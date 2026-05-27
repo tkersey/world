@@ -1,0 +1,20 @@
+.{
+    .name = .world,
+    .version = "0.1.0",
+    .fingerprint = 0x3a77114378d4745d,
+    .dependencies = .{
+        .boundary = .{
+            .path = "../boundary",
+        },
+    },
+    .minimum_zig_version = "0.16.0",
+    .paths = .{
+        "README.md",
+        "build.zig",
+        "build.zig.zon",
+        "docs",
+        "examples",
+        "src",
+        "test",
+    },
+}
