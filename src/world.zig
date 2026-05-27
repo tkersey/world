@@ -243,7 +243,7 @@ pub const Transcript = struct {
         for (self.events.items, 0..) |event, index| {
             switch (event.kind) {
                 .run_started => {
-                    if (source_start != null) continue;
+                    if (source_start != null) return Error.ReplayMissing;
                     if (event.world_surface_fingerprint != expected_world_surface_fingerprint) return Error.ReplaySurfaceMismatch;
                     if (event.target_certificate_fingerprint != expected_target_certificate_fingerprint) return Error.ReplayTargetCertificateMismatch;
                     source_start = index;

@@ -465,6 +465,33 @@ test "world replay validates zero-port run fingerprints" {
             .transcript = &transcript,
         }));
     }
+    {
+        var transcript = world.Transcript.init(std.testing.allocator);
+        defer transcript.deinit();
+        try transcript.append(.{
+            .kind = .run_started,
+            .world_surface_fingerprint = fixtures.Strict.Target.WorldSurface.surface_fingerprint,
+            .target_certificate_fingerprint = fixtures.Strict.Target.Certificate.certificate_fingerprint,
+        });
+        try transcript.append(.{
+            .kind = .run_started,
+            .world_surface_fingerprint = fixtures.Strict.Target.WorldSurface.surface_fingerprint,
+            .target_certificate_fingerprint = fixtures.Strict.Target.Certificate.certificate_fingerprint,
+        });
+        try transcript.append(.{
+            .kind = .run_completed,
+            .world_surface_fingerprint = fixtures.Strict.Target.WorldSurface.surface_fingerprint,
+            .target_certificate_fingerprint = fixtures.Strict.Target.Certificate.certificate_fingerprint,
+        });
+
+        var runtime = boundary.Runtime.init(std.testing.allocator);
+        defer runtime.deinit();
+        try std.testing.expectError(error.ReplayMissing, Machine.run(&runtime, .{}, .{
+            .allocator = std.testing.allocator,
+            .mode = world.Mode.replay,
+            .transcript = &transcript,
+        }));
+    }
 }
 
 test "world replay ignores responses outside validated source run" {
