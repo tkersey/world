@@ -189,7 +189,15 @@ test "world runtime step API parks on port and resumes to done" {
         .done => |value| try std.testing.expectEqual(@as(i32, 7), value),
         else => return error.ExpectedDone,
     }
+    const repeated = try run.next();
+    switch (repeated) {
+        .done => |value| try std.testing.expectEqual(@as(i32, 7), value),
+        else => return error.ExpectedRepeatedDone,
+    }
     try std.testing.expectEqual(@as(usize, 1), ctx.calls);
+    const summary = transcript.summary();
+    try std.testing.expectEqual(@as(usize, 1), summary.run_completed);
+    try std.testing.expectEqual(@as(usize, 0), summary.run_failed);
 }
 
 test "world dispatch uses WorldDispatchTable residual site mapping" {

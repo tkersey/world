@@ -524,6 +524,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
 
                 fn markRunFailed(self: *Self) !void {
                     if (self.audit.final_status == .failed) return;
+                    if (self.audit.final_status == .completed) return;
                     self.pending_request = null;
                     self.pending_port_id = null;
                     self.audit.final_status = .failed;
@@ -585,6 +586,9 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 }
 
                 pub fn next(self: *Self) !Step {
+                    if (self.audit.final_status == .completed) {
+                        return .{ .done = self.done_value orelse return Error.HandlerFailed };
+                    }
                     if (self.audit.final_status == .failed) return .failed;
                     if (self.pending_request != null) return .port_required;
                     const session_step = self.session.next() catch |err| {
