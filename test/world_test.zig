@@ -20,6 +20,26 @@ const PortsMachine = world.Machine(fixtures.Ports.Target, .{
     .strict_handler_coverage = true,
 });
 
+fn recordPortsTranscript(transcript: *world.Transcript) !void {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var ctx: PortsCtx = .{};
+    var result = try PortsMachine.run(&runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+        .transcript = transcript,
+    });
+    defer result.deinit(std.testing.allocator);
+}
+
+fn firstRespondedEvent(transcript: *world.Transcript) !*world.Transcript.Event {
+    for (transcript.events.items) |*event| {
+        if (event.kind == .port_responded) return event;
+    }
+    return error.MissingResponseEvent;
+}
+
 test "world machine accepts strict zero-port certified target" {
     const Machine = world.Machine(fixtures.Strict.Target, .{
         .ports = .{},
@@ -59,6 +79,17 @@ test "world machine rejects mismatched surface fingerprint" {
     }));
 }
 
+test "world machine rejects mismatched target certificate fingerprint" {
+    const Machine = world.Machine(fixtures.Strict.Target, .{ .ports = .{} });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    try std.testing.expectError(error.TargetCertificateMismatch, Machine.run(&runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .expected_target_certificate_fingerprint = fixtures.Strict.Target.Certificate.certificate_fingerprint + 1,
+    }));
+}
+
 test "world port dispatch uses dense dispatch table and records transcript" {
     PortsMachine.assertAllPortsHandled();
     PortsMachine.assertNoExtraHandlers();
@@ -87,6 +118,22 @@ test "world port dispatch uses dense dispatch table and records transcript" {
     try std.testing.expectEqual(@as(usize, 1), transcript.summary().port_requested);
     try std.testing.expectEqual(@as(usize, 1), transcript.summary().port_responded);
     try std.testing.expectEqual(@as(u32, 0), fixtures.Ports.Target.WorldDispatchTable.lookup(fixtures.Ports.ApprovalRequest.index).?);
+}
+
+test "world fresh port run does not require transcript option" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var ctx: PortsCtx = .{};
+
+    var result = try PortsMachine.run(&runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+    });
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(i32, 7), result.value);
+    try std.testing.expectEqual(@as(usize, 1), ctx.calls);
 }
 
 test "world runtime step API parks on port and resumes to done" {
@@ -181,6 +228,246 @@ test "world replay missing response fails" {
     try std.testing.expectEqual(@as(usize, 0), ctx.calls);
 }
 
+test "world replay does not require handler context option" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+
+    try std.testing.expectError(error.ReplayMissing, PortsMachine.run(&runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.replay,
+        .transcript = &transcript,
+    }));
+}
+
+test "world dispatch failures record failed audit and transcript events" {
+    const MissingMachine = world.Machine(fixtures.Ports.Target, .{ .ports = .{} });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    var ctx: PortsCtx = .{};
+
+    try std.testing.expectError(error.MissingHandler, MissingMachine.run(&runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+        .transcript = &transcript,
+    }));
+
+    const summary = transcript.summary();
+    try std.testing.expectEqual(@as(usize, 1), summary.port_requested);
+    try std.testing.expectEqual(@as(usize, 1), summary.port_failed);
+    try std.testing.expectEqual(@as(usize, 1), summary.run_failed);
+}
+
+test "world replay rejects forged transcript dimensions" {
+    {
+        var transcript = world.Transcript.init(std.testing.allocator);
+        defer transcript.deinit();
+        try recordPortsTranscript(&transcript);
+        (try firstRespondedEvent(&transcript)).world_surface_fingerprint += 1;
+
+        var runtime = boundary.Runtime.init(std.testing.allocator);
+        defer runtime.deinit();
+        var ctx: PortsCtx = .{};
+        try std.testing.expectError(error.ReplaySurfaceMismatch, PortsMachine.run(&runtime, .{}, .{
+            .allocator = std.testing.allocator,
+            .mode = world.Mode.replay,
+            .ctx = &ctx,
+            .transcript = &transcript,
+        }));
+        try std.testing.expectEqual(@as(usize, 0), ctx.calls);
+    }
+    {
+        var transcript = world.Transcript.init(std.testing.allocator);
+        defer transcript.deinit();
+        try recordPortsTranscript(&transcript);
+        (try firstRespondedEvent(&transcript)).target_certificate_fingerprint += 1;
+
+        var runtime = boundary.Runtime.init(std.testing.allocator);
+        defer runtime.deinit();
+        var ctx: PortsCtx = .{};
+        try std.testing.expectError(error.ReplayTargetCertificateMismatch, PortsMachine.run(&runtime, .{}, .{
+            .allocator = std.testing.allocator,
+            .mode = world.Mode.replay,
+            .ctx = &ctx,
+            .transcript = &transcript,
+        }));
+        try std.testing.expectEqual(@as(usize, 0), ctx.calls);
+    }
+    {
+        var transcript = world.Transcript.init(std.testing.allocator);
+        defer transcript.deinit();
+        try recordPortsTranscript(&transcript);
+        (try firstRespondedEvent(&transcript)).world_port_id.? += 1;
+
+        var runtime = boundary.Runtime.init(std.testing.allocator);
+        defer runtime.deinit();
+        var ctx: PortsCtx = .{};
+        try std.testing.expectError(error.ReplayPortMismatch, PortsMachine.run(&runtime, .{}, .{
+            .allocator = std.testing.allocator,
+            .mode = world.Mode.replay,
+            .ctx = &ctx,
+            .transcript = &transcript,
+        }));
+        try std.testing.expectEqual(@as(usize, 0), ctx.calls);
+    }
+    {
+        var transcript = world.Transcript.init(std.testing.allocator);
+        defer transcript.deinit();
+        try recordPortsTranscript(&transcript);
+        (try firstRespondedEvent(&transcript)).request_fingerprint.? += 1;
+
+        var runtime = boundary.Runtime.init(std.testing.allocator);
+        defer runtime.deinit();
+        var ctx: PortsCtx = .{};
+        try std.testing.expectError(error.ReplayRequestFingerprintMismatch, PortsMachine.run(&runtime, .{}, .{
+            .allocator = std.testing.allocator,
+            .mode = world.Mode.replay,
+            .ctx = &ctx,
+            .transcript = &transcript,
+        }));
+        try std.testing.expectEqual(@as(usize, 0), ctx.calls);
+    }
+}
+
+test "world verify rejects forged transcript dimensions before calling handlers" {
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    try recordPortsTranscript(&transcript);
+    (try firstRespondedEvent(&transcript)).target_certificate_fingerprint += 1;
+
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var ctx: PortsCtx = .{};
+    try std.testing.expectError(error.ReplayTargetCertificateMismatch, PortsMachine.run(&runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.verify,
+        .ctx = &ctx,
+        .transcript = &transcript,
+    }));
+    try std.testing.expectEqual(@as(usize, 0), ctx.calls);
+}
+
+test "world transcript keeps rejected response events unconsumed" {
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    try recordPortsTranscript(&transcript);
+    (try firstRespondedEvent(&transcript)).target_certificate_fingerprint += 1;
+
+    const key = PortsDecl.replayKey((try firstRespondedEvent(&transcript)).request_fingerprint.?);
+    try std.testing.expectError(
+        error.ReplayTargetCertificateMismatch,
+        transcript.nextResponse(key, fixtures.Ports.Target.Certificate.certificate_fingerprint, .@"resume"),
+    );
+    try std.testing.expectError(error.ReplayUnusedEvent, transcript.assertReplayComplete());
+}
+
+test "world replay and verify reject unused response events" {
+    {
+        var transcript = world.Transcript.init(std.testing.allocator);
+        defer transcript.deinit();
+        try recordPortsTranscript(&transcript);
+        const response_event = (try firstRespondedEvent(&transcript)).*;
+        try transcript.append(.{
+            .kind = .port_responded,
+            .world_surface_fingerprint = response_event.world_surface_fingerprint,
+            .target_certificate_fingerprint = response_event.target_certificate_fingerprint,
+        });
+
+        var runtime = boundary.Runtime.init(std.testing.allocator);
+        defer runtime.deinit();
+        var ctx: PortsCtx = .{};
+        try std.testing.expectError(error.ReplayUnusedEvent, PortsMachine.run(&runtime, .{}, .{
+            .allocator = std.testing.allocator,
+            .mode = world.Mode.replay,
+            .ctx = &ctx,
+            .transcript = &transcript,
+        }));
+    }
+    {
+        var transcript = world.Transcript.init(std.testing.allocator);
+        defer transcript.deinit();
+        try recordPortsTranscript(&transcript);
+        const response_event = (try firstRespondedEvent(&transcript)).*;
+        try transcript.append(.{
+            .kind = .port_responded,
+            .world_surface_fingerprint = response_event.world_surface_fingerprint,
+            .target_certificate_fingerprint = response_event.target_certificate_fingerprint,
+        });
+
+        var runtime = boundary.Runtime.init(std.testing.allocator);
+        defer runtime.deinit();
+        var ctx: PortsCtx = .{};
+        try std.testing.expectError(error.ReplayUnusedEvent, PortsMachine.run(&runtime, .{}, .{
+            .allocator = std.testing.allocator,
+            .mode = world.Mode.verify,
+            .ctx = &ctx,
+            .transcript = &transcript,
+        }));
+        try std.testing.expectEqual(@as(usize, 1), ctx.calls);
+    }
+}
+
+test "world verify rejects missing or corrupt stored replay values" {
+    var recorded = world.Transcript.init(std.testing.allocator);
+    defer recorded.deinit();
+    try recordPortsTranscript(&recorded);
+    const response_event = (try firstRespondedEvent(&recorded)).*;
+
+    {
+        var transcript = world.Transcript.init(std.testing.allocator);
+        defer transcript.deinit();
+        try transcript.append(.{
+            .kind = .port_responded,
+            .world_surface_fingerprint = response_event.world_surface_fingerprint,
+            .target_certificate_fingerprint = response_event.target_certificate_fingerprint,
+            .world_port_id = response_event.world_port_id,
+            .request_fingerprint = response_event.request_fingerprint,
+            .response_fingerprint = response_event.response_fingerprint,
+            .response_kind = response_event.response_kind,
+            .replay_key = response_event.replay_key,
+        });
+
+        var runtime = boundary.Runtime.init(std.testing.allocator);
+        defer runtime.deinit();
+        var ctx: PortsCtx = .{};
+        try std.testing.expectError(error.ReplayMissing, PortsMachine.run(&runtime, .{}, .{
+            .allocator = std.testing.allocator,
+            .mode = world.Mode.verify,
+            .ctx = &ctx,
+            .transcript = &transcript,
+        }));
+    }
+    {
+        var transcript = world.Transcript.init(std.testing.allocator);
+        defer transcript.deinit();
+        try transcript.append(.{
+            .kind = .port_responded,
+            .world_surface_fingerprint = response_event.world_surface_fingerprint,
+            .target_certificate_fingerprint = response_event.target_certificate_fingerprint,
+            .world_port_id = response_event.world_port_id,
+            .request_fingerprint = response_event.request_fingerprint,
+            .response_fingerprint = response_event.response_fingerprint,
+            .response_kind = response_event.response_kind,
+            .replay_key = response_event.replay_key,
+            .value = try world.StoredValue.init(std.testing.allocator, @as(i32, 8)),
+        });
+
+        var runtime = boundary.Runtime.init(std.testing.allocator);
+        defer runtime.deinit();
+        var ctx: PortsCtx = .{};
+        try std.testing.expectError(error.VerifyDivergence, PortsMachine.run(&runtime, .{}, .{
+            .allocator = std.testing.allocator,
+            .mode = world.Mode.verify,
+            .ctx = &ctx,
+            .transcript = &transcript,
+        }));
+    }
+}
+
 test "world verify detects changed handler response" {
     var fresh_runtime = boundary.Runtime.init(std.testing.allocator);
     defer fresh_runtime.deinit();
@@ -250,6 +537,39 @@ test "world transcript replay key and summary counts are deterministic" {
     const summary = transcript.summary();
     try std.testing.expectEqual(@as(usize, 1), summary.run_started);
     try std.testing.expectEqual(@as(usize, 1), summary.run_completed);
+}
+
+test "world transcript stores string-list values for replay" {
+    const key = world.ReplayKey{
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .world_port_id = PortsDecl.world_port_id,
+        .request_fingerprint = 0xabc,
+        .response_kind = .@"resume",
+    };
+    const response: []const []const u8 = &.{ "alpha", "beta" };
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    try transcript.append(.{
+        .kind = .port_responded,
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .world_port_id = PortsDecl.world_port_id,
+        .request_fingerprint = key.request_fingerprint,
+        .response_kind = .@"resume",
+        .replay_key = key.fingerprint(),
+        .value = try world.StoredValue.init(std.testing.allocator, response),
+    });
+
+    const event = try transcript.nextResponse(key, fixtures.Ports.Target.Certificate.certificate_fingerprint, .@"resume");
+    const stored = event.value orelse return error.MissingResponseEvent;
+    const cloned = try stored.as(std.testing.allocator, []const []const u8);
+    defer {
+        for (cloned) |item| std.testing.allocator.free(item);
+        std.testing.allocator.free(cloned);
+    }
+    try std.testing.expectEqual(@as(usize, 2), cloned.len);
+    try std.testing.expectEqualStrings("alpha", cloned[0]);
+    try std.testing.expectEqualStrings("beta", cloned[1]);
 }
 
 test "world audit report counts fresh calls and fingerprints" {

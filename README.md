@@ -79,7 +79,7 @@ Replay keys include:
 - request fingerprint
 - response kind
 
-Changing any of those changes the replay key. Replay fails on missing responses, port mismatch, request mismatch, response-kind mismatch, surface mismatch, or unused response events.
+Changing any of those changes the replay key. Replay also fails on target-certificate mismatch, missing responses, port mismatch, request mismatch, response-kind mismatch, surface mismatch, or unused response events.
 
 ## Audit Reports
 

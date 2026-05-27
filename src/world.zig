@@ -21,6 +21,7 @@ pub const Error = error{
     ReplayPortMismatch,
     ReplayRequestFingerprintMismatch,
     ReplayResponseKindMismatch,
+    ReplayTargetCertificateMismatch,
     ReplayUnusedEvent,
     ReplaySurfaceMismatch,
     VerifyDivergence,
@@ -78,8 +79,15 @@ pub const StoredValue = struct {
     destroy_fn: *const fn (std.mem.Allocator, *anyopaque) void,
 
     pub fn init(allocator: std.mem.Allocator, value: anytype) !@This() {
+        const cloned = try cloneOwnedValue(allocator, value);
+        errdefer deinitOwnedValue(allocator, cloned);
+        return initOwned(allocator, cloned);
+    }
+
+    fn initOwned(allocator: std.mem.Allocator, value: anytype) !@This() {
         const Value = @TypeOf(value);
         const ptr = try allocator.create(Value);
+        errdefer allocator.destroy(ptr);
         ptr.* = value;
         return .{
             .ptr = @ptrCast(ptr),
@@ -87,13 +95,20 @@ pub const StoredValue = struct {
             .destroy_fn = struct {
                 fn destroy(inner_allocator: std.mem.Allocator, erased: *anyopaque) void {
                     const typed: *Value = @ptrCast(@alignCast(erased));
+                    deinitOwnedValue(inner_allocator, typed.*);
                     inner_allocator.destroy(typed);
                 }
             }.destroy,
         };
     }
 
-    pub fn as(self: @This(), comptime Value: type) !Value {
+    pub fn as(self: @This(), allocator: std.mem.Allocator, comptime Value: type) !Value {
+        if (!std.mem.eql(u8, self.type_name, @typeName(Value))) return Error.ReplayResponseKindMismatch;
+        const typed: *Value = @ptrCast(@alignCast(self.ptr));
+        return cloneOwnedValue(allocator, typed.*);
+    }
+
+    fn borrow(self: @This(), comptime Value: type) !Value {
         if (!std.mem.eql(u8, self.type_name, @typeName(Value))) return Error.ReplayResponseKindMismatch;
         const typed: *Value = @ptrCast(@alignCast(self.ptr));
         return typed.*;
@@ -149,6 +164,7 @@ pub const Transcript = struct {
     pub fn nextResponse(
         self: *@This(),
         key: ReplayKey,
+        expected_target_certificate_fingerprint: u64,
         expected_response_kind: ResponseKind,
     ) !*const Event {
         const key_fingerprint = key.fingerprint();
@@ -156,12 +172,13 @@ pub const Transcript = struct {
             const index = self.replay_cursor;
             const event = &self.events.items[index];
             if (event.kind != .port_responded) continue;
-            self.replay_cursor += 1;
             if (event.world_surface_fingerprint != key.world_surface_fingerprint) return Error.ReplaySurfaceMismatch;
+            if (event.target_certificate_fingerprint != expected_target_certificate_fingerprint) return Error.ReplayTargetCertificateMismatch;
             if ((event.world_port_id orelse return Error.ReplayPortMismatch) != key.world_port_id) return Error.ReplayPortMismatch;
             if ((event.request_fingerprint orelse return Error.ReplayRequestFingerprintMismatch) != key.request_fingerprint) return Error.ReplayRequestFingerprintMismatch;
             if ((event.response_kind orelse return Error.ReplayResponseKindMismatch) != expected_response_kind) return Error.ReplayResponseKindMismatch;
             if ((event.replay_key orelse return Error.ReplayMissing) != key_fingerprint) return Error.ReplayMissing;
+            self.replay_cursor = index + 1;
             return event;
         }
         return Error.ReplayMissing;
@@ -286,6 +303,9 @@ pub fn port(comptime Target: type, comptime Site: type, comptime handler_fn: any
     if (entry.residual_site_fingerprint != Site.fingerprint) {
         @compileError("World port site fingerprint mismatch");
     }
+    if (!Site.may_resume) {
+        @compileError("World v0 only supports resumable world ports");
+    }
     return struct {
         pub const TargetType = Target;
         pub const SiteType = Site;
@@ -360,8 +380,15 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
             while (true) {
                 const step = try run_state.next();
                 switch (step) {
-                    .done => |value| return .{ .value = value, .audit = try run_state.snapshotAudit() },
-                    .port_required => try run_state.dispatch(),
+                    .done => |value| {
+                        const audit = try run_state.snapshotAudit();
+                        run_state.done_value = null;
+                        return .{ .value = value, .audit = audit };
+                    },
+                    .port_required => run_state.dispatch() catch |err| {
+                        try run_state.markRunFailed();
+                        return err;
+                    },
                     .parked => return Error.HandlerPending,
                     .failed => return Error.HandlerFailed,
                 }
@@ -388,6 +415,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 audit: AuditReport,
                 per_port_counts: []usize,
                 done_value: ?Value = null,
+                replay_values: std.ArrayList(StoredValue) = .empty,
 
                 pub const Result = struct {
                     value: Value,
@@ -414,6 +442,12 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     return audit;
                 }
 
+                fn markRunFailed(self: *Self) !void {
+                    if (self.audit.final_status == .failed) return;
+                    self.audit.final_status = .failed;
+                    try appendRunEvent(Target, self.options, .run_failed, null);
+                }
+
                 fn start(runtime: RuntimePtr, args: anytype, options: Options) !Self {
                     const allocator = @field(options, "allocator");
                     const mode_value: Mode = if (@hasField(Options, "mode")) @field(options, "mode") else .fresh;
@@ -427,12 +461,12 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     @memset(per_port_counts, 0);
                     errdefer allocator.free(per_port_counts);
                     try validateRuntimeSurfaceOptions(Target, options);
-                    if (@hasField(Options, "transcript")) {
-                        if (effective == .replay) @field(options, "transcript").resetReplay();
-                        try appendRunEvent(Target, options, .run_started, null);
-                    }
                     var session = try Program.Session.startWithArgs(runtime, Program.Handlers{}, args);
                     errdefer session.deinit();
+                    if (@hasField(Options, "transcript")) {
+                        if (modeConsumesTranscript(effective)) @field(options, "transcript").resetReplay();
+                        try appendRunEvent(Target, options, .run_started, null);
+                    }
                     return .{
                         .runtime = runtime,
                         .session = session,
@@ -451,7 +485,13 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 }
 
                 pub fn deinit(self: *Self) void {
+                    if (self.done_value) |value| {
+                        deinitRunValue(self.allocator, value);
+                        self.done_value = null;
+                    }
                     self.session.deinit();
+                    for (self.replay_values.items) |*value| value.deinit(self.allocator);
+                    self.replay_values.deinit(self.allocator);
                     self.allocator.free(self.per_port_counts);
                 }
 
@@ -462,11 +502,16 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             var result = done;
                             defer result.deinit();
                             self.done_value = try cloneRunValue(self.allocator, result.value);
+                            if (modeConsumesTranscript(self.effective_mode) and @hasField(Options, "transcript")) {
+                                @field(self.options, "transcript").assertReplayComplete() catch |err| {
+                                    self.audit.replay_mismatch_count += 1;
+                                    self.audit.final_status = .failed;
+                                    try appendRunEvent(Target, self.options, .run_failed, null);
+                                    return err;
+                                };
+                            }
                             self.audit.final_status = .completed;
                             try appendRunEvent(Target, self.options, .run_completed, null);
-                            if (self.effective_mode == .replay and @hasField(Options, "transcript")) {
-                                try @field(self.options, "transcript").assertReplayComplete();
-                            }
                             return .{ .done = self.done_value.? };
                         },
                         .after => {
@@ -495,15 +540,33 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 pub fn dispatch(self: *Self) !void {
                     const request = self.pending_request orelse return Error.UnknownResidualSite;
                     const world_port_id = self.pending_port_id orelse return Error.UnknownWorldPort;
-                    inline for (Config.ports) |Decl| {
-                        if (Decl.world_port_id == world_port_id) {
-                            try self.dispatchDecl(Decl, request);
-                            self.pending_request = null;
-                            self.pending_port_id = null;
-                            return;
-                        }
+                    const trace = request.trace();
+                    if (Target.WorldPortTable.entries.len == 0) return self.markMissingHandler(world_port_id, trace);
+                    switch (world_port_id) {
+                        inline 0...Target.WorldPortTable.entries.len - 1 => |id| {
+                            const Handler = comptime handlerForWorldPortId(Target, Config, @intCast(id));
+                            if (Handler) |Decl| {
+                                self.dispatchDecl(Decl, request) catch |err| {
+                                    self.audit.failed_count += 1;
+                                    try appendPortEvent(Target, self.options, .port_failed, world_port_id, trace, null, null, null);
+                                    try self.markRunFailed();
+                                    return err;
+                                };
+                                self.pending_request = null;
+                                self.pending_port_id = null;
+                                return;
+                            }
+                            return self.markMissingHandler(world_port_id, trace);
+                        },
+                        else => return Error.UnknownWorldPort,
                     }
+                }
+
+                fn markMissingHandler(self: *Self, world_port_id: u32, trace: anytype) !void {
                     self.audit.missing_handler_count += 1;
+                    self.audit.failed_count += 1;
+                    try appendPortEvent(Target, self.options, .port_failed, world_port_id, trace, null, null, null);
+                    try self.markRunFailed();
                     return Error.MissingHandler;
                 }
 
@@ -527,19 +590,33 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         .world_port_ref = Decl.world_port_ref,
                         .payload_value = payload,
                     };
-                    const value = switch (self.effective_mode) {
-                        .fresh, .audit => try self.callFresh(Decl, public_request),
-                        .verify => try self.callVerify(Decl, public_request, typed_request, replay_key),
-                        .replay => try self.callReplay(Decl, typed_request, replay_key, trace),
-                    };
-                    try self.session.resumeTyped(typed_request, value);
+                    switch (self.effective_mode) {
+                        .fresh, .audit => {
+                            const value = try self.callFresh(Decl, public_request);
+                            try self.session.resumeTyped(typed_request, value);
+                        },
+                        .verify => {
+                            const value = try self.callVerify(Decl, public_request, typed_request, replay_key);
+                            try self.session.resumeTyped(typed_request, value);
+                        },
+                        .replay => {
+                            const value = try self.callReplay(Decl, typed_request, replay_key, trace);
+                            try self.session.resumeTyped(typed_request, value);
+                        },
+                    }
                 }
 
                 fn callFresh(self: *Self, comptime Decl: type, request: PortRequest(Target, Decl)) !Decl.Response {
+                    if (!@hasField(Options, "ctx")) return Error.MissingHandler;
                     const response = try callHandler(Decl, @field(self.options, "ctx"), request);
                     const typed = try (self.pending_request orelse return Error.UnknownResidualSite).as(Decl.SiteType);
                     const response_trace = try typed.responseTrace(.@"resume", response);
-                    const stored = try StoredValue.init(self.allocator, response);
+                    var stored: ?StoredValue = null;
+                    if (comptime @hasField(Options, "transcript")) {
+                        stored = try StoredValue.init(self.allocator, response);
+                    }
+                    var stored_owned = stored != null;
+                    errdefer if (stored_owned) stored.?.deinit(self.allocator);
                     try appendPortEvent(
                         Target,
                         self.options,
@@ -550,6 +627,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         .@"resume",
                         stored,
                     );
+                    stored_owned = false;
                     self.audit.fresh_response_count += 1;
                     return response;
                 }
@@ -561,13 +639,16 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     replay_key: ReplayKey,
                     trace: anytype,
                 ) !Decl.Response {
+                    if (!@hasField(Options, "transcript")) return Error.ReplayMissing;
                     const transcript = @field(self.options, "transcript");
-                    const event = transcript.nextResponse(replay_key, .@"resume") catch |err| {
+                    const event = transcript.nextResponse(replay_key, Target.Certificate.certificate_fingerprint, .@"resume") catch |err| {
                         self.audit.replay_mismatch_count += 1;
                         return err;
                     };
                     const stored = event.value orelse return Error.ReplayMissing;
-                    const value = try stored.as(Decl.Response);
+                    const value = try stored.as(self.allocator, Decl.Response);
+                    var value_owned = true;
+                    errdefer if (value_owned) deinitOwnedValue(self.allocator, value);
                     const response_trace = try typed_request.responseTrace(.@"resume", value);
                     if (response_trace.fingerprint != (event.response_fingerprint orelse return Error.ReplayMissing)) {
                         self.audit.replay_mismatch_count += 1;
@@ -575,7 +656,13 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     }
                     try appendPortEvent(Target, self.options, .port_replayed, Decl.world_port_id, trace, response_trace.fingerprint, .@"resume", null);
                     self.audit.replayed_response_count += 1;
-                    return value;
+                    var run_value = try StoredValue.initOwned(self.allocator, value);
+                    value_owned = false;
+                    var run_value_owned = true;
+                    errdefer if (run_value_owned) run_value.deinit(self.allocator);
+                    try self.replay_values.append(self.allocator, run_value);
+                    run_value_owned = false;
+                    return self.replay_values.items[self.replay_values.items.len - 1].borrow(Decl.Response);
                 }
 
                 fn callVerify(
@@ -585,14 +672,28 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     typed_request: anytype,
                     replay_key: ReplayKey,
                 ) !Decl.Response {
-                    const fresh = try callHandler(Decl, @field(self.options, "ctx"), request);
-                    const response_trace = try typed_request.responseTrace(.@"resume", fresh);
+                    if (!@hasField(Options, "ctx")) return Error.MissingHandler;
+                    if (!@hasField(Options, "transcript")) return Error.ReplayMissing;
                     const transcript = @field(self.options, "transcript");
-                    const event = transcript.nextResponse(replay_key, .@"resume") catch |err| {
+                    const event = transcript.nextResponse(replay_key, Target.Certificate.certificate_fingerprint, .@"resume") catch |err| {
                         self.audit.replay_mismatch_count += 1;
                         return err;
                     };
-                    if (response_trace.fingerprint != (event.response_fingerprint orelse return Error.ReplayMissing)) {
+                    const expected_response_fingerprint = event.response_fingerprint orelse return Error.ReplayMissing;
+                    const stored = event.value orelse return Error.ReplayMissing;
+                    const replay_value = stored.as(self.allocator, Decl.Response) catch |err| {
+                        self.audit.replay_mismatch_count += 1;
+                        return err;
+                    };
+                    defer deinitOwnedValue(self.allocator, replay_value);
+                    const replay_trace = try typed_request.responseTrace(.@"resume", replay_value);
+                    if (replay_trace.fingerprint != expected_response_fingerprint) {
+                        self.audit.replay_mismatch_count += 1;
+                        return Error.VerifyDivergence;
+                    }
+                    const fresh = try callHandler(Decl, @field(self.options, "ctx"), request);
+                    const response_trace = try typed_request.responseTrace(.@"resume", fresh);
+                    if (response_trace.fingerprint != expected_response_fingerprint) {
                         self.audit.replay_mismatch_count += 1;
                         return Error.VerifyDivergence;
                     }
@@ -622,9 +723,14 @@ fn validateTarget(comptime Target: type) void {
 
 fn validateConfig(comptime Target: type, comptime Config: anytype) void {
     if (!@hasField(@TypeOf(Config), "ports")) @compileError("world.Machine config requires .ports");
-    inline for (Config.ports) |Decl| {
+    inline for (Config.ports, 0..) |Decl, index| {
         if (Decl.TargetType != Target) @compileError("World port handler bound to wrong Target");
         if (Decl.world_port_id >= Target.WorldPortTable.entries.len) @compileError("World port handler id out of range");
+        inline for (Config.ports, 0..) |Other, other_index| {
+            if (other_index > index and Decl.world_port_id == Other.world_port_id) {
+                @compileError("World port handler id duplicated");
+            }
+        }
     }
     if (comptime @hasField(@TypeOf(Config), "strict_handler_coverage") and Config.strict_handler_coverage) {
         assertAllPortsHandledFor(Target, Config);
@@ -639,6 +745,14 @@ fn assertAllPortsHandledFor(comptime Target: type, comptime Config: anytype) voi
         }
         if (!found) @compileError("World port missing handler");
     }
+}
+
+fn handlerForWorldPortId(comptime Target: type, comptime Config: anytype, comptime world_port_id: u32) ?type {
+    _ = Target;
+    inline for (Config.ports) |Decl| {
+        if (Decl.world_port_id == world_port_id) return Decl;
+    }
+    return null;
 }
 
 fn worldPortIdForSite(comptime Target: type, comptime Site: type) ?u32 {
@@ -668,19 +782,137 @@ fn callHandler(comptime Decl: type, ctx: anytype, request_value: PortRequest(Dec
     return Decl.handler(ctx, request_value.payload_value);
 }
 
-fn cloneRunValue(allocator: std.mem.Allocator, value: anytype) !@TypeOf(value) {
+fn cloneOwnedValue(allocator: std.mem.Allocator, value: anytype) !@TypeOf(value) {
     const Value = @TypeOf(value);
-    if (comptime Value == []const u8) {
-        return try allocator.dupe(u8, value);
+    return switch (@typeInfo(Value)) {
+        .void,
+        .bool,
+        .int,
+        .float,
+        .comptime_float,
+        .comptime_int,
+        .@"enum",
+        .error_set,
+        => value,
+        .pointer => |pointer| blk: {
+            if (comptime pointer.size == .slice and pointer.child == u8) {
+                break :blk try allocator.dupe(u8, value);
+            }
+            if (comptime isStringList(Value)) {
+                break :blk try cloneOwnedStringList(allocator, value);
+            }
+            @compileError("World transcript/result storage only supports owned cloning for byte slices and string lists");
+        },
+        .optional => |optional| if (value) |payload|
+            try cloneOwnedValue(allocator, @as(optional.child, payload))
+        else
+            null,
+        .@"struct" => |info| blk: {
+            var result: Value = undefined;
+            var initialized_fields: usize = 0;
+            errdefer inline for (info.fields, 0..) |field, field_index| {
+                if (field_index < initialized_fields) {
+                    deinitOwnedValue(allocator, @field(result, field.name));
+                }
+            };
+            inline for (info.fields) |field| {
+                @field(result, field.name) = try cloneOwnedValue(allocator, @field(value, field.name));
+                initialized_fields += 1;
+            }
+            break :blk result;
+        },
+        .@"union" => |union_info| blk: {
+            const Tag = union_info.tag_type orelse
+                @compileError("World transcript/result storage requires tagged unions");
+            const active_tag = std.meta.activeTag(value);
+            inline for (union_info.fields) |field| {
+                if (active_tag == @field(Tag, field.name)) {
+                    if (field.type == void) break :blk @unionInit(Value, field.name, {});
+                    const cloned = try cloneOwnedValue(allocator, @field(value, field.name));
+                    break :blk @unionInit(Value, field.name, cloned);
+                }
+            }
+            unreachable;
+        },
+        else => @compileError("World transcript/result storage cannot own-clone " ++ @typeName(Value)),
+    };
+}
+
+fn deinitOwnedValue(allocator: std.mem.Allocator, value: anytype) void {
+    const Value = @TypeOf(value);
+    switch (@typeInfo(Value)) {
+        .void,
+        .bool,
+        .int,
+        .float,
+        .comptime_float,
+        .comptime_int,
+        .@"enum",
+        .error_set,
+        => {},
+        .pointer => |pointer| {
+            if (comptime pointer.size == .slice and pointer.child == u8) {
+                allocator.free(@constCast(value));
+                return;
+            }
+            if (comptime isStringList(Value)) {
+                for (value) |item| allocator.free(@constCast(item));
+                allocator.free(@constCast(value));
+                return;
+            }
+        },
+        .optional => if (value) |payload| deinitOwnedValue(allocator, payload),
+        .@"struct" => |info| inline for (info.fields) |field| {
+            deinitOwnedValue(allocator, @field(value, field.name));
+        },
+        .@"union" => |union_info| {
+            const Tag = union_info.tag_type orelse return;
+            const active_tag = std.meta.activeTag(value);
+            inline for (union_info.fields) |field| {
+                if (active_tag == @field(Tag, field.name)) {
+                    if (field.type != void) deinitOwnedValue(allocator, @field(value, field.name));
+                    return;
+                }
+            }
+        },
+        else => {},
     }
-    return value;
+}
+
+fn isByteSlice(comptime Value: type) bool {
+    return switch (@typeInfo(Value)) {
+        .pointer => |pointer| pointer.size == .slice and pointer.child == u8,
+        else => false,
+    };
+}
+
+fn isStringList(comptime Value: type) bool {
+    return switch (@typeInfo(Value)) {
+        .pointer => |pointer| pointer.size == .slice and isByteSlice(pointer.child),
+        else => false,
+    };
+}
+
+fn cloneOwnedStringList(allocator: std.mem.Allocator, value: anytype) !@TypeOf(value) {
+    const Value = @TypeOf(value);
+    const Child = @typeInfo(Value).pointer.child;
+    const result = try allocator.alloc(Child, value.len);
+    errdefer allocator.free(result);
+    var initialized: usize = 0;
+    errdefer for (result[0..initialized]) |item| allocator.free(@constCast(item));
+    for (value, 0..) |item, index| {
+        result[index] = try allocator.dupe(u8, item);
+        initialized += 1;
+    }
+    return result;
+}
+
+fn cloneRunValue(allocator: std.mem.Allocator, value: anytype) !@TypeOf(value) {
+    return cloneOwnedValue(allocator, value);
 }
 
 fn deinitRunValue(allocator: std.mem.Allocator, value: anytype) void {
-    const Value = @TypeOf(value);
-    if (comptime Value == []const u8) {
-        allocator.free(@constCast(value));
-    }
+    deinitOwnedValue(allocator, value);
 }
 
 fn validateRuntimeSurfaceOptions(comptime Target: type, options: anytype) !void {
@@ -690,6 +922,10 @@ fn validateRuntimeSurfaceOptions(comptime Target: type, options: anytype) !void 
     if (@hasField(@TypeOf(options), "expected_target_certificate_fingerprint")) {
         if (options.expected_target_certificate_fingerprint != Target.Certificate.certificate_fingerprint) return Error.TargetCertificateMismatch;
     }
+}
+
+fn modeConsumesTranscript(mode: Mode) bool {
+    return mode == .replay or mode == .verify;
 }
 
 fn appendRunEvent(comptime Target: type, options: anytype, kind: EventKind, status: ?ResponseStatus) !void {

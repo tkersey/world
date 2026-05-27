@@ -81,17 +81,66 @@ pub fn build(b: *std.Build) void {
     });
     const test_step = b.step("test", "Run world tests.");
     test_step.dependOn(&addRunArtifactWithArgs(b, tests, test_args.passthrough).step);
+    if (target.query.isNative()) b.default_step.dependOn(test_step);
 
     const examples = [_]struct {
         name: []const u8,
         path: []const u8,
         step: []const u8,
         desc: []const u8,
+        expected_stdout: []const u8,
     }{
-        .{ .name = "world-run-strict", .path = "examples/world_run_strict.zig", .step = "run-world-strict", .desc = "Run the strict zero-port World example." },
-        .{ .name = "world-run-ports", .path = "examples/world_run_ports.zig", .step = "run-world-ports", .desc = "Run the one-port World example." },
-        .{ .name = "world-replay-ports", .path = "examples/world_replay_ports.zig", .step = "run-world-replay-ports", .desc = "Run the one-port replay World example." },
-        .{ .name = "world-agent-loop", .path = "examples/world_agent_loop.zig", .step = "run-world-agent-loop", .desc = "Run the agent-shaped World port example." },
+        .{
+            .name = "world-run-strict",
+            .path = "examples/world_run_strict.zig",
+            .step = "run-world-strict",
+            .desc = "Run the strict zero-port World example.",
+            .expected_stdout =
+            \\world_surface_fingerprint=e1a80502da70f822
+            \\target_certificate_fingerprint=db5d5fd30be43ab0
+            \\final_result=1
+            \\
+            ,
+        },
+        .{
+            .name = "world-run-ports",
+            .path = "examples/world_run_ports.zig",
+            .step = "run-world-ports",
+            .desc = "Run the one-port World example.",
+            .expected_stdout =
+            \\world_surface_fingerprint=eb029dda8f6352c
+            \\world_port_id=0
+            \\request_fingerprint=1a84e84d29103ea4
+            \\final_result=7
+            \\
+            ,
+        },
+        .{
+            .name = "world-replay-ports",
+            .path = "examples/world_replay_ports.zig",
+            .step = "run-world-replay-ports",
+            .desc = "Run the one-port replay World example.",
+            .expected_stdout =
+            \\recorded_interaction_count=1
+            \\replayed_interaction_count=1
+            \\replay_verified=true
+            \\final_result=7
+            \\
+            ,
+        },
+        .{
+            .name = "world-agent-loop",
+            .path = "examples/world_agent_loop.zig",
+            .step = "run-world-agent-loop",
+            .desc = "Run the agent-shaped World port example.",
+            .expected_stdout =
+            \\skeleton final=final=actuate skeleton complete events=6 tool_calls=1 responses=3
+            \\fixture final=final=fixture updated events=10 tool_calls=2 responses=5
+            \\fixture output=actuate updated the fixture
+            \\replay fresh_handler_calls=0
+            \\
+            ,
+        },
     };
     inline for (examples) |example| {
         const exe_mod = b.createModule(.{
@@ -105,7 +154,9 @@ pub fn build(b: *std.Build) void {
         const exe = b.addExecutable(.{ .name = example.name, .root_module = exe_mod });
         const run_step = b.step(example.step, example.desc);
         if (target.query.isNative()) {
-            run_step.dependOn(&addRunArtifactWithArgs(b, exe, if (b.args) |args| args else &.{}).step);
+            const run = addRunArtifactWithArgs(b, exe, if (b.args) |args| args else &.{});
+            run.expectStdOutEqual(example.expected_stdout);
+            run_step.dependOn(&run.step);
         } else {
             run_step.dependOn(&exe.step);
         }
