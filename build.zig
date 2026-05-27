@@ -81,7 +81,11 @@ pub fn build(b: *std.Build) void {
     });
     const test_step = b.step("test", "Run world tests.");
     test_step.dependOn(&addRunArtifactWithArgs(b, tests, test_args.passthrough).step);
-    if (target.query.isNative()) b.default_step.dependOn(test_step);
+    if (target.query.isNative()) {
+        b.default_step.dependOn(test_step);
+    } else {
+        b.default_step.dependOn(&tests.step);
+    }
 
     const examples = [_]struct {
         name: []const u8,
@@ -159,6 +163,7 @@ pub fn build(b: *std.Build) void {
             run_step.dependOn(&run.step);
         } else {
             run_step.dependOn(&exe.step);
+            b.default_step.dependOn(&exe.step);
         }
     }
 

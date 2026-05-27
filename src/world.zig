@@ -57,19 +57,35 @@ pub const EventKind = enum {
 };
 
 pub const ReplayKey = struct {
-    world_surface_fingerprint: u64,
+    world_surface_scope_fingerprint: u64,
     world_port_id: u32,
     request_fingerprint: u64,
-    response_kind: ResponseKind,
+    response_fingerprint: u64,
 
     pub fn fingerprint(self: @This()) u64 {
         var hasher = std.hash.Wyhash.init(0);
         hashBytes(&hasher, "world.replay.key.v0");
-        hashU64(&hasher, self.world_surface_fingerprint);
+        hashU64(&hasher, self.world_surface_scope_fingerprint);
         hashU64(&hasher, self.world_port_id);
         hashU64(&hasher, self.request_fingerprint);
-        hashBytes(&hasher, @tagName(self.response_kind));
+        hashU64(&hasher, self.response_fingerprint);
         return hasher.final();
+    }
+};
+
+pub const ReplayKeySeed = struct {
+    world_surface_fingerprint: u64,
+    world_surface_scope_fingerprint: u64,
+    world_port_id: u32,
+    request_fingerprint: u64,
+
+    pub fn withResponse(self: @This(), response_fingerprint: u64) ReplayKey {
+        return .{
+            .world_surface_scope_fingerprint = self.world_surface_scope_fingerprint,
+            .world_port_id = self.world_port_id,
+            .request_fingerprint = self.request_fingerprint,
+            .response_fingerprint = response_fingerprint,
+        };
     }
 };
 
@@ -124,6 +140,7 @@ pub const Transcript = struct {
     allocator: std.mem.Allocator,
     events: std.ArrayList(Event) = .empty,
     replay_cursor: usize = 0,
+    replay_limit: ?usize = null,
 
     pub const Event = struct {
         kind: EventKind,
@@ -159,16 +176,17 @@ pub const Transcript = struct {
 
     pub fn resetReplay(self: *@This()) void {
         self.replay_cursor = 0;
+        self.replay_limit = null;
     }
 
     pub fn nextResponse(
         self: *@This(),
-        key: ReplayKey,
+        key: ReplayKeySeed,
         expected_target_certificate_fingerprint: u64,
         expected_response_kind: ResponseKind,
     ) !*const Event {
-        const key_fingerprint = key.fingerprint();
-        while (self.replay_cursor < self.events.items.len) : (self.replay_cursor += 1) {
+        const replay_limit = self.replay_limit orelse self.events.items.len;
+        while (self.replay_cursor < replay_limit) : (self.replay_cursor += 1) {
             const index = self.replay_cursor;
             const event = &self.events.items[index];
             if (event.kind != .port_responded) continue;
@@ -177,6 +195,8 @@ pub const Transcript = struct {
             if ((event.world_port_id orelse return Error.ReplayPortMismatch) != key.world_port_id) return Error.ReplayPortMismatch;
             if ((event.request_fingerprint orelse return Error.ReplayRequestFingerprintMismatch) != key.request_fingerprint) return Error.ReplayRequestFingerprintMismatch;
             if ((event.response_kind orelse return Error.ReplayResponseKindMismatch) != expected_response_kind) return Error.ReplayResponseKindMismatch;
+            const response_fingerprint = event.response_fingerprint orelse return Error.ReplayMissing;
+            const key_fingerprint = key.withResponse(response_fingerprint).fingerprint();
             if ((event.replay_key orelse return Error.ReplayMissing) != key_fingerprint) return Error.ReplayMissing;
             self.replay_cursor = index + 1;
             return event;
@@ -185,10 +205,45 @@ pub const Transcript = struct {
     }
 
     pub fn assertReplayComplete(self: *const @This()) !void {
+        const replay_limit = self.replay_limit orelse self.events.items.len;
         var index = self.replay_cursor;
-        while (index < self.events.items.len) : (index += 1) {
+        while (index < replay_limit) : (index += 1) {
             if (self.events.items[index].kind == .port_responded) return Error.ReplayUnusedEvent;
         }
+    }
+
+    pub fn validateReplayRun(
+        self: *@This(),
+        expected_world_surface_fingerprint: u64,
+        expected_target_certificate_fingerprint: u64,
+    ) !void {
+        var source_start: ?usize = null;
+        for (self.events.items, 0..) |event, index| {
+            switch (event.kind) {
+                .run_started => {
+                    if (source_start != null) continue;
+                    if (event.world_surface_fingerprint != expected_world_surface_fingerprint) return Error.ReplaySurfaceMismatch;
+                    if (event.target_certificate_fingerprint != expected_target_certificate_fingerprint) return Error.ReplayTargetCertificateMismatch;
+                    source_start = index;
+                    self.replay_cursor = index + 1;
+                },
+                .run_completed => {
+                    if (source_start == null) continue;
+                    if (event.world_surface_fingerprint != expected_world_surface_fingerprint) return Error.ReplaySurfaceMismatch;
+                    if (event.target_certificate_fingerprint != expected_target_certificate_fingerprint) return Error.ReplayTargetCertificateMismatch;
+                    self.replay_limit = index;
+                    return;
+                },
+                .run_failed => {
+                    if (source_start == null) continue;
+                    if (event.world_surface_fingerprint != expected_world_surface_fingerprint) return Error.ReplaySurfaceMismatch;
+                    if (event.target_certificate_fingerprint != expected_target_certificate_fingerprint) return Error.ReplayTargetCertificateMismatch;
+                    return Error.ReplayMissing;
+                },
+                else => {},
+            }
+        }
+        return Error.ReplayMissing;
     }
 
     pub fn summary(self: *const @This()) Summary {
@@ -250,7 +305,7 @@ pub fn PortRequest(comptime Target: type, comptime Descriptor: type) type {
         residual_site_index: usize,
         residual_site_fingerprint: u64,
         request_fingerprint: u64,
-        replay_key: ReplayKey,
+        replay_key: ReplayKeySeed,
         turn_index: usize,
         value_table_payload_id: ?u32,
         value_table_response_id: ?u32,
@@ -269,14 +324,14 @@ pub fn PortRequest(comptime Target: type, comptime Descriptor: type) type {
 
         pub fn summary(self: @This(), writer: anytype) !void {
             try writer.print(
-                "surface={x} target={x} port={d} site={d} request={x} replay={x}",
+                "surface={x} target={x} port={d} site={d} request={x} replay_scope={x}",
                 .{
                     self.world_surface_fingerprint,
                     self.target_certificate_fingerprint,
                     self.world_port_id,
                     self.residual_site_index,
                     self.request_fingerprint,
-                    self.replay_key.fingerprint(),
+                    self.replay_key.world_surface_scope_fingerprint,
                 },
             );
         }
@@ -323,12 +378,12 @@ pub fn port(comptime Target: type, comptime Site: type, comptime handler_fn: any
         pub const suggested_name = if (entry.semantic_label) |label| label else entry.op_name;
         pub const handler = handler_fn;
 
-        pub fn replayKey(request_fingerprint: u64) ReplayKey {
+        pub fn replayKey(request_fingerprint: u64) ReplayKeySeed {
             return .{
                 .world_surface_fingerprint = Target.WorldSurface.surface_fingerprint,
+                .world_surface_scope_fingerprint = Target.WorldSurface.replayScopeRef().fingerprint,
                 .world_port_id = world_port_id,
                 .request_fingerprint = request_fingerprint,
-                .response_kind = .@"resume",
             };
         }
     };
@@ -336,10 +391,13 @@ pub fn port(comptime Target: type, comptime Site: type, comptime handler_fn: any
 
 pub fn portById(comptime Target: type, comptime id: u32, comptime Site: type, comptime handler_fn: anytype) type {
     if (id >= Target.WorldPortTable.entries.len) @compileError("world_port_id out of range");
-    if (Target.WorldPortTable.entries[id].residual_site_index != Site.index) {
+    const entry = Target.WorldPortTable.entries[id];
+    if (entry.residual_site_index != Site.index or entry.residual_site_fingerprint != Site.fingerprint) {
         @compileError("world_port_id does not point at Site");
     }
-    return port(Target, Site, handler_fn);
+    const Descriptor = port(Target, Site, handler_fn);
+    if (Descriptor.world_port_id != id) @compileError("world_port_id does not point at Site");
+    return Descriptor;
 }
 
 pub fn Machine(comptime Target: type, comptime Config: anytype) type {
@@ -415,7 +473,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 audit: AuditReport,
                 per_port_counts: []usize,
                 done_value: ?Value = null,
-                replay_values: std.ArrayList(StoredValue) = .empty,
+                retained_values: std.ArrayList(StoredValue) = .empty,
 
                 pub const Result = struct {
                     value: Value,
@@ -444,6 +502,8 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
 
                 fn markRunFailed(self: *Self) !void {
                     if (self.audit.final_status == .failed) return;
+                    self.pending_request = null;
+                    self.pending_port_id = null;
                     self.audit.final_status = .failed;
                     try appendRunEvent(Target, self.options, .run_failed, null);
                 }
@@ -461,10 +521,17 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     @memset(per_port_counts, 0);
                     errdefer allocator.free(per_port_counts);
                     try validateRuntimeSurfaceOptions(Target, options);
+                    if (modeConsumesTranscript(effective) and !@hasField(Options, "transcript")) return Error.ReplayMissing;
                     var session = try Program.Session.startWithArgs(runtime, Program.Handlers{}, args);
                     errdefer session.deinit();
                     if (@hasField(Options, "transcript")) {
-                        if (modeConsumesTranscript(effective)) @field(options, "transcript").resetReplay();
+                        if (modeConsumesTranscript(effective)) {
+                            @field(options, "transcript").resetReplay();
+                            try @field(options, "transcript").validateReplayRun(
+                                Target.WorldSurface.surface_fingerprint,
+                                Target.Certificate.certificate_fingerprint,
+                            );
+                        }
                         try appendRunEvent(Target, options, .run_started, null);
                     }
                     return .{
@@ -490,14 +557,20 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         self.done_value = null;
                     }
                     self.session.deinit();
-                    for (self.replay_values.items) |*value| value.deinit(self.allocator);
-                    self.replay_values.deinit(self.allocator);
+                    for (self.retained_values.items) |*value| value.deinit(self.allocator);
+                    self.retained_values.deinit(self.allocator);
                     self.allocator.free(self.per_port_counts);
                 }
 
                 pub fn next(self: *Self) !Step {
+                    if (self.audit.final_status == .failed) return .failed;
                     if (self.pending_request != null) return .port_required;
-                    switch (try self.session.next()) {
+                    const session_step = self.session.next() catch |err| {
+                        self.audit.failed_count += 1;
+                        try self.markRunFailed();
+                        return err;
+                    };
+                    switch (session_step) {
                         .done => |done| {
                             var result = done;
                             defer result.deinit();
@@ -505,8 +578,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             if (modeConsumesTranscript(self.effective_mode) and @hasField(Options, "transcript")) {
                                 @field(self.options, "transcript").assertReplayComplete() catch |err| {
                                     self.audit.replay_mismatch_count += 1;
-                                    self.audit.final_status = .failed;
-                                    try appendRunEvent(Target, self.options, .run_failed, null);
+                                    try self.markRunFailed();
                                     return err;
                                 };
                             }
@@ -515,16 +587,27 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             return .{ .done = self.done_value.? };
                         },
                         .after => {
-                            self.audit.final_status = .failed;
-                            try appendRunEvent(Target, self.options, .run_failed, null);
+                            try self.markRunFailed();
                             return Error.UnsupportedAfterRequest;
                         },
                         .request => |request| {
                             const trace = request.trace();
-                            const world_port_id = Target.WorldDispatchTable.lookup(trace.operation_site_index) orelse return Error.UnknownResidualSite;
-                            if (world_port_id >= Target.WorldPortTable.entries.len) return Error.UnknownWorldPort;
+                            const world_port_id = Target.WorldDispatchTable.lookup(trace.operation_site_index) orelse {
+                                self.audit.failed_count += 1;
+                                try self.markRunFailed();
+                                return Error.UnknownResidualSite;
+                            };
+                            if (world_port_id >= Target.WorldPortTable.entries.len) {
+                                self.audit.failed_count += 1;
+                                try self.markRunFailed();
+                                return Error.UnknownWorldPort;
+                            }
                             const entry = Target.WorldPortTable.entries[world_port_id];
-                            if (entry.residual_site_fingerprint != trace.operation_site_fingerprint) return Error.ResidualSiteFingerprintMismatch;
+                            if (entry.residual_site_fingerprint != trace.operation_site_fingerprint) {
+                                self.audit.failed_count += 1;
+                                try self.markRunFailed();
+                                return Error.ResidualSiteFingerprintMismatch;
+                            }
                             self.pending_request = request;
                             self.pending_port_id = world_port_id;
                             self.audit.port_request_count += 1;
@@ -538,6 +621,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 }
 
                 pub fn dispatch(self: *Self) !void {
+                    if (self.audit.final_status == .failed) return Error.HandlerFailed;
                     const request = self.pending_request orelse return Error.UnknownResidualSite;
                     const world_port_id = self.pending_port_id orelse return Error.UnknownWorldPort;
                     const trace = request.trace();
@@ -613,10 +697,14 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     const response_trace = try typed.responseTrace(.@"resume", response);
                     var stored: ?StoredValue = null;
                     if (comptime @hasField(Options, "transcript")) {
-                        stored = try StoredValue.init(self.allocator, response);
+                        stored = try StoredValue.init(@field(self.options, "transcript").allocator, response);
                     }
                     var stored_owned = stored != null;
-                    errdefer if (stored_owned) stored.?.deinit(self.allocator);
+                    errdefer if (stored_owned) {
+                        if (comptime @hasField(Options, "transcript")) {
+                            stored.?.deinit(@field(self.options, "transcript").allocator);
+                        }
+                    };
                     try appendPortEvent(
                         Target,
                         self.options,
@@ -629,14 +717,14 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     );
                     stored_owned = false;
                     self.audit.fresh_response_count += 1;
-                    return response;
+                    return try self.retainResponse(Decl.Response, response);
                 }
 
                 fn callReplay(
                     self: *Self,
                     comptime Decl: type,
                     typed_request: anytype,
-                    replay_key: ReplayKey,
+                    replay_key: ReplayKeySeed,
                     trace: anytype,
                 ) !Decl.Response {
                     if (!@hasField(Options, "transcript")) return Error.ReplayMissing;
@@ -660,9 +748,9 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     value_owned = false;
                     var run_value_owned = true;
                     errdefer if (run_value_owned) run_value.deinit(self.allocator);
-                    try self.replay_values.append(self.allocator, run_value);
+                    try self.retained_values.append(self.allocator, run_value);
                     run_value_owned = false;
-                    return self.replay_values.items[self.replay_values.items.len - 1].borrow(Decl.Response);
+                    return self.retained_values.items[self.retained_values.items.len - 1].borrow(Decl.Response);
                 }
 
                 fn callVerify(
@@ -670,7 +758,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     comptime Decl: type,
                     request: PortRequest(Target, Decl),
                     typed_request: anytype,
-                    replay_key: ReplayKey,
+                    replay_key: ReplayKeySeed,
                 ) !Decl.Response {
                     if (!@hasField(Options, "ctx")) return Error.MissingHandler;
                     if (!@hasField(Options, "transcript")) return Error.ReplayMissing;
@@ -698,7 +786,16 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         return Error.VerifyDivergence;
                     }
                     self.audit.fresh_response_count += 1;
-                    return fresh;
+                    return try self.retainResponse(Decl.Response, fresh);
+                }
+
+                fn retainResponse(self: *Self, comptime Response: type, value: Response) !Response {
+                    var retained = try StoredValue.init(self.allocator, value);
+                    var retained_owned = true;
+                    errdefer if (retained_owned) retained.deinit(self.allocator);
+                    try self.retained_values.append(self.allocator, retained);
+                    retained_owned = false;
+                    return self.retained_values.items[self.retained_values.items.len - 1].borrow(Response);
                 }
             };
         }
@@ -949,12 +1046,12 @@ fn appendPortEvent(
     value: ?StoredValue,
 ) !void {
     if (!@hasField(@TypeOf(options), "transcript")) return;
-    const replay_key = ReplayKey{
-        .world_surface_fingerprint = Target.WorldSurface.surface_fingerprint,
+    const replay_key = if (response_fingerprint) |fingerprint| ReplayKey{
+        .world_surface_scope_fingerprint = Target.WorldSurface.replayScopeRef().fingerprint,
         .world_port_id = world_port_id,
         .request_fingerprint = trace.fingerprint,
-        .response_kind = response_kind orelse .@"resume",
-    };
+        .response_fingerprint = fingerprint,
+    } else null;
     try @field(options, "transcript").append(.{
         .kind = kind,
         .world_surface_fingerprint = Target.WorldSurface.surface_fingerprint,
@@ -963,7 +1060,7 @@ fn appendPortEvent(
         .request_fingerprint = trace.fingerprint,
         .response_fingerprint = response_fingerprint,
         .response_kind = response_kind,
-        .replay_key = replay_key.fingerprint(),
+        .replay_key = if (replay_key) |key| key.fingerprint() else null,
         .turn_index = trace.turn_index,
         .residual_site_index = trace.operation_site_index,
         .residual_site_fingerprint = trace.operation_site_fingerprint,

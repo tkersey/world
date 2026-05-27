@@ -74,12 +74,12 @@ Fresh and verify modes require handler coverage. Strict coverage rejects missing
 
 Replay keys include:
 
-- WorldSurface fingerprint
+- WorldSurface replay-scope fingerprint
 - dense `world_port_id`
 - request fingerprint
-- response kind
+- response fingerprint
 
-Changing any of those changes the replay key. Replay also fails on target-certificate mismatch, missing responses, port mismatch, request mismatch, response-kind mismatch, surface mismatch, or unused response events.
+Changing any of those changes the replay key. Replay also fails on target-certificate mismatch, missing responses, port mismatch, request mismatch, response-kind mismatch, full-surface mismatch, or unused response events.
 
 ## Audit Reports
 

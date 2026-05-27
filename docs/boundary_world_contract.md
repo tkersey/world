@@ -49,10 +49,10 @@ Boundary provides `WorldValueTable` entries for payload, resume, and result refs
 
 The v0 replay key is deterministic and includes:
 
-- `WorldSurface.surface_fingerprint`
+- `WorldSurface.replayScopeRef().fingerprint`
 - dense `world_port_id`
 - request fingerprint
-- response kind
+- response fingerprint
 
 Replay mode fails if a matching response is missing, if the surface changes, if the target certificate changes, if the port id changes, if the request fingerprint changes, if the response kind changes, or if response events remain unused at run completion.
 
