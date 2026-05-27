@@ -823,6 +823,7 @@ fn validateConfig(comptime Target: type, comptime Config: anytype) void {
     inline for (Config.ports, 0..) |Decl, index| {
         if (Decl.TargetType != Target) @compileError("World port handler bound to wrong Target");
         if (Decl.world_port_id >= Target.WorldPortTable.entries.len) @compileError("World port handler id out of range");
+        validatePortDescriptorMetadata(Target, Decl);
         inline for (Config.ports, 0..) |Other, other_index| {
             if (other_index > index and Decl.world_port_id == Other.world_port_id) {
                 @compileError("World port handler id duplicated");
@@ -832,6 +833,25 @@ fn validateConfig(comptime Target: type, comptime Config: anytype) void {
     if (comptime @hasField(@TypeOf(Config), "strict_handler_coverage") and Config.strict_handler_coverage) {
         assertAllPortsHandledFor(Target, Config);
     }
+}
+
+fn validatePortDescriptorMetadata(comptime Target: type, comptime Decl: type) void {
+    const entry = Target.WorldPortTable.entries[Decl.world_port_id];
+    if (Decl.residual_site_index != entry.residual_site_index or
+        Decl.residual_site_fingerprint != entry.residual_site_fingerprint or
+        !boundaryValueRefMatches(Decl.payload_ref, entry.payload_ref) or
+        !boundaryValueRefMatches(Decl.response_ref, entry.resume_ref) or
+        !boundaryValueRefMatches(Decl.result_ref, entry.result_ref) or
+        !Decl.source_ref.eql(entry.source_ref) or
+        !Decl.world_port_ref.eql(entry.world_port_ref))
+    {
+        @compileError("World port descriptor metadata does not match target WorldPortTable");
+    }
+}
+
+fn boundaryValueRefMatches(comptime descriptor_ref: anytype, comptime target_ref: anytype) bool {
+    return std.mem.eql(u8, @tagName(descriptor_ref.codec), target_ref.codec) and
+        descriptor_ref.schema_index == target_ref.schema_index;
 }
 
 fn assertAllPortsHandledFor(comptime Target: type, comptime Config: anytype) void {

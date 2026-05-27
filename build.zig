@@ -87,6 +87,23 @@ pub fn build(b: *std.Build) void {
         b.default_step.dependOn(&tests.step);
     }
 
+    const forged_descriptor_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/compile_fail/forged_descriptor_metadata.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "world", .module = world },
+                .{ .name = "world_fixtures", .module = fixtures },
+            },
+        }),
+    });
+    forged_descriptor_test.expect_errors = .{
+        .contains = "World port descriptor metadata does not match target WorldPortTable",
+    };
+    const compile_fail_step = b.step("compile-fail", "Run compile-fail tests.");
+    compile_fail_step.dependOn(&forged_descriptor_test.step);
+
     const examples = [_]struct {
         name: []const u8,
         path: []const u8,
