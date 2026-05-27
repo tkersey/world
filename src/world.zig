@@ -242,6 +242,8 @@ pub const Transcript = struct {
         var active_start: ?usize = null;
         var selected_start: ?usize = null;
         var selected_limit: ?usize = null;
+        var active_has_port_event = false;
+        var active_has_source_response = false;
         var latest_run_failed = false;
         for (self.events.items, 0..) |event, index| {
             switch (event.kind) {
@@ -250,14 +252,18 @@ pub const Transcript = struct {
                     if (event.world_surface_fingerprint != expected_world_surface_fingerprint) return Error.ReplaySurfaceMismatch;
                     if (event.target_certificate_fingerprint != expected_target_certificate_fingerprint) return Error.ReplayTargetCertificateMismatch;
                     active_start = index;
+                    active_has_port_event = false;
+                    active_has_source_response = false;
                     latest_run_failed = true;
                 },
                 .run_completed => {
                     const start = active_start orelse continue;
                     if (event.world_surface_fingerprint != expected_world_surface_fingerprint) return Error.ReplaySurfaceMismatch;
                     if (event.target_certificate_fingerprint != expected_target_certificate_fingerprint) return Error.ReplayTargetCertificateMismatch;
-                    selected_start = start;
-                    selected_limit = index;
+                    if (!active_has_port_event or active_has_source_response) {
+                        selected_start = start;
+                        selected_limit = index;
+                    }
                     active_start = null;
                     latest_run_failed = false;
                 },
@@ -270,7 +276,19 @@ pub const Transcript = struct {
                     selected_limit = null;
                     latest_run_failed = true;
                 },
-                else => {},
+                .port_responded => {
+                    if (active_start != null) {
+                        active_has_port_event = true;
+                        active_has_source_response = true;
+                    }
+                },
+                .port_requested,
+                .port_replayed,
+                .port_rejected,
+                .port_failed,
+                => {
+                    if (active_start != null) active_has_port_event = true;
+                },
             }
         }
         if (active_start != null or latest_run_failed) return Error.ReplayMissing;

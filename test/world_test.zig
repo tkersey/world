@@ -366,6 +366,21 @@ test "world replay consumes transcript and does not call handlers" {
     try std.testing.expectEqual(@as(usize, 1), fresh_ctx.calls);
     try std.testing.expectEqual(@as(usize, 0), replay_ctx.calls);
     try std.testing.expectEqual(@as(usize, 1), replayed.audit.replayed_response_count);
+
+    var second_replay_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer second_replay_runtime.deinit();
+    var second_replay_ctx: PortsCtx = .{ .response = 101 };
+    var second_replay = try PortsMachine.run(&second_replay_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.replay,
+        .ctx = &second_replay_ctx,
+        .transcript = &transcript,
+    });
+    defer second_replay.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(fresh.value, second_replay.value);
+    try std.testing.expectEqual(@as(usize, 0), second_replay_ctx.calls);
+    try std.testing.expectEqual(@as(usize, 1), second_replay.audit.replayed_response_count);
 }
 
 test "world replay selects the latest completed transcript run" {
