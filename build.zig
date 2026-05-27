@@ -118,8 +118,8 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-strict",
             .desc = "Run the strict zero-port World example.",
             .expected_stdout =
-            \\world_surface_fingerprint=e1a80502da70f822
-            \\target_certificate_fingerprint=db5d5fd30be43ab0
+            \\world_surface_fingerprint=bf39bfbae5e3bb8d
+            \\target_certificate_fingerprint=b3edd8382e7b0db4
             \\final_result=1
             \\
             ,

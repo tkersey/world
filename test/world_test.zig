@@ -39,6 +39,79 @@ const MissingDispatchTarget = struct {
 };
 const MissingDispatchMachine = world.Machine(MissingDispatchTarget, .{ .ports = .{} });
 
+const OptionalNullTarget = struct {
+    pub const Program = struct {
+        pub const Handlers = struct {};
+        pub const contract = struct {
+            pub const ResultType = ?i32;
+        };
+
+        pub const Session = struct {
+            value: ?i32,
+
+            pub const Request = struct {
+                pub fn trace(_: @This()) struct {
+                    operation_site_index: usize,
+                    operation_site_fingerprint: u64,
+                    fingerprint: u64,
+                    turn_index: usize,
+                } {
+                    return .{
+                        .operation_site_index = 0,
+                        .operation_site_fingerprint = 0,
+                        .fingerprint = 0,
+                        .turn_index = 0,
+                    };
+                }
+            };
+            const Done = struct {
+                value: ?i32,
+
+                pub fn deinit(_: *@This()) void {}
+            };
+
+            pub fn startWithArgs(_: anytype, _: Handlers, args: anytype) !@This() {
+                return .{ .value = args[0] };
+            }
+
+            pub fn deinit(_: *@This()) void {}
+
+            pub fn next(self: *@This()) !union(enum) {
+                done: Done,
+                after,
+                request: Request,
+            } {
+                return .{ .done = .{ .value = self.value } };
+            }
+        };
+    };
+
+    pub const WorldSurface = struct {
+        pub const surface_fingerprint: u64 = 0x7773_6f70_746e_0001;
+
+        pub fn replayScopeRef() struct { fingerprint: u64 } {
+            return .{ .fingerprint = surface_fingerprint };
+        }
+    };
+    pub const WorldPortTable = struct {
+        pub const entries = &.{};
+    };
+    pub const WorldValueTable = struct {
+        pub const entries = &.{};
+    };
+    pub const WorldDispatchTable = struct {
+        pub fn lookup(_: usize) ?u32 {
+            return null;
+        }
+    };
+    pub const Certificate = struct {
+        pub const certificate_fingerprint: u64 = 0x7773_6f70_746e_0002;
+    };
+
+    pub fn assertWorldSurfaceReady() void {}
+    pub fn assertNoSearchHotPath() void {}
+};
+
 fn recordPortsTranscript(transcript: *world.Transcript) !void {
     var runtime = boundary.Runtime.init(std.testing.allocator);
     defer runtime.deinit();
@@ -92,6 +165,54 @@ test "world machine accepts strict zero-port certified target" {
     try std.testing.expectEqual(@as(usize, 0), result.audit.port_request_count);
     try std.testing.expectEqual(@as(usize, 1), transcript.summary().run_started);
     try std.testing.expectEqual(@as(usize, 1), transcript.summary().run_completed);
+}
+
+test "world machine preserves optional null completion values" {
+    const Machine = world.Machine(OptionalNullTarget, .{
+        .ports = .{},
+        .strict_handler_coverage = true,
+    });
+
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+
+    var result = try Machine.run(&runtime, .{@as(?i32, null)}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .transcript = &transcript,
+    });
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(?i32, null), result.value);
+    try std.testing.expectEqual(@as(usize, 1), transcript.summary().run_completed);
+}
+
+test "world step API preserves repeated optional null completion values" {
+    const Machine = world.Machine(OptionalNullTarget, .{
+        .ports = .{},
+        .strict_handler_coverage = true,
+    });
+
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+
+    var run = try Machine.start(&runtime, .{@as(?i32, null)}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    defer run.deinit();
+
+    switch (try run.next()) {
+        .done => |value| try std.testing.expectEqual(@as(?i32, null), value),
+        else => return error.ExpectedDone,
+    }
+    switch (try run.next()) {
+        .done => |value| try std.testing.expectEqual(@as(?i32, null), value),
+        else => return error.ExpectedRepeatedDone,
+    }
 }
 
 test "world machine rejects mismatched surface fingerprint" {

@@ -35,6 +35,7 @@ pub const Strict = struct {
     const closure_graph = Closure.Graph.init("world-strict-graph", &.{}, &.{}, &.{});
     const closure_report = Closure.Report.init(.{
         .graph_fingerprint = closure_graph.fingerprint,
+        .root_program_refs = &.{program_ref},
         .effect_free_root_refs = &.{program_ref},
     });
     const closure_policy = Closure.Policy.auditOnly();

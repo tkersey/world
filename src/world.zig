@@ -462,7 +462,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 switch (step) {
                     .done => |value| {
                         const audit = try run_state.snapshotAudit();
-                        run_state.done_value = null;
+                        run_state.done_value_present = false;
                         return .{ .value = value, .audit = audit };
                     },
                     .port_required => run_state.dispatch() catch |err| {
@@ -494,7 +494,8 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 pending_port_id: ?u32 = null,
                 audit: AuditReport,
                 per_port_counts: []usize,
-                done_value: ?Value = null,
+                done_value: Value = undefined,
+                done_value_present: bool = false,
                 retained_values: std.ArrayList(StoredValue) = .empty,
 
                 pub const Result = struct {
@@ -575,9 +576,9 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 }
 
                 pub fn deinit(self: *Self) void {
-                    if (self.done_value) |value| {
-                        deinitRunValue(self.allocator, value);
-                        self.done_value = null;
+                    if (self.done_value_present) {
+                        deinitRunValue(self.allocator, self.done_value);
+                        self.done_value_present = false;
                     }
                     self.session.deinit();
                     for (self.retained_values.items) |*value| value.deinit(self.allocator);
@@ -587,7 +588,8 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
 
                 pub fn next(self: *Self) !Step {
                     if (self.audit.final_status == .completed) {
-                        return .{ .done = self.done_value orelse return Error.HandlerFailed };
+                        if (!self.done_value_present) return Error.HandlerFailed;
+                        return .{ .done = self.done_value };
                     }
                     if (self.audit.final_status == .failed) return .failed;
                     if (self.pending_request != null) return .port_required;
@@ -601,6 +603,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             var result = done;
                             defer result.deinit();
                             self.done_value = try cloneRunValue(self.allocator, result.value);
+                            self.done_value_present = true;
                             if (modeConsumesTranscript(self.effective_mode) and @hasField(Options, "transcript")) {
                                 @field(self.options, "transcript").assertReplayComplete() catch |err| {
                                     self.audit.replay_mismatch_count += 1;
@@ -610,7 +613,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             }
                             self.audit.final_status = .completed;
                             try appendRunEvent(Target, self.options, .run_completed, null);
-                            return .{ .done = self.done_value.? };
+                            return .{ .done = self.done_value };
                         },
                         .after => {
                             try self.markRunFailed();
