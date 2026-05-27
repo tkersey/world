@@ -14,10 +14,27 @@ fn approve(ctx: *PortsCtx, payload: []const u8) !i32 {
     return ctx.response;
 }
 
+fn approveRequest(ctx: *PortsCtx, request: world.PortRequest(fixtures.Ports.Target, fixtures.Ports.ApprovalRequest)) !i32 {
+    try request.expectPort(fixtures.Ports.ApprovalRequest);
+    try std.testing.expectEqual(@as(u32, 0), request.world_port_id);
+    try std.testing.expectEqual(fixtures.Ports.ApprovalRequest.index, request.residual_site_index);
+    try std.testing.expectEqual(fixtures.Ports.ApprovalRequest.fingerprint, request.residual_site_fingerprint);
+    try std.testing.expectEqual(@as(?u32, 0), request.value_table_payload_id);
+    try std.testing.expectEqual(@as(?u32, 1), request.value_table_response_id);
+    try std.testing.expectEqualStrings("deploy-prod", try request.payload(fixtures.Ports.ApprovalRequest));
+    ctx.calls += 1;
+    return ctx.response;
+}
+
 const PortsDecl = world.port(fixtures.Ports.Target, fixtures.Ports.ApprovalRequest, approve);
 const PortsByIdDecl = world.portById(fixtures.Ports.Target, 0, fixtures.Ports.ApprovalRequest, approve);
+const PortsRequestDecl = world.port(fixtures.Ports.Target, fixtures.Ports.ApprovalRequest, approveRequest);
 const PortsMachine = world.Machine(fixtures.Ports.Target, .{
     .ports = .{PortsDecl},
+    .strict_handler_coverage = true,
+});
+const PortsRequestMachine = world.Machine(fixtures.Ports.Target, .{
+    .ports = .{PortsRequestDecl},
     .strict_handler_coverage = true,
 });
 
@@ -328,6 +345,25 @@ test "world dispatch uses WorldDispatchTable residual site mapping" {
     try std.testing.expectEqual(fixtures.Ports.ApprovalRequest.fingerprint, fixtures.Ports.Target.WorldPortTable.entries[world_port_id].residual_site_fingerprint);
 }
 
+test "world handlers can accept constructible PortRequest by site" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    var ctx: PortsCtx = .{ .response = 11 };
+
+    var result = try PortsRequestMachine.run(&runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+        .transcript = &transcript,
+    });
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(i32, 11), result.value);
+    try std.testing.expectEqual(@as(usize, 1), ctx.calls);
+}
+
 test "world port request includes WorldValueTable payload and response ids" {
     try std.testing.expectEqual(@as(u32, 0), fixtures.Ports.Target.WorldValueTable.entries[0].world_port_id);
     try std.testing.expectEqual(@as(u32, 0), fixtures.Ports.Target.WorldValueTable.entries[0].value_id);
@@ -381,6 +417,39 @@ test "world replay consumes transcript and does not call handlers" {
     try std.testing.expectEqual(fresh.value, second_replay.value);
     try std.testing.expectEqual(@as(usize, 0), second_replay_ctx.calls);
     try std.testing.expectEqual(@as(usize, 1), second_replay.audit.replayed_response_count);
+
+    var verify_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer verify_runtime.deinit();
+    var verify_ctx: PortsCtx = .{ .response = fresh.value };
+    var verified = try PortsMachine.run(&verify_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.verify,
+        .ctx = &verify_ctx,
+        .transcript = &transcript,
+    });
+    defer verified.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(fresh.value, verified.value);
+    try std.testing.expectEqual(@as(usize, 1), verify_ctx.calls);
+    try std.testing.expectEqual(@as(usize, 1), verified.audit.fresh_response_count);
+    try std.testing.expectEqual(@as(usize, 1), verified.audit.replayed_response_count);
+    try std.testing.expectEqual(@as(usize, 1), transcript.summary().port_requested);
+    try std.testing.expectEqual(@as(usize, 1), transcript.summary().port_responded);
+
+    var third_replay_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer third_replay_runtime.deinit();
+    var third_replay_ctx: PortsCtx = .{ .response = 103 };
+    var third_replay = try PortsMachine.run(&third_replay_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.replay,
+        .ctx = &third_replay_ctx,
+        .transcript = &transcript,
+    });
+    defer third_replay.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(fresh.value, third_replay.value);
+    try std.testing.expectEqual(@as(usize, 0), third_replay_ctx.calls);
+    try std.testing.expectEqual(@as(usize, 1), third_replay.audit.replayed_response_count);
 }
 
 test "world replay selects the latest completed transcript run" {
@@ -956,6 +1025,20 @@ test "world verify detects changed handler response" {
         .ctx = &verify_ctx,
         .transcript = &transcript,
     }));
+
+    var replay_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer replay_runtime.deinit();
+    var replay_ctx: PortsCtx = .{ .response = 99 };
+    var replayed = try PortsMachine.run(&replay_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.replay,
+        .ctx = &replay_ctx,
+        .transcript = &transcript,
+    });
+    defer replayed.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(fresh.value, replayed.value);
+    try std.testing.expectEqual(@as(usize, 0), replay_ctx.calls);
 }
 
 test "world transcript replay key and summary counts are deterministic" {
@@ -1105,6 +1188,22 @@ test "world audit report counts fresh calls and fingerprints" {
     try std.testing.expectEqual(@as(usize, 1), result.audit.per_port_counts[0]);
 }
 
+test "world audit mode rejects self-referential audit source" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    var ctx: PortsCtx = .{};
+
+    try std.testing.expectError(error.InvalidMode, PortsMachine.run(&runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.audit,
+        .audit_source = world.Mode.audit,
+        .ctx = &ctx,
+        .transcript = &transcript,
+    }));
+}
+
 const AgentCtx = struct {
     allocator: std.mem.Allocator,
     scenario: fixtures.Agent.Scenario,
@@ -1174,6 +1273,40 @@ const BorrowedOptions = struct {
     transcript: *world.Transcript,
 };
 
+const OwnedResponseCtx = struct {
+    allocator: std.mem.Allocator,
+    cleanup_calls: usize = 0,
+};
+
+fn ownedTool(ctx: *OwnedResponseCtx, _: []const u8) ![]const u8 {
+    return try ctx.allocator.dupe(u8, "owned-response");
+}
+
+fn deinitOwnedToolResponse(ctx: *OwnedResponseCtx, response: []const u8) void {
+    ctx.cleanup_calls += 1;
+    ctx.allocator.free(@constCast(response));
+}
+
+fn ownedDecide(_: *OwnedResponseCtx, observation: []const u8) !fixtures.Agent.Action {
+    if (std.mem.eql(u8, observation, "start")) return .{ .tool = "owned" };
+    return .{ .final = observation };
+}
+
+const OwnedDecideDecl = world.port(fixtures.Agent.Target, fixtures.Agent.Decide, ownedDecide);
+const OwnedToolDecl = world.portWithOptions(fixtures.Agent.Target, fixtures.Agent.Tool, ownedTool, .{
+    .response_deinit = deinitOwnedToolResponse,
+});
+const OwnedMachine = world.Machine(fixtures.Agent.Target, .{
+    .ports = .{ OwnedDecideDecl, OwnedToolDecl },
+    .strict_handler_coverage = true,
+});
+const OwnedOptions = struct {
+    allocator: std.mem.Allocator,
+    mode: world.Mode,
+    ctx: *OwnedResponseCtx,
+    transcript: *world.Transcript,
+};
+
 test "world retains fresh handler responses before resuming boundary" {
     var runtime = boundary.Runtime.init(std.testing.allocator);
     defer runtime.deinit();
@@ -1222,6 +1355,25 @@ test "world stores transcript values with the transcript allocator" {
 
     try std.testing.expectEqualStrings("final=borrowed", result.value);
     try std.testing.expectEqual(@as(usize, 1), ctx.calls);
+}
+
+test "world deinitializes owned handler responses after retaining them" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    var ctx: OwnedResponseCtx = .{ .allocator = std.testing.allocator };
+
+    var result = try OwnedMachine.run(&runtime, AgentArgs{ @as(usize, 2), "start" }, OwnedOptions{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+        .transcript = &transcript,
+    });
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqualStrings("owned-response", result.value);
+    try std.testing.expectEqual(@as(usize, 1), ctx.cleanup_calls);
 }
 
 fn runAgentScenario(allocator: std.mem.Allocator, scenario: fixtures.Agent.Scenario) !struct {
@@ -1301,4 +1453,48 @@ test "agent loop fixture scenario final text and accounting match" {
     const bytes = try std.Io.Dir.cwd().readFileAlloc(io, fixtures.Agent.fixture_output_path, std.testing.allocator, .limited(1024));
     defer std.testing.allocator.free(bytes);
     try std.testing.expectEqualStrings("actuate updated the fixture", bytes);
+}
+
+test "world replay selects latest zero-port source run after ported run" {
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+
+    var ported_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer ported_runtime.deinit();
+    var ported_ctx: AgentCtx = .{ .allocator = std.testing.allocator, .scenario = .skeleton };
+    var ported = try AgentMachine.run(&ported_runtime, AgentArgs{ @as(usize, 3), fixtures.Agent.initialObservation(.skeleton) }, AgentOptions{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ported_ctx,
+        .transcript = &transcript,
+    });
+    defer ported.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 3), transcript.summary().port_responded);
+
+    var zero_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer zero_runtime.deinit();
+    var zero_ctx: AgentCtx = .{ .allocator = std.testing.allocator, .scenario = .skeleton };
+    var zero = try AgentMachine.run(&zero_runtime, AgentArgs{ @as(usize, 0), "ignored" }, AgentOptions{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &zero_ctx,
+        .transcript = &transcript,
+    });
+    defer zero.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("budget exhausted", zero.value);
+
+    var replay_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer replay_runtime.deinit();
+    var replay_ctx: AgentCtx = .{ .allocator = std.testing.allocator, .scenario = .skeleton };
+    var replay = try AgentMachine.run(&replay_runtime, AgentArgs{ @as(usize, 0), "ignored" }, AgentOptions{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.replay,
+        .ctx = &replay_ctx,
+        .transcript = &transcript,
+    });
+    defer replay.deinit(std.testing.allocator);
+
+    try std.testing.expectEqualStrings("budget exhausted", replay.value);
+    try std.testing.expectEqual(@as(usize, 0), replay_ctx.model_calls);
+    try std.testing.expectEqual(@as(usize, 0), replay_ctx.tool_calls);
 }

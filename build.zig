@@ -105,6 +105,10 @@ pub fn build(b: *std.Build) void {
     const compile_fail_step = b.step("compile-fail", "Run compile-fail tests.");
     compile_fail_step.dependOn(&forged_descriptor_test.step);
 
+    const check_step = b.step("check", "Run tests, compile-fail tests, examples, and lint.");
+    check_step.dependOn(test_step);
+    check_step.dependOn(compile_fail_step);
+
     const examples = [_]struct {
         name: []const u8,
         path: []const u8,
@@ -183,6 +187,7 @@ pub fn build(b: *std.Build) void {
             run_step.dependOn(&exe.step);
             b.default_step.dependOn(&exe.step);
         }
+        check_step.dependOn(run_step);
     }
 
     const lint_step = b.step("lint", "Run formatting and hot-path source guards.");
@@ -206,4 +211,5 @@ pub fn build(b: *std.Build) void {
         \\fi
     });
     lint_step.dependOn(&hot_path_guard.step);
+    check_step.dependOn(lint_step);
 }

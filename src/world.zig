@@ -166,6 +166,7 @@ pub const Transcript = struct {
         residual_site_index: ?usize = null,
         residual_site_fingerprint: ?u64 = null,
         status: ?ResponseStatus = null,
+        source_run: bool = true,
         value: ?StoredValue = null,
     };
 
@@ -242,6 +243,7 @@ pub const Transcript = struct {
         var active_start: ?usize = null;
         var selected_start: ?usize = null;
         var selected_limit: ?usize = null;
+        var active_is_source_run = false;
         var active_has_port_event = false;
         var active_has_source_response = false;
         var latest_run_failed = false;
@@ -252,6 +254,7 @@ pub const Transcript = struct {
                     if (event.world_surface_fingerprint != expected_world_surface_fingerprint) return Error.ReplaySurfaceMismatch;
                     if (event.target_certificate_fingerprint != expected_target_certificate_fingerprint) return Error.ReplayTargetCertificateMismatch;
                     active_start = index;
+                    active_is_source_run = event.source_run;
                     active_has_port_event = false;
                     active_has_source_response = false;
                     latest_run_failed = true;
@@ -260,7 +263,7 @@ pub const Transcript = struct {
                     const start = active_start orelse continue;
                     if (event.world_surface_fingerprint != expected_world_surface_fingerprint) return Error.ReplaySurfaceMismatch;
                     if (event.target_certificate_fingerprint != expected_target_certificate_fingerprint) return Error.ReplayTargetCertificateMismatch;
-                    if (!active_has_port_event or active_has_source_response) {
+                    if (active_is_source_run and (!active_has_port_event or active_has_source_response)) {
                         selected_start = start;
                         selected_limit = index;
                     }
@@ -271,10 +274,14 @@ pub const Transcript = struct {
                     if (active_start == null) continue;
                     if (event.world_surface_fingerprint != expected_world_surface_fingerprint) return Error.ReplaySurfaceMismatch;
                     if (event.target_certificate_fingerprint != expected_target_certificate_fingerprint) return Error.ReplayTargetCertificateMismatch;
+                    const failed_source_run = active_is_source_run;
                     active_start = null;
-                    selected_start = null;
-                    selected_limit = null;
-                    latest_run_failed = true;
+                    active_is_source_run = false;
+                    if (failed_source_run) {
+                        selected_start = null;
+                        selected_limit = null;
+                    }
+                    latest_run_failed = failed_source_run;
                 },
                 .port_responded => {
                     if (active_start != null) {
@@ -348,6 +355,7 @@ pub const AuditReport = struct {
 };
 
 pub fn PortRequest(comptime Target: type, comptime Descriptor: type) type {
+    const world_port_id = descriptorWorldPortId(Target, Descriptor);
     return struct {
         world_surface_fingerprint: u64,
         target_certificate_fingerprint: u64,
@@ -359,17 +367,17 @@ pub fn PortRequest(comptime Target: type, comptime Descriptor: type) type {
         turn_index: usize,
         value_table_payload_id: ?u32,
         value_table_response_id: ?u32,
-        source_ref: @TypeOf(Target.WorldPortTable.entries[Descriptor.world_port_id].source_ref),
-        world_port_ref: @TypeOf(Target.WorldPortTable.entries[Descriptor.world_port_id].world_port_ref),
+        source_ref: @TypeOf(Target.WorldPortTable.entries[world_port_id].source_ref),
+        world_port_ref: @TypeOf(Target.WorldPortTable.entries[world_port_id].world_port_ref),
         payload_value: Descriptor.Payload,
 
         pub fn payload(self: @This(), comptime Expected: type) !Expected.Payload {
-            if (Expected.world_port_id != self.world_port_id) return Error.PortMismatch;
+            if (descriptorWorldPortId(Target, Expected) != self.world_port_id) return Error.PortMismatch;
             return self.payload_value;
         }
 
         pub fn expectPort(self: @This(), comptime Expected: type) !void {
-            if (Expected.world_port_id != self.world_port_id) return Error.PortMismatch;
+            if (descriptorWorldPortId(Target, Expected) != self.world_port_id) return Error.PortMismatch;
         }
 
         pub fn summary(self: @This(), writer: anytype) !void {
@@ -402,6 +410,10 @@ pub fn PortResponse(comptime Target: type, comptime Descriptor: type) type {
 }
 
 pub fn port(comptime Target: type, comptime Site: type, comptime handler_fn: anytype) type {
+    return portWithOptions(Target, Site, handler_fn, .{});
+}
+
+pub fn portWithOptions(comptime Target: type, comptime Site: type, comptime handler_fn: anytype, comptime options: anytype) type {
     const id = comptime worldPortIdForSite(Target, Site) orelse
         @compileError("World port descriptor does not match target WorldPortTable");
     const entry = Target.WorldPortTable.entries[id];
@@ -427,6 +439,10 @@ pub fn port(comptime Target: type, comptime Site: type, comptime handler_fn: any
         pub const world_port_ref = entry.world_port_ref;
         pub const suggested_name = if (entry.semantic_label) |label| label else entry.op_name;
         pub const handler = handler_fn;
+        pub const response_deinit = if (@hasField(@TypeOf(options), "response_deinit"))
+            options.response_deinit
+        else
+            noopResponseDeinit;
 
         pub fn replayKey(request_fingerprint: u64) ReplayKeySeed {
             return .{
@@ -440,12 +456,16 @@ pub fn port(comptime Target: type, comptime Site: type, comptime handler_fn: any
 }
 
 pub fn portById(comptime Target: type, comptime id: u32, comptime Site: type, comptime handler_fn: anytype) type {
+    return portByIdWithOptions(Target, id, Site, handler_fn, .{});
+}
+
+pub fn portByIdWithOptions(comptime Target: type, comptime id: u32, comptime Site: type, comptime handler_fn: anytype, comptime options: anytype) type {
     if (id >= Target.WorldPortTable.entries.len) @compileError("world_port_id out of range");
     const entry = Target.WorldPortTable.entries[id];
     if (entry.residual_site_index != Site.index or entry.residual_site_fingerprint != Site.fingerprint) {
         @compileError("world_port_id does not point at Site");
     }
-    const Descriptor = port(Target, Site, handler_fn);
+    const Descriptor = portWithOptions(Target, Site, handler_fn, options);
     if (Descriptor.world_port_id != id) @compileError("world_port_id does not point at Site");
     return Descriptor;
 }
@@ -557,7 +577,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     self.pending_request = null;
                     self.pending_port_id = null;
                     self.audit.final_status = .failed;
-                    try appendRunEvent(Target, self.options, .run_failed, null);
+                    try appendRunEvent(Target, self.options, .run_failed, null, false);
                 }
 
                 fn start(runtime: RuntimePtr, args: anytype, options: Options) !Self {
@@ -569,6 +589,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         Mode.fresh
                     else
                         mode_value;
+                    if (effective == .audit) return Error.InvalidMode;
                     const per_port_counts = try allocator.alloc(usize, Target.WorldPortTable.entries.len);
                     @memset(per_port_counts, 0);
                     errdefer allocator.free(per_port_counts);
@@ -584,7 +605,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                                 Target.Certificate.certificate_fingerprint,
                             );
                         }
-                        try appendRunEvent(Target, options, .run_started, null);
+                        try appendRunEvent(Target, options, .run_started, null, effective == .fresh);
                     }
                     return .{
                         .runtime = runtime,
@@ -640,7 +661,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                                 };
                             }
                             self.audit.final_status = .completed;
-                            try appendRunEvent(Target, self.options, .run_completed, null);
+                            try appendRunEvent(Target, self.options, .run_completed, null, self.effective_mode == .fresh);
                             return .{ .done = self.done_value };
                         },
                         .after => {
@@ -669,7 +690,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             self.pending_port_id = world_port_id;
                             self.audit.port_request_count += 1;
                             self.per_port_counts[world_port_id] += 1;
-                            if (self.effective_mode != .replay) {
+                            if (self.effective_mode == .fresh) {
                                 try appendPortEvent(Target, self.options, .port_requested, world_port_id, trace, null, null, null);
                             }
                             return .port_required;
@@ -716,7 +737,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     const payload = try typed_request.payload();
                     const trace = request.trace();
                     const replay_key = Decl.replayKey(trace.fingerprint);
-                    const public_request = PortRequest(Target, Decl){
+                    const public_request = PortRequest(Target, Decl.SiteType){
                         .world_surface_fingerprint = Target.WorldSurface.surface_fingerprint,
                         .target_certificate_fingerprint = Target.Certificate.certificate_fingerprint,
                         .world_port_id = Decl.world_port_id,
@@ -747,9 +768,10 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     }
                 }
 
-                fn callFresh(self: *Self, comptime Decl: type, request: PortRequest(Target, Decl)) !Decl.Response {
+                fn callFresh(self: *Self, comptime Decl: type, request: PortRequest(Target, Decl.SiteType)) !Decl.Response {
                     if (!@hasField(Options, "ctx")) return Error.MissingHandler;
                     const response = try callHandler(Decl, @field(self.options, "ctx"), request);
+                    defer Decl.response_deinit(@field(self.options, "ctx"), response);
                     const typed = try (self.pending_request orelse return Error.UnknownResidualSite).as(Decl.SiteType);
                     const response_trace = try typed.responseTrace(.@"resume", response);
                     var stored: ?StoredValue = null;
@@ -812,7 +834,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 fn callVerify(
                     self: *Self,
                     comptime Decl: type,
-                    request: PortRequest(Target, Decl),
+                    request: PortRequest(Target, Decl.SiteType),
                     typed_request: anytype,
                     replay_key: ReplayKeySeed,
                 ) !Decl.Response {
@@ -835,7 +857,9 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         self.audit.replay_mismatch_count += 1;
                         return Error.VerifyDivergence;
                     }
+                    self.audit.replayed_response_count += 1;
                     const fresh = try callHandler(Decl, @field(self.options, "ctx"), request);
+                    defer Decl.response_deinit(@field(self.options, "ctx"), fresh);
                     const response_trace = try typed_request.responseTrace(.@"resume", fresh);
                     if (response_trace.fingerprint != expected_response_fingerprint) {
                         self.audit.replay_mismatch_count += 1;
@@ -944,7 +968,13 @@ fn valueIdFor(comptime Target: type, comptime world_port_id: u32, comptime kind:
     return null;
 }
 
-fn callHandler(comptime Decl: type, ctx: anytype, request_value: PortRequest(Decl.TargetType, Decl)) !Decl.Response {
+fn descriptorWorldPortId(comptime Target: type, comptime Descriptor: type) u32 {
+    if (comptime @hasDecl(Descriptor, "world_port_id")) return Descriptor.world_port_id;
+    return comptime worldPortIdForSite(Target, Descriptor) orelse
+        @compileError("World port request type does not match target WorldPortTable");
+}
+
+fn callHandler(comptime Decl: type, ctx: anytype, request_value: PortRequest(Decl.TargetType, Decl.SiteType)) !Decl.Response {
     const Handler = @TypeOf(Decl.handler);
     const info = @typeInfo(Handler).@"fn";
     if (info.params.len != 2) @compileError("World port handler must take ctx plus payload or PortRequest");
@@ -954,6 +984,8 @@ fn callHandler(comptime Decl: type, ctx: anytype, request_value: PortRequest(Dec
     }
     return Decl.handler(ctx, request_value.payload_value);
 }
+
+fn noopResponseDeinit(_: anytype, _: anytype) void {}
 
 fn cloneOwnedValue(allocator: std.mem.Allocator, value: anytype) !@TypeOf(value) {
     const Value = @TypeOf(value);
@@ -1101,13 +1133,14 @@ fn modeConsumesTranscript(mode: Mode) bool {
     return mode == .replay or mode == .verify;
 }
 
-fn appendRunEvent(comptime Target: type, options: anytype, kind: EventKind, status: ?ResponseStatus) !void {
+fn appendRunEvent(comptime Target: type, options: anytype, kind: EventKind, status: ?ResponseStatus, source_run: bool) !void {
     if (!@hasField(@TypeOf(options), "transcript")) return;
     try @field(options, "transcript").append(.{
         .kind = kind,
         .world_surface_fingerprint = Target.WorldSurface.surface_fingerprint,
         .target_certificate_fingerprint = Target.Certificate.certificate_fingerprint,
         .status = status,
+        .source_run = source_run,
     });
 }
 

@@ -16,6 +16,7 @@ The public root is intentionally small:
 
 - `world.Machine`
 - `world.port`
+- `world.portWithOptions`
 - `world.PortRequest`
 - `world.PortResponse`
 - `world.Mode`
@@ -63,10 +64,12 @@ Handlers may accept either:
 
 ```zig
 fn handle(ctx: *Ctx, payload: Port.Payload) !Port.Response
-fn handle(ctx: *Ctx, request: world.PortRequest(Target, Port)) !Port.Response
+fn handle(ctx: *Ctx, request: world.PortRequest(Target, Site)) !Site.Resume
 ```
 
 Fresh and verify modes require handler coverage. Strict coverage rejects missing target ports at compile time.
+
+`world.port` treats handler responses as borrowed values: World clones the response into run/transcript storage before resuming Boundary, and the handler/context remains responsible for any source storage it owns. Handlers that return newly allocated response buffers can use `world.portWithOptions(..., .{ .response_deinit = deinitFn })`; World calls `deinitFn(ctx, response)` after it has retained the response.
 
 ## Transcript And Replay
 
@@ -103,6 +106,16 @@ zig build run-world-agent-loop
 `world_replay_ports` records a fresh transcript and replays without fresh handler calls.
 
 `world_agent_loop` demonstrates an agent-shaped residual surface with `model.decide` and `tool.call` ports. It is not an agent framework; it is a port dispatch and replay fixture.
+
+## Validation
+
+Run the full local validation gate with:
+
+```sh
+zig build check --summary all
+```
+
+The `check` step runs unit tests, the forged-descriptor compile-fail fixture, all examples, formatting, and hot-path source guards.
 
 ## Non-Goals
 

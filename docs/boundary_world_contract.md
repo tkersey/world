@@ -45,6 +45,12 @@ World dispatch does not match operation names on the hot path.
 
 Boundary provides `WorldValueTable` entries for payload, resume, and result refs. World descriptors expose the corresponding payload and response types from the residual site descriptor and preserve source/world-port refs on `PortRequest`.
 
+## Handler Response Ownership
+
+The default `world.port` ABI treats handler responses as borrowed. World clones the response into retained run storage and transcript storage before resuming Boundary; it does not assume ownership of the handler's source allocation.
+
+Handlers that return an owned response allocation must use `world.portWithOptions` with `response_deinit`. World calls that cleanup hook after cloning the response in fresh and verify modes, keeping replay mode owned by transcript/run storage only.
+
 ## Replay Keys
 
 The v0 replay key is deterministic and includes:
