@@ -239,33 +239,43 @@ pub const Transcript = struct {
         expected_world_surface_fingerprint: u64,
         expected_target_certificate_fingerprint: u64,
     ) !void {
-        var source_start: ?usize = null;
+        var active_start: ?usize = null;
+        var selected_start: ?usize = null;
+        var selected_limit: ?usize = null;
+        var latest_run_failed = false;
         for (self.events.items, 0..) |event, index| {
             switch (event.kind) {
                 .run_started => {
-                    if (source_start != null) return Error.ReplayMissing;
+                    if (active_start != null) return Error.ReplayMissing;
                     if (event.world_surface_fingerprint != expected_world_surface_fingerprint) return Error.ReplaySurfaceMismatch;
                     if (event.target_certificate_fingerprint != expected_target_certificate_fingerprint) return Error.ReplayTargetCertificateMismatch;
-                    source_start = index;
-                    self.replay_cursor = index + 1;
+                    active_start = index;
+                    latest_run_failed = true;
                 },
                 .run_completed => {
-                    if (source_start == null) continue;
+                    const start = active_start orelse continue;
                     if (event.world_surface_fingerprint != expected_world_surface_fingerprint) return Error.ReplaySurfaceMismatch;
                     if (event.target_certificate_fingerprint != expected_target_certificate_fingerprint) return Error.ReplayTargetCertificateMismatch;
-                    self.replay_limit = index;
-                    return;
+                    selected_start = start;
+                    selected_limit = index;
+                    active_start = null;
+                    latest_run_failed = false;
                 },
                 .run_failed => {
-                    if (source_start == null) continue;
+                    if (active_start == null) continue;
                     if (event.world_surface_fingerprint != expected_world_surface_fingerprint) return Error.ReplaySurfaceMismatch;
                     if (event.target_certificate_fingerprint != expected_target_certificate_fingerprint) return Error.ReplayTargetCertificateMismatch;
-                    return Error.ReplayMissing;
+                    active_start = null;
+                    selected_start = null;
+                    selected_limit = null;
+                    latest_run_failed = true;
                 },
                 else => {},
             }
         }
-        return Error.ReplayMissing;
+        if (active_start != null or latest_run_failed) return Error.ReplayMissing;
+        self.replay_cursor = (selected_start orelse return Error.ReplayMissing) + 1;
+        self.replay_limit = selected_limit orelse return Error.ReplayMissing;
     }
 
     pub fn summary(self: *const @This()) Summary {

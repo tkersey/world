@@ -368,6 +368,52 @@ test "world replay consumes transcript and does not call handlers" {
     try std.testing.expectEqual(@as(usize, 1), replayed.audit.replayed_response_count);
 }
 
+test "world replay selects the latest completed transcript run" {
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+
+    {
+        var runtime = boundary.Runtime.init(std.testing.allocator);
+        defer runtime.deinit();
+        var ctx: PortsCtx = .{ .response = 7 };
+        var result = try PortsMachine.run(&runtime, .{}, .{
+            .allocator = std.testing.allocator,
+            .mode = world.Mode.fresh,
+            .ctx = &ctx,
+            .transcript = &transcript,
+        });
+        defer result.deinit(std.testing.allocator);
+    }
+    {
+        var runtime = boundary.Runtime.init(std.testing.allocator);
+        defer runtime.deinit();
+        var ctx: PortsCtx = .{ .response = 9 };
+        var result = try PortsMachine.run(&runtime, .{}, .{
+            .allocator = std.testing.allocator,
+            .mode = world.Mode.fresh,
+            .ctx = &ctx,
+            .transcript = &transcript,
+        });
+        defer result.deinit(std.testing.allocator);
+    }
+
+    var replay_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer replay_runtime.deinit();
+    var replay_ctx: PortsCtx = .{ .response = 99 };
+    var replayed = try PortsMachine.run(&replay_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.replay,
+        .ctx = &replay_ctx,
+        .transcript = &transcript,
+    });
+    defer replayed.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(i32, 9), replayed.value);
+    try std.testing.expectEqual(@as(usize, 0), replay_ctx.calls);
+    try std.testing.expectEqual(@as(usize, 2), transcript.summary().port_responded);
+    try std.testing.expectEqual(@as(usize, 1), transcript.summary().port_replayed);
+}
+
 test "world replay missing response fails" {
     var replay_runtime = boundary.Runtime.init(std.testing.allocator);
     defer replay_runtime.deinit();
@@ -525,13 +571,11 @@ test "world replay validates zero-port run fingerprints" {
 
         var replay_runtime = boundary.Runtime.init(std.testing.allocator);
         defer replay_runtime.deinit();
-        var replay = try Machine.run(&replay_runtime, .{}, .{
+        try std.testing.expectError(error.ReplayMissing, Machine.run(&replay_runtime, .{}, .{
             .allocator = std.testing.allocator,
             .mode = world.Mode.replay,
             .transcript = &transcript,
-        });
-        defer replay.deinit(std.testing.allocator);
-        try std.testing.expectEqual(@as(i32, 1), replay.value);
+        }));
     }
     {
         var transcript = world.Transcript.init(std.testing.allocator);
