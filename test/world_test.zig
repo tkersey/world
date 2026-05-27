@@ -687,6 +687,8 @@ test "world verify rejects missing or corrupt stored replay values" {
             .world_surface_fingerprint = response_event.world_surface_fingerprint,
             .target_certificate_fingerprint = response_event.target_certificate_fingerprint,
         });
+        var corrupt_stored = try world.StoredValue.init(std.testing.allocator, @as(i32, 8));
+        defer corrupt_stored.deinit(std.testing.allocator);
         try transcript.append(.{
             .kind = .port_responded,
             .world_surface_fingerprint = response_event.world_surface_fingerprint,
@@ -696,7 +698,7 @@ test "world verify rejects missing or corrupt stored replay values" {
             .response_fingerprint = response_event.response_fingerprint,
             .response_kind = response_event.response_kind,
             .replay_key = response_event.replay_key,
-            .value = try world.StoredValue.init(std.testing.allocator, @as(i32, 8)),
+            .value = corrupt_stored,
         });
         try transcript.append(.{
             .kind = .run_completed,
@@ -806,6 +808,8 @@ test "world transcript stores string-list values for replay" {
     const response: []const []const u8 = &.{ "alpha", "beta" };
     var transcript = world.Transcript.init(std.testing.allocator);
     defer transcript.deinit();
+    var stored = try world.StoredValue.init(std.testing.allocator, response);
+    defer stored.deinit(std.testing.allocator);
     try transcript.append(.{
         .kind = .port_responded,
         .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
@@ -815,12 +819,12 @@ test "world transcript stores string-list values for replay" {
         .response_fingerprint = response_fingerprint,
         .response_kind = .@"resume",
         .replay_key = key.withResponse(response_fingerprint).fingerprint(),
-        .value = try world.StoredValue.init(std.testing.allocator, response),
+        .value = stored,
     });
 
     const event = try transcript.nextResponse(key, fixtures.Ports.Target.Certificate.certificate_fingerprint, .@"resume");
-    const stored = event.value orelse return error.MissingResponseEvent;
-    const cloned = try stored.as(std.testing.allocator, []const []const u8);
+    const event_stored = event.value orelse return error.MissingResponseEvent;
+    const cloned = try event_stored.as(std.testing.allocator, []const []const u8);
     defer {
         for (cloned) |item| std.testing.allocator.free(item);
         std.testing.allocator.free(cloned);
@@ -828,6 +832,39 @@ test "world transcript stores string-list values for replay" {
     try std.testing.expectEqual(@as(usize, 2), cloned.len);
     try std.testing.expectEqualStrings("alpha", cloned[0]);
     try std.testing.expectEqualStrings("beta", cloned[1]);
+}
+
+test "world transcript append clones stored values" {
+    const response_fingerprint = @as(u64, 0x456);
+    const key = world.ReplayKeySeed{
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .world_surface_scope_fingerprint = fixtures.Ports.Target.WorldSurface.replayScopeRef().fingerprint,
+        .world_port_id = PortsDecl.world_port_id,
+        .request_fingerprint = 0xdef,
+    };
+    var source = world.Transcript.init(std.testing.allocator);
+    var stored = try world.StoredValue.init(std.testing.allocator, @as(i32, 9));
+    defer stored.deinit(std.testing.allocator);
+    try source.append(.{
+        .kind = .port_responded,
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .world_port_id = PortsDecl.world_port_id,
+        .request_fingerprint = key.request_fingerprint,
+        .response_fingerprint = response_fingerprint,
+        .response_kind = .@"resume",
+        .replay_key = key.withResponse(response_fingerprint).fingerprint(),
+        .value = stored,
+    });
+
+    var cloned = world.Transcript.init(std.testing.allocator);
+    defer cloned.deinit();
+    try cloned.append(source.events.items[0]);
+    source.deinit();
+
+    const event = try cloned.nextResponse(key, fixtures.Ports.Target.Certificate.certificate_fingerprint, .@"resume");
+    const cloned_value = try (event.value orelse return error.MissingResponseEvent).as(std.testing.allocator, i32);
+    try std.testing.expectEqual(@as(i32, 9), cloned_value);
 }
 
 test "world audit report counts fresh calls and fingerprints" {

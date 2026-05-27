@@ -92,6 +92,7 @@ pub const ReplayKeySeed = struct {
 pub const StoredValue = struct {
     ptr: *anyopaque,
     type_name: []const u8,
+    clone_fn: *const fn (std.mem.Allocator, *anyopaque) anyerror!StoredValue,
     destroy_fn: *const fn (std.mem.Allocator, *anyopaque) void,
 
     pub fn init(allocator: std.mem.Allocator, value: anytype) !@This() {
@@ -108,6 +109,12 @@ pub const StoredValue = struct {
         return .{
             .ptr = @ptrCast(ptr),
             .type_name = @typeName(Value),
+            .clone_fn = struct {
+                fn clone(inner_allocator: std.mem.Allocator, erased: *anyopaque) anyerror!StoredValue {
+                    const typed: *Value = @ptrCast(@alignCast(erased));
+                    return StoredValue.init(inner_allocator, typed.*);
+                }
+            }.clone,
             .destroy_fn = struct {
                 fn destroy(inner_allocator: std.mem.Allocator, erased: *anyopaque) void {
                     const typed: *Value = @ptrCast(@alignCast(erased));
@@ -116,6 +123,10 @@ pub const StoredValue = struct {
                 }
             }.destroy,
         };
+    }
+
+    pub fn clone(self: @This(), allocator: std.mem.Allocator) !@This() {
+        return self.clone_fn(allocator, self.ptr);
     }
 
     pub fn as(self: @This(), allocator: std.mem.Allocator, comptime Value: type) !Value {
@@ -130,7 +141,7 @@ pub const StoredValue = struct {
         return typed.*;
     }
 
-    fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
         self.destroy_fn(allocator, self.ptr);
         self.ptr = undefined;
     }
@@ -171,7 +182,18 @@ pub const Transcript = struct {
     }
 
     pub fn append(self: *@This(), event: Event) !void {
-        try self.events.append(self.allocator, event);
+        var cloned = event;
+        cloned.value = null;
+        if (event.value) |stored| {
+            cloned.value = try stored.clone(self.allocator);
+        }
+        errdefer if (cloned.value) |*stored| stored.deinit(self.allocator);
+        try self.events.append(self.allocator, cloned);
+    }
+
+    fn appendOwned(self: *@This(), event: *Event) !void {
+        try self.events.append(self.allocator, event.*);
+        event.value = null;
     }
 
     pub fn resetReplay(self: *@This()) void {
@@ -699,10 +721,9 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     if (comptime @hasField(Options, "transcript")) {
                         stored = try StoredValue.init(@field(self.options, "transcript").allocator, response);
                     }
-                    var stored_owned = stored != null;
-                    errdefer if (stored_owned) {
+                    defer if (stored) |*owned| {
                         if (comptime @hasField(Options, "transcript")) {
-                            stored.?.deinit(@field(self.options, "transcript").allocator);
+                            owned.deinit(@field(self.options, "transcript").allocator);
                         }
                     };
                     try appendPortEvent(
@@ -715,7 +736,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         .@"resume",
                         stored,
                     );
-                    stored_owned = false;
+                    stored = null;
                     self.audit.fresh_response_count += 1;
                     return try self.retainResponse(Decl.Response, response);
                 }
@@ -1066,13 +1087,14 @@ fn appendPortEvent(
     value: ?StoredValue,
 ) !void {
     if (!@hasField(@TypeOf(options), "transcript")) return;
+    const transcript = @field(options, "transcript");
     const replay_key = if (response_fingerprint) |fingerprint| ReplayKey{
         .world_surface_scope_fingerprint = Target.WorldSurface.replayScopeRef().fingerprint,
         .world_port_id = world_port_id,
         .request_fingerprint = trace.fingerprint,
         .response_fingerprint = fingerprint,
     } else null;
-    try @field(options, "transcript").append(.{
+    var event = Transcript.Event{
         .kind = kind,
         .world_surface_fingerprint = Target.WorldSurface.surface_fingerprint,
         .target_certificate_fingerprint = Target.Certificate.certificate_fingerprint,
@@ -1086,7 +1108,8 @@ fn appendPortEvent(
         .residual_site_fingerprint = trace.operation_site_fingerprint,
         .status = if (kind == .port_responded) .responded else null,
         .value = value,
-    });
+    };
+    try transcript.appendOwned(&event);
 }
 
 fn hashBytes(hasher: *std.hash.Wyhash, bytes: []const u8) void {
