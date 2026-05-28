@@ -56,6 +56,52 @@ const MissingDispatchTarget = struct {
 };
 const MissingDispatchMachine = world.Machine(MissingDispatchTarget, .{ .ports = .{} });
 
+const ResumeFailureProgram = struct {
+    pub const contract = fixtures.Ports.Target.Program.contract;
+    pub const protocol = fixtures.Ports.Target.Program.protocol;
+    pub const Handlers = fixtures.Ports.Target.Program.Handlers;
+    const InnerSession = fixtures.Ports.Target.Program.Session;
+
+    pub const Session = struct {
+        inner: InnerSession,
+        pub const Request = InnerSession.Request;
+
+        pub fn startWithArgs(runtime: anytype, handlers: anytype, args: anytype) !@This() {
+            return .{ .inner = try InnerSession.startWithArgs(runtime, handlers, args) };
+        }
+
+        pub fn deinit(self: *@This()) void {
+            self.inner.deinit();
+        }
+
+        pub fn next(self: *@This()) @typeInfo(@TypeOf(InnerSession.next)).@"fn".return_type.? {
+            return self.inner.next();
+        }
+
+        pub fn resumeTyped(_: *@This(), _: anytype, _: anytype) !void {
+            return error.TestResumeFailed;
+        }
+    };
+};
+
+const ResumeFailureTarget = struct {
+    pub const Program = ResumeFailureProgram;
+    pub const WorldSurface = fixtures.Ports.Target.WorldSurface;
+    pub const WorldPortTable = fixtures.Ports.Target.WorldPortTable;
+    pub const WorldValueTable = fixtures.Ports.Target.WorldValueTable;
+    pub const WorldDispatchTable = fixtures.Ports.Target.WorldDispatchTable;
+    pub const Certificate = fixtures.Ports.Target.Certificate;
+
+    pub fn assertWorldSurfaceReady() void {}
+    pub fn assertNoSearchHotPath() void {}
+};
+const ResumeFailureRequest = ResumeFailureProgram.protocol.operationSite("approval", "request", 0);
+const ResumeFailureDecl = world.port(ResumeFailureTarget, ResumeFailureRequest, approve);
+const ResumeFailureMachine = world.Machine(ResumeFailureTarget, .{
+    .ports = .{ResumeFailureDecl},
+    .strict_handler_coverage = true,
+});
+
 const OptionalNullTarget = struct {
     pub const Program = struct {
         pub const Handlers = struct {};
@@ -1332,6 +1378,16 @@ test "value image scalar string product sum and policy failures" {
     defer signed_enum_image.deinit(std.testing.allocator);
     const signed_enum_value = try signed_enum_image.decodeValue(std.testing.allocator, SignedEnumValue);
     try std.testing.expectEqual(SignedEnumValue.neg, signed_enum_value);
+    var labeled_image = try world.Frame.ValueImage.fromValue(std.testing.allocator, null, null, null, @as(i32, 42), world.ValuePolicy.native_compatible);
+    defer labeled_image.deinit(std.testing.allocator);
+    const dynamic_tampered = try labeled_image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(dynamic_tampered);
+    @constCast(dynamic_tampered)[19] = 1;
+    try std.testing.expectError(error.VerifyValueImageMismatch, world.Frame.ValueImage.decode(std.testing.allocator, dynamic_tampered));
+    const label_tampered = try labeled_image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(label_tampered);
+    @constCast(label_tampered)[label_tampered.len - 1] ^= 1;
+    try std.testing.expectError(error.VerifyValueImageMismatch, world.Frame.ValueImage.decode(std.testing.allocator, label_tampered));
 
     var string = try world.Frame.ValueImage.fromValue(std.testing.allocator, 2, null, null, @as([]const u8, "hello"), .portable);
     defer string.deinit(std.testing.allocator);
@@ -1365,6 +1421,17 @@ test "value image scalar string product sum and policy failures" {
         },
         else => return error.ExpectedToolAction,
     }
+    const Untagged = union { text: []const u8 };
+    const forged_untagged = world.Frame.ValueImage{
+        .value_image_fingerprint = 0,
+        .bytes = &[_]u8{
+            0, 0, 0, 0, // field index 0
+            3,   0,   0,   0, 0, 0, 0, 0, // byte-slice length
+            'b', 'a', 'd',
+        },
+        .dynamic_size = true,
+    };
+    try std.testing.expectError(error.UnsupportedValueImage, forged_untagged.decodeValue(std.testing.allocator, Untagged));
     var string_list = try world.Frame.ValueImage.fromValue(std.testing.allocator, 5, null, null, @as([]const []const u8, &.{"alpha"}), .portable);
     defer string_list.deinit(std.testing.allocator);
     std.mem.writeInt(u64, @constCast(string_list.bytes[0..8]), std.math.maxInt(u64), .little);
@@ -1381,6 +1448,9 @@ test "value image scalar string product sum and policy failures" {
     defer stored_over_decode_cap.deinit(std.testing.allocator);
     try std.testing.expect(stored_over_decode_cap.portable_image == null);
     try std.testing.expectError(error.InvalidFrameEncoding, stored_over_decode_cap.valueImage(std.testing.allocator, null, null, null, .{}));
+    var stored_string = try world.StoredValue.init(std.testing.allocator, @as([]const u8, "lazy"));
+    defer stored_string.deinit(std.testing.allocator);
+    try std.testing.expect(stored_string.portable_image == null);
 }
 
 test "transcript image encode decode round trip stable and image replay works without handler context" {
@@ -1780,6 +1850,21 @@ test "step frame nextFrame resumeFrame and verify adapter image path work" {
     try std.testing.expectEqual(@as(i32, 7), frame_verified.value);
     try std.testing.expectEqual(@as(usize, 1), frame_verify_ctx.calls);
 
+    var native_frame_image = try frame_transcript.toImage(std.testing.allocator, .{});
+    defer native_frame_image.deinit(std.testing.allocator);
+    var native_frame_verify_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer native_frame_verify_runtime.deinit();
+    var native_frame_verify_ctx: PortsCtx = .{};
+    var native_frame_verified = try PortsMachine.run(&native_frame_verify_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.verify,
+        .ctx = &native_frame_verify_ctx,
+        .transcript_image = &native_frame_image,
+    });
+    defer native_frame_verified.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(i32, 7), native_frame_verified.value);
+    try std.testing.expectEqual(@as(usize, 1), native_frame_verify_ctx.calls);
+
     var frame_verify_transcript = world.Transcript.init(std.testing.allocator);
     defer frame_verify_transcript.deinit();
     var frame_verify_record_runtime = boundary.Runtime.init(std.testing.allocator);
@@ -1906,6 +1991,46 @@ test "rejected and failed frame responses record terminal transcript state" {
     try std.testing.expectEqual(@as(usize, 2), audit.response_frame_count);
     try std.testing.expectEqual(@as(usize, 1), audit.failed_frame_count);
     try std.testing.expectEqual(@as(usize, 0), audit.missing_portable_value_image_count);
+}
+
+test "resume frame terminally fails when session rejects accepted response" {
+    var seed_transcript = world.Transcript.init(std.testing.allocator);
+    defer seed_transcript.deinit();
+    try recordPortsTranscript(&seed_transcript);
+    const response_fingerprint = (try firstRespondedEvent(&seed_transcript)).response_fingerprint.?;
+
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var run = try ResumeFailureMachine.start(&runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .transcript = &transcript,
+    });
+    defer run.deinit();
+
+    var request = switch (try run.nextFrame()) {
+        .port_request => |frame| frame,
+        else => return error.ExpectedFrameRequest,
+    };
+    defer request.deinit(std.testing.allocator);
+
+    var response = try world.Frame.Response.fromValue(std.testing.allocator, request, 1, response_fingerprint, .@"resume", @as(i32, 7), .portable);
+    defer response.deinit(std.testing.allocator);
+
+    try std.testing.expectError(error.TestResumeFailed, run.resumeFrame(response));
+    try std.testing.expectEqual(@as(usize, 1), run.audit.failed_count);
+    switch (try run.nextFrame()) {
+        .failed => {},
+        else => return error.ExpectedFailed,
+    }
+
+    const summary = transcript.summary();
+    try std.testing.expectEqual(@as(usize, 1), summary.frame_responded);
+    try std.testing.expectEqual(@as(usize, 1), summary.frame_failed);
+    try std.testing.expectEqual(@as(usize, 1), summary.run_failed);
 }
 
 test "portable transcript image rejects responded frames without value images" {

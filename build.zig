@@ -173,8 +173,8 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-frame-ports",
             .desc = "Run the frame-first one-port World example.",
             .expected_stdout =
-            \\request_frame_fingerprint=71b86341b868d119
-            \\response_frame_fingerprint=181e18590725e11c
+            \\request_frame_fingerprint=a0fb9bb7f59ece20
+            \\response_frame_fingerprint=d614051a97fab2c5
             \\world_port_id=0
             \\final_result=7
             \\
@@ -186,7 +186,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-transcript-image-replay",
             .desc = "Run the transcript image replay World example.",
             .expected_stdout =
-            \\transcript_image_fingerprint=22773b09d09d5136
+            \\transcript_image_fingerprint=950bd692d8372e44
             \\replayed_response_count=1
             \\final_result=7
             \\
@@ -210,7 +210,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-agent-timeline",
             .desc = "Run the agent timeline World example.",
             .expected_stdout =
-            \\transcript_image_fingerprint=6222bddb5f4b14ef
+            \\transcript_image_fingerprint=826ae3f8ebba9eb5
             \\event_count=8
             \\tool_call_count=1
             \\replay_verified=true
@@ -225,8 +225,8 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the agent branch World example.",
             .expected_stdout =
             \\checkpoint_fingerprint=6a333bf6c1e931bb
-            \\baseline_transcript_fingerprint=6222bddb5f4b14ef
-            \\branch_transcript_fingerprint=43afd19a7feaa2b4
+            \\baseline_transcript_fingerprint=826ae3f8ebba9eb5
+            \\branch_transcript_fingerprint=313381a33465638b
             \\baseline_final_result=final=actuate skeleton complete
             \\branch_final_result=final=branch alternate
             \\

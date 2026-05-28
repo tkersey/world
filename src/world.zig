@@ -212,18 +212,21 @@ pub const Frame = struct {
             else
                 null;
             errdefer if (label) |owned_label| allocator.free(owned_label);
+            const dynamic_size = valueIsDynamic(@TypeOf(value));
             return .{
                 .value_image_fingerprint = fingerprintValueImage(
                     value_table_id,
                     boundary_value_fingerprint,
                     codec_schema_descriptor_fingerprint,
+                    dynamic_size,
+                    label,
                     owned_bytes,
                 ),
                 .value_table_id = value_table_id,
                 .boundary_value_fingerprint = boundary_value_fingerprint,
                 .codec_schema_descriptor_fingerprint = codec_schema_descriptor_fingerprint,
                 .bytes = owned_bytes,
-                .dynamic_size = valueIsDynamic(@TypeOf(value)),
+                .dynamic_size = dynamic_size,
                 .diagnostic_type_label = label,
             };
         }
@@ -300,6 +303,8 @@ pub const Frame = struct {
                 value_table_id,
                 boundary_value_fingerprint,
                 codec_schema_descriptor_fingerprint,
+                dynamic_size,
+                label,
                 image_bytes,
             );
             if (expected != value_image_fingerprint) return error.VerifyValueImageMismatch;
@@ -722,18 +727,12 @@ pub const StoredValue = struct {
 
     fn initOwned(allocator: std.mem.Allocator, value: anytype) !@This() {
         const Value = @TypeOf(value);
-        var portable_image = Frame.ValueImage.fromValue(allocator, null, null, null, value, .native_compatible) catch |err| switch (err) {
-            error.OutOfMemory => return err,
-            else => null,
-        };
-        errdefer if (portable_image) |*image| image.deinit(allocator);
         const ptr = try allocator.create(Value);
         errdefer allocator.destroy(ptr);
         ptr.* = value;
         const result = @This(){
             .ptr = @ptrCast(ptr),
             .type_name = @typeName(Value),
-            .portable_image = portable_image,
             .clone_fn = struct {
                 fn clone(inner_allocator: std.mem.Allocator, erased: *anyopaque) anyerror!StoredValue {
                     const typed: *Value = @ptrCast(@alignCast(erased));
@@ -2128,7 +2127,12 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     try appendPortEvent(Target, self.options, .frame_responded, Decl.world_port_id, request.trace(), response_trace.fingerprint, response_frame.response_kind, stored, null, response_frame);
                     stored = null;
                     self.audit.fresh_response_count += 1;
-                    try self.session.resumeTyped(typed_request, retained_value);
+                    self.session.resumeTyped(typed_request, retained_value) catch |err| {
+                        self.audit.failed_count += 1;
+                        try appendPortEvent(Target, self.options, .frame_failed, Decl.world_port_id, request.trace(), response_trace.fingerprint, response_frame.response_kind, null, null, response_frame);
+                        try self.markRunFailed();
+                        return err;
+                    };
                     retained_committed = true;
                 }
 
@@ -2285,6 +2289,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     var expected_value_table_id: ?u32 = null;
                     var expected_boundary_value_fingerprint: ?u64 = null;
                     var expected_codec_schema_descriptor_fingerprint: ?u64 = null;
+                    var expected_value_policy = ValuePolicy.portable;
                     var expected_response_frame: ?Frame.Response = null;
                     if (comptime @hasField(Options, "transcript_image")) {
                         const image = @field(self.options, "transcript_image");
@@ -2301,6 +2306,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             expected_value_table_id = response_image.value_table_id;
                             expected_boundary_value_fingerprint = response_image.boundary_value_fingerprint;
                             expected_codec_schema_descriptor_fingerprint = response_image.codec_schema_descriptor_fingerprint;
+                            if (response_image.diagnostic_type_label != null) expected_value_policy = ValuePolicy.native_compatible;
                         } else {
                             expected_value_image_fingerprint = frame.response_value_fingerprint;
                         }
@@ -2333,6 +2339,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                                 expected_value_table_id = response_image.value_table_id;
                                 expected_boundary_value_fingerprint = response_image.boundary_value_fingerprint;
                                 expected_codec_schema_descriptor_fingerprint = response_image.codec_schema_descriptor_fingerprint;
+                                if (response_image.diagnostic_type_label != null) expected_value_policy = ValuePolicy.native_compatible;
                             } else {
                                 expected_value_image_fingerprint = frame.response_value_fingerprint;
                             }
@@ -2363,7 +2370,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             expected_boundary_value_fingerprint,
                             expected_codec_schema_descriptor_fingerprint,
                             fresh,
-                            .portable,
+                            expected_value_policy,
                         );
                         defer fresh_image.deinit(self.allocator);
                         if (fresh_image.value_image_fingerprint != expected_image_fingerprint) return error.VerifyValueImageMismatch;
@@ -2687,6 +2694,8 @@ fn validateValueImage(image: Frame.ValueImage) !void {
         image.value_table_id,
         image.boundary_value_fingerprint,
         image.codec_schema_descriptor_fingerprint,
+        image.dynamic_size,
+        image.diagnostic_type_label,
         image.bytes,
     );
     if (expected != image.value_image_fingerprint) return error.InvalidFrameEncoding;
@@ -3061,6 +3070,8 @@ fn fingerprintValueImage(
     value_table_id: ?u32,
     boundary_value_fingerprint: ?u64,
     codec_schema_descriptor_fingerprint: ?u64,
+    dynamic_size: bool,
+    diagnostic_type_label: ?[]const u8,
     bytes: []const u8,
 ) u64 {
     var hasher = std.hash.Wyhash.init(0);
@@ -3069,6 +3080,8 @@ fn fingerprintValueImage(
     hashOptionalU32(&hasher, value_table_id);
     hashOptionalU64(&hasher, boundary_value_fingerprint);
     hashOptionalU64(&hasher, codec_schema_descriptor_fingerprint);
+    hashBool(&hasher, dynamic_size);
+    hashOptionalBytes(&hasher, diagnostic_type_label);
     hashU64(&hasher, bytes.len);
     hashBytes(&hasher, bytes);
     return hasher.final();
@@ -3454,6 +3467,7 @@ fn decodePortableValue(comptime Value: type, allocator: std.mem.Allocator, bytes
             break :blk result;
         },
         .@"union" => |union_info| blk: {
+            _ = union_info.tag_type orelse return error.UnsupportedValueImage;
             const field_index = try readU32(bytes, cursor);
             inline for (union_info.fields, 0..) |field, index| {
                 if (field_index == index) {
