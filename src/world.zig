@@ -434,32 +434,53 @@ pub const Frame = struct {
             if (format_version != world_frame_request_format_version) return error.InvalidFrameEncoding;
             const fingerprint_version = try readU32(bytes, cursor);
             if (fingerprint_version != world_frame_request_fingerprint_version) return error.InvalidFrameEncoding;
-            var result = @This(){
-                .frame_fingerprint = try readU64(bytes, cursor),
+            const frame_fingerprint = try readU64(bytes, cursor);
+            const world_surface_fingerprint = try readU64(bytes, cursor);
+            const world_surface_replay_scope_fingerprint = try readOptionalU64(bytes, cursor);
+            const target_certificate_fingerprint = try readU64(bytes, cursor);
+            const world_port_id = try readU32(bytes, cursor);
+            const residual_site_index = try readU64AsUsize(bytes, cursor);
+            const residual_site_fingerprint = try readU64(bytes, cursor);
+            const request_fingerprint = try readU64(bytes, cursor);
+            const turn_index = try readU64AsUsize(bytes, cursor);
+            const payload_value_table_id = try readOptionalU32(bytes, cursor);
+            const expected_response_value_table_id = try readOptionalU32(bytes, cursor);
+            const payload_value_fingerprint = try readOptionalU64(bytes, cursor);
+            var payload_image = try readOptionalValueImage(allocator, bytes, cursor);
+            errdefer if (payload_image) |*image| image.deinit(allocator);
+            const replay_key_seed = ReplayKeySeed{
                 .world_surface_fingerprint = try readU64(bytes, cursor),
-                .world_surface_replay_scope_fingerprint = try readOptionalU64(bytes, cursor),
-                .target_certificate_fingerprint = try readU64(bytes, cursor),
+                .world_surface_scope_fingerprint = try readU64(bytes, cursor),
                 .world_port_id = try readU32(bytes, cursor),
-                .residual_site_index = try readU64AsUsize(bytes, cursor),
-                .residual_site_fingerprint = try readU64(bytes, cursor),
                 .request_fingerprint = try readU64(bytes, cursor),
-                .turn_index = try readU64AsUsize(bytes, cursor),
-                .payload_value_table_id = try readOptionalU32(bytes, cursor),
-                .expected_response_value_table_id = try readOptionalU32(bytes, cursor),
-                .payload_value_fingerprint = try readOptionalU64(bytes, cursor),
-                .payload_image = try readOptionalValueImage(allocator, bytes, cursor),
-                .replay_key_seed = .{
-                    .world_surface_fingerprint = try readU64(bytes, cursor),
-                    .world_surface_scope_fingerprint = try readU64(bytes, cursor),
-                    .world_port_id = try readU32(bytes, cursor),
-                    .request_fingerprint = try readU64(bytes, cursor),
-                },
-                .source_effect_shape_fingerprint = try readOptionalU64(bytes, cursor),
-                .world_port_ref_fingerprint = try readOptionalU64(bytes, cursor),
-                .trace_ref_fingerprint = try readOptionalU64(bytes, cursor),
-                .evidence_ref_fingerprint = try readOptionalU64(bytes, cursor),
-                .flags = try readU32(bytes, cursor),
             };
+            const source_effect_shape_fingerprint = try readOptionalU64(bytes, cursor);
+            const world_port_ref_fingerprint = try readOptionalU64(bytes, cursor);
+            const trace_ref_fingerprint = try readOptionalU64(bytes, cursor);
+            const evidence_ref_fingerprint = try readOptionalU64(bytes, cursor);
+            const flags = try readU32(bytes, cursor);
+            var result = @This(){
+                .frame_fingerprint = frame_fingerprint,
+                .world_surface_fingerprint = world_surface_fingerprint,
+                .world_surface_replay_scope_fingerprint = world_surface_replay_scope_fingerprint,
+                .target_certificate_fingerprint = target_certificate_fingerprint,
+                .world_port_id = world_port_id,
+                .residual_site_index = residual_site_index,
+                .residual_site_fingerprint = residual_site_fingerprint,
+                .request_fingerprint = request_fingerprint,
+                .turn_index = turn_index,
+                .payload_value_table_id = payload_value_table_id,
+                .expected_response_value_table_id = expected_response_value_table_id,
+                .payload_value_fingerprint = payload_value_fingerprint,
+                .payload_image = payload_image,
+                .replay_key_seed = replay_key_seed,
+                .source_effect_shape_fingerprint = source_effect_shape_fingerprint,
+                .world_port_ref_fingerprint = world_port_ref_fingerprint,
+                .trace_ref_fingerprint = trace_ref_fingerprint,
+                .evidence_ref_fingerprint = evidence_ref_fingerprint,
+                .flags = flags,
+            };
+            payload_image = null;
             errdefer result.deinit(allocator);
             const expected_payload_value_fingerprint: ?u64 = if (result.payload_image) |image| image.value_image_fingerprint else null;
             if (result.payload_value_fingerprint != expected_payload_value_fingerprint) return error.InvalidFrameEncoding;
@@ -2763,13 +2784,16 @@ fn eventImageFromTranscriptEvent(allocator: std.mem.Allocator, event: Transcript
         const frame_status = response_status orelse .responded;
         var response_image: ?Frame.ValueImage = null;
         if (event.value) |stored| {
-            response_image = try stored.valueImage(
+            response_image = stored.valueImage(
                 allocator,
                 event.expected_response_value_table_id,
                 event.response_fingerprint,
                 null,
                 policy,
-            );
+            ) catch |err| switch (err) {
+                error.UnsupportedValueImage => if (policy.allow_native_only_values) null else return err,
+                else => return err,
+            };
         }
         errdefer if (response_image) |*image| image.deinit(allocator);
         if (frame_status == .responded) {
