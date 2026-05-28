@@ -128,6 +128,7 @@ pub const world_timeline_branch_fingerprint_version: u32 = 1;
 pub const world_audit_image_format_version: u32 = 1;
 pub const world_audit_image_fingerprint_version: u32 = 1;
 pub const world_max_decoded_byte_field_len: usize = 16 * 1024 * 1024;
+const frame_response_deferred_fingerprint_flag: u32 = 1 << 0;
 const world_min_transcript_event_image_encoded_len: usize = 8 + 1 + 8 + 8 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1;
 
 pub const ValuePolicy = struct {
@@ -242,6 +243,20 @@ pub const Frame = struct {
             var result = self;
             result.bytes = bytes;
             result.diagnostic_type_label = label;
+            return result;
+        }
+
+        fn cloneWithBoundaryValueFingerprint(self: @This(), allocator: std.mem.Allocator, boundary_value_fingerprint: u64) !@This() {
+            var result = try self.clone(allocator);
+            result.boundary_value_fingerprint = boundary_value_fingerprint;
+            result.value_image_fingerprint = fingerprintValueImage(
+                result.value_table_id,
+                result.boundary_value_fingerprint,
+                result.codec_schema_descriptor_fingerprint,
+                result.dynamic_size,
+                result.diagnostic_type_label,
+                result.bytes,
+            );
             return result;
         }
 
@@ -558,6 +573,38 @@ pub const Frame = struct {
             });
         }
 
+        pub fn fromPortableValue(
+            allocator: std.mem.Allocator,
+            request: Request,
+            response_value_table_id: ?u32,
+            response_kind: ResponseKind,
+            value: anytype,
+            policy: ValuePolicy,
+        ) !@This() {
+            var image = try ValueImage.fromValue(
+                allocator,
+                response_value_table_id,
+                null,
+                null,
+                value,
+                policy,
+            );
+            errdefer image.deinit(allocator);
+            return init(.{
+                .world_surface_fingerprint = request.world_surface_fingerprint,
+                .target_certificate_fingerprint = request.target_certificate_fingerprint,
+                .world_port_id = request.world_port_id,
+                .request_fingerprint = request.request_fingerprint,
+                .response_kind = response_kind,
+                .response_value_table_id = response_value_table_id,
+                .response_fingerprint = 0,
+                .response_image = image,
+                .replay_key = 0,
+                .status = .responded,
+                .flags = frame_response_deferred_fingerprint_flag,
+            });
+        }
+
         pub fn init(args: struct {
             world_surface_fingerprint: u64,
             target_certificate_fingerprint: u64,
@@ -594,6 +641,33 @@ pub const Frame = struct {
             };
             result.frame_fingerprint = fingerprintResponse(result);
             return result;
+        }
+
+        pub fn responseFingerprintDeferred(self: @This()) bool {
+            return (self.flags & frame_response_deferred_fingerprint_flag) != 0;
+        }
+
+        fn bindDeferredResponseFingerprint(self: @This(), allocator: std.mem.Allocator, request: Request, response_fingerprint: u64) !@This() {
+            if (!self.responseFingerprintDeferred()) return error.InvalidFrameEncoding;
+            if (self.status != .responded) return error.InvalidFrameEncoding;
+            const response_image = self.response_image orelse return error.MissingValueImage;
+            var rebound_image = try response_image.cloneWithBoundaryValueFingerprint(allocator, response_fingerprint);
+            errdefer rebound_image.deinit(allocator);
+            return init(.{
+                .world_surface_fingerprint = self.world_surface_fingerprint,
+                .target_certificate_fingerprint = self.target_certificate_fingerprint,
+                .world_port_id = self.world_port_id,
+                .request_fingerprint = self.request_fingerprint,
+                .response_kind = self.response_kind,
+                .response_value_table_id = self.response_value_table_id,
+                .response_fingerprint = response_fingerprint,
+                .response_image = rebound_image,
+                .replay_key = request.replay_key_seed.withResponse(response_fingerprint).fingerprint(),
+                .status = self.status,
+                .error_tag = self.error_tag,
+                .reason = self.reason,
+                .flags = self.flags & ~frame_response_deferred_fingerprint_flag,
+            });
         }
 
         pub fn clone(self: @This(), allocator: std.mem.Allocator) !@This() {
@@ -673,10 +747,6 @@ pub const Frame = struct {
             errdefer if (response_image) |*image| image.deinit(allocator);
             const expected_response_value_fingerprint: ?u64 = if (response_image) |image| image.value_image_fingerprint else null;
             if (response_value_fingerprint != expected_response_value_fingerprint) return error.InvalidFrameEncoding;
-            if (response_image) |image| {
-                if (image.value_table_id != response_value_table_id) return error.InvalidFrameEncoding;
-                if (image.boundary_value_fingerprint != response_fingerprint) return error.InvalidFrameEncoding;
-            }
             const replay_key = try readU64(bytes, cursor);
             const status = try enumFromByte(ResponseStatus, try readU8(bytes, cursor));
             const error_tag = try readOptionalBytesOwned(allocator, bytes, cursor);
@@ -684,6 +754,15 @@ pub const Frame = struct {
             const reason = try readOptionalBytesOwned(allocator, bytes, cursor);
             errdefer if (reason) |owned_reason| allocator.free(owned_reason);
             const flags = try readU32(bytes, cursor);
+            const deferred_response_fingerprint = (flags & frame_response_deferred_fingerprint_flag) != 0;
+            if (response_image) |image| {
+                if (image.value_table_id != response_value_table_id) return error.InvalidFrameEncoding;
+                if (deferred_response_fingerprint) {
+                    if (image.boundary_value_fingerprint != null) return error.InvalidFrameEncoding;
+                } else if (image.boundary_value_fingerprint != response_fingerprint) {
+                    return error.InvalidFrameEncoding;
+                }
+            }
             var result = init(.{
                 .world_surface_fingerprint = world_surface_fingerprint,
                 .target_certificate_fingerprint = target_certificate_fingerprint,
@@ -2009,7 +2088,8 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     if (response_frame.request_fingerprint != frame.request_fingerprint) return error.FrameRequestFingerprintMismatch;
                     if (response_frame.status == .responded and response_frame.response_value_table_id != frame.expected_response_value_table_id) return error.FrameValueTableMismatch;
                     try validateResponseFrameImage(response_frame);
-                    if (response_frame.replay_key != frame.replay_key_seed.withResponse(response_frame.response_fingerprint).fingerprint()) return error.ReplayMissing;
+                    const deferred_response_fingerprint = response_frame.responseFingerprintDeferred();
+                    if (!deferred_response_fingerprint and response_frame.replay_key != frame.replay_key_seed.withResponse(response_frame.response_fingerprint).fingerprint()) return error.ReplayMissing;
                     if (response_frame.status == .rejected) {
                         self.audit.rejected_count += 1;
                         try appendPortEvent(Target, self.options, .frame_rejected, world_port_id, request.trace(), response_frame.response_fingerprint, response_frame.response_kind, null, null, response_frame);
@@ -2027,7 +2107,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         inline 0...Target.WorldPortTable.entries.len - 1 => |id| {
                             const Handler = comptime handlerForWorldPortId(Target, Config, @intCast(id));
                             if (Handler) |Decl| {
-                                try self.resumeFrameDecl(Decl, request, response_frame);
+                                try self.resumeFrameDecl(Decl, request, frame, response_frame);
                                 self.pending_request = null;
                                 self.pending_port_id = null;
                                 return;
@@ -2104,13 +2184,18 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     return frame;
                 }
 
-                fn resumeFrameDecl(self: *Self, comptime Decl: type, request: Request, response_frame: Frame.Response) !void {
+                fn resumeFrameDecl(self: *Self, comptime Decl: type, request: Request, request_frame: Frame.Request, response_frame: Frame.Response) !void {
                     const typed_request = try request.as(Decl.SiteType);
                     if (response_frame.response_kind != .@"resume") return error.VerifyResponseKindMismatch;
                     const value = try response_frame.decodeValue(self.allocator, Decl.Response);
                     defer deinitOwnedValue(self.allocator, value);
                     const response_trace = try typed_request.responseTrace(.@"resume", value);
-                    if (response_trace.fingerprint != response_frame.response_fingerprint) return error.VerifyResponseFingerprintMismatch;
+                    var resolved_response_frame: ?Frame.Response = null;
+                    if (response_frame.responseFingerprintDeferred()) {
+                        resolved_response_frame = try response_frame.bindDeferredResponseFingerprint(self.allocator, request_frame, response_trace.fingerprint);
+                    } else if (response_trace.fingerprint != response_frame.response_fingerprint) return error.VerifyResponseFingerprintMismatch;
+                    defer if (resolved_response_frame) |*frame| frame.deinit(self.allocator);
+                    const effective_response_frame = if (resolved_response_frame) |frame| frame else response_frame;
                     var stored: ?StoredValue = null;
                     if (comptime @hasField(Options, "transcript")) {
                         stored = try StoredValue.init(@field(self.options, "transcript").allocator, value);
@@ -2131,23 +2216,23 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         retained.deinit(self.allocator);
                     };
                     const retained_value = try self.retained_values.items[self.retained_values.items.len - 1].borrow(Decl.Response);
-                    try appendPortEvent(Target, self.options, .frame_responded, Decl.world_port_id, request.trace(), response_trace.fingerprint, response_frame.response_kind, stored, null, response_frame);
+                    try appendPortEvent(Target, self.options, .frame_responded, Decl.world_port_id, request.trace(), response_trace.fingerprint, effective_response_frame.response_kind, stored, null, effective_response_frame);
                     stored = null;
                     self.audit.fresh_response_count += 1;
                     self.session.resumeTyped(typed_request, retained_value) catch |err| {
                         self.audit.failed_count += 1;
                         const failed_response_frame = Frame.Response.init(.{
-                            .world_surface_fingerprint = response_frame.world_surface_fingerprint,
-                            .target_certificate_fingerprint = response_frame.target_certificate_fingerprint,
-                            .world_port_id = response_frame.world_port_id,
-                            .request_fingerprint = response_frame.request_fingerprint,
-                            .response_kind = response_frame.response_kind,
-                            .response_value_table_id = response_frame.response_value_table_id,
-                            .response_fingerprint = response_frame.response_fingerprint,
-                            .replay_key = response_frame.replay_key,
+                            .world_surface_fingerprint = effective_response_frame.world_surface_fingerprint,
+                            .target_certificate_fingerprint = effective_response_frame.target_certificate_fingerprint,
+                            .world_port_id = effective_response_frame.world_port_id,
+                            .request_fingerprint = effective_response_frame.request_fingerprint,
+                            .response_kind = effective_response_frame.response_kind,
+                            .response_value_table_id = effective_response_frame.response_value_table_id,
+                            .response_fingerprint = effective_response_frame.response_fingerprint,
+                            .replay_key = effective_response_frame.replay_key,
                             .status = .failed,
                         });
-                        try appendPortEvent(Target, self.options, .frame_failed, Decl.world_port_id, request.trace(), response_trace.fingerprint, response_frame.response_kind, null, null, failed_response_frame);
+                        try appendPortEvent(Target, self.options, .frame_failed, Decl.world_port_id, request.trace(), response_trace.fingerprint, effective_response_frame.response_kind, null, null, failed_response_frame);
                         try self.markRunFailed();
                         return err;
                     };
@@ -2695,11 +2780,22 @@ fn validateResponseFrameImage(frame: Frame.Response) !void {
     if (frame.format_version != world_frame_response_format_version) return error.InvalidFrameEncoding;
     if (frame.fingerprint_version != world_frame_response_fingerprint_version) return error.InvalidFrameEncoding;
     if (fingerprintResponse(frame) != frame.frame_fingerprint) return error.InvalidFrameEncoding;
+    const deferred_response_fingerprint = frame.responseFingerprintDeferred();
+    if (deferred_response_fingerprint) {
+        if (frame.status != .responded) return error.InvalidFrameEncoding;
+        if (frame.response_fingerprint != 0) return error.InvalidFrameEncoding;
+        if (frame.replay_key != 0) return error.InvalidFrameEncoding;
+        if (frame.response_image == null) return error.MissingValueImage;
+    }
     if (frame.response_image) |image| {
         try validateValueImage(image);
         if (frame.response_value_fingerprint != image.value_image_fingerprint) return error.InvalidFrameEncoding;
         if (image.value_table_id != frame.response_value_table_id) return error.InvalidFrameEncoding;
-        if (image.boundary_value_fingerprint != frame.response_fingerprint) return error.InvalidFrameEncoding;
+        if (deferred_response_fingerprint) {
+            if (image.boundary_value_fingerprint != null) return error.InvalidFrameEncoding;
+        } else if (image.boundary_value_fingerprint != frame.response_fingerprint) {
+            return error.InvalidFrameEncoding;
+        }
     } else if (frame.response_value_fingerprint != null) {
         return error.InvalidFrameEncoding;
     }
@@ -2748,7 +2844,7 @@ fn validateResponseFramePolicy(frame: Frame.Response, policy: ValuePolicy) !void
     if (frame.status != .responded) return;
     const image = frame.response_image orelse {
         if (policy.require_response_images_for_replay) return error.MissingValueImage;
-        if (policy.require_portable_values and !policy.allow_native_only_values) return error.NativeOnlyValue;
+        if (!policy.allow_native_only_values) return error.NativeOnlyValue;
         return;
     };
     try validateValueImagePolicy(image, policy);

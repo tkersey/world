@@ -2111,6 +2111,7 @@ test "portable transcript image rejects responded frames without value images" {
         .response_frame = response,
     });
     try std.testing.expectError(error.MissingValueImage, transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable }));
+    try std.testing.expectError(error.NativeOnlyValue, transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy{ .allow_native_only_values = false } }));
 }
 
 test "transcript image applies value policy to stored response frames" {
@@ -2318,7 +2319,6 @@ test "world timeline port frame byte adapter native adapter replay adapter agent
     var transcript = world.Transcript.init(std.testing.allocator);
     defer transcript.deinit();
     try recordPortsTranscript(&transcript);
-    const response_fingerprint = (try firstRespondedEvent(&transcript)).response_fingerprint.?;
 
     var image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
     defer image.deinit(std.testing.allocator);
@@ -2339,13 +2339,35 @@ test "world timeline port frame byte adapter native adapter replay adapter agent
     defer std.testing.allocator.free(request_bytes);
     var decoded_request = try world.Frame.Request.decode(std.testing.allocator, request_bytes);
     defer decoded_request.deinit(std.testing.allocator);
-    var response = try world.Frame.Response.fromValue(std.testing.allocator, decoded_request, 1, response_fingerprint, .@"resume", @as(i32, 7), .portable);
+    var response = try world.Frame.Response.fromPortableValue(std.testing.allocator, decoded_request, 1, .@"resume", @as(i32, 7), .portable);
     defer response.deinit(std.testing.allocator);
+    try std.testing.expect(response.responseFingerprintDeferred());
     const response_bytes = try response.encode(std.testing.allocator);
     defer std.testing.allocator.free(response_bytes);
     var decoded_response = try world.Frame.Response.decode(std.testing.allocator, response_bytes);
     defer decoded_response.deinit(std.testing.allocator);
     try std.testing.expectEqual(response.frame_fingerprint, decoded_response.frame_fingerprint);
+
+    var frame_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer frame_runtime.deinit();
+    var frame_run = try PortsMachine.start(&frame_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    defer frame_run.deinit();
+    var live_request = switch (try frame_run.nextFrame()) {
+        .port_request => |frame| frame,
+        else => return error.ExpectedPortRequest,
+    };
+    defer live_request.deinit(std.testing.allocator);
+    var live_response = try world.Frame.Response.fromPortableValue(std.testing.allocator, live_request, 1, .@"resume", @as(i32, 7), .portable);
+    defer live_response.deinit(std.testing.allocator);
+    try frame_run.resumeFrame(live_response);
+    const frame_result = switch (try frame_run.nextFrame()) {
+        .done => |value| value,
+        else => return error.ExpectedDone,
+    };
+    try std.testing.expectEqual(@as(i32, 7), frame_result);
 
     const audit_image = world.AuditImage.fromReport(replayed.audit, image);
     try std.testing.expectEqual(@as(usize, 1), audit_image.response_frame_count);

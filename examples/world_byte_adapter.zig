@@ -17,30 +17,11 @@ const Machine = world.Machine(fixtures.Ports.Target, .{
     .strict_handler_coverage = true,
 });
 
-fn recordedResponseFingerprint(allocator: std.mem.Allocator) !u64 {
-    var transcript = world.Transcript.init(allocator);
-    defer transcript.deinit();
-    var runtime = boundary.Runtime.init(allocator);
-    defer runtime.deinit();
-    var ctx: Ctx = .{};
-    var result = try Machine.run(&runtime, .{}, .{
-        .allocator = allocator,
-        .mode = world.Mode.fresh,
-        .ctx = &ctx,
-        .transcript = &transcript,
-    });
-    defer result.deinit(allocator);
-    for (transcript.events.items) |event| {
-        if (event.kind == .port_responded) return event.response_fingerprint.?;
-    }
-    return error.MissingResponse;
-}
-
-fn fakeHost(allocator: std.mem.Allocator, request_bytes: []const u8, response_fingerprint: u64) ![]const u8 {
+fn fakeHost(allocator: std.mem.Allocator, request_bytes: []const u8) ![]const u8 {
     var request = try world.Frame.Request.decode(allocator, request_bytes);
     defer request.deinit(allocator);
     if (request.world_port_id != 0) return error.UnexpectedPort;
-    var response = try world.Frame.Response.fromValue(allocator, request, 1, response_fingerprint, .@"resume", @as(i32, 7), .portable);
+    var response = try world.Frame.Response.fromPortableValue(allocator, request, 1, .@"resume", @as(i32, 7), .portable);
     defer response.deinit(allocator);
     return response.encode(allocator);
 }
@@ -50,7 +31,6 @@ pub fn main(init: std.process.Init) !void {
     var stdout_writer = std.Io.File.stdout().writer(init.io, &stdout_buffer);
     const stdout = &stdout_writer.interface;
     const allocator = std.heap.page_allocator;
-    const response_fingerprint = try recordedResponseFingerprint(allocator);
 
     var runtime = boundary.Runtime.init(allocator);
     defer runtime.deinit();
@@ -63,7 +43,7 @@ pub fn main(init: std.process.Init) !void {
     defer request_frame.deinit(allocator);
     const request_bytes = try request_frame.encode(allocator);
     defer allocator.free(request_bytes);
-    const response_bytes = try fakeHost(allocator, request_bytes, response_fingerprint);
+    const response_bytes = try fakeHost(allocator, request_bytes);
     defer allocator.free(response_bytes);
     var response_frame = try world.Frame.Response.decode(allocator, response_bytes);
     defer response_frame.deinit(allocator);

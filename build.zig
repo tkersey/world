@@ -199,7 +199,7 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the byte adapter frame World example.",
             .expected_stdout =
             \\request_frame_bytes=193
-            \\response_frame_bytes=140
+            \\response_frame_bytes=132
             \\final_result=7
             \\
             ,
