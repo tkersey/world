@@ -463,6 +463,11 @@ pub const Frame = struct {
             errdefer result.deinit(allocator);
             const expected_payload_value_fingerprint: ?u64 = if (result.payload_image) |image| image.value_image_fingerprint else null;
             if (result.payload_value_fingerprint != expected_payload_value_fingerprint) return error.InvalidFrameEncoding;
+            const expected_replay_scope = result.world_surface_replay_scope_fingerprint orelse result.world_surface_fingerprint;
+            if (result.replay_key_seed.world_surface_fingerprint != result.world_surface_fingerprint) return error.InvalidFrameEncoding;
+            if (result.replay_key_seed.world_surface_scope_fingerprint != expected_replay_scope) return error.InvalidFrameEncoding;
+            if (result.replay_key_seed.world_port_id != result.world_port_id) return error.InvalidFrameEncoding;
+            if (result.replay_key_seed.request_fingerprint != result.request_fingerprint) return error.InvalidFrameEncoding;
             if (fingerprintRequest(result) != result.frame_fingerprint) return error.InvalidFrameEncoding;
             return result;
         }
@@ -1362,6 +1367,7 @@ pub const TranscriptImage = struct {
         while (self.replay_cursor < replay_limit) : (self.replay_cursor += 1) {
             const index = self.replay_cursor;
             const event = &self.events[index];
+            if (!eventKindIsSourceResponse(event.kind)) continue;
             const frame = if (event.response_frame) |*response_frame| response_frame else continue;
             if (frame.status != .responded) continue;
             if (frame.world_surface_fingerprint != key.world_surface_fingerprint) return error.ReplaySurfaceMismatch;
@@ -1381,7 +1387,7 @@ pub const TranscriptImage = struct {
         const replay_limit = self.replay_limit orelse self.events.len;
         var index = self.replay_cursor;
         while (index < replay_limit) : (index += 1) {
-            if (self.events[index].response_frame != null) return error.ReplayUnusedEvent;
+            if (eventKindIsSourceResponse(self.events[index].kind) and self.events[index].response_frame != null) return error.ReplayUnusedEvent;
         }
     }
 
@@ -2542,6 +2548,25 @@ fn modeConsumesTranscript(mode: Mode) bool {
     return mode == .replay or mode == .verify;
 }
 
+fn eventKindIsSourceResponse(kind: EventKind) bool {
+    return kind == .port_responded or kind == .frame_responded;
+}
+
+fn eventKindAllowsResponseFrame(kind: EventKind) bool {
+    return switch (kind) {
+        .port_responded,
+        .port_replayed,
+        .port_rejected,
+        .port_failed,
+        .frame_responded,
+        .frame_replayed,
+        .frame_rejected,
+        .frame_failed,
+        => true,
+        else => false,
+    };
+}
+
 fn appendRunEvent(comptime Target: type, options: anytype, kind: EventKind, status: ?ResponseStatus, source_run: bool) !void {
     if (!@hasField(@TypeOf(options), "transcript")) return;
     try @field(options, "transcript").append(.{
@@ -2791,6 +2816,7 @@ fn decodeTranscriptEventImage(allocator: std.mem.Allocator, bytes: []const u8, c
         defer allocator.free(encoded);
         event.response_frame = try Frame.Response.decode(allocator, encoded);
     }
+    if (event.response_frame != null and !eventKindAllowsResponseFrame(event.kind)) return error.InvalidFrameEncoding;
     if (fingerprintTranscriptEventImage(event) != event.event_fingerprint) return error.InvalidFrameEncoding;
     return event;
 }

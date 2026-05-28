@@ -1141,6 +1141,12 @@ test "request frame fingerprint stable and encodes canonical bytes" {
     defer decoded.deinit(std.testing.allocator);
     try std.testing.expectEqual(request.frame_fingerprint, decoded.frame_fingerprint);
 
+    var wrong_replay_seed = try std.testing.allocator.dupe(u8, encoded);
+    defer std.testing.allocator.free(wrong_replay_seed);
+    const replay_seed_world_surface_offset = 89;
+    wrong_replay_seed[replay_seed_world_surface_offset] ^= 1;
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Frame.Request.decode(std.testing.allocator, wrong_replay_seed));
+
     const with_junk = try std.testing.allocator.alloc(u8, encoded.len + 1);
     defer std.testing.allocator.free(with_junk);
     @memcpy(with_junk[0..encoded.len], encoded);
@@ -1255,6 +1261,36 @@ test "transcript image encode decode round trip stable and image replay works wi
         if (event.response_frame) |response| break response;
     } else return error.ExpectedResponseFrame;
     try std.testing.expectEqual(@as(?u32, 1), decoded_response.response_value_table_id);
+
+    var forged_events = try std.testing.allocator.alloc(world.TranscriptImage.EventImage, 1);
+    var forged_events_owned = true;
+    errdefer if (forged_events_owned) std.testing.allocator.free(forged_events);
+    var forged_response = try decoded_response.clone(std.testing.allocator);
+    var forged_response_owned = true;
+    errdefer if (forged_response_owned) forged_response.deinit(std.testing.allocator);
+    forged_events[0] = .{
+        .event_fingerprint = 0,
+        .kind = .run_started,
+        .world_surface_fingerprint = decoded.world_surface_fingerprint,
+        .target_certificate_fingerprint = decoded.target_certificate_fingerprint,
+        .source_run = true,
+        .response_frame = forged_response,
+    };
+    forged_response_owned = false;
+    var forged_image = world.TranscriptImage{
+        .transcript_image_fingerprint = 0,
+        .world_surface_fingerprint = decoded.world_surface_fingerprint,
+        .target_certificate_fingerprint = decoded.target_certificate_fingerprint,
+        .events = forged_events,
+        .final_status = .completed,
+        .response_count = 1,
+    };
+    forged_events_owned = false;
+    defer forged_image.deinit(std.testing.allocator);
+    try std.testing.expectError(
+        error.ReplayMissing,
+        forged_image.nextResponse(image_request.replay_key_seed, fixtures.Ports.Target.Certificate.certificate_fingerprint, .@"resume"),
+    );
 
     var forged_header: [49]u8 = undefined;
     std.mem.writeInt(u32, forged_header[0..4], world.world_transcript_image_format_version, .little);
