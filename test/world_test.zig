@@ -1242,6 +1242,11 @@ test "value image scalar string product sum and policy failures" {
     defer literal.deinit(std.testing.allocator);
     const literal_value = try literal.decodeValue(std.testing.allocator, i32);
     try std.testing.expectEqual(@as(i32, 42), literal_value);
+    const EnumValue = enum(u8) { ok };
+    var enum_image = try world.Frame.ValueImage.fromValue(std.testing.allocator, 1, null, null, EnumValue.ok, .portable);
+    defer enum_image.deinit(std.testing.allocator);
+    const enum_value = try enum_image.decodeValue(std.testing.allocator, EnumValue);
+    try std.testing.expectEqual(EnumValue.ok, enum_value);
 
     var string = try world.Frame.ValueImage.fromValue(std.testing.allocator, 2, null, null, @as([]const u8, "hello"), .portable);
     defer string.deinit(std.testing.allocator);
@@ -1677,6 +1682,15 @@ test "native compatible transcript image omits unsupported response value images
     try std.testing.expectEqual(@as(usize, 1), image.response_count);
     const response_frame = image.events[0].response_frame orelse return error.ExpectedResponseFrame;
     try std.testing.expect(response_frame.response_image == null);
+    const audit = world.AuditImage.fromReport(.{
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .target_certificate_fingerprint = request.target_certificate_fingerprint,
+        .mode = world.Mode.fresh,
+        .final_status = .completed,
+        .fresh_response_count = 1,
+    }, image);
+    try std.testing.expectEqual(@as(usize, 0), audit.missing_portable_value_image_count);
+    try std.testing.expectEqual(@as(usize, 1), audit.native_only_value_count);
 }
 
 test "timeline event checkpoint branch and audit image fingerprints are stable" {

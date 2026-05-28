@@ -1533,7 +1533,11 @@ pub const AuditImage = struct {
                 if (event.kind == .checkpoint_recorded) image.checkpoint_count += 1;
                 if (event.kind == .branch_started) image.branch_count += 1;
                 if (event.response_frame != null and event.response_frame.?.status == .responded and event.response_frame.?.response_image == null) {
-                    image.missing_portable_value_image_count += 1;
+                    if (event.response_frame.?.response_value_fingerprint == null) {
+                        image.native_only_value_count += 1;
+                    } else {
+                        image.missing_portable_value_image_count += 1;
+                    }
                 }
             }
         }
@@ -3217,10 +3221,9 @@ fn encodePortableValue(comptime Value: type, allocator: std.mem.Allocator, out: 
             }
         },
         .@"enum" => |info| {
-            if (info.tag_type) |Tag| {
-                if (@bitSizeOf(Tag) > 64) return error.UnsupportedValueImage;
-            }
-            try writeU64(out, allocator, @intCast(@intFromEnum(value)));
+            const Tag = info.tag_type;
+            if (@bitSizeOf(Tag) > 64) return error.UnsupportedValueImage;
+            try writeU64(out, allocator, @as(u64, @intCast(@intFromEnum(value))));
         },
         .pointer => |pointer| {
             if (comptime pointer.size == .slice and pointer.child == u8) {
