@@ -2628,6 +2628,7 @@ fn eventKindAllowsResponseFrame(kind: EventKind) bool {
 }
 
 fn validateResponseFrameImage(frame: Frame.Response) !void {
+    if (fingerprintResponse(frame) != frame.frame_fingerprint) return error.InvalidFrameEncoding;
     if (frame.response_image) |image| {
         try validateValueImage(image);
         if (frame.response_value_fingerprint != image.value_image_fingerprint) return error.InvalidFrameEncoding;
@@ -2650,6 +2651,7 @@ fn validateValueImage(image: Frame.ValueImage) !void {
 
 fn validateTranscriptEventFrameBindings(event: TranscriptImage.EventImage) !void {
     if (event.request_frame) |frame| {
+        if (fingerprintRequest(frame) != frame.frame_fingerprint) return error.InvalidFrameEncoding;
         if (frame.payload_image) |image| try validateValueImage(image);
         if (frame.world_surface_fingerprint != event.world_surface_fingerprint) return error.InvalidFrameEncoding;
         if (frame.target_certificate_fingerprint != event.target_certificate_fingerprint) return error.InvalidFrameEncoding;
