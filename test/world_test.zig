@@ -1606,6 +1606,14 @@ test "rejected and failed frame responses record terminal transcript state" {
     var image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
     defer image.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 2), image.response_count);
+    const audit = world.AuditImage.fromReport(.{
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .mode = world.Mode.fresh,
+        .final_status = .failed,
+        .failed_count = 2,
+    }, image);
+    try std.testing.expectEqual(@as(usize, 0), audit.missing_portable_value_image_count);
 }
 
 test "portable transcript image rejects responded frames without value images" {

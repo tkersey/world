@@ -1532,7 +1532,7 @@ pub const AuditImage = struct {
                 if (event.kind == .frame_verified) image.verified_frame_count += 1;
                 if (event.kind == .checkpoint_recorded) image.checkpoint_count += 1;
                 if (event.kind == .branch_started) image.branch_count += 1;
-                if (event.response_frame != null and event.response_frame.?.response_image == null) {
+                if (event.response_frame != null and event.response_frame.?.status == .responded and event.response_frame.?.response_image == null) {
                     image.missing_portable_value_image_count += 1;
                 }
             }
