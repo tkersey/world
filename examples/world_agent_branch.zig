@@ -49,6 +49,24 @@ fn runTranscript(allocator: std.mem.Allocator, alternate: bool) !struct {
     return .{ .value = value, .transcript = transcript, .image = image };
 }
 
+fn forkTranscriptFromCheckpoint(
+    allocator: std.mem.Allocator,
+    baseline: *const world.Transcript,
+    branch: *const world.Transcript,
+    checkpoint_event_index: usize,
+) !world.Transcript {
+    if (checkpoint_event_index > baseline.events.items.len or checkpoint_event_index > branch.events.items.len) return error.InvalidFrameEncoding;
+    var forked = world.Transcript.init(allocator);
+    errdefer forked.deinit();
+    for (baseline.events.items[0..checkpoint_event_index]) |event| {
+        try forked.append(event);
+    }
+    for (branch.events.items[checkpoint_event_index..]) |event| {
+        try forked.append(event);
+    }
+    return forked;
+}
+
 pub fn main(init: std.process.Init) !void {
     var stdout_buffer: [2048]u8 = undefined;
     var stdout_writer = std.Io.File.stdout().writer(init.io, &stdout_buffer);
@@ -61,27 +79,35 @@ pub fn main(init: std.process.Init) !void {
         baseline.image.deinit(allocator);
         baseline.transcript.deinit();
     }
-    var branch = try runTranscript(allocator, true);
+    var branch_run = try runTranscript(allocator, true);
     defer {
-        allocator.free(branch.value);
-        branch.image.deinit(allocator);
-        branch.transcript.deinit();
+        allocator.free(branch_run.value);
+        branch_run.image.deinit(allocator);
+        branch_run.transcript.deinit();
     }
 
+    const checkpoint_event_index = 2;
+    const checkpoint_event = baseline.image.events[checkpoint_event_index - 1];
+    if (branch_run.image.events[checkpoint_event_index - 1].request_fingerprint != checkpoint_event.request_fingerprint) return error.InvalidFrameEncoding;
     const checkpoint = world.Timeline.Checkpoint.init(.{
         .world_surface_fingerprint = fixtures.Agent.Target.WorldSurface.surface_fingerprint,
         .target_certificate_fingerprint = fixtures.Agent.Target.Certificate.certificate_fingerprint,
-        .event_index = 1,
-        .turn_index = 0,
-        .transcript_prefix_fingerprint = baseline.image.events[0].event_fingerprint,
+        .event_index = checkpoint_event_index,
+        .turn_index = checkpoint_event.turn_index orelse 0,
+        .current_request_fingerprint = checkpoint_event.request_fingerprint,
+        .transcript_prefix_fingerprint = checkpoint_event.event_fingerprint,
         .branch_id = 1,
         .status = .parked_on_port,
     });
+    var branch_transcript = try forkTranscriptFromCheckpoint(allocator, &baseline.transcript, &branch_run.transcript, checkpoint.event_index);
+    defer branch_transcript.deinit();
+    var branch_image = try branch_transcript.toImage(allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer branch_image.deinit(allocator);
 
     try stdout.print("checkpoint_fingerprint={x}\n", .{checkpoint.checkpoint_fingerprint});
     try stdout.print("baseline_transcript_fingerprint={x}\n", .{baseline.image.transcript_image_fingerprint});
-    try stdout.print("branch_transcript_fingerprint={x}\n", .{branch.image.transcript_image_fingerprint});
+    try stdout.print("branch_transcript_fingerprint={x}\n", .{branch_image.transcript_image_fingerprint});
     try stdout.print("baseline_final_result={s}\n", .{baseline.value});
-    try stdout.print("branch_final_result={s}\n", .{branch.value});
+    try stdout.print("branch_final_result={s}\n", .{branch_run.value});
     try stdout.flush();
 }

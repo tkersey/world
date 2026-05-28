@@ -224,7 +224,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-agent-branch",
             .desc = "Run the agent branch World example.",
             .expected_stdout =
-            \\checkpoint_fingerprint=7ff8234e65993c4e
+            \\checkpoint_fingerprint=6a333bf6c1e931bb
             \\baseline_transcript_fingerprint=6222bddb5f4b14ef
             \\branch_transcript_fingerprint=43afd19a7feaa2b4
             \\baseline_final_result=final=actuate skeleton complete
