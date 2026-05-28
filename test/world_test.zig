@@ -1879,6 +1879,33 @@ test "portable transcript image rejects responded frames without value images" {
     try std.testing.expectError(error.MissingValueImage, transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable }));
 }
 
+test "transcript image applies value policy to stored response frames" {
+    const request = testRequestFrame();
+    var response = try world.Frame.Response.fromValue(std.testing.allocator, request, 1, 0xdec1_5100, .@"resume", @as(i32, 7), world.ValuePolicy.native_compatible);
+    defer response.deinit(std.testing.allocator);
+    try std.testing.expect(response.response_image.?.diagnostic_type_label != null);
+
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    try transcript.append(.{
+        .kind = .frame_responded,
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .target_certificate_fingerprint = request.target_certificate_fingerprint,
+        .world_port_id = request.world_port_id,
+        .request_fingerprint = request.request_fingerprint,
+        .response_fingerprint = response.response_fingerprint,
+        .response_kind = response.response_kind,
+        .replay_key = response.replay_key,
+        .turn_index = request.turn_index,
+        .residual_site_index = request.residual_site_index,
+        .residual_site_fingerprint = request.residual_site_fingerprint,
+        .status = .responded,
+        .response_frame = response,
+    });
+    try std.testing.expectError(error.UnsupportedValueImage, transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable }));
+    try std.testing.expectError(error.UnsupportedValueImage, transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy{ .max_value_image_bytes = 1 } }));
+}
+
 test "native compatible transcript image omits unsupported response value images" {
     const request = testRequestFrame();
     var stored = try world.StoredValue.init(std.testing.allocator, @as(f16, 1.5));

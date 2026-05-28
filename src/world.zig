@@ -2682,6 +2682,19 @@ fn validateValueImage(image: Frame.ValueImage) !void {
     if (expected != image.value_image_fingerprint) return error.InvalidFrameEncoding;
 }
 
+fn validateResponseFramePolicy(frame: Frame.Response, policy: ValuePolicy) !void {
+    if (frame.status != .responded) return;
+    const image = frame.response_image orelse {
+        if (policy.require_response_images_for_replay) return error.MissingValueImage;
+        if (policy.require_portable_values and !policy.allow_native_only_values) return error.NativeOnlyValue;
+        return;
+    };
+    if (policy.max_value_image_bytes) |max| {
+        if (image.bytes.len > max) return error.UnsupportedValueImage;
+    }
+    if (!policy.allow_diagnostic_type_labels and image.diagnostic_type_label != null) return error.UnsupportedValueImage;
+}
+
 fn validateTranscriptEventFrameBindings(event: TranscriptImage.EventImage) !void {
     if (event.request_frame) |frame| {
         if (fingerprintRequest(frame) != frame.frame_fingerprint) return error.InvalidFrameEncoding;
@@ -2843,6 +2856,7 @@ fn eventImageFromTranscriptEvent(allocator: std.mem.Allocator, event: Transcript
         try frame.clone(allocator)
     else
         null;
+    errdefer if (response_frame) |*frame| frame.deinit(allocator);
     const response_status = event.status orelse if (event.kind == .port_rejected or event.kind == .frame_rejected)
         ResponseStatus.rejected
     else if (event.kind == .port_failed or event.kind == .frame_failed)
@@ -2850,10 +2864,8 @@ fn eventImageFromTranscriptEvent(allocator: std.mem.Allocator, event: Transcript
     else
         null;
     if (response_frame) |frame| {
-        if (frame.status == .responded and frame.response_image == null) {
-            if (policy.require_response_images_for_replay) return error.MissingValueImage;
-            if (policy.require_portable_values and !policy.allow_native_only_values) return error.NativeOnlyValue;
-        }
+        try validateResponseFrameImage(frame);
+        try validateResponseFramePolicy(frame, policy);
     }
     const source_response_event = switch (event.kind) {
         .port_responded,
@@ -2899,8 +2911,6 @@ fn eventImageFromTranscriptEvent(allocator: std.mem.Allocator, event: Transcript
         });
         response_image = null;
     }
-    errdefer if (response_frame) |*frame| frame.deinit(allocator);
-
     var image = TranscriptImage.EventImage{
         .event_fingerprint = 0,
         .kind = event.kind,
