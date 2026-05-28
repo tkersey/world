@@ -1147,6 +1147,25 @@ test "request frame fingerprint stable and encodes canonical bytes" {
     wrong_replay_seed[replay_seed_world_surface_offset] ^= 1;
     try std.testing.expectError(error.InvalidFrameEncoding, world.Frame.Request.decode(std.testing.allocator, wrong_replay_seed));
 
+    const wrong_payload_image = try world.Frame.ValueImage.fromValue(std.testing.allocator, 1, null, null, @as([]const u8, "deploy-prod"), .portable);
+    var wrong_payload_request = world.Frame.Request.init(.{
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .world_surface_replay_scope_fingerprint = fixtures.Ports.Target.WorldSurface.replayScopeRef().fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .world_port_id = 0,
+        .residual_site_index = fixtures.Ports.ApprovalRequest.index,
+        .residual_site_fingerprint = fixtures.Ports.ApprovalRequest.fingerprint,
+        .request_fingerprint = 0xabc0_ffee,
+        .turn_index = 3,
+        .payload_value_table_id = 0,
+        .expected_response_value_table_id = 1,
+        .payload_image = wrong_payload_image,
+    });
+    defer wrong_payload_request.deinit(std.testing.allocator);
+    const wrong_payload_encoded = try wrong_payload_request.encode(std.testing.allocator);
+    defer std.testing.allocator.free(wrong_payload_encoded);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Frame.Request.decode(std.testing.allocator, wrong_payload_encoded));
+
     const with_junk = try std.testing.allocator.alloc(u8, encoded.len + 1);
     defer std.testing.allocator.free(with_junk);
     @memcpy(with_junk[0..encoded.len], encoded);
@@ -1406,6 +1425,19 @@ test "step frame nextFrame resumeFrame and verify adapter image path work" {
             var wrong_value_table_response = try world.Frame.Response.fromValue(std.testing.allocator, request, null, response_fingerprint, .@"resume", @as(i32, 7), .portable);
             defer wrong_value_table_response.deinit(std.testing.allocator);
             try std.testing.expectError(error.FrameValueTableMismatch, run.resumeFrame(wrong_value_table_response));
+            const wrong_nested_image = try world.Frame.ValueImage.fromValue(std.testing.allocator, 0, response_fingerprint, null, @as(i32, 7), .portable);
+            var wrong_nested_response = world.Frame.Response.init(.{
+                .world_surface_fingerprint = request.world_surface_fingerprint,
+                .target_certificate_fingerprint = request.target_certificate_fingerprint,
+                .world_port_id = request.world_port_id,
+                .request_fingerprint = request.request_fingerprint,
+                .response_value_table_id = 1,
+                .response_fingerprint = response_fingerprint,
+                .response_image = wrong_nested_image,
+                .replay_key = request.replay_key_seed.withResponse(response_fingerprint).fingerprint(),
+            });
+            defer wrong_nested_response.deinit(std.testing.allocator);
+            try std.testing.expectError(error.InvalidFrameEncoding, run.resumeFrame(wrong_nested_response));
             var response = try world.Frame.Response.fromValue(std.testing.allocator, request, 1, response_fingerprint, .@"resume", @as(i32, 7), .portable);
             defer response.deinit(std.testing.allocator);
             expected_response_frame_fingerprint = response.frame_fingerprint;

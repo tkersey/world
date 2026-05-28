@@ -463,6 +463,10 @@ pub const Frame = struct {
             errdefer result.deinit(allocator);
             const expected_payload_value_fingerprint: ?u64 = if (result.payload_image) |image| image.value_image_fingerprint else null;
             if (result.payload_value_fingerprint != expected_payload_value_fingerprint) return error.InvalidFrameEncoding;
+            if (result.payload_image) |image| {
+                if (image.value_table_id != result.payload_value_table_id) return error.InvalidFrameEncoding;
+                if (image.boundary_value_fingerprint != null) return error.InvalidFrameEncoding;
+            }
             const expected_replay_scope = result.world_surface_replay_scope_fingerprint orelse result.world_surface_fingerprint;
             if (result.replay_key_seed.world_surface_fingerprint != result.world_surface_fingerprint) return error.InvalidFrameEncoding;
             if (result.replay_key_seed.world_surface_scope_fingerprint != expected_replay_scope) return error.InvalidFrameEncoding;
@@ -1938,6 +1942,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     if (response_frame.world_port_id != world_port_id) return error.FramePortMismatch;
                     if (response_frame.request_fingerprint != frame.request_fingerprint) return error.FrameRequestFingerprintMismatch;
                     if (response_frame.status == .responded and response_frame.response_value_table_id != frame.expected_response_value_table_id) return error.FrameValueTableMismatch;
+                    try validateResponseFrameImage(response_frame);
                     if (response_frame.replay_key != frame.replay_key_seed.withResponse(response_frame.response_fingerprint).fingerprint()) return error.ReplayMissing;
                     if (response_frame.status == .rejected) {
                         self.audit.rejected_count += 1;
@@ -2589,6 +2594,62 @@ fn eventKindAllowsResponseFrame(kind: EventKind) bool {
     };
 }
 
+fn validateResponseFrameImage(frame: Frame.Response) !void {
+    if (frame.response_image) |image| {
+        if (frame.response_value_fingerprint != image.value_image_fingerprint) return error.InvalidFrameEncoding;
+        if (image.value_table_id != frame.response_value_table_id) return error.InvalidFrameEncoding;
+        if (image.boundary_value_fingerprint != frame.response_fingerprint) return error.InvalidFrameEncoding;
+    } else if (frame.response_value_fingerprint != null) {
+        return error.InvalidFrameEncoding;
+    }
+}
+
+fn validateTranscriptEventFrameBindings(event: TranscriptImage.EventImage) !void {
+    if (event.request_frame) |frame| {
+        if (frame.world_surface_fingerprint != event.world_surface_fingerprint) return error.InvalidFrameEncoding;
+        if (frame.target_certificate_fingerprint != event.target_certificate_fingerprint) return error.InvalidFrameEncoding;
+        if (event.world_port_id) |world_port_id| {
+            if (frame.world_port_id != world_port_id) return error.InvalidFrameEncoding;
+        }
+        if (event.request_fingerprint) |request_fingerprint| {
+            if (frame.request_fingerprint != request_fingerprint) return error.InvalidFrameEncoding;
+        }
+        if (event.turn_index) |turn_index| {
+            if (frame.turn_index != turn_index) return error.InvalidFrameEncoding;
+        }
+        if (event.residual_site_index) |residual_site_index| {
+            if (frame.residual_site_index != residual_site_index) return error.InvalidFrameEncoding;
+        }
+        if (event.residual_site_fingerprint) |residual_site_fingerprint| {
+            if (frame.residual_site_fingerprint != residual_site_fingerprint) return error.InvalidFrameEncoding;
+        }
+    }
+    if (event.response_frame) |frame| {
+        if (!eventKindAllowsResponseFrame(event.kind)) return error.InvalidFrameEncoding;
+        try validateResponseFrameImage(frame);
+        if (frame.world_surface_fingerprint != event.world_surface_fingerprint) return error.InvalidFrameEncoding;
+        if (frame.target_certificate_fingerprint != event.target_certificate_fingerprint) return error.InvalidFrameEncoding;
+        if (event.world_port_id) |world_port_id| {
+            if (frame.world_port_id != world_port_id) return error.InvalidFrameEncoding;
+        }
+        if (event.request_fingerprint) |request_fingerprint| {
+            if (frame.request_fingerprint != request_fingerprint) return error.InvalidFrameEncoding;
+        }
+        if (event.response_fingerprint) |response_fingerprint| {
+            if (frame.response_fingerprint != response_fingerprint) return error.InvalidFrameEncoding;
+        }
+        if (event.response_kind) |response_kind| {
+            if (frame.response_kind != response_kind) return error.InvalidFrameEncoding;
+        }
+        if (event.replay_key) |replay_key| {
+            if (frame.replay_key != replay_key) return error.InvalidFrameEncoding;
+        }
+        if (event.status) |status| {
+            if (frame.status != status) return error.InvalidFrameEncoding;
+        }
+    }
+}
+
 fn appendRunEvent(comptime Target: type, options: anytype, kind: EventKind, status: ?ResponseStatus, source_run: bool) !void {
     if (!@hasField(@TypeOf(options), "transcript")) return;
     try @field(options, "transcript").append(.{
@@ -2749,6 +2810,7 @@ fn eventImageFromTranscriptEvent(allocator: std.mem.Allocator, event: Transcript
         .request_frame = request_frame,
         .response_frame = response_frame,
     };
+    try validateTranscriptEventFrameBindings(image);
     image.event_fingerprint = fingerprintTranscriptEventImage(image);
     return image;
 }
@@ -2838,7 +2900,7 @@ fn decodeTranscriptEventImage(allocator: std.mem.Allocator, bytes: []const u8, c
         defer allocator.free(encoded);
         event.response_frame = try Frame.Response.decode(allocator, encoded);
     }
-    if (event.response_frame != null and !eventKindAllowsResponseFrame(event.kind)) return error.InvalidFrameEncoding;
+    try validateTranscriptEventFrameBindings(event);
     if (fingerprintTranscriptEventImage(event) != event.event_fingerprint) return error.InvalidFrameEncoding;
     return event;
 }
