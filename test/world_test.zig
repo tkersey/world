@@ -1415,6 +1415,16 @@ test "step frame nextFrame resumeFrame and verify adapter image path work" {
             const payload = try request.payload_image.?.decodeValue(std.testing.allocator, []const u8);
             defer std.testing.allocator.free(payload);
             try std.testing.expectEqualStrings("deploy-prod", payload);
+            const repeated_step = try run.nextFrame();
+            switch (repeated_step) {
+                .port_request => |again| {
+                    var repeated_request = again;
+                    defer repeated_request.deinit(std.testing.allocator);
+                    try std.testing.expectEqual(request.frame_fingerprint, repeated_request.frame_fingerprint);
+                },
+                else => return error.ExpectedFrameRequest,
+            }
+            try std.testing.expectEqual(@as(usize, 1), frame_transcript.summary().frame_requested);
             const encoded_request = try request.encode(std.testing.allocator);
             defer std.testing.allocator.free(encoded_request);
             var tampered_request = try std.testing.allocator.dupe(u8, encoded_request);

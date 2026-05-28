@@ -1943,12 +1943,13 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 pub fn nextFrame(self: *Self) !FrameStep {
                     self.frame_step_request = true;
                     defer self.frame_step_request = false;
+                    const had_pending_request = self.pending_request != null;
                     const step = try self.next();
                     return switch (step) {
                         .done => |value| .{ .done = value },
                         .failed => .failed,
                         .parked => error.HandlerPending,
-                        .port_required => .{ .port_request = try self.pendingRequestFrame(true) },
+                        .port_required => .{ .port_request = try self.pendingRequestFrame(!had_pending_request) },
                     };
                 }
 
