@@ -1229,6 +1229,23 @@ test "request frame fingerprint stable and encodes canonical bytes" {
     defer std.testing.allocator.free(wrong_payload_encoded);
     try std.testing.expectError(error.InvalidFrameEncoding, world.Frame.Request.decode(std.testing.allocator, wrong_payload_encoded));
 
+    var wrong_request_version = testRequestFrame();
+    wrong_request_version.format_version += 1;
+    var request_version_transcript = world.Transcript.init(std.testing.allocator);
+    defer request_version_transcript.deinit();
+    try request_version_transcript.append(.{
+        .kind = .frame_requested,
+        .world_surface_fingerprint = wrong_request_version.world_surface_fingerprint,
+        .target_certificate_fingerprint = wrong_request_version.target_certificate_fingerprint,
+        .world_port_id = wrong_request_version.world_port_id,
+        .request_fingerprint = wrong_request_version.request_fingerprint,
+        .turn_index = wrong_request_version.turn_index,
+        .residual_site_index = wrong_request_version.residual_site_index,
+        .residual_site_fingerprint = wrong_request_version.residual_site_fingerprint,
+        .request_frame = wrong_request_version,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, request_version_transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable }));
+
     const with_junk = try std.testing.allocator.alloc(u8, encoded.len + 1);
     defer std.testing.allocator.free(with_junk);
     @memcpy(with_junk[0..encoded.len], encoded);
@@ -1651,6 +1668,14 @@ test "step frame nextFrame resumeFrame and verify adapter image path work" {
             });
             defer wrong_nested_response.deinit(std.testing.allocator);
             try std.testing.expectError(error.InvalidFrameEncoding, run.resumeFrame(wrong_nested_response));
+            var wrong_response_version = try world.Frame.Response.fromValue(std.testing.allocator, request, 1, response_fingerprint, .@"resume", @as(i32, 7), .portable);
+            defer wrong_response_version.deinit(std.testing.allocator);
+            wrong_response_version.format_version += 1;
+            try std.testing.expectError(error.InvalidFrameEncoding, run.resumeFrame(wrong_response_version));
+            var wrong_response_image_version = try world.Frame.Response.fromValue(std.testing.allocator, request, 1, response_fingerprint, .@"resume", @as(i32, 7), .portable);
+            defer wrong_response_image_version.deinit(std.testing.allocator);
+            wrong_response_image_version.response_image.?.format_version += 1;
+            try std.testing.expectError(error.InvalidFrameEncoding, run.resumeFrame(wrong_response_image_version));
             var stale_image_response = try world.Frame.Response.fromValue(std.testing.allocator, request, 1, response_fingerprint, .@"resume", @as(i32, 7), .portable);
             defer stale_image_response.deinit(std.testing.allocator);
             @constCast(stale_image_response.response_image.?.bytes)[0] ^= 1;

@@ -2667,6 +2667,8 @@ fn eventKindAllowsResponseFrame(kind: EventKind) bool {
 }
 
 fn validateResponseFrameImage(frame: Frame.Response) !void {
+    if (frame.format_version != world_frame_response_format_version) return error.InvalidFrameEncoding;
+    if (frame.fingerprint_version != world_frame_response_fingerprint_version) return error.InvalidFrameEncoding;
     if (fingerprintResponse(frame) != frame.frame_fingerprint) return error.InvalidFrameEncoding;
     if (frame.response_image) |image| {
         try validateValueImage(image);
@@ -2679,6 +2681,8 @@ fn validateResponseFrameImage(frame: Frame.Response) !void {
 }
 
 fn validateValueImage(image: Frame.ValueImage) !void {
+    if (image.format_version != world_frame_value_image_format_version) return error.InvalidFrameEncoding;
+    if (image.fingerprint_version != world_frame_value_image_fingerprint_version) return error.InvalidFrameEncoding;
     const expected = fingerprintValueImage(
         image.value_table_id,
         image.boundary_value_fingerprint,
@@ -2686,6 +2690,20 @@ fn validateValueImage(image: Frame.ValueImage) !void {
         image.bytes,
     );
     if (expected != image.value_image_fingerprint) return error.InvalidFrameEncoding;
+}
+
+fn validateRequestFrameImage(frame: Frame.Request) !void {
+    if (frame.format_version != world_frame_request_format_version) return error.InvalidFrameEncoding;
+    if (frame.fingerprint_version != world_frame_request_fingerprint_version) return error.InvalidFrameEncoding;
+    if (fingerprintRequest(frame) != frame.frame_fingerprint) return error.InvalidFrameEncoding;
+    if (frame.payload_image) |image| {
+        try validateValueImage(image);
+        if (frame.payload_value_fingerprint != image.value_image_fingerprint) return error.InvalidFrameEncoding;
+        if (image.value_table_id != frame.payload_value_table_id) return error.InvalidFrameEncoding;
+        if (image.boundary_value_fingerprint != null) return error.InvalidFrameEncoding;
+    } else if (frame.payload_value_fingerprint != null) {
+        return error.InvalidFrameEncoding;
+    }
 }
 
 fn validateValueImagePolicy(image: Frame.ValueImage, policy: ValuePolicy) !void {
@@ -2711,8 +2729,7 @@ fn validateResponseFramePolicy(frame: Frame.Response, policy: ValuePolicy) !void
 
 fn validateTranscriptEventFrameBindings(event: TranscriptImage.EventImage) !void {
     if (event.request_frame) |frame| {
-        if (fingerprintRequest(frame) != frame.frame_fingerprint) return error.InvalidFrameEncoding;
-        if (frame.payload_image) |image| try validateValueImage(image);
+        try validateRequestFrameImage(frame);
         if (frame.world_surface_fingerprint != event.world_surface_fingerprint) return error.InvalidFrameEncoding;
         if (frame.target_certificate_fingerprint != event.target_certificate_fingerprint) return error.InvalidFrameEncoding;
         if (event.world_port_id) |world_port_id| {
