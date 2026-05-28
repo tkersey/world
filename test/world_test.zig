@@ -142,6 +142,29 @@ fn recordPortsTranscript(transcript: *world.Transcript) !void {
     defer result.deinit(std.testing.allocator);
 }
 
+fn hashTestBytes(hasher: *std.hash.Wyhash, bytes: []const u8) void {
+    hasher.update(bytes);
+}
+
+fn hashTestU64(hasher: *std.hash.Wyhash, value: anytype) void {
+    var buffer: [8]u8 = undefined;
+    std.mem.writeInt(u64, &buffer, @intCast(value), .little);
+    hasher.update(&buffer);
+}
+
+fn testTranscriptImageFingerprint(image: world.TranscriptImage) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashTestBytes(&hasher, "world.transcript.image.fingerprint");
+    hashTestU64(&hasher, world.world_transcript_image_fingerprint_version);
+    hashTestU64(&hasher, image.world_surface_fingerprint);
+    hashTestU64(&hasher, image.target_certificate_fingerprint);
+    hashTestU64(&hasher, @intFromEnum(image.final_status));
+    hashTestU64(&hasher, image.response_count);
+    hashTestU64(&hasher, image.events.len);
+    for (image.events) |event| hashTestU64(&hasher, event.event_fingerprint);
+    return hasher.final();
+}
+
 fn firstRespondedEvent(transcript: *world.Transcript) !*world.Transcript.Event {
     for (transcript.events.items) |*event| {
         if (event.kind == .port_responded) return event;
@@ -1365,6 +1388,12 @@ test "transcript image encode decode round trip stable and image replay works wi
     defer decoded.deinit(std.testing.allocator);
     try std.testing.expectEqual(image.transcript_image_fingerprint, decoded.transcript_image_fingerprint);
     try std.testing.expectEqual(@as(usize, 1), decoded.response_count);
+    var forged_status_image = decoded;
+    forged_status_image.final_status = .failed;
+    forged_status_image.transcript_image_fingerprint = testTranscriptImageFingerprint(forged_status_image);
+    const forged_status_encoded = try forged_status_image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(forged_status_encoded);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.TranscriptImage.decode(std.testing.allocator, forged_status_encoded));
     const decoded_response = for (decoded.events) |event| {
         if (event.response_frame) |response| break response;
     } else return error.ExpectedResponseFrame;

@@ -1460,9 +1460,14 @@ pub const TranscriptImage = struct {
         if (cursor != bytes.len) return error.InvalidFrameEncoding;
         var decoded_response_count: usize = 0;
         for (events) |event| {
+            if (event.world_surface_fingerprint != world_surface_fingerprint) return error.InvalidFrameEncoding;
+            if (event.target_certificate_fingerprint != target_certificate_fingerprint) return error.InvalidFrameEncoding;
             if (event.response_frame != null) decoded_response_count += 1;
         }
+        if (world_surface_fingerprint != (if (events.len > 0) events[0].world_surface_fingerprint else 0)) return error.InvalidFrameEncoding;
+        if (target_certificate_fingerprint != (if (events.len > 0) events[0].target_certificate_fingerprint else 0)) return error.InvalidFrameEncoding;
         if (decoded_response_count != response_count) return error.InvalidFrameEncoding;
+        if (finalStatusFromEvents(events) != final_status) return error.InvalidFrameEncoding;
         const image = @This(){
             .transcript_image_fingerprint = transcript_image_fingerprint,
             .world_surface_fingerprint = world_surface_fingerprint,
