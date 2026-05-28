@@ -56,10 +56,11 @@ pub fn main(init: std.process.Init) !void {
     defer runtime.deinit();
     var run = try Machine.start(&runtime, .{}, .{ .allocator = allocator, .mode = world.Mode.fresh });
     defer run.deinit();
-    const request_frame = switch (try run.nextFrame()) {
+    var request_frame = switch (try run.nextFrame()) {
         .port_request => |frame| frame,
         else => return error.ExpectedPortRequest,
     };
+    defer request_frame.deinit(allocator);
     const request_bytes = try request_frame.encode(allocator);
     defer allocator.free(request_bytes);
     const response_bytes = try fakeHost(allocator, request_bytes, response_fingerprint);

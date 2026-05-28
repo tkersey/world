@@ -1291,7 +1291,13 @@ test "step frame nextFrame resumeFrame and verify adapter image path work" {
     defer run.deinit();
     const step = try run.nextFrame();
     switch (step) {
-        .port_request => |request| {
+        .port_request => |frame| {
+            var request = frame;
+            defer request.deinit(std.testing.allocator);
+            try std.testing.expect(request.payload_image != null);
+            const payload = try request.payload_image.?.decodeValue(std.testing.allocator, []const u8);
+            defer std.testing.allocator.free(payload);
+            try std.testing.expectEqualStrings("deploy-prod", payload);
             var response = try world.Frame.Response.fromValue(std.testing.allocator, request, 1, response_fingerprint, .@"resume", @as(i32, 7), .portable);
             defer response.deinit(std.testing.allocator);
             try run.resumeFrame(response);
@@ -1303,6 +1309,7 @@ test "step frame nextFrame resumeFrame and verify adapter image path work" {
         else => return error.ExpectedDone,
     }
     const frame_summary = frame_transcript.summary();
+    try std.testing.expectEqual(@as(usize, 1), frame_summary.frame_requested);
     try std.testing.expectEqual(@as(usize, 1), frame_summary.frame_responded);
 
     var frame_image = try frame_transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
@@ -1360,10 +1367,11 @@ test "rejected and failed frame responses record terminal transcript state" {
         });
         defer run.deinit();
 
-        const request = switch (try run.nextFrame()) {
+        var request = switch (try run.nextFrame()) {
             .port_request => |frame| frame,
             else => return error.ExpectedFrameRequest,
         };
+        defer request.deinit(std.testing.allocator);
         const rejected = world.Frame.Response.init(.{
             .world_surface_fingerprint = request.world_surface_fingerprint,
             .target_certificate_fingerprint = request.target_certificate_fingerprint,
@@ -1391,10 +1399,11 @@ test "rejected and failed frame responses record terminal transcript state" {
         });
         defer run.deinit();
 
-        const request = switch (try run.nextFrame()) {
+        var request = switch (try run.nextFrame()) {
             .port_request => |frame| frame,
             else => return error.ExpectedFrameRequest,
         };
+        defer request.deinit(std.testing.allocator);
         const failed = world.Frame.Response.init(.{
             .world_surface_fingerprint = request.world_surface_fingerprint,
             .target_certificate_fingerprint = request.target_certificate_fingerprint,

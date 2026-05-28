@@ -1638,6 +1638,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 per_port_counts: []usize,
                 done_value: Value = undefined,
                 done_value_present: bool = false,
+                frame_step_request: bool = false,
                 retained_values: std.ArrayList(StoredValue) = .empty,
 
                 pub const Result = struct {
@@ -1804,7 +1805,8 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             self.audit.port_request_count += 1;
                             self.per_port_counts[world_port_id] += 1;
                             if (self.effective_mode == .fresh) {
-                                try appendPortEvent(Target, self.options, .port_requested, world_port_id, trace, null, null, null);
+                                const event_kind: EventKind = if (self.frame_step_request) .frame_requested else .port_requested;
+                                try appendPortEvent(Target, self.options, event_kind, world_port_id, trace, null, null, null);
                             }
                             return .port_required;
                         },
@@ -1844,6 +1846,8 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 };
 
                 pub fn nextFrame(self: *Self) !FrameStep {
+                    self.frame_step_request = true;
+                    defer self.frame_step_request = false;
                     const step = try self.next();
                     return switch (step) {
                         .done => |value| .{ .done = value },
@@ -1857,7 +1861,8 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     if (response_frame.status == .pending) return error.HandlerPending;
                     const request = self.pending_request orelse return error.UnknownResidualSite;
                     const world_port_id = self.pending_port_id orelse return error.UnknownWorldPort;
-                    const frame = try self.pendingRequestFrame();
+                    var frame = try self.pendingRequestFrame();
+                    defer frame.deinit(self.allocator);
                     if (response_frame.world_surface_fingerprint != frame.world_surface_fingerprint) return error.FrameSurfaceMismatch;
                     if (response_frame.target_certificate_fingerprint != frame.target_certificate_fingerprint) return error.FrameTargetCertificateMismatch;
                     if (response_frame.world_port_id != world_port_id) return error.FramePortMismatch;
@@ -1893,6 +1898,15 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 fn pendingRequestFrame(self: *Self) !Frame.Request {
                     const request = self.pending_request orelse return error.UnknownResidualSite;
                     const world_port_id = self.pending_port_id orelse return error.UnknownWorldPort;
+                    if (Target.WorldPortTable.entries.len != 0) {
+                        switch (world_port_id) {
+                            inline 0...Target.WorldPortTable.entries.len - 1 => |id| {
+                                const Handler = comptime handlerForWorldPortId(Target, Config, @intCast(id));
+                                if (Handler) |Decl| return try self.pendingRequestFrameDecl(Decl, request, world_port_id);
+                            },
+                            else => {},
+                        }
+                    }
                     const trace = request.trace();
                     return Frame.Request.init(.{
                         .world_surface_fingerprint = Target.WorldSurface.surface_fingerprint,
@@ -1905,6 +1919,34 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         .turn_index = trace.turn_index,
                         .payload_value_table_id = valueIdForRuntime(Target, world_port_id, .payload),
                         .expected_response_value_table_id = valueIdForRuntime(Target, world_port_id, .@"resume"),
+                    });
+                }
+
+                fn pendingRequestFrameDecl(self: *Self, comptime Decl: type, request: Request, world_port_id: u32) !Frame.Request {
+                    const typed_request = try request.as(Decl.SiteType);
+                    const payload = try typed_request.payload();
+                    var payload_image = try Frame.ValueImage.fromValue(
+                        self.allocator,
+                        valueIdForRuntime(Target, world_port_id, .payload),
+                        null,
+                        null,
+                        payload,
+                        .portable,
+                    );
+                    errdefer payload_image.deinit(self.allocator);
+                    const trace = request.trace();
+                    return Frame.Request.init(.{
+                        .world_surface_fingerprint = Target.WorldSurface.surface_fingerprint,
+                        .world_surface_replay_scope_fingerprint = Target.WorldSurface.replayScopeRef().fingerprint,
+                        .target_certificate_fingerprint = Target.Certificate.certificate_fingerprint,
+                        .world_port_id = world_port_id,
+                        .residual_site_index = trace.operation_site_index,
+                        .residual_site_fingerprint = trace.operation_site_fingerprint,
+                        .request_fingerprint = trace.fingerprint,
+                        .turn_index = trace.turn_index,
+                        .payload_value_table_id = valueIdForRuntime(Target, world_port_id, .payload),
+                        .expected_response_value_table_id = valueIdForRuntime(Target, world_port_id, .@"resume"),
+                        .payload_image = payload_image,
                     });
                 }
 

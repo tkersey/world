@@ -173,7 +173,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-frame-ports",
             .desc = "Run the frame-first one-port World example.",
             .expected_stdout =
-            \\request_frame_fingerprint=87cbb9b9685ac5c8
+            \\request_frame_fingerprint=71b86341b868d119
             \\response_frame_fingerprint=181e18590725e11c
             \\world_port_id=0
             \\final_result=7
@@ -198,7 +198,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-byte-adapter",
             .desc = "Run the byte adapter frame World example.",
             .expected_stdout =
-            \\request_frame_bytes=125
+            \\request_frame_bytes=193
             \\response_frame_bytes=140
             \\final_result=7
             \\

@@ -52,10 +52,11 @@ pub fn main(init: std.process.Init) !void {
     defer run.deinit();
 
     const step = try run.nextFrame();
-    const request_frame = switch (step) {
+    var request_frame = switch (step) {
         .port_request => |frame| frame,
         else => return error.ExpectedPortRequest,
     };
+    defer request_frame.deinit(allocator);
     var response_frame = try world.Frame.Response.fromValue(
         allocator,
         request_frame,
