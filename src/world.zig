@@ -1982,6 +1982,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         try self.markRunFailed();
                         return error.HandlerFailed;
                     }
+                    if (Target.WorldPortTable.entries.len == 0) return self.markMissingHandler(world_port_id, request.trace());
                     switch (world_port_id) {
                         inline 0...Target.WorldPortTable.entries.len - 1 => |id| {
                             const Handler = comptime handlerForWorldPortId(Target, Config, @intCast(id));

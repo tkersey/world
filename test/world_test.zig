@@ -182,6 +182,21 @@ test "world machine accepts strict zero-port certified target" {
     try std.testing.expectEqual(@as(usize, 0), result.audit.port_request_count);
     try std.testing.expectEqual(@as(usize, 1), transcript.summary().run_started);
     try std.testing.expectEqual(@as(usize, 1), transcript.summary().run_completed);
+
+    var frame_run = try Machine.start(&runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    defer frame_run.deinit();
+    const impossible_response = world.Frame.Response.init(.{
+        .world_surface_fingerprint = fixtures.Strict.Target.WorldSurface.surface_fingerprint,
+        .target_certificate_fingerprint = fixtures.Strict.Target.Certificate.certificate_fingerprint,
+        .world_port_id = 0,
+        .request_fingerprint = 0,
+        .response_fingerprint = 0,
+        .replay_key = 0,
+    });
+    try std.testing.expectError(error.UnknownResidualSite, frame_run.resumeFrame(impossible_response));
 }
 
 test "world machine preserves optional null completion values" {
