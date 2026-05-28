@@ -134,7 +134,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-ports",
             .desc = "Run the one-port World example.",
             .expected_stdout =
-            \\world_surface_fingerprint=c34c5598edef782a
+            \\world_surface_fingerprint=1c56147f9e4ab2ff
             \\world_port_id=0
             \\request_fingerprint=1a84e84d29103ea4
             \\final_result=7
@@ -173,8 +173,8 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-frame-ports",
             .desc = "Run the frame-first one-port World example.",
             .expected_stdout =
-            \\request_frame_fingerprint=47cc53bd22ebf827
-            \\response_frame_fingerprint=aeea50cea04503c6
+            \\request_frame_fingerprint=87cbb9b9685ac5c8
+            \\response_frame_fingerprint=181e18590725e11c
             \\world_port_id=0
             \\final_result=7
             \\
@@ -186,7 +186,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-transcript-image-replay",
             .desc = "Run the transcript image replay World example.",
             .expected_stdout =
-            \\transcript_image_fingerprint=dd832a75d91f1ba1
+            \\transcript_image_fingerprint=e84970f3494fd0ee
             \\replayed_response_count=1
             \\final_result=7
             \\
@@ -210,7 +210,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-agent-timeline",
             .desc = "Run the agent timeline World example.",
             .expected_stdout =
-            \\transcript_image_fingerprint=79bdce03555a1065
+            \\transcript_image_fingerprint=6a7d91a5a6a943e0
             \\event_count=8
             \\tool_call_count=1
             \\replay_verified=true
@@ -224,9 +224,9 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-agent-branch",
             .desc = "Run the agent branch World example.",
             .expected_stdout =
-            \\checkpoint_fingerprint=7c94ef3ac64af0ba
-            \\baseline_transcript_fingerprint=79bdce03555a1065
-            \\branch_transcript_fingerprint=14d2d09553435494
+            \\checkpoint_fingerprint=7ff8234e65993c4e
+            \\baseline_transcript_fingerprint=6a7d91a5a6a943e0
+            \\branch_transcript_fingerprint=aafa3c45ccb1d32d
             \\baseline_final_result=final=actuate skeleton complete
             \\branch_final_result=final=branch alternate
             \\

@@ -1193,6 +1193,10 @@ test "value image scalar string product sum and policy failures" {
     defer scalar.deinit(std.testing.allocator);
     const scalar_value = try scalar.decodeValue(std.testing.allocator, i32);
     try std.testing.expectEqual(@as(i32, 42), scalar_value);
+    var literal = try world.Frame.ValueImage.fromValue(std.testing.allocator, 1, null, null, 42, .portable);
+    defer literal.deinit(std.testing.allocator);
+    const literal_value = try literal.decodeValue(std.testing.allocator, i32);
+    try std.testing.expectEqual(@as(i32, 42), literal_value);
 
     var string = try world.Frame.ValueImage.fromValue(std.testing.allocator, 2, null, null, @as([]const u8, "hello"), .portable);
     defer string.deinit(std.testing.allocator);
@@ -1243,6 +1247,18 @@ test "transcript image encode decode round trip stable and image replay works wi
     defer decoded.deinit(std.testing.allocator);
     try std.testing.expectEqual(image.transcript_image_fingerprint, decoded.transcript_image_fingerprint);
     try std.testing.expectEqual(@as(usize, 1), decoded.response_count);
+
+    var rebuilt_transcript = try world.Transcript.fromImage(std.testing.allocator, decoded);
+    defer rebuilt_transcript.deinit();
+    var rebuilt_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer rebuilt_runtime.deinit();
+    var rebuilt_replayed = try PortsMachine.run(&rebuilt_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.replay,
+        .transcript = &rebuilt_transcript,
+    });
+    defer rebuilt_replayed.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(i32, 7), rebuilt_replayed.value);
 
     var replay_runtime = boundary.Runtime.init(std.testing.allocator);
     defer replay_runtime.deinit();

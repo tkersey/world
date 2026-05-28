@@ -681,8 +681,13 @@ pub const StoredValue = struct {
         const ptr = try allocator.create(Value);
         errdefer allocator.destroy(ptr);
         ptr.* = value;
-        const portable_image = Frame.ValueImage.fromValue(allocator, null, null, null, value, .native_compatible) catch null;
-        return .{
+        var ptr_value_owned = true;
+        errdefer if (ptr_value_owned) deinitOwnedValue(allocator, ptr.*);
+        const portable_image = Frame.ValueImage.fromValue(allocator, null, null, null, value, .native_compatible) catch |err| switch (err) {
+            error.UnsupportedValueImage => null,
+            else => return err,
+        };
+        const result = @This(){
             .ptr = @ptrCast(ptr),
             .type_name = @typeName(Value),
             .portable_image = portable_image,
@@ -700,6 +705,8 @@ pub const StoredValue = struct {
                 }
             }.destroy,
         };
+        ptr_value_owned = false;
+        return result;
     }
 
     pub fn clone(self: @This(), allocator: std.mem.Allocator) !@This() {
@@ -749,6 +756,7 @@ pub const Transcript = struct {
         status: ?ResponseStatus = null,
         source_run: bool = true,
         value: ?StoredValue = null,
+        response_frame: ?Frame.Response = null,
     };
 
     pub fn init(allocator: std.mem.Allocator) @This() {
@@ -758,6 +766,7 @@ pub const Transcript = struct {
     pub fn deinit(self: *@This()) void {
         for (self.events.items) |*event| {
             if (event.value) |*stored| stored.deinit(self.allocator);
+            if (event.response_frame) |*frame| frame.deinit(self.allocator);
         }
         self.events.deinit(self.allocator);
         self.* = undefined;
@@ -770,12 +779,18 @@ pub const Transcript = struct {
             cloned.value = try stored.clone(self.allocator);
         }
         errdefer if (cloned.value) |*stored| stored.deinit(self.allocator);
+        cloned.response_frame = null;
+        if (event.response_frame) |frame| {
+            cloned.response_frame = try frame.clone(self.allocator);
+        }
+        errdefer if (cloned.response_frame) |*frame| frame.deinit(self.allocator);
         try self.events.append(self.allocator, cloned);
     }
 
     fn appendOwned(self: *@This(), event: *Event) !void {
         try self.events.append(self.allocator, event.*);
         event.value = null;
+        event.response_frame = null;
     }
 
     pub fn resetReplay(self: *@This()) void {
@@ -949,6 +964,7 @@ pub const Transcript = struct {
                 .residual_site_fingerprint = event.residual_site_fingerprint,
                 .status = event.status,
                 .source_run = event.source_run,
+                .response_frame = event.response_frame,
             });
         }
         return transcript;
@@ -2032,8 +2048,12 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         self.audit.replay_mismatch_count += 1;
                         return err;
                     };
-                    const stored = event.value orelse return Error.ReplayMissing;
-                    const value = try stored.as(self.allocator, Decl.Response);
+                    const value = if (event.value) |stored|
+                        try stored.as(self.allocator, Decl.Response)
+                    else if (event.response_frame) |frame|
+                        try frame.decodeValue(self.allocator, Decl.Response)
+                    else
+                        return Error.ReplayMissing;
                     var value_owned = true;
                     errdefer if (value_owned) deinitOwnedValue(self.allocator, value);
                     const response_trace = try typed_request.responseTrace(.@"resume", value);
@@ -2474,14 +2494,17 @@ fn eventImageFromTranscriptEvent(allocator: std.mem.Allocator, event: Transcript
     }
     errdefer if (request_frame) |*frame| frame.deinit(allocator);
 
-    var response_frame: ?Frame.Response = null;
+    var response_frame: ?Frame.Response = if (event.response_frame) |frame|
+        try frame.clone(allocator)
+    else
+        null;
     const response_status = event.status orelse if (event.kind == .port_rejected or event.kind == .frame_rejected)
         ResponseStatus.rejected
     else if (event.kind == .port_failed or event.kind == .frame_failed)
         ResponseStatus.failed
     else
         null;
-    if (event.world_port_id != null and event.request_fingerprint != null and event.response_fingerprint != null and event.response_kind != null and event.replay_key != null) {
+    if (response_frame == null and event.world_port_id != null and event.request_fingerprint != null and event.response_fingerprint != null and event.response_kind != null and event.replay_key != null) {
         const frame_status = response_status orelse .responded;
         var response_image: ?Frame.ValueImage = null;
         if (event.value) |stored| {
@@ -2824,13 +2847,20 @@ fn encodePortableValue(comptime Value: type, allocator: std.mem.Allocator, out: 
     switch (@typeInfo(Value)) {
         .void => {},
         .bool => try writeBool(out, allocator, value),
-        .int, .comptime_int => {
+        .int => {
             const info = @typeInfo(Value).int;
             if (info.bits > 64) return error.UnsupportedValueImage;
             if (info.signedness == .signed) {
                 try writeI64(out, allocator, @intCast(value));
             } else {
                 try writeU64(out, allocator, @intCast(value));
+            }
+        },
+        .comptime_int => {
+            if (value < 0) {
+                try writeI64(out, allocator, @as(i64, value));
+            } else {
+                try writeU64(out, allocator, @as(u64, value));
             }
         },
         .float, .comptime_float => {
@@ -2895,7 +2925,7 @@ fn decodePortableValue(comptime Value: type, allocator: std.mem.Allocator, bytes
     return switch (@typeInfo(Value)) {
         .void => {},
         .bool => try readBool(bytes, cursor),
-        .int, .comptime_int => blk: {
+        .int => blk: {
             const info = @typeInfo(Value).int;
             if (info.bits > 64) return error.UnsupportedValueImage;
             if (info.signedness == .signed) {
@@ -2905,6 +2935,7 @@ fn decodePortableValue(comptime Value: type, allocator: std.mem.Allocator, bytes
             const raw = try readU64(bytes, cursor);
             break :blk std.math.cast(Value, raw) orelse return error.InvalidFrameEncoding;
         },
+        .comptime_int => return error.UnsupportedValueImage,
         .float, .comptime_float => blk: {
             if (Value == f32) {
                 break :blk @as(f32, @bitCast(try readU32(bytes, cursor)));
