@@ -186,7 +186,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-transcript-image-replay",
             .desc = "Run the transcript image replay World example.",
             .expected_stdout =
-            \\transcript_image_fingerprint=81f21d9167ffdf0c
+            \\transcript_image_fingerprint=dd832a75d91f1ba1
             \\replayed_response_count=1
             \\final_result=7
             \\
@@ -210,7 +210,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-agent-timeline",
             .desc = "Run the agent timeline World example.",
             .expected_stdout =
-            \\transcript_image_fingerprint=974abdb05bbbd616
+            \\transcript_image_fingerprint=79bdce03555a1065
             \\event_count=8
             \\tool_call_count=1
             \\replay_verified=true
@@ -225,8 +225,8 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the agent branch World example.",
             .expected_stdout =
             \\checkpoint_fingerprint=7c94ef3ac64af0ba
-            \\baseline_transcript_fingerprint=974abdb05bbbd616
-            \\branch_transcript_fingerprint=6ab8d9a72468602b
+            \\baseline_transcript_fingerprint=79bdce03555a1065
+            \\branch_transcript_fingerprint=14d2d09553435494
             \\baseline_final_result=final=actuate skeleton complete
             \\branch_final_result=final=branch alternate
             \\

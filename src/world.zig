@@ -739,6 +739,9 @@ pub const Transcript = struct {
         response_fingerprint: ?u64 = null,
         response_kind: ?ResponseKind = null,
         replay_key: ?u64 = null,
+        world_surface_replay_scope_fingerprint: ?u64 = null,
+        payload_value_table_id: ?u32 = null,
+        expected_response_value_table_id: ?u32 = null,
         turn_index: ?usize = null,
         residual_site_index: ?usize = null,
         residual_site_fingerprint: ?u64 = null,
@@ -789,7 +792,7 @@ pub const Transcript = struct {
         while (self.replay_cursor < replay_limit) : (self.replay_cursor += 1) {
             const index = self.replay_cursor;
             const event = &self.events.items[index];
-            if (event.kind != .port_responded) continue;
+            if (event.kind != .port_responded and event.kind != .frame_responded) continue;
             if (event.world_surface_fingerprint != key.world_surface_fingerprint) return Error.ReplaySurfaceMismatch;
             if (event.target_certificate_fingerprint != expected_target_certificate_fingerprint) return Error.ReplayTargetCertificateMismatch;
             if ((event.world_port_id orelse return Error.ReplayPortMismatch) != key.world_port_id) return Error.ReplayPortMismatch;
@@ -808,7 +811,7 @@ pub const Transcript = struct {
         const replay_limit = self.replay_limit orelse self.events.items.len;
         var index = self.replay_cursor;
         while (index < replay_limit) : (index += 1) {
-            if (self.events.items[index].kind == .port_responded) return Error.ReplayUnusedEvent;
+            if (self.events.items[index].kind == .port_responded or self.events.items[index].kind == .frame_responded) return Error.ReplayUnusedEvent;
         }
     }
 
@@ -860,7 +863,9 @@ pub const Transcript = struct {
                     }
                     latest_run_failed = failed_source_run;
                 },
-                .port_responded => {
+                .port_responded,
+                .frame_responded,
+                => {
                     if (active_start != null) {
                         active_has_port_event = true;
                         active_has_source_response = true;
@@ -871,7 +876,6 @@ pub const Transcript = struct {
                 .port_rejected,
                 .port_failed,
                 .frame_requested,
-                .frame_responded,
                 .frame_replayed,
                 .frame_verified,
                 .frame_rejected,
@@ -936,6 +940,9 @@ pub const Transcript = struct {
                 .response_fingerprint = event.response_fingerprint,
                 .response_kind = event.response_kind,
                 .replay_key = event.replay_key,
+                .world_surface_replay_scope_fingerprint = if (event.request_frame) |frame| frame.world_surface_replay_scope_fingerprint else null,
+                .payload_value_table_id = if (event.request_frame) |frame| frame.payload_value_table_id else null,
+                .expected_response_value_table_id = if (event.request_frame) |frame| frame.expected_response_value_table_id else null,
                 .turn_index = event.turn_index,
                 .residual_site_index = event.residual_site_index,
                 .residual_site_fingerprint = event.residual_site_fingerprint,
@@ -1200,8 +1207,77 @@ pub const TranscriptImage = struct {
     pub fn validateReplayRun(self: *@This(), expected_world_surface_fingerprint: u64, expected_target_certificate_fingerprint: u64) !void {
         if (self.world_surface_fingerprint != expected_world_surface_fingerprint) return error.ReplaySurfaceMismatch;
         if (self.target_certificate_fingerprint != expected_target_certificate_fingerprint) return error.ReplayTargetCertificateMismatch;
-        self.replay_cursor = 0;
-        self.replay_limit = self.events.len;
+        var active_start: ?usize = null;
+        var selected_start: ?usize = null;
+        var selected_limit: ?usize = null;
+        var active_is_source_run = false;
+        var active_has_port_event = false;
+        var active_has_source_response = false;
+        var latest_run_failed = false;
+        for (self.events, 0..) |event, index| {
+            switch (event.kind) {
+                .run_started => {
+                    if (active_start != null) return error.ReplayMissing;
+                    if (event.world_surface_fingerprint != expected_world_surface_fingerprint) return error.ReplaySurfaceMismatch;
+                    if (event.target_certificate_fingerprint != expected_target_certificate_fingerprint) return error.ReplayTargetCertificateMismatch;
+                    active_start = index;
+                    active_is_source_run = event.source_run;
+                    active_has_port_event = false;
+                    active_has_source_response = false;
+                    latest_run_failed = true;
+                },
+                .run_completed => {
+                    const start = active_start orelse continue;
+                    if (event.world_surface_fingerprint != expected_world_surface_fingerprint) return error.ReplaySurfaceMismatch;
+                    if (event.target_certificate_fingerprint != expected_target_certificate_fingerprint) return error.ReplayTargetCertificateMismatch;
+                    if (active_is_source_run and (!active_has_port_event or active_has_source_response)) {
+                        selected_start = start;
+                        selected_limit = index;
+                    }
+                    active_start = null;
+                    latest_run_failed = false;
+                },
+                .run_failed => {
+                    if (active_start == null) continue;
+                    if (event.world_surface_fingerprint != expected_world_surface_fingerprint) return error.ReplaySurfaceMismatch;
+                    if (event.target_certificate_fingerprint != expected_target_certificate_fingerprint) return error.ReplayTargetCertificateMismatch;
+                    const failed_source_run = active_is_source_run;
+                    active_start = null;
+                    active_is_source_run = false;
+                    if (failed_source_run) {
+                        selected_start = null;
+                        selected_limit = null;
+                    }
+                    latest_run_failed = failed_source_run;
+                },
+                .port_responded,
+                .frame_responded,
+                => {
+                    if (active_start != null) {
+                        active_has_port_event = true;
+                        active_has_source_response = true;
+                    }
+                },
+                .port_requested,
+                .port_replayed,
+                .port_rejected,
+                .port_failed,
+                .frame_requested,
+                .frame_replayed,
+                .frame_verified,
+                .frame_rejected,
+                .frame_failed,
+                .checkpoint_recorded,
+                .branch_started,
+                .branch_joined,
+                => {
+                    if (active_start != null) active_has_port_event = true;
+                },
+            }
+        }
+        if (active_start != null or latest_run_failed) return error.ReplayMissing;
+        self.replay_cursor = (selected_start orelse return error.ReplayMissing) + 1;
+        self.replay_limit = selected_limit orelse return error.ReplayMissing;
     }
 
     pub fn nextResponse(
@@ -1813,7 +1889,17 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     errdefer if (value_owned) deinitOwnedValue(self.allocator, value);
                     const response_trace = try typed_request.responseTrace(.@"resume", value);
                     if (response_trace.fingerprint != response_frame.response_fingerprint) return error.VerifyResponseFingerprintMismatch;
-                    try appendPortEvent(Target, self.options, .frame_responded, Decl.world_port_id, request.trace(), response_trace.fingerprint, response_frame.response_kind, null);
+                    var stored: ?StoredValue = null;
+                    if (comptime @hasField(Options, "transcript")) {
+                        stored = try StoredValue.init(@field(self.options, "transcript").allocator, value);
+                    }
+                    defer if (stored) |*owned| {
+                        if (comptime @hasField(Options, "transcript")) {
+                            owned.deinit(@field(self.options, "transcript").allocator);
+                        }
+                    };
+                    try appendPortEvent(Target, self.options, .frame_responded, Decl.world_port_id, request.trace(), response_trace.fingerprint, response_frame.response_kind, stored);
+                    stored = null;
                     self.audit.replayed_response_count += 1;
                     try self.session.resumeTyped(typed_request, value);
                     var run_value = try StoredValue.initOwned(self.allocator, value);
@@ -2326,6 +2412,9 @@ fn appendPortEvent(
         .response_fingerprint = response_fingerprint,
         .response_kind = response_kind,
         .replay_key = if (replay_key) |key| key.fingerprint() else null,
+        .world_surface_replay_scope_fingerprint = Target.WorldSurface.replayScopeRef().fingerprint,
+        .payload_value_table_id = valueIdForRuntime(Target, world_port_id, .payload),
+        .expected_response_value_table_id = valueIdForRuntime(Target, world_port_id, .@"resume"),
         .turn_index = trace.turn_index,
         .residual_site_index = trace.operation_site_index,
         .residual_site_fingerprint = trace.operation_site_fingerprint,
@@ -2342,12 +2431,15 @@ fn eventImageFromTranscriptEvent(allocator: std.mem.Allocator, event: Transcript
             if (event.residual_site_index != null and event.residual_site_fingerprint != null and event.turn_index != null) {
                 request_frame = Frame.Request.init(.{
                     .world_surface_fingerprint = event.world_surface_fingerprint,
+                    .world_surface_replay_scope_fingerprint = event.world_surface_replay_scope_fingerprint,
                     .target_certificate_fingerprint = event.target_certificate_fingerprint,
                     .world_port_id = world_port_id,
                     .residual_site_index = event.residual_site_index.?,
                     .residual_site_fingerprint = event.residual_site_fingerprint.?,
                     .request_fingerprint = request_fingerprint,
                     .turn_index = event.turn_index.?,
+                    .payload_value_table_id = event.payload_value_table_id,
+                    .expected_response_value_table_id = event.expected_response_value_table_id,
                 });
             }
         }

@@ -481,6 +481,18 @@ test "world replay selects the latest completed transcript run" {
         defer result.deinit(std.testing.allocator);
     }
 
+    var image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer image.deinit(std.testing.allocator);
+    var image_replay_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer image_replay_runtime.deinit();
+    var image_replayed = try PortsMachine.run(&image_replay_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.replay,
+        .transcript_image = &image,
+    });
+    defer image_replayed.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(i32, 9), image_replayed.value);
+
     var replay_runtime = boundary.Runtime.init(std.testing.allocator);
     defer replay_runtime.deinit();
     var replay_ctx: PortsCtx = .{ .response = 99 };
@@ -1213,6 +1225,12 @@ test "transcript image encode decode round trip stable and image replay works wi
 
     var image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
     defer image.deinit(std.testing.allocator);
+    const image_request = for (image.events) |event| {
+        if (event.request_frame) |request| break request;
+    } else return error.ExpectedFrameRequest;
+    try std.testing.expectEqual(fixtures.Ports.Target.WorldSurface.replayScopeRef().fingerprint, image_request.world_surface_replay_scope_fingerprint.?);
+    try std.testing.expectEqual(@as(?u32, 0), image_request.payload_value_table_id);
+    try std.testing.expectEqual(@as(?u32, 1), image_request.expected_response_value_table_id);
     const encoded = try image.encode(std.testing.allocator);
     defer std.testing.allocator.free(encoded);
     var decoded = try world.TranscriptImage.decode(std.testing.allocator, encoded);
@@ -1238,9 +1256,16 @@ test "step frame nextFrame resumeFrame and verify adapter image path work" {
     try recordPortsTranscript(&transcript);
     const response_fingerprint = (try firstRespondedEvent(&transcript)).response_fingerprint.?;
 
+    var frame_transcript = world.Transcript.init(std.testing.allocator);
+    defer frame_transcript.deinit();
+
     var runtime = boundary.Runtime.init(std.testing.allocator);
     defer runtime.deinit();
-    var run = try PortsMachine.start(&runtime, .{}, .{ .allocator = std.testing.allocator, .mode = world.Mode.fresh });
+    var run = try PortsMachine.start(&runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .transcript = &frame_transcript,
+    });
     defer run.deinit();
     const step = try run.nextFrame();
     switch (step) {
@@ -1255,6 +1280,20 @@ test "step frame nextFrame resumeFrame and verify adapter image path work" {
         .done => |value| try std.testing.expectEqual(@as(i32, 7), value),
         else => return error.ExpectedDone,
     }
+    const frame_summary = frame_transcript.summary();
+    try std.testing.expectEqual(@as(usize, 1), frame_summary.frame_responded);
+
+    var frame_image = try frame_transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer frame_image.deinit(std.testing.allocator);
+    var frame_replay_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer frame_replay_runtime.deinit();
+    var frame_replayed = try PortsMachine.run(&frame_replay_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.replay,
+        .transcript_image = &frame_image,
+    });
+    defer frame_replayed.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(i32, 7), frame_replayed.value);
 
     var image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
     defer image.deinit(std.testing.allocator);
