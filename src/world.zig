@@ -1395,8 +1395,8 @@ pub const TranscriptImage = struct {
             const index = self.replay_cursor;
             const event = &self.events[index];
             if (!eventKindIsSourceResponse(event.kind)) continue;
-            const frame = if (event.response_frame) |*response_frame| response_frame else continue;
-            if (frame.status != .responded) continue;
+            const frame = if (event.response_frame) |*response_frame| response_frame else return error.ReplayMissing;
+            if (frame.status != .responded) return error.ReplayMissing;
             if (frame.world_surface_fingerprint != key.world_surface_fingerprint) return error.ReplaySurfaceMismatch;
             if (frame.target_certificate_fingerprint != expected_target_certificate_fingerprint) return error.ReplayTargetCertificateMismatch;
             if (frame.world_port_id != key.world_port_id) return error.ReplayPortMismatch;
@@ -1414,7 +1414,7 @@ pub const TranscriptImage = struct {
         const replay_limit = self.replay_limit orelse self.events.len;
         var index = self.replay_cursor;
         while (index < replay_limit) : (index += 1) {
-            if (eventKindIsSourceResponse(self.events[index].kind) and self.events[index].response_frame != null) return error.ReplayUnusedEvent;
+            if (eventKindIsSourceResponse(self.events[index].kind)) return error.ReplayUnusedEvent;
         }
     }
 
@@ -2726,6 +2726,16 @@ fn appendPortEvent(
         .request_fingerprint = trace.fingerprint,
         .response_fingerprint = fingerprint,
     } else null;
+    var cloned_request_frame: ?Frame.Request = null;
+    if (request_frame) |frame| {
+        cloned_request_frame = try frame.clone(transcript.allocator);
+    }
+    errdefer if (cloned_request_frame) |*frame| frame.deinit(transcript.allocator);
+    var cloned_response_frame: ?Frame.Response = null;
+    if (response_frame) |frame| {
+        cloned_response_frame = try frame.clone(transcript.allocator);
+    }
+    errdefer if (cloned_response_frame) |*frame| frame.deinit(transcript.allocator);
     var event = Transcript.Event{
         .kind = kind,
         .world_surface_fingerprint = Target.WorldSurface.surface_fingerprint,
@@ -2743,9 +2753,11 @@ fn appendPortEvent(
         .residual_site_fingerprint = trace.operation_site_fingerprint,
         .status = if (kind == .port_responded) .responded else null,
         .value = value,
-        .request_frame = if (request_frame) |frame| try frame.clone(transcript.allocator) else null,
-        .response_frame = if (response_frame) |frame| try frame.clone(transcript.allocator) else null,
+        .request_frame = cloned_request_frame,
+        .response_frame = cloned_response_frame,
     };
+    cloned_request_frame = null;
+    cloned_response_frame = null;
     errdefer if (event.request_frame) |*frame| frame.deinit(transcript.allocator);
     errdefer if (event.response_frame) |*frame| frame.deinit(transcript.allocator);
     try transcript.appendOwned(&event);

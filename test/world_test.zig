@@ -1332,6 +1332,45 @@ test "transcript image encode decode round trip stable and image replay works wi
         forged_image.nextResponse(image_request.replay_key_seed, fixtures.Ports.Target.Certificate.certificate_fingerprint, .@"resume"),
     );
 
+    var skipped_events = try std.testing.allocator.alloc(world.TranscriptImage.EventImage, 2);
+    errdefer std.testing.allocator.free(skipped_events);
+    var skipped_bad_response = try decoded_response.clone(std.testing.allocator);
+    var skipped_bad_owned = true;
+    errdefer if (skipped_bad_owned) skipped_bad_response.deinit(std.testing.allocator);
+    skipped_bad_response.status = .failed;
+    var skipped_good_response = try decoded_response.clone(std.testing.allocator);
+    var skipped_good_owned = true;
+    errdefer if (skipped_good_owned) skipped_good_response.deinit(std.testing.allocator);
+    skipped_events[0] = .{
+        .event_fingerprint = 0,
+        .kind = .frame_responded,
+        .world_surface_fingerprint = decoded.world_surface_fingerprint,
+        .target_certificate_fingerprint = decoded.target_certificate_fingerprint,
+        .world_port_id = skipped_bad_response.world_port_id,
+        .request_fingerprint = skipped_bad_response.request_fingerprint,
+        .response_fingerprint = skipped_bad_response.response_fingerprint,
+        .response_kind = skipped_bad_response.response_kind,
+        .replay_key = skipped_bad_response.replay_key,
+        .response_frame = skipped_bad_response,
+    };
+    skipped_bad_owned = false;
+    skipped_events[1] = skipped_events[0];
+    skipped_events[1].response_frame = skipped_good_response;
+    skipped_good_owned = false;
+    var skipped_image = world.TranscriptImage{
+        .transcript_image_fingerprint = 0,
+        .world_surface_fingerprint = decoded.world_surface_fingerprint,
+        .target_certificate_fingerprint = decoded.target_certificate_fingerprint,
+        .events = skipped_events,
+        .final_status = .completed,
+        .response_count = 2,
+    };
+    defer skipped_image.deinit(std.testing.allocator);
+    try std.testing.expectError(
+        error.ReplayMissing,
+        skipped_image.nextResponse(image_request.replay_key_seed, fixtures.Ports.Target.Certificate.certificate_fingerprint, .@"resume"),
+    );
+
     var forged_header: [49]u8 = undefined;
     std.mem.writeInt(u32, forged_header[0..4], world.world_transcript_image_format_version, .little);
     std.mem.writeInt(u32, forged_header[4..8], world.world_transcript_image_fingerprint_version, .little);
