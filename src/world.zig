@@ -2688,6 +2688,17 @@ fn validateValueImage(image: Frame.ValueImage) !void {
     if (expected != image.value_image_fingerprint) return error.InvalidFrameEncoding;
 }
 
+fn validateValueImagePolicy(image: Frame.ValueImage, policy: ValuePolicy) !void {
+    if (policy.max_value_image_bytes) |max| {
+        if (image.bytes.len > max) return error.UnsupportedValueImage;
+    }
+    if (!policy.allow_diagnostic_type_labels and image.diagnostic_type_label != null) return error.UnsupportedValueImage;
+}
+
+fn validateRequestFramePolicy(frame: Frame.Request, policy: ValuePolicy) !void {
+    if (frame.payload_image) |image| try validateValueImagePolicy(image, policy);
+}
+
 fn validateResponseFramePolicy(frame: Frame.Response, policy: ValuePolicy) !void {
     if (frame.status != .responded) return;
     const image = frame.response_image orelse {
@@ -2695,10 +2706,7 @@ fn validateResponseFramePolicy(frame: Frame.Response, policy: ValuePolicy) !void
         if (policy.require_portable_values and !policy.allow_native_only_values) return error.NativeOnlyValue;
         return;
     };
-    if (policy.max_value_image_bytes) |max| {
-        if (image.bytes.len > max) return error.UnsupportedValueImage;
-    }
-    if (!policy.allow_diagnostic_type_labels and image.diagnostic_type_label != null) return error.UnsupportedValueImage;
+    try validateValueImagePolicy(image, policy);
 }
 
 fn validateTranscriptEventFrameBindings(event: TranscriptImage.EventImage) !void {
@@ -2857,6 +2865,7 @@ fn eventImageFromTranscriptEvent(allocator: std.mem.Allocator, event: Transcript
         }
     }
     errdefer if (request_frame) |*frame| frame.deinit(allocator);
+    if (request_frame) |frame| try validateRequestFramePolicy(frame, policy);
 
     var response_frame: ?Frame.Response = if (event.response_frame) |frame|
         try frame.clone(allocator)
@@ -2944,6 +2953,7 @@ fn finalStatusFromEvents(events: []const TranscriptImage.EventImage) TranscriptI
     var status: TranscriptImage.FinalStatus = .running;
     for (events) |event| {
         switch (event.kind) {
+            .run_started => status = .running,
             .run_completed => status = .completed,
             .run_failed => status = .failed,
             else => {},

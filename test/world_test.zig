@@ -1929,6 +1929,42 @@ test "transcript image applies value policy to stored response frames" {
     try std.testing.expectError(error.UnsupportedValueImage, transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy{ .max_value_image_bytes = 1 } }));
 }
 
+test "transcript image applies value policy to stored request frames" {
+    var payload_image = try world.Frame.ValueImage.fromValue(std.testing.allocator, 0, null, null, @as([]const u8, "deploy-prod"), world.ValuePolicy.native_compatible);
+    var request = world.Frame.Request.init(.{
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .world_surface_replay_scope_fingerprint = fixtures.Ports.Target.WorldSurface.replayScopeRef().fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .world_port_id = 0,
+        .residual_site_index = fixtures.Ports.ApprovalRequest.index,
+        .residual_site_fingerprint = fixtures.Ports.ApprovalRequest.fingerprint,
+        .request_fingerprint = 0xabc0_ffee,
+        .turn_index = 3,
+        .payload_value_table_id = 0,
+        .expected_response_value_table_id = 1,
+        .payload_image = payload_image,
+    });
+    payload_image = undefined;
+    defer request.deinit(std.testing.allocator);
+    try std.testing.expect(request.payload_image.?.diagnostic_type_label != null);
+
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    try transcript.append(.{
+        .kind = .frame_requested,
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .target_certificate_fingerprint = request.target_certificate_fingerprint,
+        .world_port_id = request.world_port_id,
+        .request_fingerprint = request.request_fingerprint,
+        .turn_index = request.turn_index,
+        .residual_site_index = request.residual_site_index,
+        .residual_site_fingerprint = request.residual_site_fingerprint,
+        .request_frame = request,
+    });
+    try std.testing.expectError(error.UnsupportedValueImage, transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable }));
+    try std.testing.expectError(error.UnsupportedValueImage, transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy{ .max_value_image_bytes = 1 } }));
+}
+
 test "native compatible transcript image omits unsupported response value images" {
     const request = testRequestFrame();
     var stored = try world.StoredValue.init(std.testing.allocator, @as(f16, 1.5));
@@ -1964,6 +2000,36 @@ test "native compatible transcript image omits unsupported response value images
     }, image);
     try std.testing.expectEqual(@as(usize, 0), audit.missing_portable_value_image_count);
     try std.testing.expectEqual(@as(usize, 1), audit.native_only_value_count);
+}
+
+test "transcript image final status resets on later run start" {
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    try transcript.append(.{
+        .kind = .run_started,
+        .world_surface_fingerprint = fixtures.Strict.Target.WorldSurface.surface_fingerprint,
+        .target_certificate_fingerprint = fixtures.Strict.Target.Certificate.certificate_fingerprint,
+    });
+    try transcript.append(.{
+        .kind = .run_completed,
+        .world_surface_fingerprint = fixtures.Strict.Target.WorldSurface.surface_fingerprint,
+        .target_certificate_fingerprint = fixtures.Strict.Target.Certificate.certificate_fingerprint,
+    });
+    try transcript.append(.{
+        .kind = .run_started,
+        .world_surface_fingerprint = fixtures.Strict.Target.WorldSurface.surface_fingerprint,
+        .target_certificate_fingerprint = fixtures.Strict.Target.Certificate.certificate_fingerprint,
+    });
+
+    var image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer image.deinit(std.testing.allocator);
+    try std.testing.expectEqual(world.TranscriptImage.FinalStatus.running, image.final_status);
+
+    const encoded = try image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(encoded);
+    var decoded = try world.TranscriptImage.decode(std.testing.allocator, encoded);
+    defer decoded.deinit(std.testing.allocator);
+    try std.testing.expectEqual(world.TranscriptImage.FinalStatus.running, decoded.final_status);
 }
 
 test "timeline event checkpoint branch and audit image fingerprints are stable" {
