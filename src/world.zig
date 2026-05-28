@@ -128,6 +128,7 @@ pub const world_timeline_branch_fingerprint_version: u32 = 1;
 pub const world_audit_image_format_version: u32 = 1;
 pub const world_audit_image_fingerprint_version: u32 = 1;
 pub const world_max_decoded_byte_field_len: usize = 16 * 1024 * 1024;
+const world_min_transcript_event_image_encoded_len: usize = 8 + 1 + 8 + 8 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1;
 
 pub const ValuePolicy = struct {
     require_portable_values: bool = false,
@@ -1448,7 +1449,7 @@ pub const TranscriptImage = struct {
         const final_status = try enumFromByte(FinalStatus, try readU8(bytes, &cursor));
         const response_count = try readU64AsUsize(bytes, &cursor);
         const event_count = try readU64AsUsize(bytes, &cursor);
-        if (event_count > bytes.len - cursor) return error.InvalidFrameEncoding;
+        if (event_count > (bytes.len - cursor) / world_min_transcript_event_image_encoded_len) return error.InvalidFrameEncoding;
         const events = try allocator.alloc(EventImage, event_count);
         errdefer allocator.free(events);
         var initialized: usize = 0;
@@ -1529,14 +1530,20 @@ pub const AuditImage = struct {
             .target_certificate_fingerprint = report.target_certificate_fingerprint,
             .mode = report.mode,
             .final_status = report.final_status,
-            .request_frame_count = report.port_request_count,
-            .response_frame_count = report.fresh_response_count + report.replayed_response_count,
-            .replayed_frame_count = report.replayed_response_count,
-            .failed_frame_count = report.failed_count,
             .transcript_image_fingerprint = if (transcript_image) |image_source| image_source.transcript_image_fingerprint else null,
         };
         if (transcript_image) |image_source| {
             for (image_source.events) |event| {
+                if ((event.kind == .port_requested or event.kind == .frame_requested) and event.request_frame != null) {
+                    image.request_frame_count += 1;
+                }
+                if (eventKindAllowsResponseFrame(event.kind)) {
+                    if (event.response_frame) |frame| {
+                        image.response_frame_count += 1;
+                        if (event.kind == .port_replayed or event.kind == .frame_replayed) image.replayed_frame_count += 1;
+                        if (frame.status == .failed) image.failed_frame_count += 1;
+                    }
+                }
                 if (event.kind == .frame_verified) image.verified_frame_count += 1;
                 if (event.kind == .checkpoint_recorded) image.checkpoint_count += 1;
                 if (event.kind == .branch_started) image.branch_count += 1;
@@ -1548,6 +1555,11 @@ pub const AuditImage = struct {
                     }
                 }
             }
+        } else {
+            image.request_frame_count = report.port_request_count;
+            image.response_frame_count = report.fresh_response_count + report.replayed_response_count;
+            image.replayed_frame_count = report.replayed_response_count;
+            image.failed_frame_count = report.failed_count;
         }
         image.audit_fingerprint = fingerprintAuditImage(image);
         return image;

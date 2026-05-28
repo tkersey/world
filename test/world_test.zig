@@ -1487,6 +1487,13 @@ test "transcript image encode decode round trip stable and image replay works wi
     std.mem.writeInt(u64, forged_header[41..49], 1, .little);
     try std.testing.expectError(error.InvalidFrameEncoding, world.TranscriptImage.decode(std.testing.allocator, &forged_header));
 
+    var capped_event_header = [_]u8{0} ** (49 + 64);
+    std.mem.writeInt(u32, capped_event_header[0..4], world.world_transcript_image_format_version, .little);
+    std.mem.writeInt(u32, capped_event_header[4..8], world.world_transcript_image_fingerprint_version, .little);
+    capped_event_header[32] = @intFromEnum(world.TranscriptImage.FinalStatus.running);
+    std.mem.writeInt(u64, capped_event_header[41..49], 64, .little);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.TranscriptImage.decode(std.testing.allocator, &capped_event_header));
+
     var rebuilt_transcript = try world.Transcript.fromImage(std.testing.allocator, decoded);
     defer rebuilt_transcript.deinit();
     var rebuilt_runtime = boundary.Runtime.init(std.testing.allocator);
@@ -1689,7 +1696,10 @@ test "step frame nextFrame resumeFrame and verify adapter image path work" {
     var frame_verify_record_image = try frame_verify_transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
     defer frame_verify_record_image.deinit(std.testing.allocator);
     const frame_verify_audit = world.AuditImage.fromReport(frame_verify_recorded.audit, frame_verify_record_image);
+    try std.testing.expectEqual(@as(usize, 1), frame_verify_audit.response_frame_count);
+    try std.testing.expectEqual(@as(usize, 0), frame_verify_audit.replayed_frame_count);
     try std.testing.expectEqual(@as(usize, 1), frame_verify_audit.verified_frame_count);
+    try std.testing.expectEqual(@as(usize, 0), frame_verify_audit.failed_frame_count);
 
     var image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
     defer image.deinit(std.testing.allocator);
@@ -1790,6 +1800,9 @@ test "rejected and failed frame responses record terminal transcript state" {
         .final_status = .failed,
         .failed_count = 2,
     }, image);
+    try std.testing.expectEqual(@as(usize, 2), audit.request_frame_count);
+    try std.testing.expectEqual(@as(usize, 2), audit.response_frame_count);
+    try std.testing.expectEqual(@as(usize, 1), audit.failed_frame_count);
     try std.testing.expectEqual(@as(usize, 0), audit.missing_portable_value_image_count);
 }
 
@@ -1966,7 +1979,8 @@ test "world timeline port frame byte adapter native adapter replay adapter agent
     try std.testing.expectEqual(response.frame_fingerprint, decoded_response.frame_fingerprint);
 
     const audit_image = world.AuditImage.fromReport(replayed.audit, image);
-    try std.testing.expectEqual(@as(usize, 1), audit_image.replayed_frame_count);
+    try std.testing.expectEqual(@as(usize, 1), audit_image.response_frame_count);
+    try std.testing.expectEqual(@as(usize, 0), audit_image.replayed_frame_count);
     try std.testing.expect(audit_image.audit_fingerprint != 0);
 }
 
