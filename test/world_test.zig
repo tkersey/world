@@ -1359,6 +1359,29 @@ test "transcript image encode decode round trip stable and image replay works wi
     defer transcript.deinit();
     try recordPortsTranscript(&transcript);
 
+    {
+        var mixed_surface = world.Transcript.init(std.testing.allocator);
+        defer mixed_surface.deinit();
+        try recordPortsTranscript(&mixed_surface);
+        try mixed_surface.append(.{
+            .kind = .checkpoint_recorded,
+            .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint + 1,
+            .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        });
+        try std.testing.expectError(error.SurfaceMismatch, mixed_surface.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable }));
+    }
+    {
+        var mixed_target = world.Transcript.init(std.testing.allocator);
+        defer mixed_target.deinit();
+        try recordPortsTranscript(&mixed_target);
+        try mixed_target.append(.{
+            .kind = .checkpoint_recorded,
+            .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+            .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint + 1,
+        });
+        try std.testing.expectError(error.TargetCertificateMismatch, mixed_target.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable }));
+    }
+
     var image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
     defer image.deinit(std.testing.allocator);
     var stale_replay_image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });

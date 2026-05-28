@@ -1288,10 +1288,16 @@ pub const TranscriptImage = struct {
             initialized += 1;
             if (events[index].response_frame != null) response_count += 1;
         }
+        const world_surface_fingerprint = if (events.len > 0) events[0].world_surface_fingerprint else 0;
+        const target_certificate_fingerprint = if (events.len > 0) events[0].target_certificate_fingerprint else 0;
+        for (events) |event| {
+            if (event.world_surface_fingerprint != world_surface_fingerprint) return error.SurfaceMismatch;
+            if (event.target_certificate_fingerprint != target_certificate_fingerprint) return error.TargetCertificateMismatch;
+        }
         var image = @This(){
             .transcript_image_fingerprint = 0,
-            .world_surface_fingerprint = if (events.len > 0) events[0].world_surface_fingerprint else 0,
-            .target_certificate_fingerprint = if (events.len > 0) events[0].target_certificate_fingerprint else 0,
+            .world_surface_fingerprint = world_surface_fingerprint,
+            .target_certificate_fingerprint = target_certificate_fingerprint,
             .events = events,
             .final_status = finalStatusFromEvents(events),
             .response_count = response_count,
