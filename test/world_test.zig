@@ -1095,6 +1095,292 @@ test "world transcript replay key and summary counts are deterministic" {
     try std.testing.expectEqual(@as(usize, 1), summary.run_completed);
 }
 
+fn testRequestFrame() world.Frame.Request {
+    return world.Frame.Request.init(.{
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .world_surface_replay_scope_fingerprint = fixtures.Ports.Target.WorldSurface.replayScopeRef().fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .world_port_id = 0,
+        .residual_site_index = fixtures.Ports.ApprovalRequest.index,
+        .residual_site_fingerprint = fixtures.Ports.ApprovalRequest.fingerprint,
+        .request_fingerprint = 0xabc0_ffee,
+        .turn_index = 3,
+        .payload_value_table_id = 0,
+        .expected_response_value_table_id = 1,
+    });
+}
+
+test "request frame fingerprint stable and encodes canonical bytes" {
+    const request = testRequestFrame();
+    const again = testRequestFrame();
+    try std.testing.expectEqual(request.frame_fingerprint, again.frame_fingerprint);
+    try std.testing.expectEqual(fixtures.Ports.Target.WorldSurface.surface_fingerprint, request.world_surface_fingerprint);
+    try std.testing.expectEqual(fixtures.Ports.Target.Certificate.certificate_fingerprint, request.target_certificate_fingerprint);
+    try std.testing.expectEqual(@as(u32, 0), request.world_port_id);
+    try std.testing.expectEqual(@as(u64, 0xabc0_ffee), request.request_fingerprint);
+
+    const encoded = try request.encode(std.testing.allocator);
+    defer std.testing.allocator.free(encoded);
+    var decoded = try world.Frame.Request.decode(std.testing.allocator, encoded);
+    defer decoded.deinit(std.testing.allocator);
+    try std.testing.expectEqual(request.frame_fingerprint, decoded.frame_fingerprint);
+
+    const with_junk = try std.testing.allocator.alloc(u8, encoded.len + 1);
+    defer std.testing.allocator.free(with_junk);
+    @memcpy(with_junk[0..encoded.len], encoded);
+    with_junk[encoded.len] = 0;
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Frame.Request.decode(std.testing.allocator, with_junk));
+}
+
+test "response frame status rejected failed and canonical bytes" {
+    const request = testRequestFrame();
+    var response = try world.Frame.Response.fromValue(std.testing.allocator, request, 1, 0xdec1_5100, .@"resume", @as(i32, 7), .portable);
+    defer response.deinit(std.testing.allocator);
+    try std.testing.expectEqual(world.ResponseStatus.responded, response.status);
+    try std.testing.expectEqual(request.request_fingerprint, response.request_fingerprint);
+    try std.testing.expectEqual(@as(u32, 0), response.world_port_id);
+
+    const encoded = try response.encode(std.testing.allocator);
+    defer std.testing.allocator.free(encoded);
+    var decoded = try world.Frame.Response.decode(std.testing.allocator, encoded);
+    defer decoded.deinit(std.testing.allocator);
+    try std.testing.expectEqual(response.frame_fingerprint, decoded.frame_fingerprint);
+    const decoded_value = try decoded.decodeValue(std.testing.allocator, i32);
+    try std.testing.expectEqual(@as(i32, 7), decoded_value);
+
+    const rejected = world.Frame.Response.init(.{
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .target_certificate_fingerprint = request.target_certificate_fingerprint,
+        .world_port_id = request.world_port_id,
+        .request_fingerprint = request.request_fingerprint,
+        .response_fingerprint = 0,
+        .replay_key = request.replay_key_seed.withResponse(0).fingerprint(),
+        .status = .rejected,
+    });
+    try std.testing.expectEqual(world.ResponseStatus.rejected, rejected.status);
+    const failed = world.Frame.Response.init(.{
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .target_certificate_fingerprint = request.target_certificate_fingerprint,
+        .world_port_id = request.world_port_id,
+        .request_fingerprint = request.request_fingerprint,
+        .response_fingerprint = 1,
+        .replay_key = request.replay_key_seed.withResponse(1).fingerprint(),
+        .status = .failed,
+    });
+    try std.testing.expectEqual(world.ResponseStatus.failed, failed.status);
+}
+
+test "value image scalar string product sum and policy failures" {
+    var scalar = try world.Frame.ValueImage.fromValue(std.testing.allocator, 1, null, null, @as(i32, 42), .portable);
+    defer scalar.deinit(std.testing.allocator);
+    const scalar_value = try scalar.decodeValue(std.testing.allocator, i32);
+    try std.testing.expectEqual(@as(i32, 42), scalar_value);
+
+    var string = try world.Frame.ValueImage.fromValue(std.testing.allocator, 2, null, null, @as([]const u8, "hello"), .portable);
+    defer string.deinit(std.testing.allocator);
+    const decoded_string = try string.decodeValue(std.testing.allocator, []const u8);
+    defer std.testing.allocator.free(decoded_string);
+    try std.testing.expectEqualStrings("hello", decoded_string);
+
+    const Product = struct { count: i32, label: []const u8 };
+    var product = try world.Frame.ValueImage.fromValue(std.testing.allocator, 3, null, null, Product{ .count = 2, .label = @as([]const u8, "ok") }, .portable);
+    defer product.deinit(std.testing.allocator);
+    const decoded_product = try product.decodeValue(std.testing.allocator, Product);
+    defer std.testing.allocator.free(decoded_product.label);
+    try std.testing.expectEqual(@as(i32, 2), decoded_product.count);
+    try std.testing.expectEqualStrings("ok", decoded_product.label);
+
+    var sum = try world.Frame.ValueImage.fromValue(std.testing.allocator, 4, null, null, fixtures.Agent.Action{ .tool = @as([]const u8, "read") }, .portable);
+    defer sum.deinit(std.testing.allocator);
+    const decoded_sum = try sum.decodeValue(std.testing.allocator, fixtures.Agent.Action);
+    switch (decoded_sum) {
+        .tool => |tool_name| {
+            defer std.testing.allocator.free(tool_name);
+            try std.testing.expectEqualStrings("read", tool_name);
+        },
+        else => return error.ExpectedToolAction,
+    }
+
+    var native_only: i32 = 1;
+    try std.testing.expectError(error.UnsupportedValueImage, world.Frame.ValueImage.fromValue(std.testing.allocator, null, null, null, &native_only, .portable));
+    try std.testing.expectError(error.UnsupportedValueImage, world.Frame.ValueImage.fromValue(std.testing.allocator, null, null, null, @as([]const u8, "too-big"), .{ .max_value_image_bytes = 1 }));
+}
+
+test "transcript image encode decode round trip stable and image replay works without handlers" {
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    try recordPortsTranscript(&transcript);
+
+    var image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer image.deinit(std.testing.allocator);
+    const encoded = try image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(encoded);
+    var decoded = try world.TranscriptImage.decode(std.testing.allocator, encoded);
+    defer decoded.deinit(std.testing.allocator);
+    try std.testing.expectEqual(image.transcript_image_fingerprint, decoded.transcript_image_fingerprint);
+    try std.testing.expectEqual(@as(usize, 1), decoded.response_count);
+
+    var replay_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer replay_runtime.deinit();
+    var replayed = try PortsMachine.run(&replay_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.replay,
+        .transcript_image = &decoded,
+    });
+    defer replayed.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(i32, 7), replayed.value);
+    try std.testing.expectEqual(@as(usize, 1), replayed.audit.replayed_response_count);
+}
+
+test "step frame nextFrame resumeFrame and verify adapter image path work" {
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    try recordPortsTranscript(&transcript);
+    const response_fingerprint = (try firstRespondedEvent(&transcript)).response_fingerprint.?;
+
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var run = try PortsMachine.start(&runtime, .{}, .{ .allocator = std.testing.allocator, .mode = world.Mode.fresh });
+    defer run.deinit();
+    const step = try run.nextFrame();
+    switch (step) {
+        .port_request => |request| {
+            var response = try world.Frame.Response.fromValue(std.testing.allocator, request, 1, response_fingerprint, .@"resume", @as(i32, 7), .portable);
+            defer response.deinit(std.testing.allocator);
+            try run.resumeFrame(response);
+        },
+        else => return error.ExpectedFrameRequest,
+    }
+    switch (try run.nextFrame()) {
+        .done => |value| try std.testing.expectEqual(@as(i32, 7), value),
+        else => return error.ExpectedDone,
+    }
+
+    var image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer image.deinit(std.testing.allocator);
+    var verify_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer verify_runtime.deinit();
+    var verify_ctx: PortsCtx = .{};
+    var verified = try PortsMachine.run(&verify_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.verify,
+        .ctx = &verify_ctx,
+        .transcript_image = &image,
+    });
+    defer verified.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(i32, 7), verified.value);
+    try std.testing.expectEqual(@as(usize, 1), verify_ctx.calls);
+}
+
+test "timeline event checkpoint branch and audit image fingerprints are stable" {
+    const request = testRequestFrame();
+    var response = try world.Frame.Response.fromValue(std.testing.allocator, request, 1, 0xdec1_5100, .@"resume", @as(i32, 7), .portable);
+    defer response.deinit(std.testing.allocator);
+
+    const event = world.Timeline.Event.init(.{
+        .kind = .frame_responded,
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .target_certificate_fingerprint = request.target_certificate_fingerprint,
+        .request_frame_fingerprint = request.frame_fingerprint,
+        .response_frame_fingerprint = response.frame_fingerprint,
+        .replay_key = response.replay_key,
+        .turn_index = request.turn_index,
+        .status = .responded,
+    });
+    const same_event = world.Timeline.Event.init(.{
+        .kind = .frame_responded,
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .target_certificate_fingerprint = request.target_certificate_fingerprint,
+        .request_frame_fingerprint = request.frame_fingerprint,
+        .response_frame_fingerprint = response.frame_fingerprint,
+        .replay_key = response.replay_key,
+        .turn_index = request.turn_index,
+        .status = .responded,
+    });
+    try std.testing.expectEqual(event.event_fingerprint, same_event.event_fingerprint);
+
+    const checkpoint = world.Timeline.Checkpoint.init(.{
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .target_certificate_fingerprint = request.target_certificate_fingerprint,
+        .event_index = 1,
+        .turn_index = request.turn_index,
+        .current_request_fingerprint = request.request_fingerprint,
+        .last_response_fingerprint = response.response_fingerprint,
+        .transcript_prefix_fingerprint = event.event_fingerprint,
+        .branch_id = 10,
+        .status = .parked_on_port,
+    });
+    const branch = world.Timeline.Branch{
+        .branch_id = 11,
+        .parent_branch_id = 10,
+        .checkpoint_fingerprint = checkpoint.checkpoint_fingerprint,
+        .branch_label = "alternate approval",
+        .start_event_index = 1,
+        .final_event_index = 3,
+        .final_status = .completed,
+        .event_count = 2,
+        .response_count = 1,
+    };
+    try std.testing.expect(branch.fingerprint() != checkpoint.checkpoint_fingerprint);
+
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    try recordPortsTranscript(&transcript);
+    var image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer image.deinit(std.testing.allocator);
+
+    const audit = world.AuditReport{
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .mode = .fresh,
+        .final_status = .completed,
+        .port_request_count = 1,
+        .fresh_response_count = 1,
+    };
+    const audit_image = world.AuditImage.fromReport(audit, image);
+    try std.testing.expectEqual(image.transcript_image_fingerprint, audit_image.transcript_image_fingerprint.?);
+    try std.testing.expectEqual(@as(usize, 1), audit_image.request_frame_count);
+    try std.testing.expect(audit_image.audit_fingerprint != 0);
+}
+
+test "world timeline port frame byte adapter native adapter replay adapter agent timeline agent branch audit counts" {
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    try recordPortsTranscript(&transcript);
+    const response_fingerprint = (try firstRespondedEvent(&transcript)).response_fingerprint.?;
+
+    var image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer image.deinit(std.testing.allocator);
+    try std.testing.expect(image.transcript_image_fingerprint != 0);
+
+    var replay_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer replay_runtime.deinit();
+    var replayed = try PortsMachine.run(&replay_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.replay,
+        .transcript_image = &image,
+    });
+    defer replayed.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(i32, 7), replayed.value);
+
+    const request = testRequestFrame();
+    const request_bytes = try request.encode(std.testing.allocator);
+    defer std.testing.allocator.free(request_bytes);
+    var decoded_request = try world.Frame.Request.decode(std.testing.allocator, request_bytes);
+    defer decoded_request.deinit(std.testing.allocator);
+    var response = try world.Frame.Response.fromValue(std.testing.allocator, decoded_request, 1, response_fingerprint, .@"resume", @as(i32, 7), .portable);
+    defer response.deinit(std.testing.allocator);
+    const response_bytes = try response.encode(std.testing.allocator);
+    defer std.testing.allocator.free(response_bytes);
+    var decoded_response = try world.Frame.Response.decode(std.testing.allocator, response_bytes);
+    defer decoded_response.deinit(std.testing.allocator);
+    try std.testing.expectEqual(response.frame_fingerprint, decoded_response.frame_fingerprint);
+
+    const audit_image = world.AuditImage.fromReport(replayed.audit, image);
+    try std.testing.expectEqual(@as(usize, 1), audit_image.replayed_frame_count);
+    try std.testing.expect(audit_image.audit_fingerprint != 0);
+}
+
 test "world transcript stores string-list values for replay" {
     const response_fingerprint = @as(u64, 0x123);
     const key = world.ReplayKeySeed{

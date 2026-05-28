@@ -30,6 +30,18 @@ pub const Error = error{
     HandlerFailed,
     UnsupportedAfterRequest,
     InvalidMode,
+    UnsupportedValueImage,
+    NativeOnlyValue,
+    MissingValueImage,
+    InvalidFrameEncoding,
+    FrameSurfaceMismatch,
+    FrameTargetCertificateMismatch,
+    FramePortMismatch,
+    FrameRequestFingerprintMismatch,
+    VerifyMissingExpected,
+    VerifyResponseKindMismatch,
+    VerifyResponseFingerprintMismatch,
+    VerifyValueImageMismatch,
     OutOfMemory,
 };
 
@@ -52,6 +64,15 @@ pub const EventKind = enum {
     port_replayed,
     port_rejected,
     port_failed,
+    frame_requested,
+    frame_responded,
+    frame_replayed,
+    frame_verified,
+    frame_rejected,
+    frame_failed,
+    checkpoint_recorded,
+    branch_started,
+    branch_joined,
     run_completed,
     run_failed,
 };
@@ -89,9 +110,562 @@ pub const ReplayKeySeed = struct {
     }
 };
 
+pub const world_frame_request_format_version: u32 = 1;
+pub const world_frame_request_fingerprint_version: u32 = 1;
+pub const world_frame_response_format_version: u32 = 1;
+pub const world_frame_response_fingerprint_version: u32 = 1;
+pub const world_frame_value_image_format_version: u32 = 1;
+pub const world_frame_value_image_fingerprint_version: u32 = 1;
+pub const world_transcript_image_format_version: u32 = 1;
+pub const world_transcript_image_fingerprint_version: u32 = 1;
+pub const world_timeline_event_format_version: u32 = 1;
+pub const world_timeline_event_fingerprint_version: u32 = 1;
+pub const world_timeline_checkpoint_format_version: u32 = 1;
+pub const world_timeline_checkpoint_fingerprint_version: u32 = 1;
+pub const world_timeline_branch_format_version: u32 = 1;
+pub const world_timeline_branch_fingerprint_version: u32 = 1;
+pub const world_audit_image_format_version: u32 = 1;
+pub const world_audit_image_fingerprint_version: u32 = 1;
+
+pub const ValuePolicy = struct {
+    require_portable_values: bool = false,
+    allow_native_only_values: bool = true,
+    require_response_images_for_replay: bool = false,
+    allow_diagnostic_type_labels: bool = true,
+    max_value_image_bytes: ?usize = null,
+
+    pub const portable = ValuePolicy{
+        .require_portable_values = true,
+        .allow_native_only_values = false,
+        .require_response_images_for_replay = true,
+        .allow_diagnostic_type_labels = false,
+    };
+
+    pub const native_compatible = ValuePolicy{};
+
+    pub const audit_only = ValuePolicy{
+        .require_portable_values = false,
+        .allow_native_only_values = true,
+        .require_response_images_for_replay = false,
+        .allow_diagnostic_type_labels = true,
+    };
+};
+
+pub const Frame = struct {
+    pub const Status = ResponseStatus;
+    pub const Error = error{
+        UnsupportedValueImage,
+        NativeOnlyValue,
+        MissingValueImage,
+        InvalidFrameEncoding,
+        FrameSurfaceMismatch,
+        FrameTargetCertificateMismatch,
+        FramePortMismatch,
+        FrameRequestFingerprintMismatch,
+        VerifyMissingExpected,
+        VerifyResponseKindMismatch,
+        VerifyResponseFingerprintMismatch,
+        VerifyValueImageMismatch,
+        OutOfMemory,
+    };
+
+    pub const Codec = struct {
+        pub const reject_trailing_junk = true;
+    };
+
+    pub const ValueImage = struct {
+        format_version: u32 = world_frame_value_image_format_version,
+        fingerprint_version: u32 = world_frame_value_image_fingerprint_version,
+        value_image_fingerprint: u64,
+        value_table_id: ?u32 = null,
+        boundary_value_fingerprint: ?u64 = null,
+        codec_schema_descriptor_fingerprint: ?u64 = null,
+        bytes: []const u8,
+        dynamic_size: bool = false,
+        diagnostic_type_label: ?[]const u8 = null,
+
+        pub fn fromValue(
+            allocator: std.mem.Allocator,
+            value_table_id: ?u32,
+            boundary_value_fingerprint: ?u64,
+            codec_schema_descriptor_fingerprint: ?u64,
+            value: anytype,
+            policy: ValuePolicy,
+        ) !@This() {
+            var bytes: std.ArrayList(u8) = .empty;
+            errdefer bytes.deinit(allocator);
+            try encodePortableValue(@TypeOf(value), allocator, &bytes, value);
+            if (policy.max_value_image_bytes) |max| {
+                if (bytes.items.len > max) return error.UnsupportedValueImage;
+            }
+            const owned_bytes = try bytes.toOwnedSlice(allocator);
+            errdefer allocator.free(owned_bytes);
+            const label = if (policy.allow_diagnostic_type_labels)
+                try allocator.dupe(u8, @typeName(@TypeOf(value)))
+            else
+                null;
+            errdefer if (label) |owned_label| allocator.free(owned_label);
+            return .{
+                .value_image_fingerprint = fingerprintValueImage(
+                    value_table_id,
+                    boundary_value_fingerprint,
+                    codec_schema_descriptor_fingerprint,
+                    owned_bytes,
+                ),
+                .value_table_id = value_table_id,
+                .boundary_value_fingerprint = boundary_value_fingerprint,
+                .codec_schema_descriptor_fingerprint = codec_schema_descriptor_fingerprint,
+                .bytes = owned_bytes,
+                .dynamic_size = valueIsDynamic(@TypeOf(value)),
+                .diagnostic_type_label = label,
+            };
+        }
+
+        pub fn clone(self: @This(), allocator: std.mem.Allocator) !@This() {
+            const bytes = try allocator.dupe(u8, self.bytes);
+            errdefer allocator.free(bytes);
+            const label = if (self.diagnostic_type_label) |diagnostic|
+                try allocator.dupe(u8, diagnostic)
+            else
+                null;
+            errdefer if (label) |owned| allocator.free(owned);
+            var result = self;
+            result.bytes = bytes;
+            result.diagnostic_type_label = label;
+            return result;
+        }
+
+        pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+            allocator.free(self.bytes);
+            if (self.diagnostic_type_label) |label| allocator.free(label);
+            self.* = undefined;
+        }
+
+        pub fn decodeValue(self: @This(), allocator: std.mem.Allocator, comptime Value: type) !Value {
+            var cursor: usize = 0;
+            const value = try decodePortableValue(Value, allocator, self.bytes, &cursor);
+            errdefer deinitOwnedValue(allocator, value);
+            if (cursor != self.bytes.len) return error.InvalidFrameEncoding;
+            return value;
+        }
+
+        pub fn encode(self: @This(), allocator: std.mem.Allocator) ![]const u8 {
+            var out: std.ArrayList(u8) = .empty;
+            errdefer out.deinit(allocator);
+            try writeU32(&out, allocator, self.format_version);
+            try writeU32(&out, allocator, self.fingerprint_version);
+            try writeU64(&out, allocator, self.value_image_fingerprint);
+            try writeOptionalU32(&out, allocator, self.value_table_id);
+            try writeOptionalU64(&out, allocator, self.boundary_value_fingerprint);
+            try writeOptionalU64(&out, allocator, self.codec_schema_descriptor_fingerprint);
+            try writeBool(&out, allocator, self.dynamic_size);
+            try writeBytes(&out, allocator, self.bytes);
+            try writeOptionalBytes(&out, allocator, self.diagnostic_type_label);
+            return out.toOwnedSlice(allocator);
+        }
+
+        pub fn decode(allocator: std.mem.Allocator, bytes: []const u8) !@This() {
+            var cursor: usize = 0;
+            const result = try decodeFrom(allocator, bytes, &cursor);
+            errdefer {
+                var owned = result;
+                owned.deinit(allocator);
+            }
+            if (cursor != bytes.len) return error.InvalidFrameEncoding;
+            return result;
+        }
+
+        fn decodeFrom(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) !@This() {
+            const format_version = try readU32(bytes, cursor);
+            if (format_version != world_frame_value_image_format_version) return error.InvalidFrameEncoding;
+            const fingerprint_version = try readU32(bytes, cursor);
+            if (fingerprint_version != world_frame_value_image_fingerprint_version) return error.InvalidFrameEncoding;
+            const value_image_fingerprint = try readU64(bytes, cursor);
+            const value_table_id = try readOptionalU32(bytes, cursor);
+            const boundary_value_fingerprint = try readOptionalU64(bytes, cursor);
+            const codec_schema_descriptor_fingerprint = try readOptionalU64(bytes, cursor);
+            const dynamic_size = try readBool(bytes, cursor);
+            const image_bytes = try readBytesOwned(allocator, bytes, cursor);
+            errdefer allocator.free(image_bytes);
+            const label = try readOptionalBytesOwned(allocator, bytes, cursor);
+            errdefer if (label) |owned| allocator.free(owned);
+            const expected = fingerprintValueImage(
+                value_table_id,
+                boundary_value_fingerprint,
+                codec_schema_descriptor_fingerprint,
+                image_bytes,
+            );
+            if (expected != value_image_fingerprint) return error.VerifyValueImageMismatch;
+            return .{
+                .value_image_fingerprint = value_image_fingerprint,
+                .value_table_id = value_table_id,
+                .boundary_value_fingerprint = boundary_value_fingerprint,
+                .codec_schema_descriptor_fingerprint = codec_schema_descriptor_fingerprint,
+                .bytes = image_bytes,
+                .dynamic_size = dynamic_size,
+                .diagnostic_type_label = label,
+            };
+        }
+    };
+
+    pub const Request = struct {
+        format_version: u32 = world_frame_request_format_version,
+        fingerprint_version: u32 = world_frame_request_fingerprint_version,
+        frame_fingerprint: u64,
+        world_surface_fingerprint: u64,
+        world_surface_replay_scope_fingerprint: ?u64 = null,
+        target_certificate_fingerprint: u64,
+        world_port_id: u32,
+        residual_site_index: usize,
+        residual_site_fingerprint: u64,
+        request_fingerprint: u64,
+        turn_index: usize,
+        payload_value_table_id: ?u32 = null,
+        expected_response_value_table_id: ?u32 = null,
+        payload_value_fingerprint: ?u64 = null,
+        payload_image: ?ValueImage = null,
+        replay_key_seed: ReplayKeySeed,
+        source_effect_shape_fingerprint: ?u64 = null,
+        world_port_ref_fingerprint: ?u64 = null,
+        trace_ref_fingerprint: ?u64 = null,
+        evidence_ref_fingerprint: ?u64 = null,
+        flags: u32 = 0,
+
+        pub fn init(args: struct {
+            world_surface_fingerprint: u64,
+            world_surface_replay_scope_fingerprint: ?u64 = null,
+            target_certificate_fingerprint: u64,
+            world_port_id: u32,
+            residual_site_index: usize,
+            residual_site_fingerprint: u64,
+            request_fingerprint: u64,
+            turn_index: usize,
+            payload_value_table_id: ?u32 = null,
+            expected_response_value_table_id: ?u32 = null,
+            payload_image: ?ValueImage = null,
+            flags: u32 = 0,
+        }) @This() {
+            const replay_scope = args.world_surface_replay_scope_fingerprint orelse args.world_surface_fingerprint;
+            var result = @This(){
+                .frame_fingerprint = 0,
+                .world_surface_fingerprint = args.world_surface_fingerprint,
+                .world_surface_replay_scope_fingerprint = args.world_surface_replay_scope_fingerprint,
+                .target_certificate_fingerprint = args.target_certificate_fingerprint,
+                .world_port_id = args.world_port_id,
+                .residual_site_index = args.residual_site_index,
+                .residual_site_fingerprint = args.residual_site_fingerprint,
+                .request_fingerprint = args.request_fingerprint,
+                .turn_index = args.turn_index,
+                .payload_value_table_id = args.payload_value_table_id,
+                .expected_response_value_table_id = args.expected_response_value_table_id,
+                .payload_value_fingerprint = if (args.payload_image) |image| image.value_image_fingerprint else null,
+                .payload_image = args.payload_image,
+                .replay_key_seed = .{
+                    .world_surface_fingerprint = args.world_surface_fingerprint,
+                    .world_surface_scope_fingerprint = replay_scope,
+                    .world_port_id = args.world_port_id,
+                    .request_fingerprint = args.request_fingerprint,
+                },
+                .flags = args.flags,
+            };
+            result.frame_fingerprint = fingerprintRequest(result);
+            return result;
+        }
+
+        pub fn clone(self: @This(), allocator: std.mem.Allocator) !@This() {
+            var result = self;
+            result.payload_image = if (self.payload_image) |image| try image.clone(allocator) else null;
+            return result;
+        }
+
+        pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+            if (self.payload_image) |*image| image.deinit(allocator);
+            self.* = undefined;
+        }
+
+        pub fn encode(self: @This(), allocator: std.mem.Allocator) ![]const u8 {
+            var out: std.ArrayList(u8) = .empty;
+            errdefer out.deinit(allocator);
+            try writeU32(&out, allocator, self.format_version);
+            try writeU32(&out, allocator, self.fingerprint_version);
+            try writeU64(&out, allocator, self.frame_fingerprint);
+            try writeU64(&out, allocator, self.world_surface_fingerprint);
+            try writeOptionalU64(&out, allocator, self.world_surface_replay_scope_fingerprint);
+            try writeU64(&out, allocator, self.target_certificate_fingerprint);
+            try writeU32(&out, allocator, self.world_port_id);
+            try writeU64(&out, allocator, self.residual_site_index);
+            try writeU64(&out, allocator, self.residual_site_fingerprint);
+            try writeU64(&out, allocator, self.request_fingerprint);
+            try writeU64(&out, allocator, self.turn_index);
+            try writeOptionalU32(&out, allocator, self.payload_value_table_id);
+            try writeOptionalU32(&out, allocator, self.expected_response_value_table_id);
+            try writeOptionalU64(&out, allocator, self.payload_value_fingerprint);
+            try writeOptionalValueImage(&out, allocator, self.payload_image);
+            try writeU64(&out, allocator, self.replay_key_seed.world_surface_fingerprint);
+            try writeU64(&out, allocator, self.replay_key_seed.world_surface_scope_fingerprint);
+            try writeU32(&out, allocator, self.replay_key_seed.world_port_id);
+            try writeU64(&out, allocator, self.replay_key_seed.request_fingerprint);
+            try writeOptionalU64(&out, allocator, self.source_effect_shape_fingerprint);
+            try writeOptionalU64(&out, allocator, self.world_port_ref_fingerprint);
+            try writeOptionalU64(&out, allocator, self.trace_ref_fingerprint);
+            try writeOptionalU64(&out, allocator, self.evidence_ref_fingerprint);
+            try writeU32(&out, allocator, self.flags);
+            return out.toOwnedSlice(allocator);
+        }
+
+        pub fn decode(allocator: std.mem.Allocator, bytes: []const u8) !@This() {
+            var cursor: usize = 0;
+            const result = try decodeFrom(allocator, bytes, &cursor);
+            errdefer {
+                var owned = result;
+                owned.deinit(allocator);
+            }
+            if (cursor != bytes.len) return error.InvalidFrameEncoding;
+            return result;
+        }
+
+        fn decodeFrom(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) !@This() {
+            const format_version = try readU32(bytes, cursor);
+            if (format_version != world_frame_request_format_version) return error.InvalidFrameEncoding;
+            const fingerprint_version = try readU32(bytes, cursor);
+            if (fingerprint_version != world_frame_request_fingerprint_version) return error.InvalidFrameEncoding;
+            var result = @This(){
+                .frame_fingerprint = try readU64(bytes, cursor),
+                .world_surface_fingerprint = try readU64(bytes, cursor),
+                .world_surface_replay_scope_fingerprint = try readOptionalU64(bytes, cursor),
+                .target_certificate_fingerprint = try readU64(bytes, cursor),
+                .world_port_id = try readU32(bytes, cursor),
+                .residual_site_index = try readU64AsUsize(bytes, cursor),
+                .residual_site_fingerprint = try readU64(bytes, cursor),
+                .request_fingerprint = try readU64(bytes, cursor),
+                .turn_index = try readU64AsUsize(bytes, cursor),
+                .payload_value_table_id = try readOptionalU32(bytes, cursor),
+                .expected_response_value_table_id = try readOptionalU32(bytes, cursor),
+                .payload_value_fingerprint = try readOptionalU64(bytes, cursor),
+                .payload_image = try readOptionalValueImage(allocator, bytes, cursor),
+                .replay_key_seed = .{
+                    .world_surface_fingerprint = try readU64(bytes, cursor),
+                    .world_surface_scope_fingerprint = try readU64(bytes, cursor),
+                    .world_port_id = try readU32(bytes, cursor),
+                    .request_fingerprint = try readU64(bytes, cursor),
+                },
+                .source_effect_shape_fingerprint = try readOptionalU64(bytes, cursor),
+                .world_port_ref_fingerprint = try readOptionalU64(bytes, cursor),
+                .trace_ref_fingerprint = try readOptionalU64(bytes, cursor),
+                .evidence_ref_fingerprint = try readOptionalU64(bytes, cursor),
+                .flags = try readU32(bytes, cursor),
+            };
+            errdefer result.deinit(allocator);
+            if (fingerprintRequest(result) != result.frame_fingerprint) return error.InvalidFrameEncoding;
+            return result;
+        }
+    };
+
+    pub const Response = struct {
+        format_version: u32 = world_frame_response_format_version,
+        fingerprint_version: u32 = world_frame_response_fingerprint_version,
+        frame_fingerprint: u64,
+        world_surface_fingerprint: u64,
+        target_certificate_fingerprint: u64,
+        world_port_id: u32,
+        request_fingerprint: u64,
+        response_kind: ResponseKind = .@"resume",
+        response_value_table_id: ?u32 = null,
+        response_fingerprint: u64,
+        response_value_fingerprint: ?u64 = null,
+        response_image: ?ValueImage = null,
+        replay_key: u64,
+        status: ResponseStatus = .responded,
+        error_tag: ?[]const u8 = null,
+        reason: ?[]const u8 = null,
+        owns_error_tag: bool = false,
+        owns_reason: bool = false,
+        flags: u32 = 0,
+
+        pub fn fromValue(
+            allocator: std.mem.Allocator,
+            request: Request,
+            response_value_table_id: ?u32,
+            response_fingerprint: u64,
+            response_kind: ResponseKind,
+            value: anytype,
+            policy: ValuePolicy,
+        ) !@This() {
+            var image = try ValueImage.fromValue(
+                allocator,
+                response_value_table_id,
+                response_fingerprint,
+                null,
+                value,
+                policy,
+            );
+            errdefer image.deinit(allocator);
+            return init(.{
+                .world_surface_fingerprint = request.world_surface_fingerprint,
+                .target_certificate_fingerprint = request.target_certificate_fingerprint,
+                .world_port_id = request.world_port_id,
+                .request_fingerprint = request.request_fingerprint,
+                .response_kind = response_kind,
+                .response_value_table_id = response_value_table_id,
+                .response_fingerprint = response_fingerprint,
+                .response_image = image,
+                .replay_key = request.replay_key_seed.withResponse(response_fingerprint).fingerprint(),
+                .status = .responded,
+            });
+        }
+
+        pub fn init(args: struct {
+            world_surface_fingerprint: u64,
+            target_certificate_fingerprint: u64,
+            world_port_id: u32,
+            request_fingerprint: u64,
+            response_kind: ResponseKind = .@"resume",
+            response_value_table_id: ?u32 = null,
+            response_fingerprint: u64,
+            response_image: ?ValueImage = null,
+            replay_key: u64,
+            status: ResponseStatus = .responded,
+            error_tag: ?[]const u8 = null,
+            reason: ?[]const u8 = null,
+            flags: u32 = 0,
+        }) @This() {
+            var result = @This(){
+                .frame_fingerprint = 0,
+                .world_surface_fingerprint = args.world_surface_fingerprint,
+                .target_certificate_fingerprint = args.target_certificate_fingerprint,
+                .world_port_id = args.world_port_id,
+                .request_fingerprint = args.request_fingerprint,
+                .response_kind = args.response_kind,
+                .response_value_table_id = args.response_value_table_id,
+                .response_fingerprint = args.response_fingerprint,
+                .response_value_fingerprint = if (args.response_image) |image| image.value_image_fingerprint else null,
+                .response_image = args.response_image,
+                .replay_key = args.replay_key,
+                .status = args.status,
+                .error_tag = args.error_tag,
+                .reason = args.reason,
+                .owns_error_tag = false,
+                .owns_reason = false,
+                .flags = args.flags,
+            };
+            result.frame_fingerprint = fingerprintResponse(result);
+            return result;
+        }
+
+        pub fn clone(self: @This(), allocator: std.mem.Allocator) !@This() {
+            var result = self;
+            result.response_image = if (self.response_image) |image| try image.clone(allocator) else null;
+            errdefer if (result.response_image) |*image| image.deinit(allocator);
+            result.error_tag = if (self.error_tag) |tag| try allocator.dupe(u8, tag) else null;
+            result.owns_error_tag = result.error_tag != null;
+            errdefer if (result.error_tag) |tag| allocator.free(tag);
+            result.reason = if (self.reason) |reason| try allocator.dupe(u8, reason) else null;
+            result.owns_reason = result.reason != null;
+            errdefer if (result.reason) |reason| allocator.free(reason);
+            return result;
+        }
+
+        pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+            if (self.response_image) |*image| image.deinit(allocator);
+            if (self.owns_error_tag) if (self.error_tag) |tag| allocator.free(tag);
+            if (self.owns_reason) if (self.reason) |reason| allocator.free(reason);
+            self.* = undefined;
+        }
+
+        pub fn decodeValue(self: @This(), allocator: std.mem.Allocator, comptime Value: type) !Value {
+            const image = self.response_image orelse return error.MissingValueImage;
+            return image.decodeValue(allocator, Value);
+        }
+
+        pub fn encode(self: @This(), allocator: std.mem.Allocator) ![]const u8 {
+            var out: std.ArrayList(u8) = .empty;
+            errdefer out.deinit(allocator);
+            try writeU32(&out, allocator, self.format_version);
+            try writeU32(&out, allocator, self.fingerprint_version);
+            try writeU64(&out, allocator, self.frame_fingerprint);
+            try writeU64(&out, allocator, self.world_surface_fingerprint);
+            try writeU64(&out, allocator, self.target_certificate_fingerprint);
+            try writeU32(&out, allocator, self.world_port_id);
+            try writeU64(&out, allocator, self.request_fingerprint);
+            try writeU8(&out, allocator, @intFromEnum(self.response_kind));
+            try writeOptionalU32(&out, allocator, self.response_value_table_id);
+            try writeU64(&out, allocator, self.response_fingerprint);
+            try writeOptionalU64(&out, allocator, self.response_value_fingerprint);
+            try writeOptionalValueImage(&out, allocator, self.response_image);
+            try writeU64(&out, allocator, self.replay_key);
+            try writeU8(&out, allocator, @intFromEnum(self.status));
+            try writeOptionalBytes(&out, allocator, self.error_tag);
+            try writeOptionalBytes(&out, allocator, self.reason);
+            try writeU32(&out, allocator, self.flags);
+            return out.toOwnedSlice(allocator);
+        }
+
+        pub fn decode(allocator: std.mem.Allocator, bytes: []const u8) !@This() {
+            var cursor: usize = 0;
+            const result = try decodeFrom(allocator, bytes, &cursor);
+            errdefer {
+                var owned = result;
+                owned.deinit(allocator);
+            }
+            if (cursor != bytes.len) return error.InvalidFrameEncoding;
+            return result;
+        }
+
+        fn decodeFrom(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) !@This() {
+            const format_version = try readU32(bytes, cursor);
+            if (format_version != world_frame_response_format_version) return error.InvalidFrameEncoding;
+            const fingerprint_version = try readU32(bytes, cursor);
+            if (fingerprint_version != world_frame_response_fingerprint_version) return error.InvalidFrameEncoding;
+            const frame_fingerprint = try readU64(bytes, cursor);
+            const world_surface_fingerprint = try readU64(bytes, cursor);
+            const target_certificate_fingerprint = try readU64(bytes, cursor);
+            const world_port_id = try readU32(bytes, cursor);
+            const request_fingerprint = try readU64(bytes, cursor);
+            const response_kind = try enumFromByte(ResponseKind, try readU8(bytes, cursor));
+            const response_value_table_id = try readOptionalU32(bytes, cursor);
+            const response_fingerprint = try readU64(bytes, cursor);
+            const response_value_fingerprint = try readOptionalU64(bytes, cursor);
+            var response_image = try readOptionalValueImage(allocator, bytes, cursor);
+            errdefer if (response_image) |*image| image.deinit(allocator);
+            const replay_key = try readU64(bytes, cursor);
+            const status = try enumFromByte(ResponseStatus, try readU8(bytes, cursor));
+            const error_tag = try readOptionalBytesOwned(allocator, bytes, cursor);
+            errdefer if (error_tag) |tag| allocator.free(tag);
+            const reason = try readOptionalBytesOwned(allocator, bytes, cursor);
+            errdefer if (reason) |owned_reason| allocator.free(owned_reason);
+            const flags = try readU32(bytes, cursor);
+            var result = init(.{
+                .world_surface_fingerprint = world_surface_fingerprint,
+                .target_certificate_fingerprint = target_certificate_fingerprint,
+                .world_port_id = world_port_id,
+                .request_fingerprint = request_fingerprint,
+                .response_kind = response_kind,
+                .response_value_table_id = response_value_table_id,
+                .response_fingerprint = response_fingerprint,
+                .response_image = response_image,
+                .replay_key = replay_key,
+                .status = status,
+                .error_tag = error_tag,
+                .reason = reason,
+                .flags = flags,
+            });
+            result.owns_error_tag = error_tag != null;
+            result.owns_reason = reason != null;
+            result.response_value_fingerprint = response_value_fingerprint;
+            if (result.frame_fingerprint != frame_fingerprint) return error.InvalidFrameEncoding;
+            return result;
+        }
+    };
+
+    pub const NativeAdapter = struct {};
+    pub const ReplayAdapter = struct {};
+    pub const VerifyAdapter = struct {};
+};
+
 pub const StoredValue = struct {
     ptr: *anyopaque,
     type_name: []const u8,
+    portable_image: ?Frame.ValueImage = null,
     clone_fn: *const fn (std.mem.Allocator, *anyopaque) anyerror!StoredValue,
     destroy_fn: *const fn (std.mem.Allocator, *anyopaque) void,
 
@@ -106,9 +680,11 @@ pub const StoredValue = struct {
         const ptr = try allocator.create(Value);
         errdefer allocator.destroy(ptr);
         ptr.* = value;
+        const portable_image = Frame.ValueImage.fromValue(allocator, null, null, null, value, .native_compatible) catch null;
         return .{
             .ptr = @ptrCast(ptr),
             .type_name = @typeName(Value),
+            .portable_image = portable_image,
             .clone_fn = struct {
                 fn clone(inner_allocator: std.mem.Allocator, erased: *anyopaque) anyerror!StoredValue {
                     const typed: *Value = @ptrCast(@alignCast(erased));
@@ -142,6 +718,7 @@ pub const StoredValue = struct {
     }
 
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+        if (self.portable_image) |*image| image.deinit(allocator);
         self.destroy_fn(allocator, self.ptr);
         self.ptr = undefined;
     }
@@ -293,6 +870,15 @@ pub const Transcript = struct {
                 .port_replayed,
                 .port_rejected,
                 .port_failed,
+                .frame_requested,
+                .frame_responded,
+                .frame_replayed,
+                .frame_verified,
+                .frame_rejected,
+                .frame_failed,
+                .checkpoint_recorded,
+                .branch_started,
+                .branch_joined,
                 => {
                     if (active_start != null) active_has_port_event = true;
                 },
@@ -313,11 +899,51 @@ pub const Transcript = struct {
                 .port_replayed => result.port_replayed += 1,
                 .port_rejected => result.port_rejected += 1,
                 .port_failed => result.port_failed += 1,
+                .frame_requested => result.frame_requested += 1,
+                .frame_responded => result.frame_responded += 1,
+                .frame_replayed => result.frame_replayed += 1,
+                .frame_verified => result.frame_verified += 1,
+                .frame_rejected => result.frame_rejected += 1,
+                .frame_failed => result.frame_failed += 1,
+                .checkpoint_recorded => result.checkpoint_recorded += 1,
+                .branch_started => result.branch_started += 1,
+                .branch_joined => result.branch_joined += 1,
                 .run_completed => result.run_completed += 1,
                 .run_failed => result.run_failed += 1,
             }
         }
         return result;
+    }
+
+    pub fn toImage(self: *const @This(), allocator: std.mem.Allocator, options: anytype) !TranscriptImage {
+        const policy: ValuePolicy = if (@hasField(@TypeOf(options), "value_policy"))
+            @field(options, "value_policy")
+        else
+            .native_compatible;
+        return TranscriptImage.fromTranscript(allocator, self, policy);
+    }
+
+    pub fn fromImage(allocator: std.mem.Allocator, image: TranscriptImage) !@This() {
+        var transcript = Transcript.init(allocator);
+        errdefer transcript.deinit();
+        for (image.events) |event| {
+            try transcript.append(.{
+                .kind = event.kind,
+                .world_surface_fingerprint = event.world_surface_fingerprint,
+                .target_certificate_fingerprint = event.target_certificate_fingerprint,
+                .world_port_id = event.world_port_id,
+                .request_fingerprint = event.request_fingerprint,
+                .response_fingerprint = event.response_fingerprint,
+                .response_kind = event.response_kind,
+                .replay_key = event.replay_key,
+                .turn_index = event.turn_index,
+                .residual_site_index = event.residual_site_index,
+                .residual_site_fingerprint = event.residual_site_fingerprint,
+                .status = event.status,
+                .source_run = event.source_run,
+            });
+        }
+        return transcript;
     }
 
     pub const Summary = struct {
@@ -327,9 +953,337 @@ pub const Transcript = struct {
         port_replayed: usize = 0,
         port_rejected: usize = 0,
         port_failed: usize = 0,
+        frame_requested: usize = 0,
+        frame_responded: usize = 0,
+        frame_replayed: usize = 0,
+        frame_verified: usize = 0,
+        frame_rejected: usize = 0,
+        frame_failed: usize = 0,
+        checkpoint_recorded: usize = 0,
+        branch_started: usize = 0,
+        branch_joined: usize = 0,
         run_completed: usize = 0,
         run_failed: usize = 0,
     };
+};
+
+pub const Timeline = struct {
+    allocator: std.mem.Allocator,
+    events: std.ArrayList(Event) = .empty,
+
+    pub const Event = struct {
+        format_version: u32 = world_timeline_event_format_version,
+        fingerprint_version: u32 = world_timeline_event_fingerprint_version,
+        event_fingerprint: u64,
+        kind: EventKind,
+        world_surface_fingerprint: u64,
+        target_certificate_fingerprint: u64,
+        request_frame_fingerprint: ?u64 = null,
+        response_frame_fingerprint: ?u64 = null,
+        replay_key: ?u64 = null,
+        checkpoint_fingerprint: ?u64 = null,
+        branch_id: ?u64 = null,
+        turn_index: usize = 0,
+        status: ?ResponseStatus = null,
+
+        pub fn init(args: struct {
+            kind: EventKind,
+            world_surface_fingerprint: u64,
+            target_certificate_fingerprint: u64,
+            request_frame_fingerprint: ?u64 = null,
+            response_frame_fingerprint: ?u64 = null,
+            replay_key: ?u64 = null,
+            checkpoint_fingerprint: ?u64 = null,
+            branch_id: ?u64 = null,
+            turn_index: usize = 0,
+            status: ?ResponseStatus = null,
+        }) @This() {
+            var event = @This(){
+                .event_fingerprint = 0,
+                .kind = args.kind,
+                .world_surface_fingerprint = args.world_surface_fingerprint,
+                .target_certificate_fingerprint = args.target_certificate_fingerprint,
+                .request_frame_fingerprint = args.request_frame_fingerprint,
+                .response_frame_fingerprint = args.response_frame_fingerprint,
+                .replay_key = args.replay_key,
+                .checkpoint_fingerprint = args.checkpoint_fingerprint,
+                .branch_id = args.branch_id,
+                .turn_index = args.turn_index,
+                .status = args.status,
+            };
+            event.event_fingerprint = fingerprintTimelineEvent(event);
+            return event;
+        }
+    };
+
+    pub const Checkpoint = struct {
+        format_version: u32 = world_timeline_checkpoint_format_version,
+        fingerprint_version: u32 = world_timeline_checkpoint_fingerprint_version,
+        checkpoint_fingerprint: u64,
+        world_surface_fingerprint: u64,
+        target_certificate_fingerprint: u64,
+        event_index: usize,
+        turn_index: usize,
+        current_request_fingerprint: ?u64 = null,
+        last_response_fingerprint: ?u64 = null,
+        capsule_image_fingerprint: ?u64 = null,
+        transcript_prefix_fingerprint: u64,
+        branch_id: u64,
+        status: Status,
+
+        pub const Status = enum {
+            running,
+            parked_on_port,
+            completed,
+            failed,
+        };
+
+        pub fn init(args: struct {
+            world_surface_fingerprint: u64,
+            target_certificate_fingerprint: u64,
+            event_index: usize,
+            turn_index: usize,
+            current_request_fingerprint: ?u64 = null,
+            last_response_fingerprint: ?u64 = null,
+            capsule_image_fingerprint: ?u64 = null,
+            transcript_prefix_fingerprint: u64,
+            branch_id: u64 = 0,
+            status: Status,
+        }) @This() {
+            var checkpoint = @This(){
+                .checkpoint_fingerprint = 0,
+                .world_surface_fingerprint = args.world_surface_fingerprint,
+                .target_certificate_fingerprint = args.target_certificate_fingerprint,
+                .event_index = args.event_index,
+                .turn_index = args.turn_index,
+                .current_request_fingerprint = args.current_request_fingerprint,
+                .last_response_fingerprint = args.last_response_fingerprint,
+                .capsule_image_fingerprint = args.capsule_image_fingerprint,
+                .transcript_prefix_fingerprint = args.transcript_prefix_fingerprint,
+                .branch_id = args.branch_id,
+                .status = args.status,
+            };
+            checkpoint.checkpoint_fingerprint = fingerprintCheckpoint(checkpoint);
+            return checkpoint;
+        }
+    };
+
+    pub const Branch = struct {
+        format_version: u32 = world_timeline_branch_format_version,
+        fingerprint_version: u32 = world_timeline_branch_fingerprint_version,
+        branch_id: u64,
+        parent_branch_id: ?u64 = null,
+        checkpoint_fingerprint: u64,
+        branch_label: []const u8 = "",
+        start_event_index: usize,
+        final_event_index: ?usize = null,
+        final_status: Checkpoint.Status = .running,
+        event_count: usize = 0,
+        response_count: usize = 0,
+
+        pub fn fingerprint(self: @This()) u64 {
+            var hasher = std.hash.Wyhash.init(0);
+            hashBytes(&hasher, "world.timeline.branch.fingerprint");
+            hashU64(&hasher, world_timeline_branch_fingerprint_version);
+            hashU64(&hasher, self.branch_id);
+            hashOptionalU64(&hasher, self.parent_branch_id);
+            hashU64(&hasher, self.checkpoint_fingerprint);
+            hashU64(&hasher, self.start_event_index);
+            if (self.final_event_index) |index| {
+                hashBool(&hasher, true);
+                hashU64(&hasher, index);
+            } else {
+                hashBool(&hasher, false);
+            }
+            hashU64(&hasher, @intFromEnum(self.final_status));
+            hashU64(&hasher, self.event_count);
+            hashU64(&hasher, self.response_count);
+            hashU64(&hasher, self.branch_label.len);
+            hashBytes(&hasher, self.branch_label);
+            return hasher.final();
+        }
+    };
+
+    pub fn init(allocator: std.mem.Allocator) @This() {
+        return .{ .allocator = allocator };
+    }
+
+    pub fn deinit(self: *@This()) void {
+        self.events.deinit(self.allocator);
+        self.* = undefined;
+    }
+
+    pub fn append(self: *@This(), event: Event) !void {
+        try self.events.append(self.allocator, event);
+    }
+};
+
+pub const TranscriptImage = struct {
+    format_version: u32 = world_transcript_image_format_version,
+    fingerprint_version: u32 = world_transcript_image_fingerprint_version,
+    transcript_image_fingerprint: u64,
+    world_surface_fingerprint: u64,
+    target_certificate_fingerprint: u64,
+    events: []EventImage,
+    final_status: FinalStatus,
+    response_count: usize = 0,
+    replay_cursor: usize = 0,
+    replay_limit: ?usize = null,
+
+    pub const FinalStatus = enum {
+        running,
+        completed,
+        failed,
+    };
+
+    pub const EventImage = struct {
+        event_fingerprint: u64,
+        kind: EventKind,
+        world_surface_fingerprint: u64,
+        target_certificate_fingerprint: u64,
+        world_port_id: ?u32 = null,
+        request_fingerprint: ?u64 = null,
+        response_fingerprint: ?u64 = null,
+        response_kind: ?ResponseKind = null,
+        replay_key: ?u64 = null,
+        turn_index: ?usize = null,
+        residual_site_index: ?usize = null,
+        residual_site_fingerprint: ?u64 = null,
+        status: ?ResponseStatus = null,
+        source_run: bool = true,
+        request_frame: ?Frame.Request = null,
+        response_frame: ?Frame.Response = null,
+
+        pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+            if (self.request_frame) |*frame| frame.deinit(allocator);
+            if (self.response_frame) |*frame| frame.deinit(allocator);
+            self.* = undefined;
+        }
+    };
+
+    pub fn fromTranscript(allocator: std.mem.Allocator, transcript: *const Transcript, policy: ValuePolicy) !@This() {
+        const events = try allocator.alloc(EventImage, transcript.events.items.len);
+        errdefer allocator.free(events);
+        var initialized: usize = 0;
+        errdefer {
+            for (events[0..initialized]) |*event| event.deinit(allocator);
+        }
+        var response_count: usize = 0;
+        for (transcript.events.items, 0..) |event, index| {
+            events[index] = try eventImageFromTranscriptEvent(allocator, event, policy);
+            initialized += 1;
+            if (events[index].response_frame != null) response_count += 1;
+        }
+        var image = @This(){
+            .transcript_image_fingerprint = 0,
+            .world_surface_fingerprint = if (events.len > 0) events[0].world_surface_fingerprint else 0,
+            .target_certificate_fingerprint = if (events.len > 0) events[0].target_certificate_fingerprint else 0,
+            .events = events,
+            .final_status = finalStatusFromEvents(events),
+            .response_count = response_count,
+        };
+        image.transcript_image_fingerprint = fingerprintTranscriptImage(image);
+        return image;
+    }
+
+    pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+        for (self.events) |*event| event.deinit(allocator);
+        allocator.free(self.events);
+        self.* = undefined;
+    }
+
+    pub fn resetReplay(self: *@This()) void {
+        self.replay_cursor = 0;
+        self.replay_limit = null;
+    }
+
+    pub fn validateReplayRun(self: *@This(), expected_world_surface_fingerprint: u64, expected_target_certificate_fingerprint: u64) !void {
+        if (self.world_surface_fingerprint != expected_world_surface_fingerprint) return error.ReplaySurfaceMismatch;
+        if (self.target_certificate_fingerprint != expected_target_certificate_fingerprint) return error.ReplayTargetCertificateMismatch;
+        self.replay_cursor = 0;
+        self.replay_limit = self.events.len;
+    }
+
+    pub fn nextResponse(
+        self: *@This(),
+        key: ReplayKeySeed,
+        expected_target_certificate_fingerprint: u64,
+        expected_response_kind: ResponseKind,
+    ) !*const Frame.Response {
+        const replay_limit = self.replay_limit orelse self.events.len;
+        while (self.replay_cursor < replay_limit) : (self.replay_cursor += 1) {
+            const index = self.replay_cursor;
+            const event = &self.events[index];
+            const frame = if (event.response_frame) |*response_frame| response_frame else continue;
+            if (frame.status != .responded) continue;
+            if (frame.world_surface_fingerprint != key.world_surface_fingerprint) return error.ReplaySurfaceMismatch;
+            if (frame.target_certificate_fingerprint != expected_target_certificate_fingerprint) return error.ReplayTargetCertificateMismatch;
+            if (frame.world_port_id != key.world_port_id) return error.ReplayPortMismatch;
+            if (frame.request_fingerprint != key.request_fingerprint) return error.ReplayRequestFingerprintMismatch;
+            if (frame.response_kind != expected_response_kind) return error.ReplayResponseKindMismatch;
+            const expected_key = key.withResponse(frame.response_fingerprint).fingerprint();
+            if (frame.replay_key != expected_key) return error.ReplayMissing;
+            self.replay_cursor = index + 1;
+            return frame;
+        }
+        return error.ReplayMissing;
+    }
+
+    pub fn assertReplayComplete(self: *const @This()) !void {
+        const replay_limit = self.replay_limit orelse self.events.len;
+        var index = self.replay_cursor;
+        while (index < replay_limit) : (index += 1) {
+            if (self.events[index].response_frame != null) return error.ReplayUnusedEvent;
+        }
+    }
+
+    pub fn encode(self: @This(), allocator: std.mem.Allocator) ![]const u8 {
+        var out: std.ArrayList(u8) = .empty;
+        errdefer out.deinit(allocator);
+        try writeU32(&out, allocator, self.format_version);
+        try writeU32(&out, allocator, self.fingerprint_version);
+        try writeU64(&out, allocator, self.transcript_image_fingerprint);
+        try writeU64(&out, allocator, self.world_surface_fingerprint);
+        try writeU64(&out, allocator, self.target_certificate_fingerprint);
+        try writeU8(&out, allocator, @intFromEnum(self.final_status));
+        try writeU64(&out, allocator, self.response_count);
+        try writeU64(&out, allocator, self.events.len);
+        for (self.events) |event| try encodeTranscriptEventImage(&out, allocator, event);
+        return out.toOwnedSlice(allocator);
+    }
+
+    pub fn decode(allocator: std.mem.Allocator, bytes: []const u8) !@This() {
+        var cursor: usize = 0;
+        const format_version = try readU32(bytes, &cursor);
+        if (format_version != world_transcript_image_format_version) return error.InvalidFrameEncoding;
+        const fingerprint_version = try readU32(bytes, &cursor);
+        if (fingerprint_version != world_transcript_image_fingerprint_version) return error.InvalidFrameEncoding;
+        const transcript_image_fingerprint = try readU64(bytes, &cursor);
+        const world_surface_fingerprint = try readU64(bytes, &cursor);
+        const target_certificate_fingerprint = try readU64(bytes, &cursor);
+        const final_status = try enumFromByte(FinalStatus, try readU8(bytes, &cursor));
+        const response_count = try readU64AsUsize(bytes, &cursor);
+        const event_count = try readU64AsUsize(bytes, &cursor);
+        const events = try allocator.alloc(EventImage, event_count);
+        errdefer allocator.free(events);
+        var initialized: usize = 0;
+        errdefer for (events[0..initialized]) |*event| event.deinit(allocator);
+        for (events) |*event| {
+            event.* = try decodeTranscriptEventImage(allocator, bytes, &cursor);
+            initialized += 1;
+        }
+        if (cursor != bytes.len) return error.InvalidFrameEncoding;
+        const image = @This(){
+            .transcript_image_fingerprint = transcript_image_fingerprint,
+            .world_surface_fingerprint = world_surface_fingerprint,
+            .target_certificate_fingerprint = target_certificate_fingerprint,
+            .events = events,
+            .final_status = final_status,
+            .response_count = response_count,
+        };
+        if (fingerprintTranscriptImage(image) != transcript_image_fingerprint) return error.InvalidFrameEncoding;
+        return image;
+    }
 };
 
 pub const AuditReport = struct {
@@ -352,6 +1306,53 @@ pub const AuditReport = struct {
         failed,
         parked,
     };
+};
+
+pub const AuditImage = struct {
+    format_version: u32 = world_audit_image_format_version,
+    fingerprint_version: u32 = world_audit_image_fingerprint_version,
+    audit_fingerprint: u64,
+    world_surface_fingerprint: u64,
+    target_certificate_fingerprint: u64,
+    mode: Mode,
+    final_status: AuditReport.Status,
+    request_frame_count: usize = 0,
+    response_frame_count: usize = 0,
+    replayed_frame_count: usize = 0,
+    verified_frame_count: usize = 0,
+    failed_frame_count: usize = 0,
+    branch_count: usize = 0,
+    checkpoint_count: usize = 0,
+    missing_portable_value_image_count: usize = 0,
+    native_only_value_count: usize = 0,
+    transcript_image_fingerprint: ?u64 = null,
+
+    pub fn fromReport(report: AuditReport, transcript_image: ?TranscriptImage) @This() {
+        var image = @This(){
+            .audit_fingerprint = 0,
+            .world_surface_fingerprint = report.world_surface_fingerprint,
+            .target_certificate_fingerprint = report.target_certificate_fingerprint,
+            .mode = report.mode,
+            .final_status = report.final_status,
+            .request_frame_count = report.port_request_count,
+            .response_frame_count = report.fresh_response_count + report.replayed_response_count,
+            .replayed_frame_count = report.replayed_response_count,
+            .failed_frame_count = report.failed_count,
+            .transcript_image_fingerprint = if (transcript_image) |image_source| image_source.transcript_image_fingerprint else null,
+        };
+        if (transcript_image) |image_source| {
+            for (image_source.events) |event| {
+                if (event.kind == .frame_verified) image.verified_frame_count += 1;
+                if (event.kind == .checkpoint_recorded) image.checkpoint_count += 1;
+                if (event.kind == .branch_started) image.branch_count += 1;
+                if (event.response_frame != null and event.response_frame.?.response_image == null) {
+                    image.missing_portable_value_image_count += 1;
+                }
+            }
+        }
+        image.audit_fingerprint = fingerprintAuditImage(image);
+        return image;
+    }
 };
 
 pub fn PortRequest(comptime Target: type, comptime Descriptor: type) type {
@@ -594,9 +1595,21 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     @memset(per_port_counts, 0);
                     errdefer allocator.free(per_port_counts);
                     try validateRuntimeSurfaceOptions(Target, options);
-                    if (modeConsumesTranscript(effective) and !@hasField(Options, "transcript")) return Error.ReplayMissing;
+                    if (modeConsumesTranscript(effective) and
+                        !@hasField(Options, "transcript") and
+                        !@hasField(Options, "transcript_image"))
+                    {
+                        return Error.ReplayMissing;
+                    }
                     var session = try Program.Session.startWithArgs(runtime, Program.Handlers{}, args);
                     errdefer session.deinit();
+                    if (@hasField(Options, "transcript_image") and modeConsumesTranscript(effective)) {
+                        @field(options, "transcript_image").resetReplay();
+                        try @field(options, "transcript_image").validateReplayRun(
+                            Target.WorldSurface.surface_fingerprint,
+                            Target.Certificate.certificate_fingerprint,
+                        );
+                    }
                     if (@hasField(Options, "transcript")) {
                         if (modeConsumesTranscript(effective)) {
                             @field(options, "transcript").resetReplay();
@@ -655,6 +1668,13 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             self.done_value_present = true;
                             if (modeConsumesTranscript(self.effective_mode) and @hasField(Options, "transcript")) {
                                 @field(self.options, "transcript").assertReplayComplete() catch |err| {
+                                    self.audit.replay_mismatch_count += 1;
+                                    try self.markRunFailed();
+                                    return err;
+                                };
+                            }
+                            if (modeConsumesTranscript(self.effective_mode) and @hasField(Options, "transcript_image")) {
+                                @field(self.options, "transcript_image").assertReplayComplete() catch |err| {
                                     self.audit.replay_mismatch_count += 1;
                                     try self.markRunFailed();
                                     return err;
@@ -722,6 +1742,86 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         },
                         else => return Error.UnknownWorldPort,
                     }
+                }
+
+                pub const FrameStep = union(enum) {
+                    done: Value,
+                    port_request: Frame.Request,
+                    failed,
+                };
+
+                pub fn nextFrame(self: *Self) !FrameStep {
+                    const step = try self.next();
+                    return switch (step) {
+                        .done => |value| .{ .done = value },
+                        .failed => .failed,
+                        .parked => error.HandlerPending,
+                        .port_required => .{ .port_request = try self.pendingRequestFrame() },
+                    };
+                }
+
+                pub fn resumeFrame(self: *Self, response_frame: Frame.Response) !void {
+                    if (response_frame.status == .pending) return error.HandlerPending;
+                    if (response_frame.status == .rejected) return error.HandlerRejected;
+                    if (response_frame.status == .failed) return error.HandlerFailed;
+                    const request = self.pending_request orelse return error.UnknownResidualSite;
+                    const world_port_id = self.pending_port_id orelse return error.UnknownWorldPort;
+                    const frame = try self.pendingRequestFrame();
+                    if (response_frame.world_surface_fingerprint != frame.world_surface_fingerprint) return error.FrameSurfaceMismatch;
+                    if (response_frame.target_certificate_fingerprint != frame.target_certificate_fingerprint) return error.FrameTargetCertificateMismatch;
+                    if (response_frame.world_port_id != world_port_id) return error.FramePortMismatch;
+                    if (response_frame.request_fingerprint != frame.request_fingerprint) return error.FrameRequestFingerprintMismatch;
+                    if (response_frame.replay_key != frame.replay_key_seed.withResponse(response_frame.response_fingerprint).fingerprint()) return error.ReplayMissing;
+                    switch (world_port_id) {
+                        inline 0...Target.WorldPortTable.entries.len - 1 => |id| {
+                            const Handler = comptime handlerForWorldPortId(Target, Config, @intCast(id));
+                            if (Handler) |Decl| {
+                                try self.resumeFrameDecl(Decl, request, response_frame);
+                                self.pending_request = null;
+                                self.pending_port_id = null;
+                                return;
+                            }
+                            return self.markMissingHandler(world_port_id, request.trace());
+                        },
+                        else => return error.UnknownWorldPort,
+                    }
+                }
+
+                fn pendingRequestFrame(self: *Self) !Frame.Request {
+                    const request = self.pending_request orelse return error.UnknownResidualSite;
+                    const world_port_id = self.pending_port_id orelse return error.UnknownWorldPort;
+                    const trace = request.trace();
+                    return Frame.Request.init(.{
+                        .world_surface_fingerprint = Target.WorldSurface.surface_fingerprint,
+                        .world_surface_replay_scope_fingerprint = Target.WorldSurface.replayScopeRef().fingerprint,
+                        .target_certificate_fingerprint = Target.Certificate.certificate_fingerprint,
+                        .world_port_id = world_port_id,
+                        .residual_site_index = trace.operation_site_index,
+                        .residual_site_fingerprint = trace.operation_site_fingerprint,
+                        .request_fingerprint = trace.fingerprint,
+                        .turn_index = trace.turn_index,
+                        .payload_value_table_id = valueIdForRuntime(Target, world_port_id, .payload),
+                        .expected_response_value_table_id = valueIdForRuntime(Target, world_port_id, .@"resume"),
+                    });
+                }
+
+                fn resumeFrameDecl(self: *Self, comptime Decl: type, request: Request, response_frame: Frame.Response) !void {
+                    const typed_request = try request.as(Decl.SiteType);
+                    if (response_frame.response_kind != .@"resume") return error.VerifyResponseKindMismatch;
+                    const value = try response_frame.decodeValue(self.allocator, Decl.Response);
+                    var value_owned = true;
+                    errdefer if (value_owned) deinitOwnedValue(self.allocator, value);
+                    const response_trace = try typed_request.responseTrace(.@"resume", value);
+                    if (response_trace.fingerprint != response_frame.response_fingerprint) return error.VerifyResponseFingerprintMismatch;
+                    try appendPortEvent(Target, self.options, .frame_responded, Decl.world_port_id, request.trace(), response_trace.fingerprint, response_frame.response_kind, null);
+                    self.audit.replayed_response_count += 1;
+                    try self.session.resumeTyped(typed_request, value);
+                    var run_value = try StoredValue.initOwned(self.allocator, value);
+                    value_owned = false;
+                    var run_value_owned = true;
+                    errdefer if (run_value_owned) run_value.deinit(self.allocator);
+                    try self.retained_values.append(self.allocator, run_value);
+                    run_value_owned = false;
                 }
 
                 fn markMissingHandler(self: *Self, world_port_id: u32, trace: anytype) !void {
@@ -805,6 +1905,30 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     replay_key: ReplayKeySeed,
                     trace: anytype,
                 ) !Decl.Response {
+                    if (comptime @hasField(Options, "transcript_image")) {
+                        const image = @field(self.options, "transcript_image");
+                        const frame = image.nextResponse(replay_key, Target.Certificate.certificate_fingerprint, .@"resume") catch |err| {
+                            self.audit.replay_mismatch_count += 1;
+                            return err;
+                        };
+                        const value = try frame.decodeValue(self.allocator, Decl.Response);
+                        var value_owned = true;
+                        errdefer if (value_owned) deinitOwnedValue(self.allocator, value);
+                        const response_trace = try typed_request.responseTrace(.@"resume", value);
+                        if (response_trace.fingerprint != frame.response_fingerprint) {
+                            self.audit.replay_mismatch_count += 1;
+                            return error.VerifyResponseFingerprintMismatch;
+                        }
+                        try appendPortEvent(Target, self.options, .frame_replayed, Decl.world_port_id, trace, response_trace.fingerprint, .@"resume", null);
+                        self.audit.replayed_response_count += 1;
+                        var run_value = try StoredValue.initOwned(self.allocator, value);
+                        value_owned = false;
+                        var run_value_owned = true;
+                        errdefer if (run_value_owned) run_value.deinit(self.allocator);
+                        try self.retained_values.append(self.allocator, run_value);
+                        run_value_owned = false;
+                        return self.retained_values.items[self.retained_values.items.len - 1].borrow(Decl.Response);
+                    }
                     if (!@hasField(Options, "transcript")) return Error.ReplayMissing;
                     const transcript = @field(self.options, "transcript");
                     const event = transcript.nextResponse(replay_key, Target.Certificate.certificate_fingerprint, .@"resume") catch |err| {
@@ -839,23 +1963,42 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     replay_key: ReplayKeySeed,
                 ) !Decl.Response {
                     if (!@hasField(Options, "ctx")) return Error.MissingHandler;
-                    if (!@hasField(Options, "transcript")) return Error.ReplayMissing;
-                    const transcript = @field(self.options, "transcript");
-                    const event = transcript.nextResponse(replay_key, Target.Certificate.certificate_fingerprint, .@"resume") catch |err| {
-                        self.audit.replay_mismatch_count += 1;
-                        return err;
-                    };
-                    const expected_response_fingerprint = event.response_fingerprint orelse return Error.ReplayMissing;
-                    const stored = event.value orelse return Error.ReplayMissing;
-                    const replay_value = stored.as(self.allocator, Decl.Response) catch |err| {
-                        self.audit.replay_mismatch_count += 1;
-                        return err;
-                    };
-                    defer deinitOwnedValue(self.allocator, replay_value);
-                    const replay_trace = try typed_request.responseTrace(.@"resume", replay_value);
-                    if (replay_trace.fingerprint != expected_response_fingerprint) {
-                        self.audit.replay_mismatch_count += 1;
-                        return Error.VerifyDivergence;
+                    var expected_response_fingerprint: u64 = undefined;
+                    var expected_value_image_fingerprint: ?u64 = null;
+                    if (comptime @hasField(Options, "transcript_image")) {
+                        const image = @field(self.options, "transcript_image");
+                        const frame = image.nextResponse(replay_key, Target.Certificate.certificate_fingerprint, .@"resume") catch |err| {
+                            self.audit.replay_mismatch_count += 1;
+                            return err;
+                        };
+                        expected_response_fingerprint = frame.response_fingerprint;
+                        expected_value_image_fingerprint = frame.response_value_fingerprint;
+                        const replay_value = try frame.decodeValue(self.allocator, Decl.Response);
+                        defer deinitOwnedValue(self.allocator, replay_value);
+                        const replay_trace = try typed_request.responseTrace(.@"resume", replay_value);
+                        if (replay_trace.fingerprint != expected_response_fingerprint) {
+                            self.audit.replay_mismatch_count += 1;
+                            return error.VerifyDivergence;
+                        }
+                    } else {
+                        if (!@hasField(Options, "transcript")) return Error.ReplayMissing;
+                        const transcript = @field(self.options, "transcript");
+                        const event = transcript.nextResponse(replay_key, Target.Certificate.certificate_fingerprint, .@"resume") catch |err| {
+                            self.audit.replay_mismatch_count += 1;
+                            return err;
+                        };
+                        expected_response_fingerprint = event.response_fingerprint orelse return Error.ReplayMissing;
+                        const stored = event.value orelse return Error.ReplayMissing;
+                        const replay_value = stored.as(self.allocator, Decl.Response) catch |err| {
+                            self.audit.replay_mismatch_count += 1;
+                            return err;
+                        };
+                        defer deinitOwnedValue(self.allocator, replay_value);
+                        const replay_trace = try typed_request.responseTrace(.@"resume", replay_value);
+                        if (replay_trace.fingerprint != expected_response_fingerprint) {
+                            self.audit.replay_mismatch_count += 1;
+                            return Error.VerifyDivergence;
+                        }
                     }
                     self.audit.replayed_response_count += 1;
                     const fresh = try callHandler(Decl, @field(self.options, "ctx"), request);
@@ -864,6 +2007,11 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     if (response_trace.fingerprint != expected_response_fingerprint) {
                         self.audit.replay_mismatch_count += 1;
                         return Error.VerifyDivergence;
+                    }
+                    if (expected_value_image_fingerprint) |expected_image_fingerprint| {
+                        var fresh_image = try Frame.ValueImage.fromValue(self.allocator, null, null, null, fresh, .portable);
+                        defer fresh_image.deinit(self.allocator);
+                        if (fresh_image.value_image_fingerprint != expected_image_fingerprint) return error.VerifyValueImageMismatch;
                     }
                     self.audit.fresh_response_count += 1;
                     return try self.retainResponse(Decl.Response, fresh);
@@ -963,6 +2111,13 @@ fn worldPortIdForSite(comptime Target: type, comptime Site: type) ?u32 {
 
 fn valueIdFor(comptime Target: type, comptime world_port_id: u32, comptime kind: anytype) ?u32 {
     inline for (Target.WorldValueTable.entries) |entry| {
+        if (entry.world_port_id == world_port_id and entry.kind == kind) return entry.value_id;
+    }
+    return null;
+}
+
+fn valueIdForRuntime(comptime Target: type, world_port_id: u32, comptime kind: anytype) ?u32 {
+    for (Target.WorldValueTable.entries) |entry| {
         if (entry.world_port_id == world_port_id and entry.kind == kind) return entry.value_id;
     }
     return null;
@@ -1180,14 +2335,733 @@ fn appendPortEvent(
     try transcript.appendOwned(&event);
 }
 
+fn eventImageFromTranscriptEvent(allocator: std.mem.Allocator, event: Transcript.Event, policy: ValuePolicy) !TranscriptImage.EventImage {
+    var request_frame: ?Frame.Request = null;
+    if (event.world_port_id) |world_port_id| {
+        if (event.request_fingerprint) |request_fingerprint| {
+            if (event.residual_site_index != null and event.residual_site_fingerprint != null and event.turn_index != null) {
+                request_frame = Frame.Request.init(.{
+                    .world_surface_fingerprint = event.world_surface_fingerprint,
+                    .target_certificate_fingerprint = event.target_certificate_fingerprint,
+                    .world_port_id = world_port_id,
+                    .residual_site_index = event.residual_site_index.?,
+                    .residual_site_fingerprint = event.residual_site_fingerprint.?,
+                    .request_fingerprint = request_fingerprint,
+                    .turn_index = event.turn_index.?,
+                });
+            }
+        }
+    }
+    errdefer if (request_frame) |*frame| frame.deinit(allocator);
+
+    var response_frame: ?Frame.Response = null;
+    const response_status = event.status orelse if (event.kind == .port_rejected or event.kind == .frame_rejected)
+        ResponseStatus.rejected
+    else if (event.kind == .port_failed or event.kind == .frame_failed)
+        ResponseStatus.failed
+    else
+        null;
+    if (event.world_port_id != null and event.request_fingerprint != null and event.response_fingerprint != null and event.response_kind != null and event.replay_key != null) {
+        var response_image: ?Frame.ValueImage = null;
+        if (event.value) |stored| {
+            if (stored.portable_image) |image| response_image = try image.clone(allocator);
+        }
+        errdefer if (response_image) |*image| image.deinit(allocator);
+        if (response_image == null and policy.require_response_images_for_replay) return error.MissingValueImage;
+        if (response_image == null and policy.require_portable_values and !policy.allow_native_only_values) return error.NativeOnlyValue;
+        response_frame = Frame.Response.init(.{
+            .world_surface_fingerprint = event.world_surface_fingerprint,
+            .target_certificate_fingerprint = event.target_certificate_fingerprint,
+            .world_port_id = event.world_port_id.?,
+            .request_fingerprint = event.request_fingerprint.?,
+            .response_kind = event.response_kind.?,
+            .response_value_table_id = null,
+            .response_fingerprint = event.response_fingerprint.?,
+            .response_image = response_image,
+            .replay_key = event.replay_key.?,
+            .status = response_status orelse .responded,
+        });
+        response_image = null;
+    }
+    errdefer if (response_frame) |*frame| frame.deinit(allocator);
+
+    var image = TranscriptImage.EventImage{
+        .event_fingerprint = 0,
+        .kind = event.kind,
+        .world_surface_fingerprint = event.world_surface_fingerprint,
+        .target_certificate_fingerprint = event.target_certificate_fingerprint,
+        .world_port_id = event.world_port_id,
+        .request_fingerprint = event.request_fingerprint,
+        .response_fingerprint = event.response_fingerprint,
+        .response_kind = event.response_kind,
+        .replay_key = event.replay_key,
+        .turn_index = event.turn_index,
+        .residual_site_index = event.residual_site_index,
+        .residual_site_fingerprint = event.residual_site_fingerprint,
+        .status = response_status,
+        .source_run = event.source_run,
+        .request_frame = request_frame,
+        .response_frame = response_frame,
+    };
+    image.event_fingerprint = fingerprintTranscriptEventImage(image);
+    return image;
+}
+
+fn finalStatusFromEvents(events: []const TranscriptImage.EventImage) TranscriptImage.FinalStatus {
+    var status: TranscriptImage.FinalStatus = .running;
+    for (events) |event| {
+        switch (event.kind) {
+            .run_completed => status = .completed,
+            .run_failed => status = .failed,
+            else => {},
+        }
+    }
+    return status;
+}
+
+fn encodeTranscriptEventImage(out: *std.ArrayList(u8), allocator: std.mem.Allocator, event: TranscriptImage.EventImage) !void {
+    try writeU64(out, allocator, event.event_fingerprint);
+    try writeU8(out, allocator, @intFromEnum(event.kind));
+    try writeU64(out, allocator, event.world_surface_fingerprint);
+    try writeU64(out, allocator, event.target_certificate_fingerprint);
+    try writeOptionalU32(out, allocator, event.world_port_id);
+    try writeOptionalU64(out, allocator, event.request_fingerprint);
+    try writeOptionalU64(out, allocator, event.response_fingerprint);
+    if (event.response_kind) |kind| {
+        try writeBool(out, allocator, true);
+        try writeU8(out, allocator, @intFromEnum(kind));
+    } else {
+        try writeBool(out, allocator, false);
+    }
+    try writeOptionalU64(out, allocator, event.replay_key);
+    try writeOptionalU64(out, allocator, event.turn_index);
+    try writeOptionalU64(out, allocator, event.residual_site_index);
+    try writeOptionalU64(out, allocator, event.residual_site_fingerprint);
+    if (event.status) |status| {
+        try writeBool(out, allocator, true);
+        try writeU8(out, allocator, @intFromEnum(status));
+    } else {
+        try writeBool(out, allocator, false);
+    }
+    try writeBool(out, allocator, event.source_run);
+    if (event.request_frame) |frame| {
+        try writeBool(out, allocator, true);
+        const encoded = try frame.encode(allocator);
+        defer allocator.free(encoded);
+        try writeBytes(out, allocator, encoded);
+    } else {
+        try writeBool(out, allocator, false);
+    }
+    if (event.response_frame) |frame| {
+        try writeBool(out, allocator, true);
+        const encoded = try frame.encode(allocator);
+        defer allocator.free(encoded);
+        try writeBytes(out, allocator, encoded);
+    } else {
+        try writeBool(out, allocator, false);
+    }
+}
+
+fn decodeTranscriptEventImage(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) !TranscriptImage.EventImage {
+    var event = TranscriptImage.EventImage{
+        .event_fingerprint = try readU64(bytes, cursor),
+        .kind = try enumFromByte(EventKind, try readU8(bytes, cursor)),
+        .world_surface_fingerprint = try readU64(bytes, cursor),
+        .target_certificate_fingerprint = try readU64(bytes, cursor),
+        .world_port_id = try readOptionalU32(bytes, cursor),
+        .request_fingerprint = try readOptionalU64(bytes, cursor),
+        .response_fingerprint = try readOptionalU64(bytes, cursor),
+        .response_kind = if (try readBool(bytes, cursor)) try enumFromByte(ResponseKind, try readU8(bytes, cursor)) else null,
+        .replay_key = try readOptionalU64(bytes, cursor),
+        .turn_index = try readOptionalUsize(bytes, cursor),
+        .residual_site_index = try readOptionalUsize(bytes, cursor),
+        .residual_site_fingerprint = try readOptionalU64(bytes, cursor),
+        .status = if (try readBool(bytes, cursor)) try enumFromByte(ResponseStatus, try readU8(bytes, cursor)) else null,
+        .source_run = try readBool(bytes, cursor),
+        .request_frame = null,
+        .response_frame = null,
+    };
+    errdefer event.deinit(allocator);
+    if (try readBool(bytes, cursor)) {
+        const encoded = try readBytesOwned(allocator, bytes, cursor);
+        defer allocator.free(encoded);
+        event.request_frame = try Frame.Request.decode(allocator, encoded);
+    }
+    if (try readBool(bytes, cursor)) {
+        const encoded = try readBytesOwned(allocator, bytes, cursor);
+        defer allocator.free(encoded);
+        event.response_frame = try Frame.Response.decode(allocator, encoded);
+    }
+    if (fingerprintTranscriptEventImage(event) != event.event_fingerprint) return error.InvalidFrameEncoding;
+    return event;
+}
+
+fn fingerprintValueImage(
+    value_table_id: ?u32,
+    boundary_value_fingerprint: ?u64,
+    codec_schema_descriptor_fingerprint: ?u64,
+    bytes: []const u8,
+) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.frame.value_image.fingerprint");
+    hashU64(&hasher, world_frame_value_image_fingerprint_version);
+    hashOptionalU32(&hasher, value_table_id);
+    hashOptionalU64(&hasher, boundary_value_fingerprint);
+    hashOptionalU64(&hasher, codec_schema_descriptor_fingerprint);
+    hashU64(&hasher, bytes.len);
+    hashBytes(&hasher, bytes);
+    return hasher.final();
+}
+
+fn fingerprintTranscriptEventImage(event: TranscriptImage.EventImage) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.transcript.event_image.fingerprint");
+    hashU64(&hasher, world_timeline_event_fingerprint_version);
+    hashU64(&hasher, @intFromEnum(event.kind));
+    hashU64(&hasher, event.world_surface_fingerprint);
+    hashU64(&hasher, event.target_certificate_fingerprint);
+    hashOptionalU32(&hasher, event.world_port_id);
+    hashOptionalU64(&hasher, event.request_fingerprint);
+    hashOptionalU64(&hasher, event.response_fingerprint);
+    if (event.response_kind) |kind| {
+        hashBool(&hasher, true);
+        hashU64(&hasher, @intFromEnum(kind));
+    } else {
+        hashBool(&hasher, false);
+    }
+    hashOptionalU64(&hasher, event.replay_key);
+    if (event.turn_index) |turn| {
+        hashBool(&hasher, true);
+        hashU64(&hasher, turn);
+    } else {
+        hashBool(&hasher, false);
+    }
+    if (event.residual_site_index) |site| {
+        hashBool(&hasher, true);
+        hashU64(&hasher, site);
+    } else {
+        hashBool(&hasher, false);
+    }
+    hashOptionalU64(&hasher, event.residual_site_fingerprint);
+    if (event.status) |status| {
+        hashBool(&hasher, true);
+        hashU64(&hasher, @intFromEnum(status));
+    } else {
+        hashBool(&hasher, false);
+    }
+    hashBool(&hasher, event.source_run);
+    if (event.request_frame) |frame| {
+        hashBool(&hasher, true);
+        hashU64(&hasher, frame.frame_fingerprint);
+    } else {
+        hashBool(&hasher, false);
+    }
+    if (event.response_frame) |frame| {
+        hashBool(&hasher, true);
+        hashU64(&hasher, frame.frame_fingerprint);
+    } else {
+        hashBool(&hasher, false);
+    }
+    return hasher.final();
+}
+
+fn fingerprintTranscriptImage(image: TranscriptImage) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.transcript.image.fingerprint");
+    hashU64(&hasher, world_transcript_image_fingerprint_version);
+    hashU64(&hasher, image.world_surface_fingerprint);
+    hashU64(&hasher, image.target_certificate_fingerprint);
+    hashU64(&hasher, @intFromEnum(image.final_status));
+    hashU64(&hasher, image.response_count);
+    hashU64(&hasher, image.events.len);
+    for (image.events) |event| hashU64(&hasher, event.event_fingerprint);
+    return hasher.final();
+}
+
+fn fingerprintTimelineEvent(event: Timeline.Event) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.timeline.event.fingerprint");
+    hashU64(&hasher, world_timeline_event_fingerprint_version);
+    hashU64(&hasher, @intFromEnum(event.kind));
+    hashU64(&hasher, event.world_surface_fingerprint);
+    hashU64(&hasher, event.target_certificate_fingerprint);
+    hashOptionalU64(&hasher, event.request_frame_fingerprint);
+    hashOptionalU64(&hasher, event.response_frame_fingerprint);
+    hashOptionalU64(&hasher, event.replay_key);
+    hashOptionalU64(&hasher, event.checkpoint_fingerprint);
+    hashOptionalU64(&hasher, event.branch_id);
+    hashU64(&hasher, event.turn_index);
+    if (event.status) |status| {
+        hashBool(&hasher, true);
+        hashU64(&hasher, @intFromEnum(status));
+    } else {
+        hashBool(&hasher, false);
+    }
+    return hasher.final();
+}
+
+fn fingerprintCheckpoint(checkpoint: Timeline.Checkpoint) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.timeline.checkpoint.fingerprint");
+    hashU64(&hasher, world_timeline_checkpoint_fingerprint_version);
+    hashU64(&hasher, checkpoint.world_surface_fingerprint);
+    hashU64(&hasher, checkpoint.target_certificate_fingerprint);
+    hashU64(&hasher, checkpoint.event_index);
+    hashU64(&hasher, checkpoint.turn_index);
+    hashOptionalU64(&hasher, checkpoint.current_request_fingerprint);
+    hashOptionalU64(&hasher, checkpoint.last_response_fingerprint);
+    hashOptionalU64(&hasher, checkpoint.capsule_image_fingerprint);
+    hashU64(&hasher, checkpoint.transcript_prefix_fingerprint);
+    hashU64(&hasher, checkpoint.branch_id);
+    hashU64(&hasher, @intFromEnum(checkpoint.status));
+    return hasher.final();
+}
+
+fn fingerprintAuditImage(image: AuditImage) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.audit.image.fingerprint");
+    hashU64(&hasher, world_audit_image_fingerprint_version);
+    hashU64(&hasher, image.world_surface_fingerprint);
+    hashU64(&hasher, image.target_certificate_fingerprint);
+    hashU64(&hasher, @intFromEnum(image.mode));
+    hashU64(&hasher, @intFromEnum(image.final_status));
+    hashU64(&hasher, image.request_frame_count);
+    hashU64(&hasher, image.response_frame_count);
+    hashU64(&hasher, image.replayed_frame_count);
+    hashU64(&hasher, image.verified_frame_count);
+    hashU64(&hasher, image.failed_frame_count);
+    hashU64(&hasher, image.branch_count);
+    hashU64(&hasher, image.checkpoint_count);
+    hashU64(&hasher, image.missing_portable_value_image_count);
+    hashU64(&hasher, image.native_only_value_count);
+    hashOptionalU64(&hasher, image.transcript_image_fingerprint);
+    return hasher.final();
+}
+
+fn fingerprintRequest(frame: Frame.Request) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.frame.request.fingerprint");
+    hashU64(&hasher, world_frame_request_fingerprint_version);
+    hashU64(&hasher, frame.world_surface_fingerprint);
+    hashOptionalU64(&hasher, frame.world_surface_replay_scope_fingerprint);
+    hashU64(&hasher, frame.target_certificate_fingerprint);
+    hashU64(&hasher, frame.world_port_id);
+    hashU64(&hasher, frame.residual_site_index);
+    hashU64(&hasher, frame.residual_site_fingerprint);
+    hashU64(&hasher, frame.request_fingerprint);
+    hashU64(&hasher, frame.turn_index);
+    hashOptionalU32(&hasher, frame.payload_value_table_id);
+    hashOptionalU32(&hasher, frame.expected_response_value_table_id);
+    hashOptionalU64(&hasher, frame.payload_value_fingerprint);
+    if (frame.payload_image) |image| {
+        hashBool(&hasher, true);
+        hashU64(&hasher, image.value_image_fingerprint);
+    } else {
+        hashBool(&hasher, false);
+    }
+    hashU64(&hasher, frame.replay_key_seed.world_surface_fingerprint);
+    hashU64(&hasher, frame.replay_key_seed.world_surface_scope_fingerprint);
+    hashU64(&hasher, frame.replay_key_seed.world_port_id);
+    hashU64(&hasher, frame.replay_key_seed.request_fingerprint);
+    hashOptionalU64(&hasher, frame.source_effect_shape_fingerprint);
+    hashOptionalU64(&hasher, frame.world_port_ref_fingerprint);
+    hashOptionalU64(&hasher, frame.trace_ref_fingerprint);
+    hashOptionalU64(&hasher, frame.evidence_ref_fingerprint);
+    hashU64(&hasher, frame.flags);
+    return hasher.final();
+}
+
+fn fingerprintResponse(frame: Frame.Response) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.frame.response.fingerprint");
+    hashU64(&hasher, world_frame_response_fingerprint_version);
+    hashU64(&hasher, frame.world_surface_fingerprint);
+    hashU64(&hasher, frame.target_certificate_fingerprint);
+    hashU64(&hasher, frame.world_port_id);
+    hashU64(&hasher, frame.request_fingerprint);
+    hashU64(&hasher, @intFromEnum(frame.response_kind));
+    hashOptionalU32(&hasher, frame.response_value_table_id);
+    hashU64(&hasher, frame.response_fingerprint);
+    hashOptionalU64(&hasher, frame.response_value_fingerprint);
+    if (frame.response_image) |image| {
+        hashBool(&hasher, true);
+        hashU64(&hasher, image.value_image_fingerprint);
+    } else {
+        hashBool(&hasher, false);
+    }
+    hashU64(&hasher, frame.replay_key);
+    hashU64(&hasher, @intFromEnum(frame.status));
+    hashOptionalBytes(&hasher, frame.error_tag);
+    hashOptionalBytes(&hasher, frame.reason);
+    hashU64(&hasher, frame.flags);
+    return hasher.final();
+}
+
+fn encodePortableValue(comptime Value: type, allocator: std.mem.Allocator, out: *std.ArrayList(u8), value: Value) !void {
+    switch (@typeInfo(Value)) {
+        .void => {},
+        .bool => try writeBool(out, allocator, value),
+        .int, .comptime_int => {
+            const info = @typeInfo(Value).int;
+            if (info.bits > 64) return error.UnsupportedValueImage;
+            if (info.signedness == .signed) {
+                try writeI64(out, allocator, @intCast(value));
+            } else {
+                try writeU64(out, allocator, @intCast(value));
+            }
+        },
+        .float, .comptime_float => {
+            if (Value == f32) {
+                try writeU32(out, allocator, @as(u32, @bitCast(value)));
+            } else if (Value == f64) {
+                try writeU64(out, allocator, @as(u64, @bitCast(value)));
+            } else {
+                return error.UnsupportedValueImage;
+            }
+        },
+        .@"enum" => |info| {
+            if (info.tag_type) |Tag| {
+                if (@bitSizeOf(Tag) > 64) return error.UnsupportedValueImage;
+            }
+            try writeU64(out, allocator, @intCast(@intFromEnum(value)));
+        },
+        .pointer => |pointer| {
+            if (comptime pointer.size == .slice and pointer.child == u8) {
+                try writeBytes(out, allocator, value);
+                return;
+            }
+            if (comptime isStringList(Value)) {
+                try writeU64(out, allocator, value.len);
+                for (value) |item| try writeBytes(out, allocator, item);
+                return;
+            }
+            return error.UnsupportedValueImage;
+        },
+        .optional => |optional| {
+            if (value) |payload| {
+                try writeBool(out, allocator, true);
+                try encodePortableValue(optional.child, allocator, out, payload);
+            } else {
+                try writeBool(out, allocator, false);
+            }
+        },
+        .@"struct" => |info| {
+            inline for (info.fields) |field| {
+                try encodePortableValue(field.type, allocator, out, @field(value, field.name));
+            }
+        },
+        .@"union" => |union_info| {
+            const Tag = union_info.tag_type orelse return error.UnsupportedValueImage;
+            const active_tag = std.meta.activeTag(value);
+            inline for (union_info.fields, 0..) |field, field_index| {
+                if (active_tag == @field(Tag, field.name)) {
+                    try writeU32(out, allocator, @as(u32, @intCast(field_index)));
+                    if (field.type != void) {
+                        try encodePortableValue(field.type, allocator, out, @field(value, field.name));
+                    }
+                    return;
+                }
+            }
+            unreachable;
+        },
+        else => return error.UnsupportedValueImage,
+    }
+}
+
+fn decodePortableValue(comptime Value: type, allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) !Value {
+    return switch (@typeInfo(Value)) {
+        .void => {},
+        .bool => try readBool(bytes, cursor),
+        .int, .comptime_int => blk: {
+            const info = @typeInfo(Value).int;
+            if (info.bits > 64) return error.UnsupportedValueImage;
+            if (info.signedness == .signed) {
+                const raw = try readI64(bytes, cursor);
+                break :blk std.math.cast(Value, raw) orelse return error.InvalidFrameEncoding;
+            }
+            const raw = try readU64(bytes, cursor);
+            break :blk std.math.cast(Value, raw) orelse return error.InvalidFrameEncoding;
+        },
+        .float, .comptime_float => blk: {
+            if (Value == f32) {
+                break :blk @as(f32, @bitCast(try readU32(bytes, cursor)));
+            } else if (Value == f64) {
+                break :blk @as(f64, @bitCast(try readU64(bytes, cursor)));
+            }
+            return error.UnsupportedValueImage;
+        },
+        .@"enum" => |info| blk: {
+            const raw = try readU64(bytes, cursor);
+            inline for (info.fields) |field| {
+                if (field.value == raw) break :blk @as(Value, @enumFromInt(raw));
+            }
+            return error.InvalidFrameEncoding;
+        },
+        .pointer => |pointer| blk: {
+            if (comptime pointer.size == .slice and pointer.child == u8) {
+                break :blk try readBytesOwned(allocator, bytes, cursor);
+            }
+            if (comptime isStringList(Value)) {
+                const len = try readU64AsUsize(bytes, cursor);
+                const Child = @typeInfo(Value).pointer.child;
+                const result = try allocator.alloc(Child, len);
+                errdefer allocator.free(result);
+                var initialized: usize = 0;
+                errdefer for (result[0..initialized]) |item| allocator.free(@constCast(item));
+                for (result) |*item| {
+                    item.* = try readBytesOwned(allocator, bytes, cursor);
+                    initialized += 1;
+                }
+                break :blk result;
+            }
+            return error.UnsupportedValueImage;
+        },
+        .optional => |optional| blk: {
+            if (!try readBool(bytes, cursor)) break :blk null;
+            const payload = try decodePortableValue(optional.child, allocator, bytes, cursor);
+            break :blk payload;
+        },
+        .@"struct" => |info| blk: {
+            var result: Value = undefined;
+            var initialized_fields: usize = 0;
+            errdefer inline for (info.fields, 0..) |field, field_index| {
+                if (field_index < initialized_fields) {
+                    deinitOwnedValue(allocator, @field(result, field.name));
+                }
+            };
+            inline for (info.fields) |field| {
+                @field(result, field.name) = try decodePortableValue(field.type, allocator, bytes, cursor);
+                initialized_fields += 1;
+            }
+            break :blk result;
+        },
+        .@"union" => |union_info| blk: {
+            const field_index = try readU32(bytes, cursor);
+            inline for (union_info.fields, 0..) |field, index| {
+                if (field_index == index) {
+                    if (field.type == void) break :blk @unionInit(Value, field.name, {});
+                    const payload = try decodePortableValue(field.type, allocator, bytes, cursor);
+                    errdefer deinitOwnedValue(allocator, payload);
+                    break :blk @unionInit(Value, field.name, payload);
+                }
+            }
+            return error.InvalidFrameEncoding;
+        },
+        else => return error.UnsupportedValueImage,
+    };
+}
+
+fn valueIsDynamic(comptime Value: type) bool {
+    return switch (@typeInfo(Value)) {
+        .pointer => |pointer| pointer.size == .slice,
+        .optional => |optional| valueIsDynamic(optional.child),
+        .@"struct" => |info| {
+            inline for (info.fields) |field| {
+                if (valueIsDynamic(field.type)) return true;
+            }
+            return false;
+        },
+        .@"union" => |info| {
+            inline for (info.fields) |field| {
+                if (valueIsDynamic(field.type)) return true;
+            }
+            return false;
+        },
+        else => false,
+    };
+}
+
+fn writeU8(out: *std.ArrayList(u8), allocator: std.mem.Allocator, value: u8) !void {
+    try out.append(allocator, value);
+}
+
+fn writeBool(out: *std.ArrayList(u8), allocator: std.mem.Allocator, value: bool) !void {
+    try writeU8(out, allocator, if (value) 1 else 0);
+}
+
+fn writeU32(out: *std.ArrayList(u8), allocator: std.mem.Allocator, value: anytype) !void {
+    var buffer: [4]u8 = undefined;
+    std.mem.writeInt(u32, &buffer, @intCast(value), .little);
+    try out.appendSlice(allocator, &buffer);
+}
+
+fn writeU64(out: *std.ArrayList(u8), allocator: std.mem.Allocator, value: anytype) !void {
+    var buffer: [8]u8 = undefined;
+    std.mem.writeInt(u64, &buffer, @intCast(value), .little);
+    try out.appendSlice(allocator, &buffer);
+}
+
+fn writeI64(out: *std.ArrayList(u8), allocator: std.mem.Allocator, value: i64) !void {
+    var buffer: [8]u8 = undefined;
+    std.mem.writeInt(i64, &buffer, value, .little);
+    try out.appendSlice(allocator, &buffer);
+}
+
+fn writeOptionalU32(out: *std.ArrayList(u8), allocator: std.mem.Allocator, value: ?u32) !void {
+    if (value) |present| {
+        try writeBool(out, allocator, true);
+        try writeU32(out, allocator, present);
+    } else {
+        try writeBool(out, allocator, false);
+    }
+}
+
+fn writeOptionalU64(out: *std.ArrayList(u8), allocator: std.mem.Allocator, value: anytype) !void {
+    if (value) |present| {
+        try writeBool(out, allocator, true);
+        try writeU64(out, allocator, present);
+    } else {
+        try writeBool(out, allocator, false);
+    }
+}
+
+fn writeBytes(out: *std.ArrayList(u8), allocator: std.mem.Allocator, bytes: []const u8) !void {
+    try writeU64(out, allocator, bytes.len);
+    try out.appendSlice(allocator, bytes);
+}
+
+fn writeOptionalBytes(out: *std.ArrayList(u8), allocator: std.mem.Allocator, bytes: ?[]const u8) !void {
+    if (bytes) |present| {
+        try writeBool(out, allocator, true);
+        try writeBytes(out, allocator, present);
+    } else {
+        try writeBool(out, allocator, false);
+    }
+}
+
+fn writeOptionalValueImage(out: *std.ArrayList(u8), allocator: std.mem.Allocator, image: ?Frame.ValueImage) !void {
+    if (image) |present| {
+        try writeBool(out, allocator, true);
+        const encoded = try present.encode(allocator);
+        defer allocator.free(encoded);
+        try writeBytes(out, allocator, encoded);
+    } else {
+        try writeBool(out, allocator, false);
+    }
+}
+
+fn readU8(bytes: []const u8, cursor: *usize) !u8 {
+    if (cursor.* >= bytes.len) return error.InvalidFrameEncoding;
+    const value = bytes[cursor.*];
+    cursor.* += 1;
+    return value;
+}
+
+fn readBool(bytes: []const u8, cursor: *usize) !bool {
+    return switch (try readU8(bytes, cursor)) {
+        0 => false,
+        1 => true,
+        else => error.InvalidFrameEncoding,
+    };
+}
+
+fn readU32(bytes: []const u8, cursor: *usize) !u32 {
+    if (bytes.len - cursor.* < 4) return error.InvalidFrameEncoding;
+    const value = std.mem.readInt(u32, bytes[cursor.*..][0..4], .little);
+    cursor.* += 4;
+    return value;
+}
+
+fn readU64(bytes: []const u8, cursor: *usize) !u64 {
+    if (bytes.len - cursor.* < 8) return error.InvalidFrameEncoding;
+    const value = std.mem.readInt(u64, bytes[cursor.*..][0..8], .little);
+    cursor.* += 8;
+    return value;
+}
+
+fn readI64(bytes: []const u8, cursor: *usize) !i64 {
+    if (bytes.len - cursor.* < 8) return error.InvalidFrameEncoding;
+    const value = std.mem.readInt(i64, bytes[cursor.*..][0..8], .little);
+    cursor.* += 8;
+    return value;
+}
+
+fn readU64AsUsize(bytes: []const u8, cursor: *usize) !usize {
+    return std.math.cast(usize, try readU64(bytes, cursor)) orelse error.InvalidFrameEncoding;
+}
+
+fn readOptionalU32(bytes: []const u8, cursor: *usize) !?u32 {
+    if (!try readBool(bytes, cursor)) return null;
+    return try readU32(bytes, cursor);
+}
+
+fn readOptionalU64(bytes: []const u8, cursor: *usize) !?u64 {
+    if (!try readBool(bytes, cursor)) return null;
+    return try readU64(bytes, cursor);
+}
+
+fn readOptionalUsize(bytes: []const u8, cursor: *usize) !?usize {
+    if (!try readBool(bytes, cursor)) return null;
+    return try readU64AsUsize(bytes, cursor);
+}
+
+fn readBytesOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) ![]const u8 {
+    const len = try readU64AsUsize(bytes, cursor);
+    if (len > bytes.len - cursor.*) return error.InvalidFrameEncoding;
+    const result = try allocator.dupe(u8, bytes[cursor.* .. cursor.* + len]);
+    cursor.* += len;
+    return result;
+}
+
+fn readOptionalBytesOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) !?[]const u8 {
+    if (!try readBool(bytes, cursor)) return null;
+    return try readBytesOwned(allocator, bytes, cursor);
+}
+
+fn readOptionalValueImage(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) !?Frame.ValueImage {
+    if (!try readBool(bytes, cursor)) return null;
+    const encoded = try readBytesOwned(allocator, bytes, cursor);
+    defer allocator.free(encoded);
+    return try Frame.ValueImage.decode(allocator, encoded);
+}
+
+fn enumFromByte(comptime Enum: type, value: u8) !Enum {
+    inline for (@typeInfo(Enum).@"enum".fields) |field| {
+        if (field.value == value) return @as(Enum, @enumFromInt(value));
+    }
+    return error.InvalidFrameEncoding;
+}
+
 fn hashBytes(hasher: *std.hash.Wyhash, bytes: []const u8) void {
     hasher.update(bytes);
 }
 
-fn hashU64(hasher: *std.hash.Wyhash, value: u64) void {
+fn hashU64(hasher: *std.hash.Wyhash, value: anytype) void {
     var buffer: [8]u8 = undefined;
-    std.mem.writeInt(u64, &buffer, value, .little);
+    std.mem.writeInt(u64, &buffer, @intCast(value), .little);
     hasher.update(&buffer);
+}
+
+fn hashBool(hasher: *std.hash.Wyhash, value: bool) void {
+    hashU64(hasher, @as(u8, if (value) 1 else 0));
+}
+
+fn hashOptionalU32(hasher: *std.hash.Wyhash, value: ?u32) void {
+    if (value) |present| {
+        hashBool(hasher, true);
+        hashU64(hasher, present);
+    } else {
+        hashBool(hasher, false);
+    }
+}
+
+fn hashOptionalU64(hasher: *std.hash.Wyhash, value: ?u64) void {
+    if (value) |present| {
+        hashBool(hasher, true);
+        hashU64(hasher, present);
+    } else {
+        hashBool(hasher, false);
+    }
+}
+
+fn hashOptionalBytes(hasher: *std.hash.Wyhash, bytes: ?[]const u8) void {
+    if (bytes) |present| {
+        hashBool(hasher, true);
+        hashU64(hasher, present.len);
+        hashBytes(hasher, present);
+    } else {
+        hashBool(hasher, false);
+    }
 }
 
 test {
