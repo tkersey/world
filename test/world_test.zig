@@ -1450,6 +1450,37 @@ test "rejected and failed frame responses record terminal transcript state" {
     try std.testing.expectEqual(@as(usize, 2), image.response_count);
 }
 
+test "portable transcript image rejects responded frames without value images" {
+    const request = testRequestFrame();
+    const response = world.Frame.Response.init(.{
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .target_certificate_fingerprint = request.target_certificate_fingerprint,
+        .world_port_id = request.world_port_id,
+        .request_fingerprint = request.request_fingerprint,
+        .response_fingerprint = 1,
+        .replay_key = request.replay_key_seed.withResponse(1).fingerprint(),
+        .status = .responded,
+    });
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    try transcript.append(.{
+        .kind = .frame_responded,
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .target_certificate_fingerprint = request.target_certificate_fingerprint,
+        .world_port_id = request.world_port_id,
+        .request_fingerprint = request.request_fingerprint,
+        .response_fingerprint = response.response_fingerprint,
+        .response_kind = response.response_kind,
+        .replay_key = response.replay_key,
+        .turn_index = request.turn_index,
+        .residual_site_index = request.residual_site_index,
+        .residual_site_fingerprint = request.residual_site_fingerprint,
+        .status = .responded,
+        .response_frame = response,
+    });
+    try std.testing.expectError(error.MissingValueImage, transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable }));
+}
+
 test "timeline event checkpoint branch and audit image fingerprints are stable" {
     const request = testRequestFrame();
     var response = try world.Frame.Response.fromValue(std.testing.allocator, request, 1, 0xdec1_5100, .@"resume", @as(i32, 7), .portable);

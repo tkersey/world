@@ -1371,6 +1371,11 @@ pub const TranscriptImage = struct {
             initialized += 1;
         }
         if (cursor != bytes.len) return error.InvalidFrameEncoding;
+        var decoded_response_count: usize = 0;
+        for (events) |event| {
+            if (event.response_frame != null) decoded_response_count += 1;
+        }
+        if (decoded_response_count != response_count) return error.InvalidFrameEncoding;
         const image = @This(){
             .transcript_image_fingerprint = transcript_image_fingerprint,
             .world_surface_fingerprint = world_surface_fingerprint,
@@ -2555,6 +2560,12 @@ fn eventImageFromTranscriptEvent(allocator: std.mem.Allocator, event: Transcript
         ResponseStatus.failed
     else
         null;
+    if (response_frame) |frame| {
+        if (frame.status == .responded and frame.response_image == null) {
+            if (policy.require_response_images_for_replay) return error.MissingValueImage;
+            if (policy.require_portable_values and !policy.allow_native_only_values) return error.NativeOnlyValue;
+        }
+    }
     const source_response_event = switch (event.kind) {
         .port_responded,
         .frame_responded,
