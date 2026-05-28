@@ -2317,9 +2317,6 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         self.audit.replay_mismatch_count += 1;
                         return Error.VerifyDivergence;
                     }
-                    if (expected_response_frame) |frame| {
-                        try appendPortEvent(Target, self.options, .frame_verified, Decl.world_port_id, (self.pending_request orelse return Error.UnknownResidualSite).trace(), expected_response_fingerprint, .@"resume", null, null, frame);
-                    }
                     if (expected_value_image_fingerprint) |expected_image_fingerprint| {
                         var fresh_image = try Frame.ValueImage.fromValue(
                             self.allocator,
@@ -2331,6 +2328,9 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         );
                         defer fresh_image.deinit(self.allocator);
                         if (fresh_image.value_image_fingerprint != expected_image_fingerprint) return error.VerifyValueImageMismatch;
+                    }
+                    if (expected_response_frame) |frame| {
+                        try appendPortEvent(Target, self.options, .frame_verified, Decl.world_port_id, (self.pending_request orelse return Error.UnknownResidualSite).trace(), expected_response_fingerprint, .@"resume", null, null, frame);
                     }
                     self.audit.fresh_response_count += 1;
                     return try self.retainResponse(Decl.Response, fresh);
@@ -2753,7 +2753,21 @@ fn appendPortEvent(
         .turn_index = trace.turn_index,
         .residual_site_index = trace.operation_site_index,
         .residual_site_fingerprint = trace.operation_site_fingerprint,
-        .status = if (kind == .port_responded) .responded else null,
+        .status = switch (kind) {
+            .port_responded,
+            .port_replayed,
+            .frame_responded,
+            .frame_replayed,
+            .frame_verified,
+            => .responded,
+            .port_rejected,
+            .frame_rejected,
+            => .rejected,
+            .port_failed,
+            .frame_failed,
+            => .failed,
+            else => null,
+        },
         .value = value,
         .request_frame = cloned_request_frame,
         .response_frame = cloned_response_frame,

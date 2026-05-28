@@ -1522,6 +1522,10 @@ test "step frame nextFrame resumeFrame and verify adapter image path work" {
     const image_response = for (frame_image.events) |event| {
         if (event.response_frame) |response| break response;
     } else return error.ExpectedResponseFrame;
+    const image_response_event = for (frame_image.events) |event| {
+        if (event.kind == .frame_responded) break event;
+    } else return error.ExpectedResponseFrame;
+    try std.testing.expectEqual(world.ResponseStatus.responded, image_response_event.status.?);
     try std.testing.expectEqual(expected_response_frame_fingerprint, image_response.frame_fingerprint);
     var frame_replay_runtime = boundary.Runtime.init(std.testing.allocator);
     defer frame_replay_runtime.deinit();
