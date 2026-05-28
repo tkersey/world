@@ -1352,6 +1352,10 @@ test "value image scalar string product sum and policy failures" {
     var native_only: i32 = 1;
     try std.testing.expectError(error.UnsupportedValueImage, world.Frame.ValueImage.fromValue(std.testing.allocator, null, null, null, &native_only, .portable));
     try std.testing.expectError(error.UnsupportedValueImage, world.Frame.ValueImage.fromValue(std.testing.allocator, null, null, null, @as([]const u8, "too-big"), .{ .max_value_image_bytes = 1 }));
+    const over_decode_cap = try std.testing.allocator.alloc(u8, world.world_max_decoded_byte_field_len + 1);
+    defer std.testing.allocator.free(over_decode_cap);
+    @memset(over_decode_cap, 0);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Frame.ValueImage.fromValue(std.testing.allocator, null, null, null, over_decode_cap, .{}));
 }
 
 test "transcript image encode decode round trip stable and image replay works without handler context" {

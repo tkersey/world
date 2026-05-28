@@ -3516,6 +3516,7 @@ fn writeOptionalU64(out: *std.ArrayList(u8), allocator: std.mem.Allocator, value
 }
 
 fn writeBytes(out: *std.ArrayList(u8), allocator: std.mem.Allocator, bytes: []const u8) !void {
+    if (bytes.len > world_max_decoded_byte_field_len) return error.InvalidFrameEncoding;
     try writeU64(out, allocator, bytes.len);
     try out.appendSlice(allocator, bytes);
 }
