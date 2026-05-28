@@ -1160,6 +1160,12 @@ test "response frame status rejected failed and canonical bytes" {
     const decoded_value = try decoded.decodeValue(std.testing.allocator, i32);
     try std.testing.expectEqual(@as(i32, 7), decoded_value);
 
+    var tampered = try std.testing.allocator.dupe(u8, encoded);
+    defer std.testing.allocator.free(tampered);
+    const response_value_fingerprint_offset = 4 + 4 + 8 + 8 + 8 + 4 + 8 + 1 + 1 + 4 + 8 + 1;
+    tampered[response_value_fingerprint_offset] ^= 1;
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Frame.Response.decode(std.testing.allocator, tampered));
+
     const rejected = world.Frame.Response.init(.{
         .world_surface_fingerprint = request.world_surface_fingerprint,
         .target_certificate_fingerprint = request.target_certificate_fingerprint,
@@ -1394,6 +1400,10 @@ test "rejected and failed frame responses record terminal transcript state" {
     try std.testing.expectEqual(@as(usize, 1), summary.frame_rejected);
     try std.testing.expectEqual(@as(usize, 1), summary.frame_failed);
     try std.testing.expectEqual(@as(usize, 2), summary.run_failed);
+
+    var image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer image.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 2), image.response_count);
 }
 
 test "timeline event checkpoint branch and audit image fingerprints are stable" {

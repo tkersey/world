@@ -627,6 +627,8 @@ pub const Frame = struct {
             const response_value_fingerprint = try readOptionalU64(bytes, cursor);
             var response_image = try readOptionalValueImage(allocator, bytes, cursor);
             errdefer if (response_image) |*image| image.deinit(allocator);
+            const expected_response_value_fingerprint: ?u64 = if (response_image) |image| image.value_image_fingerprint else null;
+            if (response_value_fingerprint != expected_response_value_fingerprint) return error.InvalidFrameEncoding;
             const replay_key = try readU64(bytes, cursor);
             const status = try enumFromByte(ResponseStatus, try readU8(bytes, cursor));
             const error_tag = try readOptionalBytesOwned(allocator, bytes, cursor);
@@ -651,7 +653,6 @@ pub const Frame = struct {
             });
             result.owns_error_tag = error_tag != null;
             result.owns_reason = reason != null;
-            result.response_value_fingerprint = response_value_fingerprint;
             if (result.frame_fingerprint != frame_fingerprint) return error.InvalidFrameEncoding;
             return result;
         }
@@ -2481,13 +2482,16 @@ fn eventImageFromTranscriptEvent(allocator: std.mem.Allocator, event: Transcript
     else
         null;
     if (event.world_port_id != null and event.request_fingerprint != null and event.response_fingerprint != null and event.response_kind != null and event.replay_key != null) {
+        const frame_status = response_status orelse .responded;
         var response_image: ?Frame.ValueImage = null;
         if (event.value) |stored| {
             if (stored.portable_image) |image| response_image = try image.clone(allocator);
         }
         errdefer if (response_image) |*image| image.deinit(allocator);
-        if (response_image == null and policy.require_response_images_for_replay) return error.MissingValueImage;
-        if (response_image == null and policy.require_portable_values and !policy.allow_native_only_values) return error.NativeOnlyValue;
+        if (frame_status == .responded) {
+            if (response_image == null and policy.require_response_images_for_replay) return error.MissingValueImage;
+            if (response_image == null and policy.require_portable_values and !policy.allow_native_only_values) return error.NativeOnlyValue;
+        }
         response_frame = Frame.Response.init(.{
             .world_surface_fingerprint = event.world_surface_fingerprint,
             .target_certificate_fingerprint = event.target_certificate_fingerprint,
@@ -2498,7 +2502,7 @@ fn eventImageFromTranscriptEvent(allocator: std.mem.Allocator, event: Transcript
             .response_fingerprint = event.response_fingerprint.?,
             .response_image = response_image,
             .replay_key = event.replay_key.?,
-            .status = response_status orelse .responded,
+            .status = frame_status,
         });
         response_image = null;
     }
