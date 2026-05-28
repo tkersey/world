@@ -2136,7 +2136,18 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     self.audit.fresh_response_count += 1;
                     self.session.resumeTyped(typed_request, retained_value) catch |err| {
                         self.audit.failed_count += 1;
-                        try appendPortEvent(Target, self.options, .frame_failed, Decl.world_port_id, request.trace(), response_trace.fingerprint, response_frame.response_kind, null, null, response_frame);
+                        const failed_response_frame = Frame.Response.init(.{
+                            .world_surface_fingerprint = response_frame.world_surface_fingerprint,
+                            .target_certificate_fingerprint = response_frame.target_certificate_fingerprint,
+                            .world_port_id = response_frame.world_port_id,
+                            .request_fingerprint = response_frame.request_fingerprint,
+                            .response_kind = response_frame.response_kind,
+                            .response_value_table_id = response_frame.response_value_table_id,
+                            .response_fingerprint = response_frame.response_fingerprint,
+                            .replay_key = response_frame.replay_key,
+                            .status = .failed,
+                        });
+                        try appendPortEvent(Target, self.options, .frame_failed, Decl.world_port_id, request.trace(), response_trace.fingerprint, response_frame.response_kind, null, null, failed_response_frame);
                         try self.markRunFailed();
                         return err;
                     };

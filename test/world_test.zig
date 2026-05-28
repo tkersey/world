@@ -2067,6 +2067,19 @@ test "resume frame terminally fails when session rejects accepted response" {
     try std.testing.expectEqual(@as(usize, 1), summary.frame_responded);
     try std.testing.expectEqual(@as(usize, 1), summary.frame_failed);
     try std.testing.expectEqual(@as(usize, 1), summary.run_failed);
+    const failed_event = for (transcript.events.items) |event| {
+        if (event.kind == .frame_failed) break event;
+    } else return error.ExpectedFrameFailure;
+    try std.testing.expectEqual(world.ResponseStatus.failed, failed_event.status.?);
+    try std.testing.expectEqual(world.ResponseStatus.failed, failed_event.response_frame.?.status);
+
+    var image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer image.deinit(std.testing.allocator);
+    const failed_image_event = for (image.events) |event| {
+        if (event.kind == .frame_failed) break event;
+    } else return error.ExpectedFrameFailure;
+    try std.testing.expectEqual(world.ResponseStatus.failed, failed_image_event.status.?);
+    try std.testing.expectEqual(world.ResponseStatus.failed, failed_image_event.response_frame.?.status);
 }
 
 test "portable transcript image rejects responded frames without value images" {
