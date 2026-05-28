@@ -127,6 +127,7 @@ pub const world_timeline_branch_format_version: u32 = 1;
 pub const world_timeline_branch_fingerprint_version: u32 = 1;
 pub const world_audit_image_format_version: u32 = 1;
 pub const world_audit_image_fingerprint_version: u32 = 1;
+pub const world_max_decoded_byte_field_len: usize = 16 * 1024 * 1024;
 
 pub const ValuePolicy = struct {
     require_portable_values: bool = false,
@@ -3527,6 +3528,7 @@ fn readOptionalUsize(bytes: []const u8, cursor: *usize) !?usize {
 
 fn readBytesOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) ![]const u8 {
     const len = try readU64AsUsize(bytes, cursor);
+    if (len > world_max_decoded_byte_field_len) return error.InvalidFrameEncoding;
     if (len > bytes.len - cursor.*) return error.InvalidFrameEncoding;
     const result = try allocator.dupe(u8, bytes[cursor.* .. cursor.* + len]);
     cursor.* += len;
