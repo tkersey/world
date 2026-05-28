@@ -1540,7 +1540,6 @@ pub const AuditImage = struct {
                 if (eventKindAllowsResponseFrame(event.kind)) {
                     if (event.response_frame) |frame| {
                         image.response_frame_count += 1;
-                        if (event.kind == .port_replayed or event.kind == .frame_replayed) image.replayed_frame_count += 1;
                         if (frame.status == .failed) image.failed_frame_count += 1;
                     }
                 }
@@ -1555,6 +1554,7 @@ pub const AuditImage = struct {
                     }
                 }
             }
+            image.replayed_frame_count = report.replayed_response_count;
         } else {
             image.request_frame_count = report.port_request_count;
             image.response_frame_count = report.fresh_response_count + report.replayed_response_count;

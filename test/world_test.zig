@@ -1739,7 +1739,7 @@ test "step frame nextFrame resumeFrame and verify adapter image path work" {
     defer frame_verify_record_image.deinit(std.testing.allocator);
     const frame_verify_audit = world.AuditImage.fromReport(frame_verify_recorded.audit, frame_verify_record_image);
     try std.testing.expectEqual(@as(usize, 1), frame_verify_audit.response_frame_count);
-    try std.testing.expectEqual(@as(usize, 0), frame_verify_audit.replayed_frame_count);
+    try std.testing.expectEqual(@as(usize, 1), frame_verify_audit.replayed_frame_count);
     try std.testing.expectEqual(@as(usize, 1), frame_verify_audit.verified_frame_count);
     try std.testing.expectEqual(@as(usize, 0), frame_verify_audit.failed_frame_count);
 
@@ -2022,7 +2022,7 @@ test "world timeline port frame byte adapter native adapter replay adapter agent
 
     const audit_image = world.AuditImage.fromReport(replayed.audit, image);
     try std.testing.expectEqual(@as(usize, 1), audit_image.response_frame_count);
-    try std.testing.expectEqual(@as(usize, 0), audit_image.replayed_frame_count);
+    try std.testing.expectEqual(@as(usize, 1), audit_image.replayed_frame_count);
     try std.testing.expect(audit_image.audit_fingerprint != 0);
 }
 
