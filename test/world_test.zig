@@ -1251,6 +1251,21 @@ test "transcript image encode decode round trip stable and image replay works wi
     defer decoded.deinit(std.testing.allocator);
     try std.testing.expectEqual(image.transcript_image_fingerprint, decoded.transcript_image_fingerprint);
     try std.testing.expectEqual(@as(usize, 1), decoded.response_count);
+    const decoded_response = for (decoded.events) |event| {
+        if (event.response_frame) |response| break response;
+    } else return error.ExpectedResponseFrame;
+    try std.testing.expectEqual(@as(?u32, 1), decoded_response.response_value_table_id);
+
+    var forged_header: [49]u8 = undefined;
+    std.mem.writeInt(u32, forged_header[0..4], world.world_transcript_image_format_version, .little);
+    std.mem.writeInt(u32, forged_header[4..8], world.world_transcript_image_fingerprint_version, .little);
+    std.mem.writeInt(u64, forged_header[8..16], 0, .little);
+    std.mem.writeInt(u64, forged_header[16..24], fixtures.Ports.Target.WorldSurface.surface_fingerprint, .little);
+    std.mem.writeInt(u64, forged_header[24..32], fixtures.Ports.Target.Certificate.certificate_fingerprint, .little);
+    forged_header[32] = @intFromEnum(world.TranscriptImage.FinalStatus.completed);
+    std.mem.writeInt(u64, forged_header[33..41], 0, .little);
+    std.mem.writeInt(u64, forged_header[41..49], 1, .little);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.TranscriptImage.decode(std.testing.allocator, &forged_header));
 
     var rebuilt_transcript = try world.Transcript.fromImage(std.testing.allocator, decoded);
     defer rebuilt_transcript.deinit();
@@ -1310,6 +1325,9 @@ test "step frame nextFrame resumeFrame and verify adapter image path work" {
             const payload_value_fingerprint_offset = 4 + 4 + 8 + 8 + 1 + 8 + 8 + 4 + 8 + 8 + 8 + 8 + 1 + 4 + 1 + 4 + 1;
             tampered_request[payload_value_fingerprint_offset] ^= 1;
             try std.testing.expectError(error.InvalidFrameEncoding, world.Frame.Request.decode(std.testing.allocator, tampered_request));
+            var wrong_value_table_response = try world.Frame.Response.fromValue(std.testing.allocator, request, null, response_fingerprint, .@"resume", @as(i32, 7), .portable);
+            defer wrong_value_table_response.deinit(std.testing.allocator);
+            try std.testing.expectError(error.FrameValueTableMismatch, run.resumeFrame(wrong_value_table_response));
             var response = try world.Frame.Response.fromValue(std.testing.allocator, request, 1, response_fingerprint, .@"resume", @as(i32, 7), .portable);
             defer response.deinit(std.testing.allocator);
             expected_response_frame_fingerprint = response.frame_fingerprint;

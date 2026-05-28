@@ -38,6 +38,7 @@ pub const Error = error{
     FrameTargetCertificateMismatch,
     FramePortMismatch,
     FrameRequestFingerprintMismatch,
+    FrameValueTableMismatch,
     VerifyMissingExpected,
     VerifyResponseKindMismatch,
     VerifyResponseFingerprintMismatch,
@@ -162,6 +163,7 @@ pub const Frame = struct {
         FrameTargetCertificateMismatch,
         FramePortMismatch,
         FrameRequestFingerprintMismatch,
+        FrameValueTableMismatch,
         VerifyMissingExpected,
         VerifyResponseKindMismatch,
         VerifyResponseFingerprintMismatch,
@@ -1362,6 +1364,7 @@ pub const TranscriptImage = struct {
         const final_status = try enumFromByte(FinalStatus, try readU8(bytes, &cursor));
         const response_count = try readU64AsUsize(bytes, &cursor);
         const event_count = try readU64AsUsize(bytes, &cursor);
+        if (event_count > bytes.len - cursor) return error.InvalidFrameEncoding;
         const events = try allocator.alloc(EventImage, event_count);
         errdefer allocator.free(events);
         var initialized: usize = 0;
@@ -1877,6 +1880,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     if (response_frame.target_certificate_fingerprint != frame.target_certificate_fingerprint) return error.FrameTargetCertificateMismatch;
                     if (response_frame.world_port_id != world_port_id) return error.FramePortMismatch;
                     if (response_frame.request_fingerprint != frame.request_fingerprint) return error.FrameRequestFingerprintMismatch;
+                    if (response_frame.status == .responded and response_frame.response_value_table_id != frame.expected_response_value_table_id) return error.FrameValueTableMismatch;
                     if (response_frame.replay_key != frame.replay_key_seed.withResponse(response_frame.response_fingerprint).fingerprint()) return error.ReplayMissing;
                     if (response_frame.status == .rejected) {
                         self.audit.rejected_count += 1;
@@ -2077,6 +2081,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             self.audit.replay_mismatch_count += 1;
                             return err;
                         };
+                        if (frame.response_value_table_id != valueIdForRuntime(Target, Decl.world_port_id, .@"resume")) return error.FrameValueTableMismatch;
                         const value = try frame.decodeValue(self.allocator, Decl.Response);
                         var value_owned = true;
                         errdefer if (value_owned) deinitOwnedValue(self.allocator, value);
@@ -2145,6 +2150,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             return err;
                         };
                         expected_response_fingerprint = frame.response_fingerprint;
+                        if (frame.response_value_table_id != valueIdForRuntime(Target, Decl.world_port_id, .@"resume")) return error.FrameValueTableMismatch;
                         if (frame.response_image) |response_image| {
                             expected_value_image_fingerprint = response_image.value_image_fingerprint;
                             expected_value_table_id = response_image.value_table_id;
@@ -2593,7 +2599,7 @@ fn eventImageFromTranscriptEvent(allocator: std.mem.Allocator, event: Transcript
             .world_port_id = event.world_port_id.?,
             .request_fingerprint = event.request_fingerprint.?,
             .response_kind = event.response_kind.?,
-            .response_value_table_id = null,
+            .response_value_table_id = event.expected_response_value_table_id,
             .response_fingerprint = event.response_fingerprint.?,
             .response_image = response_image,
             .replay_key = event.replay_key.?,
