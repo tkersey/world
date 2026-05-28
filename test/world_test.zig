@@ -1298,6 +1298,13 @@ test "step frame nextFrame resumeFrame and verify adapter image path work" {
             const payload = try request.payload_image.?.decodeValue(std.testing.allocator, []const u8);
             defer std.testing.allocator.free(payload);
             try std.testing.expectEqualStrings("deploy-prod", payload);
+            const encoded_request = try request.encode(std.testing.allocator);
+            defer std.testing.allocator.free(encoded_request);
+            var tampered_request = try std.testing.allocator.dupe(u8, encoded_request);
+            defer std.testing.allocator.free(tampered_request);
+            const payload_value_fingerprint_offset = 4 + 4 + 8 + 8 + 1 + 8 + 8 + 4 + 8 + 8 + 8 + 8 + 1 + 4 + 1 + 4 + 1;
+            tampered_request[payload_value_fingerprint_offset] ^= 1;
+            try std.testing.expectError(error.InvalidFrameEncoding, world.Frame.Request.decode(std.testing.allocator, tampered_request));
             var response = try world.Frame.Response.fromValue(std.testing.allocator, request, 1, response_fingerprint, .@"resume", @as(i32, 7), .portable);
             defer response.deinit(std.testing.allocator);
             try run.resumeFrame(response);
@@ -1308,6 +1315,8 @@ test "step frame nextFrame resumeFrame and verify adapter image path work" {
         .done => |value| try std.testing.expectEqual(@as(i32, 7), value),
         else => return error.ExpectedDone,
     }
+    try std.testing.expectEqual(@as(usize, 1), run.audit.fresh_response_count);
+    try std.testing.expectEqual(@as(usize, 0), run.audit.replayed_response_count);
     const frame_summary = frame_transcript.summary();
     try std.testing.expectEqual(@as(usize, 1), frame_summary.frame_requested);
     try std.testing.expectEqual(@as(usize, 1), frame_summary.frame_responded);

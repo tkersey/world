@@ -456,6 +456,8 @@ pub const Frame = struct {
                 .flags = try readU32(bytes, cursor),
             };
             errdefer result.deinit(allocator);
+            const expected_payload_value_fingerprint: ?u64 = if (result.payload_image) |image| image.value_image_fingerprint else null;
+            if (result.payload_value_fingerprint != expected_payload_value_fingerprint) return error.InvalidFrameEncoding;
             if (fingerprintRequest(result) != result.frame_fingerprint) return error.InvalidFrameEncoding;
             return result;
         }
@@ -1969,7 +1971,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     };
                     try appendPortEvent(Target, self.options, .frame_responded, Decl.world_port_id, request.trace(), response_trace.fingerprint, response_frame.response_kind, stored);
                     stored = null;
-                    self.audit.replayed_response_count += 1;
+                    self.audit.fresh_response_count += 1;
                     try self.session.resumeTyped(typed_request, value);
                     var run_value = try StoredValue.initOwned(self.allocator, value);
                     value_owned = false;
