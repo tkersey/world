@@ -1644,6 +1644,42 @@ test "transcript image encode decode round trip stable and image replay works wi
         .transcript = &wrong_table_transcript,
     }));
 
+    var failed_response_transcript = try world.Transcript.fromImage(std.testing.allocator, decoded);
+    defer failed_response_transcript.deinit();
+    for (failed_response_transcript.events.items) |*event| {
+        if (event.response_frame) |response| {
+            var failed_response_image = if (response.response_image) |response_image|
+                try response_image.clone(std.testing.allocator)
+            else
+                null;
+            errdefer if (failed_response_image) |*response_image| response_image.deinit(std.testing.allocator);
+            const failed_response = world.Frame.Response.init(.{
+                .world_surface_fingerprint = response.world_surface_fingerprint,
+                .target_certificate_fingerprint = response.target_certificate_fingerprint,
+                .world_port_id = response.world_port_id,
+                .request_fingerprint = response.request_fingerprint,
+                .response_kind = response.response_kind,
+                .response_value_table_id = response.response_value_table_id,
+                .response_fingerprint = response.response_fingerprint,
+                .response_image = failed_response_image,
+                .replay_key = response.replay_key,
+                .status = .failed,
+            });
+            failed_response_image = null;
+            event.response_frame.?.deinit(std.testing.allocator);
+            event.response_frame = failed_response;
+            event.status = .failed;
+            break;
+        }
+    } else return error.ExpectedResponseFrame;
+    var failed_response_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer failed_response_runtime.deinit();
+    try std.testing.expectError(error.ReplayMissing, PortsMachine.run(&failed_response_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.replay,
+        .transcript = &failed_response_transcript,
+    }));
+
     var rebuilt_verify_runtime = boundary.Runtime.init(std.testing.allocator);
     defer rebuilt_verify_runtime.deinit();
     var rebuilt_verify_ctx: PortsCtx = .{};

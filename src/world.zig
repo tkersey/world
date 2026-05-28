@@ -896,6 +896,13 @@ pub const Transcript = struct {
             const index = self.replay_cursor;
             const event = &self.events.items[index];
             if (event.kind != .port_responded and event.kind != .frame_responded) continue;
+            if (event.status) |status| {
+                if (status != .responded) return Error.ReplayMissing;
+            }
+            if (event.kind == .frame_responded and event.response_frame == null) return Error.ReplayMissing;
+            if (event.response_frame) |frame| {
+                if (frame.status != .responded) return Error.ReplayMissing;
+            }
             if (event.world_surface_fingerprint != key.world_surface_fingerprint) return Error.ReplaySurfaceMismatch;
             if (event.target_certificate_fingerprint != expected_target_certificate_fingerprint) return Error.ReplayTargetCertificateMismatch;
             if ((event.world_port_id orelse return Error.ReplayPortMismatch) != key.world_port_id) return Error.ReplayPortMismatch;
