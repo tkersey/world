@@ -1838,8 +1838,6 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
 
                 pub fn resumeFrame(self: *Self, response_frame: Frame.Response) !void {
                     if (response_frame.status == .pending) return error.HandlerPending;
-                    if (response_frame.status == .rejected) return error.HandlerRejected;
-                    if (response_frame.status == .failed) return error.HandlerFailed;
                     const request = self.pending_request orelse return error.UnknownResidualSite;
                     const world_port_id = self.pending_port_id orelse return error.UnknownWorldPort;
                     const frame = try self.pendingRequestFrame();
@@ -1848,6 +1846,18 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     if (response_frame.world_port_id != world_port_id) return error.FramePortMismatch;
                     if (response_frame.request_fingerprint != frame.request_fingerprint) return error.FrameRequestFingerprintMismatch;
                     if (response_frame.replay_key != frame.replay_key_seed.withResponse(response_frame.response_fingerprint).fingerprint()) return error.ReplayMissing;
+                    if (response_frame.status == .rejected) {
+                        self.audit.rejected_count += 1;
+                        try appendPortEvent(Target, self.options, .frame_rejected, world_port_id, request.trace(), response_frame.response_fingerprint, response_frame.response_kind, null);
+                        try self.markRunFailed();
+                        return error.HandlerRejected;
+                    }
+                    if (response_frame.status == .failed) {
+                        self.audit.failed_count += 1;
+                        try appendPortEvent(Target, self.options, .frame_failed, world_port_id, request.trace(), response_frame.response_fingerprint, response_frame.response_kind, null);
+                        try self.markRunFailed();
+                        return error.HandlerFailed;
+                    }
                     switch (world_port_id) {
                         inline 0...Target.WorldPortTable.entries.len - 1 => |id| {
                             const Handler = comptime handlerForWorldPortId(Target, Config, @intCast(id));
@@ -2051,6 +2061,9 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     if (!@hasField(Options, "ctx")) return Error.MissingHandler;
                     var expected_response_fingerprint: u64 = undefined;
                     var expected_value_image_fingerprint: ?u64 = null;
+                    var expected_value_table_id: ?u32 = null;
+                    var expected_boundary_value_fingerprint: ?u64 = null;
+                    var expected_codec_schema_descriptor_fingerprint: ?u64 = null;
                     if (comptime @hasField(Options, "transcript_image")) {
                         const image = @field(self.options, "transcript_image");
                         const frame = image.nextResponse(replay_key, Target.Certificate.certificate_fingerprint, .@"resume") catch |err| {
@@ -2058,7 +2071,14 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             return err;
                         };
                         expected_response_fingerprint = frame.response_fingerprint;
-                        expected_value_image_fingerprint = frame.response_value_fingerprint;
+                        if (frame.response_image) |response_image| {
+                            expected_value_image_fingerprint = response_image.value_image_fingerprint;
+                            expected_value_table_id = response_image.value_table_id;
+                            expected_boundary_value_fingerprint = response_image.boundary_value_fingerprint;
+                            expected_codec_schema_descriptor_fingerprint = response_image.codec_schema_descriptor_fingerprint;
+                        } else {
+                            expected_value_image_fingerprint = frame.response_value_fingerprint;
+                        }
                         const replay_value = try frame.decodeValue(self.allocator, Decl.Response);
                         defer deinitOwnedValue(self.allocator, replay_value);
                         const replay_trace = try typed_request.responseTrace(.@"resume", replay_value);
@@ -2095,7 +2115,14 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         return Error.VerifyDivergence;
                     }
                     if (expected_value_image_fingerprint) |expected_image_fingerprint| {
-                        var fresh_image = try Frame.ValueImage.fromValue(self.allocator, null, null, null, fresh, .portable);
+                        var fresh_image = try Frame.ValueImage.fromValue(
+                            self.allocator,
+                            expected_value_table_id,
+                            expected_boundary_value_fingerprint,
+                            expected_codec_schema_descriptor_fingerprint,
+                            fresh,
+                            .portable,
+                        );
                         defer fresh_image.deinit(self.allocator);
                         if (fresh_image.value_image_fingerprint != expected_image_fingerprint) return error.VerifyValueImageMismatch;
                     }

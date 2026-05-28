@@ -1295,6 +1295,19 @@ test "step frame nextFrame resumeFrame and verify adapter image path work" {
     defer frame_replayed.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(i32, 7), frame_replayed.value);
 
+    var frame_verify_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer frame_verify_runtime.deinit();
+    var frame_verify_ctx: PortsCtx = .{};
+    var frame_verified = try PortsMachine.run(&frame_verify_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.verify,
+        .ctx = &frame_verify_ctx,
+        .transcript_image = &frame_image,
+    });
+    defer frame_verified.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(i32, 7), frame_verified.value);
+    try std.testing.expectEqual(@as(usize, 1), frame_verify_ctx.calls);
+
     var image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
     defer image.deinit(std.testing.allocator);
     var verify_runtime = boundary.Runtime.init(std.testing.allocator);
@@ -1309,6 +1322,78 @@ test "step frame nextFrame resumeFrame and verify adapter image path work" {
     defer verified.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(i32, 7), verified.value);
     try std.testing.expectEqual(@as(usize, 1), verify_ctx.calls);
+}
+
+test "rejected and failed frame responses record terminal transcript state" {
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+
+    {
+        var runtime = boundary.Runtime.init(std.testing.allocator);
+        defer runtime.deinit();
+        var run = try PortsMachine.start(&runtime, .{}, .{
+            .allocator = std.testing.allocator,
+            .mode = world.Mode.fresh,
+            .transcript = &transcript,
+        });
+        defer run.deinit();
+
+        const request = switch (try run.nextFrame()) {
+            .port_request => |frame| frame,
+            else => return error.ExpectedFrameRequest,
+        };
+        const rejected = world.Frame.Response.init(.{
+            .world_surface_fingerprint = request.world_surface_fingerprint,
+            .target_certificate_fingerprint = request.target_certificate_fingerprint,
+            .world_port_id = request.world_port_id,
+            .request_fingerprint = request.request_fingerprint,
+            .response_fingerprint = 0,
+            .replay_key = request.replay_key_seed.withResponse(0).fingerprint(),
+            .status = .rejected,
+        });
+
+        try std.testing.expectError(error.HandlerRejected, run.resumeFrame(rejected));
+        try std.testing.expectEqual(@as(usize, 1), run.audit.rejected_count);
+        switch (try run.nextFrame()) {
+            .failed => {},
+            else => return error.ExpectedFailed,
+        }
+    }
+    {
+        var runtime = boundary.Runtime.init(std.testing.allocator);
+        defer runtime.deinit();
+        var run = try PortsMachine.start(&runtime, .{}, .{
+            .allocator = std.testing.allocator,
+            .mode = world.Mode.fresh,
+            .transcript = &transcript,
+        });
+        defer run.deinit();
+
+        const request = switch (try run.nextFrame()) {
+            .port_request => |frame| frame,
+            else => return error.ExpectedFrameRequest,
+        };
+        const failed = world.Frame.Response.init(.{
+            .world_surface_fingerprint = request.world_surface_fingerprint,
+            .target_certificate_fingerprint = request.target_certificate_fingerprint,
+            .world_port_id = request.world_port_id,
+            .request_fingerprint = request.request_fingerprint,
+            .response_fingerprint = 1,
+            .replay_key = request.replay_key_seed.withResponse(1).fingerprint(),
+            .status = .failed,
+        });
+
+        try std.testing.expectError(error.HandlerFailed, run.resumeFrame(failed));
+        try std.testing.expectEqual(@as(usize, 1), run.audit.failed_count);
+        switch (try run.nextFrame()) {
+            .failed => {},
+            else => return error.ExpectedFailed,
+        }
+    }
+    const summary = transcript.summary();
+    try std.testing.expectEqual(@as(usize, 1), summary.frame_rejected);
+    try std.testing.expectEqual(@as(usize, 1), summary.frame_failed);
+    try std.testing.expectEqual(@as(usize, 2), summary.run_failed);
 }
 
 test "timeline event checkpoint branch and audit image fingerprints are stable" {
