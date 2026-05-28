@@ -641,6 +641,10 @@ pub const Frame = struct {
             errdefer if (response_image) |*image| image.deinit(allocator);
             const expected_response_value_fingerprint: ?u64 = if (response_image) |image| image.value_image_fingerprint else null;
             if (response_value_fingerprint != expected_response_value_fingerprint) return error.InvalidFrameEncoding;
+            if (response_image) |image| {
+                if (image.value_table_id != response_value_table_id) return error.InvalidFrameEncoding;
+                if (image.boundary_value_fingerprint != response_fingerprint) return error.InvalidFrameEncoding;
+            }
             const replay_key = try readU64(bytes, cursor);
             const status = try enumFromByte(ResponseStatus, try readU8(bytes, cursor));
             const error_tag = try readOptionalBytesOwned(allocator, bytes, cursor);
@@ -691,15 +695,14 @@ pub const StoredValue = struct {
 
     fn initOwned(allocator: std.mem.Allocator, value: anytype) !@This() {
         const Value = @TypeOf(value);
-        const ptr = try allocator.create(Value);
-        errdefer allocator.destroy(ptr);
-        ptr.* = value;
-        var ptr_value_owned = true;
-        errdefer if (ptr_value_owned) deinitOwnedValue(allocator, ptr.*);
-        const portable_image = Frame.ValueImage.fromValue(allocator, null, null, null, value, .native_compatible) catch |err| switch (err) {
+        var portable_image = Frame.ValueImage.fromValue(allocator, null, null, null, value, .native_compatible) catch |err| switch (err) {
             error.UnsupportedValueImage => null,
             else => return err,
         };
+        errdefer if (portable_image) |*image| image.deinit(allocator);
+        const ptr = try allocator.create(Value);
+        errdefer allocator.destroy(ptr);
+        ptr.* = value;
         const result = @This(){
             .ptr = @ptrCast(ptr),
             .type_name = @typeName(Value),
@@ -738,7 +741,6 @@ pub const StoredValue = struct {
                 }
             }.destroy,
         };
-        ptr_value_owned = false;
         return result;
     }
 
@@ -2034,8 +2036,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     const typed_request = try request.as(Decl.SiteType);
                     if (response_frame.response_kind != .@"resume") return error.VerifyResponseKindMismatch;
                     const value = try response_frame.decodeValue(self.allocator, Decl.Response);
-                    var value_owned = true;
-                    errdefer if (value_owned) deinitOwnedValue(self.allocator, value);
+                    defer deinitOwnedValue(self.allocator, value);
                     const response_trace = try typed_request.responseTrace(.@"resume", value);
                     if (response_trace.fingerprint != response_frame.response_fingerprint) return error.VerifyResponseFingerprintMismatch;
                     var stored: ?StoredValue = null;
@@ -2047,16 +2048,22 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             owned.deinit(@field(self.options, "transcript").allocator);
                         }
                     };
-                    try appendPortEvent(Target, self.options, .frame_responded, Decl.world_port_id, request.trace(), response_trace.fingerprint, response_frame.response_kind, stored, null, response_frame);
-                    stored = null;
-                    self.audit.fresh_response_count += 1;
-                    try self.session.resumeTyped(typed_request, value);
-                    var run_value = try StoredValue.initOwned(self.allocator, value);
-                    value_owned = false;
+                    var run_value = try StoredValue.init(self.allocator, value);
                     var run_value_owned = true;
                     errdefer if (run_value_owned) run_value.deinit(self.allocator);
                     try self.retained_values.append(self.allocator, run_value);
                     run_value_owned = false;
+                    var retained_committed = false;
+                    errdefer if (!retained_committed) {
+                        var retained = self.retained_values.pop().?;
+                        retained.deinit(self.allocator);
+                    };
+                    const retained_value = try self.retained_values.items[self.retained_values.items.len - 1].borrow(Decl.Response);
+                    try appendPortEvent(Target, self.options, .frame_responded, Decl.world_port_id, request.trace(), response_trace.fingerprint, response_frame.response_kind, stored, null, response_frame);
+                    stored = null;
+                    self.audit.fresh_response_count += 1;
+                    try self.session.resumeTyped(typed_request, retained_value);
+                    retained_committed = true;
                 }
 
                 fn markMissingHandler(self: *Self, world_port_id: u32, trace: anytype) !void {

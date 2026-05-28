@@ -1176,6 +1176,22 @@ test "response frame status rejected failed and canonical bytes" {
     tampered[response_value_fingerprint_offset] ^= 1;
     try std.testing.expectError(error.InvalidFrameEncoding, world.Frame.Response.decode(std.testing.allocator, tampered));
 
+    const wrong_table_image = try world.Frame.ValueImage.fromValue(std.testing.allocator, 0, 0xdec1_5100, null, @as(i32, 7), .portable);
+    var wrong_table_response = world.Frame.Response.init(.{
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .target_certificate_fingerprint = request.target_certificate_fingerprint,
+        .world_port_id = request.world_port_id,
+        .request_fingerprint = request.request_fingerprint,
+        .response_value_table_id = 1,
+        .response_fingerprint = 0xdec1_5100,
+        .response_image = wrong_table_image,
+        .replay_key = request.replay_key_seed.withResponse(0xdec1_5100).fingerprint(),
+    });
+    defer wrong_table_response.deinit(std.testing.allocator);
+    const wrong_table_encoded = try wrong_table_response.encode(std.testing.allocator);
+    defer std.testing.allocator.free(wrong_table_encoded);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Frame.Response.decode(std.testing.allocator, wrong_table_encoded));
+
     const rejected = world.Frame.Response.init(.{
         .world_surface_fingerprint = request.world_surface_fingerprint,
         .target_certificate_fingerprint = request.target_certificate_fingerprint,
