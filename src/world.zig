@@ -3253,7 +3253,11 @@ fn encodePortableValue(comptime Value: type, allocator: std.mem.Allocator, out: 
         .@"enum" => |info| {
             const Tag = info.tag_type;
             if (@bitSizeOf(Tag) > 64) return error.UnsupportedValueImage;
-            try writeU64(out, allocator, @as(u64, @intCast(@intFromEnum(value))));
+            if (@typeInfo(Tag).int.signedness == .signed) {
+                try writeI64(out, allocator, @as(i64, @intCast(@intFromEnum(value))));
+            } else {
+                try writeU64(out, allocator, @as(u64, @intCast(@intFromEnum(value))));
+            }
         },
         .pointer => |pointer| {
             if (comptime pointer.size == .slice and pointer.child == u8) {
@@ -3322,9 +3326,17 @@ fn decodePortableValue(comptime Value: type, allocator: std.mem.Allocator, bytes
             return error.UnsupportedValueImage;
         },
         .@"enum" => |info| blk: {
-            const raw = try readU64(bytes, cursor);
-            inline for (info.fields) |field| {
-                if (field.value == raw) break :blk @as(Value, @enumFromInt(raw));
+            const Tag = info.tag_type;
+            if (@typeInfo(Tag).int.signedness == .signed) {
+                const raw = try readI64(bytes, cursor);
+                inline for (info.fields) |field| {
+                    if (field.value == raw) break :blk @as(Value, @enumFromInt(raw));
+                }
+            } else {
+                const raw = try readU64(bytes, cursor);
+                inline for (info.fields) |field| {
+                    if (field.value == raw) break :blk @as(Value, @enumFromInt(raw));
+                }
             }
             return error.InvalidFrameEncoding;
         },
@@ -3526,7 +3538,7 @@ fn readOptionalUsize(bytes: []const u8, cursor: *usize) !?usize {
     return try readU64AsUsize(bytes, cursor);
 }
 
-fn readBytesOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) ![]const u8 {
+fn readBytesOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) ![]u8 {
     const len = try readU64AsUsize(bytes, cursor);
     if (len > world_max_decoded_byte_field_len) return error.InvalidFrameEncoding;
     if (len > bytes.len - cursor.*) return error.InvalidFrameEncoding;

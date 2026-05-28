@@ -1262,12 +1262,25 @@ test "value image scalar string product sum and policy failures" {
     defer enum_image.deinit(std.testing.allocator);
     const enum_value = try enum_image.decodeValue(std.testing.allocator, EnumValue);
     try std.testing.expectEqual(EnumValue.ok, enum_value);
+    const SignedEnumValue = enum(i8) { neg = -1 };
+    var signed_enum_image = try world.Frame.ValueImage.fromValue(std.testing.allocator, 1, null, null, SignedEnumValue.neg, .portable);
+    defer signed_enum_image.deinit(std.testing.allocator);
+    const signed_enum_value = try signed_enum_image.decodeValue(std.testing.allocator, SignedEnumValue);
+    try std.testing.expectEqual(SignedEnumValue.neg, signed_enum_value);
 
     var string = try world.Frame.ValueImage.fromValue(std.testing.allocator, 2, null, null, @as([]const u8, "hello"), .portable);
     defer string.deinit(std.testing.allocator);
     const decoded_string = try string.decodeValue(std.testing.allocator, []const u8);
     defer std.testing.allocator.free(decoded_string);
     try std.testing.expectEqualStrings("hello", decoded_string);
+    const mutable_bytes = try std.testing.allocator.dupe(u8, "hello");
+    defer std.testing.allocator.free(mutable_bytes);
+    var mutable_string = try world.Frame.ValueImage.fromValue(std.testing.allocator, 2, null, null, mutable_bytes, .portable);
+    defer mutable_string.deinit(std.testing.allocator);
+    const decoded_mutable_string = try mutable_string.decodeValue(std.testing.allocator, []u8);
+    defer std.testing.allocator.free(decoded_mutable_string);
+    decoded_mutable_string[0] = 'H';
+    try std.testing.expectEqualStrings("Hello", decoded_mutable_string);
 
     const Product = struct { count: i32, label: []const u8 };
     var product = try world.Frame.ValueImage.fromValue(std.testing.allocator, 3, null, null, Product{ .count = 2, .label = @as([]const u8, "ok") }, .portable);
