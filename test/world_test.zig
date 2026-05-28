@@ -1315,6 +1315,32 @@ test "transcript image encode decode round trip stable and image replay works wi
     defer rebuilt_replayed.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(i32, 7), rebuilt_replayed.value);
 
+    var rebuilt_verify_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer rebuilt_verify_runtime.deinit();
+    var rebuilt_verify_ctx: PortsCtx = .{};
+    var rebuilt_verified = try PortsMachine.run(&rebuilt_verify_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.verify,
+        .ctx = &rebuilt_verify_ctx,
+        .transcript = &rebuilt_transcript,
+    });
+    defer rebuilt_verified.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(i32, 7), rebuilt_verified.value);
+    try std.testing.expectEqual(@as(usize, 1), rebuilt_verify_ctx.calls);
+
+    var both_authorities_transcript = try world.Transcript.fromImage(std.testing.allocator, decoded);
+    defer both_authorities_transcript.deinit();
+    var both_authorities_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer both_authorities_runtime.deinit();
+    var both_authorities_replayed = try PortsMachine.run(&both_authorities_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.replay,
+        .transcript = &both_authorities_transcript,
+        .transcript_image = &decoded,
+    });
+    defer both_authorities_replayed.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(i32, 7), both_authorities_replayed.value);
+
     var replay_runtime = boundary.Runtime.init(std.testing.allocator);
     defer replay_runtime.deinit();
     var replayed = try PortsMachine.run(&replay_runtime, .{}, .{

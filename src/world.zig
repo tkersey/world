@@ -1772,7 +1772,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         );
                     }
                     if (@hasField(Options, "transcript")) {
-                        if (modeConsumesTranscript(effective)) {
+                        if (modeConsumesTranscript(effective) and !@hasField(Options, "transcript_image")) {
                             @field(options, "transcript").resetReplay();
                             try @field(options, "transcript").validateReplayRun(
                                 Target.WorldSurface.surface_fingerprint,
@@ -1827,7 +1827,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             defer result.deinit();
                             self.done_value = try cloneRunValue(self.allocator, result.value);
                             self.done_value_present = true;
-                            if (modeConsumesTranscript(self.effective_mode) and @hasField(Options, "transcript")) {
+                            if (modeConsumesTranscript(self.effective_mode) and @hasField(Options, "transcript") and !@hasField(Options, "transcript_image")) {
                                 @field(self.options, "transcript").assertReplayComplete() catch |err| {
                                     self.audit.replay_mismatch_count += 1;
                                     try self.markRunFailed();
@@ -2241,11 +2241,26 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             return err;
                         };
                         expected_response_fingerprint = event.response_fingerprint orelse return Error.ReplayMissing;
-                        const stored = event.value orelse return Error.ReplayMissing;
-                        const replay_value = stored.as(self.allocator, Decl.Response) catch |err| {
-                            self.audit.replay_mismatch_count += 1;
-                            return err;
-                        };
+                        const replay_value = if (event.value) |stored|
+                            stored.as(self.allocator, Decl.Response) catch |err| {
+                                self.audit.replay_mismatch_count += 1;
+                                return err;
+                            }
+                        else if (event.response_frame) |frame| value: {
+                            if (frame.response_value_table_id != valueIdForRuntime(Target, Decl.world_port_id, .@"resume")) return error.FrameValueTableMismatch;
+                            if (frame.response_image) |response_image| {
+                                expected_value_image_fingerprint = response_image.value_image_fingerprint;
+                                expected_value_table_id = response_image.value_table_id;
+                                expected_boundary_value_fingerprint = response_image.boundary_value_fingerprint;
+                                expected_codec_schema_descriptor_fingerprint = response_image.codec_schema_descriptor_fingerprint;
+                            } else {
+                                expected_value_image_fingerprint = frame.response_value_fingerprint;
+                            }
+                            break :value frame.decodeValue(self.allocator, Decl.Response) catch |err| {
+                                self.audit.replay_mismatch_count += 1;
+                                return err;
+                            };
+                        } else return Error.ReplayMissing;
                         defer deinitOwnedValue(self.allocator, replay_value);
                         const replay_trace = try typed_request.responseTrace(.@"resume", replay_value);
                         if (replay_trace.fingerprint != expected_response_fingerprint) {
