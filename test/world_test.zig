@@ -508,6 +508,10 @@ test "world replay selects the latest completed transcript run" {
     try std.testing.expectEqual(@as(usize, 0), replay_ctx.calls);
     try std.testing.expectEqual(@as(usize, 2), transcript.summary().port_responded);
     try std.testing.expectEqual(@as(usize, 1), transcript.summary().port_replayed);
+
+    var image_after_replay = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer image_after_replay.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 2), image_after_replay.response_count);
 }
 
 test "world replay missing response fails" {
@@ -1289,6 +1293,7 @@ test "step frame nextFrame resumeFrame and verify adapter image path work" {
         .transcript = &frame_transcript,
     });
     defer run.deinit();
+    var expected_response_frame_fingerprint: u64 = 0;
     const step = try run.nextFrame();
     switch (step) {
         .port_request => |frame| {
@@ -1307,6 +1312,7 @@ test "step frame nextFrame resumeFrame and verify adapter image path work" {
             try std.testing.expectError(error.InvalidFrameEncoding, world.Frame.Request.decode(std.testing.allocator, tampered_request));
             var response = try world.Frame.Response.fromValue(std.testing.allocator, request, 1, response_fingerprint, .@"resume", @as(i32, 7), .portable);
             defer response.deinit(std.testing.allocator);
+            expected_response_frame_fingerprint = response.frame_fingerprint;
             try run.resumeFrame(response);
         },
         else => return error.ExpectedFrameRequest,
@@ -1323,6 +1329,10 @@ test "step frame nextFrame resumeFrame and verify adapter image path work" {
 
     var frame_image = try frame_transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
     defer frame_image.deinit(std.testing.allocator);
+    const image_response = for (frame_image.events) |event| {
+        if (event.response_frame) |response| break response;
+    } else return error.ExpectedResponseFrame;
+    try std.testing.expectEqual(expected_response_frame_fingerprint, image_response.frame_fingerprint);
     var frame_replay_runtime = boundary.Runtime.init(std.testing.allocator);
     defer frame_replay_runtime.deinit();
     var frame_replayed = try PortsMachine.run(&frame_replay_runtime, .{}, .{

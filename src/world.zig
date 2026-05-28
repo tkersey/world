@@ -194,6 +194,9 @@ pub const Frame = struct {
         ) !@This() {
             var bytes: std.ArrayList(u8) = .empty;
             errdefer bytes.deinit(allocator);
+            if (policy.max_value_image_bytes) |max| {
+                if (portableValueDynamicByteLowerBound(@TypeOf(value), value) > max) return error.UnsupportedValueImage;
+            }
             try encodePortableValue(@TypeOf(value), allocator, &bytes, value);
             if (policy.max_value_image_bytes) |max| {
                 if (bytes.items.len > max) return error.UnsupportedValueImage;
@@ -1808,7 +1811,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             self.per_port_counts[world_port_id] += 1;
                             if (self.effective_mode == .fresh) {
                                 const event_kind: EventKind = if (self.frame_step_request) .frame_requested else .port_requested;
-                                try appendPortEvent(Target, self.options, event_kind, world_port_id, trace, null, null, null);
+                                try appendPortEvent(Target, self.options, event_kind, world_port_id, trace, null, null, null, null);
                             }
                             return .port_required;
                         },
@@ -1827,7 +1830,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             if (Handler) |Decl| {
                                 self.dispatchDecl(Decl, request) catch |err| {
                                     self.audit.failed_count += 1;
-                                    try appendPortEvent(Target, self.options, .port_failed, world_port_id, trace, null, null, null);
+                                    try appendPortEvent(Target, self.options, .port_failed, world_port_id, trace, null, null, null, null);
                                     try self.markRunFailed();
                                     return err;
                                 };
@@ -1872,13 +1875,13 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     if (response_frame.replay_key != frame.replay_key_seed.withResponse(response_frame.response_fingerprint).fingerprint()) return error.ReplayMissing;
                     if (response_frame.status == .rejected) {
                         self.audit.rejected_count += 1;
-                        try appendPortEvent(Target, self.options, .frame_rejected, world_port_id, request.trace(), response_frame.response_fingerprint, response_frame.response_kind, null);
+                        try appendPortEvent(Target, self.options, .frame_rejected, world_port_id, request.trace(), response_frame.response_fingerprint, response_frame.response_kind, null, response_frame);
                         try self.markRunFailed();
                         return error.HandlerRejected;
                     }
                     if (response_frame.status == .failed) {
                         self.audit.failed_count += 1;
-                        try appendPortEvent(Target, self.options, .frame_failed, world_port_id, request.trace(), response_frame.response_fingerprint, response_frame.response_kind, null);
+                        try appendPortEvent(Target, self.options, .frame_failed, world_port_id, request.trace(), response_frame.response_fingerprint, response_frame.response_kind, null, response_frame);
                         try self.markRunFailed();
                         return error.HandlerFailed;
                     }
@@ -1969,7 +1972,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             owned.deinit(@field(self.options, "transcript").allocator);
                         }
                     };
-                    try appendPortEvent(Target, self.options, .frame_responded, Decl.world_port_id, request.trace(), response_trace.fingerprint, response_frame.response_kind, stored);
+                    try appendPortEvent(Target, self.options, .frame_responded, Decl.world_port_id, request.trace(), response_trace.fingerprint, response_frame.response_kind, stored, response_frame);
                     stored = null;
                     self.audit.fresh_response_count += 1;
                     try self.session.resumeTyped(typed_request, value);
@@ -1984,7 +1987,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 fn markMissingHandler(self: *Self, world_port_id: u32, trace: anytype) !void {
                     self.audit.missing_handler_count += 1;
                     self.audit.failed_count += 1;
-                    try appendPortEvent(Target, self.options, .port_failed, world_port_id, trace, null, null, null);
+                    try appendPortEvent(Target, self.options, .port_failed, world_port_id, trace, null, null, null, null);
                     try self.markRunFailed();
                     return Error.MissingHandler;
                 }
@@ -2049,6 +2052,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         response_trace.fingerprint,
                         .@"resume",
                         stored,
+                        null,
                     );
                     stored = null;
                     self.audit.fresh_response_count += 1;
@@ -2076,7 +2080,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             self.audit.replay_mismatch_count += 1;
                             return error.VerifyResponseFingerprintMismatch;
                         }
-                        try appendPortEvent(Target, self.options, .frame_replayed, Decl.world_port_id, trace, response_trace.fingerprint, .@"resume", null);
+                        try appendPortEvent(Target, self.options, .frame_replayed, Decl.world_port_id, trace, response_trace.fingerprint, .@"resume", null, frame.*);
                         self.audit.replayed_response_count += 1;
                         var run_value = try StoredValue.initOwned(self.allocator, value);
                         value_owned = false;
@@ -2105,7 +2109,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         self.audit.replay_mismatch_count += 1;
                         return Error.ReplayResponseKindMismatch;
                     }
-                    try appendPortEvent(Target, self.options, .port_replayed, Decl.world_port_id, trace, response_trace.fingerprint, .@"resume", null);
+                    try appendPortEvent(Target, self.options, .port_replayed, Decl.world_port_id, trace, response_trace.fingerprint, .@"resume", null, if (event.response_frame) |frame| frame else null);
                     self.audit.replayed_response_count += 1;
                     var run_value = try StoredValue.initOwned(self.allocator, value);
                     value_owned = false;
@@ -2486,6 +2490,7 @@ fn appendPortEvent(
     response_fingerprint: ?u64,
     response_kind: ?ResponseKind,
     value: ?StoredValue,
+    response_frame: ?Frame.Response,
 ) !void {
     if (!@hasField(@TypeOf(options), "transcript")) return;
     const transcript = @field(options, "transcript");
@@ -2512,7 +2517,9 @@ fn appendPortEvent(
         .residual_site_fingerprint = trace.operation_site_fingerprint,
         .status = if (kind == .port_responded) .responded else null,
         .value = value,
+        .response_frame = if (response_frame) |frame| try frame.clone(transcript.allocator) else null,
     };
+    errdefer if (event.response_frame) |*frame| frame.deinit(transcript.allocator);
     try transcript.appendOwned(&event);
 }
 
@@ -2548,7 +2555,17 @@ fn eventImageFromTranscriptEvent(allocator: std.mem.Allocator, event: Transcript
         ResponseStatus.failed
     else
         null;
-    if (response_frame == null and event.world_port_id != null and event.request_fingerprint != null and event.response_fingerprint != null and event.response_kind != null and event.replay_key != null) {
+    const source_response_event = switch (event.kind) {
+        .port_responded,
+        .frame_responded,
+        .port_rejected,
+        .frame_rejected,
+        .port_failed,
+        .frame_failed,
+        => true,
+        else => false,
+    };
+    if (response_frame == null and source_response_event and event.world_port_id != null and event.request_fingerprint != null and event.response_fingerprint != null and event.response_kind != null and event.replay_key != null) {
         const frame_status = response_status orelse .responded;
         var response_image: ?Frame.ValueImage = null;
         if (event.value) |stored| {
@@ -2885,6 +2902,43 @@ fn fingerprintResponse(frame: Frame.Response) u64 {
     hashOptionalBytes(&hasher, frame.reason);
     hashU64(&hasher, frame.flags);
     return hasher.final();
+}
+
+fn portableValueDynamicByteLowerBound(comptime Value: type, value: Value) usize {
+    return switch (@typeInfo(Value)) {
+        .pointer => |pointer| blk: {
+            if (comptime pointer.size == .slice and pointer.child == u8) break :blk value.len;
+            if (comptime isStringList(Value)) {
+                var total: usize = 0;
+                for (value) |item| total += item.len;
+                break :blk total;
+            }
+            break :blk 0;
+        },
+        .optional => |optional| if (value) |payload|
+            portableValueDynamicByteLowerBound(optional.child, payload)
+        else
+            0,
+        .@"struct" => |info| blk: {
+            var total: usize = 0;
+            inline for (info.fields) |field| {
+                total += portableValueDynamicByteLowerBound(field.type, @field(value, field.name));
+            }
+            break :blk total;
+        },
+        .@"union" => |union_info| blk: {
+            const Tag = union_info.tag_type orelse break :blk 0;
+            const active_tag = std.meta.activeTag(value);
+            inline for (union_info.fields) |field| {
+                if (active_tag == @field(Tag, field.name)) {
+                    if (field.type == void) break :blk 0;
+                    break :blk portableValueDynamicByteLowerBound(field.type, @field(value, field.name));
+                }
+            }
+            break :blk 0;
+        },
+        else => 0,
+    };
 }
 
 fn encodePortableValue(comptime Value: type, allocator: std.mem.Allocator, out: *std.ArrayList(u8), value: Value) !void {
