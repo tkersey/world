@@ -2215,10 +2215,10 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     };
                     const value = if (event.value) |stored|
                         try stored.as(self.allocator, Decl.Response)
-                    else if (event.response_frame) |frame|
-                        try frame.decodeValue(self.allocator, Decl.Response)
-                    else
-                        return Error.ReplayMissing;
+                    else if (event.response_frame) |frame| value: {
+                        if (frame.response_value_table_id != valueIdForRuntime(Target, Decl.world_port_id, .@"resume")) return error.FrameValueTableMismatch;
+                        break :value try frame.decodeValue(self.allocator, Decl.Response);
+                    } else return Error.ReplayMissing;
                     var value_owned = true;
                     errdefer if (value_owned) deinitOwnedValue(self.allocator, value);
                     const response_trace = try typed_request.responseTrace(.@"resume", value);

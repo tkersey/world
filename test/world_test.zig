@@ -1409,6 +1409,22 @@ test "transcript image encode decode round trip stable and image replay works wi
     defer rebuilt_replayed.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(i32, 7), rebuilt_replayed.value);
 
+    var wrong_table_transcript = try world.Transcript.fromImage(std.testing.allocator, decoded);
+    defer wrong_table_transcript.deinit();
+    for (wrong_table_transcript.events.items) |*event| {
+        if (event.response_frame) |*frame| {
+            frame.response_value_table_id = null;
+            break;
+        }
+    }
+    var wrong_table_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer wrong_table_runtime.deinit();
+    try std.testing.expectError(error.FrameValueTableMismatch, PortsMachine.run(&wrong_table_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.replay,
+        .transcript = &wrong_table_transcript,
+    }));
+
     var rebuilt_verify_runtime = boundary.Runtime.init(std.testing.allocator);
     defer rebuilt_verify_runtime.deinit();
     var rebuilt_verify_ctx: PortsCtx = .{};
