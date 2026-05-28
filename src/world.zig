@@ -983,12 +983,13 @@ pub const Transcript = struct {
                 .frame_verified,
                 .frame_rejected,
                 .frame_failed,
-                .checkpoint_recorded,
-                .branch_started,
-                .branch_joined,
                 => {
                     if (active_start != null) active_has_port_event = true;
                 },
+                .checkpoint_recorded,
+                .branch_started,
+                .branch_joined,
+                => {},
             }
         }
         if (active_start != null or latest_run_failed) return Error.ReplayMissing;
@@ -1372,12 +1373,13 @@ pub const TranscriptImage = struct {
                 .frame_verified,
                 .frame_rejected,
                 .frame_failed,
-                .checkpoint_recorded,
-                .branch_started,
-                .branch_joined,
                 => {
                     if (active_start != null) active_has_port_event = true;
                 },
+                .checkpoint_recorded,
+                .branch_started,
+                .branch_joined,
+                => {},
             }
         }
         if (active_start != null or latest_run_failed) return error.ReplayMissing;
@@ -1793,6 +1795,13 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         !@hasField(Options, "transcript_image"))
                     {
                         return Error.ReplayMissing;
+                    }
+                    if (modeConsumesTranscript(effective) and
+                        @hasField(Options, "transcript_image") and
+                        Config.ports.len == 0 and
+                        Target.WorldPortTable.entries.len != 0)
+                    {
+                        return Error.MissingHandler;
                     }
                     var session = try Program.Session.startWithArgs(runtime, Program.Handlers{}, args);
                     errdefer session.deinit();

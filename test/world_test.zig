@@ -183,6 +183,31 @@ test "world machine accepts strict zero-port certified target" {
     try std.testing.expectEqual(@as(usize, 1), transcript.summary().run_started);
     try std.testing.expectEqual(@as(usize, 1), transcript.summary().run_completed);
 
+    var checkpointed = world.Transcript.init(std.testing.allocator);
+    defer checkpointed.deinit();
+    try checkpointed.append(.{
+        .kind = .run_started,
+        .world_surface_fingerprint = fixtures.Strict.Target.WorldSurface.surface_fingerprint,
+        .target_certificate_fingerprint = fixtures.Strict.Target.Certificate.certificate_fingerprint,
+    });
+    try checkpointed.append(.{
+        .kind = .checkpoint_recorded,
+        .world_surface_fingerprint = fixtures.Strict.Target.WorldSurface.surface_fingerprint,
+        .target_certificate_fingerprint = fixtures.Strict.Target.Certificate.certificate_fingerprint,
+    });
+    try checkpointed.append(.{
+        .kind = .run_completed,
+        .world_surface_fingerprint = fixtures.Strict.Target.WorldSurface.surface_fingerprint,
+        .target_certificate_fingerprint = fixtures.Strict.Target.Certificate.certificate_fingerprint,
+    });
+    var replayed = try Machine.run(&runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.replay,
+        .transcript = &checkpointed,
+    });
+    defer replayed.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(i32, 1), replayed.value);
+
     var frame_run = try Machine.start(&runtime, .{}, .{
         .allocator = std.testing.allocator,
         .mode = world.Mode.fresh,
@@ -1329,6 +1354,14 @@ test "transcript image encode decode round trip stable and image replay works wi
         if (event.response_frame) |response| break response;
     } else return error.ExpectedResponseFrame;
     try std.testing.expectEqual(@as(?u32, 1), decoded_response.response_value_table_id);
+    const MissingImageReplayMachine = world.Machine(fixtures.Ports.Target, .{ .ports = .{} });
+    var missing_decl_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer missing_decl_runtime.deinit();
+    try std.testing.expectError(error.MissingHandler, MissingImageReplayMachine.run(&missing_decl_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.replay,
+        .transcript_image = &decoded,
+    }));
 
     var forged_events = try std.testing.allocator.alloc(world.TranscriptImage.EventImage, 1);
     var forged_events_owned = true;
