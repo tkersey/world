@@ -2198,6 +2198,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             return err;
                         };
                         if (frame.response_value_table_id != valueIdForRuntime(Target, Decl.world_port_id, .@"resume")) return error.FrameValueTableMismatch;
+                        try validateResponseFrameImage(frame.*);
                         const value = try frame.decodeValue(self.allocator, Decl.Response);
                         var value_owned = true;
                         errdefer if (value_owned) deinitOwnedValue(self.allocator, value);
@@ -2226,6 +2227,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         try stored.as(self.allocator, Decl.Response)
                     else if (event.response_frame) |frame| value: {
                         if (frame.response_value_table_id != valueIdForRuntime(Target, Decl.world_port_id, .@"resume")) return error.FrameValueTableMismatch;
+                        try validateResponseFrameImage(frame);
                         break :value try frame.decodeValue(self.allocator, Decl.Response);
                     } else return Error.ReplayMissing;
                     var value_owned = true;

@@ -1338,6 +1338,21 @@ test "transcript image encode decode round trip stable and image replay works wi
 
     var image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
     defer image.deinit(std.testing.allocator);
+    var stale_replay_image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer stale_replay_image.deinit(std.testing.allocator);
+    for (stale_replay_image.events) |*event| {
+        if (event.response_frame) |*frame| {
+            frame.flags = 1;
+            break;
+        }
+    }
+    var stale_replay_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer stale_replay_runtime.deinit();
+    try std.testing.expectError(error.InvalidFrameEncoding, PortsMachine.run(&stale_replay_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.replay,
+        .transcript_image = &stale_replay_image,
+    }));
     const image_request = for (image.events) |event| {
         if (event.request_frame) |request| break request;
     } else return error.ExpectedFrameRequest;
