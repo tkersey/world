@@ -32,7 +32,7 @@ The synchronous `responded` path is executable. `rejected` and `failed` are repr
 
 `world.TranscriptImage` is a pointer-free image derived from `world.Transcript`. It stores event images, request/response frames, replay keys, final status, and counts. It does not store `StoredValue`, `*anyopaque`, allocator/runtime/thread pointers, request tokens, or handlers.
 
-Replay from a transcript image consumes response frames and decodes `ValueImage` data. Native handlers are not required.
+Replay from a transcript image consumes response frames and decodes `ValueImage` data. The machine must still be configured with compile-time port descriptors because the Boundary session resumes with typed site/response values, but replay does not call native handlers or require a handler context.
 
 ## Checkpoints
 
@@ -52,7 +52,7 @@ Fresh mode calls native handlers through the native adapter path and records fra
 
 ## ReplayAdapter
 
-Replay consumes a request frame seed, finds the expected response frame/event, validates surface, certificate, port id, request fingerprint, response kind, and replay key, then returns a decoded response without calling handlers.
+Replay consumes a request frame seed, finds the expected response frame/event, validates surface, certificate, port id, request fingerprint, response kind, and replay key, then returns a decoded response through the port descriptor without calling handlers.
 
 ## VerifyAdapter
 
@@ -64,7 +64,7 @@ The byte adapter example encodes `Frame.Request` to canonical bytes, lets a fake
 
 ## Agent Timeline Example
 
-`zig build run-world-agent-timeline` records an agent-shaped fresh run and replays from `TranscriptImage` without model/tool handlers.
+`zig build run-world-agent-timeline` records an agent-shaped fresh run and replays from `TranscriptImage` without model/tool handler calls.
 
 ## Future world-wasm
 

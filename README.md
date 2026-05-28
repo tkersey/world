@@ -106,7 +106,7 @@ switch (try run.nextFrame()) {
 }
 ```
 
-`world.TranscriptImage` is the portable image form of a transcript. It contains ordered event images, request/response frames, replay keys, final status, and summary counts. It does not store `StoredValue`, `*anyopaque`, allocator/runtime/thread pointers, request tokens, or handler functions. Image-backed replay can run without native handlers when response frames carry portable `ValueImage` data.
+`world.TranscriptImage` is the portable image form of a transcript. It contains ordered event images, request/response frames, replay keys, final status, and summary counts. It does not store `StoredValue`, `*anyopaque`, allocator/runtime/thread pointers, request tokens, or handler functions. Image-backed replay requires the machine's compile-time port descriptors so World can recover the residual site and response type, but it does not call native handlers or require a handler context when response frames carry portable `ValueImage` data.
 
 `world.Timeline.Checkpoint` records deterministic metadata for a resumable or branchable point: event index, turn index, prefix fingerprint, branch id, and optional current request/last response fingerprints. `world.Timeline.Branch` records a branch id, parent, checkpoint fingerprint, event range, final status, and counts. These are metadata primitives only; World does not add persistence, scheduling, or concurrency.
 
@@ -142,11 +142,11 @@ zig build run-world-agent-branch
 
 `world_frame_ports` steps to a `Frame.Request`, resumes from a `Frame.Response`, and records frame fingerprints.
 
-`world_transcript_image_replay` records a fresh transcript image, decodes it, and replays without native handlers.
+`world_transcript_image_replay` records a fresh transcript image, decodes it, and replays without native handler calls.
 
 `world_byte_adapter` encodes request/response frames as canonical bytes through a fake byte host. It is not WASM and does not define a concrete ABI.
 
-`world_agent_timeline` replays an agent-shaped transcript image without model/tool handlers.
+`world_agent_timeline` replays an agent-shaped transcript image without model/tool handler calls.
 
 `world_agent_branch` records baseline and alternate agent transcripts from checkpoint metadata and shows different final results.
 

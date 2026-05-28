@@ -1331,7 +1331,7 @@ test "value image scalar string product sum and policy failures" {
     try std.testing.expectError(error.UnsupportedValueImage, world.Frame.ValueImage.fromValue(std.testing.allocator, null, null, null, @as([]const u8, "too-big"), .{ .max_value_image_bytes = 1 }));
 }
 
-test "transcript image encode decode round trip stable and image replay works without handlers" {
+test "transcript image encode decode round trip stable and image replay works without handler context" {
     var transcript = world.Transcript.init(std.testing.allocator);
     defer transcript.deinit();
     try recordPortsTranscript(&transcript);
@@ -1369,10 +1369,10 @@ test "transcript image encode decode round trip stable and image replay works wi
         if (event.response_frame) |response| break response;
     } else return error.ExpectedResponseFrame;
     try std.testing.expectEqual(@as(?u32, 1), decoded_response.response_value_table_id);
-    const MissingImageReplayMachine = world.Machine(fixtures.Ports.Target, .{ .ports = .{} });
-    var missing_decl_runtime = boundary.Runtime.init(std.testing.allocator);
-    defer missing_decl_runtime.deinit();
-    try std.testing.expectError(error.MissingHandler, MissingImageReplayMachine.run(&missing_decl_runtime, .{}, .{
+    const MissingDescriptorMachine = world.Machine(fixtures.Ports.Target, .{ .ports = .{} });
+    var missing_descriptor_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer missing_descriptor_runtime.deinit();
+    try std.testing.expectError(error.MissingHandler, MissingDescriptorMachine.run(&missing_descriptor_runtime, .{}, .{
         .allocator = std.testing.allocator,
         .mode = world.Mode.replay,
         .transcript_image = &decoded,
