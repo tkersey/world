@@ -1448,6 +1448,10 @@ test "step frame nextFrame resumeFrame and verify adapter image path work" {
             });
             defer wrong_nested_response.deinit(std.testing.allocator);
             try std.testing.expectError(error.InvalidFrameEncoding, run.resumeFrame(wrong_nested_response));
+            var stale_image_response = try world.Frame.Response.fromValue(std.testing.allocator, request, 1, response_fingerprint, .@"resume", @as(i32, 7), .portable);
+            defer stale_image_response.deinit(std.testing.allocator);
+            @constCast(stale_image_response.response_image.?.bytes)[0] ^= 1;
+            try std.testing.expectError(error.InvalidFrameEncoding, run.resumeFrame(stale_image_response));
             var response = try world.Frame.Response.fromValue(std.testing.allocator, request, 1, response_fingerprint, .@"resume", @as(i32, 7), .portable);
             defer response.deinit(std.testing.allocator);
             expected_response_frame_fingerprint = response.frame_fingerprint;
