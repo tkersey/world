@@ -1356,6 +1356,10 @@ test "value image scalar string product sum and policy failures" {
     defer std.testing.allocator.free(over_decode_cap);
     @memset(over_decode_cap, 0);
     try std.testing.expectError(error.InvalidFrameEncoding, world.Frame.ValueImage.fromValue(std.testing.allocator, null, null, null, over_decode_cap, .{}));
+    var stored_over_decode_cap = try world.StoredValue.init(std.testing.allocator, over_decode_cap);
+    defer stored_over_decode_cap.deinit(std.testing.allocator);
+    try std.testing.expect(stored_over_decode_cap.portable_image == null);
+    try std.testing.expectError(error.InvalidFrameEncoding, stored_over_decode_cap.valueImage(std.testing.allocator, null, null, null, .{}));
 }
 
 test "transcript image encode decode round trip stable and image replay works without handler context" {

@@ -723,8 +723,8 @@ pub const StoredValue = struct {
     fn initOwned(allocator: std.mem.Allocator, value: anytype) !@This() {
         const Value = @TypeOf(value);
         var portable_image = Frame.ValueImage.fromValue(allocator, null, null, null, value, .native_compatible) catch |err| switch (err) {
-            error.UnsupportedValueImage => null,
-            else => return err,
+            error.OutOfMemory => return err,
+            else => null,
         };
         errdefer if (portable_image) |*image| image.deinit(allocator);
         const ptr = try allocator.create(Value);
