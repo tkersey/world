@@ -2243,12 +2243,14 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     var expected_value_table_id: ?u32 = null;
                     var expected_boundary_value_fingerprint: ?u64 = null;
                     var expected_codec_schema_descriptor_fingerprint: ?u64 = null;
+                    var expected_response_frame: ?Frame.Response = null;
                     if (comptime @hasField(Options, "transcript_image")) {
                         const image = @field(self.options, "transcript_image");
                         const frame = image.nextResponse(replay_key, Target.Certificate.certificate_fingerprint, .@"resume") catch |err| {
                             self.audit.replay_mismatch_count += 1;
                             return err;
                         };
+                        expected_response_frame = frame.*;
                         expected_response_fingerprint = frame.response_fingerprint;
                         if (frame.response_value_table_id != valueIdForRuntime(Target, Decl.world_port_id, .@"resume")) return error.FrameValueTableMismatch;
                         if (frame.response_image) |response_image| {
@@ -2280,6 +2282,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                                 return err;
                             }
                         else if (event.response_frame) |frame| value: {
+                            expected_response_frame = frame;
                             if (frame.response_value_table_id != valueIdForRuntime(Target, Decl.world_port_id, .@"resume")) return error.FrameValueTableMismatch;
                             if (frame.response_image) |response_image| {
                                 expected_value_image_fingerprint = response_image.value_image_fingerprint;
@@ -2308,6 +2311,9 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     if (response_trace.fingerprint != expected_response_fingerprint) {
                         self.audit.replay_mismatch_count += 1;
                         return Error.VerifyDivergence;
+                    }
+                    if (expected_response_frame) |frame| {
+                        try appendPortEvent(Target, self.options, .frame_verified, Decl.world_port_id, (self.pending_request orelse return Error.UnknownResidualSite).trace(), expected_response_fingerprint, .@"resume", null, null, frame);
                     }
                     if (expected_value_image_fingerprint) |expected_image_fingerprint| {
                         var fresh_image = try Frame.ValueImage.fromValue(
@@ -2608,6 +2614,7 @@ fn eventKindAllowsResponseFrame(kind: EventKind) bool {
         .port_failed,
         .frame_responded,
         .frame_replayed,
+        .frame_verified,
         .frame_rejected,
         .frame_failed,
         => true,

@@ -1484,6 +1484,26 @@ test "step frame nextFrame resumeFrame and verify adapter image path work" {
     try std.testing.expectEqual(@as(i32, 7), frame_verified.value);
     try std.testing.expectEqual(@as(usize, 1), frame_verify_ctx.calls);
 
+    var frame_verify_transcript = world.Transcript.init(std.testing.allocator);
+    defer frame_verify_transcript.deinit();
+    var frame_verify_record_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer frame_verify_record_runtime.deinit();
+    var frame_verify_record_ctx: PortsCtx = .{};
+    var frame_verify_recorded = try PortsMachine.run(&frame_verify_record_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.verify,
+        .ctx = &frame_verify_record_ctx,
+        .transcript_image = &frame_image,
+        .transcript = &frame_verify_transcript,
+    });
+    defer frame_verify_recorded.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(i32, 7), frame_verify_recorded.value);
+    try std.testing.expectEqual(@as(usize, 1), frame_verify_transcript.summary().frame_verified);
+    var frame_verify_record_image = try frame_verify_transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer frame_verify_record_image.deinit(std.testing.allocator);
+    const frame_verify_audit = world.AuditImage.fromReport(frame_verify_recorded.audit, frame_verify_record_image);
+    try std.testing.expectEqual(@as(usize, 1), frame_verify_audit.verified_frame_count);
+
     var image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
     defer image.deinit(std.testing.allocator);
     var verify_runtime = boundary.Runtime.init(std.testing.allocator);
