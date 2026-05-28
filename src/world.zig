@@ -675,6 +675,7 @@ pub const StoredValue = struct {
     type_name: []const u8,
     portable_image: ?Frame.ValueImage = null,
     clone_fn: *const fn (std.mem.Allocator, *anyopaque) anyerror!StoredValue,
+    image_fn: *const fn (std.mem.Allocator, *anyopaque, ?u32, ?u64, ?u64, ValuePolicy) anyerror!Frame.ValueImage,
     destroy_fn: *const fn (std.mem.Allocator, *anyopaque) void,
 
     pub fn init(allocator: std.mem.Allocator, value: anytype) !@This() {
@@ -704,6 +705,26 @@ pub const StoredValue = struct {
                     return StoredValue.init(inner_allocator, typed.*);
                 }
             }.clone,
+            .image_fn = struct {
+                fn image(
+                    inner_allocator: std.mem.Allocator,
+                    erased: *anyopaque,
+                    value_table_id: ?u32,
+                    boundary_value_fingerprint: ?u64,
+                    codec_schema_descriptor_fingerprint: ?u64,
+                    policy: ValuePolicy,
+                ) anyerror!Frame.ValueImage {
+                    const typed: *Value = @ptrCast(@alignCast(erased));
+                    return Frame.ValueImage.fromValue(
+                        inner_allocator,
+                        value_table_id,
+                        boundary_value_fingerprint,
+                        codec_schema_descriptor_fingerprint,
+                        typed.*,
+                        policy,
+                    );
+                }
+            }.image,
             .destroy_fn = struct {
                 fn destroy(inner_allocator: std.mem.Allocator, erased: *anyopaque) void {
                     const typed: *Value = @ptrCast(@alignCast(erased));
@@ -718,6 +739,24 @@ pub const StoredValue = struct {
 
     pub fn clone(self: @This(), allocator: std.mem.Allocator) !@This() {
         return self.clone_fn(allocator, self.ptr);
+    }
+
+    pub fn valueImage(
+        self: @This(),
+        allocator: std.mem.Allocator,
+        value_table_id: ?u32,
+        boundary_value_fingerprint: ?u64,
+        codec_schema_descriptor_fingerprint: ?u64,
+        policy: ValuePolicy,
+    ) !Frame.ValueImage {
+        return self.image_fn(
+            allocator,
+            self.ptr,
+            value_table_id,
+            boundary_value_fingerprint,
+            codec_schema_descriptor_fingerprint,
+            policy,
+        );
     }
 
     pub fn as(self: @This(), allocator: std.mem.Allocator, comptime Value: type) !Value {
@@ -763,6 +802,7 @@ pub const Transcript = struct {
         status: ?ResponseStatus = null,
         source_run: bool = true,
         value: ?StoredValue = null,
+        request_frame: ?Frame.Request = null,
         response_frame: ?Frame.Response = null,
     };
 
@@ -773,6 +813,7 @@ pub const Transcript = struct {
     pub fn deinit(self: *@This()) void {
         for (self.events.items) |*event| {
             if (event.value) |*stored| stored.deinit(self.allocator);
+            if (event.request_frame) |*frame| frame.deinit(self.allocator);
             if (event.response_frame) |*frame| frame.deinit(self.allocator);
         }
         self.events.deinit(self.allocator);
@@ -786,6 +827,11 @@ pub const Transcript = struct {
             cloned.value = try stored.clone(self.allocator);
         }
         errdefer if (cloned.value) |*stored| stored.deinit(self.allocator);
+        cloned.request_frame = null;
+        if (event.request_frame) |frame| {
+            cloned.request_frame = try frame.clone(self.allocator);
+        }
+        errdefer if (cloned.request_frame) |*frame| frame.deinit(self.allocator);
         cloned.response_frame = null;
         if (event.response_frame) |frame| {
             cloned.response_frame = try frame.clone(self.allocator);
@@ -797,6 +843,7 @@ pub const Transcript = struct {
     fn appendOwned(self: *@This(), event: *Event) !void {
         try self.events.append(self.allocator, event.*);
         event.value = null;
+        event.request_frame = null;
         event.response_frame = null;
     }
 
@@ -971,6 +1018,7 @@ pub const Transcript = struct {
                 .residual_site_fingerprint = event.residual_site_fingerprint,
                 .status = event.status,
                 .source_run = event.source_run,
+                .request_frame = event.request_frame,
                 .response_frame = event.response_frame,
             });
         }
@@ -1818,8 +1866,9 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             self.audit.port_request_count += 1;
                             self.per_port_counts[world_port_id] += 1;
                             if (self.effective_mode == .fresh) {
-                                const event_kind: EventKind = if (self.frame_step_request) .frame_requested else .port_requested;
-                                try appendPortEvent(Target, self.options, event_kind, world_port_id, trace, null, null, null, null);
+                                if (!self.frame_step_request) {
+                                    try appendPortEvent(Target, self.options, .port_requested, world_port_id, trace, null, null, null, null, null);
+                                }
                             }
                             return .port_required;
                         },
@@ -1838,7 +1887,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             if (Handler) |Decl| {
                                 self.dispatchDecl(Decl, request) catch |err| {
                                     self.audit.failed_count += 1;
-                                    try appendPortEvent(Target, self.options, .port_failed, world_port_id, trace, null, null, null, null);
+                                    try appendPortEvent(Target, self.options, .port_failed, world_port_id, trace, null, null, null, null, null);
                                     try self.markRunFailed();
                                     return err;
                                 };
@@ -1866,7 +1915,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         .done => |value| .{ .done = value },
                         .failed => .failed,
                         .parked => error.HandlerPending,
-                        .port_required => .{ .port_request = try self.pendingRequestFrame() },
+                        .port_required => .{ .port_request = try self.pendingRequestFrame(true) },
                     };
                 }
 
@@ -1874,7 +1923,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     if (response_frame.status == .pending) return error.HandlerPending;
                     const request = self.pending_request orelse return error.UnknownResidualSite;
                     const world_port_id = self.pending_port_id orelse return error.UnknownWorldPort;
-                    var frame = try self.pendingRequestFrame();
+                    var frame = try self.pendingRequestFrame(false);
                     defer frame.deinit(self.allocator);
                     if (response_frame.world_surface_fingerprint != frame.world_surface_fingerprint) return error.FrameSurfaceMismatch;
                     if (response_frame.target_certificate_fingerprint != frame.target_certificate_fingerprint) return error.FrameTargetCertificateMismatch;
@@ -1884,13 +1933,13 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     if (response_frame.replay_key != frame.replay_key_seed.withResponse(response_frame.response_fingerprint).fingerprint()) return error.ReplayMissing;
                     if (response_frame.status == .rejected) {
                         self.audit.rejected_count += 1;
-                        try appendPortEvent(Target, self.options, .frame_rejected, world_port_id, request.trace(), response_frame.response_fingerprint, response_frame.response_kind, null, response_frame);
+                        try appendPortEvent(Target, self.options, .frame_rejected, world_port_id, request.trace(), response_frame.response_fingerprint, response_frame.response_kind, null, null, response_frame);
                         try self.markRunFailed();
                         return error.HandlerRejected;
                     }
                     if (response_frame.status == .failed) {
                         self.audit.failed_count += 1;
-                        try appendPortEvent(Target, self.options, .frame_failed, world_port_id, request.trace(), response_frame.response_fingerprint, response_frame.response_kind, null, response_frame);
+                        try appendPortEvent(Target, self.options, .frame_failed, world_port_id, request.trace(), response_frame.response_fingerprint, response_frame.response_kind, null, null, response_frame);
                         try self.markRunFailed();
                         return error.HandlerFailed;
                     }
@@ -1909,20 +1958,20 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     }
                 }
 
-                fn pendingRequestFrame(self: *Self) !Frame.Request {
+                fn pendingRequestFrame(self: *Self, record_event: bool) !Frame.Request {
                     const request = self.pending_request orelse return error.UnknownResidualSite;
                     const world_port_id = self.pending_port_id orelse return error.UnknownWorldPort;
                     if (Target.WorldPortTable.entries.len != 0) {
                         switch (world_port_id) {
                             inline 0...Target.WorldPortTable.entries.len - 1 => |id| {
                                 const Handler = comptime handlerForWorldPortId(Target, Config, @intCast(id));
-                                if (Handler) |Decl| return try self.pendingRequestFrameDecl(Decl, request, world_port_id);
+                                if (Handler) |Decl| return try self.pendingRequestFrameDecl(Decl, request, world_port_id, record_event);
                             },
                             else => {},
                         }
                     }
                     const trace = request.trace();
-                    return Frame.Request.init(.{
+                    var frame = Frame.Request.init(.{
                         .world_surface_fingerprint = Target.WorldSurface.surface_fingerprint,
                         .world_surface_replay_scope_fingerprint = Target.WorldSurface.replayScopeRef().fingerprint,
                         .target_certificate_fingerprint = Target.Certificate.certificate_fingerprint,
@@ -1934,12 +1983,17 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         .payload_value_table_id = valueIdForRuntime(Target, world_port_id, .payload),
                         .expected_response_value_table_id = valueIdForRuntime(Target, world_port_id, .@"resume"),
                     });
+                    errdefer frame.deinit(self.allocator);
+                    if (record_event and self.effective_mode == .fresh) {
+                        try appendPortEvent(Target, self.options, .frame_requested, world_port_id, trace, null, null, null, frame, null);
+                    }
+                    return frame;
                 }
 
-                fn pendingRequestFrameDecl(self: *Self, comptime Decl: type, request: Request, world_port_id: u32) !Frame.Request {
+                fn pendingRequestFrameDecl(self: *Self, comptime Decl: type, request: Request, world_port_id: u32, record_event: bool) !Frame.Request {
                     const typed_request = try request.as(Decl.SiteType);
                     const payload = try typed_request.payload();
-                    var payload_image = try Frame.ValueImage.fromValue(
+                    var payload_image: ?Frame.ValueImage = try Frame.ValueImage.fromValue(
                         self.allocator,
                         valueIdForRuntime(Target, world_port_id, .payload),
                         null,
@@ -1947,9 +2001,9 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         payload,
                         .portable,
                     );
-                    errdefer payload_image.deinit(self.allocator);
+                    errdefer if (payload_image) |*image| image.deinit(self.allocator);
                     const trace = request.trace();
-                    return Frame.Request.init(.{
+                    var frame = Frame.Request.init(.{
                         .world_surface_fingerprint = Target.WorldSurface.surface_fingerprint,
                         .world_surface_replay_scope_fingerprint = Target.WorldSurface.replayScopeRef().fingerprint,
                         .target_certificate_fingerprint = Target.Certificate.certificate_fingerprint,
@@ -1962,6 +2016,12 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         .expected_response_value_table_id = valueIdForRuntime(Target, world_port_id, .@"resume"),
                         .payload_image = payload_image,
                     });
+                    payload_image = null;
+                    errdefer frame.deinit(self.allocator);
+                    if (record_event and self.effective_mode == .fresh) {
+                        try appendPortEvent(Target, self.options, .frame_requested, world_port_id, trace, null, null, null, frame, null);
+                    }
+                    return frame;
                 }
 
                 fn resumeFrameDecl(self: *Self, comptime Decl: type, request: Request, response_frame: Frame.Response) !void {
@@ -1981,7 +2041,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             owned.deinit(@field(self.options, "transcript").allocator);
                         }
                     };
-                    try appendPortEvent(Target, self.options, .frame_responded, Decl.world_port_id, request.trace(), response_trace.fingerprint, response_frame.response_kind, stored, response_frame);
+                    try appendPortEvent(Target, self.options, .frame_responded, Decl.world_port_id, request.trace(), response_trace.fingerprint, response_frame.response_kind, stored, null, response_frame);
                     stored = null;
                     self.audit.fresh_response_count += 1;
                     try self.session.resumeTyped(typed_request, value);
@@ -1996,7 +2056,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 fn markMissingHandler(self: *Self, world_port_id: u32, trace: anytype) !void {
                     self.audit.missing_handler_count += 1;
                     self.audit.failed_count += 1;
-                    try appendPortEvent(Target, self.options, .port_failed, world_port_id, trace, null, null, null, null);
+                    try appendPortEvent(Target, self.options, .port_failed, world_port_id, trace, null, null, null, null, null);
                     try self.markRunFailed();
                     return Error.MissingHandler;
                 }
@@ -2062,6 +2122,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         .@"resume",
                         stored,
                         null,
+                        null,
                     );
                     stored = null;
                     self.audit.fresh_response_count += 1;
@@ -2090,7 +2151,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             self.audit.replay_mismatch_count += 1;
                             return error.VerifyResponseFingerprintMismatch;
                         }
-                        try appendPortEvent(Target, self.options, .frame_replayed, Decl.world_port_id, trace, response_trace.fingerprint, .@"resume", null, frame.*);
+                        try appendPortEvent(Target, self.options, .frame_replayed, Decl.world_port_id, trace, response_trace.fingerprint, .@"resume", null, null, frame.*);
                         self.audit.replayed_response_count += 1;
                         var run_value = try StoredValue.initOwned(self.allocator, value);
                         value_owned = false;
@@ -2119,7 +2180,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         self.audit.replay_mismatch_count += 1;
                         return Error.ReplayResponseKindMismatch;
                     }
-                    try appendPortEvent(Target, self.options, .port_replayed, Decl.world_port_id, trace, response_trace.fingerprint, .@"resume", null, if (event.response_frame) |frame| frame else null);
+                    try appendPortEvent(Target, self.options, .port_replayed, Decl.world_port_id, trace, response_trace.fingerprint, .@"resume", null, null, if (event.response_frame) |frame| frame else null);
                     self.audit.replayed_response_count += 1;
                     var run_value = try StoredValue.initOwned(self.allocator, value);
                     value_owned = false;
@@ -2501,6 +2562,7 @@ fn appendPortEvent(
     response_fingerprint: ?u64,
     response_kind: ?ResponseKind,
     value: ?StoredValue,
+    request_frame: ?Frame.Request,
     response_frame: ?Frame.Response,
 ) !void {
     if (!@hasField(@TypeOf(options), "transcript")) return;
@@ -2528,29 +2590,36 @@ fn appendPortEvent(
         .residual_site_fingerprint = trace.operation_site_fingerprint,
         .status = if (kind == .port_responded) .responded else null,
         .value = value,
+        .request_frame = if (request_frame) |frame| try frame.clone(transcript.allocator) else null,
         .response_frame = if (response_frame) |frame| try frame.clone(transcript.allocator) else null,
     };
+    errdefer if (event.request_frame) |*frame| frame.deinit(transcript.allocator);
     errdefer if (event.response_frame) |*frame| frame.deinit(transcript.allocator);
     try transcript.appendOwned(&event);
 }
 
 fn eventImageFromTranscriptEvent(allocator: std.mem.Allocator, event: Transcript.Event, policy: ValuePolicy) !TranscriptImage.EventImage {
-    var request_frame: ?Frame.Request = null;
-    if (event.world_port_id) |world_port_id| {
-        if (event.request_fingerprint) |request_fingerprint| {
-            if (event.residual_site_index != null and event.residual_site_fingerprint != null and event.turn_index != null) {
-                request_frame = Frame.Request.init(.{
-                    .world_surface_fingerprint = event.world_surface_fingerprint,
-                    .world_surface_replay_scope_fingerprint = event.world_surface_replay_scope_fingerprint,
-                    .target_certificate_fingerprint = event.target_certificate_fingerprint,
-                    .world_port_id = world_port_id,
-                    .residual_site_index = event.residual_site_index.?,
-                    .residual_site_fingerprint = event.residual_site_fingerprint.?,
-                    .request_fingerprint = request_fingerprint,
-                    .turn_index = event.turn_index.?,
-                    .payload_value_table_id = event.payload_value_table_id,
-                    .expected_response_value_table_id = event.expected_response_value_table_id,
-                });
+    var request_frame: ?Frame.Request = if (event.request_frame) |frame|
+        try frame.clone(allocator)
+    else
+        null;
+    if (request_frame == null) {
+        if (event.world_port_id) |world_port_id| {
+            if (event.request_fingerprint) |request_fingerprint| {
+                if (event.residual_site_index != null and event.residual_site_fingerprint != null and event.turn_index != null) {
+                    request_frame = Frame.Request.init(.{
+                        .world_surface_fingerprint = event.world_surface_fingerprint,
+                        .world_surface_replay_scope_fingerprint = event.world_surface_replay_scope_fingerprint,
+                        .target_certificate_fingerprint = event.target_certificate_fingerprint,
+                        .world_port_id = world_port_id,
+                        .residual_site_index = event.residual_site_index.?,
+                        .residual_site_fingerprint = event.residual_site_fingerprint.?,
+                        .request_fingerprint = request_fingerprint,
+                        .turn_index = event.turn_index.?,
+                        .payload_value_table_id = event.payload_value_table_id,
+                        .expected_response_value_table_id = event.expected_response_value_table_id,
+                    });
+                }
             }
         }
     }
@@ -2586,7 +2655,13 @@ fn eventImageFromTranscriptEvent(allocator: std.mem.Allocator, event: Transcript
         const frame_status = response_status orelse .responded;
         var response_image: ?Frame.ValueImage = null;
         if (event.value) |stored| {
-            if (stored.portable_image) |image| response_image = try image.clone(allocator);
+            response_image = try stored.valueImage(
+                allocator,
+                event.expected_response_value_table_id,
+                event.response_fingerprint,
+                null,
+                policy,
+            );
         }
         errdefer if (response_image) |*image| image.deinit(allocator);
         if (frame_status == .responded) {
