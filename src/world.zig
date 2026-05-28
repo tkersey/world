@@ -1988,6 +1988,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     if (response_frame.status == .pending) return error.HandlerPending;
                     const request = self.pending_request orelse return error.UnknownResidualSite;
                     const world_port_id = self.pending_port_id orelse return error.UnknownWorldPort;
+                    if (self.effective_mode != .fresh) return Error.InvalidMode;
                     var frame = try self.pendingRequestFrame(false);
                     defer frame.deinit(self.allocator);
                     if (response_frame.world_surface_fingerprint != frame.world_surface_fingerprint) return error.FrameSurfaceMismatch;
@@ -2285,6 +2286,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             self.audit.replay_mismatch_count += 1;
                             return err;
                         };
+                        try validateResponseFrameImage(frame.*);
                         expected_response_frame = frame.*;
                         expected_response_fingerprint = frame.response_fingerprint;
                         if (frame.response_value_table_id != valueIdForRuntime(Target, Decl.world_port_id, .@"resume")) return error.FrameValueTableMismatch;
@@ -2319,6 +2321,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         else if (event.response_frame) |frame| value: {
                             expected_response_frame = frame;
                             if (frame.response_value_table_id != valueIdForRuntime(Target, Decl.world_port_id, .@"resume")) return error.FrameValueTableMismatch;
+                            try validateResponseFrameImage(frame);
                             if (frame.response_image) |response_image| {
                                 expected_value_image_fingerprint = response_image.value_image_fingerprint;
                                 expected_value_table_id = response_image.value_table_id;

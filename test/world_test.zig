@@ -1655,6 +1655,30 @@ test "step frame nextFrame resumeFrame and verify adapter image path work" {
     } else return error.ExpectedResponseFrame;
     try std.testing.expectEqual(world.ResponseStatus.responded, image_response_event.status.?);
     try std.testing.expectEqual(expected_response_frame_fingerprint, image_response.frame_fingerprint);
+    var replay_frame_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer replay_frame_runtime.deinit();
+    var replay_frame_run = try PortsMachine.start(&replay_frame_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.replay,
+        .transcript_image = &frame_image,
+    });
+    defer replay_frame_run.deinit();
+    switch (try replay_frame_run.nextFrame()) {
+        .port_request => |frame| {
+            var request = frame;
+            defer request.deinit(std.testing.allocator);
+            const forged_replay_response = world.Frame.Response.init(.{
+                .world_surface_fingerprint = request.world_surface_fingerprint,
+                .target_certificate_fingerprint = request.target_certificate_fingerprint,
+                .world_port_id = request.world_port_id,
+                .request_fingerprint = request.request_fingerprint,
+                .response_fingerprint = 0,
+                .replay_key = request.replay_key_seed.withResponse(0).fingerprint(),
+            });
+            try std.testing.expectError(error.InvalidMode, replay_frame_run.resumeFrame(forged_replay_response));
+        },
+        else => return error.ExpectedFrameRequest,
+    }
     var frame_replay_runtime = boundary.Runtime.init(std.testing.allocator);
     defer frame_replay_runtime.deinit();
     var frame_replayed = try PortsMachine.run(&frame_replay_runtime, .{}, .{
@@ -1664,6 +1688,24 @@ test "step frame nextFrame resumeFrame and verify adapter image path work" {
     });
     defer frame_replayed.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(i32, 7), frame_replayed.value);
+
+    var stale_verify_image = try frame_transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer stale_verify_image.deinit(std.testing.allocator);
+    for (stale_verify_image.events) |*event| {
+        if (event.response_frame) |*response_frame| {
+            response_frame.flags = 1;
+            break;
+        }
+    }
+    var stale_verify_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer stale_verify_runtime.deinit();
+    var stale_verify_ctx: PortsCtx = .{};
+    try std.testing.expectError(error.InvalidFrameEncoding, PortsMachine.run(&stale_verify_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.verify,
+        .ctx = &stale_verify_ctx,
+        .transcript_image = &stale_verify_image,
+    }));
 
     var frame_verify_runtime = boundary.Runtime.init(std.testing.allocator);
     defer frame_verify_runtime.deinit();
