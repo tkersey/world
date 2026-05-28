@@ -3420,6 +3420,7 @@ fn decodePortableValue(comptime Value: type, allocator: std.mem.Allocator, bytes
             }
             if (comptime isStringList(Value)) {
                 const len = try readU64AsUsize(bytes, cursor);
+                if (len > (bytes.len - cursor.*) / 8) return error.InvalidFrameEncoding;
                 const Child = @typeInfo(Value).pointer.child;
                 const result = try allocator.alloc(Child, len);
                 errdefer allocator.free(result);

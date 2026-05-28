@@ -1365,6 +1365,10 @@ test "value image scalar string product sum and policy failures" {
         },
         else => return error.ExpectedToolAction,
     }
+    var string_list = try world.Frame.ValueImage.fromValue(std.testing.allocator, 5, null, null, @as([]const []const u8, &.{"alpha"}), .portable);
+    defer string_list.deinit(std.testing.allocator);
+    std.mem.writeInt(u64, @constCast(string_list.bytes[0..8]), std.math.maxInt(u64), .little);
+    try std.testing.expectError(error.InvalidFrameEncoding, string_list.decodeValue(std.testing.allocator, []const []const u8));
 
     var native_only: i32 = 1;
     try std.testing.expectError(error.UnsupportedValueImage, world.Frame.ValueImage.fromValue(std.testing.allocator, null, null, null, &native_only, .portable));
