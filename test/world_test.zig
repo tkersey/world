@@ -725,6 +725,36 @@ test "world step dispatch failure is terminal" {
     try std.testing.expectEqual(@as(usize, 0), summary.run_completed);
 }
 
+test "world frame step rejects missing port descriptor before exposing request" {
+    const MissingMachine = world.Machine(fixtures.Ports.Target, .{ .ports = .{} });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+
+    var run = try MissingMachine.start(&runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .transcript = &transcript,
+    });
+    defer run.deinit();
+
+    try std.testing.expectError(error.MissingHandler, run.nextFrame());
+    switch (try run.nextFrame()) {
+        .failed => {},
+        else => return error.ExpectedFailed,
+    }
+    try std.testing.expectEqual(@as(usize, 1), run.audit.missing_handler_count);
+    try std.testing.expectEqual(@as(usize, 1), run.audit.failed_count);
+
+    const summary = transcript.summary();
+    try std.testing.expectEqual(@as(usize, 0), summary.port_requested);
+    try std.testing.expectEqual(@as(usize, 1), summary.port_failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.frame_requested);
+    try std.testing.expectEqual(@as(usize, 1), summary.run_failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.run_completed);
+}
+
 test "world replay validates zero-port run fingerprints" {
     const Machine = world.Machine(fixtures.Strict.Target, .{ .ports = .{} });
     {

@@ -2122,33 +2122,19 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 fn pendingRequestFrame(self: *Self, record_event: bool) !Frame.Request {
                     const request = self.pending_request orelse return error.UnknownResidualSite;
                     const world_port_id = self.pending_port_id orelse return error.UnknownWorldPort;
+                    const trace = request.trace();
+                    if (Target.WorldPortTable.entries.len == 0) return self.markMissingHandlerFrame(world_port_id, trace);
                     if (Target.WorldPortTable.entries.len != 0) {
                         switch (world_port_id) {
                             inline 0...Target.WorldPortTable.entries.len - 1 => |id| {
                                 const Handler = comptime handlerForWorldPortId(Target, Config, @intCast(id));
                                 if (Handler) |Decl| return try self.pendingRequestFrameDecl(Decl, request, world_port_id, record_event);
+                                return self.markMissingHandlerFrame(world_port_id, trace);
                             },
-                            else => {},
+                            else => return error.UnknownWorldPort,
                         }
                     }
-                    const trace = request.trace();
-                    var frame = Frame.Request.init(.{
-                        .world_surface_fingerprint = Target.WorldSurface.surface_fingerprint,
-                        .world_surface_replay_scope_fingerprint = Target.WorldSurface.replayScopeRef().fingerprint,
-                        .target_certificate_fingerprint = Target.Certificate.certificate_fingerprint,
-                        .world_port_id = world_port_id,
-                        .residual_site_index = trace.operation_site_index,
-                        .residual_site_fingerprint = trace.operation_site_fingerprint,
-                        .request_fingerprint = trace.fingerprint,
-                        .turn_index = trace.turn_index,
-                        .payload_value_table_id = valueIdForRuntime(Target, world_port_id, .payload),
-                        .expected_response_value_table_id = valueIdForRuntime(Target, world_port_id, .@"resume"),
-                    });
-                    errdefer frame.deinit(self.allocator);
-                    if (record_event and self.effective_mode == .fresh) {
-                        try appendPortEvent(Target, self.options, .frame_requested, world_port_id, trace, null, null, null, frame, null);
-                    }
-                    return frame;
+                    return error.UnknownWorldPort;
                 }
 
                 fn pendingRequestFrameDecl(self: *Self, comptime Decl: type, request: Request, world_port_id: u32, record_event: bool) !Frame.Request {
@@ -2241,11 +2227,20 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 }
 
                 fn markMissingHandler(self: *Self, world_port_id: u32, trace: anytype) !void {
+                    try self.recordMissingHandler(world_port_id, trace);
+                    return Error.MissingHandler;
+                }
+
+                fn markMissingHandlerFrame(self: *Self, world_port_id: u32, trace: anytype) !Frame.Request {
+                    try self.recordMissingHandler(world_port_id, trace);
+                    return Error.MissingHandler;
+                }
+
+                fn recordMissingHandler(self: *Self, world_port_id: u32, trace: anytype) !void {
                     self.audit.missing_handler_count += 1;
                     self.audit.failed_count += 1;
                     try appendPortEvent(Target, self.options, .port_failed, world_port_id, trace, null, null, null, null, null);
                     try self.markRunFailed();
-                    return Error.MissingHandler;
                 }
 
                 fn dispatchDecl(self: *Self, comptime Decl: type, request: Request) !void {
