@@ -780,6 +780,7 @@ pub const Frame = struct {
             });
             result.owns_error_tag = error_tag != null;
             result.owns_reason = reason != null;
+            try validateResponseFrameImage(result);
             if (result.frame_fingerprint != frame_fingerprint) return error.InvalidFrameEncoding;
             return result;
         }

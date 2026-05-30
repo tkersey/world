@@ -1301,6 +1301,7 @@ test "request frame fingerprint stable and encodes canonical bytes" {
 
 test "response frame status rejected failed and canonical bytes" {
     const request = testRequestFrame();
+    const deferred_response_flag: u32 = 1;
     var response = try world.Frame.Response.fromValue(std.testing.allocator, request, 1, 0xdec1_5100, .@"resume", @as(i32, 7), .portable);
     defer response.deinit(std.testing.allocator);
     try std.testing.expectEqual(world.ResponseStatus.responded, response.status);
@@ -1336,6 +1337,54 @@ test "response frame status rejected failed and canonical bytes" {
     const wrong_table_encoded = try wrong_table_response.encode(std.testing.allocator);
     defer std.testing.allocator.free(wrong_table_encoded);
     try std.testing.expectError(error.InvalidFrameEncoding, world.Frame.Response.decode(std.testing.allocator, wrong_table_encoded));
+
+    const deferred_image = try world.Frame.ValueImage.fromValue(std.testing.allocator, 1, null, null, @as(i32, 7), .portable);
+    var deferred_with_fingerprint = world.Frame.Response.init(.{
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .target_certificate_fingerprint = request.target_certificate_fingerprint,
+        .world_port_id = request.world_port_id,
+        .request_fingerprint = request.request_fingerprint,
+        .response_value_table_id = 1,
+        .response_fingerprint = 0xdec1_5100,
+        .response_image = deferred_image,
+        .replay_key = 0,
+        .flags = deferred_response_flag,
+    });
+    defer deferred_with_fingerprint.deinit(std.testing.allocator);
+    const deferred_with_fingerprint_encoded = try deferred_with_fingerprint.encode(std.testing.allocator);
+    defer std.testing.allocator.free(deferred_with_fingerprint_encoded);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Frame.Response.decode(std.testing.allocator, deferred_with_fingerprint_encoded));
+
+    const deferred_rejected_image = try world.Frame.ValueImage.fromValue(std.testing.allocator, 1, null, null, @as(i32, 7), .portable);
+    var deferred_rejected = world.Frame.Response.init(.{
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .target_certificate_fingerprint = request.target_certificate_fingerprint,
+        .world_port_id = request.world_port_id,
+        .request_fingerprint = request.request_fingerprint,
+        .response_value_table_id = 1,
+        .response_fingerprint = 0,
+        .response_image = deferred_rejected_image,
+        .replay_key = 0,
+        .status = .rejected,
+        .flags = deferred_response_flag,
+    });
+    defer deferred_rejected.deinit(std.testing.allocator);
+    const deferred_rejected_encoded = try deferred_rejected.encode(std.testing.allocator);
+    defer std.testing.allocator.free(deferred_rejected_encoded);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Frame.Response.decode(std.testing.allocator, deferred_rejected_encoded));
+
+    const deferred_without_image = world.Frame.Response.init(.{
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .target_certificate_fingerprint = request.target_certificate_fingerprint,
+        .world_port_id = request.world_port_id,
+        .request_fingerprint = request.request_fingerprint,
+        .response_fingerprint = 0,
+        .replay_key = 0,
+        .flags = deferred_response_flag,
+    });
+    const deferred_without_image_encoded = try deferred_without_image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(deferred_without_image_encoded);
+    try std.testing.expectError(error.MissingValueImage, world.Frame.Response.decode(std.testing.allocator, deferred_without_image_encoded));
 
     const rejected = world.Frame.Response.init(.{
         .world_surface_fingerprint = request.world_surface_fingerprint,
