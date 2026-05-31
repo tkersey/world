@@ -3744,6 +3744,21 @@ test "run image encode decode roundtrip includes TargetRef TranscriptImage branc
     });
     try std.testing.expectError(error.HandoffPendingFrameMismatch, missing_pending_image.validate(.{}));
 
+    const stale_pending_state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .pending_request_fingerprint = request.request_fingerprint,
+        .turn_index = request.turn_index,
+        .status = .running,
+    });
+    const stale_pending_image = world.RunImage.init(.{
+        .kind = .full_target_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = import_set.import_set_fingerprint,
+        .current_state = stale_pending_state,
+        .pending_request_frame = request,
+    });
+    try std.testing.expectError(error.HandoffPendingFrameMismatch, stale_pending_image.validate(.{}));
+
     const wrong_turn_state = world.RunState.init(.{
         .target_ref_fingerprint = target_ref.target_ref_fingerprint,
         .pending_request_fingerprint = request.frame_fingerprint,

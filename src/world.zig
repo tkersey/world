@@ -2654,7 +2654,7 @@ pub const RunImage = struct {
                 if (frame.frame_fingerprint != fingerprint) return error.HandoffPendingFrameMismatch;
                 if (frame.turn_index != self.current_state.turn_index) return error.HandoffPendingFrameMismatch;
             } else if (self.current_state.pending_request_fingerprint) |fingerprint| {
-                if (frame.frame_fingerprint != fingerprint and frame.request_fingerprint != fingerprint) return error.HandoffPendingFrameMismatch;
+                if (frame.frame_fingerprint != fingerprint) return error.HandoffPendingFrameMismatch;
             }
         }
         if (self.final_result_image) |image| {
