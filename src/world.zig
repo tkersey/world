@@ -1739,6 +1739,12 @@ pub const Supervision = struct {
             const cost_model = permit.cost_model.withFingerprint();
             if (permit.cost_model.cost_model_fingerprint != cost_model.cost_model_fingerprint) return Error.SupervisionDenied;
             if (permit.cost_model_fingerprint != cost_model.cost_model_fingerprint) return Error.SupervisionDenied;
+            for (permit.budget.per_port_budgets) |per_port_budget| {
+                if (per_port_budget.world_port_id >= port_count) return Error.SupervisionDenied;
+            }
+            for (permit.cost_model.per_port_costs) |per_port_cost| {
+                if (per_port_cost.world_port_id >= port_count) return Error.SupervisionDenied;
+            }
             for (permit.port_rules) |rule| {
                 if (rule.world_surface_fingerprint != permit.world_surface_fingerprint) return Error.SupervisionDenied;
                 if (rule.world_port_id >= port_count) return Error.SupervisionDenied;

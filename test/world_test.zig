@@ -4996,6 +4996,26 @@ test "permit validation binds port rules to target surface and range" {
         .port_rules = &out_of_range_rules,
     });
     try std.testing.expectError(error.SupervisionDenied, world.Supervisor.init(std.testing.allocator, out_of_range_permit, fixtures.Ports.Target.WorldPortTable.entries.len));
+    const out_of_range_budgets = [_]world.Supervision.PerPortBudget{.{
+        .world_port_id = @as(u32, @intCast(fixtures.Ports.Target.WorldPortTable.entries.len)),
+        .max_requests = 1,
+    }};
+    const out_of_range_budget_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+        .budget = world.Budget.init(.{ .per_port_budgets = &out_of_range_budgets }),
+    });
+    try std.testing.expectError(error.SupervisionDenied, world.Supervisor.init(std.testing.allocator, out_of_range_budget_permit, fixtures.Ports.Target.WorldPortTable.entries.len));
+    const out_of_range_costs = [_]world.Supervision.PerPortCost{.{
+        .world_port_id = @as(u32, @intCast(fixtures.Ports.Target.WorldPortTable.entries.len)),
+        .fresh_call_cost = 0,
+    }};
+    const out_of_range_cost_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+        .cost_model = world.CostModel.init(.{ .per_port_costs = &out_of_range_costs }),
+    });
+    try std.testing.expectError(error.SupervisionDenied, world.Supervisor.init(std.testing.allocator, out_of_range_cost_permit, fixtures.Ports.Target.WorldPortTable.entries.len));
 }
 
 test "per-port byte and status cost overrides are honored" {
