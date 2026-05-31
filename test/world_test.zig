@@ -4859,6 +4859,12 @@ test "supervised frame response bytes are accounted before framed resume" {
         else => return error.ExpectedFrameRequest,
     };
     defer request.deinit(std.testing.allocator);
+    const ledger_before_invalid_frame = run.supervisor.?.ledger.ledger_fingerprint;
+    var wrong_value_table_response = try world.Frame.Response.fromValue(std.testing.allocator, request, null, 0x1234, .@"resume", @as(i32, 7), .portable);
+    defer wrong_value_table_response.deinit(std.testing.allocator);
+    try std.testing.expectError(error.FrameValueTableMismatch, run.resumeFrame(wrong_value_table_response));
+    try std.testing.expectEqual(ledger_before_invalid_frame, run.supervisor.?.ledger.ledger_fingerprint);
+    try std.testing.expectEqual(@as(?world.Supervision.BudgetExceededKind, null), run.supervisor.?.ledger.exceeded_budget);
     var response = try world.Frame.Response.fromValue(std.testing.allocator, request, 1, 0x1234, .@"resume", @as(i32, 7), .portable);
     defer response.deinit(std.testing.allocator);
     try std.testing.expectError(error.BudgetExceeded, run.resumeFrame(response));

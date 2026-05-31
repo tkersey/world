@@ -5425,6 +5425,17 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 fn resumeFrameWithProvenance(self: *Self, response_frame: Frame.Response, comptime replayed: bool) !void {
                     const request = self.pending_request orelse return error.UnknownResidualSite;
                     const world_port_id = self.pending_port_id orelse return error.UnknownWorldPort;
+                    if (self.effective_mode != .fresh) return Error.InvalidMode;
+                    var frame = try self.pendingRequestFrame(false);
+                    defer frame.deinit(self.allocator);
+                    if (response_frame.world_surface_fingerprint != frame.world_surface_fingerprint) return error.FrameSurfaceMismatch;
+                    if (response_frame.target_certificate_fingerprint != frame.target_certificate_fingerprint) return error.FrameTargetCertificateMismatch;
+                    if (response_frame.world_port_id != world_port_id) return error.FramePortMismatch;
+                    if (response_frame.request_fingerprint != frame.request_fingerprint) return error.FrameRequestFingerprintMismatch;
+                    if (response_frame.status == .responded and response_frame.response_value_table_id != frame.expected_response_value_table_id) return error.FrameValueTableMismatch;
+                    try validateResponseFrameImage(response_frame);
+                    const deferred_response_fingerprint = response_frame.responseFingerprintDeferred();
+                    if (!deferred_response_fingerprint and response_frame.replay_key != frame.replay_key_seed.withResponse(response_frame.response_fingerprint).fingerprint()) return error.ReplayMissing;
                     if (self.supervisor) |*supervisor| {
                         const encoded_response = try response_frame.encode(self.allocator);
                         defer self.allocator.free(encoded_response);
@@ -5439,17 +5450,6 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         };
                     }
                     if (response_frame.status == .pending) return error.HandlerPending;
-                    if (self.effective_mode != .fresh) return Error.InvalidMode;
-                    var frame = try self.pendingRequestFrame(false);
-                    defer frame.deinit(self.allocator);
-                    if (response_frame.world_surface_fingerprint != frame.world_surface_fingerprint) return error.FrameSurfaceMismatch;
-                    if (response_frame.target_certificate_fingerprint != frame.target_certificate_fingerprint) return error.FrameTargetCertificateMismatch;
-                    if (response_frame.world_port_id != world_port_id) return error.FramePortMismatch;
-                    if (response_frame.request_fingerprint != frame.request_fingerprint) return error.FrameRequestFingerprintMismatch;
-                    if (response_frame.status == .responded and response_frame.response_value_table_id != frame.expected_response_value_table_id) return error.FrameValueTableMismatch;
-                    try validateResponseFrameImage(response_frame);
-                    const deferred_response_fingerprint = response_frame.responseFingerprintDeferred();
-                    if (!deferred_response_fingerprint and response_frame.replay_key != frame.replay_key_seed.withResponse(response_frame.response_fingerprint).fingerprint()) return error.ReplayMissing;
                     if (response_frame.status == .rejected) {
                         self.audit.rejected_count += 1;
                         try self.recordPortEvent(.frame_rejected, world_port_id, request.trace(), response_frame.response_fingerprint, response_frame.response_kind, null, null, response_frame);
