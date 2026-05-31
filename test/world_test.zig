@@ -3336,6 +3336,22 @@ test "world environment accepts bindings and reports missing duplicate and repla
     try std.testing.expect(!replay_missing_bindings.accepted);
     try std.testing.expectEqual(world.AcceptanceBlocker.MissingBinding, replay_missing_bindings.blockers[0]);
 
+    const audit_only_missing_env = world.Environment(fixtures.Ports.Target, .{
+        .bindings = .{},
+        .policy = world.EnvironmentPolicy.audit_only,
+    });
+    const audit_only_report = audit_only_missing_env.acceptanceReport(.audit, false);
+    try std.testing.expect(audit_only_report.accepted);
+    const audit_only_fresh_report = audit_only_missing_env.acceptanceReport(.fresh, false);
+    try std.testing.expect(!audit_only_fresh_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.MissingBinding, audit_only_fresh_report.blockers[0]);
+    const audit_only_replay_report = audit_only_missing_env.acceptanceReport(.replay, true);
+    try std.testing.expect(!audit_only_replay_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.MissingBinding, audit_only_replay_report.blockers[0]);
+    const audit_only_verify_report = audit_only_missing_env.acceptanceReport(.verify, true);
+    try std.testing.expect(!audit_only_verify_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.MissingBinding, audit_only_verify_report.blockers[0]);
+
     const replay_fresh_report = PortsReplayEnv.acceptanceReport(.fresh, false);
     try std.testing.expect(!replay_fresh_report.accepted);
     try std.testing.expectEqual(world.AcceptanceBlocker.AdapterModeNotAllowed, replay_fresh_report.blockers[0]);

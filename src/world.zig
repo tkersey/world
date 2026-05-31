@@ -3974,7 +3974,7 @@ fn acceptanceReportFor(
         if (policy.require_portable_values and !value_policy.require_portable_values) return rejectedReport(report, &.{.PortableValuesRequired});
         if (!policy.allow_native_only_values and value_policy.allow_native_only_values) return rejectedReport(report, &.{.NativeOnlyValueRejected});
     }
-    if (policy.require_all_required_ports_bound and bindings.len < Target.WorldPortTable.entries.len) {
+    if ((policy.require_all_required_ports_bound or requested_mode != .audit) and bindings.len < Target.WorldPortTable.entries.len) {
         report.missing_port_count = Target.WorldPortTable.entries.len - bindings.len;
         return rejectedReport(report, &.{.MissingBinding});
     }
