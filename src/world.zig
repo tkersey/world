@@ -4810,6 +4810,7 @@ pub const Handoff = struct {
                 }
             }
         }
+        try supervisor.beforeSessionStep();
     }
 
     pub fn inspectPriorReceipts(self: *@This()) struct {
