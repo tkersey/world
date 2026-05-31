@@ -4787,6 +4787,12 @@ test "run permit validation rejects nested policy budget cost and rule drift" {
         .policy = world.SupervisionPolicy.strict_replay,
     });
     try std.testing.expectError(error.TranscriptImageRequired, world.Supervisor.init(std.testing.allocator, replay_without_image_permit, fixtures.Ports.Target.WorldPortTable.entries.len));
+
+    const verify_without_image_permit = world.Supervision.issue(fixtures.Ports.Target, PortsReplayEnv, .{
+        .mode = .verify,
+        .policy = world.SupervisionPolicy.verify_replay,
+    });
+    try std.testing.expectError(error.TranscriptImageRequired, world.Supervisor.init(std.testing.allocator, verify_without_image_permit, fixtures.Ports.Target.WorldPortTable.entries.len));
 }
 
 test "supervision policy denies native fresh calls and pending by default" {

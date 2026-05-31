@@ -1778,7 +1778,7 @@ pub const Supervision = struct {
             }
             if (permit.permit_fingerprint != fingerprintRunPermit(permit)) return Error.SupervisionDenied;
             if (permit.policy.require_environment_certificate and permit.environment_certificate_fingerprint == 0) return Error.SupervisionDenied;
-            if (permit.policy.require_transcript_image_for_replay and permit.mode == .replay and !permit.transcript_image_available) return Error.TranscriptImageRequired;
+            if (permit.policy.require_transcript_image_for_replay and modeConsumesTranscript(permit.mode) and !permit.transcript_image_available) return Error.TranscriptImageRequired;
         }
 
         fn validateWorldPortId(self: *@This(), world_port_id: u32) !void {
