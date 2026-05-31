@@ -2394,7 +2394,9 @@ pub const RunImage = struct {
     owns_branches: bool = false,
     owns_branch_labels: bool = false,
     pending_request_frame: ?Frame.Request = null,
+    owns_pending_request_frame: bool = false,
     final_result_image: ?Frame.ValueImage = null,
+    owns_final_result_image: bool = false,
     environment_certificate_fingerprint: ?u64 = null,
     acceptance_report_fingerprint: ?u64 = null,
     audit_image_fingerprint: ?u64 = null,
@@ -2484,8 +2486,12 @@ pub const RunImage = struct {
         if (self.owns_transcript_image) {
             if (self.transcript_image) |*image| image.deinit(allocator);
         }
-        if (self.pending_request_frame) |*frame| frame.deinit(allocator);
-        if (self.final_result_image) |*image| image.deinit(allocator);
+        if (self.owns_pending_request_frame) {
+            if (self.pending_request_frame) |*frame| frame.deinit(allocator);
+        }
+        if (self.owns_final_result_image) {
+            if (self.final_result_image) |*image| image.deinit(allocator);
+        }
         if (self.owns_checkpoints) allocator.free(self.checkpoints);
         if (self.owns_branch_labels) {
             for (self.branches) |branch| allocator.free(@constCast(branch.branch_label));
@@ -2673,7 +2679,9 @@ pub const RunImage = struct {
             .owns_branches = true,
             .owns_branch_labels = true,
             .pending_request_frame = pending_request_frame,
+            .owns_pending_request_frame = pending_request_frame != null,
             .final_result_image = final_result_image,
+            .owns_final_result_image = final_result_image != null,
             .environment_certificate_fingerprint = environment_certificate_fingerprint,
             .acceptance_report_fingerprint = acceptance_report_fingerprint,
             .audit_image_fingerprint = audit_image_fingerprint,
@@ -3721,6 +3729,8 @@ fn acceptanceReportFor(
         }
         if (kind == .native and !policy.allow_native_adapters) return rejectedReport(report, &.{.AdapterModeNotAllowed});
         if (kind == .byte and !policy.allow_byte_adapters) return rejectedReport(report, &.{.AdapterModeNotAllowed});
+        if (kind == .pending_stub and !policy.allow_pending_adapters) return rejectedReport(report, &.{.AdapterModeNotAllowed});
+        if (kind == .null_reject and !policy.allow_reject_adapters) return rejectedReport(report, &.{.AdapterModeNotAllowed});
         if (kind == .replay and requested_mode != .replay) return rejectedReport(report, &.{.AdapterModeNotAllowed});
         if (@hasDecl(BindingDecl, "authority") and !authorityAllowsMode(BindingDecl.authority, requested_mode)) return rejectedReport(report, &.{.AdapterModeNotAllowed});
         const value_policy: ValuePolicy = if (@hasDecl(BindingDecl, "value_policy")) BindingDecl.value_policy else .native_compatible;

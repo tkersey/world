@@ -33,6 +33,16 @@ const PortsNativeBinding = world.bind(PortsDecl, world.NativeAdapter(approve));
 const PortsAltNativeBinding = world.bind(PortsDecl, world.NativeAdapter(approveRequest));
 const PortsReplayBinding = world.bind(PortsDecl, world.ReplayAdapter(0x7777_aaaa));
 const PortsByteBinding = world.bind(PortsDecl, world.ByteAdapter("test-byte"));
+const PortsPendingBinding = world.bind(PortsDecl, struct {
+    pub const kind: world.AdapterKind = .pending_stub;
+    pub const authority = world.PortAuthority.fixture;
+    pub const value_policy = world.ValuePolicy.portable;
+});
+const PortsRejectBinding = world.bind(PortsDecl, struct {
+    pub const kind: world.AdapterKind = .null_reject;
+    pub const authority = world.PortAuthority.fixture;
+    pub const value_policy = world.ValuePolicy.portable;
+});
 const PortsEnv = world.Environment(fixtures.Ports.Target, .{
     .bindings = .{PortsNativeBinding},
     .policy = world.EnvironmentPolicy.fresh_and_replay,
@@ -3031,6 +3041,20 @@ test "world environment accepts bindings and reports missing duplicate and repla
 
     const replay_report = PortsReplayEnv.acceptanceReport(.replay, true);
     try std.testing.expect(replay_report.accepted);
+
+    const pending_report = world.Environment(fixtures.Ports.Target, .{
+        .bindings = .{PortsPendingBinding},
+        .policy = world.EnvironmentPolicy.fresh_and_replay,
+    }).acceptanceReport(.fresh, false);
+    try std.testing.expect(!pending_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.AdapterModeNotAllowed, pending_report.blockers[0]);
+
+    const reject_report = world.Environment(fixtures.Ports.Target, .{
+        .bindings = .{PortsRejectBinding},
+        .policy = world.EnvironmentPolicy.fresh_and_replay,
+    }).acceptanceReport(.fresh, false);
+    try std.testing.expect(!reject_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.AdapterModeNotAllowed, reject_report.blockers[0]);
 }
 
 test "binding plan and binding descriptors exclude native function pointer identity" {
@@ -3219,6 +3243,19 @@ test "run image encode decode roundtrip includes TargetRef TranscriptImage branc
 
     var final_image = try world.Frame.ValueImage.fromValue(std.testing.allocator, 1, null, null, @as(i32, 7), .portable);
     defer final_image.deinit(std.testing.allocator);
+    const borrowed_final_state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .final_value_image_fingerprint = final_image.value_image_fingerprint,
+        .status = .completed,
+    });
+    var borrowed_final_owner = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = import_set.import_set_fingerprint,
+        .current_state = borrowed_final_state,
+        .final_result_image = final_image,
+    });
+    borrowed_final_owner.deinit(std.testing.allocator);
     const mismatched_final_state = world.RunState.init(.{
         .target_ref_fingerprint = target_ref.target_ref_fingerprint,
         .final_value_image_fingerprint = final_image.value_image_fingerprint + 1,
@@ -3388,6 +3425,14 @@ test "parked handoff resumes selected pending request on receiver environment" {
         .current_state = state,
         .pending_request_frame = request,
     });
+    var borrowed_frame_owner = world.RunImage.init(.{
+        .kind = .parked_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = state,
+        .pending_request_frame = request,
+    });
+    borrowed_frame_owner.deinit(std.testing.allocator);
     const encoded = try run_image.encode(std.testing.allocator);
     defer std.testing.allocator.free(encoded);
     var handoff = try world.Handoff.fromRunImage(std.testing.allocator, encoded);
