@@ -5654,9 +5654,10 @@ test "checkpoint value image bytes are charged to cost budgets" {
     });
     var supervisor = try world.Supervisor.init(std.testing.allocator, permit, fixtures.Ports.Target.WorldPortTable.entries.len);
     defer supervisor.deinit();
+    try supervisor.beforeSessionStep();
     try std.testing.expectError(error.BudgetExceeded, supervisor.beforeCheckpoint(2));
     try std.testing.expectEqual(@as(usize, 2), supervisor.ledger.total_value_image_bytes);
-    try std.testing.expectEqual(@as(u64, 5), supervisor.ledger.total_cost_units);
+    try std.testing.expectEqual(@as(u64, 6), supervisor.ledger.total_cost_units);
     try std.testing.expectEqual(world.Supervision.BudgetExceededKind.total_cost_units, supervisor.ledger.exceeded_budget.?);
 }
 

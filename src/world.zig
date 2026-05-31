@@ -2015,7 +2015,7 @@ pub const Supervision = struct {
             const value_image_cost = mulSatUsizeU64(value_image_bytes, self.permit.cost_model.value_image_byte_cost);
             next.total_checkpoints = addSatUsize(next.total_checkpoints, 1);
             next.total_value_image_bytes = addSatUsize(next.total_value_image_bytes, value_image_bytes);
-            next.total_cost_units = addSatU64Many(&.{ self.permit.cost_model.checkpoint_cost, value_image_cost });
+            next.total_cost_units = addSatU64(next.total_cost_units, addSatU64(self.permit.cost_model.checkpoint_cost, value_image_cost));
             try self.commitCheck(.before_checkpoint, null, &next, null, null, "checkpoint");
         }
 
