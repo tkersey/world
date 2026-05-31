@@ -716,6 +716,7 @@ pub const BindingPlan = struct {
         adapter_kind: AdapterKind,
         value_policy: ValuePolicy,
         authority_fingerprint: ?u64,
+        adapter_descriptor_fingerprint: u64,
     };
 
     pub fn lookup(self: @This(), world_port_id: u32) ?usize {
@@ -815,8 +816,8 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
                 .binding_plan_fingerprint = plan.plan_fingerprint,
                 .acceptance_report_fingerprint = report.report_fingerprint,
                 .policy_fingerprint = policy.policy_fingerprint,
-                .authority_descriptor_fingerprint = authoritySetFingerprint(bindings),
-                .adapter_descriptor_fingerprint = adapterSetFingerprint(bindings),
+                .authority_descriptor_fingerprint = authoritySetFingerprint(dense_binding_entries[0..]),
+                .adapter_descriptor_fingerprint = adapterSetFingerprint(dense_binding_entries[0..]),
                 .accepted_modes = acceptedModeMask(report),
                 .blocker_count = report.blockers.len,
             };
@@ -2794,16 +2795,31 @@ pub const Handoff = struct {
         {
             return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.HandoffPendingFrameMismatch});
         }
+        if (mode == .accept_fresh) {
+            const pending_frame = self.run_image.pending_request_frame.?;
+            if (self.run_image.transcript_image) |*image| {
+                image.validateValuePolicy(valuePolicyForEnvironment(Env)) catch {
+                    return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.NativeOnlyValueRejected});
+                };
+                image.prepareReplayPrefixForPendingRequest(
+                    Target.WorldSurface.surface_fingerprint,
+                    Target.Certificate.certificate_fingerprint,
+                    pending_frame.frame_fingerprint,
+                ) catch {
+                    image.resetReplay();
+                    return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.ReplaySourceMissing});
+                };
+                image.resetReplay();
+            } else if (pending_frame.turn_index != 0) {
+                return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.TranscriptImageRequired});
+            }
+        }
         if (mode == .accept_replay or mode == .accept_verify) {
             const image = if (self.run_image.transcript_image) |*image|
                 image
             else
                 return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.TranscriptImageRequired});
-            const value_policy = if (Env.policy_decl.require_portable_values or !Env.policy_decl.allow_native_only_values or Env.policy_decl.require_frame_images_for_replay)
-                ValuePolicy.portable
-            else
-                ValuePolicy.native_compatible;
-            image.validateValuePolicy(value_policy) catch {
+            image.validateValuePolicy(valuePolicyForEnvironment(Env)) catch {
                 return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.NativeOnlyValueRejected});
             };
             image.resetReplay();
@@ -3772,6 +3788,7 @@ fn bindingPlanEntryFor(comptime Target: type, comptime BindingDecl: type, compti
         .adapter_kind = if (@hasDecl(BindingDecl, "adapter_kind")) BindingDecl.adapter_kind else .native,
         .value_policy = if (@hasDecl(BindingDecl, "value_policy")) BindingDecl.value_policy else .native_compatible,
         .authority_fingerprint = if (@hasDecl(BindingDecl, "authority")) BindingDecl.authority.authority_fingerprint else null,
+        .adapter_descriptor_fingerprint = record.adapter_descriptor_fingerprint,
     };
 }
 
@@ -4719,19 +4736,26 @@ fn modeToRunMode(mode: HandoffMode) Mode {
     };
 }
 
-fn authoritySetFingerprint(comptime bindings: anytype) u64 {
+fn valuePolicyForEnvironment(comptime Env: type) ValuePolicy {
+    return if (Env.policy_decl.require_portable_values or !Env.policy_decl.allow_native_only_values or Env.policy_decl.require_frame_images_for_replay)
+        ValuePolicy.portable
+    else
+        ValuePolicy.native_compatible;
+}
+
+fn authoritySetFingerprint(entries: []const BindingPlan.Entry) u64 {
     var hasher = std.hash.Wyhash.init(0);
     hashBytes(&hasher, "world.environment.authority_set.fingerprint");
-    inline for (bindings) |BindingDecl| {
-        if (@hasDecl(BindingDecl, "authority")) hashU64(&hasher, BindingDecl.authority.authority_fingerprint);
+    for (entries) |entry| {
+        if (entry.authority_fingerprint) |fingerprint| hashU64(&hasher, fingerprint);
     }
     return hasher.final();
 }
 
-fn adapterSetFingerprint(comptime bindings: anytype) u64 {
+fn adapterSetFingerprint(entries: []const BindingPlan.Entry) u64 {
     var hasher = std.hash.Wyhash.init(0);
     hashBytes(&hasher, "world.environment.adapter_set.fingerprint");
-    inline for (bindings) |BindingDecl| hashU64(&hasher, bindingRecordFor(BindingDecl.TargetType, BindingDecl).adapter_descriptor_fingerprint);
+    for (entries) |entry| hashU64(&hasher, entry.adapter_descriptor_fingerprint);
     return hasher.final();
 }
 

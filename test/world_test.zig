@@ -3161,6 +3161,11 @@ test "binding plan and binding descriptors exclude native function pointer ident
     try std.testing.expectEqual(@as(u32, 0), reordered_agent_plan.dense_entries[0].world_port_id);
     try std.testing.expectEqual(@as(u32, 1), reordered_agent_plan.dense_entries[1].world_port_id);
     try std.testing.expectEqual(agent_plan.plan_fingerprint, reordered_agent_plan.plan_fingerprint);
+    const agent_cert = AgentEnv.certificate(.fresh, false);
+    const reordered_agent_cert = AgentEnvReordered.certificate(.fresh, false);
+    try std.testing.expectEqual(agent_cert.authority_descriptor_fingerprint, reordered_agent_cert.authority_descriptor_fingerprint);
+    try std.testing.expectEqual(agent_cert.adapter_descriptor_fingerprint, reordered_agent_cert.adapter_descriptor_fingerprint);
+    try std.testing.expectEqual(agent_cert.certificate_fingerprint, reordered_agent_cert.certificate_fingerprint);
 }
 
 test "acceptance report port authority adapter descriptor and environment certificate fingerprints are stable" {
@@ -3611,6 +3616,30 @@ test "parked handoff replays transcript prefix before selected pending request" 
     defer std.testing.allocator.free(encoded);
     var handoff = try world.Handoff.fromRunImage(std.testing.allocator, encoded);
     defer handoff.deinit();
+
+    const accepted_fresh = handoff.preflight(fixtures.Agent.Target, AgentEnv, .accept_fresh);
+    try std.testing.expect(accepted_fresh.accepted);
+
+    const missing_prefix_state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .pending_request_fingerprint = tool_request.frame_fingerprint,
+        .turn_index = tool_request.turn_index,
+        .status = .parked_on_port,
+    });
+    const missing_prefix_run_image = world.RunImage.init(.{
+        .kind = .parked_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Agent.Target).import_set_fingerprint,
+        .current_state = missing_prefix_state,
+        .pending_request_frame = tool_request,
+    });
+    const missing_prefix_encoded = try missing_prefix_run_image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(missing_prefix_encoded);
+    var missing_prefix_handoff = try world.Handoff.fromRunImage(std.testing.allocator, missing_prefix_encoded);
+    defer missing_prefix_handoff.deinit();
+    const missing_prefix_report = missing_prefix_handoff.preflight(fixtures.Agent.Target, AgentEnv, .accept_fresh);
+    try std.testing.expect(!missing_prefix_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.TranscriptImageRequired, missing_prefix_report.blockers[0]);
 
     const rejected_replay = handoff.preflight(fixtures.Agent.Target, AgentEnv, .accept_replay);
     try std.testing.expect(!rejected_replay.accepted);

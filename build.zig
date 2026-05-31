@@ -123,7 +123,7 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the strict zero-port World example.",
             .expected_stdout =
             \\world_surface_fingerprint=bf39bfbae5e3bb8d
-            \\target_certificate_fingerprint=b3edd8382e7b0db4
+            \\target_certificate_fingerprint=792b22fdcb55245b
             \\final_result=1
             \\
             ,
@@ -173,8 +173,8 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-frame-ports",
             .desc = "Run the frame-first one-port World example.",
             .expected_stdout =
-            \\request_frame_fingerprint=a0fb9bb7f59ece20
-            \\response_frame_fingerprint=d614051a97fab2c5
+            \\request_frame_fingerprint=d3b5cc62866bbabc
+            \\response_frame_fingerprint=912749c4a1687614
             \\world_port_id=0
             \\final_result=7
             \\
@@ -186,7 +186,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-transcript-image-replay",
             .desc = "Run the transcript image replay World example.",
             .expected_stdout =
-            \\transcript_image_fingerprint=950bd692d8372e44
+            \\transcript_image_fingerprint=efb46c7518f91622
             \\replayed_response_count=1
             \\final_result=7
             \\
@@ -210,7 +210,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-agent-timeline",
             .desc = "Run the agent timeline World example.",
             .expected_stdout =
-            \\transcript_image_fingerprint=826ae3f8ebba9eb5
+            \\transcript_image_fingerprint=61303f1fc5aa1b85
             \\event_count=8
             \\tool_call_count=1
             \\replay_verified=true
@@ -224,9 +224,9 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-agent-branch",
             .desc = "Run the agent branch World example.",
             .expected_stdout =
-            \\checkpoint_fingerprint=6a333bf6c1e931bb
-            \\baseline_transcript_fingerprint=826ae3f8ebba9eb5
-            \\branch_transcript_fingerprint=313381a33465638b
+            \\checkpoint_fingerprint=1e4f8e5871983044
+            \\baseline_transcript_fingerprint=61303f1fc5aa1b85
+            \\branch_transcript_fingerprint=2d45c97017619885
             \\baseline_final_result=final=actuate skeleton complete
             \\branch_final_result=final=branch alternate
             \\
@@ -241,7 +241,7 @@ pub fn build(b: *std.Build) void {
             \\fresh_missing_accepted=false
             \\fresh_blocker=MissingBinding
             \\replay_without_handlers_accepted=true
-            \\transcript_image_fingerprint=950bd692d8372e44
+            \\transcript_image_fingerprint=efb46c7518f91622
             \\
             ,
         },
@@ -251,9 +251,9 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-handoff-parked",
             .desc = "Run the parked World handoff example.",
             .expected_stdout =
-            \\run_image_fingerprint=7ce905755a4e689d
-            \\pending_request_fingerprint=a0fb9bb7f59ece20
-            \\environment_certificate_fingerprint=61bebc8dac9635f8
+            \\run_image_fingerprint=df6380e1fafdbf7b
+            \\pending_request_fingerprint=d3b5cc62866bbabc
+            \\environment_certificate_fingerprint=f2398983f11e0f77
             \\final_result=7
             \\
             ,
@@ -264,7 +264,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-handoff-replay",
             .desc = "Run the replay World handoff example.",
             .expected_stdout =
-            \\run_image_fingerprint=4a0188c7d4bad27a
+            \\run_image_fingerprint=4d431fbe7807e21
             \\replayed_response_count=1
             \\final_result=7
             \\
@@ -287,8 +287,8 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-agent-handoff",
             .desc = "Run the agent World handoff example.",
             .expected_stdout =
-            \\run_image_fingerprint=af9d30b6a34e3634
-            \\checkpoint_fingerprint=6a333bf6c1e931bb
+            \\run_image_fingerprint=28edfb004520d287
+            \\checkpoint_fingerprint=1e4f8e5871983044
             \\branch_id=1
             \\model_port_id=0
             \\tool_port_id=1
