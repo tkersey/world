@@ -103,15 +103,21 @@ pub const EventKind = enum {
     checkpoint_recorded,
     branch_started,
     branch_joined,
+    run_completed,
+    run_failed,
     permit_issued,
     supervision_check,
     budget_exceeded,
     supervision_denied,
     run_interrupted,
     receipt_recorded,
-    run_completed,
-    run_failed,
 };
+
+test "EventKind keeps v1 transcript ordinals stable" {
+    try std.testing.expectEqual(@as(u8, 15), @intFromEnum(EventKind.run_completed));
+    try std.testing.expectEqual(@as(u8, 16), @intFromEnum(EventKind.run_failed));
+    try std.testing.expect(@intFromEnum(EventKind.permit_issued) > @intFromEnum(EventKind.run_failed));
+}
 
 pub const ReplayKey = struct {
     world_surface_scope_fingerprint: u64,
@@ -176,7 +182,7 @@ pub const world_environment_certificate_format_version: u32 = 1;
 pub const world_environment_certificate_fingerprint_version: u32 = 1;
 pub const world_adapter_descriptor_fingerprint_version: u32 = 1;
 pub const world_run_state_fingerprint_version: u32 = 1;
-pub const world_run_image_format_version: u32 = 1;
+pub const world_run_image_format_version: u32 = 2;
 pub const world_run_image_fingerprint_version: u32 = 1;
 pub const world_run_permit_format_version: u32 = 1;
 pub const world_run_permit_fingerprint_version: u32 = 1;
@@ -1705,30 +1711,60 @@ pub const Supervision = struct {
 
         pub fn beforePortRequest(self: *@This(), world_port_id: u32, request_bytes: usize, value_image_bytes: usize) !void {
             var next = self.ledger;
-            next.total_port_requests += 1;
-            next.total_frame_request_bytes += request_bytes;
-            next.total_value_image_bytes += value_image_bytes;
             const request_cost = self.permit.cost_model.requestCost(world_port_id);
             const request_byte_cost = @as(u64, @intCast(request_bytes)) * self.permit.cost_model.frame_byte_cost;
             const value_image_cost = @as(u64, @intCast(value_image_bytes)) * self.permit.cost_model.value_image_byte_cost;
-            next.total_cost_units += request_cost + request_byte_cost + value_image_cost;
-            const usage = &next.per_port_usage[world_port_id];
-            usage.requests += 1;
-            usage.value_image_bytes += value_image_bytes;
-            usage.cost_units += request_cost + request_byte_cost + value_image_cost;
+            const current_usage = next.per_port_usage[world_port_id];
+            const next_requests = current_usage.requests + 1;
+            const next_value_image_bytes = current_usage.value_image_bytes + value_image_bytes;
+            const next_cost_units = current_usage.cost_units + request_cost + request_byte_cost + value_image_cost;
             const rule = self.permit.ruleFor(world_port_id);
             if (rule) |port_rule| {
                 if (port_rule.max_payload_image_bytes) |max| {
                     if (value_image_bytes > max) return self.deny(.before_port_request, world_port_id, .port_rule_denied, port_rule.rule_fingerprint, "rule payload image cap");
                 }
                 if (port_rule.max_requests) |max| {
-                    if (usage.requests > max) return self.deny(.before_port_request, world_port_id, .port_rule_denied, port_rule.rule_fingerprint, "rule request cap");
+                    if (next_requests > max) return self.deny(.before_port_request, world_port_id, .port_rule_denied, port_rule.rule_fingerprint, "rule request cap");
                 }
                 if (port_rule.max_cost_units) |max| {
-                    if (usage.cost_units > max) return self.deny(.before_port_request, world_port_id, .port_rule_denied, port_rule.rule_fingerprint, "rule cost cap");
+                    if (next_cost_units > max) return self.deny(.before_port_request, world_port_id, .port_rule_denied, port_rule.rule_fingerprint, "rule cost cap");
                 }
             }
+            next.total_port_requests += 1;
+            next.total_frame_request_bytes += request_bytes;
+            next.total_value_image_bytes += value_image_bytes;
+            next.total_cost_units += request_cost + request_byte_cost + value_image_cost;
+            const usage = &next.per_port_usage[world_port_id];
+            usage.requests = next_requests;
+            usage.value_image_bytes = next_value_image_bytes;
+            usage.cost_units = next_cost_units;
             try self.commitCheck(.before_port_request, world_port_id, next, null, rule, "port request");
+        }
+
+        pub fn accountPortRequestBytes(self: *@This(), world_port_id: u32, request_bytes: usize, value_image_bytes: usize) !void {
+            if (request_bytes == 0 and value_image_bytes == 0) return;
+            var next = self.ledger;
+            const request_byte_cost = @as(u64, @intCast(request_bytes)) * self.permit.cost_model.frame_byte_cost;
+            const value_image_cost = @as(u64, @intCast(value_image_bytes)) * self.permit.cost_model.value_image_byte_cost;
+            const current_usage = next.per_port_usage[world_port_id];
+            const next_value_image_bytes = current_usage.value_image_bytes + value_image_bytes;
+            const next_cost_units = current_usage.cost_units + request_byte_cost + value_image_cost;
+            const rule = self.permit.ruleFor(world_port_id);
+            if (rule) |port_rule| {
+                if (port_rule.max_payload_image_bytes) |max| {
+                    if (value_image_bytes > max) return self.deny(.before_port_request, world_port_id, .port_rule_denied, port_rule.rule_fingerprint, "rule payload image cap");
+                }
+                if (port_rule.max_cost_units) |max| {
+                    if (next_cost_units > max) return self.deny(.before_port_request, world_port_id, .port_rule_denied, port_rule.rule_fingerprint, "rule cost cap");
+                }
+            }
+            next.total_frame_request_bytes += request_bytes;
+            next.total_value_image_bytes += value_image_bytes;
+            next.total_cost_units += request_byte_cost + value_image_cost;
+            const usage = &next.per_port_usage[world_port_id];
+            usage.value_image_bytes = next_value_image_bytes;
+            usage.cost_units = next_cost_units;
+            try self.commitCheck(.before_port_request, world_port_id, next, null, rule, "port request bytes");
         }
 
         pub fn beforeAdapterCall(self: *@This(), args: struct {
@@ -1752,36 +1788,40 @@ pub const Supervision = struct {
                 }
             }
             var next = self.ledger;
-            const usage = &next.per_port_usage[args.world_port_id];
+            const current_usage = next.per_port_usage[args.world_port_id];
+            var fresh_delta: usize = 0;
+            var replay_delta: usize = 0;
+            var verify_delta: usize = 0;
+            var cost_delta: u64 = 0;
             switch (args.mode) {
                 .fresh, .audit => {
-                    next.total_fresh_calls += 1;
-                    usage.fresh_calls += 1;
-                    const cost = self.permit.cost_model.freshCost(args.world_port_id);
-                    next.total_cost_units += cost;
-                    usage.cost_units += cost;
+                    fresh_delta = 1;
+                    cost_delta = self.permit.cost_model.freshCost(args.world_port_id);
                 },
                 .replay => {
-                    next.total_replay_calls += 1;
-                    usage.replay_calls += 1;
-                    const cost = self.permit.cost_model.replayCost(args.world_port_id);
-                    next.total_cost_units += cost;
-                    usage.cost_units += cost;
+                    replay_delta = 1;
+                    cost_delta = self.permit.cost_model.replayCost(args.world_port_id);
                 },
                 .verify => {
-                    next.total_verify_calls += 1;
-                    usage.verify_calls += 1;
-                    const cost = self.permit.cost_model.verifyCost(args.world_port_id);
-                    next.total_cost_units += cost;
-                    usage.cost_units += cost;
+                    verify_delta = 1;
+                    cost_delta = self.permit.cost_model.verifyCost(args.world_port_id);
                 },
             }
             const rule = self.permit.ruleFor(args.world_port_id);
             if (rule) |port_rule| {
                 if (port_rule.max_cost_units) |max| {
-                    if (usage.cost_units > max) return self.deny(.before_adapter_call, args.world_port_id, .port_rule_denied, port_rule.rule_fingerprint, "rule cost cap");
+                    if (current_usage.cost_units + cost_delta > max) return self.deny(.before_adapter_call, args.world_port_id, .port_rule_denied, port_rule.rule_fingerprint, "rule cost cap");
                 }
             }
+            next.total_fresh_calls += fresh_delta;
+            next.total_replay_calls += replay_delta;
+            next.total_verify_calls += verify_delta;
+            next.total_cost_units += cost_delta;
+            const usage = &next.per_port_usage[args.world_port_id];
+            usage.fresh_calls += fresh_delta;
+            usage.replay_calls += replay_delta;
+            usage.verify_calls += verify_delta;
+            usage.cost_units += cost_delta;
             try self.commitCheck(.before_adapter_call, args.world_port_id, next, null, rule, "adapter call");
         }
 
@@ -1810,51 +1850,54 @@ pub const Supervision = struct {
                 if (!allowed) return self.deny(.after_adapter_response, args.world_port_id, .port_rule_denied, rule.rule_fingerprint, "rule response denied");
             }
             var next = self.ledger;
-            next.total_port_responses += 1;
-            next.total_frame_response_bytes += args.response_bytes;
-            next.total_value_image_bytes += args.value_image_bytes;
             const response_cost = self.permit.cost_model.responseCost(args.world_port_id);
             const response_byte_cost = @as(u64, @intCast(args.response_bytes)) * self.permit.cost_model.frame_byte_cost;
             const value_image_cost = @as(u64, @intCast(args.value_image_bytes)) * self.permit.cost_model.value_image_byte_cost;
-            next.total_cost_units += response_cost + response_byte_cost + value_image_cost;
-            const usage = &next.per_port_usage[args.world_port_id];
-            usage.responses += 1;
-            usage.response_bytes += args.response_bytes;
-            usage.value_image_bytes += args.value_image_bytes;
-            usage.cost_units += response_cost + response_byte_cost + value_image_cost;
+            const current_usage = next.per_port_usage[args.world_port_id];
+            var pending_delta: usize = 0;
+            var rejected_delta: usize = 0;
+            var failed_delta: usize = 0;
+            var status_cost: u64 = 0;
             switch (args.status) {
                 .responded => {},
                 .pending => {
-                    const status_cost = self.permit.cost_model.pending_call_cost;
-                    next.total_pending_calls += 1;
-                    usage.pending_calls += 1;
-                    next.total_cost_units += status_cost;
-                    usage.cost_units += status_cost;
+                    pending_delta = 1;
+                    status_cost = self.permit.cost_model.pending_call_cost;
                 },
                 .rejected => {
-                    const status_cost = self.permit.cost_model.rejected_call_cost;
-                    next.total_rejected_calls += 1;
-                    usage.rejected_calls += 1;
-                    next.total_cost_units += status_cost;
-                    usage.cost_units += status_cost;
+                    rejected_delta = 1;
+                    status_cost = self.permit.cost_model.rejected_call_cost;
                 },
                 .failed => {
-                    const status_cost = self.permit.cost_model.failed_call_cost;
-                    next.total_failed_calls += 1;
-                    usage.failed_calls += 1;
-                    next.total_cost_units += status_cost;
-                    usage.cost_units += status_cost;
+                    failed_delta = 1;
+                    status_cost = self.permit.cost_model.failed_call_cost;
                 },
             }
+            const cost_delta = response_cost + response_byte_cost + value_image_cost + status_cost;
             const rule = self.permit.ruleFor(args.world_port_id);
             if (rule) |port_rule| {
                 if (port_rule.max_response_image_bytes) |max| {
                     if (args.value_image_bytes > max) return self.deny(.after_adapter_response, args.world_port_id, .port_rule_denied, port_rule.rule_fingerprint, "rule response image cap");
                 }
                 if (port_rule.max_cost_units) |max| {
-                    if (usage.cost_units > max) return self.deny(.after_adapter_response, args.world_port_id, .port_rule_denied, port_rule.rule_fingerprint, "rule cost cap");
+                    if (current_usage.cost_units + cost_delta > max) return self.deny(.after_adapter_response, args.world_port_id, .port_rule_denied, port_rule.rule_fingerprint, "rule cost cap");
                 }
             }
+            next.total_port_responses += 1;
+            next.total_frame_response_bytes += args.response_bytes;
+            next.total_value_image_bytes += args.value_image_bytes;
+            next.total_cost_units += cost_delta;
+            next.total_pending_calls += pending_delta;
+            next.total_rejected_calls += rejected_delta;
+            next.total_failed_calls += failed_delta;
+            const usage = &next.per_port_usage[args.world_port_id];
+            usage.responses += 1;
+            usage.response_bytes += args.response_bytes;
+            usage.value_image_bytes += args.value_image_bytes;
+            usage.cost_units += cost_delta;
+            usage.pending_calls += pending_delta;
+            usage.rejected_calls += rejected_delta;
+            usage.failed_calls += failed_delta;
             try self.commitCheck(.after_adapter_response, args.world_port_id, next, null, rule, "adapter response");
         }
 
@@ -4035,7 +4078,8 @@ pub const RunImage = struct {
             if (self.current_state.final_value_image_fingerprint != image.value_image_fingerprint) return error.InvalidFrameEncoding;
         }
         if (fingerprintRunState(self.current_state) != self.current_state.run_state_fingerprint) return error.InvalidFrameEncoding;
-        if (fingerprintRunImage(self) != self.run_image_fingerprint) return error.InvalidFrameEncoding;
+        const expected_run_image_fingerprint = if (self.format_version == 1) fingerprintRunImageV1(self) else fingerprintRunImage(self);
+        if (expected_run_image_fingerprint != self.run_image_fingerprint) return error.InvalidFrameEncoding;
     }
 
     pub fn encode(self: @This(), allocator: std.mem.Allocator) ![]const u8 {
@@ -4083,7 +4127,7 @@ pub const RunImage = struct {
         if (bytes.len > world_max_decoded_byte_field_len) return error.InvalidFrameEncoding;
         var cursor: usize = 0;
         const format_version = try readU32(bytes, &cursor);
-        if (format_version != world_run_image_format_version) return error.InvalidFrameEncoding;
+        if (format_version != 1 and format_version != world_run_image_format_version) return error.InvalidFrameEncoding;
         const fingerprint_version = try readU32(bytes, &cursor);
         if (fingerprint_version != world_run_image_fingerprint_version) return error.InvalidFrameEncoding;
         const run_image_fingerprint = try readU64(bytes, &cursor);
@@ -4137,12 +4181,13 @@ pub const RunImage = struct {
         const environment_certificate_fingerprint = try readOptionalU64(bytes, &cursor);
         const acceptance_report_fingerprint = try readOptionalU64(bytes, &cursor);
         const audit_image_fingerprint = try readOptionalU64(bytes, &cursor);
-        const prior_run_permit_fingerprint = try readOptionalU64(bytes, &cursor);
-        const prior_run_receipt_fingerprint = try readOptionalU64(bytes, &cursor);
+        const prior_run_permit_fingerprint = if (format_version >= 2) try readOptionalU64(bytes, &cursor) else null;
+        const prior_run_receipt_fingerprint = if (format_version >= 2) try readOptionalU64(bytes, &cursor) else null;
         const metadata = try readBytesOwned(allocator, bytes, &cursor);
         errdefer allocator.free(metadata);
         if (cursor != bytes.len) return error.InvalidFrameEncoding;
         var result = @This(){
+            .format_version = format_version,
             .run_image_fingerprint = run_image_fingerprint,
             .kind = kind,
             .target_ref = target_ref,
@@ -4175,6 +4220,59 @@ pub const RunImage = struct {
         return result;
     }
 };
+
+test "RunImage decoder accepts v1 layout without prior receipt refs" {
+    const allocator = std.testing.allocator;
+    var target_ref = TargetRef{
+        .target_ref_fingerprint = 0,
+        .world_surface_fingerprint = 11,
+        .target_certificate_fingerprint = 22,
+        .metadata = "target",
+    };
+    target_ref.target_ref_fingerprint = fingerprintTargetRef(target_ref);
+    const state = RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .completed,
+    });
+    var image = RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = 33,
+        .current_state = state,
+        .environment_certificate_fingerprint = 44,
+        .metadata = "legacy",
+    });
+    image.format_version = 1;
+    image.run_image_fingerprint = fingerprintRunImageV1(image);
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(allocator);
+    try writeU32(&out, allocator, 1);
+    try writeU32(&out, allocator, image.fingerprint_version);
+    try writeU64(&out, allocator, image.run_image_fingerprint);
+    try writeU8(&out, allocator, @intFromEnum(image.kind));
+    try encodeTargetRef(&out, allocator, image.target_ref);
+    try writeU64(&out, allocator, image.import_set_fingerprint);
+    try encodeRunState(&out, allocator, image.current_state);
+    try writeOptionalU64(&out, allocator, null);
+    try writeBool(&out, allocator, false);
+    try writeU64(&out, allocator, 0);
+    try writeU64(&out, allocator, 0);
+    try writeBool(&out, allocator, false);
+    try writeOptionalValueImage(&out, allocator, null);
+    try writeOptionalU64(&out, allocator, image.environment_certificate_fingerprint);
+    try writeOptionalU64(&out, allocator, image.acceptance_report_fingerprint);
+    try writeOptionalU64(&out, allocator, image.audit_image_fingerprint);
+    try writeBytes(&out, allocator, image.metadata);
+
+    var decoded = try RunImage.decode(allocator, out.items);
+    defer decoded.deinit(allocator);
+    try std.testing.expectEqual(@as(u32, 1), decoded.format_version);
+    try std.testing.expectEqual(@as(?u64, null), decoded.prior_run_permit_fingerprint);
+    try std.testing.expectEqual(@as(?u64, null), decoded.prior_run_receipt_fingerprint);
+    try std.testing.expectEqualStrings("legacy", decoded.metadata);
+    try decoded.validate(.{});
+}
 
 fn validateRunImageKindState(image: RunImage) !void {
     switch (image.kind) {
@@ -4343,6 +4441,12 @@ pub const Handoff = struct {
         errdefer run.deinit();
         var resume_committed = false;
         errdefer if (!resume_committed) run.markRunFailed() catch {};
+        if (run.supervisor) |*supervisor| {
+            supervisor.beforeHandoffAccept() catch |err| {
+                try run.markRunFailed();
+                return err;
+            };
+        }
         if (self.run_image.transcript_image) |*image| {
             try image.prepareReplayPrefixForPendingRequest(
                 Target.WorldSurface.surface_fingerprint,
@@ -5056,6 +5160,20 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     });
                     payload_image = null;
                     errdefer frame.deinit(self.allocator);
+                    if (record_event) {
+                        if (self.supervisor) |*supervisor| {
+                            const encoded = try frame.encode(self.allocator);
+                            defer self.allocator.free(encoded);
+                            supervisor.accountPortRequestBytes(
+                                world_port_id,
+                                encoded.len,
+                                if (frame.payload_image) |image| image.bytes.len else 0,
+                            ) catch |err| {
+                                try self.markRunFailed();
+                                return err;
+                            };
+                        }
+                    }
                     if (record_event and self.effective_mode == .fresh) {
                         try self.recordPortEvent(.frame_requested, world_port_id, trace, null, null, null, frame, null);
                     }
@@ -7348,6 +7466,14 @@ fn fingerprintRunState(state: RunState) u64 {
 }
 
 fn fingerprintRunImage(image: RunImage) u64 {
+    return fingerprintRunImageVersioned(image, true);
+}
+
+fn fingerprintRunImageV1(image: RunImage) u64 {
+    return fingerprintRunImageVersioned(image, false);
+}
+
+fn fingerprintRunImageVersioned(image: RunImage, comptime include_prior_receipts: bool) u64 {
     var hasher = std.hash.Wyhash.init(0);
     hashBytes(&hasher, "world.run_image.fingerprint");
     hashU64(&hasher, world_run_image_fingerprint_version);
@@ -7365,8 +7491,10 @@ fn fingerprintRunImage(image: RunImage) u64 {
     hashOptionalU64(&hasher, image.environment_certificate_fingerprint);
     hashOptionalU64(&hasher, image.acceptance_report_fingerprint);
     hashOptionalU64(&hasher, image.audit_image_fingerprint);
-    hashOptionalU64(&hasher, image.prior_run_permit_fingerprint);
-    hashOptionalU64(&hasher, image.prior_run_receipt_fingerprint);
+    if (include_prior_receipts) {
+        hashOptionalU64(&hasher, image.prior_run_permit_fingerprint);
+        hashOptionalU64(&hasher, image.prior_run_receipt_fingerprint);
+    }
     hashU64(&hasher, image.metadata.len);
     hashBytes(&hasher, image.metadata);
     return hasher.final();

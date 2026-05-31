@@ -4625,7 +4625,10 @@ test "port rules enforce portable values and rule-owned caps" {
     });
     var request_cap_supervisor = try world.Supervisor.init(std.testing.allocator, request_cap_permit, fixtures.Ports.Target.WorldPortTable.entries.len);
     defer request_cap_supervisor.deinit();
+    const request_cap_fingerprint = request_cap_supervisor.ledger.ledger_fingerprint;
     try std.testing.expectError(error.PortRuleDenied, request_cap_supervisor.beforePortRequest(0, 0, 0));
+    try std.testing.expectEqual(request_cap_fingerprint, request_cap_supervisor.ledger.ledger_fingerprint);
+    try std.testing.expectEqual(@as(usize, 0), request_cap_supervisor.ledger.per_port_usage[0].requests);
 
     const image_cap_rules = [_]world.PortRule{world.PortRule.init(.{
         .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
@@ -4640,7 +4643,11 @@ test "port rules enforce portable values and rule-owned caps" {
     });
     var payload_cap_supervisor = try world.Supervisor.init(std.testing.allocator, image_cap_permit, fixtures.Ports.Target.WorldPortTable.entries.len);
     defer payload_cap_supervisor.deinit();
-    try std.testing.expectError(error.PortRuleDenied, payload_cap_supervisor.beforePortRequest(0, 0, 2));
+    try payload_cap_supervisor.beforePortRequest(0, 0, 0);
+    const payload_cap_fingerprint = payload_cap_supervisor.ledger.ledger_fingerprint;
+    try std.testing.expectError(error.PortRuleDenied, payload_cap_supervisor.accountPortRequestBytes(0, 8, 2));
+    try std.testing.expectEqual(payload_cap_fingerprint, payload_cap_supervisor.ledger.ledger_fingerprint);
+    try std.testing.expectEqual(@as(usize, 0), payload_cap_supervisor.ledger.per_port_usage[0].value_image_bytes);
 
     var response_cap_supervisor = try world.Supervisor.init(std.testing.allocator, image_cap_permit, fixtures.Ports.Target.WorldPortTable.entries.len);
     defer response_cap_supervisor.deinit();
@@ -4649,6 +4656,26 @@ test "port rules enforce portable values and rule-owned caps" {
         .status = .responded,
         .value_image_bytes = 2,
     }));
+}
+
+test "supervised frame request bytes are accounted before frame handoff" {
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+        .budget = world.Budget.init(.{ .max_frame_request_bytes = 1 }),
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var ctx: PortsCtx = .{};
+    var run = try PortsMachineEnv.start(&runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+        .permit = permit,
+    });
+    defer run.deinit();
+    try std.testing.expectError(error.BudgetExceeded, run.nextFrame());
+    try std.testing.expectEqual(@as(usize, 0), ctx.calls);
 }
 
 test "budget zero port budget denies first port and usage ledger records cost model units" {
@@ -4940,6 +4967,21 @@ test "supervised handoff receiver can issue stricter permit and inspect prior re
         .ctx = &resume_ctx,
     }, .accept_fresh, denying_receiver_permit));
     try std.testing.expectEqual(@as(usize, 0), resume_ctx.calls);
+
+    const handoff_accept_deny_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.handoff_receiver,
+        .budget = world.Budget.init(.{ .max_port_requests = 1, .max_handoff_accepts = 0 }),
+    });
+    var accept_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer accept_runtime.deinit();
+    var accept_ctx: PortsCtx = .{};
+    try std.testing.expectError(error.BudgetExceeded, handoff.resumeWithPermit(fixtures.Ports.Target, PortsEnv, &accept_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &accept_ctx,
+    }, .accept_fresh, handoff_accept_deny_permit));
+    try std.testing.expectEqual(@as(usize, 0), accept_ctx.calls);
 }
 
 test "supervised branch and checkpoint budgets are enforced" {
