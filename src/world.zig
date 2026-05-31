@@ -4802,6 +4802,12 @@ pub const Handoff = struct {
                     .response_bytes = response_bytes,
                     .value_image_bytes = if (response_frame.response_image) |image_value| image_value.bytes.len else 0,
                 });
+                if (run_mode == .verify) {
+                    try supervisor.afterAdapterResponse(.{
+                        .world_port_id = response_frame.world_port_id,
+                        .status = .responded,
+                    });
+                }
             }
         }
     }

@@ -4599,6 +4599,23 @@ test "verify handoff detects changed fixture handler behavior" {
     var handoff = try world.Handoff.fromRunImage(std.testing.allocator, encoded);
     defer handoff.deinit();
     try std.testing.expect(handoff.preflight(fixtures.Ports.Target, PortsEnv, .accept_verify).accepted);
+    const verify_accept_policy = world.SupervisionPolicy.init(.{
+        .allow_verify_calls = true,
+        .allow_native_adapters = true,
+        .allow_handoff_accept = true,
+        .require_environment_certificate = true,
+        .require_transcript_image_for_replay = true,
+    });
+    const verify_response_deny_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .verify,
+        .policy = verify_accept_policy,
+        .budget = world.Budget.init(.{ .max_port_responses = 1 }),
+        .transcript_image_available = true,
+        .handoff_policy = .allow,
+    });
+    const verify_response_deny_report = handoff.preflightWithPermit(fixtures.Ports.Target, PortsEnv, .accept_verify, verify_response_deny_permit);
+    try std.testing.expect(!verify_response_deny_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.SupervisionBudgetExceeded, verify_response_deny_report.blockers[0]);
 
     var ok_runtime = boundary.Runtime.init(std.testing.allocator);
     defer ok_runtime.deinit();
