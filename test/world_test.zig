@@ -3123,6 +3123,10 @@ test "world environment accepts bindings and reports missing duplicate and repla
     try std.testing.expect(!replay_verify_report.accepted);
     try std.testing.expectEqual(world.AcceptanceBlocker.AdapterModeNotAllowed, replay_verify_report.blockers[0]);
 
+    const byte_fresh_report = PortsByteEnv.acceptanceReport(.fresh, false);
+    try std.testing.expect(!byte_fresh_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.AdapterModeNotAllowed, byte_fresh_report.blockers[0]);
+
     const byte_verify_report = PortsByteEnv.acceptanceReport(.verify, true);
     try std.testing.expect(!byte_verify_report.accepted);
     try std.testing.expectEqual(world.AcceptanceBlocker.AdapterModeNotAllowed, byte_verify_report.blockers[0]);
@@ -3244,14 +3248,14 @@ test "Machine accepts Environment while legacy ports config remains valid" {
     try std.testing.expectEqual(@as(usize, 1), legacy_plan);
 }
 
-test "byte adapter environment does not dispatch native handler" {
+test "byte adapter environment rejects fresh execution before native dispatch" {
     const PortsByteMachineEnv = world.Machine(fixtures.Ports.Target, .{
         .environment = PortsByteEnv,
     });
     var runtime = boundary.Runtime.init(std.testing.allocator);
     defer runtime.deinit();
     var ctx: PortsCtx = .{};
-    try std.testing.expectError(error.MissingHandler, PortsByteMachineEnv.run(&runtime, .{}, .{
+    try std.testing.expectError(error.AdapterModeNotAllowed, PortsByteMachineEnv.run(&runtime, .{}, .{
         .allocator = std.testing.allocator,
         .mode = world.Mode.fresh,
         .ctx = &ctx,

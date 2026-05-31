@@ -3920,6 +3920,7 @@ fn acceptanceReportFor(
         if (kind == .byte and !policy.allow_byte_adapters) return rejectedReport(report, &.{.AdapterModeNotAllowed});
         if (kind == .pending_stub and !policy.allow_pending_adapters) return rejectedReport(report, &.{.AdapterModeNotAllowed});
         if (kind == .null_reject and !policy.allow_reject_adapters) return rejectedReport(report, &.{.AdapterModeNotAllowed});
+        if ((requested_mode == .fresh or requested_mode == .audit) and kind != .native) return rejectedReport(report, &.{.AdapterModeNotAllowed});
         if (kind == .replay and requested_mode != .replay) return rejectedReport(report, &.{.AdapterModeNotAllowed});
         if (requested_mode == .verify and kind != .native) return rejectedReport(report, &.{.AdapterModeNotAllowed});
         if (kind == .replay and !policy.allow_replay_without_handlers) return rejectedReport(report, &.{.AdapterModeNotAllowed});
