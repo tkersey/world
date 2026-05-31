@@ -2500,6 +2500,7 @@ pub const RunImage = struct {
             if (image.events.len > options.max_timeline_events) return error.InvalidFrameEncoding;
             if (image.world_surface_fingerprint != self.target_ref.world_surface_fingerprint) return error.TranscriptImageSurfaceMismatch;
             if (image.target_certificate_fingerprint != self.target_ref.target_certificate_fingerprint) return error.TargetCertificateMismatch;
+            if (self.current_state.transcript_image_fingerprint != image.transcript_image_fingerprint) return error.HandoffTargetMismatch;
         }
         if (self.current_state.target_ref_fingerprint != self.target_ref.target_ref_fingerprint) return error.HandoffTargetMismatch;
         if (self.current_state.checkpoint_fingerprint) |checkpoint_fingerprint| {
@@ -3701,9 +3702,7 @@ fn acceptanceReportFor(
     }
     if (policy.require_all_required_ports_bound and bindings.len < Target.WorldPortTable.entries.len) {
         report.missing_port_count = Target.WorldPortTable.entries.len - bindings.len;
-        if (!(requested_mode == .replay and policy.allow_replay_without_handlers and transcript_image_available)) {
-            return rejectedReport(report, &.{.MissingBinding});
-        }
+        return rejectedReport(report, &.{.MissingBinding});
     }
     if (policy.reject_extra_bindings and bindings.len > Target.WorldPortTable.entries.len) {
         report.extra_binding_count = bindings.len - Target.WorldPortTable.entries.len;
@@ -4613,6 +4612,7 @@ fn decodeTargetRef(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usi
     if (fingerprint_version != world_target_ref_fingerprint_version) return error.InvalidFrameEncoding;
     const target_ref_fingerprint = try readU64(bytes, cursor);
     const target_label = try readOptionalBytesOwned(allocator, bytes, cursor);
+    errdefer if (target_label) |label| allocator.free(@constCast(label));
     const world_surface_fingerprint = try readU64(bytes, cursor);
     const world_surface_replay_scope_fingerprint = try readOptionalU64(bytes, cursor);
     const target_certificate_fingerprint = try readU64(bytes, cursor);
@@ -4624,6 +4624,7 @@ fn decodeTargetRef(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usi
     const surface_profile_fingerprint = try readOptionalU64(bytes, cursor);
     const boundary_module_fingerprint = try readOptionalU64(bytes, cursor);
     const metadata = try readBytesOwned(allocator, bytes, cursor);
+    errdefer allocator.free(metadata);
     // TargetRef labels/metadata are intentionally leaked into the owning RunImage lifetime;
     // RunImage does not currently expose a separate TargetRef deinit path.
     const result = TargetRef{

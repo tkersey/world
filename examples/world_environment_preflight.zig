@@ -13,6 +13,7 @@ fn approve(ctx: *Ctx, payload: []const u8) !i32 {
 
 const ApprovalPort = world.port(fixtures.Ports.Target, fixtures.Ports.ApprovalRequest, approve);
 const NativeBinding = world.bind(ApprovalPort, world.NativeAdapter(approve));
+const ReplayBinding = world.bind(ApprovalPort, world.ReplayAdapter(0x7777_aaaa));
 const NativeEnv = world.Environment(fixtures.Ports.Target, .{
     .bindings = .{NativeBinding},
     .policy = world.EnvironmentPolicy.fresh_and_replay,
@@ -22,7 +23,7 @@ const MissingEnv = world.Environment(fixtures.Ports.Target, .{
     .policy = world.EnvironmentPolicy.strict_fresh,
 });
 const ReplayOnlyEnv = world.Environment(fixtures.Ports.Target, .{
-    .bindings = .{},
+    .bindings = .{ReplayBinding},
     .policy = world.EnvironmentPolicy.strict_replay,
 });
 const Machine = world.Machine(fixtures.Ports.Target, .{ .environment = NativeEnv });

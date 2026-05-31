@@ -2992,11 +2992,12 @@ test "world environment accepts bindings and reports missing duplicate and repla
     try std.testing.expect(!duplicate_report.accepted);
     try std.testing.expectEqual(world.AcceptanceBlocker.ExtraBinding, duplicate_report.blockers[0]);
 
-    const replay_without_handlers = world.Environment(fixtures.Ports.Target, .{
+    const replay_missing_bindings = world.Environment(fixtures.Ports.Target, .{
         .bindings = .{},
         .policy = world.EnvironmentPolicy.strict_replay,
     }).acceptanceReport(.replay, true);
-    try std.testing.expect(replay_without_handlers.accepted);
+    try std.testing.expect(!replay_missing_bindings.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.MissingBinding, replay_missing_bindings.blockers[0]);
 
     const replay_fresh_report = PortsReplayEnv.acceptanceReport(.fresh, false);
     try std.testing.expect(!replay_fresh_report.accepted);
@@ -3167,6 +3168,24 @@ test "run image encode decode roundtrip includes TargetRef TranscriptImage branc
     defer std.testing.allocator.free(malformed);
     malformed[8] +%= 1;
     try std.testing.expectError(error.InvalidFrameEncoding, world.RunImage.decode(std.testing.allocator, malformed));
+
+    var malformed_target_ref = try std.testing.allocator.dupe(u8, encoded);
+    defer std.testing.allocator.free(malformed_target_ref);
+    malformed_target_ref[25] +%= 1;
+    try std.testing.expectError(error.InvalidFrameEncoding, world.RunImage.decode(std.testing.allocator, malformed_target_ref));
+
+    const stale_state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .completed,
+    });
+    const stale_transcript_binding = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = import_set.import_set_fingerprint,
+        .transcript_image = image,
+        .current_state = stale_state,
+    });
+    try std.testing.expectError(error.HandoffTargetMismatch, stale_transcript_binding.validate(.{}));
 }
 
 test "run image decode rejects oversized timeline counts before allocation" {
