@@ -1768,6 +1768,10 @@ pub const Supervision = struct {
             if (permit.policy.require_transcript_image_for_replay and permit.mode == .replay and permit.binding_plan_fingerprint == 0) return Error.TranscriptImageRequired;
         }
 
+        fn validateWorldPortId(self: *@This(), world_port_id: u32) !void {
+            if (world_port_id >= self.ledger.per_port_usage.len) return Error.SupervisionDenied;
+        }
+
         fn addSatUsize(a: usize, b: usize) usize {
             return a +| b;
         }
@@ -1796,6 +1800,7 @@ pub const Supervision = struct {
         }
 
         pub fn beforePortRequest(self: *@This(), world_port_id: u32, request_bytes: usize, value_image_bytes: usize) !void {
+            try self.validateWorldPortId(world_port_id);
             var next = try self.ledger.clone(self.allocator);
             defer next.deinit(self.allocator);
             const request_cost = self.permit.cost_model.requestCost(world_port_id);
@@ -1830,6 +1835,7 @@ pub const Supervision = struct {
         }
 
         pub fn accountPortRequestBytes(self: *@This(), world_port_id: u32, request_bytes: usize, value_image_bytes: usize) !void {
+            try self.validateWorldPortId(world_port_id);
             if (request_bytes == 0 and value_image_bytes == 0) return;
             var next = try self.ledger.clone(self.allocator);
             defer next.deinit(self.allocator);
@@ -1864,6 +1870,7 @@ pub const Supervision = struct {
             authority_kind: ?PortAuthority.Kind = null,
             value_policy: ValuePolicy = .native_compatible,
         }) !void {
+            try self.validateWorldPortId(args.world_port_id);
             const policy = self.permit.policy;
             if (!modeAllowedByPolicy(policy, args.mode)) {
                 const blocker: Supervision.Blocker = switch (args.mode) {
@@ -1929,6 +1936,7 @@ pub const Supervision = struct {
             response_bytes: usize = 0,
             value_image_bytes: usize = 0,
         }) !void {
+            try self.validateWorldPortId(args.world_port_id);
             if (!responseAllowedByPolicy(self.permit.policy, args.status)) {
                 const blocker: Blocker = switch (args.status) {
                     .pending => .pending_denied,
@@ -2339,6 +2347,26 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
                 }
                 if (supervision_policy.reject_native_only_values and entry.value_policy.allow_native_only_values) {
                     return rejectedReport(report, &.{.NativeOnlyValueRejected});
+                }
+            }
+            return report;
+        }
+
+        pub fn acceptanceReportWithPermit(requested_mode: Mode, transcript_image_available: bool, permit: RunPermit) AcceptanceReport {
+            const report = acceptanceReportWithSupervision(requested_mode, transcript_image_available, permit.policy);
+            if (!report.accepted) return report;
+            inline for (bindings) |BindingDecl| {
+                if (BindingDecl.TargetType != Target) continue;
+                if (BindingDecl.world_port_id >= Target.WorldPortTable.entries.len) continue;
+                if (permit.ruleFor(BindingDecl.world_port_id)) |rule| {
+                    if (!rule.permitsMode(requested_mode)) return rejectedReport(report, &.{.SupervisionPortRuleDenied});
+                    const adapter_kind: AdapterKind = if (@hasDecl(BindingDecl, "adapter_kind")) BindingDecl.adapter_kind else .native;
+                    if (!rule.allowed_adapter_kinds.allows(adapter_kind)) return rejectedReport(report, &.{.SupervisionPortRuleDenied});
+                    const value_policy: ValuePolicy = if (@hasDecl(BindingDecl, "value_policy")) BindingDecl.value_policy else .native_compatible;
+                    if (rule.require_portable_values and !value_policy.require_portable_values) return rejectedReport(report, &.{.SupervisionPortRuleDenied});
+                    if (@hasDecl(BindingDecl, "authority")) {
+                        if (!rule.allowed_authority_kinds.allows(BindingDecl.authority.authority_kind)) return rejectedReport(report, &.{.SupervisionPortRuleDenied});
+                    }
                 }
             }
             return report;
@@ -4593,7 +4621,7 @@ pub const Handoff = struct {
                 return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.SupervisionPolicyMismatch});
             }
         }
-        const supervision_report = Env.acceptanceReportWithSupervision(modeToRunMode(mode), self.run_image.transcript_image != null, permit.policy);
+        const supervision_report = Env.acceptanceReportWithPermit(modeToRunMode(mode), self.run_image.transcript_image != null, permit);
         if (!supervision_report.accepted) return supervision_report;
         return self.preflight(Target, Env, mode);
     }
@@ -5169,7 +5197,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                                 @hasField(Options, "transcript_image")
                             else
                                 transcript_available;
-                            const supervision_report = Config.environment.acceptanceReportWithSupervision(mode_value, supervision_transcript_available, permit.policy);
+                            const supervision_report = Config.environment.acceptanceReportWithPermit(mode_value, supervision_transcript_available, permit);
                             if (!supervision_report.accepted) return acceptanceError(supervision_report);
                             const cert = Config.environment.certificate(mode_value, transcript_available);
                             if (permit.environment_certificate_fingerprint != cert.certificate_fingerprint) return Error.SupervisionDenied;

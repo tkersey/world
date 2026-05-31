@@ -4755,6 +4755,31 @@ test "port rules enforce portable values and rule-owned caps" {
     }));
 }
 
+test "supervisor rejects out-of-range port ids before ledger access" {
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+    });
+    var supervisor = try world.Supervisor.init(std.testing.allocator, permit, fixtures.Ports.Target.WorldPortTable.entries.len);
+    defer supervisor.deinit();
+    const invalid_port_id: u32 = fixtures.Ports.Target.WorldPortTable.entries.len;
+    const ledger_fingerprint = supervisor.ledger.ledger_fingerprint;
+
+    try std.testing.expectError(error.SupervisionDenied, supervisor.beforePortRequest(invalid_port_id, 0, 0));
+    try std.testing.expectError(error.SupervisionDenied, supervisor.accountPortRequestBytes(invalid_port_id, 0, 0));
+    try std.testing.expectError(error.SupervisionDenied, supervisor.beforeAdapterCall(.{
+        .world_port_id = invalid_port_id,
+        .mode = .fresh,
+        .adapter_kind = .native,
+    }));
+    try std.testing.expectError(error.SupervisionDenied, supervisor.afterAdapterResponse(.{
+        .world_port_id = invalid_port_id,
+        .status = .responded,
+    }));
+    try std.testing.expectEqual(ledger_fingerprint, supervisor.ledger.ledger_fingerprint);
+    try std.testing.expectEqual(@as(?world.SupervisionCheck, null), supervisor.last_check);
+}
+
 test "supervised frame request bytes are accounted before frame handoff" {
     const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
         .mode = .fresh,
@@ -5545,6 +5570,19 @@ test "supervised handoff receiver can issue stricter permit and inspect prior re
     });
     const adapter_deny_report = handoff.preflightWithPermit(fixtures.Ports.Target, PortsEnv, .accept_fresh, adapter_deny_permit);
     try std.testing.expect(!adapter_deny_report.accepted);
+    const rule_deny_rules = [_]world.PortRule{world.PortRule.init(.{
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .world_port_id = 0,
+        .allow_fresh = false,
+    })};
+    const rule_deny_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.handoff_receiver,
+        .port_rules = &rule_deny_rules,
+    });
+    const rule_deny_report = handoff.preflightWithPermit(fixtures.Ports.Target, PortsEnv, .accept_fresh, rule_deny_permit);
+    try std.testing.expect(!rule_deny_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.SupervisionPortRuleDenied, rule_deny_report.blockers[0]);
     const cert = PortsEnv.certificate(.fresh, false);
     const wrong_surface_permit = world.RunPermit.init(.{
         .target_ref_fingerprint = target_ref.target_ref_fingerprint,
