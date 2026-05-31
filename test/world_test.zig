@@ -4669,6 +4669,12 @@ test "run permit validation rejects nested policy budget cost and rule drift" {
     var forged_rule_permit = permit;
     forged_rule_permit.port_rules = &forged_rules;
     try std.testing.expectError(error.SupervisionDenied, world.Supervisor.init(std.testing.allocator, forged_rule_permit, fixtures.Ports.Target.WorldPortTable.entries.len));
+
+    const replay_without_image_permit = world.Supervision.issue(fixtures.Ports.Target, PortsReplayEnv, .{
+        .mode = .replay,
+        .policy = world.SupervisionPolicy.strict_replay,
+    });
+    try std.testing.expectError(error.TranscriptImageRequired, world.Supervisor.init(std.testing.allocator, replay_without_image_permit, fixtures.Ports.Target.WorldPortTable.entries.len));
 }
 
 test "supervision policy denies native fresh calls and pending by default" {
@@ -5255,6 +5261,7 @@ test "audit-only max supervision events warns and allows checks" {
     try std.testing.expect(supervisor.last_check.?.allowed);
     try std.testing.expectEqual(world.Supervision.Blocker.max_supervision_events_exceeded, supervisor.last_check.?.blocker.?);
     try std.testing.expectEqual(world.Supervision.BudgetExceededKind.supervision_events, supervisor.last_check.?.budget_exceeded.?);
+    try std.testing.expectEqual(world.Supervision.BudgetExceededKind.supervision_events, supervisor.ledger.exceeded_budget.?);
     try std.testing.expect(supervisor.last_check.?.validateFingerprint());
 }
 

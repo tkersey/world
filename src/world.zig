@@ -1405,6 +1405,7 @@ pub const Supervision = struct {
         environment_certificate_fingerprint: u64,
         binding_plan_fingerprint: u64,
         mode: Mode,
+        transcript_image_available: bool = false,
         supervision_policy_fingerprint: u64,
         budget_fingerprint: u64,
         cost_model_fingerprint: u64,
@@ -1424,6 +1425,7 @@ pub const Supervision = struct {
             environment_certificate_fingerprint: u64,
             binding_plan_fingerprint: u64,
             mode: Mode,
+            transcript_image_available: bool = false,
             policy: Supervision.SupervisionPolicy = Supervision.SupervisionPolicy.strict_fresh,
             budget: Supervision.Budget = Supervision.Budget.unlimited,
             cost_model: Supervision.CostModel = Supervision.CostModel.default,
@@ -1444,6 +1446,7 @@ pub const Supervision = struct {
                 .environment_certificate_fingerprint = args.environment_certificate_fingerprint,
                 .binding_plan_fingerprint = args.binding_plan_fingerprint,
                 .mode = args.mode,
+                .transcript_image_available = args.transcript_image_available,
                 .supervision_policy_fingerprint = policy.policy_fingerprint,
                 .budget_fingerprint = budget.budget_fingerprint,
                 .cost_model_fingerprint = cost_model.cost_model_fingerprint,
@@ -1489,6 +1492,7 @@ pub const Supervision = struct {
             .environment_certificate_fingerprint = cert.certificate_fingerprint,
             .binding_plan_fingerprint = cert.binding_plan_fingerprint,
             .mode = mode,
+            .transcript_image_available = transcript_available,
             .policy = policy,
             .budget = budget,
             .cost_model = cost_model,
@@ -1765,7 +1769,7 @@ pub const Supervision = struct {
             }
             if (permit.permit_fingerprint != fingerprintRunPermit(permit)) return Error.SupervisionDenied;
             if (permit.policy.require_environment_certificate and permit.environment_certificate_fingerprint == 0) return Error.SupervisionDenied;
-            if (permit.policy.require_transcript_image_for_replay and permit.mode == .replay and permit.binding_plan_fingerprint == 0) return Error.TranscriptImageRequired;
+            if (permit.policy.require_transcript_image_for_replay and permit.mode == .replay and !permit.transcript_image_available) return Error.TranscriptImageRequired;
         }
 
         fn validateWorldPortId(self: *@This(), world_port_id: u32) !void {
@@ -2090,6 +2094,7 @@ pub const Supervision = struct {
             }
             const usage_before = self.ledger.ledger_fingerprint;
             const reservation = try self.reserveSupervisionEvent(kind, world_port_id, usage_before, if (rule) |r| r.rule_fingerprint else null, "max supervision events");
+            if (reservation == .audit_only_exceeded) candidate.exceeded_budget = .supervision_events;
             self.ledger.deinit(self.allocator);
             self.ledger = candidate.*;
             candidate.per_port_usage = &.{};
@@ -7743,6 +7748,7 @@ fn fingerprintRunPermit(permit: RunPermit) u64 {
     hashU64(&hasher, permit.environment_certificate_fingerprint);
     hashU64(&hasher, permit.binding_plan_fingerprint);
     hashU64(&hasher, @intFromEnum(permit.mode));
+    hashBool(&hasher, permit.transcript_image_available);
     hashU64(&hasher, permit.supervision_policy_fingerprint);
     hashU64(&hasher, permit.budget_fingerprint);
     hashU64(&hasher, permit.cost_model_fingerprint);
