@@ -2700,6 +2700,13 @@ const AgentEnv = world.Environment(fixtures.Agent.Target, .{
     },
     .policy = world.EnvironmentPolicy.fresh_and_replay,
 });
+const AgentEnvReordered = world.Environment(fixtures.Agent.Target, .{
+    .bindings = .{
+        world.bind(AgentToolDecl, world.NativeAdapter(tool)),
+        world.bind(AgentDecideDecl, world.NativeAdapter(decide)),
+    },
+    .policy = world.EnvironmentPolicy.fresh_and_replay,
+});
 const AgentMachine = world.Machine(fixtures.Agent.Target, .{
     .ports = .{ AgentDecideDecl, AgentToolDecl },
     .strict_handler_coverage = true,
@@ -3042,6 +3049,19 @@ test "world environment accepts bindings and reports missing duplicate and repla
     const replay_report = PortsReplayEnv.acceptanceReport(.replay, true);
     try std.testing.expect(replay_report.accepted);
 
+    const transcript_required_report = world.Environment(fixtures.Ports.Target, .{
+        .bindings = .{PortsNativeBinding},
+        .policy = world.EnvironmentPolicy.init(.{ .allow_fresh_without_transcript = false }),
+    }).acceptanceReport(.fresh, false);
+    try std.testing.expect(!transcript_required_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.TranscriptImageRequired, transcript_required_report.blockers[0]);
+
+    const transcript_available_report = world.Environment(fixtures.Ports.Target, .{
+        .bindings = .{PortsNativeBinding},
+        .policy = world.EnvironmentPolicy.init(.{ .allow_fresh_without_transcript = false }),
+    }).acceptanceReport(.fresh, true);
+    try std.testing.expect(transcript_available_report.accepted);
+
     const pending_report = world.Environment(fixtures.Ports.Target, .{
         .bindings = .{PortsPendingBinding},
         .policy = world.EnvironmentPolicy.fresh_and_replay,
@@ -3071,6 +3091,14 @@ test "binding plan and binding descriptors exclude native function pointer ident
     try std.testing.expect(plan.accepted);
     try std.testing.expectEqual(@as(?usize, 0), plan.lookup(0));
     try std.testing.expectEqual(@as(?usize, null), plan.lookup(99));
+
+    const agent_plan = AgentEnv.bindingPlan();
+    const reordered_agent_plan = AgentEnvReordered.bindingPlan();
+    try std.testing.expectEqual(@as(u32, 0), agent_plan.dense_entries[0].world_port_id);
+    try std.testing.expectEqual(@as(u32, 1), agent_plan.dense_entries[1].world_port_id);
+    try std.testing.expectEqual(@as(u32, 0), reordered_agent_plan.dense_entries[0].world_port_id);
+    try std.testing.expectEqual(@as(u32, 1), reordered_agent_plan.dense_entries[1].world_port_id);
+    try std.testing.expectEqual(agent_plan.plan_fingerprint, reordered_agent_plan.plan_fingerprint);
 }
 
 test "acceptance report port authority adapter descriptor and environment certificate fingerprints are stable" {
@@ -3565,6 +3593,15 @@ test "replay handoff replays completed run without native handler calls" {
         .allocator = std.testing.allocator,
         .mode = world.Mode.replay,
     }, .accept_replay));
+    var rejected_fresh_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer rejected_fresh_runtime.deinit();
+    var rejected_fresh_ctx: PortsCtx = .{};
+    try std.testing.expectError(error.HandoffPendingFrameMismatch, handoff.@"resume"(fixtures.Ports.Target, PortsEnv, &rejected_fresh_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &rejected_fresh_ctx,
+    }, .accept_fresh));
+    try std.testing.expectEqual(@as(usize, 0), rejected_fresh_ctx.calls);
 
     var runtime = boundary.Runtime.init(std.testing.allocator);
     defer runtime.deinit();

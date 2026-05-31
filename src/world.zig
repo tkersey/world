@@ -2752,32 +2752,31 @@ pub const Handoff = struct {
         if (mode != .accept_fresh) return Error.InvalidMode;
         const report = self.preflight(Target, Env, mode);
         if (!report.accepted) return acceptanceError(report);
+        if (self.run_image.current_state.status != .parked_on_port or self.run_image.pending_request_frame == null) return error.HandoffPendingFrameMismatch;
         const MachineType = Machine(Target, Env.machine_config);
         var run = try MachineType.start(runtime, args, options);
         errdefer run.deinit();
-        if (self.run_image.current_state.status == .parked_on_port) {
-            if (self.run_image.transcript_image) |*image| image.resetReplay();
-            while (true) {
-                const step = try run.nextFrame();
-                switch (step) {
-                    .port_request => |request_frame| {
-                        var request = request_frame;
-                        defer request.deinit(run.allocator);
-                        if ((self.run_image.pending_request_frame orelse return error.HandoffPendingFrameMismatch).frame_fingerprint == request.frame_fingerprint) {
-                            try self.validatePendingFrame(request);
-                            break;
+        if (self.run_image.transcript_image) |*image| image.resetReplay();
+        while (true) {
+            const step = try run.nextFrame();
+            switch (step) {
+                .port_request => |request_frame| {
+                    var request = request_frame;
+                    defer request.deinit(run.allocator);
+                    if ((self.run_image.pending_request_frame orelse return error.HandoffPendingFrameMismatch).frame_fingerprint == request.frame_fingerprint) {
+                        try self.validatePendingFrame(request);
+                        break;
+                    }
+                    const response = if (self.run_image.transcript_image) |*image|
+                        image.nextResponse(request.replay_key_seed, Target.Certificate.certificate_fingerprint, .@"resume") catch |err| {
+                            run.audit.replay_mismatch_count += 1;
+                            return err;
                         }
-                        const response = if (self.run_image.transcript_image) |*image|
-                            image.nextResponse(request.replay_key_seed, Target.Certificate.certificate_fingerprint, .@"resume") catch |err| {
-                                run.audit.replay_mismatch_count += 1;
-                                return err;
-                            }
-                        else
-                            return error.HandoffPendingFrameMismatch;
-                        try run.resumeFrame(response.*);
-                    },
-                    else => return error.HandoffPendingFrameMismatch,
-                }
+                    else
+                        return error.HandoffPendingFrameMismatch;
+                    try run.resumeFrame(response.*);
+                },
+                else => return error.HandoffPendingFrameMismatch,
             }
         }
         return run;
@@ -3654,18 +3653,34 @@ fn boundPorts(comptime bindings: anytype) [bindings.len]type {
 
 fn bindingPlanEntries(comptime Target: type, comptime bindings: anytype) [bindings.len]BindingPlan.Entry {
     var result: [bindings.len]BindingPlan.Entry = undefined;
-    inline for (bindings, 0..) |BindingDecl, index| {
-        const record = bindingRecordFor(Target, BindingDecl);
-        result[index] = .{
-            .world_port_id = BindingDecl.world_port_id,
-            .adapter_slot = index,
-            .binding_fingerprint = record.binding_fingerprint,
-            .adapter_kind = if (@hasDecl(BindingDecl, "adapter_kind")) BindingDecl.adapter_kind else .native,
-            .value_policy = if (@hasDecl(BindingDecl, "value_policy")) BindingDecl.value_policy else .native_compatible,
-            .authority_fingerprint = if (@hasDecl(BindingDecl, "authority")) BindingDecl.authority.authority_fingerprint else null,
-        };
+    var out_index: usize = 0;
+    inline for (0..Target.WorldPortTable.entries.len) |world_port_id| {
+        inline for (bindings, 0..) |BindingDecl, binding_index| {
+            if (BindingDecl.world_port_id == world_port_id) {
+                result[out_index] = bindingPlanEntryFor(Target, BindingDecl, binding_index);
+                out_index += 1;
+            }
+        }
+    }
+    inline for (bindings, 0..) |BindingDecl, binding_index| {
+        if (BindingDecl.world_port_id >= Target.WorldPortTable.entries.len) {
+            result[out_index] = bindingPlanEntryFor(Target, BindingDecl, binding_index);
+            out_index += 1;
+        }
     }
     return result;
+}
+
+fn bindingPlanEntryFor(comptime Target: type, comptime BindingDecl: type, comptime binding_index: usize) BindingPlan.Entry {
+    const record = bindingRecordFor(Target, BindingDecl);
+    return .{
+        .world_port_id = BindingDecl.world_port_id,
+        .adapter_slot = binding_index,
+        .binding_fingerprint = record.binding_fingerprint,
+        .adapter_kind = if (@hasDecl(BindingDecl, "adapter_kind")) BindingDecl.adapter_kind else .native,
+        .value_policy = if (@hasDecl(BindingDecl, "value_policy")) BindingDecl.value_policy else .native_compatible,
+        .authority_fingerprint = if (@hasDecl(BindingDecl, "authority")) BindingDecl.authority.authority_fingerprint else null,
+    };
 }
 
 fn bindingPlanFor(
@@ -3747,6 +3762,7 @@ fn acceptanceReportFor(
         report.extra_binding_count = bindings.len - Target.WorldPortTable.entries.len;
         return rejectedReport(report, &.{.ExtraBinding});
     }
+    if (requested_mode == .fresh and !transcript_image_available and !policy.allow_fresh_without_transcript) return rejectedReport(report, &.{.TranscriptImageRequired});
     if (requested_mode == .replay and !transcript_image_available and policy.require_frame_images_for_replay) return rejectedReport(report, &.{.TranscriptImageRequired});
     if (requested_mode == .verify and !transcript_image_available and !policy.allow_verify_without_transcript) return rejectedReport(report, &.{.VerifyTranscriptMissing});
     report.report_fingerprint = fingerprintAcceptanceReport(report);
@@ -4955,7 +4971,6 @@ fn fingerprintBindingPlan(plan: BindingPlan) u64 {
     hashU64(&hasher, plan.binding_count);
     for (plan.dense_entries) |entry| {
         hashU64(&hasher, entry.world_port_id);
-        hashU64(&hasher, entry.adapter_slot);
         hashU64(&hasher, entry.binding_fingerprint);
         hashU64(&hasher, @intFromEnum(entry.adapter_kind));
         hashValuePolicy(&hasher, entry.value_policy);
