@@ -123,7 +123,7 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the strict zero-port World example.",
             .expected_stdout =
             \\world_surface_fingerprint=bf39bfbae5e3bb8d
-            \\target_certificate_fingerprint=b3edd8382e7b0db4
+            \\target_certificate_fingerprint=dd2d04f0eddca6f1
             \\final_result=1
             \\
             ,
@@ -173,8 +173,8 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-frame-ports",
             .desc = "Run the frame-first one-port World example.",
             .expected_stdout =
-            \\request_frame_fingerprint=a0fb9bb7f59ece20
-            \\response_frame_fingerprint=d614051a97fab2c5
+            \\request_frame_fingerprint=f167057cbf38adb0
+            \\response_frame_fingerprint=7949142489b8957f
             \\world_port_id=0
             \\final_result=7
             \\
@@ -186,7 +186,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-transcript-image-replay",
             .desc = "Run the transcript image replay World example.",
             .expected_stdout =
-            \\transcript_image_fingerprint=950bd692d8372e44
+            \\transcript_image_fingerprint=a0ca263faed105a
             \\replayed_response_count=1
             \\final_result=7
             \\
@@ -210,7 +210,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-agent-timeline",
             .desc = "Run the agent timeline World example.",
             .expected_stdout =
-            \\transcript_image_fingerprint=826ae3f8ebba9eb5
+            \\transcript_image_fingerprint=4099cf5282ce6b8d
             \\event_count=8
             \\tool_call_count=1
             \\replay_verified=true
@@ -224,11 +224,75 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-agent-branch",
             .desc = "Run the agent branch World example.",
             .expected_stdout =
-            \\checkpoint_fingerprint=6a333bf6c1e931bb
-            \\baseline_transcript_fingerprint=826ae3f8ebba9eb5
-            \\branch_transcript_fingerprint=313381a33465638b
+            \\checkpoint_fingerprint=e35fc0906e26ab9e
+            \\baseline_transcript_fingerprint=4099cf5282ce6b8d
+            \\branch_transcript_fingerprint=1cc787815c6ee617
             \\baseline_final_result=final=actuate skeleton complete
             \\branch_final_result=final=branch alternate
+            \\
+            ,
+        },
+        .{
+            .name = "world-environment-preflight",
+            .path = "examples/world_environment_preflight.zig",
+            .step = "run-world-environment-preflight",
+            .desc = "Run the World environment preflight example.",
+            .expected_stdout =
+            \\fresh_missing_accepted=false
+            \\fresh_blocker=MissingBinding
+            \\replay_without_handlers_accepted=true
+            \\transcript_image_fingerprint=a0ca263faed105a
+            \\
+            ,
+        },
+        .{
+            .name = "world-handoff-parked",
+            .path = "examples/world_handoff_parked.zig",
+            .step = "run-world-handoff-parked",
+            .desc = "Run the parked World handoff example.",
+            .expected_stdout =
+            \\run_image_fingerprint=b9ea83e6295dbaf0
+            \\pending_request_fingerprint=f167057cbf38adb0
+            \\environment_certificate_fingerprint=18eae8043c9acdfb
+            \\final_result=7
+            \\
+            ,
+        },
+        .{
+            .name = "world-handoff-replay",
+            .path = "examples/world_handoff_replay.zig",
+            .step = "run-world-handoff-replay",
+            .desc = "Run the replay World handoff example.",
+            .expected_stdout =
+            \\run_image_fingerprint=1daa813b4b12ab3a
+            \\replayed_response_count=1
+            \\final_result=7
+            \\
+            ,
+        },
+        .{
+            .name = "world-handoff-verify",
+            .path = "examples/world_handoff_verify.zig",
+            .step = "run-world-handoff-verify",
+            .desc = "Run the verify World handoff example.",
+            .expected_stdout =
+            \\verification_accepted=true
+            \\divergence_detected=true
+            \\
+            ,
+        },
+        .{
+            .name = "world-agent-handoff",
+            .path = "examples/world_agent_handoff.zig",
+            .step = "run-world-agent-handoff",
+            .desc = "Run the agent World handoff example.",
+            .expected_stdout =
+            \\run_image_fingerprint=503185a18a98b5d0
+            \\checkpoint_fingerprint=e35fc0906e26ab9e
+            \\branch_id=1
+            \\model_port_id=0
+            \\tool_port_id=1
+            \\final_result=final=actuate skeleton complete
             \\
             ,
         },

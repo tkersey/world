@@ -39,6 +39,23 @@ pub const Error = error{
     FramePortMismatch,
     FrameRequestFingerprintMismatch,
     FrameValueTableMismatch,
+    MissingBinding,
+    ExtraBinding,
+    DuplicateBinding,
+    WrongWorldSurface,
+    WrongTargetCertificate,
+    WrongPortId,
+    AdapterModeNotAllowed,
+    PortableValuesRequired,
+    NativeOnlyValueRejected,
+    ReplaySourceMissing,
+    VerifyTranscriptMissing,
+    TranscriptImageRequired,
+    TranscriptImageSurfaceMismatch,
+    HandoffTargetMismatch,
+    HandoffCheckpointMismatch,
+    HandoffPendingFrameMismatch,
+    SurfaceProfileIncompatible,
     VerifyMissingExpected,
     VerifyResponseKindMismatch,
     VerifyResponseFingerprintMismatch,
@@ -127,6 +144,22 @@ pub const world_timeline_branch_format_version: u32 = 1;
 pub const world_timeline_branch_fingerprint_version: u32 = 1;
 pub const world_audit_image_format_version: u32 = 1;
 pub const world_audit_image_fingerprint_version: u32 = 1;
+pub const world_target_ref_format_version: u32 = 1;
+pub const world_target_ref_fingerprint_version: u32 = 1;
+pub const world_import_requirement_fingerprint_version: u32 = 1;
+pub const world_import_set_fingerprint_version: u32 = 1;
+pub const world_binding_format_version: u32 = 1;
+pub const world_binding_fingerprint_version: u32 = 1;
+pub const world_port_authority_fingerprint_version: u32 = 1;
+pub const world_environment_policy_fingerprint_version: u32 = 1;
+pub const world_binding_plan_fingerprint_version: u32 = 1;
+pub const world_acceptance_report_fingerprint_version: u32 = 1;
+pub const world_environment_certificate_format_version: u32 = 1;
+pub const world_environment_certificate_fingerprint_version: u32 = 1;
+pub const world_adapter_descriptor_fingerprint_version: u32 = 1;
+pub const world_run_state_fingerprint_version: u32 = 1;
+pub const world_run_image_format_version: u32 = 1;
+pub const world_run_image_fingerprint_version: u32 = 1;
 pub const world_max_decoded_byte_field_len: usize = 16 * 1024 * 1024;
 const frame_response_deferred_fingerprint_flag: u32 = 1 << 0;
 const world_min_transcript_event_image_encoded_len: usize = 8 + 1 + 8 + 8 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1;
@@ -154,6 +187,651 @@ pub const ValuePolicy = struct {
         .allow_diagnostic_type_labels = true,
     };
 };
+
+pub const NormalFormKind = enum {
+    unknown,
+    strict_closed,
+    world_ports_only,
+    boundary_normal_form,
+};
+
+pub const AdapterKind = enum {
+    native,
+    replay,
+    verify,
+    byte,
+    null_reject,
+    pending_stub,
+    custom,
+};
+
+pub const BindingModePolicy = enum {
+    fresh,
+    replay,
+    verify,
+    audit,
+    fresh_and_replay,
+    all,
+};
+
+pub const AcceptanceBlocker = enum {
+    MissingBinding,
+    ExtraBinding,
+    WrongWorldSurface,
+    WrongTargetCertificate,
+    WrongPortId,
+    PayloadValueMismatch,
+    ResponseValueMismatch,
+    AdapterModeNotAllowed,
+    PortableValuesRequired,
+    NativeOnlyValueRejected,
+    ReplaySourceMissing,
+    VerifyTranscriptMissing,
+    SurfaceProfileIncompatible,
+    TranscriptImageRequired,
+    TranscriptImageSurfaceMismatch,
+    HandoffTargetMismatch,
+    HandoffCheckpointMismatch,
+    HandoffPendingFrameMismatch,
+};
+
+pub const TargetRef = struct {
+    format_version: u32 = world_target_ref_format_version,
+    fingerprint_version: u32 = world_target_ref_fingerprint_version,
+    target_ref_fingerprint: u64,
+    target_label: ?[]const u8 = null,
+    world_surface_fingerprint: u64,
+    world_surface_replay_scope_fingerprint: ?u64 = null,
+    target_certificate_fingerprint: u64,
+    residual_program_plan_hash: ?u64 = null,
+    normal_form_kind: NormalFormKind = .unknown,
+    world_port_table_fingerprint: ?u64 = null,
+    world_value_table_fingerprint: ?u64 = null,
+    world_dispatch_table_fingerprint: ?u64 = null,
+    surface_profile_fingerprint: ?u64 = null,
+    boundary_module_fingerprint: ?u64 = null,
+    metadata: []const u8 = "",
+
+    pub fn fromTarget(comptime Target: type) @This() {
+        @setEvalBranchQuota(20_000);
+        var result = @This(){
+            .target_ref_fingerprint = 0,
+            .target_label = targetLabel(Target),
+            .world_surface_fingerprint = Target.WorldSurface.surface_fingerprint,
+            .world_surface_replay_scope_fingerprint = Target.WorldSurface.replayScopeRef().fingerprint,
+            .target_certificate_fingerprint = Target.Certificate.certificate_fingerprint,
+            .residual_program_plan_hash = residualProgramPlanHash(Target),
+            .normal_form_kind = normalFormKind(Target),
+            .world_port_table_fingerprint = tableFingerprint(Target.WorldPortTable),
+            .world_value_table_fingerprint = tableFingerprint(Target.WorldValueTable),
+            .world_dispatch_table_fingerprint = tableFingerprint(Target.WorldDispatchTable),
+            .surface_profile_fingerprint = if (@hasDecl(Target, "SurfaceProfile")) tableFingerprint(Target.SurfaceProfile) else null,
+            .boundary_module_fingerprint = if (@hasDecl(Target, "Module")) tableFingerprint(Target.Module) else null,
+        };
+        result.target_ref_fingerprint = fingerprintTargetRef(result);
+        return result;
+    }
+
+    pub fn matchesTarget(self: @This(), comptime Target: type) bool {
+        const expected = fromTarget(Target);
+        return self.world_surface_fingerprint == expected.world_surface_fingerprint and
+            self.target_certificate_fingerprint == expected.target_certificate_fingerprint and
+            self.target_ref_fingerprint == expected.target_ref_fingerprint and
+            self.residual_program_plan_hash == expected.residual_program_plan_hash;
+    }
+};
+
+pub const ImportRequirement = struct {
+    requirement_fingerprint: u64,
+    world_surface_fingerprint: u64,
+    world_port_id: u32,
+    world_port_ref_fingerprint: ?u64 = null,
+    source_effect_shape_ref_fingerprint: ?u64 = null,
+    residual_site_index: usize,
+    residual_site_fingerprint: u64,
+    payload_value_table_id: ?u32 = null,
+    response_value_table_id: ?u32 = null,
+    mode: BindingModePolicy = .all,
+    allowed_response_kinds: ResponseKindMask = .resume_only,
+    replay_key_recipe_fingerprint: ?u64 = null,
+    suggested_symbolic_name: ?[]const u8 = null,
+    required: bool = true,
+    tags: []const []const u8 = &.{},
+    metadata: []const u8 = "",
+
+    pub const ResponseKindMask = enum {
+        resume_only,
+        return_now_only,
+        all,
+    };
+
+    pub fn fromTargetPort(comptime Target: type, comptime world_port_id: u32) @This() {
+        if (world_port_id >= Target.WorldPortTable.entries.len) @compileError("world_port_id out of range");
+        const entry = Target.WorldPortTable.entries[world_port_id];
+        var result = @This(){
+            .requirement_fingerprint = 0,
+            .world_surface_fingerprint = Target.WorldSurface.surface_fingerprint,
+            .world_port_id = world_port_id,
+            .world_port_ref_fingerprint = refFingerprint(entry.world_port_ref),
+            .source_effect_shape_ref_fingerprint = refFingerprint(entry.source_ref),
+            .residual_site_index = entry.residual_site_index,
+            .residual_site_fingerprint = entry.residual_site_fingerprint,
+            .payload_value_table_id = valueIdFor(Target, world_port_id, .payload),
+            .response_value_table_id = valueIdFor(Target, world_port_id, .@"resume"),
+            .replay_key_recipe_fingerprint = replayKeyRecipeFingerprint(Target),
+            .suggested_symbolic_name = if (entry.semantic_label) |label| label else entry.op_name,
+        };
+        result.requirement_fingerprint = fingerprintImportRequirement(result);
+        return result;
+    }
+};
+
+pub const ImportSet = struct {
+    import_set_fingerprint: u64,
+    target_ref_fingerprint: u64,
+    required_count: usize,
+    optional_count: usize = 0,
+    world_port_count: usize,
+    value_table_entry_count: usize,
+    surface_profile_fingerprint: ?u64 = null,
+
+    pub fn fromTarget(comptime Target: type) @This() {
+        const target_ref = TargetRef.fromTarget(Target);
+        var result = @This(){
+            .import_set_fingerprint = 0,
+            .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+            .required_count = Target.WorldPortTable.entries.len,
+            .world_port_count = Target.WorldPortTable.entries.len,
+            .value_table_entry_count = Target.WorldValueTable.entries.len,
+            .surface_profile_fingerprint = target_ref.surface_profile_fingerprint,
+        };
+        result.import_set_fingerprint = fingerprintImportSet(result);
+        return result;
+    }
+
+    pub fn requiredPortIds(self: @This(), allocator: std.mem.Allocator) ![]u32 {
+        const ids = try allocator.alloc(u32, self.required_count);
+        for (ids, 0..) |*id, index| id.* = @intCast(index);
+        return ids;
+    }
+
+    pub fn requirementForPort(_: @This(), comptime Target: type, comptime world_port_id: u32) ImportRequirement {
+        return ImportRequirement.fromTargetPort(Target, world_port_id);
+    }
+};
+
+pub const PortAuthority = struct {
+    authority_fingerprint: u64,
+    authority_label: []const u8 = "",
+    authority_kind: Kind = .custom,
+    allowed_modes: ModeMask = .all,
+    allows_fresh_calls: bool = true,
+    allows_replay: bool = true,
+    allows_verify: bool = true,
+    requires_portable_values: bool = false,
+    allows_native_only_values: bool = true,
+    max_payload_image_bytes: ?usize = null,
+    max_response_image_bytes: ?usize = null,
+    metadata: []const u8 = "",
+
+    pub const Kind = enum {
+        fixture,
+        replay_source,
+        native_function,
+        byte_adapter,
+        model_like,
+        tool_like,
+        file_like,
+        human_like,
+        custom,
+    };
+
+    pub const ModeMask = enum {
+        fresh,
+        replay,
+        verify,
+        audit,
+        fresh_and_replay,
+        all,
+    };
+
+    pub fn init(args: struct {
+        authority_label: []const u8 = "",
+        authority_kind: Kind = .custom,
+        allowed_modes: ModeMask = .all,
+        allows_fresh_calls: bool = true,
+        allows_replay: bool = true,
+        allows_verify: bool = true,
+        requires_portable_values: bool = false,
+        allows_native_only_values: bool = true,
+        max_payload_image_bytes: ?usize = null,
+        max_response_image_bytes: ?usize = null,
+        metadata: []const u8 = "",
+    }) @This() {
+        var result = @This(){
+            .authority_fingerprint = 0,
+            .authority_label = args.authority_label,
+            .authority_kind = args.authority_kind,
+            .allowed_modes = args.allowed_modes,
+            .allows_fresh_calls = args.allows_fresh_calls,
+            .allows_replay = args.allows_replay,
+            .allows_verify = args.allows_verify,
+            .requires_portable_values = args.requires_portable_values,
+            .allows_native_only_values = args.allows_native_only_values,
+            .max_payload_image_bytes = args.max_payload_image_bytes,
+            .max_response_image_bytes = args.max_response_image_bytes,
+            .metadata = args.metadata,
+        };
+        result.authority_fingerprint = fingerprintPortAuthority(result);
+        return result;
+    }
+
+    pub const fixture = init(.{ .authority_label = "fixture", .authority_kind = .fixture, .allowed_modes = .all });
+    pub const replay_source = init(.{ .authority_label = "replay", .authority_kind = .replay_source, .allowed_modes = .replay, .allows_fresh_calls = false, .allows_verify = false });
+    pub const native_function = init(.{ .authority_label = "native", .authority_kind = .native_function, .allowed_modes = .all });
+};
+
+pub const AdapterDescriptor = struct {
+    adapter_kind: AdapterKind,
+    target_ref_fingerprint: u64,
+    world_surface_fingerprint: u64,
+    world_port_id: u32,
+    value_policy: ValuePolicy = .native_compatible,
+    authority_fingerprint: ?u64 = null,
+    label: []const u8 = "",
+    metadata: []const u8 = "",
+    replay_source_fingerprint: ?u64 = null,
+    byte_adapter_protocol_label: ?[]const u8 = null,
+    descriptor_fingerprint: u64,
+
+    pub fn init(args: struct {
+        adapter_kind: AdapterKind,
+        target_ref_fingerprint: u64,
+        world_surface_fingerprint: u64,
+        world_port_id: u32,
+        value_policy: ValuePolicy = .native_compatible,
+        authority_fingerprint: ?u64 = null,
+        label: []const u8 = "",
+        metadata: []const u8 = "",
+        replay_source_fingerprint: ?u64 = null,
+        byte_adapter_protocol_label: ?[]const u8 = null,
+    }) @This() {
+        var result = @This(){
+            .adapter_kind = args.adapter_kind,
+            .target_ref_fingerprint = args.target_ref_fingerprint,
+            .world_surface_fingerprint = args.world_surface_fingerprint,
+            .world_port_id = args.world_port_id,
+            .value_policy = args.value_policy,
+            .authority_fingerprint = args.authority_fingerprint,
+            .label = args.label,
+            .metadata = args.metadata,
+            .replay_source_fingerprint = args.replay_source_fingerprint,
+            .byte_adapter_protocol_label = args.byte_adapter_protocol_label,
+            .descriptor_fingerprint = 0,
+        };
+        result.descriptor_fingerprint = fingerprintAdapterDescriptor(result);
+        return result;
+    }
+};
+
+pub const Binding = struct {
+    format_version: u32 = world_binding_format_version,
+    fingerprint_version: u32 = world_binding_fingerprint_version,
+    binding_fingerprint: u64,
+    target_ref_fingerprint: u64,
+    world_surface_fingerprint: u64,
+    target_certificate_fingerprint: u64,
+    world_port_id: u32,
+    import_requirement_fingerprint: u64,
+    world_port_ref_fingerprint: ?u64 = null,
+    source_effect_shape_ref_fingerprint: ?u64 = null,
+    payload_value_table_id: ?u32 = null,
+    response_value_table_id: ?u32 = null,
+    adapter_kind: AdapterKind = .native,
+    binding_mode_policy: BindingModePolicy = .all,
+    value_policy: ValuePolicy = .native_compatible,
+    authority_fingerprint: ?u64 = null,
+    adapter_descriptor_fingerprint: u64,
+    label: []const u8 = "",
+    tags: []const []const u8 = &.{},
+    metadata: []const u8 = "",
+
+    pub fn init(args: struct {
+        target_ref_fingerprint: u64,
+        world_surface_fingerprint: u64,
+        target_certificate_fingerprint: u64,
+        world_port_id: u32,
+        import_requirement_fingerprint: u64,
+        world_port_ref_fingerprint: ?u64 = null,
+        source_effect_shape_ref_fingerprint: ?u64 = null,
+        payload_value_table_id: ?u32 = null,
+        response_value_table_id: ?u32 = null,
+        adapter_kind: AdapterKind = .native,
+        binding_mode_policy: BindingModePolicy = .all,
+        value_policy: ValuePolicy = .native_compatible,
+        authority_fingerprint: ?u64 = null,
+        adapter_descriptor_fingerprint: u64,
+        label: []const u8 = "",
+        tags: []const []const u8 = &.{},
+        metadata: []const u8 = "",
+    }) @This() {
+        var result = @This(){
+            .binding_fingerprint = 0,
+            .target_ref_fingerprint = args.target_ref_fingerprint,
+            .world_surface_fingerprint = args.world_surface_fingerprint,
+            .target_certificate_fingerprint = args.target_certificate_fingerprint,
+            .world_port_id = args.world_port_id,
+            .import_requirement_fingerprint = args.import_requirement_fingerprint,
+            .world_port_ref_fingerprint = args.world_port_ref_fingerprint,
+            .source_effect_shape_ref_fingerprint = args.source_effect_shape_ref_fingerprint,
+            .payload_value_table_id = args.payload_value_table_id,
+            .response_value_table_id = args.response_value_table_id,
+            .adapter_kind = args.adapter_kind,
+            .binding_mode_policy = args.binding_mode_policy,
+            .value_policy = args.value_policy,
+            .authority_fingerprint = args.authority_fingerprint,
+            .adapter_descriptor_fingerprint = args.adapter_descriptor_fingerprint,
+            .label = args.label,
+            .tags = args.tags,
+            .metadata = args.metadata,
+        };
+        result.binding_fingerprint = fingerprintBinding(result);
+        return result;
+    }
+};
+
+pub fn NativeAdapter(comptime handler_fn: anytype) type {
+    return struct {
+        pub const kind: AdapterKind = .native;
+        pub const handler = handler_fn;
+        pub const authority = PortAuthority.native_function;
+        pub const value_policy = ValuePolicy.native_compatible;
+        pub const label = "native";
+    };
+}
+
+pub fn ReplayAdapter(comptime replay_source_fingerprint: u64) type {
+    return struct {
+        pub const kind: AdapterKind = .replay;
+        pub const authority = PortAuthority.replay_source;
+        pub const value_policy = ValuePolicy.portable;
+        pub const replay_fingerprint = replay_source_fingerprint;
+        pub const label = "replay";
+    };
+}
+
+pub fn ByteAdapter(comptime protocol_label: []const u8) type {
+    return struct {
+        pub const kind: AdapterKind = .byte;
+        pub const authority = PortAuthority.init(.{ .authority_label = protocol_label, .authority_kind = .byte_adapter, .allowed_modes = .all });
+        pub const value_policy = ValuePolicy.portable;
+        pub const label = protocol_label;
+    };
+}
+
+pub fn bind(comptime Decl: type, comptime Adapter: type) type {
+    const BasePortDecl = Decl;
+    return struct {
+        pub const PortDecl = BasePortDecl;
+        pub const TargetType = BasePortDecl.TargetType;
+        pub const SiteType = BasePortDecl.SiteType;
+        pub const Payload = BasePortDecl.Payload;
+        pub const Response = BasePortDecl.Response;
+        pub const Result = BasePortDecl.Result;
+        pub const world_port_id = BasePortDecl.world_port_id;
+        pub const residual_site_index = BasePortDecl.residual_site_index;
+        pub const residual_site_fingerprint = BasePortDecl.residual_site_fingerprint;
+        pub const payload_ref = BasePortDecl.payload_ref;
+        pub const response_ref = BasePortDecl.response_ref;
+        pub const result_ref = BasePortDecl.result_ref;
+        pub const source_ref = BasePortDecl.source_ref;
+        pub const world_port_ref = BasePortDecl.world_port_ref;
+        pub const suggested_name = BasePortDecl.suggested_name;
+        pub const response_deinit = BasePortDecl.response_deinit;
+        pub const adapter_kind: AdapterKind = Adapter.kind;
+        pub const authority = Adapter.authority;
+        pub const value_policy = Adapter.value_policy;
+        pub const replay_source_fingerprint: ?u64 = if (@hasDecl(Adapter, "replay_fingerprint")) Adapter.replay_fingerprint else null;
+        pub const byte_adapter_protocol_label: ?[]const u8 = if (Adapter.kind == .byte and @hasDecl(Adapter, "label")) Adapter.label else null;
+        pub const handler = if (@hasDecl(Adapter, "handler"))
+            Adapter.handler
+        else if (Adapter.kind == .native)
+            BasePortDecl.handler
+        else {};
+
+        pub fn replayKey(request_fingerprint: u64) ReplayKeySeed {
+            return BasePortDecl.replayKey(request_fingerprint);
+        }
+
+        pub fn bindingRecord() Binding {
+            const target_ref = TargetRef.fromTarget(TargetType);
+            const requirement = ImportRequirement.fromTargetPort(TargetType, world_port_id);
+            const descriptor = AdapterDescriptor.init(.{
+                .adapter_kind = adapter_kind,
+                .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+                .world_surface_fingerprint = TargetType.WorldSurface.surface_fingerprint,
+                .world_port_id = world_port_id,
+                .value_policy = value_policy,
+                .authority_fingerprint = authority.authority_fingerprint,
+                .label = suggested_name,
+                .replay_source_fingerprint = replay_source_fingerprint,
+                .byte_adapter_protocol_label = byte_adapter_protocol_label,
+            });
+            return Binding.init(.{
+                .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+                .world_surface_fingerprint = TargetType.WorldSurface.surface_fingerprint,
+                .target_certificate_fingerprint = TargetType.Certificate.certificate_fingerprint,
+                .world_port_id = world_port_id,
+                .import_requirement_fingerprint = requirement.requirement_fingerprint,
+                .world_port_ref_fingerprint = requirement.world_port_ref_fingerprint,
+                .source_effect_shape_ref_fingerprint = requirement.source_effect_shape_ref_fingerprint,
+                .payload_value_table_id = requirement.payload_value_table_id,
+                .response_value_table_id = requirement.response_value_table_id,
+                .adapter_kind = adapter_kind,
+                .value_policy = value_policy,
+                .authority_fingerprint = authority.authority_fingerprint,
+                .adapter_descriptor_fingerprint = descriptor.descriptor_fingerprint,
+                .label = suggested_name,
+            });
+        }
+    };
+}
+
+pub const EnvironmentPolicy = struct {
+    require_all_required_ports_bound: bool = true,
+    reject_extra_bindings: bool = true,
+    reject_wrong_surface: bool = true,
+    require_target_certificate_match: bool = true,
+    allow_replay_without_handlers: bool = false,
+    allow_fresh_without_transcript: bool = true,
+    allow_verify_without_transcript: bool = false,
+    require_portable_values: bool = false,
+    allow_native_only_values: bool = true,
+    require_frame_images_for_replay: bool = true,
+    allow_pending_adapters: bool = false,
+    allow_reject_adapters: bool = false,
+    allow_byte_adapters: bool = true,
+    allow_native_adapters: bool = true,
+    max_world_ports: ?usize = null,
+    max_bindings: ?usize = null,
+    policy_fingerprint: u64 = 0,
+
+    pub fn init(args: struct {
+        require_all_required_ports_bound: bool = true,
+        reject_extra_bindings: bool = true,
+        reject_wrong_surface: bool = true,
+        require_target_certificate_match: bool = true,
+        allow_replay_without_handlers: bool = false,
+        allow_fresh_without_transcript: bool = true,
+        allow_verify_without_transcript: bool = false,
+        require_portable_values: bool = false,
+        allow_native_only_values: bool = true,
+        require_frame_images_for_replay: bool = true,
+        allow_pending_adapters: bool = false,
+        allow_reject_adapters: bool = false,
+        allow_byte_adapters: bool = true,
+        allow_native_adapters: bool = true,
+        max_world_ports: ?usize = null,
+        max_bindings: ?usize = null,
+    }) @This() {
+        var result = @This(){
+            .require_all_required_ports_bound = args.require_all_required_ports_bound,
+            .reject_extra_bindings = args.reject_extra_bindings,
+            .reject_wrong_surface = args.reject_wrong_surface,
+            .require_target_certificate_match = args.require_target_certificate_match,
+            .allow_replay_without_handlers = args.allow_replay_without_handlers,
+            .allow_fresh_without_transcript = args.allow_fresh_without_transcript,
+            .allow_verify_without_transcript = args.allow_verify_without_transcript,
+            .require_portable_values = args.require_portable_values,
+            .allow_native_only_values = args.allow_native_only_values,
+            .require_frame_images_for_replay = args.require_frame_images_for_replay,
+            .allow_pending_adapters = args.allow_pending_adapters,
+            .allow_reject_adapters = args.allow_reject_adapters,
+            .allow_byte_adapters = args.allow_byte_adapters,
+            .allow_native_adapters = args.allow_native_adapters,
+            .max_world_ports = args.max_world_ports,
+            .max_bindings = args.max_bindings,
+        };
+        result.policy_fingerprint = fingerprintEnvironmentPolicy(result);
+        return result;
+    }
+
+    pub const strict_fresh = init(.{ .allow_replay_without_handlers = false });
+    pub const strict_replay = init(.{ .allow_replay_without_handlers = true, .allow_native_adapters = false, .require_portable_values = true, .allow_native_only_values = false });
+    pub const fresh_and_replay = init(.{ .allow_replay_without_handlers = true });
+    pub const verify_against_transcript = init(.{ .allow_verify_without_transcript = false, .require_portable_values = true, .allow_native_only_values = false });
+    pub const audit_only = init(.{ .require_all_required_ports_bound = false, .allow_replay_without_handlers = true });
+    pub const test_fixture = init(.{ .allow_replay_without_handlers = true, .allow_pending_adapters = true, .allow_reject_adapters = true });
+};
+
+pub const BindingPlan = struct {
+    plan_fingerprint: u64,
+    target_ref_fingerprint: u64,
+    world_surface_fingerprint: u64,
+    target_certificate_fingerprint: u64,
+    binding_count: usize,
+    dense_entries: []const Entry = &.{},
+    missing_port_ids: []const u32 = &.{},
+    extra_binding_ids: []const u32 = &.{},
+    accepted: bool,
+
+    pub const Entry = struct {
+        world_port_id: u32,
+        adapter_slot: usize,
+        binding_fingerprint: u64,
+        adapter_kind: AdapterKind,
+        value_policy: ValuePolicy,
+        authority_fingerprint: ?u64,
+        adapter_descriptor_fingerprint: u64,
+    };
+
+    pub fn lookup(self: @This(), world_port_id: u32) ?usize {
+        for (self.dense_entries) |entry| {
+            if (entry.world_port_id == world_port_id) return entry.adapter_slot;
+        }
+        return null;
+    }
+};
+
+pub const AcceptanceReport = struct {
+    report_fingerprint: u64,
+    target_ref_fingerprint: u64,
+    world_surface_fingerprint: u64,
+    target_certificate_fingerprint: u64,
+    requested_mode: Mode,
+    accepted: bool,
+    required_port_count: usize = 0,
+    bound_port_count: usize = 0,
+    missing_port_count: usize = 0,
+    extra_binding_count: usize = 0,
+    replay_only_port_count: usize = 0,
+    native_port_count: usize = 0,
+    byte_adapter_port_count: usize = 0,
+    portable_value_compatible_count: usize = 0,
+    native_only_value_count: usize = 0,
+    blockers: []const AcceptanceBlocker = &.{},
+    warnings: []const AcceptanceBlocker = &.{},
+    summary: []const u8 = "",
+};
+
+pub const EnvironmentCertificate = struct {
+    format_version: u32 = world_environment_certificate_format_version,
+    fingerprint_version: u32 = world_environment_certificate_fingerprint_version,
+    certificate_fingerprint: u64,
+    target_ref_fingerprint: u64,
+    world_surface_fingerprint: u64,
+    target_certificate_fingerprint: u64,
+    import_set_fingerprint: u64,
+    binding_plan_fingerprint: u64,
+    acceptance_report_fingerprint: u64,
+    policy_fingerprint: u64,
+    authority_descriptor_fingerprint: u64,
+    adapter_descriptor_fingerprint: u64,
+    accepted_modes: ModeMask = .fresh_replay_verify,
+    blocker_count: usize = 0,
+
+    pub const ModeMask = enum {
+        none,
+        fresh,
+        replay,
+        verify,
+        audit,
+        fresh_replay,
+        fresh_replay_verify,
+        all,
+    };
+};
+
+pub fn Environment(comptime Target: type, comptime Config: anytype) type {
+    comptime validateTarget(Target);
+    const bindings = if (@hasField(@TypeOf(Config), "bindings")) Config.bindings else .{};
+    const policy = if (@hasField(@TypeOf(Config), "policy")) Config.policy else EnvironmentPolicy.fresh_and_replay;
+    return struct {
+        pub const Policy = EnvironmentPolicy;
+        pub const TargetType = Target;
+        pub const target_ref = TargetRef.fromTarget(Target);
+        pub const import_set = ImportSet.fromTarget(Target);
+        pub const bindings_decl = bindings;
+        pub const policy_decl = policy;
+        pub const ports = boundPorts(bindings);
+        pub const dense_binding_entries = bindingPlanEntries(Target, bindings);
+        pub const machine_config = .{ .environment = @This() };
+
+        pub fn acceptanceReport(requested_mode: Mode, transcript_image_available: bool) AcceptanceReport {
+            return acceptanceReportFor(Target, bindings, policy, requested_mode, transcript_image_available);
+        }
+
+        pub fn bindingPlan() BindingPlan {
+            return bindingPlanForMode(.fresh, false);
+        }
+
+        pub fn bindingPlanForMode(requested_mode: Mode, transcript_image_available: bool) BindingPlan {
+            const report = acceptanceReport(requested_mode, transcript_image_available);
+            return bindingPlanFor(Target, bindings, policy, dense_binding_entries[0..], report.accepted);
+        }
+
+        pub fn certificate(requested_mode: Mode, transcript_image_available: bool) EnvironmentCertificate {
+            const report = acceptanceReport(requested_mode, transcript_image_available);
+            const plan = bindingPlanForMode(requested_mode, transcript_image_available);
+            var cert = EnvironmentCertificate{
+                .certificate_fingerprint = 0,
+                .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+                .world_surface_fingerprint = Target.WorldSurface.surface_fingerprint,
+                .target_certificate_fingerprint = Target.Certificate.certificate_fingerprint,
+                .import_set_fingerprint = import_set.import_set_fingerprint,
+                .binding_plan_fingerprint = plan.plan_fingerprint,
+                .acceptance_report_fingerprint = report.report_fingerprint,
+                .policy_fingerprint = policy.policy_fingerprint,
+                .authority_descriptor_fingerprint = authoritySetFingerprint(dense_binding_entries[0..]),
+                .adapter_descriptor_fingerprint = adapterSetFingerprint(dense_binding_entries[0..]),
+                .accepted_modes = acceptedModeMask(report),
+                .blocker_count = report.blockers.len,
+            };
+            cert.certificate_fingerprint = fingerprintEnvironmentCertificate(cert);
+            return cert;
+        }
+    };
+}
 
 pub const Frame = struct {
     pub const Status = ResponseStatus;
@@ -975,11 +1653,11 @@ pub const Transcript = struct {
         while (self.replay_cursor < replay_limit) : (self.replay_cursor += 1) {
             const index = self.replay_cursor;
             const event = &self.events.items[index];
-            if (event.kind != .port_responded and event.kind != .frame_responded) continue;
+            if (!eventKindIsSourceResponse(event.kind)) continue;
             if (event.status) |status| {
                 if (status != .responded) return Error.ReplayMissing;
             }
-            if (event.kind == .frame_responded and event.response_frame == null) return Error.ReplayMissing;
+            if ((event.kind == .frame_responded or event.kind == .frame_replayed) and event.response_frame == null) return Error.ReplayMissing;
             if (event.response_frame) |frame| {
                 if (frame.status != .responded) return Error.ReplayMissing;
             }
@@ -1001,7 +1679,7 @@ pub const Transcript = struct {
         const replay_limit = self.replay_limit orelse self.events.items.len;
         var index = self.replay_cursor;
         while (index < replay_limit) : (index += 1) {
-            if (self.events.items[index].kind == .port_responded or self.events.items[index].kind == .frame_responded) return Error.ReplayUnusedEvent;
+            if (eventKindIsSourceResponse(self.events.items[index].kind)) return Error.ReplayUnusedEvent;
         }
     }
 
@@ -1054,7 +1732,9 @@ pub const Transcript = struct {
                     latest_run_failed = failed_source_run;
                 },
                 .port_responded,
+                .port_replayed,
                 .frame_responded,
+                .frame_replayed,
                 => {
                     if (active_start != null) {
                         active_has_port_event = true;
@@ -1062,11 +1742,9 @@ pub const Transcript = struct {
                     }
                 },
                 .port_requested,
-                .port_replayed,
                 .port_rejected,
                 .port_failed,
                 .frame_requested,
-                .frame_replayed,
                 .frame_verified,
                 .frame_rejected,
                 .frame_failed,
@@ -1450,7 +2128,9 @@ pub const TranscriptImage = struct {
                     latest_run_failed = failed_source_run;
                 },
                 .port_responded,
+                .port_replayed,
                 .frame_responded,
+                .frame_replayed,
                 => {
                     if (active_start != null) {
                         active_has_port_event = true;
@@ -1458,11 +2138,9 @@ pub const TranscriptImage = struct {
                     }
                 },
                 .port_requested,
-                .port_replayed,
                 .port_rejected,
                 .port_failed,
                 .frame_requested,
-                .frame_replayed,
                 .frame_verified,
                 .frame_rejected,
                 .frame_failed,
@@ -1478,6 +2156,81 @@ pub const TranscriptImage = struct {
         if (active_start != null or latest_run_failed) return error.ReplayMissing;
         self.replay_cursor = (selected_start orelse return error.ReplayMissing) + 1;
         self.replay_limit = selected_limit orelse return error.ReplayMissing;
+    }
+
+    pub fn prepareReplayPrefixForPendingRequest(
+        self: *@This(),
+        expected_world_surface_fingerprint: u64,
+        expected_target_certificate_fingerprint: u64,
+        pending_request_frame_fingerprint: u64,
+    ) !void {
+        if (self.world_surface_fingerprint != expected_world_surface_fingerprint) return error.ReplaySurfaceMismatch;
+        if (self.target_certificate_fingerprint != expected_target_certificate_fingerprint) return error.ReplayTargetCertificateMismatch;
+        var active_start: ?usize = null;
+        var active_is_source_run = false;
+        var active_pending_index: ?usize = null;
+        var active_pending_fingerprint: ?u64 = null;
+        for (self.events, 0..) |event, index| {
+            switch (event.kind) {
+                .run_started => {
+                    if (active_start != null) return error.ReplayMissing;
+                    if (event.world_surface_fingerprint != expected_world_surface_fingerprint) return error.ReplaySurfaceMismatch;
+                    if (event.target_certificate_fingerprint != expected_target_certificate_fingerprint) return error.ReplayTargetCertificateMismatch;
+                    active_start = index;
+                    active_is_source_run = event.source_run;
+                    active_pending_index = null;
+                    active_pending_fingerprint = null;
+                },
+                .run_completed,
+                .run_failed,
+                => {
+                    if (active_start == null) continue;
+                    if (event.world_surface_fingerprint != expected_world_surface_fingerprint) return error.ReplaySurfaceMismatch;
+                    if (event.target_certificate_fingerprint != expected_target_certificate_fingerprint) return error.ReplayTargetCertificateMismatch;
+                    active_start = null;
+                    active_is_source_run = false;
+                    active_pending_index = null;
+                    active_pending_fingerprint = null;
+                },
+                .port_requested,
+                .frame_requested,
+                => {
+                    _ = active_start orelse continue;
+                    if (!active_is_source_run) continue;
+                    const request_frame = event.request_frame orelse return error.ReplayMissing;
+                    active_pending_index = index;
+                    active_pending_fingerprint = request_frame.frame_fingerprint;
+                },
+                .port_responded,
+                .port_replayed,
+                .port_rejected,
+                .port_failed,
+                .frame_responded,
+                .frame_replayed,
+                .frame_verified,
+                .frame_rejected,
+                .frame_failed,
+                => {
+                    if (active_start != null and active_is_source_run) {
+                        active_pending_index = null;
+                        active_pending_fingerprint = null;
+                    }
+                },
+                else => {},
+            }
+        }
+        const start = active_start orelse return error.ReplayMissing;
+        const pending_index = active_pending_index orelse return error.ReplayMissing;
+        if ((active_pending_fingerprint orelse return error.ReplayMissing) != pending_request_frame_fingerprint) return error.ReplayMissing;
+        self.replay_cursor = start + 1;
+        self.replay_limit = pending_index;
+    }
+
+    pub fn validateValuePolicy(self: *const @This(), policy: ValuePolicy) !void {
+        for (self.events) |event| {
+            if (event.request_frame) |frame| try validateRequestFramePolicy(frame, policy);
+            if (event.response_frame) |frame| try validateResponseFramePolicy(frame, policy);
+        }
     }
 
     pub fn nextResponse(
@@ -1658,6 +2411,557 @@ pub const AuditImage = struct {
     }
 };
 
+pub const RunState = struct {
+    run_state_fingerprint: u64,
+    target_ref_fingerprint: u64,
+    transcript_image_fingerprint: ?u64 = null,
+    branch_id: u64 = 0,
+    checkpoint_fingerprint: ?u64 = null,
+    pending_request_fingerprint: ?u64 = null,
+    final_response_fingerprint: ?u64 = null,
+    final_value_image_fingerprint: ?u64 = null,
+    turn_index: usize = 0,
+    status: Status = .not_started,
+
+    pub const Status = enum {
+        not_started,
+        running,
+        parked_on_port,
+        completed,
+        failed,
+    };
+
+    pub fn init(args: struct {
+        target_ref_fingerprint: u64,
+        transcript_image_fingerprint: ?u64 = null,
+        branch_id: u64 = 0,
+        checkpoint_fingerprint: ?u64 = null,
+        pending_request_fingerprint: ?u64 = null,
+        final_response_fingerprint: ?u64 = null,
+        final_value_image_fingerprint: ?u64 = null,
+        turn_index: usize = 0,
+        status: Status = .not_started,
+    }) @This() {
+        var result = @This(){
+            .run_state_fingerprint = 0,
+            .target_ref_fingerprint = args.target_ref_fingerprint,
+            .transcript_image_fingerprint = args.transcript_image_fingerprint,
+            .branch_id = args.branch_id,
+            .checkpoint_fingerprint = args.checkpoint_fingerprint,
+            .pending_request_fingerprint = args.pending_request_fingerprint,
+            .final_response_fingerprint = args.final_response_fingerprint,
+            .final_value_image_fingerprint = args.final_value_image_fingerprint,
+            .turn_index = args.turn_index,
+            .status = args.status,
+        };
+        result.run_state_fingerprint = fingerprintRunState(result);
+        return result;
+    }
+};
+
+pub const RunImage = struct {
+    format_version: u32 = world_run_image_format_version,
+    fingerprint_version: u32 = world_run_image_fingerprint_version,
+    run_image_fingerprint: u64,
+    kind: Kind,
+    target_ref: TargetRef,
+    owns_target_ref_bytes: bool = false,
+    import_set_fingerprint: u64,
+    transcript_image: ?TranscriptImage = null,
+    owns_transcript_image: bool = false,
+    current_state: RunState,
+    checkpoints: []const Timeline.Checkpoint = &.{},
+    branches: []Timeline.Branch = &.{},
+    owns_checkpoints: bool = false,
+    owns_branches: bool = false,
+    owns_branch_labels: bool = false,
+    pending_request_frame: ?Frame.Request = null,
+    owns_pending_request_frame: bool = false,
+    final_result_image: ?Frame.ValueImage = null,
+    owns_final_result_image: bool = false,
+    environment_certificate_fingerprint: ?u64 = null,
+    acceptance_report_fingerprint: ?u64 = null,
+    audit_image_fingerprint: ?u64 = null,
+    metadata: []const u8 = "",
+    owns_metadata: bool = false,
+
+    pub const Kind = enum {
+        reference_target_run,
+        full_target_run,
+        replay_only_run,
+        parked_run,
+        completed_run,
+        branched_run,
+    };
+
+    pub const ValidateOptions = struct {
+        max_image_bytes: usize = world_max_decoded_byte_field_len,
+        max_timeline_events: usize = 1_000_000,
+        max_branches: usize = 4096,
+        max_checkpoints: usize = 4096,
+        require_portable_values: bool = false,
+        allow_reference_target: bool = true,
+        require_known_target: bool = false,
+    };
+
+    pub fn init(args: struct {
+        kind: Kind,
+        target_ref: TargetRef,
+        import_set_fingerprint: u64,
+        transcript_image: ?TranscriptImage = null,
+        current_state: RunState,
+        checkpoints: []const Timeline.Checkpoint = &.{},
+        branches: []Timeline.Branch = &.{},
+        pending_request_frame: ?Frame.Request = null,
+        final_result_image: ?Frame.ValueImage = null,
+        environment_certificate_fingerprint: ?u64 = null,
+        acceptance_report_fingerprint: ?u64 = null,
+        audit_image_fingerprint: ?u64 = null,
+        metadata: []const u8 = "",
+    }) @This() {
+        var result = @This(){
+            .run_image_fingerprint = 0,
+            .kind = args.kind,
+            .target_ref = args.target_ref,
+            .import_set_fingerprint = args.import_set_fingerprint,
+            .transcript_image = args.transcript_image,
+            .current_state = args.current_state,
+            .checkpoints = args.checkpoints,
+            .branches = args.branches,
+            .pending_request_frame = args.pending_request_frame,
+            .final_result_image = args.final_result_image,
+            .environment_certificate_fingerprint = args.environment_certificate_fingerprint,
+            .acceptance_report_fingerprint = args.acceptance_report_fingerprint,
+            .audit_image_fingerprint = args.audit_image_fingerprint,
+            .metadata = args.metadata,
+        };
+        result.run_image_fingerprint = fingerprintRunImage(result);
+        return result;
+    }
+
+    pub fn fromTranscriptImage(comptime Target: type, image: TranscriptImage, kind: Kind) @This() {
+        const target_ref = TargetRef.fromTarget(Target);
+        const import_set = ImportSet.fromTarget(Target);
+        const state = RunState.init(.{
+            .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+            .transcript_image_fingerprint = image.transcript_image_fingerprint,
+            .status = switch (image.final_status) {
+                .running => .running,
+                .completed => .completed,
+                .failed => .failed,
+            },
+        });
+        return init(.{
+            .kind = kind,
+            .target_ref = target_ref,
+            .import_set_fingerprint = import_set.import_set_fingerprint,
+            .transcript_image = image,
+            .current_state = state,
+        });
+    }
+
+    pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+        if (self.owns_target_ref_bytes) {
+            if (self.target_ref.target_label) |label| allocator.free(@constCast(label));
+            allocator.free(@constCast(self.target_ref.metadata));
+        }
+        if (self.owns_transcript_image) {
+            if (self.transcript_image) |*image| image.deinit(allocator);
+        }
+        if (self.owns_pending_request_frame) {
+            if (self.pending_request_frame) |*frame| frame.deinit(allocator);
+        }
+        if (self.owns_final_result_image) {
+            if (self.final_result_image) |*image| image.deinit(allocator);
+        }
+        if (self.owns_checkpoints) allocator.free(self.checkpoints);
+        if (self.owns_branch_labels) {
+            for (self.branches) |branch| allocator.free(@constCast(branch.branch_label));
+        }
+        if (self.owns_branches) allocator.free(self.branches);
+        if (self.owns_metadata) allocator.free(@constCast(self.metadata));
+        self.* = undefined;
+    }
+
+    pub fn validate(self: @This(), options: ValidateOptions) !void {
+        if (!options.allow_reference_target and self.kind == .reference_target_run) return error.InvalidFrameEncoding;
+        if (options.require_known_target and self.kind == .reference_target_run) return error.InvalidFrameEncoding;
+        if (self.metadata.len > options.max_image_bytes) return error.InvalidFrameEncoding;
+        if (self.target_ref.target_label) |label| {
+            if (label.len > options.max_image_bytes) return error.InvalidFrameEncoding;
+        }
+        if (self.target_ref.metadata.len > options.max_image_bytes) return error.InvalidFrameEncoding;
+        if (self.checkpoints.len > options.max_checkpoints) return error.InvalidFrameEncoding;
+        if (self.branches.len > options.max_branches) return error.InvalidFrameEncoding;
+        const value_policy = valuePolicyForRunImageValidation(options);
+        if (self.transcript_image) |image| {
+            if (image.events.len > options.max_timeline_events) return error.InvalidFrameEncoding;
+            if (image.world_surface_fingerprint != self.target_ref.world_surface_fingerprint) return error.TranscriptImageSurfaceMismatch;
+            if (image.target_certificate_fingerprint != self.target_ref.target_certificate_fingerprint) return error.TargetCertificateMismatch;
+            if (self.current_state.transcript_image_fingerprint != image.transcript_image_fingerprint) return error.HandoffTargetMismatch;
+            switch (image.final_status) {
+                .completed => if (self.current_state.status != .completed) return error.HandoffTargetMismatch,
+                .failed => if (self.current_state.status != .failed) return error.HandoffTargetMismatch,
+                .running => if (self.current_state.status != .running and self.current_state.status != .parked_on_port) return error.HandoffTargetMismatch,
+            }
+            try image.validateValuePolicy(value_policy);
+        }
+        try validateRunImageKindState(self);
+        if (self.current_state.target_ref_fingerprint != self.target_ref.target_ref_fingerprint) return error.HandoffTargetMismatch;
+        if (self.current_state.checkpoint_fingerprint) |checkpoint_fingerprint| {
+            var found_checkpoint = false;
+            for (self.checkpoints) |checkpoint| {
+                if (checkpoint.checkpoint_fingerprint == checkpoint_fingerprint) {
+                    found_checkpoint = true;
+                    break;
+                }
+            }
+            if (!found_checkpoint and (self.kind == .branched_run or self.checkpoints.len != 0)) return error.HandoffCheckpointMismatch;
+        }
+        for (self.checkpoints) |checkpoint| {
+            if (checkpoint.world_surface_fingerprint != self.target_ref.world_surface_fingerprint) return error.HandoffCheckpointMismatch;
+            if (checkpoint.target_certificate_fingerprint != self.target_ref.target_certificate_fingerprint) return error.HandoffCheckpointMismatch;
+        }
+        if (self.kind == .branched_run and self.current_state.branch_id != 0) {
+            var found_branch = false;
+            for (self.branches) |branch| {
+                if (branch.branch_id == self.current_state.branch_id) {
+                    found_branch = true;
+                    break;
+                }
+            }
+            if (!found_branch) return error.HandoffCheckpointMismatch;
+        }
+        for (self.branches) |branch| {
+            if (branch.branch_label.len > options.max_image_bytes) return error.InvalidFrameEncoding;
+            var found_checkpoint = false;
+            for (self.checkpoints) |checkpoint| {
+                if (checkpoint.checkpoint_fingerprint == branch.checkpoint_fingerprint) {
+                    found_checkpoint = true;
+                    break;
+                }
+            }
+            if (!found_checkpoint) return error.HandoffCheckpointMismatch;
+        }
+        if (self.current_state.status == .parked_on_port and self.pending_request_frame == null) return error.HandoffPendingFrameMismatch;
+        if (self.pending_request_frame) |frame| {
+            try validateRequestFrameImage(frame);
+            try validateRequestFramePolicy(frame, value_policy);
+            if (frame.world_surface_fingerprint != self.target_ref.world_surface_fingerprint) return error.FrameSurfaceMismatch;
+            if (frame.target_certificate_fingerprint != self.target_ref.target_certificate_fingerprint) return error.FrameTargetCertificateMismatch;
+            if (self.current_state.status == .parked_on_port) {
+                const fingerprint = self.current_state.pending_request_fingerprint orelse return error.HandoffPendingFrameMismatch;
+                if (frame.frame_fingerprint != fingerprint) return error.HandoffPendingFrameMismatch;
+                if (frame.turn_index != self.current_state.turn_index) return error.HandoffPendingFrameMismatch;
+            } else if (self.current_state.pending_request_fingerprint) |fingerprint| {
+                if (frame.frame_fingerprint != fingerprint) return error.HandoffPendingFrameMismatch;
+            }
+        }
+        if (self.final_result_image) |image| {
+            try validateValueImage(image);
+            try validateValueImagePolicy(image, value_policy);
+            if (self.current_state.final_value_image_fingerprint != image.value_image_fingerprint) return error.InvalidFrameEncoding;
+        }
+        if (fingerprintRunState(self.current_state) != self.current_state.run_state_fingerprint) return error.InvalidFrameEncoding;
+        if (fingerprintRunImage(self) != self.run_image_fingerprint) return error.InvalidFrameEncoding;
+    }
+
+    pub fn encode(self: @This(), allocator: std.mem.Allocator) ![]const u8 {
+        var out: std.ArrayList(u8) = .empty;
+        errdefer out.deinit(allocator);
+        try writeU32(&out, allocator, self.format_version);
+        try writeU32(&out, allocator, self.fingerprint_version);
+        try writeU64(&out, allocator, self.run_image_fingerprint);
+        try writeU8(&out, allocator, @intFromEnum(self.kind));
+        try encodeTargetRef(&out, allocator, self.target_ref);
+        try writeU64(&out, allocator, self.import_set_fingerprint);
+        try encodeRunState(&out, allocator, self.current_state);
+        try writeOptionalU64(&out, allocator, if (self.transcript_image) |image| image.transcript_image_fingerprint else null);
+        if (self.transcript_image) |image| {
+            try writeBool(&out, allocator, true);
+            const encoded = try image.encode(allocator);
+            defer allocator.free(encoded);
+            try writeBytes(&out, allocator, encoded);
+        } else {
+            try writeBool(&out, allocator, false);
+        }
+        try writeU64(&out, allocator, self.checkpoints.len);
+        for (self.checkpoints) |checkpoint| encodeCheckpoint(&out, allocator, checkpoint) catch |err| return err;
+        try writeU64(&out, allocator, self.branches.len);
+        for (self.branches) |branch| encodeBranch(&out, allocator, branch) catch |err| return err;
+        if (self.pending_request_frame) |frame| {
+            try writeBool(&out, allocator, true);
+            const encoded = try frame.encode(allocator);
+            defer allocator.free(encoded);
+            try writeBytes(&out, allocator, encoded);
+        } else {
+            try writeBool(&out, allocator, false);
+        }
+        try writeOptionalValueImage(&out, allocator, self.final_result_image);
+        try writeOptionalU64(&out, allocator, self.environment_certificate_fingerprint);
+        try writeOptionalU64(&out, allocator, self.acceptance_report_fingerprint);
+        try writeOptionalU64(&out, allocator, self.audit_image_fingerprint);
+        try writeBytes(&out, allocator, self.metadata);
+        return out.toOwnedSlice(allocator);
+    }
+
+    pub fn decode(allocator: std.mem.Allocator, bytes: []const u8) !@This() {
+        if (bytes.len > world_max_decoded_byte_field_len) return error.InvalidFrameEncoding;
+        var cursor: usize = 0;
+        const format_version = try readU32(bytes, &cursor);
+        if (format_version != world_run_image_format_version) return error.InvalidFrameEncoding;
+        const fingerprint_version = try readU32(bytes, &cursor);
+        if (fingerprint_version != world_run_image_fingerprint_version) return error.InvalidFrameEncoding;
+        const run_image_fingerprint = try readU64(bytes, &cursor);
+        const kind = try enumFromByte(Kind, try readU8(bytes, &cursor));
+        const target_ref = try decodeTargetRef(allocator, bytes, &cursor);
+        errdefer {
+            if (target_ref.target_label) |label| allocator.free(@constCast(label));
+            allocator.free(@constCast(target_ref.metadata));
+        }
+        const import_set_fingerprint = try readU64(bytes, &cursor);
+        const current_state = try decodeRunState(bytes, &cursor);
+        const encoded_transcript_image_fingerprint = try readOptionalU64(bytes, &cursor);
+        var transcript_image: ?TranscriptImage = null;
+        if (try readBool(bytes, &cursor)) {
+            const encoded = try readBytesOwned(allocator, bytes, &cursor);
+            defer allocator.free(encoded);
+            var decoded_transcript_image = try TranscriptImage.decode(allocator, encoded);
+            errdefer decoded_transcript_image.deinit(allocator);
+            if (encoded_transcript_image_fingerprint != decoded_transcript_image.transcript_image_fingerprint) return error.InvalidFrameEncoding;
+            transcript_image = decoded_transcript_image;
+        } else if (encoded_transcript_image_fingerprint != null) {
+            return error.InvalidFrameEncoding;
+        }
+        errdefer if (transcript_image) |*image| image.deinit(allocator);
+        const checkpoint_count = try readU64AsUsize(bytes, &cursor);
+        if (checkpoint_count > (ValidateOptions{}).max_checkpoints) return error.InvalidFrameEncoding;
+        if (checkpoint_count > (bytes.len - cursor) / 8) return error.InvalidFrameEncoding;
+        const checkpoints = try allocator.alloc(Timeline.Checkpoint, checkpoint_count);
+        errdefer allocator.free(checkpoints);
+        for (checkpoints) |*checkpoint| checkpoint.* = try decodeCheckpoint(bytes, &cursor);
+        const branch_count = try readU64AsUsize(bytes, &cursor);
+        if (branch_count > (ValidateOptions{}).max_branches) return error.InvalidFrameEncoding;
+        if (branch_count > (bytes.len - cursor) / 8) return error.InvalidFrameEncoding;
+        const branches = try allocator.alloc(Timeline.Branch, branch_count);
+        errdefer allocator.free(branches);
+        var initialized_branches: usize = 0;
+        errdefer for (branches[0..initialized_branches]) |branch| allocator.free(@constCast(branch.branch_label));
+        for (branches) |*branch| {
+            branch.* = try decodeBranch(allocator, bytes, &cursor);
+            initialized_branches += 1;
+        }
+        var pending_request_frame: ?Frame.Request = null;
+        if (try readBool(bytes, &cursor)) {
+            const encoded = try readBytesOwned(allocator, bytes, &cursor);
+            defer allocator.free(encoded);
+            pending_request_frame = try Frame.Request.decode(allocator, encoded);
+        }
+        errdefer if (pending_request_frame) |*frame| frame.deinit(allocator);
+        var final_result_image = try readOptionalValueImage(allocator, bytes, &cursor);
+        errdefer if (final_result_image) |*image| image.deinit(allocator);
+        const environment_certificate_fingerprint = try readOptionalU64(bytes, &cursor);
+        const acceptance_report_fingerprint = try readOptionalU64(bytes, &cursor);
+        const audit_image_fingerprint = try readOptionalU64(bytes, &cursor);
+        const metadata = try readBytesOwned(allocator, bytes, &cursor);
+        errdefer allocator.free(metadata);
+        if (cursor != bytes.len) return error.InvalidFrameEncoding;
+        var result = @This(){
+            .run_image_fingerprint = run_image_fingerprint,
+            .kind = kind,
+            .target_ref = target_ref,
+            .owns_target_ref_bytes = true,
+            .import_set_fingerprint = import_set_fingerprint,
+            .transcript_image = transcript_image,
+            .owns_transcript_image = transcript_image != null,
+            .current_state = current_state,
+            .checkpoints = checkpoints,
+            .branches = branches,
+            .owns_checkpoints = true,
+            .owns_branches = true,
+            .owns_branch_labels = true,
+            .pending_request_frame = pending_request_frame,
+            .owns_pending_request_frame = pending_request_frame != null,
+            .final_result_image = final_result_image,
+            .owns_final_result_image = final_result_image != null,
+            .environment_certificate_fingerprint = environment_certificate_fingerprint,
+            .acceptance_report_fingerprint = acceptance_report_fingerprint,
+            .audit_image_fingerprint = audit_image_fingerprint,
+            .metadata = metadata,
+            .owns_metadata = true,
+        };
+        result.validate(.{}) catch |err| return err;
+        transcript_image = null;
+        pending_request_frame = null;
+        final_result_image = null;
+        return result;
+    }
+};
+
+fn validateRunImageKindState(image: RunImage) !void {
+    switch (image.kind) {
+        .completed_run => {
+            if (image.current_state.status != .completed) return error.HandoffTargetMismatch;
+        },
+        .replay_only_run => switch (image.current_state.status) {
+            .completed, .failed => {},
+            else => return error.HandoffTargetMismatch,
+        },
+        .parked_run => {
+            if (image.current_state.status != .parked_on_port) return error.HandoffPendingFrameMismatch;
+        },
+        else => {},
+    }
+}
+
+pub const HandoffMode = enum {
+    accept_fresh,
+    accept_replay,
+    accept_verify,
+    inspect_only,
+};
+
+pub const Handoff = struct {
+    allocator: std.mem.Allocator,
+    run_image: RunImage,
+
+    pub fn fromRunImage(allocator: std.mem.Allocator, bytes: []const u8) !@This() {
+        var image = try RunImage.decode(allocator, bytes);
+        errdefer image.deinit(allocator);
+        try image.validate(.{});
+        return .{ .allocator = allocator, .run_image = image };
+    }
+
+    pub fn deinit(self: *@This()) void {
+        self.run_image.deinit(self.allocator);
+        self.* = undefined;
+    }
+
+    pub fn preflight(self: *@This(), comptime Target: type, comptime Env: type, mode: HandoffMode) AcceptanceReport {
+        if (!self.run_image.target_ref.matchesTarget(Target)) {
+            return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.HandoffTargetMismatch});
+        }
+        if (self.run_image.import_set_fingerprint != Env.import_set.import_set_fingerprint) {
+            return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.HandoffTargetMismatch});
+        }
+        const has_transcript = self.run_image.transcript_image != null;
+        const report = Env.acceptanceReport(modeToRunMode(mode), has_transcript);
+        if (!report.accepted) return report;
+        if (mode == .accept_fresh and
+            (self.run_image.current_state.status != .parked_on_port or self.run_image.pending_request_frame == null))
+        {
+            return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.HandoffPendingFrameMismatch});
+        }
+        if (mode == .accept_fresh) {
+            const pending_frame = self.run_image.pending_request_frame.?;
+            const pending_policy = valuePolicyForEnvironmentPort(Env, pending_frame.world_port_id, .request) catch |err| {
+                return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{environmentValidationBlocker(err)});
+            };
+            validateTransferredRequestFramePolicy(pending_frame, pending_policy) catch |err| {
+                return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{environmentValidationBlocker(err)});
+            };
+            if (self.run_image.transcript_image) |*image| {
+                validateTranscriptImageForEnvironment(Env, image) catch |err| {
+                    return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{environmentValidationBlocker(err)});
+                };
+                image.prepareReplayPrefixForPendingRequest(
+                    Target.WorldSurface.surface_fingerprint,
+                    Target.Certificate.certificate_fingerprint,
+                    pending_frame.frame_fingerprint,
+                ) catch {
+                    image.resetReplay();
+                    return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.ReplaySourceMissing});
+                };
+                image.resetReplay();
+            } else if (pending_frame.turn_index != 0) {
+                return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.TranscriptImageRequired});
+            }
+        }
+        if (mode == .accept_replay or mode == .accept_verify) {
+            const image = if (self.run_image.transcript_image) |*image|
+                image
+            else
+                return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.TranscriptImageRequired});
+            validateTranscriptImageForEnvironment(Env, image) catch |err| {
+                return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{environmentValidationBlocker(err)});
+            };
+            image.resetReplay();
+            image.validateReplayRun(
+                Target.WorldSurface.surface_fingerprint,
+                Target.Certificate.certificate_fingerprint,
+            ) catch {
+                image.resetReplay();
+                return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.ReplaySourceMissing});
+            };
+            image.resetReplay();
+        }
+        return report;
+    }
+
+    pub fn validatePendingFrame(self: *@This(), frame: Frame.Request) !void {
+        const expected = self.run_image.pending_request_frame orelse return error.HandoffPendingFrameMismatch;
+        if (expected.frame_fingerprint != frame.frame_fingerprint) return error.HandoffPendingFrameMismatch;
+    }
+
+    pub fn @"resume"(
+        self: *@This(),
+        comptime Target: type,
+        comptime Env: type,
+        runtime: anytype,
+        args: anytype,
+        options: anytype,
+        mode: HandoffMode,
+    ) !Machine(Target, Env.machine_config).Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)) {
+        if (mode != .accept_fresh) return Error.InvalidMode;
+        const report = self.preflight(Target, Env, mode);
+        if (!report.accepted) return acceptanceError(report);
+        if (self.run_image.current_state.status != .parked_on_port) return error.HandoffPendingFrameMismatch;
+        const pending_frame = self.run_image.pending_request_frame orelse return error.HandoffPendingFrameMismatch;
+        const MachineType = Machine(Target, Env.machine_config);
+        var run = try MachineType.startWithHandoffTranscript(runtime, args, options);
+        errdefer run.deinit();
+        var resume_committed = false;
+        errdefer if (!resume_committed) run.markRunFailed() catch {};
+        if (self.run_image.transcript_image) |*image| {
+            try image.prepareReplayPrefixForPendingRequest(
+                Target.WorldSurface.surface_fingerprint,
+                Target.Certificate.certificate_fingerprint,
+                pending_frame.frame_fingerprint,
+            );
+        }
+        while (true) {
+            const step = try run.nextFrame();
+            switch (step) {
+                .port_request => |request_frame| {
+                    var request = request_frame;
+                    defer request.deinit(run.allocator);
+                    if (pending_frame.frame_fingerprint == request.frame_fingerprint) {
+                        if (self.run_image.transcript_image) |*image| {
+                            image.assertReplayComplete() catch |err| {
+                                run.audit.replay_mismatch_count += 1;
+                                return err;
+                            };
+                        }
+                        try self.validatePendingFrame(request);
+                        break;
+                    }
+                    const response = if (self.run_image.transcript_image) |*image|
+                        image.nextResponse(request.replay_key_seed, Target.Certificate.certificate_fingerprint, .@"resume") catch |err| {
+                            run.audit.replay_mismatch_count += 1;
+                            return err;
+                        }
+                    else
+                        return error.HandoffPendingFrameMismatch;
+                    try run.resumeReplayedFrame(response.*);
+                },
+                else => return error.HandoffPendingFrameMismatch,
+            }
+        }
+        resume_committed = true;
+        return run;
+    }
+};
+
 pub fn PortRequest(comptime Target: type, comptime Descriptor: type) type {
     const world_port_id = descriptorWorldPortId(Target, Descriptor);
     return struct {
@@ -1777,6 +3081,7 @@ pub fn portByIdWithOptions(comptime Target: type, comptime id: u32, comptime Sit
 pub fn Machine(comptime Target: type, comptime Config: anytype) type {
     comptime validateTarget(Target);
     comptime validateConfig(Target, Config);
+    const ConfigPorts = machineConfigPorts(Config);
     return struct {
         pub const target_world_surface_fingerprint = Target.WorldSurface.surface_fingerprint;
         pub const target_certificate_fingerprint = Target.Certificate.certificate_fingerprint;
@@ -1804,6 +3109,10 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
 
         pub fn start(runtime: anytype, args: anytype, options: anytype) !Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)) {
             return Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)).start(runtime, args, options);
+        }
+
+        fn startWithHandoffTranscript(runtime: anytype, args: anytype, options: anytype) !Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)) {
+            return Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)).startWithTranscriptAvailable(runtime, args, options, true);
         }
 
         pub fn run(runtime: anytype, args: anytype, options: anytype) !Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)).Result {
@@ -1886,6 +3195,10 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 }
 
                 fn start(runtime: RuntimePtr, args: anytype, options: Options) !Self {
+                    return startWithTranscriptAvailable(runtime, args, options, false);
+                }
+
+                fn startWithTranscriptAvailable(runtime: RuntimePtr, args: anytype, options: Options, comptime handoff_transcript_available: bool) !Self {
                     const allocator = @field(options, "allocator");
                     const mode_value: Mode = if (@hasField(Options, "mode")) @field(options, "mode") else .fresh;
                     const effective = if (mode_value == .audit and @hasField(Options, "audit_source"))
@@ -1907,10 +3220,25 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     }
                     if (modeConsumesTranscript(effective) and
                         @hasField(Options, "transcript_image") and
-                        Config.ports.len == 0 and
+                        ConfigPorts.len == 0 and
                         Target.WorldPortTable.entries.len != 0)
                     {
                         return Error.MissingHandler;
+                    }
+                    if (comptime @hasField(@TypeOf(Config), "environment")) {
+                        const transcript_available = comptime handoff_transcript_available or
+                            @hasField(Options, "transcript_image") or
+                            (@hasField(Options, "transcript") and Config.environment.policy_decl.allow_native_adapters);
+                        const report = Config.environment.acceptanceReport(effective, transcript_available);
+                        if (!report.accepted) return acceptanceError(report);
+                        if (modeConsumesTranscript(effective)) {
+                            if (comptime @hasField(Options, "transcript_image")) {
+                                try validateTranscriptImageForEnvironment(Config.environment, @field(options, "transcript_image"));
+                            }
+                            if (comptime @hasField(Options, "transcript")) {
+                                try validateTranscriptForEnvironment(Config.environment, @field(options, "transcript"));
+                            }
+                        }
                     }
                     var session = try Program.Session.startWithArgs(runtime, Program.Handlers{}, args);
                     errdefer session.deinit();
@@ -2077,6 +3405,14 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 }
 
                 pub fn resumeFrame(self: *Self, response_frame: Frame.Response) !void {
+                    try self.resumeFrameWithProvenance(response_frame, false);
+                }
+
+                fn resumeReplayedFrame(self: *Self, response_frame: Frame.Response) !void {
+                    try self.resumeFrameWithProvenance(response_frame, true);
+                }
+
+                fn resumeFrameWithProvenance(self: *Self, response_frame: Frame.Response, comptime replayed: bool) !void {
                     if (response_frame.status == .pending) return error.HandlerPending;
                     const request = self.pending_request orelse return error.UnknownResidualSite;
                     const world_port_id = self.pending_port_id orelse return error.UnknownWorldPort;
@@ -2108,7 +3444,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         inline 0...Target.WorldPortTable.entries.len - 1 => |id| {
                             const Handler = comptime handlerForWorldPortId(Target, Config, @intCast(id));
                             if (Handler) |Decl| {
-                                try self.resumeFrameDecl(Decl, request, frame, response_frame);
+                                try self.resumeFrameDecl(Decl, request, frame, response_frame, replayed);
                                 self.pending_request = null;
                                 self.pending_port_id = null;
                                 return;
@@ -2171,7 +3507,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     return frame;
                 }
 
-                fn resumeFrameDecl(self: *Self, comptime Decl: type, request: Request, request_frame: Frame.Request, response_frame: Frame.Response) !void {
+                fn resumeFrameDecl(self: *Self, comptime Decl: type, request: Request, request_frame: Frame.Request, response_frame: Frame.Response, comptime replayed: bool) !void {
                     const typed_request = try request.as(Decl.SiteType);
                     if (response_frame.response_kind != .@"resume") return error.VerifyResponseKindMismatch;
                     const value = try response_frame.decodeValue(self.allocator, Decl.Response);
@@ -2184,7 +3520,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     defer if (resolved_response_frame) |*frame| frame.deinit(self.allocator);
                     const effective_response_frame = if (resolved_response_frame) |frame| frame else response_frame;
                     var stored: ?StoredValue = null;
-                    if (comptime @hasField(Options, "transcript")) {
+                    if (comptime !replayed and @hasField(Options, "transcript")) {
                         stored = try StoredValue.init(@field(self.options, "transcript").allocator, value);
                     }
                     defer if (stored) |*owned| {
@@ -2203,9 +3539,24 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         retained.deinit(self.allocator);
                     };
                     const retained_value = try self.retained_values.items[self.retained_values.items.len - 1].borrow(Decl.Response);
-                    try appendPortEvent(Target, self.options, .frame_responded, Decl.world_port_id, request.trace(), response_trace.fingerprint, effective_response_frame.response_kind, stored, null, effective_response_frame);
+                    try appendPortEvent(
+                        Target,
+                        self.options,
+                        if (replayed) .frame_replayed else .frame_responded,
+                        Decl.world_port_id,
+                        request.trace(),
+                        response_trace.fingerprint,
+                        effective_response_frame.response_kind,
+                        stored,
+                        null,
+                        effective_response_frame,
+                    );
                     stored = null;
-                    self.audit.fresh_response_count += 1;
+                    if (replayed) {
+                        self.audit.replayed_response_count += 1;
+                    } else {
+                        self.audit.fresh_response_count += 1;
+                    }
                     self.session.resumeTyped(typed_request, retained_value) catch |err| {
                         self.audit.failed_count += 1;
                         const failed_response_frame = Frame.Response.init(.{
@@ -2265,10 +3616,12 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     };
                     switch (self.effective_mode) {
                         .fresh, .audit => {
+                            if (comptime adapterKindForDecl(Decl) != .native) return Error.MissingHandler;
                             const value = try self.callFresh(Decl, public_request);
                             try self.session.resumeTyped(typed_request, value);
                         },
                         .verify => {
+                            if (comptime adapterKindForDecl(Decl) != .native) return Error.MissingHandler;
                             const value = try self.callVerify(Decl, public_request, typed_request, replay_key);
                             try self.session.resumeTyped(typed_request, value);
                         },
@@ -2510,13 +3863,328 @@ fn validateTarget(comptime Target: type) void {
     Target.assertNoSearchHotPath();
 }
 
+fn machineConfigPorts(comptime Config: anytype) @TypeOf(if (@hasField(@TypeOf(Config), "environment")) Config.environment.ports else Config.ports) {
+    return if (@hasField(@TypeOf(Config), "environment")) Config.environment.ports else Config.ports;
+}
+
+fn boundPorts(comptime bindings: anytype) [bindings.len]type {
+    var result: [bindings.len]type = undefined;
+    inline for (bindings, 0..) |BindingDecl, index| result[index] = BindingDecl;
+    return result;
+}
+
+fn bindingPlanEntryCount(comptime Target: type, comptime bindings: anytype) comptime_int {
+    var count: usize = 0;
+    inline for (bindings) |BindingDecl| {
+        if (BindingDecl.TargetType == Target and BindingDecl.world_port_id < Target.WorldPortTable.entries.len) count += 1;
+    }
+    return count;
+}
+
+fn bindingPlanEntries(comptime Target: type, comptime bindings: anytype) [bindingPlanEntryCount(Target, bindings)]BindingPlan.Entry {
+    var result: [bindingPlanEntryCount(Target, bindings)]BindingPlan.Entry = undefined;
+    var out_index: usize = 0;
+    inline for (0..Target.WorldPortTable.entries.len) |world_port_id| {
+        inline for (bindings, 0..) |BindingDecl, binding_index| {
+            if (BindingDecl.TargetType == Target and BindingDecl.world_port_id == world_port_id) {
+                result[out_index] = bindingPlanEntryFor(Target, BindingDecl, binding_index);
+                out_index += 1;
+            }
+        }
+    }
+    return result;
+}
+
+fn bindingPlanEntryFor(comptime Target: type, comptime BindingDecl: type, comptime binding_index: usize) BindingPlan.Entry {
+    const record = bindingRecordFor(Target, BindingDecl);
+    return .{
+        .world_port_id = BindingDecl.world_port_id,
+        .adapter_slot = binding_index,
+        .binding_fingerprint = record.binding_fingerprint,
+        .adapter_kind = if (@hasDecl(BindingDecl, "adapter_kind")) BindingDecl.adapter_kind else .native,
+        .value_policy = if (@hasDecl(BindingDecl, "value_policy")) BindingDecl.value_policy else .native_compatible,
+        .authority_fingerprint = if (@hasDecl(BindingDecl, "authority")) BindingDecl.authority.authority_fingerprint else null,
+        .adapter_descriptor_fingerprint = record.adapter_descriptor_fingerprint,
+    };
+}
+
+fn bindingPlanFor(
+    comptime Target: type,
+    comptime bindings: anytype,
+    policy: EnvironmentPolicy,
+    entries: []const BindingPlan.Entry,
+    accepted: bool,
+) BindingPlan {
+    const target_ref = TargetRef.fromTarget(Target);
+    var plan = BindingPlan{
+        .plan_fingerprint = 0,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = Target.WorldSurface.surface_fingerprint,
+        .target_certificate_fingerprint = Target.Certificate.certificate_fingerprint,
+        .binding_count = bindings.len,
+        .dense_entries = entries,
+        .accepted = accepted,
+    };
+    _ = policy;
+    plan.plan_fingerprint = fingerprintBindingPlan(plan);
+    return plan;
+}
+
+fn acceptanceReportFor(
+    comptime Target: type,
+    comptime bindings: anytype,
+    policy: EnvironmentPolicy,
+    requested_mode: Mode,
+    transcript_image_available: bool,
+) AcceptanceReport {
+    const target_ref = TargetRef.fromTarget(Target);
+    var report = AcceptanceReport{
+        .report_fingerprint = 0,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = Target.WorldSurface.surface_fingerprint,
+        .target_certificate_fingerprint = Target.Certificate.certificate_fingerprint,
+        .requested_mode = requested_mode,
+        .accepted = true,
+        .required_port_count = Target.WorldPortTable.entries.len,
+        .bound_port_count = bindings.len,
+        .summary = "accepted",
+    };
+    if (policy.max_world_ports) |max| {
+        if (Target.WorldPortTable.entries.len > max) return rejectedReport(report, &.{.SurfaceProfileIncompatible});
+    }
+    if (policy.max_bindings) |max| {
+        if (bindings.len > max) return rejectedReport(report, &.{.ExtraBinding});
+    }
+    inline for (bindings, 0..) |BindingDecl, index| {
+        if (BindingDecl.TargetType != Target) return rejectedReport(report, &.{.HandoffTargetMismatch});
+        if (BindingDecl.world_port_id >= Target.WorldPortTable.entries.len) return rejectedReport(report, &.{.WrongPortId});
+        if (bindingRecordBlockerFor(Target, BindingDecl, policy)) |blocker| return rejectedReportForBindingRecordBlocker(report, blocker);
+        inline for (bindings, 0..) |Other, other_index| {
+            if (other_index > index and BindingDecl.world_port_id == Other.world_port_id) return rejectedReport(report, &.{.ExtraBinding});
+        }
+        const kind: AdapterKind = if (@hasDecl(BindingDecl, "adapter_kind")) BindingDecl.adapter_kind else .native;
+        switch (kind) {
+            .native => report.native_port_count += 1,
+            .replay => report.replay_only_port_count += 1,
+            .byte => report.byte_adapter_port_count += 1,
+            else => {},
+        }
+        if (kind == .native and !policy.allow_native_adapters) return rejectedReport(report, &.{.AdapterModeNotAllowed});
+        if (kind == .byte and !policy.allow_byte_adapters) return rejectedReport(report, &.{.AdapterModeNotAllowed});
+        if (kind == .pending_stub and !policy.allow_pending_adapters) return rejectedReport(report, &.{.AdapterModeNotAllowed});
+        if (kind == .null_reject and !policy.allow_reject_adapters) return rejectedReport(report, &.{.AdapterModeNotAllowed});
+        if ((requested_mode == .fresh or requested_mode == .audit) and kind != .native) return rejectedReport(report, &.{.AdapterModeNotAllowed});
+        if (kind == .replay and requested_mode != .replay) return rejectedReport(report, &.{.AdapterModeNotAllowed});
+        if (requested_mode == .verify and kind != .native) return rejectedReport(report, &.{.AdapterModeNotAllowed});
+        if (kind == .replay and !policy.allow_replay_without_handlers) return rejectedReport(report, &.{.AdapterModeNotAllowed});
+        if (@hasDecl(BindingDecl, "authority") and !authorityAllowsMode(BindingDecl.authority, requested_mode)) return rejectedReport(report, &.{.AdapterModeNotAllowed});
+        const value_policy: ValuePolicy = if (@hasDecl(BindingDecl, "value_policy")) BindingDecl.value_policy else .native_compatible;
+        if (value_policy.require_portable_values) report.portable_value_compatible_count += 1 else report.native_only_value_count += 1;
+        if (@hasDecl(BindingDecl, "authority")) {
+            if (BindingDecl.authority.requires_portable_values and !value_policy.require_portable_values) return rejectedReport(report, &.{.PortableValuesRequired});
+            if (!BindingDecl.authority.allows_native_only_values and value_policy.allow_native_only_values) return rejectedReport(report, &.{.NativeOnlyValueRejected});
+            if (BindingDecl.authority.max_payload_image_bytes) |max| {
+                const policy_max = value_policy.max_value_image_bytes orelse return rejectedReport(report, &.{.PayloadValueMismatch});
+                if (policy_max > max) return rejectedReport(report, &.{.PayloadValueMismatch});
+            }
+            if (BindingDecl.authority.max_response_image_bytes) |max| {
+                const policy_max = value_policy.max_value_image_bytes orelse return rejectedReport(report, &.{.ResponseValueMismatch});
+                if (policy_max > max) return rejectedReport(report, &.{.ResponseValueMismatch});
+            }
+        }
+        if (policy.require_portable_values and !value_policy.require_portable_values) return rejectedReport(report, &.{.PortableValuesRequired});
+        if (!policy.allow_native_only_values and value_policy.allow_native_only_values) return rejectedReport(report, &.{.NativeOnlyValueRejected});
+    }
+    if ((policy.require_all_required_ports_bound or requested_mode != .audit) and bindings.len < Target.WorldPortTable.entries.len) {
+        report.missing_port_count = Target.WorldPortTable.entries.len - bindings.len;
+        return rejectedReport(report, &.{.MissingBinding});
+    }
+    if (policy.reject_extra_bindings and bindings.len > Target.WorldPortTable.entries.len) {
+        report.extra_binding_count = bindings.len - Target.WorldPortTable.entries.len;
+        return rejectedReport(report, &.{.ExtraBinding});
+    }
+    if (requested_mode == .fresh and !transcript_image_available and !policy.allow_fresh_without_transcript) return rejectedReport(report, &.{.TranscriptImageRequired});
+    if (requested_mode == .replay and !transcript_image_available and policy.require_frame_images_for_replay) return rejectedReport(report, &.{.TranscriptImageRequired});
+    if (requested_mode == .verify and !transcript_image_available and !policy.allow_verify_without_transcript) return rejectedReport(report, &.{.VerifyTranscriptMissing});
+    report.report_fingerprint = fingerprintAcceptanceReport(report);
+    return report;
+}
+
+fn bindingRecordBlockerFor(comptime Target: type, comptime BindingDecl: type, policy: EnvironmentPolicy) ?AcceptanceBlocker {
+    const target_ref = TargetRef.fromTarget(Target);
+    const requirement = ImportRequirement.fromTargetPort(Target, BindingDecl.world_port_id);
+    const record = bindingRecordFor(Target, BindingDecl);
+    if (record.binding_fingerprint != fingerprintBinding(record)) return .HandoffTargetMismatch;
+    if (record.target_ref_fingerprint != target_ref.target_ref_fingerprint) return .HandoffTargetMismatch;
+    if (policy.reject_wrong_surface and record.world_surface_fingerprint != Target.WorldSurface.surface_fingerprint) return .WrongWorldSurface;
+    if (policy.require_target_certificate_match and record.target_certificate_fingerprint != Target.Certificate.certificate_fingerprint) return .WrongTargetCertificate;
+    if (record.world_port_id != BindingDecl.world_port_id) return .WrongPortId;
+    if (record.import_requirement_fingerprint != requirement.requirement_fingerprint) return .HandoffTargetMismatch;
+    if (record.world_port_ref_fingerprint != requirement.world_port_ref_fingerprint) return .HandoffTargetMismatch;
+    if (record.source_effect_shape_ref_fingerprint != requirement.source_effect_shape_ref_fingerprint) return .HandoffTargetMismatch;
+    if (record.payload_value_table_id != requirement.payload_value_table_id) return .PayloadValueMismatch;
+    if (record.response_value_table_id != requirement.response_value_table_id) return .ResponseValueMismatch;
+    const declared_kind: AdapterKind = if (@hasDecl(BindingDecl, "adapter_kind")) BindingDecl.adapter_kind else .native;
+    const declared_value_policy: ValuePolicy = if (@hasDecl(BindingDecl, "value_policy")) BindingDecl.value_policy else .native_compatible;
+    const declared_authority_fingerprint = if (@hasDecl(BindingDecl, "authority")) BindingDecl.authority.authority_fingerprint else null;
+    if (record.adapter_kind != declared_kind) return .AdapterModeNotAllowed;
+    if (!std.meta.eql(record.value_policy, declared_value_policy)) return .HandoffTargetMismatch;
+    if (record.authority_fingerprint != declared_authority_fingerprint) return .HandoffTargetMismatch;
+    if (record.adapter_descriptor_fingerprint != adapterDescriptorFingerprintForBindingDecl(Target, BindingDecl)) return .HandoffTargetMismatch;
+    return null;
+}
+
+fn rejectedReportForBindingRecordBlocker(base: AcceptanceReport, blocker: AcceptanceBlocker) AcceptanceReport {
+    return switch (blocker) {
+        .HandoffTargetMismatch => rejectedReport(base, &.{.HandoffTargetMismatch}),
+        .WrongWorldSurface => rejectedReport(base, &.{.WrongWorldSurface}),
+        .WrongTargetCertificate => rejectedReport(base, &.{.WrongTargetCertificate}),
+        .WrongPortId => rejectedReport(base, &.{.WrongPortId}),
+        .PayloadValueMismatch => rejectedReport(base, &.{.PayloadValueMismatch}),
+        .ResponseValueMismatch => rejectedReport(base, &.{.ResponseValueMismatch}),
+        .AdapterModeNotAllowed => rejectedReport(base, &.{.AdapterModeNotAllowed}),
+        else => unreachable,
+    };
+}
+
+fn adapterDescriptorFingerprintForBindingDecl(comptime Target: type, comptime BindingDecl: type) u64 {
+    const target_ref = TargetRef.fromTarget(Target);
+    const declared_kind: AdapterKind = if (@hasDecl(BindingDecl, "adapter_kind")) BindingDecl.adapter_kind else .native;
+    const declared_value_policy: ValuePolicy = if (@hasDecl(BindingDecl, "value_policy")) BindingDecl.value_policy else .native_compatible;
+    const declared_authority_fingerprint = if (@hasDecl(BindingDecl, "authority")) BindingDecl.authority.authority_fingerprint else null;
+    const label = if (@hasDecl(BindingDecl, "suggested_name")) BindingDecl.suggested_name else "";
+    return AdapterDescriptor.init(.{
+        .adapter_kind = declared_kind,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = Target.WorldSurface.surface_fingerprint,
+        .world_port_id = BindingDecl.world_port_id,
+        .value_policy = declared_value_policy,
+        .authority_fingerprint = declared_authority_fingerprint,
+        .label = label,
+        .replay_source_fingerprint = if (@hasDecl(BindingDecl, "replay_source_fingerprint")) BindingDecl.replay_source_fingerprint else null,
+        .byte_adapter_protocol_label = if (@hasDecl(BindingDecl, "byte_adapter_protocol_label")) BindingDecl.byte_adapter_protocol_label else null,
+    }).descriptor_fingerprint;
+}
+
+fn acceptedModeMask(report: AcceptanceReport) EnvironmentCertificate.ModeMask {
+    if (!report.accepted) return .none;
+    return switch (report.requested_mode) {
+        .fresh => .fresh,
+        .replay => .replay,
+        .verify => .verify,
+        .audit => .audit,
+    };
+}
+
+fn authorityAllowsMode(authority: PortAuthority, requested_mode: Mode) bool {
+    if (!portAuthorityModeMaskAllows(authority.allowed_modes, requested_mode)) return false;
+    return switch (requested_mode) {
+        .fresh => authority.allows_fresh_calls,
+        .replay => authority.allows_replay,
+        .verify => authority.allows_verify,
+        .audit => true,
+    };
+}
+
+fn portAuthorityModeMaskAllows(mask: PortAuthority.ModeMask, requested_mode: Mode) bool {
+    return switch (mask) {
+        .fresh => requested_mode == .fresh,
+        .replay => requested_mode == .replay,
+        .verify => requested_mode == .verify,
+        .audit => requested_mode == .audit,
+        .fresh_and_replay => requested_mode == .fresh or requested_mode == .replay,
+        .all => true,
+    };
+}
+
+fn rejectedReport(base: AcceptanceReport, blockers: []const AcceptanceBlocker) AcceptanceReport {
+    var report = base;
+    report.accepted = false;
+    report.blockers = blockers;
+    report.summary = "rejected";
+    report.report_fingerprint = fingerprintAcceptanceReport(report);
+    return report;
+}
+
+fn rejectedAcceptance(target_ref: TargetRef, mode: Mode, blockers: []const AcceptanceBlocker) AcceptanceReport {
+    var report = AcceptanceReport{
+        .report_fingerprint = 0,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = target_ref.target_certificate_fingerprint,
+        .requested_mode = mode,
+        .accepted = false,
+        .blockers = blockers,
+        .summary = "rejected",
+    };
+    report.report_fingerprint = fingerprintAcceptanceReport(report);
+    return report;
+}
+
+fn acceptanceError(report: AcceptanceReport) Error {
+    if (report.blockers.len == 0) return Error.InvalidMode;
+    return switch (report.blockers[0]) {
+        .MissingBinding => Error.MissingBinding,
+        .ExtraBinding => Error.ExtraBinding,
+        .WrongWorldSurface => Error.WrongWorldSurface,
+        .WrongTargetCertificate => Error.WrongTargetCertificate,
+        .WrongPortId => Error.WrongPortId,
+        .AdapterModeNotAllowed => Error.AdapterModeNotAllowed,
+        .PortableValuesRequired => Error.PortableValuesRequired,
+        .NativeOnlyValueRejected => Error.NativeOnlyValueRejected,
+        .ReplaySourceMissing => Error.ReplaySourceMissing,
+        .VerifyTranscriptMissing => Error.VerifyTranscriptMissing,
+        .TranscriptImageRequired => Error.TranscriptImageRequired,
+        .TranscriptImageSurfaceMismatch => Error.TranscriptImageSurfaceMismatch,
+        .HandoffTargetMismatch => Error.HandoffTargetMismatch,
+        .HandoffCheckpointMismatch => Error.HandoffCheckpointMismatch,
+        .HandoffPendingFrameMismatch => Error.HandoffPendingFrameMismatch,
+        .SurfaceProfileIncompatible => Error.SurfaceProfileIncompatible,
+        .PayloadValueMismatch => Error.FrameValueTableMismatch,
+        .ResponseValueMismatch => Error.FrameValueTableMismatch,
+    };
+}
+
+fn bindingRecordFor(comptime Target: type, comptime BindingDecl: type) Binding {
+    if (@hasDecl(BindingDecl, "bindingRecord")) return BindingDecl.bindingRecord();
+    const target_ref = TargetRef.fromTarget(Target);
+    const requirement = ImportRequirement.fromTargetPort(Target, BindingDecl.world_port_id);
+    const authority = PortAuthority.native_function;
+    const descriptor = AdapterDescriptor.init(.{
+        .adapter_kind = .native,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = Target.WorldSurface.surface_fingerprint,
+        .world_port_id = BindingDecl.world_port_id,
+        .authority_fingerprint = authority.authority_fingerprint,
+        .label = BindingDecl.suggested_name,
+    });
+    return Binding.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = Target.WorldSurface.surface_fingerprint,
+        .target_certificate_fingerprint = Target.Certificate.certificate_fingerprint,
+        .world_port_id = BindingDecl.world_port_id,
+        .import_requirement_fingerprint = requirement.requirement_fingerprint,
+        .world_port_ref_fingerprint = requirement.world_port_ref_fingerprint,
+        .source_effect_shape_ref_fingerprint = requirement.source_effect_shape_ref_fingerprint,
+        .payload_value_table_id = requirement.payload_value_table_id,
+        .response_value_table_id = requirement.response_value_table_id,
+        .adapter_kind = .native,
+        .authority_fingerprint = authority.authority_fingerprint,
+        .adapter_descriptor_fingerprint = descriptor.descriptor_fingerprint,
+        .label = BindingDecl.suggested_name,
+    });
+}
+
 fn validateConfig(comptime Target: type, comptime Config: anytype) void {
-    if (!@hasField(@TypeOf(Config), "ports")) @compileError("world.Machine config requires .ports");
-    inline for (Config.ports, 0..) |Decl, index| {
+    if (!@hasField(@TypeOf(Config), "ports") and !@hasField(@TypeOf(Config), "environment")) {
+        @compileError("world.Machine config requires .ports or .environment");
+    }
+    const ports = comptime machineConfigPorts(Config);
+    inline for (ports, 0..) |Decl, index| {
         if (Decl.TargetType != Target) @compileError("World port handler bound to wrong Target");
         if (Decl.world_port_id >= Target.WorldPortTable.entries.len) @compileError("World port handler id out of range");
         validatePortDescriptorMetadata(Target, Decl);
-        inline for (Config.ports, 0..) |Other, other_index| {
+        inline for (ports, 0..) |Other, other_index| {
             if (other_index > index and Decl.world_port_id == Other.world_port_id) {
                 @compileError("World port handler id duplicated");
             }
@@ -2547,9 +4215,10 @@ fn boundaryValueRefMatches(comptime descriptor_ref: anytype, comptime target_ref
 }
 
 fn assertAllPortsHandledFor(comptime Target: type, comptime Config: anytype) void {
+    const ports = comptime machineConfigPorts(Config);
     inline for (Target.WorldPortTable.entries) |entry| {
         comptime var found = false;
-        inline for (Config.ports) |Decl| {
+        inline for (ports) |Decl| {
             if (Decl.world_port_id == entry.world_port_id) found = true;
         }
         if (!found) @compileError("World port missing handler");
@@ -2558,7 +4227,8 @@ fn assertAllPortsHandledFor(comptime Target: type, comptime Config: anytype) voi
 
 fn handlerForWorldPortId(comptime Target: type, comptime Config: anytype, comptime world_port_id: u32) ?type {
     _ = Target;
-    inline for (Config.ports) |Decl| {
+    const ports = comptime machineConfigPorts(Config);
+    inline for (ports) |Decl| {
         if (Decl.world_port_id == world_port_id) return Decl;
     }
     return null;
@@ -2753,7 +4423,7 @@ fn modeConsumesTranscript(mode: Mode) bool {
 }
 
 fn eventKindIsSourceResponse(kind: EventKind) bool {
-    return kind == .port_responded or kind == .frame_responded;
+    return kind == .port_responded or kind == .frame_responded or kind == .port_replayed or kind == .frame_replayed;
 }
 
 fn eventKindAllowsResponseFrame(kind: EventKind) bool {
@@ -2834,6 +4504,11 @@ fn validateValueImagePolicy(image: Frame.ValueImage, policy: ValuePolicy) !void 
 
 fn validateRequestFramePolicy(frame: Frame.Request, policy: ValuePolicy) !void {
     if (frame.payload_image) |image| try validateValueImagePolicy(image, policy);
+}
+
+fn validateTransferredRequestFramePolicy(frame: Frame.Request, policy: ValuePolicy) !void {
+    try validateRequestFramePolicy(frame, policy);
+    if (frame.payload_image == null and (policy.require_portable_values or !policy.allow_native_only_values)) return error.MissingValueImage;
 }
 
 fn validateResponseFramePolicy(frame: Frame.Response, policy: ValuePolicy) !void {
@@ -3175,6 +4850,607 @@ fn decodeTranscriptEventImage(allocator: std.mem.Allocator, bytes: []const u8, c
     try validateTranscriptEventFrameBindings(event);
     if (fingerprintTranscriptEventImage(event) != event.event_fingerprint) return error.InvalidFrameEncoding;
     return event;
+}
+
+fn targetLabel(comptime Target: type) ?[]const u8 {
+    if (@hasDecl(Target, "Certificate")) {
+        if (@TypeOf(Target.Certificate) == type) {
+            if (@hasDecl(Target.Certificate, "target_label")) return Target.Certificate.target_label;
+        } else if (@hasField(@TypeOf(Target.Certificate), "target_label")) return Target.Certificate.target_label;
+    }
+    if (@TypeOf(Target.Program.contract) == type) {
+        if (@hasDecl(Target.Program.contract, "label")) return Target.Program.contract.label;
+    } else if (@hasField(@TypeOf(Target.Program.contract), "label")) return Target.Program.contract.label;
+    return null;
+}
+
+fn residualProgramPlanHash(comptime Target: type) ?u64 {
+    if (@hasDecl(Target.Program, "compiled_plan") and @hasDecl(@TypeOf(Target.Program.compiled_plan), "hash")) {
+        return Target.Program.compiled_plan.hash();
+    }
+    return null;
+}
+
+fn normalFormKind(comptime Target: type) NormalFormKind {
+    if (@hasDecl(Target, "NormalForm")) {
+        if (@TypeOf(Target.NormalForm) == type) {
+            if (@hasDecl(Target.NormalForm, "kind")) {
+                const name = @tagName(Target.NormalForm.kind);
+                if (std.mem.eql(u8, name, "strict_closed")) return .strict_closed;
+                if (std.mem.eql(u8, name, "world_ports_only")) return .world_ports_only;
+            }
+        } else if (@hasField(@TypeOf(Target.NormalForm), "kind")) {
+            const name = @tagName(Target.NormalForm.kind);
+            if (std.mem.eql(u8, name, "strict_closed")) return .strict_closed;
+            if (std.mem.eql(u8, name, "world_ports_only")) return .world_ports_only;
+        }
+    }
+    return .boundary_normal_form;
+}
+
+fn tableFingerprint(comptime table: anytype) ?u64 {
+    if (@TypeOf(table) == type) {
+        if (@hasDecl(table, "fingerprint")) return table.fingerprint;
+        if (@hasDecl(table, "surface_fingerprint")) return table.surface_fingerprint;
+        if (@hasDecl(table, "certificate_fingerprint")) return table.certificate_fingerprint;
+    } else {
+        const Table = @TypeOf(table);
+        if (@hasField(Table, "fingerprint")) return table.fingerprint;
+        if (@hasField(Table, "surface_fingerprint")) return table.surface_fingerprint;
+        if (@hasField(Table, "certificate_fingerprint")) return table.certificate_fingerprint;
+        if (@hasDecl(Table, "fingerprint")) return table.fingerprint;
+        if (@hasDecl(Table, "surface_fingerprint")) return table.surface_fingerprint;
+        if (@hasDecl(Table, "certificate_fingerprint")) return table.certificate_fingerprint;
+    }
+    return null;
+}
+
+fn refFingerprint(ref: anytype) ?u64 {
+    const Ref = @TypeOf(ref);
+    if (@hasField(Ref, "fingerprint")) return ref.fingerprint;
+    return null;
+}
+
+fn replayKeyRecipeFingerprint(comptime Target: type) ?u64 {
+    if (@hasDecl(Target, "replay_key_recipe")) return refFingerprint(Target.replay_key_recipe.evidenceRef());
+    if (@TypeOf(Target.WorldSurface) == type) {
+        if (@hasDecl(Target.WorldSurface, "replay_key_recipe_ref")) return refFingerprint(Target.WorldSurface.replay_key_recipe_ref);
+    } else if (@hasField(@TypeOf(Target.WorldSurface), "replay_key_recipe_ref")) return refFingerprint(Target.WorldSurface.replay_key_recipe_ref);
+    return Target.WorldSurface.replayScopeRef().fingerprint;
+}
+
+fn modeToRunMode(mode: HandoffMode) Mode {
+    return switch (mode) {
+        .accept_fresh => .fresh,
+        .accept_replay => .replay,
+        .accept_verify => .verify,
+        .inspect_only => .audit,
+    };
+}
+
+fn valuePolicyForEnvironment(comptime Env: type) ValuePolicy {
+    return .{
+        .require_portable_values = Env.policy_decl.require_portable_values,
+        .allow_native_only_values = Env.policy_decl.allow_native_only_values,
+        .require_response_images_for_replay = Env.policy_decl.require_frame_images_for_replay,
+        .allow_diagnostic_type_labels = Env.policy_decl.allow_native_only_values,
+    };
+}
+
+fn validateTranscriptForEnvironment(comptime Env: type, transcript: *const Transcript) !void {
+    for (transcript.events.items) |event| {
+        if (event.request_frame) |frame| try validateRequestFramePolicy(frame, try valuePolicyForEnvironmentPort(Env, frame.world_port_id, .request));
+        if (event.response_frame) |frame| try validateResponseFramePolicy(frame, try valuePolicyForEnvironmentPort(Env, frame.world_port_id, .response));
+    }
+}
+
+fn validateTranscriptImageForEnvironment(comptime Env: type, image: *const TranscriptImage) !void {
+    for (image.events) |event| {
+        if (event.request_frame) |frame| try validateRequestFramePolicy(frame, try valuePolicyForEnvironmentPort(Env, frame.world_port_id, .request));
+        if (event.response_frame) |frame| try validateResponseFramePolicy(frame, try replayImageValuePolicyForEnvironmentPort(Env, frame.world_port_id));
+    }
+}
+
+const FrameValuePolicyKind = enum { request, response };
+
+fn replayImageValuePolicyForEnvironmentPort(comptime Env: type, world_port_id: u32) !ValuePolicy {
+    var policy = try valuePolicyForEnvironmentPort(Env, world_port_id, .response);
+    policy.require_response_images_for_replay = true;
+    return policy;
+}
+
+fn valuePolicyForEnvironmentPort(comptime Env: type, world_port_id: u32, comptime kind: FrameValuePolicyKind) !ValuePolicy {
+    if (world_port_id >= Env.TargetType.WorldPortTable.entries.len) return error.WrongPortId;
+    var policy = valuePolicyForEnvironment(Env);
+    var found = false;
+    inline for (Env.bindings_decl) |BindingDecl| {
+        if (comptime BindingDecl.TargetType == Env.TargetType) {
+            if (BindingDecl.world_port_id == world_port_id) {
+                found = true;
+                const binding_policy: ValuePolicy = if (@hasDecl(BindingDecl, "value_policy")) BindingDecl.value_policy else .native_compatible;
+                if (binding_policy.require_portable_values) policy.require_portable_values = true;
+                if (!binding_policy.allow_native_only_values) policy.allow_native_only_values = false;
+                if (binding_policy.require_response_images_for_replay) policy.require_response_images_for_replay = true;
+                if (!binding_policy.allow_diagnostic_type_labels) policy.allow_diagnostic_type_labels = false;
+                tightenValuePolicyMax(&policy, binding_policy.max_value_image_bytes);
+                if (@hasDecl(BindingDecl, "authority")) {
+                    if (BindingDecl.authority.requires_portable_values) policy.require_portable_values = true;
+                    if (!BindingDecl.authority.allows_native_only_values) policy.allow_native_only_values = false;
+                    switch (kind) {
+                        .request => tightenValuePolicyMax(&policy, BindingDecl.authority.max_payload_image_bytes),
+                        .response => tightenValuePolicyMax(&policy, BindingDecl.authority.max_response_image_bytes),
+                    }
+                }
+            }
+        }
+    }
+    if (!found) return error.MissingBinding;
+    return policy;
+}
+
+fn environmentValidationBlocker(err: anyerror) AcceptanceBlocker {
+    return switch (err) {
+        error.WrongPortId => .WrongPortId,
+        error.MissingBinding => .MissingBinding,
+        else => .NativeOnlyValueRejected,
+    };
+}
+
+fn tightenValuePolicyMax(policy: *ValuePolicy, limit: ?usize) void {
+    if (limit) |max| {
+        if (policy.max_value_image_bytes == null or policy.max_value_image_bytes.? > max) {
+            policy.max_value_image_bytes = max;
+        }
+    }
+}
+
+fn valuePolicyForRunImageValidation(options: RunImage.ValidateOptions) ValuePolicy {
+    var policy = if (options.require_portable_values) ValuePolicy.portable else ValuePolicy.native_compatible;
+    policy.max_value_image_bytes = options.max_image_bytes;
+    return policy;
+}
+
+fn adapterKindForDecl(comptime Decl: type) AdapterKind {
+    return if (@hasDecl(Decl, "adapter_kind")) Decl.adapter_kind else .native;
+}
+
+fn authoritySetFingerprint(entries: []const BindingPlan.Entry) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.environment.authority_set.fingerprint");
+    for (entries) |entry| {
+        if (entry.authority_fingerprint) |fingerprint| hashU64(&hasher, fingerprint);
+    }
+    return hasher.final();
+}
+
+fn adapterSetFingerprint(entries: []const BindingPlan.Entry) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.environment.adapter_set.fingerprint");
+    for (entries) |entry| hashU64(&hasher, entry.adapter_descriptor_fingerprint);
+    return hasher.final();
+}
+
+fn encodeTargetRef(out: *std.ArrayList(u8), allocator: std.mem.Allocator, target_ref: TargetRef) !void {
+    try writeU32(out, allocator, target_ref.format_version);
+    try writeU32(out, allocator, target_ref.fingerprint_version);
+    try writeU64(out, allocator, target_ref.target_ref_fingerprint);
+    try writeOptionalBytes(out, allocator, target_ref.target_label);
+    try writeU64(out, allocator, target_ref.world_surface_fingerprint);
+    try writeOptionalU64(out, allocator, target_ref.world_surface_replay_scope_fingerprint);
+    try writeU64(out, allocator, target_ref.target_certificate_fingerprint);
+    try writeOptionalU64(out, allocator, target_ref.residual_program_plan_hash);
+    try writeU8(out, allocator, @intFromEnum(target_ref.normal_form_kind));
+    try writeOptionalU64(out, allocator, target_ref.world_port_table_fingerprint);
+    try writeOptionalU64(out, allocator, target_ref.world_value_table_fingerprint);
+    try writeOptionalU64(out, allocator, target_ref.world_dispatch_table_fingerprint);
+    try writeOptionalU64(out, allocator, target_ref.surface_profile_fingerprint);
+    try writeOptionalU64(out, allocator, target_ref.boundary_module_fingerprint);
+    try writeBytes(out, allocator, target_ref.metadata);
+}
+
+fn decodeTargetRef(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) !TargetRef {
+    const format_version = try readU32(bytes, cursor);
+    if (format_version != world_target_ref_format_version) return error.InvalidFrameEncoding;
+    const fingerprint_version = try readU32(bytes, cursor);
+    if (fingerprint_version != world_target_ref_fingerprint_version) return error.InvalidFrameEncoding;
+    const target_ref_fingerprint = try readU64(bytes, cursor);
+    const target_label = try readOptionalBytesOwned(allocator, bytes, cursor);
+    errdefer if (target_label) |label| allocator.free(@constCast(label));
+    const world_surface_fingerprint = try readU64(bytes, cursor);
+    const world_surface_replay_scope_fingerprint = try readOptionalU64(bytes, cursor);
+    const target_certificate_fingerprint = try readU64(bytes, cursor);
+    const residual_program_plan_hash = try readOptionalU64(bytes, cursor);
+    const kind = try enumFromByte(NormalFormKind, try readU8(bytes, cursor));
+    const world_port_table_fingerprint = try readOptionalU64(bytes, cursor);
+    const world_value_table_fingerprint = try readOptionalU64(bytes, cursor);
+    const world_dispatch_table_fingerprint = try readOptionalU64(bytes, cursor);
+    const surface_profile_fingerprint = try readOptionalU64(bytes, cursor);
+    const boundary_module_fingerprint = try readOptionalU64(bytes, cursor);
+    const metadata = try readBytesOwned(allocator, bytes, cursor);
+    errdefer allocator.free(metadata);
+    // TargetRef labels/metadata are intentionally leaked into the owning RunImage lifetime;
+    // RunImage does not currently expose a separate TargetRef deinit path.
+    const result = TargetRef{
+        .target_ref_fingerprint = target_ref_fingerprint,
+        .target_label = target_label,
+        .world_surface_fingerprint = world_surface_fingerprint,
+        .world_surface_replay_scope_fingerprint = world_surface_replay_scope_fingerprint,
+        .target_certificate_fingerprint = target_certificate_fingerprint,
+        .residual_program_plan_hash = residual_program_plan_hash,
+        .normal_form_kind = kind,
+        .world_port_table_fingerprint = world_port_table_fingerprint,
+        .world_value_table_fingerprint = world_value_table_fingerprint,
+        .world_dispatch_table_fingerprint = world_dispatch_table_fingerprint,
+        .surface_profile_fingerprint = surface_profile_fingerprint,
+        .boundary_module_fingerprint = boundary_module_fingerprint,
+        .metadata = metadata,
+    };
+    if (fingerprintTargetRef(result) != target_ref_fingerprint) return error.InvalidFrameEncoding;
+    return result;
+}
+
+fn encodeRunState(out: *std.ArrayList(u8), allocator: std.mem.Allocator, state: RunState) !void {
+    try writeU64(out, allocator, state.run_state_fingerprint);
+    try writeU64(out, allocator, state.target_ref_fingerprint);
+    try writeOptionalU64(out, allocator, state.transcript_image_fingerprint);
+    try writeU64(out, allocator, state.branch_id);
+    try writeOptionalU64(out, allocator, state.checkpoint_fingerprint);
+    try writeOptionalU64(out, allocator, state.pending_request_fingerprint);
+    try writeOptionalU64(out, allocator, state.final_response_fingerprint);
+    try writeOptionalU64(out, allocator, state.final_value_image_fingerprint);
+    try writeU64(out, allocator, state.turn_index);
+    try writeU8(out, allocator, @intFromEnum(state.status));
+}
+
+fn decodeRunState(bytes: []const u8, cursor: *usize) !RunState {
+    const state = RunState{
+        .run_state_fingerprint = try readU64(bytes, cursor),
+        .target_ref_fingerprint = try readU64(bytes, cursor),
+        .transcript_image_fingerprint = try readOptionalU64(bytes, cursor),
+        .branch_id = try readU64(bytes, cursor),
+        .checkpoint_fingerprint = try readOptionalU64(bytes, cursor),
+        .pending_request_fingerprint = try readOptionalU64(bytes, cursor),
+        .final_response_fingerprint = try readOptionalU64(bytes, cursor),
+        .final_value_image_fingerprint = try readOptionalU64(bytes, cursor),
+        .turn_index = try readU64AsUsize(bytes, cursor),
+        .status = try enumFromByte(RunState.Status, try readU8(bytes, cursor)),
+    };
+    if (fingerprintRunState(state) != state.run_state_fingerprint) return error.InvalidFrameEncoding;
+    return state;
+}
+
+fn encodeCheckpoint(out: *std.ArrayList(u8), allocator: std.mem.Allocator, checkpoint: Timeline.Checkpoint) !void {
+    try writeU32(out, allocator, checkpoint.format_version);
+    try writeU32(out, allocator, checkpoint.fingerprint_version);
+    try writeU64(out, allocator, checkpoint.checkpoint_fingerprint);
+    try writeU64(out, allocator, checkpoint.world_surface_fingerprint);
+    try writeU64(out, allocator, checkpoint.target_certificate_fingerprint);
+    try writeU64(out, allocator, checkpoint.event_index);
+    try writeU64(out, allocator, checkpoint.turn_index);
+    try writeOptionalU64(out, allocator, checkpoint.current_request_fingerprint);
+    try writeOptionalU64(out, allocator, checkpoint.last_response_fingerprint);
+    try writeOptionalU64(out, allocator, checkpoint.capsule_image_fingerprint);
+    try writeU64(out, allocator, checkpoint.transcript_prefix_fingerprint);
+    try writeU64(out, allocator, checkpoint.branch_id);
+    try writeU8(out, allocator, @intFromEnum(checkpoint.status));
+}
+
+fn decodeCheckpoint(bytes: []const u8, cursor: *usize) !Timeline.Checkpoint {
+    const format_version = try readU32(bytes, cursor);
+    if (format_version != world_timeline_checkpoint_format_version) return error.InvalidFrameEncoding;
+    const fingerprint_version = try readU32(bytes, cursor);
+    if (fingerprint_version != world_timeline_checkpoint_fingerprint_version) return error.InvalidFrameEncoding;
+    const checkpoint = Timeline.Checkpoint{
+        .checkpoint_fingerprint = try readU64(bytes, cursor),
+        .world_surface_fingerprint = try readU64(bytes, cursor),
+        .target_certificate_fingerprint = try readU64(bytes, cursor),
+        .event_index = try readU64AsUsize(bytes, cursor),
+        .turn_index = try readU64AsUsize(bytes, cursor),
+        .current_request_fingerprint = try readOptionalU64(bytes, cursor),
+        .last_response_fingerprint = try readOptionalU64(bytes, cursor),
+        .capsule_image_fingerprint = try readOptionalU64(bytes, cursor),
+        .transcript_prefix_fingerprint = try readU64(bytes, cursor),
+        .branch_id = try readU64(bytes, cursor),
+        .status = try enumFromByte(Timeline.Checkpoint.Status, try readU8(bytes, cursor)),
+    };
+    if (fingerprintCheckpoint(checkpoint) != checkpoint.checkpoint_fingerprint) return error.InvalidFrameEncoding;
+    return checkpoint;
+}
+
+fn encodeBranch(out: *std.ArrayList(u8), allocator: std.mem.Allocator, branch: Timeline.Branch) !void {
+    try writeU32(out, allocator, branch.format_version);
+    try writeU32(out, allocator, branch.fingerprint_version);
+    try writeU64(out, allocator, branch.branch_id);
+    try writeOptionalU64(out, allocator, branch.parent_branch_id);
+    try writeU64(out, allocator, branch.checkpoint_fingerprint);
+    try writeBytes(out, allocator, branch.branch_label);
+    try writeU64(out, allocator, branch.start_event_index);
+    try writeOptionalU64(out, allocator, branch.final_event_index);
+    try writeU8(out, allocator, @intFromEnum(branch.final_status));
+    try writeU64(out, allocator, branch.event_count);
+    try writeU64(out, allocator, branch.response_count);
+    try writeU64(out, allocator, branch.fingerprint());
+}
+
+fn decodeBranch(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) !Timeline.Branch {
+    const format_version = try readU32(bytes, cursor);
+    if (format_version != world_timeline_branch_format_version) return error.InvalidFrameEncoding;
+    const fingerprint_version = try readU32(bytes, cursor);
+    if (fingerprint_version != world_timeline_branch_fingerprint_version) return error.InvalidFrameEncoding;
+    const branch_id = try readU64(bytes, cursor);
+    const parent_branch_id = try readOptionalU64(bytes, cursor);
+    const checkpoint_fingerprint = try readU64(bytes, cursor);
+    const label = try readBytesOwned(allocator, bytes, cursor);
+    errdefer allocator.free(label);
+    const branch = Timeline.Branch{
+        .branch_id = branch_id,
+        .parent_branch_id = parent_branch_id,
+        .checkpoint_fingerprint = checkpoint_fingerprint,
+        .branch_label = label,
+        .start_event_index = try readU64AsUsize(bytes, cursor),
+        .final_event_index = try readOptionalUsize(bytes, cursor),
+        .final_status = try enumFromByte(Timeline.Checkpoint.Status, try readU8(bytes, cursor)),
+        .event_count = try readU64AsUsize(bytes, cursor),
+        .response_count = try readU64AsUsize(bytes, cursor),
+    };
+    if (try readU64(bytes, cursor) != branch.fingerprint()) return error.InvalidFrameEncoding;
+    return branch;
+}
+
+fn fingerprintTargetRef(target_ref: TargetRef) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.target_ref.fingerprint");
+    hashU64(&hasher, world_target_ref_fingerprint_version);
+    hashOptionalBytes(&hasher, target_ref.target_label);
+    hashU64(&hasher, target_ref.world_surface_fingerprint);
+    hashOptionalU64(&hasher, target_ref.world_surface_replay_scope_fingerprint);
+    hashU64(&hasher, target_ref.target_certificate_fingerprint);
+    hashOptionalU64(&hasher, target_ref.residual_program_plan_hash);
+    hashU64(&hasher, @intFromEnum(target_ref.normal_form_kind));
+    hashOptionalU64(&hasher, target_ref.world_port_table_fingerprint);
+    hashOptionalU64(&hasher, target_ref.world_value_table_fingerprint);
+    hashOptionalU64(&hasher, target_ref.world_dispatch_table_fingerprint);
+    hashOptionalU64(&hasher, target_ref.surface_profile_fingerprint);
+    hashOptionalU64(&hasher, target_ref.boundary_module_fingerprint);
+    hashU64(&hasher, target_ref.metadata.len);
+    hashBytes(&hasher, target_ref.metadata);
+    return hasher.final();
+}
+
+fn fingerprintImportRequirement(requirement: ImportRequirement) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.import_requirement.fingerprint");
+    hashU64(&hasher, world_import_requirement_fingerprint_version);
+    hashU64(&hasher, requirement.world_surface_fingerprint);
+    hashU64(&hasher, requirement.world_port_id);
+    hashOptionalU64(&hasher, requirement.world_port_ref_fingerprint);
+    hashOptionalU64(&hasher, requirement.source_effect_shape_ref_fingerprint);
+    hashU64(&hasher, requirement.residual_site_index);
+    hashU64(&hasher, requirement.residual_site_fingerprint);
+    hashOptionalU32(&hasher, requirement.payload_value_table_id);
+    hashOptionalU32(&hasher, requirement.response_value_table_id);
+    hashU64(&hasher, @intFromEnum(requirement.mode));
+    hashU64(&hasher, @intFromEnum(requirement.allowed_response_kinds));
+    hashOptionalU64(&hasher, requirement.replay_key_recipe_fingerprint);
+    hashOptionalBytes(&hasher, requirement.suggested_symbolic_name);
+    hashBool(&hasher, requirement.required);
+    hashU64(&hasher, requirement.tags.len);
+    for (requirement.tags) |tag| {
+        hashU64(&hasher, tag.len);
+        hashBytes(&hasher, tag);
+    }
+    hashU64(&hasher, requirement.metadata.len);
+    hashBytes(&hasher, requirement.metadata);
+    return hasher.final();
+}
+
+fn fingerprintImportSet(import_set: ImportSet) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.import_set.fingerprint");
+    hashU64(&hasher, world_import_set_fingerprint_version);
+    hashU64(&hasher, import_set.target_ref_fingerprint);
+    hashU64(&hasher, import_set.required_count);
+    hashU64(&hasher, import_set.optional_count);
+    hashU64(&hasher, import_set.world_port_count);
+    hashU64(&hasher, import_set.value_table_entry_count);
+    hashOptionalU64(&hasher, import_set.surface_profile_fingerprint);
+    return hasher.final();
+}
+
+fn fingerprintPortAuthority(authority: PortAuthority) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.port_authority.fingerprint");
+    hashU64(&hasher, world_port_authority_fingerprint_version);
+    hashU64(&hasher, authority.authority_label.len);
+    hashBytes(&hasher, authority.authority_label);
+    hashU64(&hasher, @intFromEnum(authority.authority_kind));
+    hashU64(&hasher, @intFromEnum(authority.allowed_modes));
+    hashBool(&hasher, authority.allows_fresh_calls);
+    hashBool(&hasher, authority.allows_replay);
+    hashBool(&hasher, authority.allows_verify);
+    hashBool(&hasher, authority.requires_portable_values);
+    hashBool(&hasher, authority.allows_native_only_values);
+    hashOptionalU64(&hasher, authority.max_payload_image_bytes);
+    hashOptionalU64(&hasher, authority.max_response_image_bytes);
+    hashU64(&hasher, authority.metadata.len);
+    hashBytes(&hasher, authority.metadata);
+    return hasher.final();
+}
+
+fn fingerprintAdapterDescriptor(descriptor: AdapterDescriptor) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.adapter_descriptor.fingerprint");
+    hashU64(&hasher, world_adapter_descriptor_fingerprint_version);
+    hashU64(&hasher, @intFromEnum(descriptor.adapter_kind));
+    hashU64(&hasher, descriptor.target_ref_fingerprint);
+    hashU64(&hasher, descriptor.world_surface_fingerprint);
+    hashU64(&hasher, descriptor.world_port_id);
+    hashValuePolicy(&hasher, descriptor.value_policy);
+    hashOptionalU64(&hasher, descriptor.authority_fingerprint);
+    hashU64(&hasher, descriptor.label.len);
+    hashBytes(&hasher, descriptor.label);
+    hashU64(&hasher, descriptor.metadata.len);
+    hashBytes(&hasher, descriptor.metadata);
+    hashOptionalU64(&hasher, descriptor.replay_source_fingerprint);
+    hashOptionalBytes(&hasher, descriptor.byte_adapter_protocol_label);
+    return hasher.final();
+}
+
+fn fingerprintBinding(binding: Binding) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.binding.fingerprint");
+    hashU64(&hasher, world_binding_fingerprint_version);
+    hashU64(&hasher, binding.target_ref_fingerprint);
+    hashU64(&hasher, binding.world_surface_fingerprint);
+    hashU64(&hasher, binding.target_certificate_fingerprint);
+    hashU64(&hasher, binding.world_port_id);
+    hashU64(&hasher, binding.import_requirement_fingerprint);
+    hashOptionalU64(&hasher, binding.world_port_ref_fingerprint);
+    hashOptionalU64(&hasher, binding.source_effect_shape_ref_fingerprint);
+    hashOptionalU32(&hasher, binding.payload_value_table_id);
+    hashOptionalU32(&hasher, binding.response_value_table_id);
+    hashU64(&hasher, @intFromEnum(binding.adapter_kind));
+    hashU64(&hasher, @intFromEnum(binding.binding_mode_policy));
+    hashValuePolicy(&hasher, binding.value_policy);
+    hashOptionalU64(&hasher, binding.authority_fingerprint);
+    hashU64(&hasher, binding.adapter_descriptor_fingerprint);
+    hashU64(&hasher, binding.label.len);
+    hashBytes(&hasher, binding.label);
+    hashU64(&hasher, binding.tags.len);
+    for (binding.tags) |tag| {
+        hashU64(&hasher, tag.len);
+        hashBytes(&hasher, tag);
+    }
+    hashU64(&hasher, binding.metadata.len);
+    hashBytes(&hasher, binding.metadata);
+    return hasher.final();
+}
+
+fn fingerprintEnvironmentPolicy(policy: EnvironmentPolicy) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.environment.policy.fingerprint");
+    hashU64(&hasher, world_environment_policy_fingerprint_version);
+    hashBool(&hasher, policy.require_all_required_ports_bound);
+    hashBool(&hasher, policy.reject_extra_bindings);
+    hashBool(&hasher, policy.reject_wrong_surface);
+    hashBool(&hasher, policy.require_target_certificate_match);
+    hashBool(&hasher, policy.allow_replay_without_handlers);
+    hashBool(&hasher, policy.allow_fresh_without_transcript);
+    hashBool(&hasher, policy.allow_verify_without_transcript);
+    hashBool(&hasher, policy.require_portable_values);
+    hashBool(&hasher, policy.allow_native_only_values);
+    hashBool(&hasher, policy.require_frame_images_for_replay);
+    hashBool(&hasher, policy.allow_pending_adapters);
+    hashBool(&hasher, policy.allow_reject_adapters);
+    hashBool(&hasher, policy.allow_byte_adapters);
+    hashBool(&hasher, policy.allow_native_adapters);
+    hashOptionalU64(&hasher, policy.max_world_ports);
+    hashOptionalU64(&hasher, policy.max_bindings);
+    return hasher.final();
+}
+
+fn fingerprintBindingPlan(plan: BindingPlan) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.binding_plan.fingerprint");
+    hashU64(&hasher, world_binding_plan_fingerprint_version);
+    hashU64(&hasher, plan.target_ref_fingerprint);
+    hashU64(&hasher, plan.world_surface_fingerprint);
+    hashU64(&hasher, plan.target_certificate_fingerprint);
+    hashU64(&hasher, plan.binding_count);
+    for (plan.dense_entries) |entry| {
+        hashU64(&hasher, entry.world_port_id);
+        hashU64(&hasher, entry.adapter_slot);
+        hashU64(&hasher, entry.binding_fingerprint);
+        hashU64(&hasher, @intFromEnum(entry.adapter_kind));
+        hashValuePolicy(&hasher, entry.value_policy);
+        hashOptionalU64(&hasher, entry.authority_fingerprint);
+    }
+    hashBool(&hasher, plan.accepted);
+    return hasher.final();
+}
+
+fn fingerprintAcceptanceReport(report: AcceptanceReport) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.acceptance_report.fingerprint");
+    hashU64(&hasher, world_acceptance_report_fingerprint_version);
+    hashU64(&hasher, report.target_ref_fingerprint);
+    hashU64(&hasher, report.world_surface_fingerprint);
+    hashU64(&hasher, report.target_certificate_fingerprint);
+    hashU64(&hasher, @intFromEnum(report.requested_mode));
+    hashBool(&hasher, report.accepted);
+    hashU64(&hasher, report.required_port_count);
+    hashU64(&hasher, report.bound_port_count);
+    hashU64(&hasher, report.missing_port_count);
+    hashU64(&hasher, report.extra_binding_count);
+    hashU64(&hasher, report.replay_only_port_count);
+    hashU64(&hasher, report.native_port_count);
+    hashU64(&hasher, report.byte_adapter_port_count);
+    hashU64(&hasher, report.portable_value_compatible_count);
+    hashU64(&hasher, report.native_only_value_count);
+    hashU64(&hasher, report.blockers.len);
+    for (report.blockers) |blocker| hashU64(&hasher, @intFromEnum(blocker));
+    hashU64(&hasher, report.warnings.len);
+    for (report.warnings) |warning| hashU64(&hasher, @intFromEnum(warning));
+    hashU64(&hasher, report.summary.len);
+    hashBytes(&hasher, report.summary);
+    return hasher.final();
+}
+
+fn fingerprintEnvironmentCertificate(cert: EnvironmentCertificate) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.environment_certificate.fingerprint");
+    hashU64(&hasher, world_environment_certificate_fingerprint_version);
+    hashU64(&hasher, cert.target_ref_fingerprint);
+    hashU64(&hasher, cert.world_surface_fingerprint);
+    hashU64(&hasher, cert.target_certificate_fingerprint);
+    hashU64(&hasher, cert.import_set_fingerprint);
+    hashU64(&hasher, cert.binding_plan_fingerprint);
+    hashU64(&hasher, cert.acceptance_report_fingerprint);
+    hashU64(&hasher, cert.policy_fingerprint);
+    hashU64(&hasher, cert.authority_descriptor_fingerprint);
+    hashU64(&hasher, cert.adapter_descriptor_fingerprint);
+    hashU64(&hasher, @intFromEnum(cert.accepted_modes));
+    hashU64(&hasher, cert.blocker_count);
+    return hasher.final();
+}
+
+fn fingerprintRunState(state: RunState) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.run_state.fingerprint");
+    hashU64(&hasher, world_run_state_fingerprint_version);
+    hashU64(&hasher, state.target_ref_fingerprint);
+    hashOptionalU64(&hasher, state.transcript_image_fingerprint);
+    hashU64(&hasher, state.branch_id);
+    hashOptionalU64(&hasher, state.checkpoint_fingerprint);
+    hashOptionalU64(&hasher, state.pending_request_fingerprint);
+    hashOptionalU64(&hasher, state.final_response_fingerprint);
+    hashOptionalU64(&hasher, state.final_value_image_fingerprint);
+    hashU64(&hasher, state.turn_index);
+    hashU64(&hasher, @intFromEnum(state.status));
+    return hasher.final();
+}
+
+fn fingerprintRunImage(image: RunImage) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.run_image.fingerprint");
+    hashU64(&hasher, world_run_image_fingerprint_version);
+    hashU64(&hasher, @intFromEnum(image.kind));
+    hashU64(&hasher, image.target_ref.target_ref_fingerprint);
+    hashU64(&hasher, image.import_set_fingerprint);
+    hashOptionalU64(&hasher, if (image.transcript_image) |transcript| transcript.transcript_image_fingerprint else null);
+    hashU64(&hasher, image.current_state.run_state_fingerprint);
+    hashU64(&hasher, image.checkpoints.len);
+    for (image.checkpoints) |checkpoint| hashU64(&hasher, checkpoint.checkpoint_fingerprint);
+    hashU64(&hasher, image.branches.len);
+    for (image.branches) |branch| hashU64(&hasher, branch.fingerprint());
+    hashOptionalU64(&hasher, if (image.pending_request_frame) |frame| frame.frame_fingerprint else null);
+    hashOptionalU64(&hasher, if (image.final_result_image) |value| value.value_image_fingerprint else null);
+    hashOptionalU64(&hasher, image.environment_certificate_fingerprint);
+    hashOptionalU64(&hasher, image.acceptance_report_fingerprint);
+    hashOptionalU64(&hasher, image.audit_image_fingerprint);
+    hashU64(&hasher, image.metadata.len);
+    hashBytes(&hasher, image.metadata);
+    return hasher.final();
 }
 
 fn fingerprintValueImage(
@@ -3790,7 +6066,7 @@ fn hashOptionalU32(hasher: *std.hash.Wyhash, value: ?u32) void {
     }
 }
 
-fn hashOptionalU64(hasher: *std.hash.Wyhash, value: ?u64) void {
+fn hashOptionalU64(hasher: *std.hash.Wyhash, value: anytype) void {
     if (value) |present| {
         hashBool(hasher, true);
         hashU64(hasher, present);
@@ -3807,6 +6083,14 @@ fn hashOptionalBytes(hasher: *std.hash.Wyhash, bytes: ?[]const u8) void {
     } else {
         hashBool(hasher, false);
     }
+}
+
+fn hashValuePolicy(hasher: *std.hash.Wyhash, policy: ValuePolicy) void {
+    hashBool(hasher, policy.require_portable_values);
+    hashBool(hasher, policy.allow_native_only_values);
+    hashBool(hasher, policy.require_response_images_for_replay);
+    hashBool(hasher, policy.allow_diagnostic_type_labels);
+    hashOptionalU64(hasher, policy.max_value_image_bytes);
 }
 
 test {
