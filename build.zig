@@ -303,7 +303,7 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the supervised budget World example.",
             .expected_stdout =
             \\permit_fingerprint=299b25d38bd9e715
-            \\receipt_fingerprint=dda4cde41f36d2f6
+            \\receipt_fingerprint=7cd8474f8a49a3da
             \\budget_exceeded=false
             \\denied_budget_exceeded=true
             \\
@@ -330,7 +330,7 @@ pub fn build(b: *std.Build) void {
             .expected_stdout =
             \\received_run_image_fingerprint=7783047cc7e16a2d
             \\receiver_permit_fingerprint=b962d0b413a703
-            \\receiver_receipt_fingerprint=66f49d5563df492c
+            \\receiver_receipt_fingerprint=806cc344a3727c58
             \\final_result=7
             \\
             ,
@@ -353,8 +353,8 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-supervised-replay-verify",
             .desc = "Run the supervised replay/verify World example.",
             .expected_stdout =
-            \\fresh_receipt=ee3046b67349b8ac
-            \\replay_receipt=b98408e8912d6bd6
+            \\fresh_receipt=7be04f5b20196471
+            \\replay_receipt=813225c25ecb9bf9
             \\verify_divergence_detected=true
             \\
             ,

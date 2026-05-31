@@ -5034,7 +5034,6 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 }
 
                 fn nativeResponseAccounting(self: *Self, comptime Decl: type, trace: anytype, response_fingerprint: u64, response: Decl.Response) !ResponseAccounting {
-                    if (comptime !@hasField(Options, "transcript")) return .{};
                     const value_policy: ValuePolicy = if (comptime @hasDecl(Decl, "value_policy")) Decl.value_policy else .native_compatible;
                     var response_image: ?Frame.ValueImage = Frame.ValueImage.fromValue(
                         self.allocator,
@@ -5313,6 +5312,21 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             self.pending_port_id = world_port_id;
                             self.audit.port_request_count += 1;
                             self.per_port_counts[world_port_id] += 1;
+                            if (!self.frame_step_request) {
+                                if (self.supervisor) |*supervisor| {
+                                    var request_frame = try self.pendingRequestFrame(false);
+                                    defer request_frame.deinit(self.allocator);
+                                    const encoded = try request_frame.encode(self.allocator);
+                                    defer self.allocator.free(encoded);
+                                    supervisor.accountPortRequestBytes(
+                                        world_port_id,
+                                        encoded.len,
+                                        if (request_frame.payload_image) |image| image.bytes.len else 0,
+                                    ) catch |err| {
+                                        return self.handleSupervisionStepError(err);
+                                    };
+                                }
+                            }
                             if (self.effective_mode == .fresh) {
                                 if (!self.frame_step_request) {
                                     try self.recordPortEvent(.port_requested, world_port_id, trace, null, null, null, null, null);

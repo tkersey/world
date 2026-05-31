@@ -4775,6 +4775,24 @@ test "supervised frame request bytes are accounted before frame handoff" {
     try std.testing.expectEqual(@as(usize, 0), ctx.calls);
 }
 
+test "supervised direct dispatch accounts request frame bytes before handler" {
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+        .budget = world.Budget.init(.{ .max_frame_request_bytes = 1 }),
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var ctx: PortsCtx = .{};
+    try std.testing.expectError(error.BudgetExceeded, PortsMachineEnv.run(&runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+        .permit = permit,
+    }));
+    try std.testing.expectEqual(@as(usize, 0), ctx.calls);
+}
+
 test "supervised frame response bytes are accounted before framed resume" {
     const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
         .mode = .fresh,
@@ -4872,11 +4890,11 @@ test "supervised verify accounts transcript image response frame bytes" {
     try std.testing.expectEqual(world.Supervision.BudgetExceededKind.frame_response_bytes, run.supervisor.?.ledger.exceeded_budget.?);
 }
 
-test "supervised fresh accounts native transcript response image bytes" {
+test "supervised fresh accounts native transcript response frame bytes" {
     const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
         .mode = .fresh,
         .policy = world.SupervisionPolicy.strict_fresh,
-        .budget = world.Budget.init(.{ .max_value_image_bytes = 1 }),
+        .budget = world.Budget.init(.{ .max_frame_response_bytes = 1 }),
     });
     var runtime = boundary.Runtime.init(std.testing.allocator);
     defer runtime.deinit();
@@ -4897,7 +4915,25 @@ test "supervised fresh accounts native transcript response image bytes" {
     }
     try std.testing.expectError(error.BudgetExceeded, run.dispatch());
     try std.testing.expectEqual(@as(usize, 1), ctx.calls);
-    try std.testing.expectEqual(world.Supervision.BudgetExceededKind.value_image_bytes, run.supervisor.?.ledger.exceeded_budget.?);
+    try std.testing.expectEqual(world.Supervision.BudgetExceededKind.frame_response_bytes, run.supervisor.?.ledger.exceeded_budget.?);
+}
+
+test "supervised fresh accounts native response frame bytes without transcripts" {
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+        .budget = world.Budget.init(.{ .max_frame_response_bytes = 1 }),
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var ctx: PortsCtx = .{};
+    try std.testing.expectError(error.BudgetExceeded, PortsMachineEnv.run(&runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+        .permit = permit,
+    }));
+    try std.testing.expectEqual(@as(usize, 1), ctx.calls);
 }
 
 test "budget zero port budget denies first port and usage ledger records cost model units" {
