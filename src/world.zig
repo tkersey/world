@@ -2186,7 +2186,6 @@ pub const Supervision = struct {
             self.ledger.deinit(self.allocator);
             self.ledger = candidate.*;
             candidate.per_port_usage = &.{};
-            self.blocker = .budget_exceeded;
             self.last_check = Supervision.SupervisionCheck.init(.{
                 .run_permit_fingerprint = self.permit.permit_fingerprint,
                 .event_kind = kind,
@@ -2201,8 +2200,12 @@ pub const Supervision = struct {
                 .summary = summary,
             });
             switch (self.permit.policy.budgetBehavior()) {
-                .fail => return Error.BudgetExceeded,
+                .fail => {
+                    self.blocker = .budget_exceeded;
+                    return Error.BudgetExceeded;
+                },
                 .park => {
+                    self.blocker = .budget_exceeded;
                     self.interrupted = true;
                     return Error.BudgetExceeded;
                 },
@@ -2220,7 +2223,6 @@ pub const Supervision = struct {
         fn reserveSupervisionEvent(self: *@This(), kind: Supervision.SupervisionCheck.EventKind, world_port_id: ?u32, usage_before: u64, rule_fingerprint: ?u64, summary: []const u8) !SupervisionEventReservation {
             if (self.permit.policy.max_supervision_events) |max| {
                 if (self.supervision_event_count >= max) {
-                    self.blocker = .max_supervision_events_exceeded;
                     var check = Supervision.SupervisionCheck.init(.{
                         .run_permit_fingerprint = self.permit.permit_fingerprint,
                         .event_kind = kind,
@@ -2236,10 +2238,12 @@ pub const Supervision = struct {
                     });
                     switch (self.permit.policy.budgetBehavior()) {
                         .fail => {
+                            self.blocker = .max_supervision_events_exceeded;
                             self.last_check = check;
                             return Error.BudgetExceeded;
                         },
                         .park => {
+                            self.blocker = .max_supervision_events_exceeded;
                             self.interrupted = true;
                             self.last_check = check;
                             return Error.BudgetExceeded;

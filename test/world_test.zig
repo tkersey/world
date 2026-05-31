@@ -5343,8 +5343,18 @@ test "audit-only budget checks refresh fingerprints after allowing the check" {
     defer supervisor.deinit();
     try supervisor.beforePortRequest(0, 0, 0);
     try std.testing.expectEqual(@as(usize, 1), supervisor.warning_count);
+    try std.testing.expectEqual(@as(?world.Supervision.Blocker, null), supervisor.blocker);
     try std.testing.expect(supervisor.last_check.?.allowed);
     try std.testing.expect(supervisor.last_check.?.validateFingerprint());
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .completed,
+    });
+    const receipt = supervisor.receipt(.completed, state.run_state_fingerprint, null, null);
+    try std.testing.expectEqual(@as(?world.Supervision.Blocker, null), receipt.blocker);
+    try std.testing.expectEqual(@as(usize, 1), receipt.warning_count);
+    try std.testing.expectEqual(world.Supervision.BudgetExceededKind.port_requests, receipt.exceeded_budget.?);
 }
 
 test "cost model and port rule enforce per-port budgets and response status" {
@@ -5546,6 +5556,7 @@ test "audit-only max supervision events warns and allows checks" {
     try std.testing.expectEqual(@as(usize, 1), supervisor.supervision_event_count);
     try std.testing.expectEqual(@as(usize, 2), supervisor.ledger.total_session_steps);
     try std.testing.expectEqual(@as(usize, 1), supervisor.warning_count);
+    try std.testing.expectEqual(@as(?world.Supervision.Blocker, null), supervisor.blocker);
     try std.testing.expect(supervisor.last_check.?.allowed);
     try std.testing.expectEqual(world.Supervision.Blocker.max_supervision_events_exceeded, supervisor.last_check.?.blocker.?);
     try std.testing.expectEqual(world.Supervision.BudgetExceededKind.supervision_events, supervisor.last_check.?.budget_exceeded.?);
