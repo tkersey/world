@@ -4349,6 +4349,12 @@ test "replay handoff replays completed run without native handler calls" {
 
     const report = handoff.preflight(fixtures.Ports.Target, PortsReplayEnv, .accept_replay);
     try std.testing.expect(report.accepted);
+    const replay_permit = world.Supervision.issue(fixtures.Ports.Target, PortsReplayEnv, .{
+        .mode = .replay,
+        .policy = world.SupervisionPolicy.strict_replay,
+    });
+    const replay_permit_report = handoff.preflightWithPermit(fixtures.Ports.Target, PortsReplayEnv, .accept_replay, replay_permit);
+    try std.testing.expect(!replay_permit_report.accepted);
     const fresh_report = handoff.preflight(fixtures.Ports.Target, PortsEnv, .accept_fresh);
     try std.testing.expect(!fresh_report.accepted);
     try std.testing.expectEqual(world.AcceptanceBlocker.HandoffPendingFrameMismatch, fresh_report.blockers[0]);
@@ -4872,6 +4878,45 @@ test "park-on-budget returns parked run state instead of failing" {
     try std.testing.expectEqual(world.AuditReport.Status.parked, run.audit.final_status);
 }
 
+test "park-on-budget preserves parked state when completion transcript exceeds budget" {
+    const policy = world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .allow_native_adapters = true,
+        .require_environment_certificate = true,
+        .park_on_budget_exceeded = true,
+    });
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = policy,
+        .budget = world.Budget.init(.{ .max_transcript_events = 4 }),
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var ctx: PortsCtx = .{};
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    var run = try PortsMachineEnv.start(&runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+        .transcript = &transcript,
+        .permit = permit,
+    });
+    defer run.deinit();
+    switch (try run.next()) {
+        .port_required => {},
+        else => return error.ExpectedPortRequired,
+    }
+    try run.dispatch();
+    switch (try run.next()) {
+        .parked => {},
+        else => return error.ExpectedParked,
+    }
+    try std.testing.expectEqual(@as(usize, 1), ctx.calls);
+    try std.testing.expectEqual(world.AuditReport.Status.parked, run.audit.final_status);
+    try std.testing.expectEqual(@as(usize, 4), transcript.events.items.len);
+}
+
 test "max supervision events is enforced before recording another check" {
     const policy = world.SupervisionPolicy.init(.{
         .allow_fresh_calls = true,
@@ -5183,12 +5228,16 @@ test "supervised handoff receiver can issue stricter permit and inspect prior re
     var accept_runtime = boundary.Runtime.init(std.testing.allocator);
     defer accept_runtime.deinit();
     var accept_ctx: PortsCtx = .{};
+    var accept_transcript = world.Transcript.init(std.testing.allocator);
+    defer accept_transcript.deinit();
     try std.testing.expectError(error.BudgetExceeded, handoff.resumeWithPermit(fixtures.Ports.Target, PortsEnv, &accept_runtime, .{}, .{
         .allocator = std.testing.allocator,
         .mode = world.Mode.fresh,
         .ctx = &accept_ctx,
+        .transcript = &accept_transcript,
     }, .accept_fresh, handoff_accept_deny_permit));
     try std.testing.expectEqual(@as(usize, 0), accept_ctx.calls);
+    try std.testing.expectEqual(@as(usize, 0), accept_transcript.events.items.len);
 }
 
 test "supervised branch and checkpoint budgets are enforced" {

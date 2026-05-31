@@ -4487,7 +4487,7 @@ pub const Handoff = struct {
         if (permit.environment_certificate_fingerprint != cert.certificate_fingerprint) {
             return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.SupervisionPolicyMismatch});
         }
-        if (mode == .accept_fresh and !permit.policy.allow_handoff_accept) {
+        if (!permit.policy.allow_handoff_accept) {
             return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.SupervisionPolicyMismatch});
         }
         const supervision_report = Env.acceptanceReportWithSupervision(modeToRunMode(mode), self.run_image.transcript_image != null, permit.policy);
@@ -4538,6 +4538,11 @@ pub const Handoff = struct {
         if (self.run_image.current_state.status != .parked_on_port) return error.HandoffPendingFrameMismatch;
         const pending_frame = self.run_image.pending_request_frame orelse return error.HandoffPendingFrameMismatch;
         const MachineType = Machine(Target, Env.machine_config);
+        if (permit_override) |permit| {
+            var accept_supervisor = try Supervision.Supervisor.init(@field(options, "allocator"), permit, Target.WorldPortTable.entries.len);
+            defer accept_supervisor.deinit();
+            try accept_supervisor.beforeHandoffAccept();
+        }
         var run = if (permit_override) |permit|
             try MachineType.startWithHandoffTranscriptPermit(runtime, args, options, permit)
         else
@@ -5102,8 +5107,10 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                                     return err;
                                 };
                             }
+                            self.recordRunEvent(.run_completed, null, self.effective_mode == .fresh) catch |err| {
+                                return self.handleSupervisionStepError(err);
+                            };
                             self.audit.final_status = .completed;
-                            try self.recordRunEvent(.run_completed, null, self.effective_mode == .fresh);
                             return .{ .done = self.done_value };
                         },
                         .after => {
