@@ -134,7 +134,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-ports",
             .desc = "Run the one-port World example.",
             .expected_stdout =
-            \\world_surface_fingerprint=eb029dda8f6352c
+            \\world_surface_fingerprint=1c56147f9e4ab2ff
             \\world_port_id=0
             \\request_fingerprint=1a84e84d29103ea4
             \\final_result=7
@@ -164,6 +164,71 @@ pub fn build(b: *std.Build) void {
             \\fixture final=final=fixture updated events=10 tool_calls=2 responses=5
             \\fixture output=actuate updated the fixture
             \\replay fresh_handler_calls=0
+            \\
+            ,
+        },
+        .{
+            .name = "world-frame-ports",
+            .path = "examples/world_frame_ports.zig",
+            .step = "run-world-frame-ports",
+            .desc = "Run the frame-first one-port World example.",
+            .expected_stdout =
+            \\request_frame_fingerprint=a0fb9bb7f59ece20
+            \\response_frame_fingerprint=d614051a97fab2c5
+            \\world_port_id=0
+            \\final_result=7
+            \\
+            ,
+        },
+        .{
+            .name = "world-transcript-image-replay",
+            .path = "examples/world_transcript_image_replay.zig",
+            .step = "run-world-transcript-image-replay",
+            .desc = "Run the transcript image replay World example.",
+            .expected_stdout =
+            \\transcript_image_fingerprint=950bd692d8372e44
+            \\replayed_response_count=1
+            \\final_result=7
+            \\
+            ,
+        },
+        .{
+            .name = "world-byte-adapter",
+            .path = "examples/world_byte_adapter.zig",
+            .step = "run-world-byte-adapter",
+            .desc = "Run the byte adapter frame World example.",
+            .expected_stdout =
+            \\request_frame_bytes=193
+            \\response_frame_bytes=132
+            \\final_result=7
+            \\
+            ,
+        },
+        .{
+            .name = "world-agent-timeline",
+            .path = "examples/world_agent_timeline.zig",
+            .step = "run-world-agent-timeline",
+            .desc = "Run the agent timeline World example.",
+            .expected_stdout =
+            \\transcript_image_fingerprint=826ae3f8ebba9eb5
+            \\event_count=8
+            \\tool_call_count=1
+            \\replay_verified=true
+            \\final_result=final=actuate skeleton complete
+            \\
+            ,
+        },
+        .{
+            .name = "world-agent-branch",
+            .path = "examples/world_agent_branch.zig",
+            .step = "run-world-agent-branch",
+            .desc = "Run the agent branch World example.",
+            .expected_stdout =
+            \\checkpoint_fingerprint=6a333bf6c1e931bb
+            \\baseline_transcript_fingerprint=826ae3f8ebba9eb5
+            \\branch_transcript_fingerprint=313381a33465638b
+            \\baseline_final_result=final=actuate skeleton complete
+            \\branch_final_result=final=branch alternate
             \\
             ,
         },
@@ -205,7 +270,7 @@ pub fn build(b: *std.Build) void {
         "sh",
         "-c",
         \\set -eu
-        \\if grep -n -E 'TreatyResolver|ProviderHarness|provider_catalog|morphism_catalog|closure_graph|normalize|operation_label_dispatch|string_match_dispatch' src/world.zig; then
+        \\if grep -n -E 'TreatyResolver|ProviderHarness|provider_catalog|morphism_catalog|closure_graph|normalize|operation_label_dispatch|string_match_dispatch|transcript_image.*StoredValue|StoredValue.*transcript_image|request_token|thread_id' src/world.zig; then
         \\  echo "forbidden hot-path surface reference found" >&2
         \\  exit 1
         \\fi

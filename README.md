@@ -21,6 +21,11 @@ The public root is intentionally small:
 - `world.PortResponse`
 - `world.Mode`
 - `world.Transcript`
+- `world.Frame`
+- `world.ValuePolicy`
+- `world.TranscriptImage`
+- `world.Timeline`
+- `world.AuditImage`
 - `world.AuditReport`
 - `world.Error`
 
@@ -84,6 +89,29 @@ Replay keys include:
 
 Changing any of those changes the replay key. Replay also fails on target-certificate mismatch, missing responses, port mismatch, request mismatch, response-kind mismatch, full-surface mismatch, or unused response events.
 
+## World Timeline Kernel
+
+The timeline kernel makes residual port interactions portable. `world.Frame.Request` describes a port request without a request token, runtime pointer, allocator pointer, handler function pointer, thread id, or host-owned pointer identity. `world.Frame.Response` describes the response, status, replay key, response fingerprint, and optional portable value image.
+
+`world.Frame.ValueImage` is a byte-oriented value image for scalar values, byte slices, and simple product/sum shapes already represented by Boundary value metadata and Zig types. Unsupported values fail closed with `UnsupportedValueImage`, `NativeOnlyValue`, or `MissingValueImage` depending on `world.ValuePolicy`.
+
+Native Zig handlers remain ergonomic through `world.port` and `world.portWithOptions`; they are one adapter over frame semantics. The frame step API is:
+
+```zig
+var run = try Machine.start(runtime, args, options);
+switch (try run.nextFrame()) {
+    .port_request => |request_frame| try run.resumeFrame(response_frame),
+    .done => |value| ...,
+    .failed => ...,
+}
+```
+
+`world.TranscriptImage` is the portable image form of a transcript. It contains ordered event images, request/response frames, replay keys, final status, and summary counts. It does not store `StoredValue`, `*anyopaque`, allocator/runtime/thread pointers, request tokens, or handler functions. Image-backed replay requires the machine's compile-time port descriptors so World can recover the residual site and response type, but it does not call native handlers or require a handler context when response frames carry portable `ValueImage` data.
+
+`world.Timeline.Checkpoint` records deterministic metadata for a resumable or branchable point: event index, turn index, prefix fingerprint, branch id, and optional current request/last response fingerprints. `world.Timeline.Branch` records a branch id, parent, checkpoint fingerprint, event range, final status, and counts. These are metadata primitives only; World does not add persistence, scheduling, or concurrency.
+
+`world.AuditImage` summarizes frame counts, replay/verify/failure counts, checkpoint/branch counts, portable-value blockers, and the transcript image fingerprint when available.
+
 ## Audit Reports
 
 `world.AuditReport` includes the WorldSurface fingerprint, target certificate fingerprint, run mode, final status, request counts, fresh/replayed/rejected/failed counts, replay mismatches, missing handlers, and per-port counts.
@@ -97,6 +125,11 @@ zig build run-world-strict
 zig build run-world-ports
 zig build run-world-replay-ports
 zig build run-world-agent-loop
+zig build run-world-frame-ports
+zig build run-world-transcript-image-replay
+zig build run-world-byte-adapter
+zig build run-world-agent-timeline
+zig build run-world-agent-branch
 ```
 
 `world_run_strict` runs a strict closed zero-port target.
@@ -106,6 +139,16 @@ zig build run-world-agent-loop
 `world_replay_ports` records a fresh transcript and replays without fresh handler calls.
 
 `world_agent_loop` demonstrates an agent-shaped residual surface with `model.decide` and `tool.call` ports. It is not an agent framework; it is a port dispatch and replay fixture.
+
+`world_frame_ports` steps to a `Frame.Request`, resumes from a `Frame.Response`, and records frame fingerprints.
+
+`world_transcript_image_replay` records a fresh transcript image, decodes it, and replays without native handler calls.
+
+`world_byte_adapter` encodes request/response frames as canonical bytes through a fake byte host. It is not WASM and does not define a concrete ABI.
+
+`world_agent_timeline` replays an agent-shaped transcript image without model/tool handler calls.
+
+`world_agent_branch` records baseline and alternate agent transcripts from checkpoint metadata and shows different final results.
 
 ## Validation
 
