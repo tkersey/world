@@ -29,6 +29,37 @@ fn approveRequest(ctx: *PortsCtx, request: world.PortRequest(fixtures.Ports.Targ
 const PortsDecl = world.port(fixtures.Ports.Target, fixtures.Ports.ApprovalRequest, approve);
 const PortsByIdDecl = world.portById(fixtures.Ports.Target, 0, fixtures.Ports.ApprovalRequest, approve);
 const PortsRequestDecl = world.port(fixtures.Ports.Target, fixtures.Ports.ApprovalRequest, approveRequest);
+const PortsNativeBinding = world.bind(PortsDecl, world.NativeAdapter(approve));
+const PortsAltNativeBinding = world.bind(PortsDecl, world.NativeAdapter(approveRequest));
+const PortsReplayBinding = world.bind(PortsDecl, world.ReplayAdapter(0x7777_aaaa));
+const PortsByteBinding = world.bind(PortsDecl, world.ByteAdapter("test-byte"));
+const PortsEnv = world.Environment(fixtures.Ports.Target, .{
+    .bindings = .{PortsNativeBinding},
+    .policy = world.EnvironmentPolicy.fresh_and_replay,
+});
+const PortsReplayEnv = world.Environment(fixtures.Ports.Target, .{
+    .bindings = .{PortsReplayBinding},
+    .policy = world.EnvironmentPolicy.strict_replay,
+});
+const PortsByteEnv = world.Environment(fixtures.Ports.Target, .{
+    .bindings = .{PortsByteBinding},
+    .policy = world.EnvironmentPolicy.test_fixture,
+});
+const PortsMissingEnv = world.Environment(fixtures.Ports.Target, .{
+    .bindings = .{},
+    .policy = world.EnvironmentPolicy.strict_fresh,
+});
+const PortsDuplicateEnv = world.Environment(fixtures.Ports.Target, .{
+    .bindings = .{ PortsNativeBinding, PortsAltNativeBinding },
+    .policy = world.EnvironmentPolicy.fresh_and_replay,
+});
+const PortsMachineEnv = world.Machine(fixtures.Ports.Target, .{
+    .environment = PortsEnv,
+    .strict_handler_coverage = true,
+});
+const PortsReplayMachineEnv = world.Machine(fixtures.Ports.Target, .{
+    .environment = PortsReplayEnv,
+});
 const PortsMachine = world.Machine(fixtures.Ports.Target, .{
     .ports = .{PortsDecl},
     .strict_handler_coverage = true,
@@ -2894,6 +2925,472 @@ test "world replay selects latest zero-port source run after ported run" {
     defer replay.deinit(std.testing.allocator);
 
     try std.testing.expectEqualStrings("budget exhausted", replay.value);
+    try std.testing.expectEqual(@as(usize, 0), replay_ctx.model_calls);
+    try std.testing.expectEqual(@as(usize, 0), replay_ctx.tool_calls);
+}
+
+test "target ref fingerprint stable and rejects wrong WorldSurface or TargetCertificate" {
+    const ref_a = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const ref_b = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    try std.testing.expectEqual(ref_a.target_ref_fingerprint, ref_b.target_ref_fingerprint);
+    try std.testing.expect(ref_a.matchesTarget(fixtures.Ports.Target));
+
+    var wrong_surface = ref_a;
+    wrong_surface.world_surface_fingerprint += 1;
+    wrong_surface.target_ref_fingerprint += 1;
+    try std.testing.expect(!wrong_surface.matchesTarget(fixtures.Ports.Target));
+
+    var wrong_certificate = ref_a;
+    wrong_certificate.target_certificate_fingerprint += 1;
+    wrong_certificate.target_ref_fingerprint += 1;
+    try std.testing.expect(!wrong_certificate.matchesTarget(fixtures.Ports.Target));
+    try std.testing.expect(ref_a.residual_program_plan_hash != null);
+}
+
+test "import requirement and import set preserve world_port_id scope" {
+    const requirement = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
+    const again = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
+    try std.testing.expectEqual(requirement.requirement_fingerprint, again.requirement_fingerprint);
+    try std.testing.expectEqual(@as(u32, 0), requirement.world_port_id);
+    try std.testing.expectEqual(@as(?u32, 0), requirement.payload_value_table_id);
+    try std.testing.expectEqual(@as(?u32, 1), requirement.response_value_table_id);
+
+    const set = world.ImportSet.fromTarget(fixtures.Ports.Target);
+    const ids = try set.requiredPortIds(std.testing.allocator);
+    defer std.testing.allocator.free(ids);
+    try std.testing.expectEqual(@as(usize, 1), ids.len);
+    try std.testing.expectEqual(@as(u32, 0), ids[0]);
+    try std.testing.expectEqual(requirement.requirement_fingerprint, set.requirementForPort(fixtures.Ports.Target, 0).requirement_fingerprint);
+}
+
+test "world environment accepts bindings and reports missing duplicate and replay-only coverage" {
+    const fresh_report = PortsEnv.acceptanceReport(.fresh, false);
+    try std.testing.expect(fresh_report.accepted);
+    try std.testing.expectEqual(@as(usize, 1), fresh_report.required_port_count);
+    try std.testing.expectEqual(@as(usize, 1), fresh_report.bound_port_count);
+
+    const missing_report = PortsMissingEnv.acceptanceReport(.fresh, false);
+    try std.testing.expect(!missing_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.MissingBinding, missing_report.blockers[0]);
+
+    const duplicate_report = PortsDuplicateEnv.acceptanceReport(.fresh, false);
+    try std.testing.expect(!duplicate_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.ExtraBinding, duplicate_report.blockers[0]);
+
+    const replay_without_handlers = world.Environment(fixtures.Ports.Target, .{
+        .bindings = .{},
+        .policy = world.EnvironmentPolicy.strict_replay,
+    }).acceptanceReport(.replay, true);
+    try std.testing.expect(replay_without_handlers.accepted);
+}
+
+test "binding plan and binding descriptors exclude native function pointer identity" {
+    const native_record = PortsNativeBinding.bindingRecord();
+    const alternate_native_record = PortsAltNativeBinding.bindingRecord();
+    try std.testing.expectEqual(native_record.binding_fingerprint, alternate_native_record.binding_fingerprint);
+    try std.testing.expectEqual(native_record.adapter_descriptor_fingerprint, alternate_native_record.adapter_descriptor_fingerprint);
+
+    const replay_record = PortsReplayBinding.bindingRecord();
+    try std.testing.expect(native_record.binding_fingerprint != replay_record.binding_fingerprint);
+    try std.testing.expectEqual(world.AdapterKind.replay, replay_record.adapter_kind);
+
+    const plan = PortsEnv.bindingPlan();
+    try std.testing.expect(plan.accepted);
+    try std.testing.expectEqual(@as(?usize, 0), plan.lookup(0));
+    try std.testing.expectEqual(@as(?usize, null), plan.lookup(99));
+}
+
+test "acceptance report port authority adapter descriptor and environment certificate fingerprints are stable" {
+    const authority = world.PortAuthority.fixture;
+    const same_authority = world.PortAuthority.fixture;
+    try std.testing.expectEqual(authority.authority_fingerprint, same_authority.authority_fingerprint);
+    try std.testing.expect(authority.allows_fresh_calls);
+    try std.testing.expect(world.PortAuthority.replay_source.allows_replay);
+    try std.testing.expect(!world.PortAuthority.replay_source.allows_fresh_calls);
+
+    const record = PortsByteBinding.bindingRecord();
+    try std.testing.expectEqual(world.AdapterKind.byte, record.adapter_kind);
+    const native_record = PortsNativeBinding.bindingRecord();
+    try std.testing.expect(native_record.adapter_descriptor_fingerprint != record.adapter_descriptor_fingerprint);
+
+    const report = PortsEnv.acceptanceReport(.fresh, false);
+    const report_again = PortsEnv.acceptanceReport(.fresh, false);
+    try std.testing.expectEqual(report.report_fingerprint, report_again.report_fingerprint);
+
+    const cert = PortsEnv.certificate(.fresh, false);
+    const cert_again = PortsEnv.certificate(.fresh, false);
+    try std.testing.expectEqual(cert.certificate_fingerprint, cert_again.certificate_fingerprint);
+    try std.testing.expectEqual(PortsEnv.bindingPlan().plan_fingerprint, cert.binding_plan_fingerprint);
+}
+
+test "Machine accepts Environment while legacy ports config remains valid" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var ctx: PortsCtx = .{};
+    var result = try PortsMachineEnv.run(&runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+    });
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(i32, 7), result.value);
+    try std.testing.expectEqual(@as(usize, 1), ctx.calls);
+
+    const legacy_plan = PortsMachine.port_count;
+    try std.testing.expectEqual(@as(usize, 1), legacy_plan);
+}
+
+test "run state fingerprints bind parked and completed state without runtime pointers" {
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const parked = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .pending_request_fingerprint = testRequestFrame().frame_fingerprint,
+        .turn_index = 3,
+        .status = .parked_on_port,
+    });
+    const parked_again = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .pending_request_fingerprint = testRequestFrame().frame_fingerprint,
+        .turn_index = 3,
+        .status = .parked_on_port,
+    });
+    try std.testing.expectEqual(parked.run_state_fingerprint, parked_again.run_state_fingerprint);
+
+    const completed = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .final_value_image_fingerprint = 0x1234,
+        .status = .completed,
+    });
+    try std.testing.expect(parked.run_state_fingerprint != completed.run_state_fingerprint);
+}
+
+test "run image encode decode roundtrip includes TargetRef TranscriptImage branches checkpoints and pending frame" {
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    try recordPortsTranscript(&transcript);
+    var image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer image.deinit(std.testing.allocator);
+
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const import_set = world.ImportSet.fromTarget(fixtures.Ports.Target);
+    const request = testRequestFrame();
+    const checkpoint = world.Timeline.Checkpoint.init(.{
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .target_certificate_fingerprint = request.target_certificate_fingerprint,
+        .event_index = 1,
+        .turn_index = request.turn_index,
+        .current_request_fingerprint = request.frame_fingerprint,
+        .transcript_prefix_fingerprint = image.events[0].event_fingerprint,
+        .branch_id = 1,
+        .status = .parked_on_port,
+    });
+    const branch = world.Timeline.Branch{
+        .branch_id = 2,
+        .parent_branch_id = 1,
+        .checkpoint_fingerprint = checkpoint.checkpoint_fingerprint,
+        .branch_label = "receiver",
+        .start_event_index = 1,
+        .final_event_index = image.events.len,
+        .final_status = .running,
+        .event_count = image.events.len,
+        .response_count = image.response_count,
+    };
+    const state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .transcript_image_fingerprint = image.transcript_image_fingerprint,
+        .branch_id = 2,
+        .checkpoint_fingerprint = checkpoint.checkpoint_fingerprint,
+        .pending_request_fingerprint = request.frame_fingerprint,
+        .turn_index = request.turn_index,
+        .status = .parked_on_port,
+    });
+    const run_image = world.RunImage.init(.{
+        .kind = .parked_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = import_set.import_set_fingerprint,
+        .transcript_image = image,
+        .current_state = state,
+        .checkpoints = &.{checkpoint},
+        .branches = @constCast(&[_]world.Timeline.Branch{branch}),
+        .pending_request_frame = request,
+        .environment_certificate_fingerprint = PortsEnv.certificate(.fresh, false).certificate_fingerprint,
+        .acceptance_report_fingerprint = PortsEnv.acceptanceReport(.fresh, false).report_fingerprint,
+    });
+
+    const encoded = try run_image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(encoded);
+    var decoded = try world.RunImage.decode(std.testing.allocator, encoded);
+    defer decoded.deinit(std.testing.allocator);
+    try std.testing.expectEqual(run_image.run_image_fingerprint, decoded.run_image_fingerprint);
+    try std.testing.expectEqual(target_ref.target_ref_fingerprint, decoded.target_ref.target_ref_fingerprint);
+    try std.testing.expectEqual(@as(usize, 1), decoded.checkpoints.len);
+    try std.testing.expectEqual(@as(usize, 1), decoded.branches.len);
+    try std.testing.expect(decoded.pending_request_frame != null);
+
+    var malformed = try std.testing.allocator.dupe(u8, encoded);
+    defer std.testing.allocator.free(malformed);
+    malformed[8] +%= 1;
+    try std.testing.expectError(error.InvalidFrameEncoding, world.RunImage.decode(std.testing.allocator, malformed));
+}
+
+test "handoff preflight rejects target mismatch and accepts replay handoff with transcript image" {
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    try recordPortsTranscript(&transcript);
+    var image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer image.deinit(std.testing.allocator);
+    const run_image = world.RunImage.fromTranscriptImage(fixtures.Ports.Target, image, .replay_only_run);
+    const encoded = try run_image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(encoded);
+    var handoff = try world.Handoff.fromRunImage(std.testing.allocator, encoded);
+    defer handoff.deinit();
+
+    const replay_report = handoff.preflight(fixtures.Ports.Target, PortsReplayEnv, .accept_replay);
+    try std.testing.expect(replay_report.accepted);
+
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const forged_state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .not_started,
+    });
+    const forged_import_set = world.RunImage.init(.{
+        .kind = .reference_target_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint + 1,
+        .current_state = forged_state,
+    });
+    const forged_encoded = try forged_import_set.encode(std.testing.allocator);
+    defer std.testing.allocator.free(forged_encoded);
+    var forged_handoff = try world.Handoff.fromRunImage(std.testing.allocator, forged_encoded);
+    defer forged_handoff.deinit();
+    const import_mismatch = forged_handoff.preflight(fixtures.Ports.Target, PortsEnv, .inspect_only);
+    try std.testing.expect(!import_mismatch.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.HandoffTargetMismatch, import_mismatch.blockers[0]);
+
+    const EmptyEnv = world.Environment(OptionalNullTarget, .{ .bindings = .{}, .policy = world.EnvironmentPolicy.audit_only });
+    const mismatch = handoff.preflight(OptionalNullTarget, EmptyEnv, .inspect_only);
+    try std.testing.expect(!mismatch.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.HandoffTargetMismatch, mismatch.blockers[0]);
+}
+
+test "parked handoff resumes selected pending request on receiver environment" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var ctx: PortsCtx = .{};
+    var run = try PortsMachineEnv.start(&runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+    });
+    defer run.deinit();
+    var request = switch (try run.nextFrame()) {
+        .port_request => |frame| frame,
+        else => return error.ExpectedPortRequest,
+    };
+    defer request.deinit(std.testing.allocator);
+
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .pending_request_fingerprint = request.frame_fingerprint,
+        .turn_index = request.turn_index,
+        .status = .parked_on_port,
+    });
+    const run_image = world.RunImage.init(.{
+        .kind = .parked_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = state,
+        .pending_request_frame = request,
+    });
+    const encoded = try run_image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(encoded);
+    var handoff = try world.Handoff.fromRunImage(std.testing.allocator, encoded);
+    defer handoff.deinit();
+
+    var receiver_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer receiver_runtime.deinit();
+    var receiver_ctx: PortsCtx = .{};
+    var receiver_run = try handoff.@"resume"(fixtures.Ports.Target, PortsEnv, &receiver_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &receiver_ctx,
+    }, .accept_fresh);
+    defer receiver_run.deinit();
+    var receiver_request = switch (try receiver_run.nextFrame()) {
+        .port_request => |frame| frame,
+        else => return error.ExpectedPortRequest,
+    };
+    defer receiver_request.deinit(std.testing.allocator);
+    try std.testing.expectEqual(request.frame_fingerprint, receiver_request.frame_fingerprint);
+    try receiver_run.dispatch();
+    const done = try receiver_run.nextFrame();
+    try std.testing.expectEqual(@as(i32, 7), switch (done) {
+        .done => |value| value,
+        else => return error.ExpectedDone,
+    });
+}
+
+test "replay handoff replays completed run without native handler calls" {
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    try recordPortsTranscript(&transcript);
+    var image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer image.deinit(std.testing.allocator);
+    const run_image = world.RunImage.fromTranscriptImage(fixtures.Ports.Target, image, .completed_run);
+    const encoded = try run_image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(encoded);
+    var handoff = try world.Handoff.fromRunImage(std.testing.allocator, encoded);
+    defer handoff.deinit();
+
+    const report = handoff.preflight(fixtures.Ports.Target, PortsReplayEnv, .accept_replay);
+    try std.testing.expect(report.accepted);
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var replayed = try PortsReplayMachineEnv.run(&runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.replay,
+        .transcript_image = &handoff.run_image.transcript_image.?,
+    });
+    defer replayed.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(i32, 7), replayed.value);
+    try std.testing.expectEqual(@as(usize, 1), replayed.audit.replayed_response_count);
+}
+
+test "verify handoff detects changed fixture handler behavior" {
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    try recordPortsTranscript(&transcript);
+    var image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer image.deinit(std.testing.allocator);
+    const run_image = world.RunImage.fromTranscriptImage(fixtures.Ports.Target, image, .completed_run);
+    const encoded = try run_image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(encoded);
+    var handoff = try world.Handoff.fromRunImage(std.testing.allocator, encoded);
+    defer handoff.deinit();
+    try std.testing.expect(handoff.preflight(fixtures.Ports.Target, PortsEnv, .accept_verify).accepted);
+
+    var ok_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer ok_runtime.deinit();
+    var ok_ctx: PortsCtx = .{};
+    var verified = try PortsMachineEnv.run(&ok_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.verify,
+        .ctx = &ok_ctx,
+        .transcript_image = &handoff.run_image.transcript_image.?,
+    });
+    defer verified.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(i32, 7), verified.value);
+
+    handoff.run_image.transcript_image.?.resetReplay();
+    var bad_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer bad_runtime.deinit();
+    var bad_ctx: PortsCtx = .{ .response = 99 };
+    try std.testing.expectError(error.VerifyDivergence, PortsMachineEnv.run(&bad_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.verify,
+        .ctx = &bad_ctx,
+        .transcript_image = &handoff.run_image.transcript_image.?,
+    }));
+}
+
+test "branch handoff metadata roundtrips and parent transcript is not mutated" {
+    var baseline = try runAgentScenario(std.testing.allocator, .skeleton);
+    defer baseline.fresh_result.deinit(std.testing.allocator);
+    defer baseline.replay_result.deinit(std.testing.allocator);
+    defer baseline.transcript.deinit();
+    var image = try baseline.transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer image.deinit(std.testing.allocator);
+    const original_event_count = baseline.transcript.events.items.len;
+    const checkpoint = world.Timeline.Checkpoint.init(.{
+        .world_surface_fingerprint = fixtures.Agent.Target.WorldSurface.surface_fingerprint,
+        .target_certificate_fingerprint = fixtures.Agent.Target.Certificate.certificate_fingerprint,
+        .event_index = 2,
+        .turn_index = image.events[1].turn_index orelse 0,
+        .current_request_fingerprint = image.events[1].request_fingerprint,
+        .transcript_prefix_fingerprint = image.events[1].event_fingerprint,
+        .branch_id = 1,
+        .status = .parked_on_port,
+    });
+    const branch = world.Timeline.Branch{
+        .branch_id = 2,
+        .parent_branch_id = 1,
+        .checkpoint_fingerprint = checkpoint.checkpoint_fingerprint,
+        .branch_label = "agent-branch",
+        .start_event_index = checkpoint.event_index,
+        .final_event_index = image.events.len,
+        .final_status = .completed,
+        .event_count = image.events.len - checkpoint.event_index,
+        .response_count = image.response_count,
+    };
+    const target_ref = world.TargetRef.fromTarget(fixtures.Agent.Target);
+    const state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .transcript_image_fingerprint = image.transcript_image_fingerprint,
+        .branch_id = branch.branch_id,
+        .checkpoint_fingerprint = checkpoint.checkpoint_fingerprint,
+        .status = .completed,
+    });
+    const run_image = world.RunImage.init(.{
+        .kind = .branched_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Agent.Target).import_set_fingerprint,
+        .transcript_image = image,
+        .current_state = state,
+        .checkpoints = &.{checkpoint},
+        .branches = @constCast(&[_]world.Timeline.Branch{branch}),
+    });
+    const encoded = try run_image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(encoded);
+    var decoded = try world.RunImage.decode(std.testing.allocator, encoded);
+    defer decoded.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 1), decoded.branches.len);
+    try std.testing.expectEqual(branch.fingerprint(), decoded.branches[0].fingerprint());
+    try std.testing.expectEqual(original_event_count, baseline.transcript.events.items.len);
+
+    const invalid_state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .transcript_image_fingerprint = image.transcript_image_fingerprint,
+        .branch_id = 99,
+        .checkpoint_fingerprint = checkpoint.checkpoint_fingerprint + 1,
+        .status = .completed,
+    });
+    const invalid_branch_image = world.RunImage.init(.{
+        .kind = .branched_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Agent.Target).import_set_fingerprint,
+        .transcript_image = image,
+        .current_state = invalid_state,
+        .checkpoints = &.{checkpoint},
+        .branches = @constCast(&[_]world.Timeline.Branch{branch}),
+    });
+    try std.testing.expectError(error.HandoffCheckpointMismatch, invalid_branch_image.validate(.{}));
+}
+
+test "agent handoff replay works without model or tool handler calls" {
+    var run = try runAgentScenario(std.testing.allocator, .skeleton);
+    defer run.fresh_result.deinit(std.testing.allocator);
+    defer run.replay_result.deinit(std.testing.allocator);
+    defer run.transcript.deinit();
+    var image = try run.transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer image.deinit(std.testing.allocator);
+    const run_image = world.RunImage.fromTranscriptImage(fixtures.Agent.Target, image, .replay_only_run);
+    const encoded = try run_image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(encoded);
+    var handoff = try world.Handoff.fromRunImage(std.testing.allocator, encoded);
+    defer handoff.deinit();
+
+    var replay_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer replay_runtime.deinit();
+    var replay_ctx: AgentCtx = .{ .allocator = std.testing.allocator, .scenario = .skeleton };
+    var replay = try AgentMachine.run(&replay_runtime, AgentArgs{ @as(usize, 3), fixtures.Agent.initialObservation(.skeleton) }, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.replay,
+        .ctx = &replay_ctx,
+        .transcript_image = &handoff.run_image.transcript_image.?,
+    });
+    defer replay.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("final=actuate skeleton complete", replay.value);
     try std.testing.expectEqual(@as(usize, 0), replay_ctx.model_calls);
     try std.testing.expectEqual(@as(usize, 0), replay_ctx.tool_calls);
 }

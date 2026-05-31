@@ -25,6 +25,19 @@ The public root is intentionally small:
 - `world.ValuePolicy`
 - `world.TranscriptImage`
 - `world.Timeline`
+- `world.TargetRef`
+- `world.ImportRequirement`
+- `world.ImportSet`
+- `world.Environment`
+- `world.Binding`
+- `world.PortAuthority`
+- `world.AdapterDescriptor`
+- `world.BindingPlan`
+- `world.AcceptanceReport`
+- `world.EnvironmentCertificate`
+- `world.RunState`
+- `world.RunImage`
+- `world.Handoff`
 - `world.AuditImage`
 - `world.AuditReport`
 - `world.Error`
@@ -38,6 +51,8 @@ const Machine = world.Machine(Target, .{
     .strict_handler_coverage = true,
 });
 ```
+
+The legacy `.ports` form remains available. It is sugar over the same import-binding shape used by `world.Environment`.
 
 ## Certified Targets
 
@@ -76,6 +91,26 @@ Fresh and verify modes require handler coverage. Strict coverage rejects missing
 
 `world.port` treats handler responses as borrowed values: World clones the response into run/transcript storage before resuming Boundary, and the handler/context remains responsible for any source storage it owns. Handlers that return newly allocated response buffers can use `world.portWithOptions(..., .{ .response_deinit = deinitFn })`; World calls `deinitFn(ctx, response)` after it has retained the response.
 
+## World Environment
+
+World Environment binds the receiving host to the semantic WorldPort imports that Boundary exposed. `world.TargetRef` identifies the certified target by target, surface, certificate, plan, table, and profile fingerprints without carrying code, handlers, runtime pointers, request tokens, credentials, or allocator/thread identity.
+
+`world.ImportRequirement` describes one residual WorldPort requirement. `world.ImportSet` summarizes the required imports for a target and exposes required port ids and per-port requirements. Requirements are semantic; implementations stay outside the requirement.
+
+`world.Binding` connects an import requirement to a local adapter declaration. `world.PortAuthority` is a local audit/policy descriptor, not a Boundary capability and not cryptographic security. `world.AdapterDescriptor` fingerprints adapter declarations without native function pointer identity. `world.BindingPlan` is the deterministic dense table used by `Machine` for `world_port_id` dispatch.
+
+`world.AcceptanceReport` answers whether a target/run can execute under an environment and mode. `world.EnvironmentCertificate` records the accepted target, import set, binding plan, policy, authority, adapter, and blocker fingerprints for audit and transcript provenance.
+
+```zig
+const Env = world.Environment(Target, .{
+    .bindings = .{
+        world.bind(Target.WorldPorts.model_decide, world.NativeAdapter(handleModel)),
+    },
+    .policy = world.EnvironmentPolicy.fresh_and_replay,
+});
+const Machine = world.Machine(Target, .{ .environment = Env });
+```
+
 ## Transcript And Replay
 
 `world.Transcript` is an in-memory deterministic transcript. It records run events, port requests, fresh responses, replayed responses, failures, fingerprints, replay keys, turn indexes, and stored replay values.
@@ -112,6 +147,16 @@ switch (try run.nextFrame()) {
 
 `world.AuditImage` summarizes frame counts, replay/verify/failure counts, checkpoint/branch counts, portable-value blockers, and the transcript image fingerprint when available.
 
+## World Handoff
+
+World Handoff packages execution state. Environment binds the receiving host. Boundary supplies the semantic target.
+
+`world.RunState` describes whether a run is not started, running, parked on a port, completed, or failed. It binds the target ref, optional transcript image, branch id, checkpoint, pending request frame fingerprint, final response/value image fingerprint, turn index, and status.
+
+`world.RunImage` is the portable handoff object. It contains a `TargetRef`, `ImportSet` fingerprint, transcript image, current `RunState`, checkpoint and branch metadata, optional pending `Frame.Request`, optional final `ValueImage`, and optional environment/acceptance/audit fingerprints. It does not contain handlers, credentials, concrete ABI data, network or storage transport, host function pointers, allocator/runtime/thread ids, or request tokens.
+
+`world.Handoff` decodes and validates a `RunImage`, preflights it against a local target and environment, validates parked pending frames, supports replay-only and verify-on-receive flows through transcript images, and keeps branch metadata portable. Future Boundary module images can be referenced by `TargetRef`/`RunImage` without making World a storage, transport, or module-image implementation.
+
 ## Audit Reports
 
 `world.AuditReport` includes the WorldSurface fingerprint, target certificate fingerprint, run mode, final status, request counts, fresh/replayed/rejected/failed counts, replay mismatches, missing handlers, and per-port counts.
@@ -130,6 +175,11 @@ zig build run-world-transcript-image-replay
 zig build run-world-byte-adapter
 zig build run-world-agent-timeline
 zig build run-world-agent-branch
+zig build run-world-environment-preflight
+zig build run-world-handoff-parked
+zig build run-world-handoff-replay
+zig build run-world-handoff-verify
+zig build run-world-agent-handoff
 ```
 
 `world_run_strict` runs a strict closed zero-port target.
@@ -149,6 +199,16 @@ zig build run-world-agent-branch
 `world_agent_timeline` replays an agent-shaped transcript image without model/tool handler calls.
 
 `world_agent_branch` records baseline and alternate agent transcripts from checkpoint metadata and shows different final results.
+
+`world_environment_preflight` shows a missing fresh binding rejected while replay with a complete transcript image passes without a native handler.
+
+`world_handoff_parked` packages a run parked on a port request, decodes it on the receiver side, validates the pending frame, and completes the run.
+
+`world_handoff_replay` transfers a completed run image and replays it from a transcript image without calling a native fresh handler.
+
+`world_handoff_verify` verifies a transferred transcript against matching local handlers and detects a changed handler.
+
+`world_agent_handoff` packages an agent-shaped run image with checkpoint metadata and replays it on the receiver side.
 
 ## Validation
 

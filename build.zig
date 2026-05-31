@@ -232,6 +232,70 @@ pub fn build(b: *std.Build) void {
             \\
             ,
         },
+        .{
+            .name = "world-environment-preflight",
+            .path = "examples/world_environment_preflight.zig",
+            .step = "run-world-environment-preflight",
+            .desc = "Run the World environment preflight example.",
+            .expected_stdout =
+            \\fresh_missing_accepted=false
+            \\fresh_blocker=MissingBinding
+            \\replay_without_handlers_accepted=true
+            \\transcript_image_fingerprint=950bd692d8372e44
+            \\
+            ,
+        },
+        .{
+            .name = "world-handoff-parked",
+            .path = "examples/world_handoff_parked.zig",
+            .step = "run-world-handoff-parked",
+            .desc = "Run the parked World handoff example.",
+            .expected_stdout =
+            \\run_image_fingerprint=ff1e004962787901
+            \\pending_request_fingerprint=a0fb9bb7f59ece20
+            \\environment_certificate_fingerprint=49842a92fd42b967
+            \\final_result=7
+            \\
+            ,
+        },
+        .{
+            .name = "world-handoff-replay",
+            .path = "examples/world_handoff_replay.zig",
+            .step = "run-world-handoff-replay",
+            .desc = "Run the replay World handoff example.",
+            .expected_stdout =
+            \\run_image_fingerprint=4a0188c7d4bad27a
+            \\replayed_response_count=1
+            \\final_result=7
+            \\
+            ,
+        },
+        .{
+            .name = "world-handoff-verify",
+            .path = "examples/world_handoff_verify.zig",
+            .step = "run-world-handoff-verify",
+            .desc = "Run the verify World handoff example.",
+            .expected_stdout =
+            \\verification_accepted=true
+            \\divergence_detected=true
+            \\
+            ,
+        },
+        .{
+            .name = "world-agent-handoff",
+            .path = "examples/world_agent_handoff.zig",
+            .step = "run-world-agent-handoff",
+            .desc = "Run the agent World handoff example.",
+            .expected_stdout =
+            \\run_image_fingerprint=af9d30b6a34e3634
+            \\checkpoint_fingerprint=6a333bf6c1e931bb
+            \\branch_id=1
+            \\model_port_id=0
+            \\tool_port_id=1
+            \\final_result=final=actuate skeleton complete
+            \\
+            ,
+        },
     };
     inline for (examples) |example| {
         const exe_mod = b.createModule(.{
