@@ -4700,6 +4700,34 @@ test "supervised frame request bytes are accounted before frame handoff" {
     try std.testing.expectEqual(@as(usize, 0), ctx.calls);
 }
 
+test "supervised frame response bytes are accounted before framed resume" {
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+        .budget = world.Budget.init(.{ .max_frame_response_bytes = 1 }),
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var ctx: PortsCtx = .{};
+    var run = try PortsMachineEnv.start(&runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+        .permit = permit,
+    });
+    defer run.deinit();
+    var request = switch (try run.nextFrame()) {
+        .port_request => |frame| frame,
+        else => return error.ExpectedFrameRequest,
+    };
+    defer request.deinit(std.testing.allocator);
+    var response = try world.Frame.Response.fromValue(std.testing.allocator, request, 1, 0x1234, .@"resume", @as(i32, 7), .portable);
+    defer response.deinit(std.testing.allocator);
+    try std.testing.expectError(error.BudgetExceeded, run.resumeFrame(response));
+    try std.testing.expectEqual(world.Supervision.BudgetExceededKind.frame_response_bytes, run.supervisor.?.ledger.exceeded_budget.?);
+    try std.testing.expectEqual(@as(usize, 0), ctx.calls);
+}
+
 test "budget zero port budget denies first port and usage ledger records cost model units" {
     const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
         .mode = .fresh,

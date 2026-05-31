@@ -5212,10 +5212,12 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     const request = self.pending_request orelse return error.UnknownResidualSite;
                     const world_port_id = self.pending_port_id orelse return error.UnknownWorldPort;
                     if (self.supervisor) |*supervisor| {
+                        const encoded_response = try response_frame.encode(self.allocator);
+                        defer self.allocator.free(encoded_response);
                         supervisor.afterAdapterResponse(.{
                             .world_port_id = world_port_id,
                             .status = response_frame.status,
-                            .response_bytes = 0,
+                            .response_bytes = encoded_response.len,
                             .value_image_bytes = if (response_frame.response_image) |image| image.bytes.len else 0,
                         }) catch |err| {
                             try self.handleSupervisionError(err);
