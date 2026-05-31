@@ -3460,6 +3460,17 @@ test "handoff preflight rejects target mismatch and accepts replay handoff with 
     const replay_report = handoff.preflight(fixtures.Ports.Target, PortsReplayEnv, .accept_replay);
     try std.testing.expect(replay_report.accepted);
 
+    var native_image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.native_compatible });
+    defer native_image.deinit(std.testing.allocator);
+    const native_run_image = world.RunImage.fromTranscriptImage(fixtures.Ports.Target, native_image, .replay_only_run);
+    const native_encoded = try native_run_image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(native_encoded);
+    var native_handoff = try world.Handoff.fromRunImage(std.testing.allocator, native_encoded);
+    defer native_handoff.deinit();
+    const native_replay_report = native_handoff.preflight(fixtures.Ports.Target, PortsReplayEnv, .accept_replay);
+    try std.testing.expect(!native_replay_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.NativeOnlyValueRejected, native_replay_report.blockers[0]);
+
     const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const forged_state = world.RunState.init(.{
         .target_ref_fingerprint = target_ref.target_ref_fingerprint,
@@ -3664,6 +3675,9 @@ test "replay handoff replays completed run without native handler calls" {
 
     const report = handoff.preflight(fixtures.Ports.Target, PortsReplayEnv, .accept_replay);
     try std.testing.expect(report.accepted);
+    const fresh_report = handoff.preflight(fixtures.Ports.Target, PortsEnv, .accept_fresh);
+    try std.testing.expect(!fresh_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.HandoffPendingFrameMismatch, fresh_report.blockers[0]);
     var rejected_resume_runtime = boundary.Runtime.init(std.testing.allocator);
     defer rejected_resume_runtime.deinit();
     try std.testing.expectError(error.InvalidMode, handoff.@"resume"(fixtures.Ports.Target, PortsReplayEnv, &rejected_resume_runtime, .{}, .{

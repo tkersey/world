@@ -2204,6 +2204,13 @@ pub const TranscriptImage = struct {
         self.replay_limit = selected_limit orelse return error.ReplayMissing;
     }
 
+    pub fn validateValuePolicy(self: *const @This(), policy: ValuePolicy) !void {
+        for (self.events) |event| {
+            if (event.request_frame) |frame| try validateRequestFramePolicy(frame, policy);
+            if (event.response_frame) |frame| try validateResponseFramePolicy(frame, policy);
+        }
+    }
+
     pub fn nextResponse(
         self: *@This(),
         key: ReplayKeySeed,
@@ -2782,11 +2789,23 @@ pub const Handoff = struct {
         const has_transcript = self.run_image.transcript_image != null;
         const report = Env.acceptanceReport(modeToRunMode(mode), has_transcript);
         if (!report.accepted) return report;
+        if (mode == .accept_fresh and
+            (self.run_image.current_state.status != .parked_on_port or self.run_image.pending_request_frame == null))
+        {
+            return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.HandoffPendingFrameMismatch});
+        }
         if (mode == .accept_replay or mode == .accept_verify) {
             const image = if (self.run_image.transcript_image) |*image|
                 image
             else
                 return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.TranscriptImageRequired});
+            const value_policy = if (Env.policy_decl.require_portable_values or !Env.policy_decl.allow_native_only_values or Env.policy_decl.require_frame_images_for_replay)
+                ValuePolicy.portable
+            else
+                ValuePolicy.native_compatible;
+            image.validateValuePolicy(value_policy) catch {
+                return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.NativeOnlyValueRejected});
+            };
             image.resetReplay();
             image.validateReplayRun(
                 Target.WorldSurface.surface_fingerprint,
