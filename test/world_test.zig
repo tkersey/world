@@ -5727,6 +5727,38 @@ test "supervision preflight rejects policies that disable requested mode" {
     try std.testing.expectEqual(world.AcceptanceBlocker.FreshCallDenied, report.blockers[0]);
 }
 
+test "permit acceptance report rejects mismatched permit authority" {
+    const broad_policy = world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .allow_replay_calls = true,
+        .allow_native_adapters = true,
+        .require_environment_certificate = true,
+        .require_transcript_image_for_replay = false,
+    });
+    const fresh_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = broad_policy,
+    });
+    const mode_mismatch = PortsEnv.acceptanceReportWithPermit(.replay, false, fresh_permit);
+    try std.testing.expect(!mode_mismatch.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.SupervisionPolicyMismatch, mode_mismatch.blockers[0]);
+
+    const replay_policy = world.SupervisionPolicy.init(.{
+        .allow_replay_calls = true,
+        .allow_native_adapters = true,
+        .allow_replay_adapters = true,
+        .require_environment_certificate = true,
+        .require_transcript_image_for_replay = false,
+    });
+    const replay_permit = world.Supervision.issue(fixtures.Ports.Target, PortsReplayEnv, .{
+        .mode = .replay,
+        .policy = replay_policy,
+    });
+    const environment_mismatch = PortsEnv.acceptanceReportWithPermit(.replay, false, replay_permit);
+    try std.testing.expect(!environment_mismatch.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.SupervisionPolicyMismatch, environment_mismatch.blockers[0]);
+}
+
 test "supervision replay permits requiring transcript images reject live transcript only runs" {
     var transcript = world.Transcript.init(std.testing.allocator);
     defer transcript.deinit();

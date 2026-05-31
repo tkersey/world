@@ -2392,8 +2392,31 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
         }
 
         pub fn acceptanceReportWithPermit(requested_mode: Mode, transcript_image_available: bool, permit: RunPermit) AcceptanceReport {
+            const environment_target_ref = TargetRef.fromTarget(Target);
+            if (permit.mode != requested_mode) {
+                return rejectedAcceptance(environment_target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
+            }
+            if (permit.target_ref_fingerprint != environment_target_ref.target_ref_fingerprint) {
+                return rejectedAcceptance(environment_target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
+            }
+            if (permit.world_surface_fingerprint != Target.WorldSurface.surface_fingerprint) {
+                return rejectedAcceptance(environment_target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
+            }
+            if (permit.target_certificate_fingerprint != Target.Certificate.certificate_fingerprint) {
+                return rejectedAcceptance(environment_target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
+            }
+            const cert = certificate(requested_mode, transcript_image_available);
+            if (permit.environment_certificate_fingerprint != cert.certificate_fingerprint) {
+                return rejectedAcceptance(environment_target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
+            }
+            if (permit.binding_plan_fingerprint != cert.binding_plan_fingerprint) {
+                return rejectedAcceptance(environment_target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
+            }
             const report = acceptanceReportWithSupervision(requested_mode, transcript_image_available, permit.policy);
             if (!report.accepted) return report;
+            Supervision.Supervisor.validatePermitForRun(permit, Target.WorldPortTable.entries.len) catch |err| {
+                return rejectedAcceptance(environment_target_ref, requested_mode, &.{supervisionPreflightBlocker(err)});
+            };
             inline for (bindings) |BindingDecl| {
                 if (BindingDecl.TargetType != Target) continue;
                 if (BindingDecl.world_port_id >= Target.WorldPortTable.entries.len) continue;
