@@ -4318,6 +4318,7 @@ test "parked handoff replays transcript prefix before selected pending request" 
         .mode = .fresh,
         .policy = world.SupervisionPolicy.handoff_receiver,
         .budget = world.Budget.init(.{ .max_replay_calls = 0 }),
+        .handoff_policy = .allow,
     });
     var replay_denied_runtime = boundary.Runtime.init(std.testing.allocator);
     defer replay_denied_runtime.deinit();
@@ -4429,6 +4430,7 @@ test "replay handoff replays completed run without native handler calls" {
         .mode = .replay,
         .policy = replay_accept_policy,
         .transcript_image_available = true,
+        .handoff_policy = .allow,
     });
     const replay_accept_report = handoff.preflightWithPermit(fixtures.Ports.Target, PortsReplayEnv, .accept_replay, replay_accept_permit);
     try std.testing.expect(replay_accept_report.accepted);
@@ -5566,6 +5568,19 @@ test "supervised handoff receiver can issue stricter permit and inspect prior re
     });
     const report = handoff.preflightWithPermit(fixtures.Ports.Target, PortsEnv, .accept_fresh, receiver_permit);
     try std.testing.expect(report.accepted);
+    const unwitnessed_image = world.RunImage.init(.{
+        .kind = .parked_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = state,
+        .pending_request_frame = request_frame,
+    });
+    const unwitnessed_encoded = try unwitnessed_image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(unwitnessed_encoded);
+    var unwitnessed_handoff = try world.Handoff.fromRunImage(std.testing.allocator, unwitnessed_encoded);
+    defer unwitnessed_handoff.deinit();
+    const unwitnessed_report = unwitnessed_handoff.preflightWithPermit(fixtures.Ports.Target, PortsEnv, .accept_fresh, receiver_permit);
+    try std.testing.expect(!unwitnessed_report.accepted);
     const reused_permit_image = world.RunImage.init(.{
         .kind = .parked_run,
         .target_ref = target_ref,
@@ -5672,6 +5687,21 @@ test "supervised handoff receiver can issue stricter permit and inspect prior re
     }, .accept_fresh, handoff_accept_deny_permit));
     try std.testing.expectEqual(@as(usize, 0), accept_ctx.calls);
     try std.testing.expectEqual(@as(usize, 0), accept_transcript.events.items.len);
+
+    var options_accept_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer options_accept_runtime.deinit();
+    var options_accept_ctx: PortsCtx = .{};
+    var options_accept_transcript = world.Transcript.init(std.testing.allocator);
+    defer options_accept_transcript.deinit();
+    try std.testing.expectError(error.BudgetExceeded, handoff.@"resume"(fixtures.Ports.Target, PortsEnv, &options_accept_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &options_accept_ctx,
+        .transcript = &options_accept_transcript,
+        .permit = handoff_accept_deny_permit,
+    }, .accept_fresh));
+    try std.testing.expectEqual(@as(usize, 0), options_accept_ctx.calls);
+    try std.testing.expectEqual(@as(usize, 0), options_accept_transcript.events.items.len);
 }
 
 test "supervised handoff export is charged before encoded bytes are returned" {

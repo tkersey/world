@@ -4620,7 +4620,10 @@ pub const Handoff = struct {
             return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.SupervisionPolicyMismatch});
         }
         if (permit.handoff_policy == .require_new_permit) {
-            if (self.run_image.prior_run_permit_fingerprint == permit.permit_fingerprint) {
+            const prior_permit_fingerprint = self.run_image.prior_run_permit_fingerprint orelse {
+                return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.SupervisionPolicyMismatch});
+            };
+            if (prior_permit_fingerprint == permit.permit_fingerprint) {
                 return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.SupervisionPolicyMismatch});
             }
         }
@@ -4667,12 +4670,18 @@ pub const Handoff = struct {
         permit_override: ?RunPermit,
     ) !Machine(Target, Env.machine_config).Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)) {
         if (mode != .accept_fresh) return Error.InvalidMode;
-        const report = self.preflight(Target, Env, mode);
+        const Options = @TypeOf(options);
+        const options_permit: ?RunPermit = if (comptime @hasField(Options, "permit")) @field(options, "permit") else null;
+        const effective_permit = permit_override orelse options_permit;
+        const report = if (effective_permit) |permit|
+            self.preflightWithPermit(Target, Env, mode, permit)
+        else
+            self.preflight(Target, Env, mode);
         if (!report.accepted) return acceptanceError(report);
         if (self.run_image.current_state.status != .parked_on_port) return error.HandoffPendingFrameMismatch;
         const pending_frame = self.run_image.pending_request_frame orelse return error.HandoffPendingFrameMismatch;
         const MachineType = Machine(Target, Env.machine_config);
-        if (permit_override) |permit| {
+        if (effective_permit) |permit| {
             var accept_supervisor = try Supervision.Supervisor.init(@field(options, "allocator"), permit, Target.WorldPortTable.entries.len);
             defer accept_supervisor.deinit();
             try accept_supervisor.beforeHandoffAccept();
