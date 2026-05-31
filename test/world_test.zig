@@ -3676,10 +3676,13 @@ test "parked handoff replays transcript prefix before selected pending request" 
     var receiver_runtime = boundary.Runtime.init(std.testing.allocator);
     defer receiver_runtime.deinit();
     var receiver_ctx: AgentCtx = .{ .allocator = std.testing.allocator, .scenario = .skeleton };
+    var receiver_transcript = world.Transcript.init(std.testing.allocator);
+    defer receiver_transcript.deinit();
     var receiver_run = try handoff.@"resume"(fixtures.Agent.Target, AgentEnv, &receiver_runtime, AgentArgs{ @as(usize, 3), fixtures.Agent.initialObservation(.skeleton) }, .{
         .allocator = std.testing.allocator,
         .mode = world.Mode.fresh,
         .ctx = &receiver_ctx,
+        .transcript = &receiver_transcript,
     }, .accept_fresh);
     defer receiver_run.deinit();
     try std.testing.expectEqual(@as(usize, 0), receiver_ctx.model_calls);
@@ -3705,6 +3708,9 @@ test "parked handoff replays transcript prefix before selected pending request" 
     });
     try std.testing.expectEqual(@as(usize, 1), receiver_ctx.model_calls);
     try std.testing.expectEqual(@as(usize, 1), receiver_ctx.tool_calls);
+    try std.testing.expectEqual(@as(usize, 1), receiver_run.audit.replayed_response_count);
+    try std.testing.expectEqual(@as(usize, 1), receiver_transcript.summary().frame_replayed);
+    try std.testing.expectEqual(@as(usize, 0), receiver_transcript.summary().frame_responded);
 }
 
 test "replay handoff replays completed run without native handler calls" {

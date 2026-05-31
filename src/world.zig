@@ -2885,7 +2885,7 @@ pub const Handoff = struct {
                         }
                     else
                         return error.HandoffPendingFrameMismatch;
-                    try run.resumeFrame(response.*);
+                    try run.resumeReplayedFrame(response.*);
                 },
                 else => return error.HandoffPendingFrameMismatch,
             }
@@ -3320,6 +3320,14 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 }
 
                 pub fn resumeFrame(self: *Self, response_frame: Frame.Response) !void {
+                    try self.resumeFrameWithProvenance(response_frame, false);
+                }
+
+                pub fn resumeReplayedFrame(self: *Self, response_frame: Frame.Response) !void {
+                    try self.resumeFrameWithProvenance(response_frame, true);
+                }
+
+                fn resumeFrameWithProvenance(self: *Self, response_frame: Frame.Response, comptime replayed: bool) !void {
                     if (response_frame.status == .pending) return error.HandlerPending;
                     const request = self.pending_request orelse return error.UnknownResidualSite;
                     const world_port_id = self.pending_port_id orelse return error.UnknownWorldPort;
@@ -3351,7 +3359,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         inline 0...Target.WorldPortTable.entries.len - 1 => |id| {
                             const Handler = comptime handlerForWorldPortId(Target, Config, @intCast(id));
                             if (Handler) |Decl| {
-                                try self.resumeFrameDecl(Decl, request, frame, response_frame);
+                                try self.resumeFrameDecl(Decl, request, frame, response_frame, replayed);
                                 self.pending_request = null;
                                 self.pending_port_id = null;
                                 return;
@@ -3414,7 +3422,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     return frame;
                 }
 
-                fn resumeFrameDecl(self: *Self, comptime Decl: type, request: Request, request_frame: Frame.Request, response_frame: Frame.Response) !void {
+                fn resumeFrameDecl(self: *Self, comptime Decl: type, request: Request, request_frame: Frame.Request, response_frame: Frame.Response, comptime replayed: bool) !void {
                     const typed_request = try request.as(Decl.SiteType);
                     if (response_frame.response_kind != .@"resume") return error.VerifyResponseKindMismatch;
                     const value = try response_frame.decodeValue(self.allocator, Decl.Response);
@@ -3427,7 +3435,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     defer if (resolved_response_frame) |*frame| frame.deinit(self.allocator);
                     const effective_response_frame = if (resolved_response_frame) |frame| frame else response_frame;
                     var stored: ?StoredValue = null;
-                    if (comptime @hasField(Options, "transcript")) {
+                    if (comptime !replayed and @hasField(Options, "transcript")) {
                         stored = try StoredValue.init(@field(self.options, "transcript").allocator, value);
                     }
                     defer if (stored) |*owned| {
@@ -3446,9 +3454,24 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         retained.deinit(self.allocator);
                     };
                     const retained_value = try self.retained_values.items[self.retained_values.items.len - 1].borrow(Decl.Response);
-                    try appendPortEvent(Target, self.options, .frame_responded, Decl.world_port_id, request.trace(), response_trace.fingerprint, effective_response_frame.response_kind, stored, null, effective_response_frame);
+                    try appendPortEvent(
+                        Target,
+                        self.options,
+                        if (replayed) .frame_replayed else .frame_responded,
+                        Decl.world_port_id,
+                        request.trace(),
+                        response_trace.fingerprint,
+                        effective_response_frame.response_kind,
+                        stored,
+                        null,
+                        effective_response_frame,
+                    );
                     stored = null;
-                    self.audit.fresh_response_count += 1;
+                    if (replayed) {
+                        self.audit.replayed_response_count += 1;
+                    } else {
+                        self.audit.fresh_response_count += 1;
+                    }
                     self.session.resumeTyped(typed_request, retained_value) catch |err| {
                         self.audit.failed_count += 1;
                         const failed_response_frame = Frame.Response.init(.{
