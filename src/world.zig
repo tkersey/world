@@ -5023,7 +5023,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         if (permit.target_ref_fingerprint != TargetRef.fromTarget(Target).target_ref_fingerprint) return Error.SupervisionDenied;
                         if (permit.world_surface_fingerprint != Target.WorldSurface.surface_fingerprint) return Error.SupervisionDenied;
                         if (permit.target_certificate_fingerprint != Target.Certificate.certificate_fingerprint) return Error.SupervisionDenied;
-                        if (permit.mode != effective) return Error.SupervisionDenied;
+                        if (permit.mode != mode_value) return Error.SupervisionDenied;
                         if (comptime @hasField(@TypeOf(Config), "environment")) {
                             const transcript_available = comptime handoff_transcript_available or
                                 @hasField(Options, "transcript_image") or
@@ -5032,9 +5032,9 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                                 @hasField(Options, "transcript_image")
                             else
                                 transcript_available;
-                            const supervision_report = Config.environment.acceptanceReportWithSupervision(effective, supervision_transcript_available, permit.policy);
+                            const supervision_report = Config.environment.acceptanceReportWithSupervision(mode_value, supervision_transcript_available, permit.policy);
                             if (!supervision_report.accepted) return acceptanceError(supervision_report);
-                            const cert = Config.environment.certificate(effective, transcript_available);
+                            const cert = Config.environment.certificate(mode_value, transcript_available);
                             if (permit.environment_certificate_fingerprint != cert.certificate_fingerprint) return Error.SupervisionDenied;
                             if (permit.binding_plan_fingerprint != cert.binding_plan_fingerprint) return Error.SupervisionDenied;
                         } else if (permit.policy.require_environment_certificate) {

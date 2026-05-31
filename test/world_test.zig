@@ -2914,6 +2914,43 @@ test "world audit mode rejects self-referential audit source" {
     }));
 }
 
+test "supervised audit permits authorize requested mode not source mode" {
+    const audit_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = world.Mode.audit,
+        .policy = world.SupervisionPolicy.audit_only,
+    });
+    var audit_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer audit_runtime.deinit();
+    var audit_ctx: PortsCtx = .{};
+    var audited = try PortsMachineEnv.run(&audit_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.audit,
+        .audit_source = world.Mode.fresh,
+        .ctx = &audit_ctx,
+        .permit = audit_permit,
+    });
+    defer audited.deinit(std.testing.allocator);
+    try std.testing.expectEqual(world.Mode.audit, audited.audit.mode);
+    try std.testing.expectEqual(@as(usize, 1), audit_ctx.calls);
+    try std.testing.expect(audited.receipt != null);
+
+    const fresh_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = world.Mode.fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+    });
+    var fresh_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer fresh_runtime.deinit();
+    var fresh_ctx: PortsCtx = .{};
+    try std.testing.expectError(error.SupervisionDenied, PortsMachineEnv.run(&fresh_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.audit,
+        .audit_source = world.Mode.fresh,
+        .ctx = &fresh_ctx,
+        .permit = fresh_permit,
+    }));
+    try std.testing.expectEqual(@as(usize, 0), fresh_ctx.calls);
+}
+
 const AgentCtx = struct {
     allocator: std.mem.Allocator,
     scenario: fixtures.Agent.Scenario,
