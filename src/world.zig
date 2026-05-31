@@ -56,6 +56,18 @@ pub const Error = error{
     HandoffCheckpointMismatch,
     HandoffPendingFrameMismatch,
     SurfaceProfileIncompatible,
+    BudgetExceeded,
+    SupervisionDenied,
+    PortRuleDenied,
+    AdapterKindDenied,
+    AuthorityDenied,
+    PortableValueRequired,
+    NativeValueRejected,
+    FreshCallDenied,
+    ReplayCallDenied,
+    PendingDenied,
+    BranchDenied,
+    HandoffDenied,
     VerifyMissingExpected,
     VerifyResponseKindMismatch,
     VerifyResponseFingerprintMismatch,
@@ -91,6 +103,12 @@ pub const EventKind = enum {
     checkpoint_recorded,
     branch_started,
     branch_joined,
+    permit_issued,
+    supervision_check,
+    budget_exceeded,
+    supervision_denied,
+    run_interrupted,
+    receipt_recorded,
     run_completed,
     run_failed,
 };
@@ -160,6 +178,16 @@ pub const world_adapter_descriptor_fingerprint_version: u32 = 1;
 pub const world_run_state_fingerprint_version: u32 = 1;
 pub const world_run_image_format_version: u32 = 1;
 pub const world_run_image_fingerprint_version: u32 = 1;
+pub const world_run_permit_format_version: u32 = 1;
+pub const world_run_permit_fingerprint_version: u32 = 1;
+pub const world_supervision_policy_fingerprint_version: u32 = 1;
+pub const world_budget_fingerprint_version: u32 = 1;
+pub const world_cost_model_fingerprint_version: u32 = 1;
+pub const world_port_rule_fingerprint_version: u32 = 1;
+pub const world_usage_ledger_fingerprint_version: u32 = 1;
+pub const world_supervision_check_fingerprint_version: u32 = 1;
+pub const world_run_receipt_format_version: u32 = 1;
+pub const world_run_receipt_fingerprint_version: u32 = 1;
 pub const world_max_decoded_byte_field_len: usize = 16 * 1024 * 1024;
 const frame_response_deferred_fingerprint_flag: u32 = 1 << 0;
 const world_min_transcript_event_image_encoded_len: usize = 8 + 1 + 8 + 8 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1;
@@ -233,6 +261,9 @@ pub const AcceptanceBlocker = enum {
     HandoffTargetMismatch,
     HandoffCheckpointMismatch,
     HandoffPendingFrameMismatch,
+    SupervisionPolicyMismatch,
+    SupervisionBudgetExceeded,
+    SupervisionPortRuleDenied,
 };
 
 pub const TargetRef = struct {
@@ -782,6 +813,1224 @@ pub const EnvironmentCertificate = struct {
     };
 };
 
+pub const Supervisor = Supervision.Supervisor;
+pub const RunPermit = Supervision.RunPermit;
+pub const SupervisionPolicy = Supervision.SupervisionPolicy;
+pub const Budget = Supervision.Budget;
+pub const CostModel = Supervision.CostModel;
+pub const PortRule = Supervision.PortRule;
+pub const UsageLedger = Supervision.UsageLedger;
+pub const SupervisionCheck = Supervision.SupervisionCheck;
+pub const RunReceipt = Supervision.RunReceipt;
+
+pub const Supervision = struct {
+    pub const ResponseClass = enum {
+        responded,
+        rejected,
+        pending,
+        failed,
+    };
+
+    pub const PermitBranchPolicy = enum {
+        inherit,
+        require_new_permit,
+        deny,
+    };
+
+    pub const PermitHandoffPolicy = enum {
+        allow,
+        require_new_permit,
+        deny,
+    };
+
+    pub const BudgetExceededBehavior = enum {
+        fail,
+        park,
+        audit_only,
+    };
+
+    pub const AllowedAdapterKinds = packed struct(u8) {
+        native: bool = false,
+        replay: bool = false,
+        verify: bool = false,
+        byte: bool = false,
+        null_reject: bool = false,
+        pending_stub: bool = false,
+        custom: bool = false,
+        _padding: u1 = 0,
+
+        pub const none = @This(){};
+        pub const fresh_native = @This(){ .native = true };
+        pub const replay_only = @This(){ .replay = true };
+        pub const byte_only = @This(){ .byte = true };
+        pub const all = @This(){
+            .native = true,
+            .replay = true,
+            .verify = true,
+            .byte = true,
+            .null_reject = true,
+            .pending_stub = true,
+            .custom = true,
+        };
+
+        pub fn allows(self: @This(), kind: AdapterKind) bool {
+            return switch (kind) {
+                .native => self.native,
+                .replay => self.replay,
+                .verify => self.verify,
+                .byte => self.byte,
+                .null_reject => self.null_reject,
+                .pending_stub => self.pending_stub,
+                .custom => self.custom,
+            };
+        }
+    };
+
+    pub const AllowedModes = packed struct(u8) {
+        fresh: bool = false,
+        replay: bool = false,
+        verify: bool = false,
+        audit: bool = false,
+        _padding: u4 = 0,
+
+        pub const none = @This(){};
+        pub const all = @This(){ .fresh = true, .replay = true, .verify = true, .audit = true };
+        pub const fresh_only = @This(){ .fresh = true };
+        pub const replay_only = @This(){ .replay = true };
+        pub const verify_only = @This(){ .verify = true };
+
+        pub fn allows(self: @This(), mode: Mode) bool {
+            return switch (mode) {
+                .fresh => self.fresh,
+                .replay => self.replay,
+                .verify => self.verify,
+                .audit => self.audit,
+            };
+        }
+    };
+
+    pub const AllowedAuthorityKinds = packed struct(u16) {
+        fixture: bool = false,
+        replay_source: bool = false,
+        native_function: bool = false,
+        byte_adapter: bool = false,
+        model_like: bool = false,
+        tool_like: bool = false,
+        file_like: bool = false,
+        human_like: bool = false,
+        custom: bool = false,
+        _padding: u7 = 0,
+
+        pub const none = @This(){};
+        pub const fixtures = @This(){ .fixture = true };
+        pub const native = @This(){ .native_function = true };
+        pub const replay = @This(){ .replay_source = true };
+        pub const all = @This(){
+            .fixture = true,
+            .replay_source = true,
+            .native_function = true,
+            .byte_adapter = true,
+            .model_like = true,
+            .tool_like = true,
+            .file_like = true,
+            .human_like = true,
+            .custom = true,
+        };
+
+        pub fn allows(self: @This(), kind: PortAuthority.Kind) bool {
+            return switch (kind) {
+                .fixture => self.fixture,
+                .replay_source => self.replay_source,
+                .native_function => self.native_function,
+                .byte_adapter => self.byte_adapter,
+                .model_like => self.model_like,
+                .tool_like => self.tool_like,
+                .file_like => self.file_like,
+                .human_like => self.human_like,
+                .custom => self.custom,
+            };
+        }
+    };
+
+    pub const Blocker = enum {
+        none,
+        budget_exceeded,
+        port_rule_denied,
+        adapter_kind_denied,
+        authority_denied,
+        portable_value_required,
+        native_value_rejected,
+        fresh_call_denied,
+        replay_call_denied,
+        verify_call_denied,
+        pending_denied,
+        rejected_denied,
+        failed_denied,
+        branch_denied,
+        checkpoint_denied,
+        handoff_denied,
+        transcript_image_required,
+        environment_certificate_required,
+        max_supervision_events_exceeded,
+    };
+
+    pub const BudgetExceededKind = enum {
+        session_steps,
+        port_requests,
+        port_responses,
+        fresh_calls,
+        replay_calls,
+        verify_calls,
+        failed_calls,
+        rejected_calls,
+        pending_calls,
+        frame_request_bytes,
+        frame_response_bytes,
+        value_image_bytes,
+        transcript_events,
+        transcript_image_bytes,
+        checkpoints,
+        branches,
+        branch_depth,
+        handoff_exports,
+        handoff_accepts,
+        total_cost_units,
+        per_port_requests,
+        per_port_fresh_calls,
+        per_port_replay_calls,
+        per_port_response_bytes,
+        per_port_value_image_bytes,
+        per_port_cost_units,
+        supervision_events,
+    };
+
+    pub const SupervisionPolicy = struct {
+        policy_fingerprint: u64 = 0,
+        allow_fresh_calls: bool = false,
+        allow_replay_calls: bool = false,
+        allow_verify_calls: bool = false,
+        allow_audit_only: bool = false,
+        allow_native_adapters: bool = false,
+        allow_byte_adapters: bool = false,
+        allow_replay_adapters: bool = false,
+        allow_pending_responses: bool = false,
+        allow_rejected_responses: bool = false,
+        allow_failed_responses: bool = false,
+        allow_branching: bool = false,
+        allow_checkpoints: bool = false,
+        allow_handoff_export: bool = false,
+        allow_handoff_accept: bool = false,
+        require_portable_value_images: bool = false,
+        reject_native_only_values: bool = false,
+        require_environment_certificate: bool = true,
+        require_transcript_image_for_replay: bool = true,
+        fail_on_budget_exceeded: bool = true,
+        park_on_budget_exceeded: bool = false,
+        audit_only_on_budget_exceeded: bool = false,
+        max_supervision_events: ?usize = null,
+
+        pub fn init(args: anytype) @This() {
+            const Args = @TypeOf(args);
+            var result = @This(){};
+            inline for (@typeInfo(@This()).@"struct".fields) |field| {
+                if (comptime std.mem.eql(u8, field.name, "policy_fingerprint")) continue;
+                if (comptime @hasField(Args, field.name)) {
+                    @field(result, field.name) = @field(args, field.name);
+                }
+            }
+            result.policy_fingerprint = fingerprintSupervisionPolicy(result);
+            return result;
+        }
+
+        pub fn withFingerprint(self: @This()) @This() {
+            var result = self;
+            result.policy_fingerprint = 0;
+            result.policy_fingerprint = fingerprintSupervisionPolicy(result);
+            return result;
+        }
+
+        pub fn budgetBehavior(self: @This()) BudgetExceededBehavior {
+            if (self.park_on_budget_exceeded) return .park;
+            if (self.audit_only_on_budget_exceeded) return .audit_only;
+            return .fail;
+        }
+
+        pub const strict_fresh = init(.{
+            .allow_fresh_calls = true,
+            .allow_native_adapters = true,
+            .allow_checkpoints = true,
+            .require_environment_certificate = true,
+            .fail_on_budget_exceeded = true,
+        });
+        pub const strict_replay = init(.{
+            .allow_replay_calls = true,
+            .allow_replay_adapters = true,
+            .require_portable_value_images = true,
+            .reject_native_only_values = true,
+            .require_environment_certificate = true,
+            .require_transcript_image_for_replay = true,
+        });
+        pub const verify_replay = init(.{
+            .allow_fresh_calls = true,
+            .allow_replay_calls = true,
+            .allow_verify_calls = true,
+            .allow_native_adapters = true,
+            .allow_replay_adapters = true,
+            .require_portable_value_images = true,
+            .reject_native_only_values = true,
+            .require_environment_certificate = true,
+            .require_transcript_image_for_replay = true,
+        });
+        pub const agent_fixture = init(.{
+            .allow_fresh_calls = true,
+            .allow_replay_calls = true,
+            .allow_verify_calls = true,
+            .allow_native_adapters = true,
+            .allow_replay_adapters = true,
+            .allow_pending_responses = false,
+            .allow_rejected_responses = false,
+            .allow_failed_responses = false,
+            .allow_branching = true,
+            .allow_checkpoints = true,
+            .allow_handoff_export = true,
+            .allow_handoff_accept = true,
+            .require_environment_certificate = true,
+        });
+        pub const audit_only = init(.{
+            .allow_audit_only = true,
+            .allow_fresh_calls = true,
+            .allow_replay_calls = true,
+            .allow_verify_calls = true,
+            .allow_native_adapters = true,
+            .allow_byte_adapters = true,
+            .allow_replay_adapters = true,
+            .allow_pending_responses = true,
+            .allow_rejected_responses = true,
+            .allow_failed_responses = true,
+            .allow_branching = true,
+            .allow_checkpoints = true,
+            .allow_handoff_export = true,
+            .allow_handoff_accept = true,
+            .require_environment_certificate = false,
+            .fail_on_budget_exceeded = false,
+            .audit_only_on_budget_exceeded = true,
+        });
+        pub const handoff_receiver = init(.{
+            .allow_fresh_calls = true,
+            .allow_replay_calls = true,
+            .allow_verify_calls = true,
+            .allow_native_adapters = true,
+            .allow_replay_adapters = true,
+            .allow_handoff_accept = true,
+            .require_environment_certificate = true,
+            .require_transcript_image_for_replay = true,
+        });
+        pub const branch_limited = init(.{
+            .allow_fresh_calls = true,
+            .allow_native_adapters = true,
+            .allow_branching = true,
+            .allow_checkpoints = true,
+            .require_environment_certificate = true,
+        });
+    };
+
+    pub const PerPortBudget = struct {
+        world_port_id: u32,
+        max_requests: ?usize = null,
+        max_fresh_calls: ?usize = null,
+        max_replay_calls: ?usize = null,
+        max_response_bytes: ?usize = null,
+        max_value_image_bytes: ?usize = null,
+        max_cost_units: ?u64 = null,
+    };
+
+    pub const Budget = struct {
+        budget_fingerprint: u64 = 0,
+        max_session_steps: ?usize = null,
+        max_port_requests: ?usize = null,
+        max_port_responses: ?usize = null,
+        max_fresh_calls: ?usize = null,
+        max_replay_calls: ?usize = null,
+        max_verify_calls: ?usize = null,
+        max_failed_calls: ?usize = null,
+        max_rejected_calls: ?usize = null,
+        max_pending_calls: ?usize = null,
+        max_frame_request_bytes: ?usize = null,
+        max_frame_response_bytes: ?usize = null,
+        max_value_image_bytes: ?usize = null,
+        max_transcript_events: ?usize = null,
+        max_transcript_image_bytes: ?usize = null,
+        max_checkpoints: ?usize = null,
+        max_branches: ?usize = null,
+        max_branch_depth: ?usize = null,
+        max_handoff_exports: ?usize = null,
+        max_handoff_accepts: ?usize = null,
+        max_total_cost_units: ?u64 = null,
+        per_port_budgets: []const PerPortBudget = &.{},
+
+        pub fn init(args: anytype) @This() {
+            const Args = @TypeOf(args);
+            var result = @This(){};
+            inline for (@typeInfo(@This()).@"struct".fields) |field| {
+                if (comptime std.mem.eql(u8, field.name, "budget_fingerprint")) continue;
+                if (comptime @hasField(Args, field.name)) {
+                    @field(result, field.name) = @field(args, field.name);
+                }
+            }
+            result.budget_fingerprint = fingerprintBudget(result);
+            return result;
+        }
+
+        pub fn withFingerprint(self: @This()) @This() {
+            var result = self;
+            result.budget_fingerprint = 0;
+            result.budget_fingerprint = fingerprintBudget(result);
+            return result;
+        }
+
+        pub fn perPort(self: @This(), world_port_id: u32) ?PerPortBudget {
+            for (self.per_port_budgets) |budget| {
+                if (budget.world_port_id == world_port_id) return budget;
+            }
+            return null;
+        }
+
+        pub const unlimited = init(.{});
+    };
+
+    pub const PerPortCost = struct {
+        world_port_id: u32,
+        port_request_base_cost: ?u64 = null,
+        port_response_base_cost: ?u64 = null,
+        fresh_call_cost: ?u64 = null,
+        replay_call_cost: ?u64 = null,
+        verify_call_cost: ?u64 = null,
+        failed_call_cost: ?u64 = null,
+        rejected_call_cost: ?u64 = null,
+        pending_call_cost: ?u64 = null,
+        frame_byte_cost: ?u64 = null,
+        value_image_byte_cost: ?u64 = null,
+    };
+
+    pub const CostModel = struct {
+        cost_model_fingerprint: u64 = 0,
+        session_step_cost: u64 = 1,
+        port_request_base_cost: u64 = 1,
+        port_response_base_cost: u64 = 1,
+        fresh_call_cost: u64 = 1,
+        replay_call_cost: u64 = 1,
+        verify_call_cost: u64 = 1,
+        failed_call_cost: u64 = 1,
+        rejected_call_cost: u64 = 1,
+        pending_call_cost: u64 = 1,
+        frame_byte_cost: u64 = 0,
+        value_image_byte_cost: u64 = 0,
+        checkpoint_cost: u64 = 1,
+        branch_cost: u64 = 1,
+        handoff_export_cost: u64 = 1,
+        handoff_accept_cost: u64 = 1,
+        per_port_costs: []const PerPortCost = &.{},
+
+        pub fn init(args: anytype) @This() {
+            const Args = @TypeOf(args);
+            var result = @This(){};
+            inline for (@typeInfo(@This()).@"struct".fields) |field| {
+                if (comptime std.mem.eql(u8, field.name, "cost_model_fingerprint")) continue;
+                if (comptime @hasField(Args, field.name)) {
+                    @field(result, field.name) = @field(args, field.name);
+                }
+            }
+            result.cost_model_fingerprint = fingerprintCostModel(result);
+            return result;
+        }
+
+        pub fn withFingerprint(self: @This()) @This() {
+            var result = self;
+            result.cost_model_fingerprint = 0;
+            result.cost_model_fingerprint = fingerprintCostModel(result);
+            return result;
+        }
+
+        pub fn perPort(self: @This(), world_port_id: u32) ?PerPortCost {
+            for (self.per_port_costs) |cost| {
+                if (cost.world_port_id == world_port_id) return cost;
+            }
+            return null;
+        }
+
+        pub fn requestCost(self: @This(), world_port_id: u32) u64 {
+            if (self.perPort(world_port_id)) |cost| {
+                if (cost.port_request_base_cost) |override| return override;
+            }
+            return self.port_request_base_cost;
+        }
+
+        pub fn responseCost(self: @This(), world_port_id: u32) u64 {
+            if (self.perPort(world_port_id)) |cost| {
+                if (cost.port_response_base_cost) |override| return override;
+            }
+            return self.port_response_base_cost;
+        }
+
+        pub fn freshCost(self: @This(), world_port_id: u32) u64 {
+            if (self.perPort(world_port_id)) |cost| {
+                if (cost.fresh_call_cost) |override| return override;
+            }
+            return self.fresh_call_cost;
+        }
+
+        pub fn replayCost(self: @This(), world_port_id: u32) u64 {
+            if (self.perPort(world_port_id)) |cost| {
+                if (cost.replay_call_cost) |override| return override;
+            }
+            return self.replay_call_cost;
+        }
+
+        pub fn verifyCost(self: @This(), world_port_id: u32) u64 {
+            if (self.perPort(world_port_id)) |cost| {
+                if (cost.verify_call_cost) |override| return override;
+            }
+            return self.verify_call_cost;
+        }
+
+        pub const default = init(.{});
+    };
+
+    pub const PortRule = struct {
+        rule_fingerprint: u64 = 0,
+        world_surface_fingerprint: u64,
+        world_port_id: u32,
+        allowed_adapter_kinds: AllowedAdapterKinds = .all,
+        allowed_authority_kinds: AllowedAuthorityKinds = .all,
+        allowed_modes: AllowedModes = .all,
+        allow_fresh: bool = true,
+        allow_replay: bool = true,
+        allow_verify: bool = true,
+        allow_pending: bool = false,
+        allow_reject: bool = false,
+        allow_fail: bool = false,
+        require_portable_values: bool = false,
+        max_payload_image_bytes: ?usize = null,
+        max_response_image_bytes: ?usize = null,
+        max_requests: ?usize = null,
+        max_cost_units: ?u64 = null,
+
+        pub fn init(args: anytype) @This() {
+            const Args = @TypeOf(args);
+            var result = @This(){
+                .world_surface_fingerprint = args.world_surface_fingerprint,
+                .world_port_id = args.world_port_id,
+            };
+            inline for (@typeInfo(@This()).@"struct".fields) |field| {
+                if (comptime std.mem.eql(u8, field.name, "rule_fingerprint")) continue;
+                if (comptime std.mem.eql(u8, field.name, "world_surface_fingerprint")) continue;
+                if (comptime std.mem.eql(u8, field.name, "world_port_id")) continue;
+                if (comptime @hasField(Args, field.name)) {
+                    @field(result, field.name) = @field(args, field.name);
+                }
+            }
+            result.rule_fingerprint = fingerprintPortRule(result);
+            return result;
+        }
+
+        pub fn permitsMode(self: @This(), mode: Mode) bool {
+            if (!self.allowed_modes.allows(mode)) return false;
+            return switch (mode) {
+                .fresh, .audit => self.allow_fresh,
+                .replay => self.allow_replay,
+                .verify => self.allow_verify,
+            };
+        }
+    };
+
+    pub const RunPermit = struct {
+        format_version: u32 = world_run_permit_format_version,
+        fingerprint_version: u32 = world_run_permit_fingerprint_version,
+        permit_fingerprint: u64 = 0,
+        target_ref_fingerprint: u64,
+        world_surface_fingerprint: u64,
+        target_certificate_fingerprint: u64,
+        environment_certificate_fingerprint: u64,
+        binding_plan_fingerprint: u64,
+        mode: Mode,
+        supervision_policy_fingerprint: u64,
+        budget_fingerprint: u64,
+        cost_model_fingerprint: u64,
+        branch_policy: PermitBranchPolicy = .inherit,
+        handoff_policy: PermitHandoffPolicy = .require_new_permit,
+        metadata: []const u8 = "",
+        label: []const u8 = "",
+        policy: Supervision.SupervisionPolicy,
+        budget: Supervision.Budget,
+        cost_model: Supervision.CostModel,
+        port_rules: []const Supervision.PortRule = &.{},
+
+        pub fn init(args: struct {
+            target_ref_fingerprint: u64,
+            world_surface_fingerprint: u64,
+            target_certificate_fingerprint: u64,
+            environment_certificate_fingerprint: u64,
+            binding_plan_fingerprint: u64,
+            mode: Mode,
+            policy: Supervision.SupervisionPolicy = Supervision.SupervisionPolicy.strict_fresh,
+            budget: Supervision.Budget = Supervision.Budget.unlimited,
+            cost_model: Supervision.CostModel = Supervision.CostModel.default,
+            branch_policy: PermitBranchPolicy = .inherit,
+            handoff_policy: PermitHandoffPolicy = .require_new_permit,
+            metadata: []const u8 = "",
+            label: []const u8 = "",
+            port_rules: []const Supervision.PortRule = &.{},
+        }) @This() {
+            const policy = args.policy.withFingerprint();
+            const budget = args.budget.withFingerprint();
+            const cost_model = args.cost_model.withFingerprint();
+            var result = @This(){
+                .permit_fingerprint = 0,
+                .target_ref_fingerprint = args.target_ref_fingerprint,
+                .world_surface_fingerprint = args.world_surface_fingerprint,
+                .target_certificate_fingerprint = args.target_certificate_fingerprint,
+                .environment_certificate_fingerprint = args.environment_certificate_fingerprint,
+                .binding_plan_fingerprint = args.binding_plan_fingerprint,
+                .mode = args.mode,
+                .supervision_policy_fingerprint = policy.policy_fingerprint,
+                .budget_fingerprint = budget.budget_fingerprint,
+                .cost_model_fingerprint = cost_model.cost_model_fingerprint,
+                .branch_policy = args.branch_policy,
+                .handoff_policy = args.handoff_policy,
+                .metadata = args.metadata,
+                .label = args.label,
+                .policy = policy,
+                .budget = budget,
+                .cost_model = cost_model,
+                .port_rules = args.port_rules,
+            };
+            result.permit_fingerprint = fingerprintRunPermit(result);
+            return result;
+        }
+
+        pub fn ruleFor(self: @This(), world_port_id: u32) ?Supervision.PortRule {
+            for (self.port_rules) |rule| {
+                if (rule.world_port_id == world_port_id) return rule;
+            }
+            return null;
+        }
+    };
+
+    pub fn issue(comptime Target: type, comptime Env: type, args: anytype) Supervision.RunPermit {
+        comptime validateTarget(Target);
+        const Args = @TypeOf(args);
+        const mode: Mode = if (@hasField(Args, "mode")) args.mode else .fresh;
+        const transcript_available: bool = if (@hasField(Args, "transcript_image_available")) args.transcript_image_available else false;
+        const cert = Env.certificate(mode, transcript_available);
+        const policy: Supervision.SupervisionPolicy = if (@hasField(Args, "policy")) args.policy else Supervision.SupervisionPolicy.strict_fresh;
+        const budget: Supervision.Budget = if (@hasField(Args, "budget")) args.budget else Supervision.Budget.unlimited;
+        const cost_model: Supervision.CostModel = if (@hasField(Args, "cost_model")) args.cost_model else Supervision.CostModel.default;
+        const branch_policy: PermitBranchPolicy = if (@hasField(Args, "branch_policy")) args.branch_policy else .inherit;
+        const handoff_policy: PermitHandoffPolicy = if (@hasField(Args, "handoff_policy")) args.handoff_policy else .require_new_permit;
+        const metadata: []const u8 = if (@hasField(Args, "metadata")) args.metadata else "";
+        const label: []const u8 = if (@hasField(Args, "label")) args.label else "";
+        const port_rules: []const Supervision.PortRule = if (@hasField(Args, "port_rules")) args.port_rules else &.{};
+        return Supervision.RunPermit.init(.{
+            .target_ref_fingerprint = TargetRef.fromTarget(Target).target_ref_fingerprint,
+            .world_surface_fingerprint = Target.WorldSurface.surface_fingerprint,
+            .target_certificate_fingerprint = Target.Certificate.certificate_fingerprint,
+            .environment_certificate_fingerprint = cert.certificate_fingerprint,
+            .binding_plan_fingerprint = cert.binding_plan_fingerprint,
+            .mode = mode,
+            .policy = policy,
+            .budget = budget,
+            .cost_model = cost_model,
+            .branch_policy = branch_policy,
+            .handoff_policy = handoff_policy,
+            .metadata = metadata,
+            .label = label,
+            .port_rules = port_rules,
+        });
+    }
+
+    pub const PerPortUsage = struct {
+        world_port_id: u32,
+        requests: usize = 0,
+        responses: usize = 0,
+        fresh_calls: usize = 0,
+        replay_calls: usize = 0,
+        verify_calls: usize = 0,
+        failed_calls: usize = 0,
+        rejected_calls: usize = 0,
+        pending_calls: usize = 0,
+        response_bytes: usize = 0,
+        value_image_bytes: usize = 0,
+        cost_units: u64 = 0,
+    };
+
+    pub const UsageLedger = struct {
+        ledger_fingerprint: u64 = 0,
+        run_permit_fingerprint: u64,
+        target_ref_fingerprint: u64,
+        environment_certificate_fingerprint: u64,
+        total_session_steps: usize = 0,
+        total_port_requests: usize = 0,
+        total_port_responses: usize = 0,
+        total_fresh_calls: usize = 0,
+        total_replay_calls: usize = 0,
+        total_verify_calls: usize = 0,
+        total_failed_calls: usize = 0,
+        total_rejected_calls: usize = 0,
+        total_pending_calls: usize = 0,
+        total_frame_request_bytes: usize = 0,
+        total_frame_response_bytes: usize = 0,
+        total_value_image_bytes: usize = 0,
+        total_transcript_events: usize = 0,
+        total_checkpoints: usize = 0,
+        total_branches: usize = 0,
+        total_handoff_exports: usize = 0,
+        total_handoff_accepts: usize = 0,
+        total_cost_units: u64 = 0,
+        per_port_usage: []PerPortUsage = &.{},
+        exceeded_budget: ?BudgetExceededKind = null,
+
+        pub fn init(allocator: std.mem.Allocator, permit: Supervision.RunPermit, port_count: usize) !@This() {
+            const per_port = try allocator.alloc(PerPortUsage, port_count);
+            for (per_port, 0..) |*usage, index| usage.* = .{ .world_port_id = @intCast(index) };
+            var result = @This(){
+                .run_permit_fingerprint = permit.permit_fingerprint,
+                .target_ref_fingerprint = permit.target_ref_fingerprint,
+                .environment_certificate_fingerprint = permit.environment_certificate_fingerprint,
+                .per_port_usage = per_port,
+            };
+            result.refreshFingerprint();
+            return result;
+        }
+
+        pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+            allocator.free(self.per_port_usage);
+            self.per_port_usage = &.{};
+        }
+
+        pub fn refreshFingerprint(self: *@This()) void {
+            self.ledger_fingerprint = 0;
+            self.ledger_fingerprint = fingerprintUsageLedger(self.*);
+        }
+
+        pub fn perPort(self: *@This(), world_port_id: u32) *PerPortUsage {
+            return &self.per_port_usage[world_port_id];
+        }
+    };
+
+    pub const SupervisionCheck = struct {
+        check_fingerprint: u64 = 0,
+        run_permit_fingerprint: u64,
+        event_kind: Supervision.SupervisionCheck.EventKind,
+        world_port_id: ?u32 = null,
+        usage_before_fingerprint: u64,
+        usage_after_fingerprint: u64,
+        allowed: bool,
+        blocker: ?Blocker = null,
+        budget_exceeded: ?BudgetExceededKind = null,
+        rule_fingerprint: ?u64 = null,
+        budget_fingerprint: ?u64 = null,
+        summary: []const u8 = "",
+
+        pub const EventKind = enum {
+            before_session_step,
+            after_session_step,
+            before_port_request,
+            before_adapter_call,
+            after_adapter_response,
+            before_resume,
+            before_transcript_append,
+            before_checkpoint,
+            before_branch,
+            before_handoff_export,
+            before_handoff_accept,
+        };
+
+        pub fn init(args: struct {
+            run_permit_fingerprint: u64,
+            event_kind: Supervision.SupervisionCheck.EventKind,
+            world_port_id: ?u32 = null,
+            usage_before_fingerprint: u64,
+            usage_after_fingerprint: u64,
+            allowed: bool,
+            blocker: ?Blocker = null,
+            budget_exceeded: ?BudgetExceededKind = null,
+            rule_fingerprint: ?u64 = null,
+            budget_fingerprint: ?u64 = null,
+            summary: []const u8 = "",
+        }) @This() {
+            var result = @This(){
+                .run_permit_fingerprint = args.run_permit_fingerprint,
+                .event_kind = args.event_kind,
+                .world_port_id = args.world_port_id,
+                .usage_before_fingerprint = args.usage_before_fingerprint,
+                .usage_after_fingerprint = args.usage_after_fingerprint,
+                .allowed = args.allowed,
+                .blocker = args.blocker,
+                .budget_exceeded = args.budget_exceeded,
+                .rule_fingerprint = args.rule_fingerprint,
+                .budget_fingerprint = args.budget_fingerprint,
+                .summary = args.summary,
+            };
+            result.check_fingerprint = fingerprintSupervisionCheck(result);
+            return result;
+        }
+    };
+
+    pub const RunReceipt = struct {
+        format_version: u32 = world_run_receipt_format_version,
+        fingerprint_version: u32 = world_run_receipt_fingerprint_version,
+        receipt_fingerprint: u64 = 0,
+        run_permit_fingerprint: u64,
+        environment_certificate_fingerprint: u64,
+        target_ref_fingerprint: u64,
+        run_image_fingerprint: ?u64 = null,
+        transcript_image_fingerprint: ?u64 = null,
+        usage_ledger_fingerprint: u64,
+        final_run_state_fingerprint: u64,
+        final_status: FinalStatus,
+        exceeded_budget: ?BudgetExceededKind = null,
+        blocker: ?Blocker = null,
+        warning_count: usize = 0,
+        total_session_steps: usize = 0,
+        total_port_requests: usize = 0,
+        total_port_responses: usize = 0,
+        total_cost_units: u64 = 0,
+        branch_count: usize = 0,
+        checkpoint_count: usize = 0,
+        handoff_export_count: usize = 0,
+        handoff_accept_count: usize = 0,
+
+        pub const FinalStatus = enum {
+            completed,
+            failed,
+            parked,
+            interrupted,
+            rejected,
+        };
+
+        pub fn init(args: struct {
+            run_permit_fingerprint: u64,
+            environment_certificate_fingerprint: u64,
+            target_ref_fingerprint: u64,
+            run_image_fingerprint: ?u64 = null,
+            transcript_image_fingerprint: ?u64 = null,
+            usage_ledger_fingerprint: u64,
+            final_run_state_fingerprint: u64,
+            final_status: FinalStatus,
+            exceeded_budget: ?BudgetExceededKind = null,
+            blocker: ?Blocker = null,
+            warning_count: usize = 0,
+            ledger: ?Supervision.UsageLedger = null,
+        }) @This() {
+            var result = @This(){
+                .run_permit_fingerprint = args.run_permit_fingerprint,
+                .environment_certificate_fingerprint = args.environment_certificate_fingerprint,
+                .target_ref_fingerprint = args.target_ref_fingerprint,
+                .run_image_fingerprint = args.run_image_fingerprint,
+                .transcript_image_fingerprint = args.transcript_image_fingerprint,
+                .usage_ledger_fingerprint = args.usage_ledger_fingerprint,
+                .final_run_state_fingerprint = args.final_run_state_fingerprint,
+                .final_status = args.final_status,
+                .exceeded_budget = args.exceeded_budget,
+                .blocker = args.blocker,
+                .warning_count = args.warning_count,
+            };
+            if (args.ledger) |ledger| {
+                result.total_session_steps = ledger.total_session_steps;
+                result.total_port_requests = ledger.total_port_requests;
+                result.total_port_responses = ledger.total_port_responses;
+                result.total_cost_units = ledger.total_cost_units;
+                result.branch_count = ledger.total_branches;
+                result.checkpoint_count = ledger.total_checkpoints;
+                result.handoff_export_count = ledger.total_handoff_exports;
+                result.handoff_accept_count = ledger.total_handoff_accepts;
+            }
+            result.receipt_fingerprint = fingerprintRunReceipt(result);
+            return result;
+        }
+    };
+
+    pub const Supervisor = struct {
+        allocator: std.mem.Allocator,
+        permit: Supervision.RunPermit,
+        ledger: Supervision.UsageLedger,
+        last_check: ?Supervision.SupervisionCheck = null,
+        warning_count: usize = 0,
+        interrupted: bool = false,
+        blocker: ?Blocker = null,
+
+        pub fn init(allocator: std.mem.Allocator, permit: Supervision.RunPermit, port_count: usize) !@This() {
+            try validatePermitForRun(permit);
+            const ledger = try Supervision.UsageLedger.init(allocator, permit, port_count);
+            return .{
+                .allocator = allocator,
+                .permit = permit,
+                .ledger = ledger,
+            };
+        }
+
+        pub fn deinit(self: *@This()) void {
+            self.ledger.deinit(self.allocator);
+        }
+
+        pub fn validatePermitForRun(permit: Supervision.RunPermit) !void {
+            if (permit.permit_fingerprint != fingerprintRunPermit(permit)) return Error.SupervisionDenied;
+            if (permit.policy.require_environment_certificate and permit.environment_certificate_fingerprint == 0) return Error.SupervisionDenied;
+            if (permit.policy.require_transcript_image_for_replay and permit.mode == .replay and permit.binding_plan_fingerprint == 0) return Error.TranscriptImageRequired;
+        }
+
+        pub fn beforeSessionStep(self: *@This()) !void {
+            var next = self.ledger;
+            next.total_session_steps += 1;
+            next.total_cost_units += self.permit.cost_model.session_step_cost;
+            try self.commitCheck(.before_session_step, null, next, null, null, "session step");
+        }
+
+        pub fn beforePortRequest(self: *@This(), world_port_id: u32, request_bytes: usize, value_image_bytes: usize) !void {
+            var next = self.ledger;
+            next.total_port_requests += 1;
+            next.total_frame_request_bytes += request_bytes;
+            next.total_value_image_bytes += value_image_bytes;
+            next.total_cost_units += self.permit.cost_model.requestCost(world_port_id);
+            next.total_cost_units += @as(u64, @intCast(request_bytes)) * self.permit.cost_model.frame_byte_cost;
+            next.total_cost_units += @as(u64, @intCast(value_image_bytes)) * self.permit.cost_model.value_image_byte_cost;
+            const usage = &next.per_port_usage[world_port_id];
+            usage.requests += 1;
+            usage.value_image_bytes += value_image_bytes;
+            usage.cost_units += self.permit.cost_model.requestCost(world_port_id);
+            try self.commitCheck(.before_port_request, world_port_id, next, null, self.permit.ruleFor(world_port_id), "port request");
+        }
+
+        pub fn beforeAdapterCall(self: *@This(), args: struct {
+            world_port_id: u32,
+            mode: Mode,
+            adapter_kind: AdapterKind,
+            authority_kind: ?PortAuthority.Kind = null,
+            value_policy: ValuePolicy = .native_compatible,
+        }) !void {
+            const policy = self.permit.policy;
+            if (!modeAllowedByPolicy(policy, args.mode)) return self.deny(.before_adapter_call, args.world_port_id, .fresh_call_denied, null, "mode denied");
+            if (!adapterAllowedByPolicy(policy, args.adapter_kind)) return self.deny(.before_adapter_call, args.world_port_id, .adapter_kind_denied, null, "adapter denied");
+            if (args.value_policy.require_portable_values == false and policy.require_portable_value_images) return self.deny(.before_adapter_call, args.world_port_id, .portable_value_required, null, "portable value required");
+            if (args.value_policy.allow_native_only_values and policy.reject_native_only_values) return self.deny(.before_adapter_call, args.world_port_id, .native_value_rejected, null, "native value rejected");
+            if (self.permit.ruleFor(args.world_port_id)) |rule| {
+                if (!rule.permitsMode(args.mode)) return self.deny(.before_adapter_call, args.world_port_id, .port_rule_denied, rule.rule_fingerprint, "rule mode denied");
+                if (!rule.allowed_adapter_kinds.allows(args.adapter_kind)) return self.deny(.before_adapter_call, args.world_port_id, .adapter_kind_denied, rule.rule_fingerprint, "rule adapter denied");
+                if (args.authority_kind) |kind| {
+                    if (!rule.allowed_authority_kinds.allows(kind)) return self.deny(.before_adapter_call, args.world_port_id, .authority_denied, rule.rule_fingerprint, "rule authority denied");
+                }
+            }
+            var next = self.ledger;
+            const usage = &next.per_port_usage[args.world_port_id];
+            switch (args.mode) {
+                .fresh, .audit => {
+                    next.total_fresh_calls += 1;
+                    usage.fresh_calls += 1;
+                    const cost = self.permit.cost_model.freshCost(args.world_port_id);
+                    next.total_cost_units += cost;
+                    usage.cost_units += cost;
+                },
+                .replay => {
+                    next.total_replay_calls += 1;
+                    usage.replay_calls += 1;
+                    const cost = self.permit.cost_model.replayCost(args.world_port_id);
+                    next.total_cost_units += cost;
+                    usage.cost_units += cost;
+                },
+                .verify => {
+                    next.total_verify_calls += 1;
+                    usage.verify_calls += 1;
+                    const cost = self.permit.cost_model.verifyCost(args.world_port_id);
+                    next.total_cost_units += cost;
+                    usage.cost_units += cost;
+                },
+            }
+            try self.commitCheck(.before_adapter_call, args.world_port_id, next, null, self.permit.ruleFor(args.world_port_id), "adapter call");
+        }
+
+        pub fn afterAdapterResponse(self: *@This(), args: struct {
+            world_port_id: u32,
+            status: ResponseStatus,
+            response_bytes: usize = 0,
+            value_image_bytes: usize = 0,
+        }) !void {
+            if (!responseAllowedByPolicy(self.permit.policy, args.status)) {
+                const blocker: Blocker = switch (args.status) {
+                    .pending => .pending_denied,
+                    .rejected => .rejected_denied,
+                    .failed => .failed_denied,
+                    .responded => .none,
+                };
+                return self.deny(.after_adapter_response, args.world_port_id, blocker, null, "response status denied");
+            }
+            if (self.permit.ruleFor(args.world_port_id)) |rule| {
+                const allowed = switch (args.status) {
+                    .responded => true,
+                    .pending => rule.allow_pending,
+                    .rejected => rule.allow_reject,
+                    .failed => rule.allow_fail,
+                };
+                if (!allowed) return self.deny(.after_adapter_response, args.world_port_id, .port_rule_denied, rule.rule_fingerprint, "rule response denied");
+            }
+            var next = self.ledger;
+            next.total_port_responses += 1;
+            next.total_frame_response_bytes += args.response_bytes;
+            next.total_value_image_bytes += args.value_image_bytes;
+            next.total_cost_units += self.permit.cost_model.responseCost(args.world_port_id);
+            next.total_cost_units += @as(u64, @intCast(args.response_bytes)) * self.permit.cost_model.frame_byte_cost;
+            next.total_cost_units += @as(u64, @intCast(args.value_image_bytes)) * self.permit.cost_model.value_image_byte_cost;
+            const usage = &next.per_port_usage[args.world_port_id];
+            usage.responses += 1;
+            usage.response_bytes += args.response_bytes;
+            usage.value_image_bytes += args.value_image_bytes;
+            usage.cost_units += self.permit.cost_model.responseCost(args.world_port_id);
+            switch (args.status) {
+                .responded => {},
+                .pending => {
+                    next.total_pending_calls += 1;
+                    usage.pending_calls += 1;
+                    next.total_cost_units += self.permit.cost_model.pending_call_cost;
+                },
+                .rejected => {
+                    next.total_rejected_calls += 1;
+                    usage.rejected_calls += 1;
+                    next.total_cost_units += self.permit.cost_model.rejected_call_cost;
+                },
+                .failed => {
+                    next.total_failed_calls += 1;
+                    usage.failed_calls += 1;
+                    next.total_cost_units += self.permit.cost_model.failed_call_cost;
+                },
+            }
+            try self.commitCheck(.after_adapter_response, args.world_port_id, next, null, self.permit.ruleFor(args.world_port_id), "adapter response");
+        }
+
+        pub fn beforeTranscriptAppend(self: *@This(), event_count_after_append: usize, image_bytes_after_append: usize) !void {
+            var next = self.ledger;
+            next.total_transcript_events = event_count_after_append;
+            try self.commitCheck(.before_transcript_append, null, next, null, null, "transcript append");
+            if (self.permit.budget.max_transcript_image_bytes) |max| {
+                if (image_bytes_after_append > max) return self.exceed(.before_transcript_append, null, .transcript_image_bytes, next, null, "transcript image budget");
+            }
+        }
+
+        pub fn beforeCheckpoint(self: *@This(), value_image_bytes: usize) !void {
+            if (!self.permit.policy.allow_checkpoints) return self.deny(.before_checkpoint, null, .checkpoint_denied, null, "checkpoint denied");
+            var next = self.ledger;
+            next.total_checkpoints += 1;
+            next.total_value_image_bytes += value_image_bytes;
+            next.total_cost_units += self.permit.cost_model.checkpoint_cost;
+            try self.commitCheck(.before_checkpoint, null, next, null, null, "checkpoint");
+        }
+
+        pub fn beforeBranch(self: *@This(), depth: usize) !void {
+            if (!self.permit.policy.allow_branching or self.permit.branch_policy == .deny) return self.deny(.before_branch, null, .branch_denied, null, "branch denied");
+            var next = self.ledger;
+            next.total_branches += 1;
+            next.total_cost_units += self.permit.cost_model.branch_cost;
+            if (self.permit.budget.max_branch_depth) |max| {
+                if (depth > max) return self.exceed(.before_branch, null, .branch_depth, next, null, "branch depth");
+            }
+            try self.commitCheck(.before_branch, null, next, null, null, "branch");
+        }
+
+        pub fn beforeHandoffExport(self: *@This()) !void {
+            if (!self.permit.policy.allow_handoff_export or self.permit.handoff_policy == .deny) return self.deny(.before_handoff_export, null, .handoff_denied, null, "handoff export denied");
+            var next = self.ledger;
+            next.total_handoff_exports += 1;
+            next.total_cost_units += self.permit.cost_model.handoff_export_cost;
+            try self.commitCheck(.before_handoff_export, null, next, null, null, "handoff export");
+        }
+
+        pub fn beforeHandoffAccept(self: *@This()) !void {
+            if (!self.permit.policy.allow_handoff_accept) return self.deny(.before_handoff_accept, null, .handoff_denied, null, "handoff accept denied");
+            var next = self.ledger;
+            next.total_handoff_accepts += 1;
+            next.total_cost_units += self.permit.cost_model.handoff_accept_cost;
+            try self.commitCheck(.before_handoff_accept, null, next, null, null, "handoff accept");
+        }
+
+        pub fn receipt(self: *@This(), final_status: Supervision.RunReceipt.FinalStatus, final_run_state_fingerprint: u64, transcript_image_fingerprint: ?u64, run_image_fingerprint: ?u64) Supervision.RunReceipt {
+            self.ledger.refreshFingerprint();
+            return Supervision.RunReceipt.init(.{
+                .run_permit_fingerprint = self.permit.permit_fingerprint,
+                .environment_certificate_fingerprint = self.permit.environment_certificate_fingerprint,
+                .target_ref_fingerprint = self.permit.target_ref_fingerprint,
+                .run_image_fingerprint = run_image_fingerprint,
+                .transcript_image_fingerprint = transcript_image_fingerprint,
+                .usage_ledger_fingerprint = self.ledger.ledger_fingerprint,
+                .final_run_state_fingerprint = final_run_state_fingerprint,
+                .final_status = final_status,
+                .exceeded_budget = self.ledger.exceeded_budget,
+                .blocker = self.blocker,
+                .warning_count = self.warning_count,
+                .ledger = self.ledger,
+            });
+        }
+
+        fn commitCheck(self: *@This(), kind: Supervision.SupervisionCheck.EventKind, world_port_id: ?u32, next: Supervision.UsageLedger, blocker: ?Supervision.Blocker, rule: ?Supervision.PortRule, summary: []const u8) !void {
+            var candidate = next;
+            candidate.refreshFingerprint();
+            if (budgetExceeded(self.permit.budget, candidate, world_port_id)) |exceeded_kind| {
+                return self.exceed(kind, world_port_id, exceeded_kind, candidate, if (rule) |r| r.rule_fingerprint else null, summary);
+            }
+            const usage_before = self.ledger.ledger_fingerprint;
+            self.ledger = candidate;
+            self.ledger.refreshFingerprint();
+            self.last_check = Supervision.SupervisionCheck.init(.{
+                .run_permit_fingerprint = self.permit.permit_fingerprint,
+                .event_kind = kind,
+                .world_port_id = world_port_id,
+                .usage_before_fingerprint = usage_before,
+                .usage_after_fingerprint = self.ledger.ledger_fingerprint,
+                .allowed = true,
+                .blocker = blocker,
+                .rule_fingerprint = if (rule) |r| r.rule_fingerprint else null,
+                .budget_fingerprint = self.permit.budget_fingerprint,
+                .summary = summary,
+            });
+        }
+
+        fn deny(self: *@This(), kind: Supervision.SupervisionCheck.EventKind, world_port_id: ?u32, blocker: Supervision.Blocker, rule_fingerprint: ?u64, summary: []const u8) !void {
+            const usage_before = self.ledger.ledger_fingerprint;
+            self.blocker = blocker;
+            self.last_check = Supervision.SupervisionCheck.init(.{
+                .run_permit_fingerprint = self.permit.permit_fingerprint,
+                .event_kind = kind,
+                .world_port_id = world_port_id,
+                .usage_before_fingerprint = usage_before,
+                .usage_after_fingerprint = usage_before,
+                .allowed = false,
+                .blocker = blocker,
+                .rule_fingerprint = rule_fingerprint,
+                .budget_fingerprint = self.permit.budget_fingerprint,
+                .summary = summary,
+            });
+            return errorForBlocker(blocker);
+        }
+
+        fn exceed(self: *@This(), kind: Supervision.SupervisionCheck.EventKind, world_port_id: ?u32, exceeded_kind: Supervision.BudgetExceededKind, candidate: Supervision.UsageLedger, rule_fingerprint: ?u64, summary: []const u8) !void {
+            var next = candidate;
+            next.exceeded_budget = exceeded_kind;
+            next.refreshFingerprint();
+            const usage_before = self.ledger.ledger_fingerprint;
+            self.ledger = next;
+            self.blocker = .budget_exceeded;
+            self.last_check = Supervision.SupervisionCheck.init(.{
+                .run_permit_fingerprint = self.permit.permit_fingerprint,
+                .event_kind = kind,
+                .world_port_id = world_port_id,
+                .usage_before_fingerprint = usage_before,
+                .usage_after_fingerprint = self.ledger.ledger_fingerprint,
+                .allowed = false,
+                .blocker = .budget_exceeded,
+                .budget_exceeded = exceeded_kind,
+                .rule_fingerprint = rule_fingerprint,
+                .budget_fingerprint = self.permit.budget_fingerprint,
+                .summary = summary,
+            });
+            switch (self.permit.policy.budgetBehavior()) {
+                .fail => return Error.BudgetExceeded,
+                .park => {
+                    self.interrupted = true;
+                    return Error.BudgetExceeded;
+                },
+                .audit_only => {
+                    self.warning_count += 1;
+                    self.last_check.?.allowed = true;
+                    return;
+                },
+            }
+        }
+    };
+
+    pub fn modeAllowedByPolicy(policy: Supervision.SupervisionPolicy, mode: Mode) bool {
+        return switch (mode) {
+            .fresh => policy.allow_fresh_calls,
+            .audit => policy.allow_audit_only,
+            .replay => policy.allow_replay_calls,
+            .verify => policy.allow_verify_calls,
+        };
+    }
+
+    pub fn adapterAllowedByPolicy(policy: Supervision.SupervisionPolicy, kind: AdapterKind) bool {
+        return switch (kind) {
+            .native => policy.allow_native_adapters,
+            .byte => policy.allow_byte_adapters,
+            .replay => policy.allow_replay_adapters,
+            .verify => policy.allow_native_adapters and policy.allow_verify_calls,
+            .null_reject => policy.allow_rejected_responses,
+            .pending_stub => policy.allow_pending_responses,
+            .custom => policy.allow_native_adapters or policy.allow_byte_adapters or policy.allow_replay_adapters,
+        };
+    }
+
+    pub fn responseAllowedByPolicy(policy: Supervision.SupervisionPolicy, status: ResponseStatus) bool {
+        return switch (status) {
+            .responded => true,
+            .pending => policy.allow_pending_responses,
+            .rejected => policy.allow_rejected_responses,
+            .failed => policy.allow_failed_responses,
+        };
+    }
+
+    fn budgetExceeded(budget: Supervision.Budget, ledger: Supervision.UsageLedger, world_port_id: ?u32) ?Supervision.BudgetExceededKind {
+        if (budget.max_session_steps) |max| if (ledger.total_session_steps > max) return .session_steps;
+        if (budget.max_port_requests) |max| if (ledger.total_port_requests > max) return .port_requests;
+        if (budget.max_port_responses) |max| if (ledger.total_port_responses > max) return .port_responses;
+        if (budget.max_fresh_calls) |max| if (ledger.total_fresh_calls > max) return .fresh_calls;
+        if (budget.max_replay_calls) |max| if (ledger.total_replay_calls > max) return .replay_calls;
+        if (budget.max_verify_calls) |max| if (ledger.total_verify_calls > max) return .verify_calls;
+        if (budget.max_failed_calls) |max| if (ledger.total_failed_calls > max) return .failed_calls;
+        if (budget.max_rejected_calls) |max| if (ledger.total_rejected_calls > max) return .rejected_calls;
+        if (budget.max_pending_calls) |max| if (ledger.total_pending_calls > max) return .pending_calls;
+        if (budget.max_frame_request_bytes) |max| if (ledger.total_frame_request_bytes > max) return .frame_request_bytes;
+        if (budget.max_frame_response_bytes) |max| if (ledger.total_frame_response_bytes > max) return .frame_response_bytes;
+        if (budget.max_value_image_bytes) |max| if (ledger.total_value_image_bytes > max) return .value_image_bytes;
+        if (budget.max_transcript_events) |max| if (ledger.total_transcript_events > max) return .transcript_events;
+        if (budget.max_checkpoints) |max| if (ledger.total_checkpoints > max) return .checkpoints;
+        if (budget.max_branches) |max| if (ledger.total_branches > max) return .branches;
+        if (budget.max_handoff_exports) |max| if (ledger.total_handoff_exports > max) return .handoff_exports;
+        if (budget.max_handoff_accepts) |max| if (ledger.total_handoff_accepts > max) return .handoff_accepts;
+        if (budget.max_total_cost_units) |max| if (ledger.total_cost_units > max) return .total_cost_units;
+        if (world_port_id) |id| {
+            if (budget.perPort(id)) |per_port_budget| {
+                const usage = ledger.per_port_usage[id];
+                if (per_port_budget.max_requests) |max| if (usage.requests > max) return .per_port_requests;
+                if (per_port_budget.max_fresh_calls) |max| if (usage.fresh_calls > max) return .per_port_fresh_calls;
+                if (per_port_budget.max_replay_calls) |max| if (usage.replay_calls > max) return .per_port_replay_calls;
+                if (per_port_budget.max_response_bytes) |max| if (usage.response_bytes > max) return .per_port_response_bytes;
+                if (per_port_budget.max_value_image_bytes) |max| if (usage.value_image_bytes > max) return .per_port_value_image_bytes;
+                if (per_port_budget.max_cost_units) |max| if (usage.cost_units > max) return .per_port_cost_units;
+            }
+        }
+        return null;
+    }
+
+    fn errorForBlocker(blocker: Supervision.Blocker) Error {
+        return switch (blocker) {
+            .budget_exceeded, .max_supervision_events_exceeded => Error.BudgetExceeded,
+            .port_rule_denied => Error.PortRuleDenied,
+            .adapter_kind_denied => Error.AdapterKindDenied,
+            .authority_denied => Error.AuthorityDenied,
+            .portable_value_required => Error.PortableValueRequired,
+            .native_value_rejected => Error.NativeValueRejected,
+            .fresh_call_denied => Error.FreshCallDenied,
+            .replay_call_denied => Error.ReplayCallDenied,
+            .verify_call_denied => Error.VerifyDivergence,
+            .pending_denied => Error.PendingDenied,
+            .rejected_denied => Error.HandlerRejected,
+            .failed_denied => Error.HandlerFailed,
+            .branch_denied => Error.BranchDenied,
+            .checkpoint_denied => Error.SupervisionDenied,
+            .handoff_denied => Error.HandoffDenied,
+            .transcript_image_required => Error.TranscriptImageRequired,
+            .environment_certificate_required => Error.SupervisionDenied,
+            .none => Error.SupervisionDenied,
+        };
+    }
+};
+
 pub fn Environment(comptime Target: type, comptime Config: anytype) type {
     comptime validateTarget(Target);
     const bindings = if (@hasField(@TypeOf(Config), "bindings")) Config.bindings else .{};
@@ -799,6 +2048,29 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
 
         pub fn acceptanceReport(requested_mode: Mode, transcript_image_available: bool) AcceptanceReport {
             return acceptanceReportFor(Target, bindings, policy, requested_mode, transcript_image_available);
+        }
+
+        pub fn acceptanceReportWithSupervision(requested_mode: Mode, transcript_image_available: bool, supervision_policy: SupervisionPolicy) AcceptanceReport {
+            const report = acceptanceReportFor(Target, bindings, policy, requested_mode, transcript_image_available);
+            if (!report.accepted) return report;
+            if (supervision_policy.require_transcript_image_for_replay and modeConsumesTranscript(requested_mode) and !transcript_image_available) {
+                return rejectedReport(report, &.{.TranscriptImageRequired});
+            }
+            inline for (dense_binding_entries) |entry| {
+                switch (entry.adapter_kind) {
+                    .native => if (!supervision_policy.allow_native_adapters) return rejectedReport(report, &.{.SupervisionPolicyMismatch}),
+                    .byte => if (!supervision_policy.allow_byte_adapters) return rejectedReport(report, &.{.SupervisionPolicyMismatch}),
+                    .replay => if (!supervision_policy.allow_replay_adapters) return rejectedReport(report, &.{.SupervisionPolicyMismatch}),
+                    else => {},
+                }
+                if (supervision_policy.require_portable_value_images and !entry.value_policy.require_portable_values) {
+                    return rejectedReport(report, &.{.PortableValuesRequired});
+                }
+                if (supervision_policy.reject_native_only_values and entry.value_policy.allow_native_only_values) {
+                    return rejectedReport(report, &.{.NativeOnlyValueRejected});
+                }
+            }
+            return report;
         }
 
         pub fn bindingPlan() BindingPlan {
@@ -1754,6 +3026,12 @@ pub const Transcript = struct {
                 .checkpoint_recorded,
                 .branch_started,
                 .branch_joined,
+                .permit_issued,
+                .supervision_check,
+                .budget_exceeded,
+                .supervision_denied,
+                .run_interrupted,
+                .receipt_recorded,
                 => {},
             }
         }
@@ -1781,6 +3059,12 @@ pub const Transcript = struct {
                 .checkpoint_recorded => result.checkpoint_recorded += 1,
                 .branch_started => result.branch_started += 1,
                 .branch_joined => result.branch_joined += 1,
+                .permit_issued => result.permit_issued += 1,
+                .supervision_check => result.supervision_check += 1,
+                .budget_exceeded => result.budget_exceeded += 1,
+                .supervision_denied => result.supervision_denied += 1,
+                .run_interrupted => result.run_interrupted += 1,
+                .receipt_recorded => result.receipt_recorded += 1,
                 .run_completed => result.run_completed += 1,
                 .run_failed => result.run_failed += 1,
             }
@@ -1840,6 +3124,12 @@ pub const Transcript = struct {
         checkpoint_recorded: usize = 0,
         branch_started: usize = 0,
         branch_joined: usize = 0,
+        permit_issued: usize = 0,
+        supervision_check: usize = 0,
+        budget_exceeded: usize = 0,
+        supervision_denied: usize = 0,
+        run_interrupted: usize = 0,
+        receipt_recorded: usize = 0,
         run_completed: usize = 0,
         run_failed: usize = 0,
     };
@@ -1861,6 +3151,11 @@ pub const Timeline = struct {
         replay_key: ?u64 = null,
         checkpoint_fingerprint: ?u64 = null,
         branch_id: ?u64 = null,
+        run_permit_fingerprint: ?u64 = null,
+        supervision_check_fingerprint: ?u64 = null,
+        usage_ledger_fingerprint: ?u64 = null,
+        run_receipt_fingerprint: ?u64 = null,
+        blocker_tag: ?Supervision.Blocker = null,
         turn_index: usize = 0,
         status: ?ResponseStatus = null,
 
@@ -1873,6 +3168,11 @@ pub const Timeline = struct {
             replay_key: ?u64 = null,
             checkpoint_fingerprint: ?u64 = null,
             branch_id: ?u64 = null,
+            run_permit_fingerprint: ?u64 = null,
+            supervision_check_fingerprint: ?u64 = null,
+            usage_ledger_fingerprint: ?u64 = null,
+            run_receipt_fingerprint: ?u64 = null,
+            blocker_tag: ?Supervision.Blocker = null,
             turn_index: usize = 0,
             status: ?ResponseStatus = null,
         }) @This() {
@@ -1886,6 +3186,11 @@ pub const Timeline = struct {
                 .replay_key = args.replay_key,
                 .checkpoint_fingerprint = args.checkpoint_fingerprint,
                 .branch_id = args.branch_id,
+                .run_permit_fingerprint = args.run_permit_fingerprint,
+                .supervision_check_fingerprint = args.supervision_check_fingerprint,
+                .usage_ledger_fingerprint = args.usage_ledger_fingerprint,
+                .run_receipt_fingerprint = args.run_receipt_fingerprint,
+                .blocker_tag = args.blocker_tag,
                 .turn_index = args.turn_index,
                 .status = args.status,
             };
@@ -2150,6 +3455,12 @@ pub const TranscriptImage = struct {
                 .checkpoint_recorded,
                 .branch_started,
                 .branch_joined,
+                .permit_issued,
+                .supervision_check,
+                .budget_exceeded,
+                .supervision_denied,
+                .run_interrupted,
+                .receipt_recorded,
                 => {},
             }
         }
@@ -2482,6 +3793,8 @@ pub const RunImage = struct {
     environment_certificate_fingerprint: ?u64 = null,
     acceptance_report_fingerprint: ?u64 = null,
     audit_image_fingerprint: ?u64 = null,
+    prior_run_permit_fingerprint: ?u64 = null,
+    prior_run_receipt_fingerprint: ?u64 = null,
     metadata: []const u8 = "",
     owns_metadata: bool = false,
 
@@ -2517,6 +3830,8 @@ pub const RunImage = struct {
         environment_certificate_fingerprint: ?u64 = null,
         acceptance_report_fingerprint: ?u64 = null,
         audit_image_fingerprint: ?u64 = null,
+        prior_run_permit_fingerprint: ?u64 = null,
+        prior_run_receipt_fingerprint: ?u64 = null,
         metadata: []const u8 = "",
     }) @This() {
         var result = @This(){
@@ -2533,6 +3848,8 @@ pub const RunImage = struct {
             .environment_certificate_fingerprint = args.environment_certificate_fingerprint,
             .acceptance_report_fingerprint = args.acceptance_report_fingerprint,
             .audit_image_fingerprint = args.audit_image_fingerprint,
+            .prior_run_permit_fingerprint = args.prior_run_permit_fingerprint,
+            .prior_run_receipt_fingerprint = args.prior_run_receipt_fingerprint,
             .metadata = args.metadata,
         };
         result.run_image_fingerprint = fingerprintRunImage(result);
@@ -2701,6 +4018,8 @@ pub const RunImage = struct {
         try writeOptionalU64(&out, allocator, self.environment_certificate_fingerprint);
         try writeOptionalU64(&out, allocator, self.acceptance_report_fingerprint);
         try writeOptionalU64(&out, allocator, self.audit_image_fingerprint);
+        try writeOptionalU64(&out, allocator, self.prior_run_permit_fingerprint);
+        try writeOptionalU64(&out, allocator, self.prior_run_receipt_fingerprint);
         try writeBytes(&out, allocator, self.metadata);
         return out.toOwnedSlice(allocator);
     }
@@ -2763,6 +4082,8 @@ pub const RunImage = struct {
         const environment_certificate_fingerprint = try readOptionalU64(bytes, &cursor);
         const acceptance_report_fingerprint = try readOptionalU64(bytes, &cursor);
         const audit_image_fingerprint = try readOptionalU64(bytes, &cursor);
+        const prior_run_permit_fingerprint = try readOptionalU64(bytes, &cursor);
+        const prior_run_receipt_fingerprint = try readOptionalU64(bytes, &cursor);
         const metadata = try readBytesOwned(allocator, bytes, &cursor);
         errdefer allocator.free(metadata);
         if (cursor != bytes.len) return error.InvalidFrameEncoding;
@@ -2787,6 +4108,8 @@ pub const RunImage = struct {
             .environment_certificate_fingerprint = environment_certificate_fingerprint,
             .acceptance_report_fingerprint = acceptance_report_fingerprint,
             .audit_image_fingerprint = audit_image_fingerprint,
+            .prior_run_permit_fingerprint = prior_run_permit_fingerprint,
+            .prior_run_receipt_fingerprint = prior_run_receipt_fingerprint,
             .metadata = metadata,
             .owns_metadata = true,
         };
@@ -2898,6 +4221,33 @@ pub const Handoff = struct {
         return report;
     }
 
+    pub fn preflightWithPermit(self: *@This(), comptime Target: type, comptime Env: type, mode: HandoffMode, permit: RunPermit) AcceptanceReport {
+        if (permit.mode != modeToRunMode(mode)) {
+            return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.SupervisionPolicyMismatch});
+        }
+        if (permit.target_ref_fingerprint != TargetRef.fromTarget(Target).target_ref_fingerprint) {
+            return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.HandoffTargetMismatch});
+        }
+        const cert = Env.certificate(modeToRunMode(mode), self.run_image.transcript_image != null);
+        if (permit.environment_certificate_fingerprint != cert.certificate_fingerprint) {
+            return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.SupervisionPolicyMismatch});
+        }
+        if (mode == .accept_fresh and !permit.policy.allow_handoff_accept) {
+            return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.SupervisionPolicyMismatch});
+        }
+        return self.preflight(Target, Env, mode);
+    }
+
+    pub fn inspectPriorReceipts(self: *@This()) struct {
+        prior_run_permit_fingerprint: ?u64,
+        prior_run_receipt_fingerprint: ?u64,
+    } {
+        return .{
+            .prior_run_permit_fingerprint = self.run_image.prior_run_permit_fingerprint,
+            .prior_run_receipt_fingerprint = self.run_image.prior_run_receipt_fingerprint,
+        };
+    }
+
     pub fn validatePendingFrame(self: *@This(), frame: Frame.Request) !void {
         const expected = self.run_image.pending_request_frame orelse return error.HandoffPendingFrameMismatch;
         if (expected.frame_fingerprint != frame.frame_fingerprint) return error.HandoffPendingFrameMismatch;
@@ -2959,6 +4309,21 @@ pub const Handoff = struct {
         }
         resume_committed = true;
         return run;
+    }
+
+    pub fn resumeWithPermit(
+        self: *@This(),
+        comptime Target: type,
+        comptime Env: type,
+        runtime: anytype,
+        args: anytype,
+        options: anytype,
+        mode: HandoffMode,
+        permit: RunPermit,
+    ) !Machine(Target, Env.machine_config).Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)) {
+        const report = self.preflightWithPermit(Target, Env, mode, permit);
+        if (!report.accepted) return acceptanceError(report);
+        return self.@"resume"(Target, Env, runtime, args, options, mode);
     }
 };
 
@@ -3123,8 +4488,9 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 switch (step) {
                     .done => |value| {
                         const audit = try run_state.snapshotAudit();
+                        const receipt = run_state.snapshotReceipt(.completed);
                         run_state.done_value_present = false;
-                        return .{ .value = value, .audit = audit };
+                        return .{ .value = value, .audit = audit, .receipt = receipt };
                     },
                     .port_required => run_state.dispatch() catch |err| {
                         try run_state.markRunFailed();
@@ -3159,10 +4525,12 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 done_value_present: bool = false,
                 frame_step_request: bool = false,
                 retained_values: std.ArrayList(StoredValue) = .empty,
+                supervisor: ?Supervision.Supervisor = null,
 
                 pub const Result = struct {
                     value: Value,
                     audit: AuditReport,
+                    receipt: ?RunReceipt = null,
 
                     pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
                         deinitRunValue(allocator, self.value);
@@ -3183,6 +4551,26 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     var audit = self.audit;
                     audit.per_port_counts = counts;
                     return audit;
+                }
+
+                fn snapshotReceipt(self: *Self, final_status: RunReceipt.FinalStatus) ?RunReceipt {
+                    if (self.supervisor) |*supervisor| {
+                        const run_state = RunState.init(.{
+                            .target_ref_fingerprint = TargetRef.fromTarget(Target).target_ref_fingerprint,
+                            .transcript_image_fingerprint = if (comptime @hasField(Options, "transcript_image"))
+                                @field(self.options, "transcript_image").transcript_image_fingerprint
+                            else
+                                null,
+                            .turn_index = self.audit.port_request_count,
+                            .status = switch (final_status) {
+                                .completed => .completed,
+                                .failed, .rejected => .failed,
+                                .parked, .interrupted => .parked_on_port,
+                            },
+                        });
+                        return supervisor.receipt(final_status, run_state.run_state_fingerprint, run_state.transcript_image_fingerprint, null);
+                    }
+                    return null;
                 }
 
                 fn markRunFailed(self: *Self) !void {
@@ -3240,6 +4628,28 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             }
                         }
                     }
+                    var supervisor: ?Supervision.Supervisor = null;
+                    errdefer if (supervisor) |*owned| owned.deinit();
+                    if (comptime @hasField(Options, "permit")) {
+                        const permit: RunPermit = @field(options, "permit");
+                        if (permit.target_ref_fingerprint != TargetRef.fromTarget(Target).target_ref_fingerprint) return Error.SupervisionDenied;
+                        if (permit.world_surface_fingerprint != Target.WorldSurface.surface_fingerprint) return Error.SupervisionDenied;
+                        if (permit.target_certificate_fingerprint != Target.Certificate.certificate_fingerprint) return Error.SupervisionDenied;
+                        if (permit.mode != effective) return Error.SupervisionDenied;
+                        if (comptime @hasField(@TypeOf(Config), "environment")) {
+                            const transcript_available = comptime handoff_transcript_available or
+                                @hasField(Options, "transcript_image") or
+                                (@hasField(Options, "transcript") and Config.environment.policy_decl.allow_native_adapters);
+                            const supervision_report = Config.environment.acceptanceReportWithSupervision(effective, transcript_available, permit.policy);
+                            if (!supervision_report.accepted) return acceptanceError(supervision_report);
+                            const cert = Config.environment.certificate(effective, transcript_available);
+                            if (permit.environment_certificate_fingerprint != cert.certificate_fingerprint) return Error.SupervisionDenied;
+                            if (permit.binding_plan_fingerprint != cert.binding_plan_fingerprint) return Error.SupervisionDenied;
+                        } else if (permit.policy.require_environment_certificate) {
+                            return Error.SupervisionDenied;
+                        }
+                        supervisor = try Supervision.Supervisor.init(allocator, permit, Target.WorldPortTable.entries.len);
+                    }
                     var session = try Program.Session.startWithArgs(runtime, Program.Handlers{}, args);
                     errdefer session.deinit();
                     if (@hasField(Options, "transcript_image") and modeConsumesTranscript(effective)) {
@@ -3258,8 +4668,14 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             );
                         }
                         try appendRunEvent(Target, options, .run_started, null, effective == .fresh);
+                        if (supervisor) |*active| {
+                            try appendRunEvent(Target, options, .permit_issued, null, false);
+                            if (active.last_check) |check| {
+                                _ = check;
+                            }
+                        }
                     }
-                    return .{
+                    const result = Self{
                         .runtime = runtime,
                         .session = session,
                         .allocator = allocator,
@@ -3273,7 +4689,10 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             .per_port_counts = per_port_counts,
                         },
                         .per_port_counts = per_port_counts,
+                        .supervisor = supervisor,
                     };
+                    supervisor = null;
+                    return result;
                 }
 
                 pub fn deinit(self: *Self) void {
@@ -3284,6 +4703,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     self.session.deinit();
                     for (self.retained_values.items) |*value| value.deinit(self.allocator);
                     self.retained_values.deinit(self.allocator);
+                    if (self.supervisor) |*supervisor| supervisor.deinit();
                     self.allocator.free(self.per_port_counts);
                 }
 
@@ -3294,6 +4714,12 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     }
                     if (self.audit.final_status == .failed) return .failed;
                     if (self.pending_request != null) return .port_required;
+                    if (self.supervisor) |*supervisor| {
+                        supervisor.beforeSessionStep() catch |err| {
+                            try self.markRunFailed();
+                            return err;
+                        };
+                    }
                     const session_step = self.session.next() catch |err| {
                         self.audit.failed_count += 1;
                         try self.markRunFailed();
@@ -3344,6 +4770,12 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                                 self.audit.failed_count += 1;
                                 try self.markRunFailed();
                                 return Error.ResidualSiteFingerprintMismatch;
+                            }
+                            if (self.supervisor) |*supervisor| {
+                                supervisor.beforePortRequest(world_port_id, 0, 0) catch |err| {
+                                    try self.markRunFailed();
+                                    return err;
+                                };
                             }
                             self.pending_request = request;
                             self.pending_port_id = world_port_id;
@@ -3413,9 +4845,20 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 }
 
                 fn resumeFrameWithProvenance(self: *Self, response_frame: Frame.Response, comptime replayed: bool) !void {
-                    if (response_frame.status == .pending) return error.HandlerPending;
                     const request = self.pending_request orelse return error.UnknownResidualSite;
                     const world_port_id = self.pending_port_id orelse return error.UnknownWorldPort;
+                    if (self.supervisor) |*supervisor| {
+                        supervisor.afterAdapterResponse(.{
+                            .world_port_id = world_port_id,
+                            .status = response_frame.status,
+                            .response_bytes = 0,
+                            .value_image_bytes = if (response_frame.response_image) |image| image.bytes.len else 0,
+                        }) catch |err| {
+                            try self.markRunFailed();
+                            return err;
+                        };
+                    }
+                    if (response_frame.status == .pending) return error.HandlerPending;
                     if (self.effective_mode != .fresh) return Error.InvalidMode;
                     var frame = try self.pendingRequestFrame(false);
                     defer frame.deinit(self.allocator);
@@ -3599,6 +5042,18 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     const payload = try typed_request.payload();
                     const trace = request.trace();
                     const replay_key = Decl.replayKey(trace.fingerprint);
+                    if (self.supervisor) |*supervisor| {
+                        supervisor.beforeAdapterCall(.{
+                            .world_port_id = Decl.world_port_id,
+                            .mode = self.effective_mode,
+                            .adapter_kind = comptime adapterKindForDecl(Decl),
+                            .authority_kind = if (comptime @hasDecl(Decl, "authority")) Decl.authority.authority_kind else null,
+                            .value_policy = if (comptime @hasDecl(Decl, "value_policy")) Decl.value_policy else .native_compatible,
+                        }) catch |err| {
+                            try self.markRunFailed();
+                            return err;
+                        };
+                    }
                     const public_request = PortRequest(Target, Decl.SiteType){
                         .world_surface_fingerprint = Target.WorldSurface.surface_fingerprint,
                         .target_certificate_fingerprint = Target.Certificate.certificate_fingerprint,
@@ -3636,6 +5091,15 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     if (!@hasField(Options, "ctx")) return Error.MissingHandler;
                     const response = try callHandler(Decl, @field(self.options, "ctx"), request);
                     defer Decl.response_deinit(@field(self.options, "ctx"), response);
+                    if (self.supervisor) |*supervisor| {
+                        supervisor.afterAdapterResponse(.{
+                            .world_port_id = Decl.world_port_id,
+                            .status = .responded,
+                        }) catch |err| {
+                            try self.markRunFailed();
+                            return err;
+                        };
+                    }
                     const typed = try (self.pending_request orelse return Error.UnknownResidualSite).as(Decl.SiteType);
                     const response_trace = try typed.responseTrace(.@"resume", response);
                     var stored: ?StoredValue = null;
@@ -3687,6 +5151,16 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             self.audit.replay_mismatch_count += 1;
                             return error.VerifyResponseFingerprintMismatch;
                         }
+                        if (self.supervisor) |*supervisor| {
+                            supervisor.afterAdapterResponse(.{
+                                .world_port_id = Decl.world_port_id,
+                                .status = .responded,
+                                .value_image_bytes = if (frame.response_image) |value_image| value_image.bytes.len else 0,
+                            }) catch |err| {
+                                try self.markRunFailed();
+                                return err;
+                            };
+                        }
                         try appendPortEvent(Target, self.options, .frame_replayed, Decl.world_port_id, trace, response_trace.fingerprint, .@"resume", null, null, frame.*);
                         self.audit.replayed_response_count += 1;
                         var run_value = try StoredValue.initOwned(self.allocator, value);
@@ -3716,6 +5190,16 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     if (response_trace.fingerprint != (event.response_fingerprint orelse return Error.ReplayMissing)) {
                         self.audit.replay_mismatch_count += 1;
                         return Error.ReplayResponseKindMismatch;
+                    }
+                    if (self.supervisor) |*supervisor| {
+                        supervisor.afterAdapterResponse(.{
+                            .world_port_id = Decl.world_port_id,
+                            .status = .responded,
+                            .value_image_bytes = if (event.response_frame) |frame| if (frame.response_image) |image| image.bytes.len else 0 else 0,
+                        }) catch |err| {
+                            try self.markRunFailed();
+                            return err;
+                        };
                     }
                     try appendPortEvent(Target, self.options, .port_replayed, Decl.world_port_id, trace, response_trace.fingerprint, .@"resume", null, null, if (event.response_frame) |frame| frame else null);
                     self.audit.replayed_response_count += 1;
@@ -3810,6 +5294,15 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     self.audit.replayed_response_count += 1;
                     const fresh = try callHandler(Decl, @field(self.options, "ctx"), request);
                     defer Decl.response_deinit(@field(self.options, "ctx"), fresh);
+                    if (self.supervisor) |*supervisor| {
+                        supervisor.afterAdapterResponse(.{
+                            .world_port_id = Decl.world_port_id,
+                            .status = .responded,
+                        }) catch |err| {
+                            try self.markRunFailed();
+                            return err;
+                        };
+                    }
                     const response_trace = try typed_request.responseTrace(.@"resume", fresh);
                     if (response_trace.fingerprint != expected_response_fingerprint) {
                         self.audit.replay_mismatch_count += 1;
@@ -4139,6 +5632,9 @@ fn acceptanceError(report: AcceptanceReport) Error {
         .HandoffTargetMismatch => Error.HandoffTargetMismatch,
         .HandoffCheckpointMismatch => Error.HandoffCheckpointMismatch,
         .HandoffPendingFrameMismatch => Error.HandoffPendingFrameMismatch,
+        .SupervisionPolicyMismatch => Error.SupervisionDenied,
+        .SupervisionBudgetExceeded => Error.BudgetExceeded,
+        .SupervisionPortRuleDenied => Error.PortRuleDenied,
         .SurfaceProfileIncompatible => Error.SurfaceProfileIncompatible,
         .PayloadValueMismatch => Error.FrameValueTableMismatch,
         .ResponseValueMismatch => Error.FrameValueTableMismatch,
@@ -5414,6 +6910,304 @@ fn fingerprintEnvironmentCertificate(cert: EnvironmentCertificate) u64 {
     return hasher.final();
 }
 
+fn fingerprintSupervisionPolicy(policy: SupervisionPolicy) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.supervision.policy.fingerprint");
+    hashU64(&hasher, world_supervision_policy_fingerprint_version);
+    hashBool(&hasher, policy.allow_fresh_calls);
+    hashBool(&hasher, policy.allow_replay_calls);
+    hashBool(&hasher, policy.allow_verify_calls);
+    hashBool(&hasher, policy.allow_audit_only);
+    hashBool(&hasher, policy.allow_native_adapters);
+    hashBool(&hasher, policy.allow_byte_adapters);
+    hashBool(&hasher, policy.allow_replay_adapters);
+    hashBool(&hasher, policy.allow_pending_responses);
+    hashBool(&hasher, policy.allow_rejected_responses);
+    hashBool(&hasher, policy.allow_failed_responses);
+    hashBool(&hasher, policy.allow_branching);
+    hashBool(&hasher, policy.allow_checkpoints);
+    hashBool(&hasher, policy.allow_handoff_export);
+    hashBool(&hasher, policy.allow_handoff_accept);
+    hashBool(&hasher, policy.require_portable_value_images);
+    hashBool(&hasher, policy.reject_native_only_values);
+    hashBool(&hasher, policy.require_environment_certificate);
+    hashBool(&hasher, policy.require_transcript_image_for_replay);
+    hashBool(&hasher, policy.fail_on_budget_exceeded);
+    hashBool(&hasher, policy.park_on_budget_exceeded);
+    hashBool(&hasher, policy.audit_only_on_budget_exceeded);
+    hashOptionalU64(&hasher, policy.max_supervision_events);
+    return hasher.final();
+}
+
+fn fingerprintBudget(budget: Budget) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.budget.fingerprint");
+    hashU64(&hasher, world_budget_fingerprint_version);
+    hashOptionalU64(&hasher, budget.max_session_steps);
+    hashOptionalU64(&hasher, budget.max_port_requests);
+    hashOptionalU64(&hasher, budget.max_port_responses);
+    hashOptionalU64(&hasher, budget.max_fresh_calls);
+    hashOptionalU64(&hasher, budget.max_replay_calls);
+    hashOptionalU64(&hasher, budget.max_verify_calls);
+    hashOptionalU64(&hasher, budget.max_failed_calls);
+    hashOptionalU64(&hasher, budget.max_rejected_calls);
+    hashOptionalU64(&hasher, budget.max_pending_calls);
+    hashOptionalU64(&hasher, budget.max_frame_request_bytes);
+    hashOptionalU64(&hasher, budget.max_frame_response_bytes);
+    hashOptionalU64(&hasher, budget.max_value_image_bytes);
+    hashOptionalU64(&hasher, budget.max_transcript_events);
+    hashOptionalU64(&hasher, budget.max_transcript_image_bytes);
+    hashOptionalU64(&hasher, budget.max_checkpoints);
+    hashOptionalU64(&hasher, budget.max_branches);
+    hashOptionalU64(&hasher, budget.max_branch_depth);
+    hashOptionalU64(&hasher, budget.max_handoff_exports);
+    hashOptionalU64(&hasher, budget.max_handoff_accepts);
+    hashOptionalU64(&hasher, budget.max_total_cost_units);
+    hashU64(&hasher, budget.per_port_budgets.len);
+    for (budget.per_port_budgets) |per_port| {
+        hashU64(&hasher, per_port.world_port_id);
+        hashOptionalU64(&hasher, per_port.max_requests);
+        hashOptionalU64(&hasher, per_port.max_fresh_calls);
+        hashOptionalU64(&hasher, per_port.max_replay_calls);
+        hashOptionalU64(&hasher, per_port.max_response_bytes);
+        hashOptionalU64(&hasher, per_port.max_value_image_bytes);
+        hashOptionalU64(&hasher, per_port.max_cost_units);
+    }
+    return hasher.final();
+}
+
+fn fingerprintCostModel(model: CostModel) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.cost_model.fingerprint");
+    hashU64(&hasher, world_cost_model_fingerprint_version);
+    hashU64(&hasher, model.session_step_cost);
+    hashU64(&hasher, model.port_request_base_cost);
+    hashU64(&hasher, model.port_response_base_cost);
+    hashU64(&hasher, model.fresh_call_cost);
+    hashU64(&hasher, model.replay_call_cost);
+    hashU64(&hasher, model.verify_call_cost);
+    hashU64(&hasher, model.failed_call_cost);
+    hashU64(&hasher, model.rejected_call_cost);
+    hashU64(&hasher, model.pending_call_cost);
+    hashU64(&hasher, model.frame_byte_cost);
+    hashU64(&hasher, model.value_image_byte_cost);
+    hashU64(&hasher, model.checkpoint_cost);
+    hashU64(&hasher, model.branch_cost);
+    hashU64(&hasher, model.handoff_export_cost);
+    hashU64(&hasher, model.handoff_accept_cost);
+    hashU64(&hasher, model.per_port_costs.len);
+    for (model.per_port_costs) |cost| {
+        hashU64(&hasher, cost.world_port_id);
+        hashOptionalU64(&hasher, cost.port_request_base_cost);
+        hashOptionalU64(&hasher, cost.port_response_base_cost);
+        hashOptionalU64(&hasher, cost.fresh_call_cost);
+        hashOptionalU64(&hasher, cost.replay_call_cost);
+        hashOptionalU64(&hasher, cost.verify_call_cost);
+        hashOptionalU64(&hasher, cost.failed_call_cost);
+        hashOptionalU64(&hasher, cost.rejected_call_cost);
+        hashOptionalU64(&hasher, cost.pending_call_cost);
+        hashOptionalU64(&hasher, cost.frame_byte_cost);
+        hashOptionalU64(&hasher, cost.value_image_byte_cost);
+    }
+    return hasher.final();
+}
+
+fn fingerprintAllowedAdapterKinds(kinds: Supervision.AllowedAdapterKinds) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBool(&hasher, kinds.native);
+    hashBool(&hasher, kinds.replay);
+    hashBool(&hasher, kinds.verify);
+    hashBool(&hasher, kinds.byte);
+    hashBool(&hasher, kinds.null_reject);
+    hashBool(&hasher, kinds.pending_stub);
+    hashBool(&hasher, kinds.custom);
+    return hasher.final();
+}
+
+fn fingerprintAllowedAuthorityKinds(kinds: Supervision.AllowedAuthorityKinds) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBool(&hasher, kinds.fixture);
+    hashBool(&hasher, kinds.replay_source);
+    hashBool(&hasher, kinds.native_function);
+    hashBool(&hasher, kinds.byte_adapter);
+    hashBool(&hasher, kinds.model_like);
+    hashBool(&hasher, kinds.tool_like);
+    hashBool(&hasher, kinds.file_like);
+    hashBool(&hasher, kinds.human_like);
+    hashBool(&hasher, kinds.custom);
+    return hasher.final();
+}
+
+fn fingerprintAllowedModes(modes: Supervision.AllowedModes) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBool(&hasher, modes.fresh);
+    hashBool(&hasher, modes.replay);
+    hashBool(&hasher, modes.verify);
+    hashBool(&hasher, modes.audit);
+    return hasher.final();
+}
+
+fn fingerprintPortRule(rule: PortRule) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.port_rule.fingerprint");
+    hashU64(&hasher, world_port_rule_fingerprint_version);
+    hashU64(&hasher, rule.world_surface_fingerprint);
+    hashU64(&hasher, rule.world_port_id);
+    hashU64(&hasher, fingerprintAllowedAdapterKinds(rule.allowed_adapter_kinds));
+    hashU64(&hasher, fingerprintAllowedAuthorityKinds(rule.allowed_authority_kinds));
+    hashU64(&hasher, fingerprintAllowedModes(rule.allowed_modes));
+    hashBool(&hasher, rule.allow_fresh);
+    hashBool(&hasher, rule.allow_replay);
+    hashBool(&hasher, rule.allow_verify);
+    hashBool(&hasher, rule.allow_pending);
+    hashBool(&hasher, rule.allow_reject);
+    hashBool(&hasher, rule.allow_fail);
+    hashBool(&hasher, rule.require_portable_values);
+    hashOptionalU64(&hasher, rule.max_payload_image_bytes);
+    hashOptionalU64(&hasher, rule.max_response_image_bytes);
+    hashOptionalU64(&hasher, rule.max_requests);
+    hashOptionalU64(&hasher, rule.max_cost_units);
+    return hasher.final();
+}
+
+fn fingerprintRunPermit(permit: RunPermit) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.run_permit.fingerprint");
+    hashU64(&hasher, world_run_permit_fingerprint_version);
+    hashU64(&hasher, permit.target_ref_fingerprint);
+    hashU64(&hasher, permit.world_surface_fingerprint);
+    hashU64(&hasher, permit.target_certificate_fingerprint);
+    hashU64(&hasher, permit.environment_certificate_fingerprint);
+    hashU64(&hasher, permit.binding_plan_fingerprint);
+    hashU64(&hasher, @intFromEnum(permit.mode));
+    hashU64(&hasher, permit.supervision_policy_fingerprint);
+    hashU64(&hasher, permit.budget_fingerprint);
+    hashU64(&hasher, permit.cost_model_fingerprint);
+    hashU64(&hasher, @intFromEnum(permit.branch_policy));
+    hashU64(&hasher, @intFromEnum(permit.handoff_policy));
+    hashU64(&hasher, permit.metadata.len);
+    hashBytes(&hasher, permit.metadata);
+    hashU64(&hasher, permit.label.len);
+    hashBytes(&hasher, permit.label);
+    hashU64(&hasher, permit.port_rules.len);
+    for (permit.port_rules) |rule| hashU64(&hasher, rule.rule_fingerprint);
+    return hasher.final();
+}
+
+fn fingerprintUsageLedger(ledger: UsageLedger) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.usage_ledger.fingerprint");
+    hashU64(&hasher, world_usage_ledger_fingerprint_version);
+    hashU64(&hasher, ledger.run_permit_fingerprint);
+    hashU64(&hasher, ledger.target_ref_fingerprint);
+    hashU64(&hasher, ledger.environment_certificate_fingerprint);
+    hashU64(&hasher, ledger.total_session_steps);
+    hashU64(&hasher, ledger.total_port_requests);
+    hashU64(&hasher, ledger.total_port_responses);
+    hashU64(&hasher, ledger.total_fresh_calls);
+    hashU64(&hasher, ledger.total_replay_calls);
+    hashU64(&hasher, ledger.total_verify_calls);
+    hashU64(&hasher, ledger.total_failed_calls);
+    hashU64(&hasher, ledger.total_rejected_calls);
+    hashU64(&hasher, ledger.total_pending_calls);
+    hashU64(&hasher, ledger.total_frame_request_bytes);
+    hashU64(&hasher, ledger.total_frame_response_bytes);
+    hashU64(&hasher, ledger.total_value_image_bytes);
+    hashU64(&hasher, ledger.total_transcript_events);
+    hashU64(&hasher, ledger.total_checkpoints);
+    hashU64(&hasher, ledger.total_branches);
+    hashU64(&hasher, ledger.total_handoff_exports);
+    hashU64(&hasher, ledger.total_handoff_accepts);
+    hashU64(&hasher, ledger.total_cost_units);
+    hashU64(&hasher, ledger.per_port_usage.len);
+    for (ledger.per_port_usage) |usage| {
+        hashU64(&hasher, usage.world_port_id);
+        hashU64(&hasher, usage.requests);
+        hashU64(&hasher, usage.responses);
+        hashU64(&hasher, usage.fresh_calls);
+        hashU64(&hasher, usage.replay_calls);
+        hashU64(&hasher, usage.verify_calls);
+        hashU64(&hasher, usage.failed_calls);
+        hashU64(&hasher, usage.rejected_calls);
+        hashU64(&hasher, usage.pending_calls);
+        hashU64(&hasher, usage.response_bytes);
+        hashU64(&hasher, usage.value_image_bytes);
+        hashU64(&hasher, usage.cost_units);
+    }
+    if (ledger.exceeded_budget) |exceeded| {
+        hashBool(&hasher, true);
+        hashU64(&hasher, @intFromEnum(exceeded));
+    } else {
+        hashBool(&hasher, false);
+    }
+    return hasher.final();
+}
+
+fn fingerprintSupervisionCheck(check: SupervisionCheck) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.supervision_check.fingerprint");
+    hashU64(&hasher, world_supervision_check_fingerprint_version);
+    hashU64(&hasher, check.run_permit_fingerprint);
+    hashU64(&hasher, @intFromEnum(check.event_kind));
+    hashOptionalU32(&hasher, check.world_port_id);
+    hashU64(&hasher, check.usage_before_fingerprint);
+    hashU64(&hasher, check.usage_after_fingerprint);
+    hashBool(&hasher, check.allowed);
+    if (check.blocker) |blocker| {
+        hashBool(&hasher, true);
+        hashU64(&hasher, @intFromEnum(blocker));
+    } else {
+        hashBool(&hasher, false);
+    }
+    if (check.budget_exceeded) |exceeded| {
+        hashBool(&hasher, true);
+        hashU64(&hasher, @intFromEnum(exceeded));
+    } else {
+        hashBool(&hasher, false);
+    }
+    hashOptionalU64(&hasher, check.rule_fingerprint);
+    hashOptionalU64(&hasher, check.budget_fingerprint);
+    hashU64(&hasher, check.summary.len);
+    hashBytes(&hasher, check.summary);
+    return hasher.final();
+}
+
+fn fingerprintRunReceipt(receipt: RunReceipt) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.run_receipt.fingerprint");
+    hashU64(&hasher, world_run_receipt_fingerprint_version);
+    hashU64(&hasher, receipt.run_permit_fingerprint);
+    hashU64(&hasher, receipt.environment_certificate_fingerprint);
+    hashU64(&hasher, receipt.target_ref_fingerprint);
+    hashOptionalU64(&hasher, receipt.run_image_fingerprint);
+    hashOptionalU64(&hasher, receipt.transcript_image_fingerprint);
+    hashU64(&hasher, receipt.usage_ledger_fingerprint);
+    hashU64(&hasher, receipt.final_run_state_fingerprint);
+    hashU64(&hasher, @intFromEnum(receipt.final_status));
+    if (receipt.exceeded_budget) |exceeded| {
+        hashBool(&hasher, true);
+        hashU64(&hasher, @intFromEnum(exceeded));
+    } else {
+        hashBool(&hasher, false);
+    }
+    if (receipt.blocker) |blocker| {
+        hashBool(&hasher, true);
+        hashU64(&hasher, @intFromEnum(blocker));
+    } else {
+        hashBool(&hasher, false);
+    }
+    hashU64(&hasher, receipt.warning_count);
+    hashU64(&hasher, receipt.total_session_steps);
+    hashU64(&hasher, receipt.total_port_requests);
+    hashU64(&hasher, receipt.total_port_responses);
+    hashU64(&hasher, receipt.total_cost_units);
+    hashU64(&hasher, receipt.branch_count);
+    hashU64(&hasher, receipt.checkpoint_count);
+    hashU64(&hasher, receipt.handoff_export_count);
+    hashU64(&hasher, receipt.handoff_accept_count);
+    return hasher.final();
+}
+
 fn fingerprintRunState(state: RunState) u64 {
     var hasher = std.hash.Wyhash.init(0);
     hashBytes(&hasher, "world.run_state.fingerprint");
@@ -5448,6 +7242,8 @@ fn fingerprintRunImage(image: RunImage) u64 {
     hashOptionalU64(&hasher, image.environment_certificate_fingerprint);
     hashOptionalU64(&hasher, image.acceptance_report_fingerprint);
     hashOptionalU64(&hasher, image.audit_image_fingerprint);
+    hashOptionalU64(&hasher, image.prior_run_permit_fingerprint);
+    hashOptionalU64(&hasher, image.prior_run_receipt_fingerprint);
     hashU64(&hasher, image.metadata.len);
     hashBytes(&hasher, image.metadata);
     return hasher.final();
@@ -5551,6 +7347,16 @@ fn fingerprintTimelineEvent(event: Timeline.Event) u64 {
     hashOptionalU64(&hasher, event.replay_key);
     hashOptionalU64(&hasher, event.checkpoint_fingerprint);
     hashOptionalU64(&hasher, event.branch_id);
+    hashOptionalU64(&hasher, event.run_permit_fingerprint);
+    hashOptionalU64(&hasher, event.supervision_check_fingerprint);
+    hashOptionalU64(&hasher, event.usage_ledger_fingerprint);
+    hashOptionalU64(&hasher, event.run_receipt_fingerprint);
+    if (event.blocker_tag) |blocker| {
+        hashBool(&hasher, true);
+        hashU64(&hasher, @intFromEnum(blocker));
+    } else {
+        hashBool(&hasher, false);
+    }
     hashU64(&hasher, event.turn_index);
     if (event.status) |status| {
         hashBool(&hasher, true);

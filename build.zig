@@ -186,7 +186,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-transcript-image-replay",
             .desc = "Run the transcript image replay World example.",
             .expected_stdout =
-            \\transcript_image_fingerprint=a0ca263faed105a
+            \\transcript_image_fingerprint=9a28be8bfdd66988
             \\replayed_response_count=1
             \\final_result=7
             \\
@@ -210,7 +210,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-agent-timeline",
             .desc = "Run the agent timeline World example.",
             .expected_stdout =
-            \\transcript_image_fingerprint=4099cf5282ce6b8d
+            \\transcript_image_fingerprint=4253fb76adf50962
             \\event_count=8
             \\tool_call_count=1
             \\replay_verified=true
@@ -225,8 +225,8 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the agent branch World example.",
             .expected_stdout =
             \\checkpoint_fingerprint=e35fc0906e26ab9e
-            \\baseline_transcript_fingerprint=4099cf5282ce6b8d
-            \\branch_transcript_fingerprint=1cc787815c6ee617
+            \\baseline_transcript_fingerprint=4253fb76adf50962
+            \\branch_transcript_fingerprint=af5e6710436bd94e
             \\baseline_final_result=final=actuate skeleton complete
             \\branch_final_result=final=branch alternate
             \\
@@ -241,7 +241,7 @@ pub fn build(b: *std.Build) void {
             \\fresh_missing_accepted=false
             \\fresh_blocker=MissingBinding
             \\replay_without_handlers_accepted=true
-            \\transcript_image_fingerprint=a0ca263faed105a
+            \\transcript_image_fingerprint=9a28be8bfdd66988
             \\
             ,
         },
@@ -251,7 +251,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-handoff-parked",
             .desc = "Run the parked World handoff example.",
             .expected_stdout =
-            \\run_image_fingerprint=b9ea83e6295dbaf0
+            \\run_image_fingerprint=4b8b82248de60f25
             \\pending_request_fingerprint=f167057cbf38adb0
             \\environment_certificate_fingerprint=18eae8043c9acdfb
             \\final_result=7
@@ -264,7 +264,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-handoff-replay",
             .desc = "Run the replay World handoff example.",
             .expected_stdout =
-            \\run_image_fingerprint=1daa813b4b12ab3a
+            \\run_image_fingerprint=37a6122a53649eeb
             \\replayed_response_count=1
             \\final_result=7
             \\
@@ -287,12 +287,75 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-agent-handoff",
             .desc = "Run the agent World handoff example.",
             .expected_stdout =
-            \\run_image_fingerprint=503185a18a98b5d0
+            \\run_image_fingerprint=722e57367f5c060c
             \\checkpoint_fingerprint=e35fc0906e26ab9e
             \\branch_id=1
             \\model_port_id=0
             \\tool_port_id=1
             \\final_result=final=actuate skeleton complete
+            \\
+            ,
+        },
+        .{
+            .name = "world-supervised-budget",
+            .path = "examples/world_supervised_budget.zig",
+            .step = "run-world-supervised-budget",
+            .desc = "Run the supervised budget World example.",
+            .expected_stdout =
+            \\permit_fingerprint=302f035d6f0f691e
+            \\receipt_fingerprint=fc6baeb288b2f656
+            \\budget_exceeded=false
+            \\denied_budget_exceeded=true
+            \\
+            ,
+        },
+        .{
+            .name = "world-supervised-agent",
+            .path = "examples/world_supervised_agent.zig",
+            .step = "run-world-supervised-agent",
+            .desc = "Run the supervised agent World example.",
+            .expected_stdout =
+            \\model_port_calls=2
+            \\tool_port_calls=1
+            \\total_cost_units=13
+            \\final_result=final=actuate skeleton complete
+            \\
+            ,
+        },
+        .{
+            .name = "world-supervised-handoff",
+            .path = "examples/world_supervised_handoff.zig",
+            .step = "run-world-supervised-handoff",
+            .desc = "Run the supervised handoff World example.",
+            .expected_stdout =
+            \\received_run_image_fingerprint=559d35db4d58ef0
+            \\receiver_permit_fingerprint=29d4723016a2728b
+            \\receiver_receipt_fingerprint=b4adccbbd5dc81a0
+            \\final_result=7
+            \\
+            ,
+        },
+        .{
+            .name = "world-supervised-branch",
+            .path = "examples/world_supervised_branch.zig",
+            .step = "run-world-supervised-branch",
+            .desc = "Run the supervised branch World example.",
+            .expected_stdout =
+            \\checkpoint_fingerprint=e59cf203b9e7d39e
+            \\first_branch_result=allowed
+            \\second_branch_denied=true
+            \\
+            ,
+        },
+        .{
+            .name = "world-supervised-replay-verify",
+            .path = "examples/world_supervised_replay_verify.zig",
+            .step = "run-world-supervised-replay-verify",
+            .desc = "Run the supervised replay/verify World example.",
+            .expected_stdout =
+            \\fresh_receipt=fc6baeb288b2f656
+            \\replay_receipt=611e5b97240ea1e
+            \\verify_divergence_detected=true
             \\
             ,
         },

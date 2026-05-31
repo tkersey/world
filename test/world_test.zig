@@ -4501,3 +4501,304 @@ test "agent handoff replay works without model or tool handler calls" {
     try std.testing.expectEqual(@as(usize, 0), replay_ctx.model_calls);
     try std.testing.expectEqual(@as(usize, 0), replay_ctx.tool_calls);
 }
+
+test "run permit fingerprint stable binds target environment policy budget cost model and excludes runtime tokens" {
+    const budget = world.Budget.init(.{ .max_port_requests = 3 });
+    const cost_model = world.CostModel.init(.{ .fresh_call_cost = 7 });
+    const permit_a = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+        .budget = budget,
+        .cost_model = cost_model,
+        .label = "permit-a",
+    });
+    const permit_b = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+        .budget = budget,
+        .cost_model = cost_model,
+        .label = "permit-a",
+    });
+    const changed_budget = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+        .budget = world.Budget.init(.{ .max_port_requests = 4 }),
+        .cost_model = cost_model,
+        .label = "permit-a",
+    });
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const cert = PortsEnv.certificate(.fresh, false);
+    try std.testing.expectEqual(permit_a.permit_fingerprint, permit_b.permit_fingerprint);
+    try std.testing.expectEqual(target_ref.target_ref_fingerprint, permit_a.target_ref_fingerprint);
+    try std.testing.expectEqual(cert.certificate_fingerprint, permit_a.environment_certificate_fingerprint);
+    try std.testing.expectEqual(world.SupervisionPolicy.strict_fresh.policy_fingerprint, permit_a.supervision_policy_fingerprint);
+    try std.testing.expectEqual(budget.budget_fingerprint, permit_a.budget_fingerprint);
+    try std.testing.expectEqual(cost_model.cost_model_fingerprint, permit_a.cost_model_fingerprint);
+    try std.testing.expect(permit_a.permit_fingerprint != changed_budget.permit_fingerprint);
+}
+
+test "supervision policy denies native fresh calls and pending by default" {
+    const policy = world.SupervisionPolicy.init(.{
+        .allow_native_adapters = true,
+        .require_environment_certificate = true,
+    });
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = policy,
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var ctx: PortsCtx = .{};
+    try std.testing.expectError(error.FreshCallDenied, PortsMachineEnv.run(&runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+        .permit = permit,
+    }));
+    try std.testing.expectEqual(@as(usize, 0), ctx.calls);
+    try std.testing.expect(!world.Supervision.responseAllowedByPolicy(world.SupervisionPolicy.strict_fresh, .pending));
+    try std.testing.expect(world.Supervision.adapterAllowedByPolicy(world.SupervisionPolicy.strict_replay, .replay));
+}
+
+test "budget zero port budget denies first port and usage ledger records cost model units" {
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+        .budget = world.Budget.init(.{ .max_port_requests = 0 }),
+        .cost_model = world.CostModel.init(.{ .port_request_base_cost = 5 }),
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var ctx: PortsCtx = .{};
+    try std.testing.expectError(error.BudgetExceeded, PortsMachineEnv.run(&runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+        .permit = permit,
+    }));
+    try std.testing.expectEqual(@as(usize, 0), ctx.calls);
+}
+
+test "cost model and port rule enforce per-port budgets and response status" {
+    const per_port_budget = [_]world.Supervision.PerPortBudget{.{
+        .world_port_id = 0,
+        .max_requests = 1,
+        .max_cost_units = 10,
+    }};
+    const per_port_cost = [_]world.Supervision.PerPortCost{.{
+        .world_port_id = 0,
+        .port_request_base_cost = 3,
+        .fresh_call_cost = 4,
+    }};
+    const rules = [_]world.PortRule{world.PortRule.init(.{
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .world_port_id = 0,
+        .allowed_adapter_kinds = world.Supervision.AllowedAdapterKinds.fresh_native,
+        .allowed_modes = world.Supervision.AllowedModes.fresh_only,
+        .allow_fail = false,
+    })};
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+        .budget = world.Budget.init(.{ .per_port_budgets = &per_port_budget }),
+        .cost_model = world.CostModel.init(.{ .per_port_costs = &per_port_cost }),
+        .port_rules = &rules,
+    });
+    var supervisor = try world.Supervisor.init(std.testing.allocator, permit, fixtures.Ports.Target.WorldPortTable.entries.len);
+    defer supervisor.deinit();
+    try supervisor.beforePortRequest(0, 0, 0);
+    try supervisor.beforeAdapterCall(.{
+        .world_port_id = 0,
+        .mode = .fresh,
+        .adapter_kind = .native,
+        .authority_kind = .native_function,
+    });
+    try std.testing.expectEqual(@as(u64, 7), supervisor.ledger.per_port_usage[0].cost_units);
+    try std.testing.expectError(error.HandlerFailed, supervisor.afterAdapterResponse(.{
+        .world_port_id = 0,
+        .status = .failed,
+    }));
+}
+
+test "usage ledger supervision check and run receipt fingerprints are stable" {
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+        .budget = world.Budget.init(.{ .max_port_requests = 2, .max_total_cost_units = 100 }),
+    });
+    var supervisor = try world.Supervisor.init(std.testing.allocator, permit, fixtures.Ports.Target.WorldPortTable.entries.len);
+    defer supervisor.deinit();
+    const before = supervisor.ledger.ledger_fingerprint;
+    try supervisor.beforeSessionStep();
+    try supervisor.beforePortRequest(0, 0, 0);
+    try supervisor.beforeAdapterCall(.{ .world_port_id = 0, .mode = .fresh, .adapter_kind = .native });
+    try supervisor.afterAdapterResponse(.{ .world_port_id = 0, .status = .responded });
+    const check = supervisor.last_check.?;
+    try std.testing.expect(check.allowed);
+    try std.testing.expect(check.check_fingerprint != before);
+    try std.testing.expectEqual(@as(usize, 1), supervisor.ledger.total_session_steps);
+    try std.testing.expectEqual(@as(usize, 1), supervisor.ledger.total_port_requests);
+    try std.testing.expectEqual(@as(usize, 1), supervisor.ledger.total_fresh_calls);
+    const state = world.RunState.init(.{
+        .target_ref_fingerprint = permit.target_ref_fingerprint,
+        .status = .completed,
+    });
+    const receipt_a = supervisor.receipt(.completed, state.run_state_fingerprint, null, null);
+    const receipt_b = supervisor.receipt(.completed, state.run_state_fingerprint, null, null);
+    try std.testing.expectEqual(receipt_a.receipt_fingerprint, receipt_b.receipt_fingerprint);
+    try std.testing.expectEqual(supervisor.ledger.ledger_fingerprint, receipt_a.usage_ledger_fingerprint);
+    try std.testing.expectEqual(@as(usize, 1), receipt_a.total_port_requests);
+}
+
+test "policy membrane prevents fresh handler calls and run receipt is available after permitted run" {
+    const ok_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+        .budget = world.Budget.init(.{ .max_port_requests = 1, .max_fresh_calls = 1 }),
+    });
+    var ok_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer ok_runtime.deinit();
+    var ok_ctx: PortsCtx = .{};
+    var ok = try PortsMachineEnv.run(&ok_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ok_ctx,
+        .permit = ok_permit,
+    });
+    defer ok.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(i32, 7), ok.value);
+    try std.testing.expectEqual(@as(usize, 1), ok_ctx.calls);
+    try std.testing.expect(ok.receipt != null);
+    try std.testing.expectEqual(world.RunReceipt.FinalStatus.completed, ok.receipt.?.final_status);
+
+    const denied_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_native_adapters = false,
+            .require_environment_certificate = true,
+        }),
+    });
+    var denied_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer denied_runtime.deinit();
+    var denied_ctx: PortsCtx = .{};
+    try std.testing.expectError(error.SupervisionDenied, PortsMachineEnv.run(&denied_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &denied_ctx,
+        .permit = denied_permit,
+    }));
+    try std.testing.expectEqual(@as(usize, 0), denied_ctx.calls);
+}
+
+test "supervised handoff receiver can issue stricter permit and inspect prior receipt refs" {
+    const sender_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.agent_fixture,
+    });
+    const sender_receipt = world.RunReceipt.init(.{
+        .run_permit_fingerprint = sender_permit.permit_fingerprint,
+        .environment_certificate_fingerprint = sender_permit.environment_certificate_fingerprint,
+        .target_ref_fingerprint = sender_permit.target_ref_fingerprint,
+        .usage_ledger_fingerprint = 1,
+        .final_run_state_fingerprint = 2,
+        .final_status = .parked,
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var ctx: PortsCtx = .{};
+    var run = try PortsMachineEnv.start(&runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+    });
+    defer run.deinit();
+    const step = try run.nextFrame();
+    var request_frame = switch (step) {
+        .port_request => |frame| frame,
+        else => return error.HandoffPendingFrameMismatch,
+    };
+    defer request_frame.deinit(std.testing.allocator);
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .parked_on_port,
+        .pending_request_fingerprint = request_frame.frame_fingerprint,
+        .turn_index = request_frame.turn_index,
+    });
+    const image = world.RunImage.init(.{
+        .kind = .parked_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = state,
+        .pending_request_frame = request_frame,
+        .prior_run_permit_fingerprint = sender_permit.permit_fingerprint,
+        .prior_run_receipt_fingerprint = sender_receipt.receipt_fingerprint,
+    });
+    const encoded = try image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(encoded);
+    var handoff = try world.Handoff.fromRunImage(std.testing.allocator, encoded);
+    defer handoff.deinit();
+    const inspected = handoff.inspectPriorReceipts();
+    try std.testing.expectEqual(sender_permit.permit_fingerprint, inspected.prior_run_permit_fingerprint.?);
+    try std.testing.expectEqual(sender_receipt.receipt_fingerprint, inspected.prior_run_receipt_fingerprint.?);
+    const receiver_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.handoff_receiver,
+        .budget = world.Budget.init(.{ .max_port_requests = 1 }),
+    });
+    const report = handoff.preflightWithPermit(fixtures.Ports.Target, PortsEnv, .accept_fresh, receiver_permit);
+    try std.testing.expect(report.accepted);
+}
+
+test "supervised branch and checkpoint budgets are enforced" {
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.branch_limited,
+        .budget = world.Budget.init(.{ .max_checkpoints = 1, .max_branches = 1, .max_branch_depth = 1 }),
+    });
+    var supervisor = try world.Supervisor.init(std.testing.allocator, permit, fixtures.Ports.Target.WorldPortTable.entries.len);
+    defer supervisor.deinit();
+    try supervisor.beforeCheckpoint(0);
+    try supervisor.beforeBranch(1);
+    try std.testing.expectError(error.BudgetExceeded, supervisor.beforeBranch(1));
+    try std.testing.expectEqual(world.Supervision.BudgetExceededKind.branches, supervisor.ledger.exceeded_budget.?);
+}
+
+test "supervised agent run completes under budget and over-budget agent is denied" {
+    var ok_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer ok_runtime.deinit();
+    var ok_ctx: AgentCtx = .{ .allocator = std.testing.allocator, .scenario = .skeleton };
+    const ok_permit = world.Supervision.issue(fixtures.Agent.Target, AgentEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.agent_fixture,
+        .budget = world.Budget.init(.{ .max_port_requests = 4, .max_fresh_calls = 4, .max_total_cost_units = 20 }),
+    });
+    var ok = try AgentMachineEnv.run(&ok_runtime, AgentArgs{ @as(usize, 3), fixtures.Agent.initialObservation(.skeleton) }, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ok_ctx,
+        .permit = ok_permit,
+    });
+    defer ok.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("final=actuate skeleton complete", ok.value);
+    try std.testing.expect(ok.receipt != null);
+    try std.testing.expect(ok.receipt.?.total_cost_units <= 20);
+
+    var denied_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer denied_runtime.deinit();
+    var denied_ctx: AgentCtx = .{ .allocator = std.testing.allocator, .scenario = .skeleton };
+    const denied_permit = world.Supervision.issue(fixtures.Agent.Target, AgentEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.agent_fixture,
+        .budget = world.Budget.init(.{ .max_port_requests = 0 }),
+    });
+    try std.testing.expectError(error.BudgetExceeded, AgentMachineEnv.run(&denied_runtime, AgentArgs{ @as(usize, 3), fixtures.Agent.initialObservation(.skeleton) }, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &denied_ctx,
+        .permit = denied_permit,
+    }));
+    try std.testing.expectEqual(@as(usize, 0), denied_ctx.model_calls);
+    try std.testing.expectEqual(@as(usize, 0), denied_ctx.tool_calls);
+}
