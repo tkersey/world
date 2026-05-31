@@ -2729,8 +2729,20 @@ pub const Handoff = struct {
         const has_transcript = self.run_image.transcript_image != null;
         const report = Env.acceptanceReport(modeToRunMode(mode), has_transcript);
         if (!report.accepted) return report;
-        if ((mode == .accept_replay or mode == .accept_verify) and !has_transcript) {
-            return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.TranscriptImageRequired});
+        if (mode == .accept_replay or mode == .accept_verify) {
+            const image = if (self.run_image.transcript_image) |*image|
+                image
+            else
+                return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.TranscriptImageRequired});
+            image.resetReplay();
+            image.validateReplayRun(
+                Target.WorldSurface.surface_fingerprint,
+                Target.Certificate.certificate_fingerprint,
+            ) catch {
+                image.resetReplay();
+                return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.ReplaySourceMissing});
+            };
+            image.resetReplay();
         }
         return report;
     }
@@ -3039,8 +3051,8 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         return Error.MissingHandler;
                     }
                     if (comptime @hasField(@TypeOf(Config), "environment")) {
-                        const has_transcript_image = comptime @hasField(Options, "transcript_image");
-                        const report = Config.environment.acceptanceReport(effective, has_transcript_image);
+                        const transcript_available = comptime @hasField(Options, "transcript_image") or @hasField(Options, "transcript");
+                        const report = Config.environment.acceptanceReport(effective, transcript_available);
                         if (!report.accepted) return acceptanceError(report);
                     }
                     var session = try Program.Session.startWithArgs(runtime, Program.Handlers{}, args);

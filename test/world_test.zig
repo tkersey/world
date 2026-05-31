@@ -996,6 +996,47 @@ test "world replay ignores responses outside validated source run" {
     try std.testing.expectEqual(@as(usize, 0), ctx.calls);
 }
 
+test "environment replay and verify accept in-memory transcripts" {
+    {
+        var transcript = world.Transcript.init(std.testing.allocator);
+        defer transcript.deinit();
+        try recordPortsTranscript(&transcript);
+
+        var runtime = boundary.Runtime.init(std.testing.allocator);
+        defer runtime.deinit();
+        var ctx: PortsCtx = .{};
+        var result = try PortsMachineEnv.run(&runtime, .{}, .{
+            .allocator = std.testing.allocator,
+            .mode = world.Mode.replay,
+            .ctx = &ctx,
+            .transcript = &transcript,
+        });
+        defer result.deinit(std.testing.allocator);
+
+        try std.testing.expectEqual(@as(i32, 7), result.value);
+        try std.testing.expectEqual(@as(usize, 0), ctx.calls);
+    }
+    {
+        var transcript = world.Transcript.init(std.testing.allocator);
+        defer transcript.deinit();
+        try recordPortsTranscript(&transcript);
+
+        var runtime = boundary.Runtime.init(std.testing.allocator);
+        defer runtime.deinit();
+        var ctx: PortsCtx = .{};
+        var result = try PortsMachineEnv.run(&runtime, .{}, .{
+            .allocator = std.testing.allocator,
+            .mode = world.Mode.verify,
+            .ctx = &ctx,
+            .transcript = &transcript,
+        });
+        defer result.deinit(std.testing.allocator);
+
+        try std.testing.expectEqual(@as(i32, 7), result.value);
+        try std.testing.expectEqual(@as(usize, 1), ctx.calls);
+    }
+}
+
 test "world replay rejects forged transcript dimensions" {
     {
         var transcript = world.Transcript.init(std.testing.allocator);
@@ -3538,6 +3579,10 @@ test "parked handoff replays transcript prefix before selected pending request" 
     defer std.testing.allocator.free(encoded);
     var handoff = try world.Handoff.fromRunImage(std.testing.allocator, encoded);
     defer handoff.deinit();
+
+    const rejected_replay = handoff.preflight(fixtures.Agent.Target, AgentEnv, .accept_replay);
+    try std.testing.expect(!rejected_replay.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.ReplaySourceMissing, rejected_replay.blockers[0]);
 
     var receiver_runtime = boundary.Runtime.init(std.testing.allocator);
     defer receiver_runtime.deinit();
