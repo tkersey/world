@@ -1388,7 +1388,8 @@ pub const Supervision = struct {
         pub fn permitsMode(self: @This(), mode: Mode) bool {
             if (!self.allowed_modes.allows(mode)) return false;
             return switch (mode) {
-                .fresh, .audit => self.allow_fresh,
+                .fresh => self.allow_fresh,
+                .audit => true,
                 .replay => self.allow_replay,
                 .verify => self.allow_verify,
             };
@@ -2372,11 +2373,8 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
                 return rejectedReport(report, &.{.TranscriptImageRequired});
             }
             inline for (dense_binding_entries) |entry| {
-                switch (entry.adapter_kind) {
-                    .native => if (!supervision_policy.allow_native_adapters) return rejectedReport(report, &.{.SupervisionPolicyMismatch}),
-                    .byte => if (!supervision_policy.allow_byte_adapters) return rejectedReport(report, &.{.SupervisionPolicyMismatch}),
-                    .replay => if (!supervision_policy.allow_replay_adapters) return rejectedReport(report, &.{.SupervisionPolicyMismatch}),
-                    else => {},
+                if (!Supervision.adapterAllowedByPolicy(supervision_policy, entry.adapter_kind)) {
+                    return rejectedReport(report, &.{.SupervisionPolicyMismatch});
                 }
                 if (supervision_policy.require_portable_value_images and !entry.value_policy.require_portable_values) {
                     return rejectedReport(report, &.{.PortableValuesRequired});

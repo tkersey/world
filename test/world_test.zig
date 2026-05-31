@@ -4819,6 +4819,26 @@ test "supervision policy denies native fresh calls and pending by default" {
 }
 
 test "port rules enforce portable values and rule-owned caps" {
+    const audit_rules = [_]world.PortRule{world.PortRule.init(.{
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .world_port_id = 0,
+        .allowed_modes = world.Supervision.AllowedModes{ .audit = true },
+        .allow_fresh = false,
+    })};
+    const audit_policy = world.SupervisionPolicy.init(.{
+        .allow_audit_only = true,
+        .allow_native_adapters = true,
+        .require_environment_certificate = true,
+    });
+    const audit_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .audit,
+        .policy = audit_policy,
+        .port_rules = &audit_rules,
+    });
+    var audit_supervisor = try world.Supervisor.init(std.testing.allocator, audit_permit, fixtures.Ports.Target.WorldPortTable.entries.len);
+    defer audit_supervisor.deinit();
+    try audit_supervisor.beforeAdapterCall(.{ .world_port_id = 0, .mode = .audit, .adapter_kind = .native });
+
     const portable_rules = [_]world.PortRule{world.PortRule.init(.{
         .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
         .world_port_id = 0,
