@@ -4385,7 +4385,7 @@ test "parked handoff replays transcript prefix before selected pending request" 
     });
     const replay_denied_report = replay_denied_handoff.preflightWithPermit(fixtures.Agent.Target, AgentEnv, .accept_fresh, replay_denied_permit);
     try std.testing.expect(!replay_denied_report.accepted);
-    try std.testing.expectEqual(world.AcceptanceBlocker.SupervisionPolicyMismatch, replay_denied_report.blockers[0]);
+    try std.testing.expectEqual(world.AcceptanceBlocker.SupervisionBudgetExceeded, replay_denied_report.blockers[0]);
 
     const request_denied_permit = world.Supervision.issue(fixtures.Agent.Target, AgentEnv, .{
         .mode = .fresh,
@@ -4395,7 +4395,7 @@ test "parked handoff replays transcript prefix before selected pending request" 
     });
     const request_denied_report = replay_denied_handoff.preflightWithPermit(fixtures.Agent.Target, AgentEnv, .accept_fresh, request_denied_permit);
     try std.testing.expect(!request_denied_report.accepted);
-    try std.testing.expectEqual(world.AcceptanceBlocker.SupervisionPolicyMismatch, request_denied_report.blockers[0]);
+    try std.testing.expectEqual(world.AcceptanceBlocker.SupervisionBudgetExceeded, request_denied_report.blockers[0]);
 
     const step_denied_permit = world.Supervision.issue(fixtures.Agent.Target, AgentEnv, .{
         .mode = .fresh,
@@ -4405,12 +4405,12 @@ test "parked handoff replays transcript prefix before selected pending request" 
     });
     const step_denied_report = replay_denied_handoff.preflightWithPermit(fixtures.Agent.Target, AgentEnv, .accept_fresh, step_denied_permit);
     try std.testing.expect(!step_denied_report.accepted);
-    try std.testing.expectEqual(world.AcceptanceBlocker.SupervisionPolicyMismatch, step_denied_report.blockers[0]);
+    try std.testing.expectEqual(world.AcceptanceBlocker.SupervisionBudgetExceeded, step_denied_report.blockers[0]);
 
     var replay_denied_runtime = boundary.Runtime.init(std.testing.allocator);
     defer replay_denied_runtime.deinit();
     var replay_denied_ctx: AgentCtx = .{ .allocator = std.testing.allocator, .scenario = .skeleton };
-    try std.testing.expectError(error.SupervisionDenied, replay_denied_handoff.resumeWithPermit(fixtures.Agent.Target, AgentEnv, &replay_denied_runtime, AgentArgs{ @as(usize, 3), fixtures.Agent.initialObservation(.skeleton) }, .{
+    try std.testing.expectError(error.BudgetExceeded, replay_denied_handoff.resumeWithPermit(fixtures.Agent.Target, AgentEnv, &replay_denied_runtime, AgentArgs{ @as(usize, 3), fixtures.Agent.initialObservation(.skeleton) }, .{
         .allocator = std.testing.allocator,
         .mode = world.Mode.fresh,
         .ctx = &replay_denied_ctx,
@@ -5898,6 +5898,9 @@ test "supervised handoff receiver can issue stricter permit and inspect prior re
         .policy = world.SupervisionPolicy.handoff_receiver,
         .budget = world.Budget.init(.{ .max_port_requests = 1, .max_handoff_accepts = 0 }),
     });
+    const handoff_accept_deny_report = handoff.preflightWithPermit(fixtures.Ports.Target, PortsEnv, .accept_fresh, handoff_accept_deny_permit);
+    try std.testing.expect(!handoff_accept_deny_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.SupervisionBudgetExceeded, handoff_accept_deny_report.blockers[0]);
     var accept_runtime = boundary.Runtime.init(std.testing.allocator);
     defer accept_runtime.deinit();
     var accept_ctx: PortsCtx = .{};

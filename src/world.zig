@@ -4664,9 +4664,16 @@ pub const Handoff = struct {
         if (!supervision_report.accepted) return supervision_report;
         const report = self.preflight(Target, Env, mode);
         if (!report.accepted) return report;
+        var supervisor = Supervision.Supervisor.init(self.allocator, permit, Target.WorldPortTable.entries.len) catch {
+            return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.SupervisionPolicyMismatch});
+        };
+        defer supervisor.deinit();
+        supervisor.beforeHandoffAccept() catch |err| {
+            return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{supervisionPreflightBlocker(err)});
+        };
         if (mode == .accept_fresh) {
-            self.preflightReplayPrefixWithPermit(Target, Env, permit) catch {
-                return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.SupervisionPolicyMismatch});
+            self.preflightReplayPrefixWithSupervisor(Target, Env, &supervisor) catch |err| {
+                return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{supervisionPreflightBlocker(err)});
             };
         }
         return report;
@@ -4687,7 +4694,7 @@ pub const Handoff = struct {
         );
     }
 
-    fn preflightReplayPrefixWithPermit(self: *@This(), comptime Target: type, comptime Env: type, permit: RunPermit) !void {
+    fn preflightReplayPrefixWithSupervisor(self: *@This(), comptime Target: type, comptime Env: type, supervisor: *Supervision.Supervisor) !void {
         const pending_frame = self.run_image.pending_request_frame orelse return error.HandoffPendingFrameMismatch;
         const image = if (self.run_image.transcript_image) |*image| image else {
             if (pending_frame.turn_index != 0) return error.TranscriptImageRequired;
@@ -4699,8 +4706,6 @@ pub const Handoff = struct {
             pending_frame.frame_fingerprint,
         );
         defer image.resetReplay();
-        var supervisor = try Supervision.Supervisor.init(self.allocator, permit, Target.WorldPortTable.entries.len);
-        defer supervisor.deinit();
         var index = image.replay_cursor;
         const limit = image.replay_limit orelse image.events.len;
         while (index < limit) : (index += 1) {
@@ -4710,7 +4715,7 @@ pub const Handoff = struct {
                 .frame_requested,
                 => {
                     const request_frame = event.request_frame orelse return error.ReplayMissing;
-                    try self.preflightRequestFrameWithSupervisor(&supervisor, request_frame);
+                    try self.preflightRequestFrameWithSupervisor(supervisor, request_frame);
                     try supervisor.beforeAdapterCall(.{
                         .world_port_id = request_frame.world_port_id,
                         .mode = .replay,
@@ -4736,7 +4741,7 @@ pub const Handoff = struct {
                 });
             }
         }
-        try self.preflightRequestFrameWithSupervisor(&supervisor, pending_frame);
+        try self.preflightRequestFrameWithSupervisor(supervisor, pending_frame);
         try supervisor.beforeAdapterCall(.{
             .world_port_id = pending_frame.world_port_id,
             .mode = .fresh,
@@ -6440,6 +6445,27 @@ fn acceptanceError(report: AcceptanceReport) Error {
         .SurfaceProfileIncompatible => Error.SurfaceProfileIncompatible,
         .PayloadValueMismatch => Error.FrameValueTableMismatch,
         .ResponseValueMismatch => Error.FrameValueTableMismatch,
+    };
+}
+
+fn supervisionPreflightBlocker(err: anyerror) AcceptanceBlocker {
+    return switch (err) {
+        Error.BudgetExceeded => .SupervisionBudgetExceeded,
+        Error.PortRuleDenied => .SupervisionPortRuleDenied,
+        Error.FreshCallDenied => .FreshCallDenied,
+        Error.ReplayCallDenied => .ReplayCallDenied,
+        Error.TranscriptImageRequired => .TranscriptImageRequired,
+        Error.HandoffPendingFrameMismatch => .HandoffPendingFrameMismatch,
+        Error.ReplayMissing,
+        Error.ReplayPortMismatch,
+        Error.ReplayRequestFingerprintMismatch,
+        Error.ReplayResponseKindMismatch,
+        Error.ReplayTargetCertificateMismatch,
+        Error.ReplayUnusedEvent,
+        Error.ReplaySurfaceMismatch,
+        Error.ReplaySourceMissing,
+        => .ReplaySourceMissing,
+        else => .SupervisionPolicyMismatch,
     };
 }
 
