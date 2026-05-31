@@ -2903,6 +2903,16 @@ const AgentEnv = world.Environment(fixtures.Agent.Target, .{
     },
     .policy = world.EnvironmentPolicy.fresh_and_replay,
 });
+const AgentEnvTranscriptRequired = world.Environment(fixtures.Agent.Target, .{
+    .bindings = .{
+        world.bind(AgentDecideDecl, world.NativeAdapter(decide)),
+        world.bind(AgentToolDecl, world.NativeAdapter(tool)),
+    },
+    .policy = world.EnvironmentPolicy.init(.{
+        .allow_replay_without_handlers = true,
+        .allow_fresh_without_transcript = false,
+    }),
+});
 const AgentEnvReordered = world.Environment(fixtures.Agent.Target, .{
     .bindings = .{
         world.bind(AgentToolDecl, world.NativeAdapter(tool)),
@@ -3948,6 +3958,25 @@ test "parked handoff replays transcript prefix before selected pending request" 
 
     const accepted_fresh = handoff.preflight(fixtures.Agent.Target, AgentEnv, .accept_fresh);
     try std.testing.expect(accepted_fresh.accepted);
+
+    const strict_transcript_fresh = handoff.preflight(fixtures.Agent.Target, AgentEnvTranscriptRequired, .accept_fresh);
+    try std.testing.expect(strict_transcript_fresh.accepted);
+    var strict_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer strict_runtime.deinit();
+    var strict_ctx: AgentCtx = .{ .allocator = std.testing.allocator, .scenario = .skeleton };
+    var strict_run = try handoff.@"resume"(fixtures.Agent.Target, AgentEnvTranscriptRequired, &strict_runtime, AgentArgs{ @as(usize, 3), fixtures.Agent.initialObservation(.skeleton) }, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &strict_ctx,
+    }, .accept_fresh);
+    defer strict_run.deinit();
+    var strict_request = switch (try strict_run.nextFrame()) {
+        .port_request => |frame| frame,
+        else => return error.ExpectedPortRequest,
+    };
+    defer strict_request.deinit(std.testing.allocator);
+    try std.testing.expectEqual(tool_request.frame_fingerprint, strict_request.frame_fingerprint);
+    try std.testing.expectEqual(@as(usize, 0), strict_ctx.model_calls);
 
     const stale_state = world.RunState.init(.{
         .target_ref_fingerprint = target_ref.target_ref_fingerprint,

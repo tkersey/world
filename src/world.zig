@@ -2894,7 +2894,7 @@ pub const Handoff = struct {
         if (self.run_image.current_state.status != .parked_on_port) return error.HandoffPendingFrameMismatch;
         const pending_frame = self.run_image.pending_request_frame orelse return error.HandoffPendingFrameMismatch;
         const MachineType = Machine(Target, Env.machine_config);
-        var run = try MachineType.start(runtime, args, options);
+        var run = try MachineType.startWithHandoffTranscript(runtime, args, options);
         errdefer run.deinit();
         if (self.run_image.transcript_image) |*image| {
             try image.prepareReplayPrefixForPendingRequest(
@@ -3078,6 +3078,10 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
             return Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)).start(runtime, args, options);
         }
 
+        pub fn startWithHandoffTranscript(runtime: anytype, args: anytype, options: anytype) !Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)) {
+            return Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)).startWithTranscriptAvailable(runtime, args, options, true);
+        }
+
         pub fn run(runtime: anytype, args: anytype, options: anytype) !Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)).Result {
             var run_state = try start(runtime, args, options);
             defer run_state.deinit();
@@ -3158,6 +3162,10 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 }
 
                 fn start(runtime: RuntimePtr, args: anytype, options: Options) !Self {
+                    return startWithTranscriptAvailable(runtime, args, options, false);
+                }
+
+                fn startWithTranscriptAvailable(runtime: RuntimePtr, args: anytype, options: Options, comptime handoff_transcript_available: bool) !Self {
                     const allocator = @field(options, "allocator");
                     const mode_value: Mode = if (@hasField(Options, "mode")) @field(options, "mode") else .fresh;
                     const effective = if (mode_value == .audit and @hasField(Options, "audit_source"))
@@ -3185,7 +3193,8 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         return Error.MissingHandler;
                     }
                     if (comptime @hasField(@TypeOf(Config), "environment")) {
-                        const transcript_available = comptime @hasField(Options, "transcript_image") or
+                        const transcript_available = comptime handoff_transcript_available or
+                            @hasField(Options, "transcript_image") or
                             (@hasField(Options, "transcript") and Config.environment.policy_decl.allow_native_adapters);
                         const report = Config.environment.acceptanceReport(effective, transcript_available);
                         if (!report.accepted) return acceptanceError(report);
