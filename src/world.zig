@@ -4840,6 +4840,7 @@ pub const Handoff = struct {
                             };
                         }
                         try self.validatePendingFrame(request);
+                        try run.accountPendingAdapterCall(request.world_port_id);
                         run.handoff_pending_frame_fingerprint = null;
                         break;
                     }

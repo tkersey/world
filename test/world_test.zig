@@ -5935,6 +5935,34 @@ test "supervised handoff receiver can issue stricter permit and inspect prior re
     }, .accept_fresh));
     try std.testing.expectEqual(@as(usize, 0), options_accept_ctx.calls);
     try std.testing.expectEqual(@as(usize, 0), options_accept_transcript.events.items.len);
+
+    const frame_budget_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.handoff_receiver,
+        .budget = world.Budget.init(.{ .max_total_cost_units = 4 }),
+    });
+    var frame_budget_handoff = try world.Handoff.fromRunImage(std.testing.allocator, encoded);
+    defer frame_budget_handoff.deinit();
+    var frame_budget_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer frame_budget_runtime.deinit();
+    var frame_budget_ctx: PortsCtx = .{};
+    var frame_budget_run = try frame_budget_handoff.resumeWithPermit(fixtures.Ports.Target, PortsEnv, &frame_budget_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &frame_budget_ctx,
+    }, .accept_fresh, frame_budget_permit);
+    defer frame_budget_run.deinit();
+    try std.testing.expectEqual(@as(usize, 1), frame_budget_run.supervisor.?.ledger.total_handoff_accepts);
+    try std.testing.expectEqual(@as(usize, 1), frame_budget_run.supervisor.?.ledger.total_fresh_calls);
+    var resumed_frame = switch (try frame_budget_run.nextFrame()) {
+        .port_request => |frame| frame,
+        else => return error.ExpectedFrameRequest,
+    };
+    defer resumed_frame.deinit(std.testing.allocator);
+    var frame_response = try world.Frame.Response.fromValue(std.testing.allocator, resumed_frame, 1, 0x1234, .@"resume", @as(i32, 7), .portable);
+    defer frame_response.deinit(std.testing.allocator);
+    try std.testing.expectError(error.BudgetExceeded, frame_budget_run.resumeFrame(frame_response));
+    try std.testing.expectEqual(world.Supervision.BudgetExceededKind.total_cost_units, frame_budget_run.supervisor.?.ledger.exceeded_budget.?);
 }
 
 test "supervised handoff export is charged before encoded bytes are returned" {
