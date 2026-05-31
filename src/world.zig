@@ -1756,16 +1756,25 @@ pub const Supervision = struct {
             const cost_model = permit.cost_model.withFingerprint();
             if (permit.cost_model.cost_model_fingerprint != cost_model.cost_model_fingerprint) return Error.SupervisionDenied;
             if (permit.cost_model_fingerprint != cost_model.cost_model_fingerprint) return Error.SupervisionDenied;
-            for (permit.budget.per_port_budgets) |per_port_budget| {
+            for (permit.budget.per_port_budgets, 0..) |per_port_budget, index| {
                 if (per_port_budget.world_port_id >= port_count) return Error.SupervisionDenied;
+                for (permit.budget.per_port_budgets[0..index]) |previous| {
+                    if (previous.world_port_id == per_port_budget.world_port_id) return Error.SupervisionDenied;
+                }
             }
-            for (permit.cost_model.per_port_costs) |per_port_cost| {
+            for (permit.cost_model.per_port_costs, 0..) |per_port_cost, index| {
                 if (per_port_cost.world_port_id >= port_count) return Error.SupervisionDenied;
+                for (permit.cost_model.per_port_costs[0..index]) |previous| {
+                    if (previous.world_port_id == per_port_cost.world_port_id) return Error.SupervisionDenied;
+                }
             }
-            for (permit.port_rules) |rule| {
+            for (permit.port_rules, 0..) |rule, index| {
                 if (rule.world_surface_fingerprint != permit.world_surface_fingerprint) return Error.SupervisionDenied;
                 if (rule.world_port_id >= port_count) return Error.SupervisionDenied;
                 if (rule.rule_fingerprint != fingerprintPortRule(rule)) return Error.SupervisionDenied;
+                for (permit.port_rules[0..index]) |previous| {
+                    if (previous.world_port_id == rule.world_port_id) return Error.SupervisionDenied;
+                }
             }
             if (permit.permit_fingerprint != fingerprintRunPermit(permit)) return Error.SupervisionDenied;
             if (permit.policy.require_environment_certificate and permit.environment_certificate_fingerprint == 0) return Error.SupervisionDenied;
@@ -5459,7 +5468,22 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 fn resumeFrameWithProvenance(self: *Self, response_frame: Frame.Response, comptime replayed: bool) !void {
                     const request = self.pending_request orelse return error.UnknownResidualSite;
                     const world_port_id = self.pending_port_id orelse return error.UnknownWorldPort;
-                    if (response_frame.status == .pending and self.supervisor == null) return error.HandlerPending;
+                    if (response_frame.status == .pending) {
+                        if (self.supervisor) |*supervisor| {
+                            try validateResponseFrameImage(response_frame);
+                            const accounting = try self.responseFrameAccounting(response_frame);
+                            supervisor.afterAdapterResponse(.{
+                                .world_port_id = world_port_id,
+                                .status = response_frame.status,
+                                .response_bytes = accounting.response_bytes,
+                                .value_image_bytes = accounting.value_image_bytes,
+                            }) catch |err| {
+                                try self.handleSupervisionError(err);
+                                return Error.HandlerPending;
+                            };
+                        }
+                        return error.HandlerPending;
+                    }
                     if (self.effective_mode != .fresh) return Error.InvalidMode;
                     var frame = try self.pendingRequestFrame(false);
                     defer frame.deinit(self.allocator);
@@ -5472,19 +5496,17 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     const deferred_response_fingerprint = response_frame.responseFingerprintDeferred();
                     if (!deferred_response_fingerprint and response_frame.replay_key != frame.replay_key_seed.withResponse(response_frame.response_fingerprint).fingerprint()) return error.ReplayMissing;
                     if (self.supervisor) |*supervisor| {
-                        const encoded_response = try response_frame.encode(self.allocator);
-                        defer self.allocator.free(encoded_response);
+                        const accounting = try self.responseFrameAccounting(response_frame);
                         supervisor.afterAdapterResponse(.{
                             .world_port_id = world_port_id,
                             .status = response_frame.status,
-                            .response_bytes = encoded_response.len,
-                            .value_image_bytes = if (response_frame.response_image) |image| image.bytes.len else 0,
+                            .response_bytes = accounting.response_bytes,
+                            .value_image_bytes = accounting.value_image_bytes,
                         }) catch |err| {
                             try self.handleSupervisionError(err);
                             return Error.HandlerPending;
                         };
                     }
-                    if (response_frame.status == .pending) return error.HandlerPending;
                     if (response_frame.status == .rejected) {
                         self.audit.rejected_count += 1;
                         try self.recordPortEvent(.frame_rejected, world_port_id, request.trace(), response_frame.response_fingerprint, response_frame.response_kind, null, null, response_frame);

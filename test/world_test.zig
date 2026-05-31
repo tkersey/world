@@ -4890,6 +4890,50 @@ test "supervised frame response bytes are accounted before framed resume" {
     try std.testing.expectEqual(@as(usize, 0), ctx.calls);
 }
 
+test "supervised pending frame responses are accounted before parking" {
+    const policy = world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .allow_native_adapters = true,
+        .allow_pending_responses = true,
+        .require_environment_certificate = true,
+    });
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = policy,
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var ctx: PortsCtx = .{};
+    var run = try PortsMachineEnv.start(&runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+        .permit = permit,
+    });
+    defer run.deinit();
+    var request = switch (try run.nextFrame()) {
+        .port_request => |frame| frame,
+        else => return error.ExpectedFrameRequest,
+    };
+    defer request.deinit(std.testing.allocator);
+    const ledger_before_pending = run.supervisor.?.ledger.ledger_fingerprint;
+    const pending_response = world.Frame.Response.init(.{
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .target_certificate_fingerprint = request.target_certificate_fingerprint,
+        .world_port_id = request.world_port_id,
+        .request_fingerprint = request.request_fingerprint + 1,
+        .status = .pending,
+        .response_fingerprint = 0,
+        .replay_key = 0,
+    });
+    try std.testing.expectError(error.HandlerPending, run.resumeFrame(pending_response));
+    try std.testing.expect(run.supervisor.?.ledger.ledger_fingerprint != ledger_before_pending);
+    try std.testing.expectEqual(@as(usize, 1), run.supervisor.?.ledger.total_port_responses);
+    try std.testing.expectEqual(@as(usize, 1), run.supervisor.?.ledger.total_pending_calls);
+    try std.testing.expectEqual(@as(usize, 1), run.supervisor.?.ledger.per_port_usage[0].pending_calls);
+    try std.testing.expectEqual(@as(usize, 0), ctx.calls);
+}
+
 test "supervised replay accounts transcript image response frame bytes" {
     var transcript = world.Transcript.init(std.testing.allocator);
     defer transcript.deinit();
@@ -5319,6 +5363,47 @@ test "permit validation binds port rules to target surface and range" {
         .cost_model = world.CostModel.init(.{ .per_port_costs = &out_of_range_costs }),
     });
     try std.testing.expectError(error.SupervisionDenied, world.Supervisor.init(std.testing.allocator, out_of_range_cost_permit, fixtures.Ports.Target.WorldPortTable.entries.len));
+
+    const duplicate_rules = [_]world.PortRule{
+        world.PortRule.init(.{
+            .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+            .world_port_id = 0,
+            .max_requests = 1,
+        }),
+        world.PortRule.init(.{
+            .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+            .world_port_id = 0,
+            .max_requests = 2,
+        }),
+    };
+    const duplicate_rule_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+        .port_rules = &duplicate_rules,
+    });
+    try std.testing.expectError(error.SupervisionDenied, world.Supervisor.init(std.testing.allocator, duplicate_rule_permit, fixtures.Ports.Target.WorldPortTable.entries.len));
+
+    const duplicate_budgets = [_]world.Supervision.PerPortBudget{
+        .{ .world_port_id = 0, .max_requests = 1 },
+        .{ .world_port_id = 0, .max_requests = 2 },
+    };
+    const duplicate_budget_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+        .budget = world.Budget.init(.{ .per_port_budgets = &duplicate_budgets }),
+    });
+    try std.testing.expectError(error.SupervisionDenied, world.Supervisor.init(std.testing.allocator, duplicate_budget_permit, fixtures.Ports.Target.WorldPortTable.entries.len));
+
+    const duplicate_costs = [_]world.Supervision.PerPortCost{
+        .{ .world_port_id = 0, .fresh_call_cost = 1 },
+        .{ .world_port_id = 0, .fresh_call_cost = 2 },
+    };
+    const duplicate_cost_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+        .cost_model = world.CostModel.init(.{ .per_port_costs = &duplicate_costs }),
+    });
+    try std.testing.expectError(error.SupervisionDenied, world.Supervisor.init(std.testing.allocator, duplicate_cost_permit, fixtures.Ports.Target.WorldPortTable.entries.len));
 }
 
 test "per-port byte and status cost overrides are honored" {
