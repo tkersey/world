@@ -4878,6 +4878,94 @@ test "max supervision events is enforced before recording another check" {
     try std.testing.expectEqual(world.Supervision.Blocker.max_supervision_events_exceeded, supervisor.last_check.?.blocker.?);
     try std.testing.expectEqual(world.Supervision.BudgetExceededKind.supervision_events, supervisor.last_check.?.budget_exceeded.?);
     try std.testing.expect(supervisor.last_check.?.validateFingerprint());
+
+    try std.testing.expectError(error.BudgetExceeded, supervisor.beforePortRequest(0, 0, 0));
+    try std.testing.expectEqual(@as(usize, 0), supervisor.ledger.per_port_usage[0].requests);
+}
+
+test "permit validation binds port rules to target surface and range" {
+    const wrong_surface_rules = [_]world.PortRule{world.PortRule.init(.{
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint + 1,
+        .world_port_id = 0,
+        .max_requests = 1,
+    })};
+    const wrong_surface_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+        .port_rules = &wrong_surface_rules,
+    });
+    try std.testing.expectError(error.SupervisionDenied, world.Supervisor.init(std.testing.allocator, wrong_surface_permit, fixtures.Ports.Target.WorldPortTable.entries.len));
+
+    const out_of_range_rules = [_]world.PortRule{world.PortRule.init(.{
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .world_port_id = @as(u32, @intCast(fixtures.Ports.Target.WorldPortTable.entries.len)),
+        .max_requests = 1,
+    })};
+    const out_of_range_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+        .port_rules = &out_of_range_rules,
+    });
+    try std.testing.expectError(error.SupervisionDenied, world.Supervisor.init(std.testing.allocator, out_of_range_permit, fixtures.Ports.Target.WorldPortTable.entries.len));
+}
+
+test "per-port byte and status cost overrides are honored" {
+    const per_port_cost = [_]world.Supervision.PerPortCost{.{
+        .world_port_id = 0,
+        .port_request_base_cost = 0,
+        .port_response_base_cost = 0,
+        .frame_byte_cost = 2,
+        .value_image_byte_cost = 3,
+        .pending_call_cost = 4,
+    }};
+    const policy = world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .allow_native_adapters = true,
+        .allow_pending_responses = true,
+        .require_environment_certificate = true,
+    });
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = policy,
+        .cost_model = world.CostModel.init(.{
+            .frame_byte_cost = 1,
+            .value_image_byte_cost = 1,
+            .pending_call_cost = 1,
+            .per_port_costs = &per_port_cost,
+        }),
+    });
+    var supervisor = try world.Supervisor.init(std.testing.allocator, permit, fixtures.Ports.Target.WorldPortTable.entries.len);
+    defer supervisor.deinit();
+    try supervisor.beforePortRequest(0, 0, 0);
+    try supervisor.accountPortRequestBytes(0, 2, 3);
+    try std.testing.expectEqual(@as(u64, 13), supervisor.ledger.per_port_usage[0].cost_units);
+    try supervisor.afterAdapterResponse(.{
+        .world_port_id = 0,
+        .status = .pending,
+        .response_bytes = 5,
+        .value_image_bytes = 7,
+    });
+    try std.testing.expectEqual(@as(u64, 48), supervisor.ledger.per_port_usage[0].cost_units);
+}
+
+test "mode-denied supervision checks preserve requested mode blocker" {
+    const policy = world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .allow_native_adapters = true,
+        .require_environment_certificate = true,
+    });
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = policy,
+    });
+    var supervisor = try world.Supervisor.init(std.testing.allocator, permit, fixtures.Ports.Target.WorldPortTable.entries.len);
+    defer supervisor.deinit();
+    try std.testing.expectError(error.ReplayCallDenied, supervisor.beforeAdapterCall(.{
+        .world_port_id = 0,
+        .mode = .replay,
+        .adapter_kind = .native,
+    }));
+    try std.testing.expectEqual(world.Supervision.Blocker.replay_call_denied, supervisor.last_check.?.blocker.?);
 }
 
 test "usage ledger supervision check and run receipt fingerprints are stable" {

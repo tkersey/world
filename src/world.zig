@@ -1299,6 +1299,41 @@ pub const Supervision = struct {
             return self.verify_call_cost;
         }
 
+        pub fn failedCost(self: @This(), world_port_id: u32) u64 {
+            if (self.perPort(world_port_id)) |cost| {
+                if (cost.failed_call_cost) |override| return override;
+            }
+            return self.failed_call_cost;
+        }
+
+        pub fn rejectedCost(self: @This(), world_port_id: u32) u64 {
+            if (self.perPort(world_port_id)) |cost| {
+                if (cost.rejected_call_cost) |override| return override;
+            }
+            return self.rejected_call_cost;
+        }
+
+        pub fn pendingCost(self: @This(), world_port_id: u32) u64 {
+            if (self.perPort(world_port_id)) |cost| {
+                if (cost.pending_call_cost) |override| return override;
+            }
+            return self.pending_call_cost;
+        }
+
+        pub fn frameByteCost(self: @This(), world_port_id: u32) u64 {
+            if (self.perPort(world_port_id)) |cost| {
+                if (cost.frame_byte_cost) |override| return override;
+            }
+            return self.frame_byte_cost;
+        }
+
+        pub fn valueImageByteCost(self: @This(), world_port_id: u32) u64 {
+            if (self.perPort(world_port_id)) |cost| {
+                if (cost.value_image_byte_cost) |override| return override;
+            }
+            return self.value_image_byte_cost;
+        }
+
         pub const default = init(.{});
     };
 
@@ -1514,6 +1549,12 @@ pub const Supervision = struct {
             self.per_port_usage = &.{};
         }
 
+        pub fn clone(self: @This(), allocator: std.mem.Allocator) !@This() {
+            var result = self;
+            result.per_port_usage = try allocator.dupe(PerPortUsage, self.per_port_usage);
+            return result;
+        }
+
         pub fn refreshFingerprint(self: *@This()) void {
             self.ledger_fingerprint = 0;
             self.ledger_fingerprint = fingerprintUsageLedger(self.*);
@@ -1672,7 +1713,7 @@ pub const Supervision = struct {
         blocker: ?Blocker = null,
 
         pub fn init(allocator: std.mem.Allocator, permit: Supervision.RunPermit, port_count: usize) !@This() {
-            try validatePermitForRun(permit);
+            try validatePermitForRun(permit, port_count);
             const ledger = try Supervision.UsageLedger.init(allocator, permit, port_count);
             return .{
                 .allocator = allocator,
@@ -1685,7 +1726,7 @@ pub const Supervision = struct {
             self.ledger.deinit(self.allocator);
         }
 
-        pub fn validatePermitForRun(permit: Supervision.RunPermit) !void {
+        pub fn validatePermitForRun(permit: Supervision.RunPermit, port_count: usize) !void {
             const policy = permit.policy.withFingerprint();
             if (permit.policy.policy_fingerprint != policy.policy_fingerprint) return Error.SupervisionDenied;
             if (permit.supervision_policy_fingerprint != policy.policy_fingerprint) return Error.SupervisionDenied;
@@ -1696,6 +1737,8 @@ pub const Supervision = struct {
             if (permit.cost_model.cost_model_fingerprint != cost_model.cost_model_fingerprint) return Error.SupervisionDenied;
             if (permit.cost_model_fingerprint != cost_model.cost_model_fingerprint) return Error.SupervisionDenied;
             for (permit.port_rules) |rule| {
+                if (rule.world_surface_fingerprint != permit.world_surface_fingerprint) return Error.SupervisionDenied;
+                if (rule.world_port_id >= port_count) return Error.SupervisionDenied;
                 if (rule.rule_fingerprint != fingerprintPortRule(rule)) return Error.SupervisionDenied;
             }
             if (permit.permit_fingerprint != fingerprintRunPermit(permit)) return Error.SupervisionDenied;
@@ -1704,17 +1747,19 @@ pub const Supervision = struct {
         }
 
         pub fn beforeSessionStep(self: *@This()) !void {
-            var next = self.ledger;
+            var next = try self.ledger.clone(self.allocator);
+            defer next.deinit(self.allocator);
             next.total_session_steps += 1;
             next.total_cost_units += self.permit.cost_model.session_step_cost;
-            try self.commitCheck(.before_session_step, null, next, null, null, "session step");
+            try self.commitCheck(.before_session_step, null, &next, null, null, "session step");
         }
 
         pub fn beforePortRequest(self: *@This(), world_port_id: u32, request_bytes: usize, value_image_bytes: usize) !void {
-            var next = self.ledger;
+            var next = try self.ledger.clone(self.allocator);
+            defer next.deinit(self.allocator);
             const request_cost = self.permit.cost_model.requestCost(world_port_id);
-            const request_byte_cost = @as(u64, @intCast(request_bytes)) * self.permit.cost_model.frame_byte_cost;
-            const value_image_cost = @as(u64, @intCast(value_image_bytes)) * self.permit.cost_model.value_image_byte_cost;
+            const request_byte_cost = @as(u64, @intCast(request_bytes)) * self.permit.cost_model.frameByteCost(world_port_id);
+            const value_image_cost = @as(u64, @intCast(value_image_bytes)) * self.permit.cost_model.valueImageByteCost(world_port_id);
             const current_usage = next.per_port_usage[world_port_id];
             const next_requests = current_usage.requests + 1;
             const next_value_image_bytes = current_usage.value_image_bytes + value_image_bytes;
@@ -1739,14 +1784,15 @@ pub const Supervision = struct {
             usage.requests = next_requests;
             usage.value_image_bytes = next_value_image_bytes;
             usage.cost_units = next_cost_units;
-            try self.commitCheck(.before_port_request, world_port_id, next, null, rule, "port request");
+            try self.commitCheck(.before_port_request, world_port_id, &next, null, rule, "port request");
         }
 
         pub fn accountPortRequestBytes(self: *@This(), world_port_id: u32, request_bytes: usize, value_image_bytes: usize) !void {
             if (request_bytes == 0 and value_image_bytes == 0) return;
-            var next = self.ledger;
-            const request_byte_cost = @as(u64, @intCast(request_bytes)) * self.permit.cost_model.frame_byte_cost;
-            const value_image_cost = @as(u64, @intCast(value_image_bytes)) * self.permit.cost_model.value_image_byte_cost;
+            var next = try self.ledger.clone(self.allocator);
+            defer next.deinit(self.allocator);
+            const request_byte_cost = @as(u64, @intCast(request_bytes)) * self.permit.cost_model.frameByteCost(world_port_id);
+            const value_image_cost = @as(u64, @intCast(value_image_bytes)) * self.permit.cost_model.valueImageByteCost(world_port_id);
             const current_usage = next.per_port_usage[world_port_id];
             const next_value_image_bytes = current_usage.value_image_bytes + value_image_bytes;
             const next_cost_units = current_usage.cost_units + request_byte_cost + value_image_cost;
@@ -1765,7 +1811,7 @@ pub const Supervision = struct {
             const usage = &next.per_port_usage[world_port_id];
             usage.value_image_bytes = next_value_image_bytes;
             usage.cost_units = next_cost_units;
-            try self.commitCheck(.before_port_request, world_port_id, next, null, rule, "port request bytes");
+            try self.commitCheck(.before_port_request, world_port_id, &next, null, rule, "port request bytes");
         }
 
         pub fn beforeAdapterCall(self: *@This(), args: struct {
@@ -1776,7 +1822,14 @@ pub const Supervision = struct {
             value_policy: ValuePolicy = .native_compatible,
         }) !void {
             const policy = self.permit.policy;
-            if (!modeAllowedByPolicy(policy, args.mode)) return self.deny(.before_adapter_call, args.world_port_id, .fresh_call_denied, null, "mode denied");
+            if (!modeAllowedByPolicy(policy, args.mode)) {
+                const blocker: Supervision.Blocker = switch (args.mode) {
+                    .fresh, .audit => .fresh_call_denied,
+                    .replay => .replay_call_denied,
+                    .verify => .verify_call_denied,
+                };
+                return self.deny(.before_adapter_call, args.world_port_id, blocker, null, "mode denied");
+            }
             if (!adapterAllowedByPolicy(policy, args.adapter_kind)) return self.deny(.before_adapter_call, args.world_port_id, .adapter_kind_denied, null, "adapter denied");
             if (args.value_policy.require_portable_values == false and policy.require_portable_value_images) return self.deny(.before_adapter_call, args.world_port_id, .portable_value_required, null, "portable value required");
             if (args.value_policy.allow_native_only_values and policy.reject_native_only_values) return self.deny(.before_adapter_call, args.world_port_id, .native_value_rejected, null, "native value rejected");
@@ -1788,7 +1841,8 @@ pub const Supervision = struct {
                     if (!rule.allowed_authority_kinds.allows(kind)) return self.deny(.before_adapter_call, args.world_port_id, .authority_denied, rule.rule_fingerprint, "rule authority denied");
                 }
             }
-            var next = self.ledger;
+            var next = try self.ledger.clone(self.allocator);
+            defer next.deinit(self.allocator);
             const current_usage = next.per_port_usage[args.world_port_id];
             var fresh_delta: usize = 0;
             var replay_delta: usize = 0;
@@ -1823,7 +1877,7 @@ pub const Supervision = struct {
             usage.replay_calls += replay_delta;
             usage.verify_calls += verify_delta;
             usage.cost_units += cost_delta;
-            try self.commitCheck(.before_adapter_call, args.world_port_id, next, null, rule, "adapter call");
+            try self.commitCheck(.before_adapter_call, args.world_port_id, &next, null, rule, "adapter call");
         }
 
         pub fn afterAdapterResponse(self: *@This(), args: struct {
@@ -1850,10 +1904,11 @@ pub const Supervision = struct {
                 };
                 if (!allowed) return self.deny(.after_adapter_response, args.world_port_id, .port_rule_denied, rule.rule_fingerprint, "rule response denied");
             }
-            var next = self.ledger;
+            var next = try self.ledger.clone(self.allocator);
+            defer next.deinit(self.allocator);
             const response_cost = self.permit.cost_model.responseCost(args.world_port_id);
-            const response_byte_cost = @as(u64, @intCast(args.response_bytes)) * self.permit.cost_model.frame_byte_cost;
-            const value_image_cost = @as(u64, @intCast(args.value_image_bytes)) * self.permit.cost_model.value_image_byte_cost;
+            const response_byte_cost = @as(u64, @intCast(args.response_bytes)) * self.permit.cost_model.frameByteCost(args.world_port_id);
+            const value_image_cost = @as(u64, @intCast(args.value_image_bytes)) * self.permit.cost_model.valueImageByteCost(args.world_port_id);
             const current_usage = next.per_port_usage[args.world_port_id];
             var pending_delta: usize = 0;
             var rejected_delta: usize = 0;
@@ -1863,15 +1918,15 @@ pub const Supervision = struct {
                 .responded => {},
                 .pending => {
                     pending_delta = 1;
-                    status_cost = self.permit.cost_model.pending_call_cost;
+                    status_cost = self.permit.cost_model.pendingCost(args.world_port_id);
                 },
                 .rejected => {
                     rejected_delta = 1;
-                    status_cost = self.permit.cost_model.rejected_call_cost;
+                    status_cost = self.permit.cost_model.rejectedCost(args.world_port_id);
                 },
                 .failed => {
                     failed_delta = 1;
-                    status_cost = self.permit.cost_model.failed_call_cost;
+                    status_cost = self.permit.cost_model.failedCost(args.world_port_id);
                 },
             }
             const cost_delta = response_cost + response_byte_cost + value_image_cost + status_cost;
@@ -1899,50 +1954,55 @@ pub const Supervision = struct {
             usage.pending_calls += pending_delta;
             usage.rejected_calls += rejected_delta;
             usage.failed_calls += failed_delta;
-            try self.commitCheck(.after_adapter_response, args.world_port_id, next, null, rule, "adapter response");
+            try self.commitCheck(.after_adapter_response, args.world_port_id, &next, null, rule, "adapter response");
         }
 
         pub fn beforeTranscriptAppend(self: *@This(), event_count_after_append: usize, image_bytes_after_append: usize) !void {
-            var next = self.ledger;
+            var next = try self.ledger.clone(self.allocator);
+            defer next.deinit(self.allocator);
             next.total_transcript_events = event_count_after_append;
             next.total_transcript_image_bytes = image_bytes_after_append;
-            try self.commitCheck(.before_transcript_append, null, next, null, null, "transcript append");
+            try self.commitCheck(.before_transcript_append, null, &next, null, null, "transcript append");
         }
 
         pub fn beforeCheckpoint(self: *@This(), value_image_bytes: usize) !void {
             if (!self.permit.policy.allow_checkpoints) return self.deny(.before_checkpoint, null, .checkpoint_denied, null, "checkpoint denied");
-            var next = self.ledger;
+            var next = try self.ledger.clone(self.allocator);
+            defer next.deinit(self.allocator);
             next.total_checkpoints += 1;
             next.total_value_image_bytes += value_image_bytes;
             next.total_cost_units += self.permit.cost_model.checkpoint_cost;
-            try self.commitCheck(.before_checkpoint, null, next, null, null, "checkpoint");
+            try self.commitCheck(.before_checkpoint, null, &next, null, null, "checkpoint");
         }
 
         pub fn beforeBranch(self: *@This(), depth: usize) !void {
             if (!self.permit.policy.allow_branching or self.permit.branch_policy == .deny) return self.deny(.before_branch, null, .branch_denied, null, "branch denied");
-            var next = self.ledger;
+            var next = try self.ledger.clone(self.allocator);
+            defer next.deinit(self.allocator);
             next.total_branches += 1;
             next.total_cost_units += self.permit.cost_model.branch_cost;
             if (self.permit.budget.max_branch_depth) |max| {
-                if (depth > max) return self.exceed(.before_branch, null, .branch_depth, next, null, "branch depth");
+                if (depth > max) return self.exceed(.before_branch, null, .branch_depth, &next, null, "branch depth");
             }
-            try self.commitCheck(.before_branch, null, next, null, null, "branch");
+            try self.commitCheck(.before_branch, null, &next, null, null, "branch");
         }
 
         pub fn beforeHandoffExport(self: *@This()) !void {
             if (!self.permit.policy.allow_handoff_export or self.permit.handoff_policy == .deny) return self.deny(.before_handoff_export, null, .handoff_denied, null, "handoff export denied");
-            var next = self.ledger;
+            var next = try self.ledger.clone(self.allocator);
+            defer next.deinit(self.allocator);
             next.total_handoff_exports += 1;
             next.total_cost_units += self.permit.cost_model.handoff_export_cost;
-            try self.commitCheck(.before_handoff_export, null, next, null, null, "handoff export");
+            try self.commitCheck(.before_handoff_export, null, &next, null, null, "handoff export");
         }
 
         pub fn beforeHandoffAccept(self: *@This()) !void {
             if (!self.permit.policy.allow_handoff_accept) return self.deny(.before_handoff_accept, null, .handoff_denied, null, "handoff accept denied");
-            var next = self.ledger;
+            var next = try self.ledger.clone(self.allocator);
+            defer next.deinit(self.allocator);
             next.total_handoff_accepts += 1;
             next.total_cost_units += self.permit.cost_model.handoff_accept_cost;
-            try self.commitCheck(.before_handoff_accept, null, next, null, null, "handoff accept");
+            try self.commitCheck(.before_handoff_accept, null, &next, null, null, "handoff accept");
         }
 
         pub fn receipt(self: *@This(), final_status: Supervision.RunReceipt.FinalStatus, final_run_state_fingerprint: u64, transcript_image_fingerprint: ?u64, run_image_fingerprint: ?u64) Supervision.RunReceipt {
@@ -1963,15 +2023,16 @@ pub const Supervision = struct {
             });
         }
 
-        fn commitCheck(self: *@This(), kind: Supervision.SupervisionCheck.EventKind, world_port_id: ?u32, next: Supervision.UsageLedger, blocker: ?Supervision.Blocker, rule: ?Supervision.PortRule, summary: []const u8) !void {
-            var candidate = next;
+        fn commitCheck(self: *@This(), kind: Supervision.SupervisionCheck.EventKind, world_port_id: ?u32, candidate: *Supervision.UsageLedger, blocker: ?Supervision.Blocker, rule: ?Supervision.PortRule, summary: []const u8) !void {
             candidate.refreshFingerprint();
-            if (budgetExceeded(self.permit.budget, candidate, world_port_id)) |exceeded_kind| {
+            if (budgetExceeded(self.permit.budget, candidate.*, world_port_id)) |exceeded_kind| {
                 return self.exceed(kind, world_port_id, exceeded_kind, candidate, if (rule) |r| r.rule_fingerprint else null, summary);
             }
             const usage_before = self.ledger.ledger_fingerprint;
             try self.reserveSupervisionEvent(kind, world_port_id, usage_before, if (rule) |r| r.rule_fingerprint else null, "max supervision events");
-            self.ledger = candidate;
+            self.ledger.deinit(self.allocator);
+            self.ledger = candidate.*;
+            candidate.per_port_usage = &.{};
             self.ledger.refreshFingerprint();
             self.last_check = Supervision.SupervisionCheck.init(.{
                 .run_permit_fingerprint = self.permit.permit_fingerprint,
@@ -2006,13 +2067,14 @@ pub const Supervision = struct {
             return errorForBlocker(blocker);
         }
 
-        fn exceed(self: *@This(), kind: Supervision.SupervisionCheck.EventKind, world_port_id: ?u32, exceeded_kind: Supervision.BudgetExceededKind, candidate: Supervision.UsageLedger, rule_fingerprint: ?u64, summary: []const u8) !void {
-            var next = candidate;
-            next.exceeded_budget = exceeded_kind;
-            next.refreshFingerprint();
+        fn exceed(self: *@This(), kind: Supervision.SupervisionCheck.EventKind, world_port_id: ?u32, exceeded_kind: Supervision.BudgetExceededKind, candidate: *Supervision.UsageLedger, rule_fingerprint: ?u64, summary: []const u8) !void {
+            candidate.exceeded_budget = exceeded_kind;
+            candidate.refreshFingerprint();
             const usage_before = self.ledger.ledger_fingerprint;
             try self.reserveSupervisionEvent(kind, world_port_id, usage_before, rule_fingerprint, "max supervision events");
-            self.ledger = next;
+            self.ledger.deinit(self.allocator);
+            self.ledger = candidate.*;
+            candidate.per_port_usage = &.{};
             self.blocker = .budget_exceeded;
             self.last_check = Supervision.SupervisionCheck.init(.{
                 .run_permit_fingerprint = self.permit.permit_fingerprint,
