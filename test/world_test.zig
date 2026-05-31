@@ -244,6 +244,17 @@ fn firstDiffAfter(left: []const u8, right: []const u8, start: usize) !usize {
     return error.MissingDiff;
 }
 
+fn nthBytesOffset(haystack: []const u8, needle: []const u8, ordinal: usize) !usize {
+    var search_from: usize = 0;
+    var seen: usize = 0;
+    while (std.mem.indexOfPos(u8, haystack, search_from, needle)) |offset| {
+        if (seen == ordinal) return offset;
+        seen += 1;
+        search_from = offset + 1;
+    }
+    return error.MissingNeedle;
+}
+
 fn testTranscriptImageFingerprint(image: world.TranscriptImage) u64 {
     var hasher = std.hash.Wyhash.init(0);
     hashTestBytes(&hasher, "world.transcript.image.fingerprint");
@@ -3174,6 +3185,14 @@ test "run image encode decode roundtrip includes TargetRef TranscriptImage branc
     malformed_target_ref[25] +%= 1;
     try std.testing.expectError(error.InvalidFrameEncoding, world.RunImage.decode(std.testing.allocator, malformed_target_ref));
 
+    var transcript_fingerprint_bytes: [8]u8 = undefined;
+    std.mem.writeInt(u64, &transcript_fingerprint_bytes, image.transcript_image_fingerprint, .little);
+    const encoded_transcript_fingerprint_offset = try nthBytesOffset(encoded, &transcript_fingerprint_bytes, 1);
+    var malformed_transcript_fingerprint = try std.testing.allocator.dupe(u8, encoded);
+    defer std.testing.allocator.free(malformed_transcript_fingerprint);
+    malformed_transcript_fingerprint[encoded_transcript_fingerprint_offset] +%= 1;
+    try std.testing.expectError(error.InvalidFrameEncoding, world.RunImage.decode(std.testing.allocator, malformed_transcript_fingerprint));
+
     const stale_state = world.RunState.init(.{
         .target_ref_fingerprint = target_ref.target_ref_fingerprint,
         .status = .completed,
@@ -3186,6 +3205,47 @@ test "run image encode decode roundtrip includes TargetRef TranscriptImage branc
         .current_state = stale_state,
     });
     try std.testing.expectError(error.HandoffTargetMismatch, stale_transcript_binding.validate(.{}));
+
+    var final_image = try world.Frame.ValueImage.fromValue(std.testing.allocator, 1, null, null, @as(i32, 7), .portable);
+    defer final_image.deinit(std.testing.allocator);
+    const mismatched_final_state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .final_value_image_fingerprint = final_image.value_image_fingerprint + 1,
+        .status = .completed,
+    });
+    const mismatched_final_image = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = import_set.import_set_fingerprint,
+        .current_state = mismatched_final_state,
+        .final_result_image = final_image,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, mismatched_final_image.validate(.{}));
+
+    const wrong_target_checkpoint = world.Timeline.Checkpoint.init(.{
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint + 1,
+        .target_certificate_fingerprint = target_ref.target_certificate_fingerprint,
+        .event_index = 1,
+        .turn_index = request.turn_index,
+        .current_request_fingerprint = request.frame_fingerprint,
+        .transcript_prefix_fingerprint = image.events[0].event_fingerprint,
+        .branch_id = 1,
+        .status = .parked_on_port,
+    });
+    const wrong_checkpoint_state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .checkpoint_fingerprint = wrong_target_checkpoint.checkpoint_fingerprint,
+        .status = .parked_on_port,
+    });
+    const wrong_target_checkpoint_image = world.RunImage.init(.{
+        .kind = .parked_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = import_set.import_set_fingerprint,
+        .current_state = wrong_checkpoint_state,
+        .checkpoints = &.{wrong_target_checkpoint},
+        .pending_request_frame = request,
+    });
+    try std.testing.expectError(error.HandoffCheckpointMismatch, wrong_target_checkpoint_image.validate(.{}));
 }
 
 test "run image decode rejects oversized timeline counts before allocation" {

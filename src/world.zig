@@ -2513,6 +2513,10 @@ pub const RunImage = struct {
             }
             if (!found_checkpoint and (self.kind == .branched_run or self.checkpoints.len != 0)) return error.HandoffCheckpointMismatch;
         }
+        for (self.checkpoints) |checkpoint| {
+            if (checkpoint.world_surface_fingerprint != self.target_ref.world_surface_fingerprint) return error.HandoffCheckpointMismatch;
+            if (checkpoint.target_certificate_fingerprint != self.target_ref.target_certificate_fingerprint) return error.HandoffCheckpointMismatch;
+        }
         if (self.kind == .branched_run and self.current_state.branch_id != 0) {
             var found_branch = false;
             for (self.branches) |branch| {
@@ -2545,6 +2549,7 @@ pub const RunImage = struct {
         if (self.final_result_image) |image| {
             try validateValueImage(image);
             if (options.require_portable_values and image.diagnostic_type_label != null) return error.NativeOnlyValueRejected;
+            if (self.current_state.final_value_image_fingerprint != image.value_image_fingerprint) return error.InvalidFrameEncoding;
         }
         if (fingerprintRunState(self.current_state) != self.current_state.run_state_fingerprint) return error.InvalidFrameEncoding;
         if (fingerprintRunImage(self) != self.run_image_fingerprint) return error.InvalidFrameEncoding;
@@ -2605,12 +2610,17 @@ pub const RunImage = struct {
         }
         const import_set_fingerprint = try readU64(bytes, &cursor);
         const current_state = try decodeRunState(bytes, &cursor);
-        _ = try readOptionalU64(bytes, &cursor);
+        const encoded_transcript_image_fingerprint = try readOptionalU64(bytes, &cursor);
         var transcript_image: ?TranscriptImage = null;
         if (try readBool(bytes, &cursor)) {
             const encoded = try readBytesOwned(allocator, bytes, &cursor);
             defer allocator.free(encoded);
-            transcript_image = try TranscriptImage.decode(allocator, encoded);
+            var decoded_transcript_image = try TranscriptImage.decode(allocator, encoded);
+            errdefer decoded_transcript_image.deinit(allocator);
+            if (encoded_transcript_image_fingerprint != decoded_transcript_image.transcript_image_fingerprint) return error.InvalidFrameEncoding;
+            transcript_image = decoded_transcript_image;
+        } else if (encoded_transcript_image_fingerprint != null) {
+            return error.InvalidFrameEncoding;
         }
         errdefer if (transcript_image) |*image| image.deinit(allocator);
         const checkpoint_count = try readU64AsUsize(bytes, &cursor);
