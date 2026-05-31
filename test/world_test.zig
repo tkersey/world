@@ -4391,6 +4391,30 @@ test "parked handoff replays transcript prefix before selected pending request" 
     try std.testing.expectEqual(@as(usize, 0), replay_denied_ctx.model_calls);
     try std.testing.expectEqual(@as(usize, 0), replay_denied_ctx.tool_calls);
 
+    var fresh_limited_handoff = try world.Handoff.fromRunImage(std.testing.allocator, encoded);
+    defer fresh_limited_handoff.deinit();
+    const fresh_limited_permit = world.Supervision.issue(fixtures.Agent.Target, AgentEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.handoff_receiver,
+        .budget = world.Budget.init(.{ .max_fresh_calls = 1 }),
+        .handoff_policy = .allow,
+    });
+    const fresh_limited_report = fresh_limited_handoff.preflightWithPermit(fixtures.Agent.Target, AgentEnv, .accept_fresh, fresh_limited_permit);
+    try std.testing.expect(fresh_limited_report.accepted);
+    var fresh_limited_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer fresh_limited_runtime.deinit();
+    var fresh_limited_ctx: AgentCtx = .{ .allocator = std.testing.allocator, .scenario = .skeleton };
+    var fresh_limited_run = try fresh_limited_handoff.resumeWithPermit(fixtures.Agent.Target, AgentEnv, &fresh_limited_runtime, AgentArgs{ @as(usize, 3), fixtures.Agent.initialObservation(.skeleton) }, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &fresh_limited_ctx,
+    }, .accept_fresh, fresh_limited_permit);
+    defer fresh_limited_run.deinit();
+    try std.testing.expectEqual(@as(usize, 0), fresh_limited_ctx.model_calls);
+    try std.testing.expectEqual(@as(usize, 0), fresh_limited_ctx.tool_calls);
+    try std.testing.expectEqual(@as(usize, 1), fresh_limited_run.supervisor.?.ledger.total_fresh_calls);
+    try std.testing.expectEqual(@as(usize, 1), fresh_limited_run.supervisor.?.ledger.total_replay_calls);
+
     var receiver_runtime = boundary.Runtime.init(std.testing.allocator);
     defer receiver_runtime.deinit();
     var receiver_ctx: AgentCtx = .{ .allocator = std.testing.allocator, .scenario = .skeleton };

@@ -4804,6 +4804,7 @@ pub const Handoff = struct {
         else
             try MachineType.startWithHandoffTranscript(runtime, args, options);
         errdefer run.deinit();
+        run.handoff_pending_frame_fingerprint = pending_frame.frame_fingerprint;
         var resume_committed = false;
         errdefer if (!resume_committed) run.markRunFailed() catch {};
         if (run.supervisor) |*supervisor| {
@@ -4833,6 +4834,7 @@ pub const Handoff = struct {
                             };
                         }
                         try self.validatePendingFrame(request);
+                        run.handoff_pending_frame_fingerprint = null;
                         break;
                     }
                     const response = if (self.run_image.transcript_image) |*image|
@@ -5081,6 +5083,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 done_value: Value = undefined,
                 done_value_present: bool = false,
                 frame_step_request: bool = false,
+                handoff_pending_frame_fingerprint: ?u64 = null,
                 retained_values: std.ArrayList(StoredValue) = .empty,
                 supervisor: ?Supervision.Supervisor = null,
 
@@ -5664,16 +5667,22 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     errdefer frame.deinit(self.allocator);
                     if (record_event) {
                         if (self.supervisor) |*supervisor| {
-                            supervisor.beforeAdapterCall(.{
-                                .world_port_id = world_port_id,
-                                .mode = self.mode,
-                                .adapter_kind = comptime adapterKindForDecl(Decl),
-                                .authority_kind = comptime authorityKindForDecl(Decl),
-                                .value_policy = if (comptime @hasDecl(Decl, "value_policy")) Decl.value_policy else .native_compatible,
-                            }) catch |err| {
-                                try self.handleSupervisionError(err);
-                                return Error.HandlerPending;
-                            };
+                            const charge_adapter_call = if (self.handoff_pending_frame_fingerprint) |fingerprint|
+                                fingerprint == frame.frame_fingerprint
+                            else
+                                true;
+                            if (charge_adapter_call) {
+                                supervisor.beforeAdapterCall(.{
+                                    .world_port_id = world_port_id,
+                                    .mode = self.mode,
+                                    .adapter_kind = comptime adapterKindForDecl(Decl),
+                                    .authority_kind = comptime authorityKindForDecl(Decl),
+                                    .value_policy = if (comptime @hasDecl(Decl, "value_policy")) Decl.value_policy else .native_compatible,
+                                }) catch |err| {
+                                    try self.handleSupervisionError(err);
+                                    return Error.HandlerPending;
+                                };
+                            }
                             const encoded = try frame.encode(self.allocator);
                             defer self.allocator.free(encoded);
                             supervisor.accountPortRequestBytes(
