@@ -3906,7 +3906,7 @@ fn acceptanceReportFor(
     inline for (bindings, 0..) |BindingDecl, index| {
         if (BindingDecl.TargetType != Target) return rejectedReport(report, &.{.HandoffTargetMismatch});
         if (BindingDecl.world_port_id >= Target.WorldPortTable.entries.len) return rejectedReport(report, &.{.WrongPortId});
-        if (bindingRecordBlockerFor(Target, BindingDecl, policy)) |blocker| return rejectedReport(report, &.{blocker});
+        if (bindingRecordBlockerFor(Target, BindingDecl, policy)) |blocker| return rejectedReportForBindingRecordBlocker(report, blocker);
         inline for (bindings, 0..) |Other, other_index| {
             if (other_index > index and BindingDecl.world_port_id == Other.world_port_id) return rejectedReport(report, &.{.ExtraBinding});
         }
@@ -3928,6 +3928,18 @@ fn acceptanceReportFor(
         if (@hasDecl(BindingDecl, "authority") and !authorityAllowsMode(BindingDecl.authority, requested_mode)) return rejectedReport(report, &.{.AdapterModeNotAllowed});
         const value_policy: ValuePolicy = if (@hasDecl(BindingDecl, "value_policy")) BindingDecl.value_policy else .native_compatible;
         if (value_policy.require_portable_values) report.portable_value_compatible_count += 1 else report.native_only_value_count += 1;
+        if (@hasDecl(BindingDecl, "authority")) {
+            if (BindingDecl.authority.requires_portable_values and !value_policy.require_portable_values) return rejectedReport(report, &.{.PortableValuesRequired});
+            if (!BindingDecl.authority.allows_native_only_values and value_policy.allow_native_only_values) return rejectedReport(report, &.{.NativeOnlyValueRejected});
+            if (BindingDecl.authority.max_payload_image_bytes) |max| {
+                const policy_max = value_policy.max_value_image_bytes orelse return rejectedReport(report, &.{.PayloadValueMismatch});
+                if (policy_max > max) return rejectedReport(report, &.{.PayloadValueMismatch});
+            }
+            if (BindingDecl.authority.max_response_image_bytes) |max| {
+                const policy_max = value_policy.max_value_image_bytes orelse return rejectedReport(report, &.{.ResponseValueMismatch});
+                if (policy_max > max) return rejectedReport(report, &.{.ResponseValueMismatch});
+            }
+        }
         if (policy.require_portable_values and !value_policy.require_portable_values) return rejectedReport(report, &.{.PortableValuesRequired});
         if (!policy.allow_native_only_values and value_policy.allow_native_only_values) return rejectedReport(report, &.{.NativeOnlyValueRejected});
     }
@@ -3961,6 +3973,18 @@ fn bindingRecordBlockerFor(comptime Target: type, comptime BindingDecl: type, po
     if (record.payload_value_table_id != requirement.payload_value_table_id) return .PayloadValueMismatch;
     if (record.response_value_table_id != requirement.response_value_table_id) return .ResponseValueMismatch;
     return null;
+}
+
+fn rejectedReportForBindingRecordBlocker(base: AcceptanceReport, blocker: AcceptanceBlocker) AcceptanceReport {
+    return switch (blocker) {
+        .HandoffTargetMismatch => rejectedReport(base, &.{.HandoffTargetMismatch}),
+        .WrongWorldSurface => rejectedReport(base, &.{.WrongWorldSurface}),
+        .WrongTargetCertificate => rejectedReport(base, &.{.WrongTargetCertificate}),
+        .WrongPortId => rejectedReport(base, &.{.WrongPortId}),
+        .PayloadValueMismatch => rejectedReport(base, &.{.PayloadValueMismatch}),
+        .ResponseValueMismatch => rejectedReport(base, &.{.ResponseValueMismatch}),
+        else => unreachable,
+    };
 }
 
 fn acceptedModeMask(report: AcceptanceReport) EnvironmentCertificate.ModeMask {

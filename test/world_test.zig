@@ -43,6 +43,33 @@ const PortsRejectBinding = world.bind(PortsDecl, struct {
     pub const authority = world.PortAuthority.fixture;
     pub const value_policy = world.ValuePolicy.portable;
 });
+const PortsPortableAuthorityBinding = world.bind(PortsDecl, struct {
+    pub const kind: world.AdapterKind = .native;
+    pub const authority = world.PortAuthority.init(.{
+        .authority_label = "portable-required",
+        .authority_kind = .fixture,
+        .requires_portable_values = true,
+    });
+    pub const value_policy = world.ValuePolicy.native_compatible;
+});
+const PortsNoNativeAuthorityBinding = world.bind(PortsDecl, struct {
+    pub const kind: world.AdapterKind = .native;
+    pub const authority = world.PortAuthority.init(.{
+        .authority_label = "no-native",
+        .authority_kind = .fixture,
+        .allows_native_only_values = false,
+    });
+    pub const value_policy = world.ValuePolicy.native_compatible;
+});
+const PortsPayloadCapAuthorityBinding = world.bind(PortsDecl, struct {
+    pub const kind: world.AdapterKind = .native;
+    pub const authority = world.PortAuthority.init(.{
+        .authority_label = "payload-cap",
+        .authority_kind = .fixture,
+        .max_payload_image_bytes = 1,
+    });
+    pub const value_policy = world.ValuePolicy.portable;
+});
 const PortsWrongPortBinding = struct {
     pub const TargetType = fixtures.Ports.Target;
     pub const world_port_id: u32 = 99;
@@ -3185,6 +3212,27 @@ test "world environment accepts bindings and reports missing duplicate and repla
     }).acceptanceReport(.fresh, false);
     try std.testing.expect(!wrong_requirement_report.accepted);
     try std.testing.expectEqual(world.AcceptanceBlocker.HandoffTargetMismatch, wrong_requirement_report.blockers[0]);
+
+    const authority_portable_report = world.Environment(fixtures.Ports.Target, .{
+        .bindings = .{PortsPortableAuthorityBinding},
+        .policy = world.EnvironmentPolicy.test_fixture,
+    }).acceptanceReport(.fresh, false);
+    try std.testing.expect(!authority_portable_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.PortableValuesRequired, authority_portable_report.blockers[0]);
+
+    const authority_native_report = world.Environment(fixtures.Ports.Target, .{
+        .bindings = .{PortsNoNativeAuthorityBinding},
+        .policy = world.EnvironmentPolicy.test_fixture,
+    }).acceptanceReport(.fresh, false);
+    try std.testing.expect(!authority_native_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.NativeOnlyValueRejected, authority_native_report.blockers[0]);
+
+    const authority_payload_report = world.Environment(fixtures.Ports.Target, .{
+        .bindings = .{PortsPayloadCapAuthorityBinding},
+        .policy = world.EnvironmentPolicy.test_fixture,
+    }).acceptanceReport(.fresh, false);
+    try std.testing.expect(!authority_payload_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.PayloadValueMismatch, authority_payload_report.blockers[0]);
 
     const replay_missing_bindings = world.Environment(fixtures.Ports.Target, .{
         .bindings = .{},
