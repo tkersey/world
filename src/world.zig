@@ -2616,7 +2616,11 @@ pub const RunImage = struct {
             try validateRequestFrameImage(frame);
             if (frame.world_surface_fingerprint != self.target_ref.world_surface_fingerprint) return error.FrameSurfaceMismatch;
             if (frame.target_certificate_fingerprint != self.target_ref.target_certificate_fingerprint) return error.FrameTargetCertificateMismatch;
-            if (self.current_state.pending_request_fingerprint) |fingerprint| {
+            if (self.current_state.status == .parked_on_port) {
+                const fingerprint = self.current_state.pending_request_fingerprint orelse return error.HandoffPendingFrameMismatch;
+                if (frame.frame_fingerprint != fingerprint) return error.HandoffPendingFrameMismatch;
+                if (frame.turn_index != self.current_state.turn_index) return error.HandoffPendingFrameMismatch;
+            } else if (self.current_state.pending_request_fingerprint) |fingerprint| {
                 if (frame.frame_fingerprint != fingerprint and frame.request_fingerprint != fingerprint) return error.HandoffPendingFrameMismatch;
             }
         }
@@ -3323,7 +3327,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     try self.resumeFrameWithProvenance(response_frame, false);
                 }
 
-                pub fn resumeReplayedFrame(self: *Self, response_frame: Frame.Response) !void {
+                fn resumeReplayedFrame(self: *Self, response_frame: Frame.Response) !void {
                     try self.resumeFrameWithProvenance(response_frame, true);
                 }
 

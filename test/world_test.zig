@@ -3324,6 +3324,35 @@ test "run image encode decode roundtrip includes TargetRef TranscriptImage branc
     try std.testing.expectEqual(@as(usize, 1), decoded.branches.len);
     try std.testing.expect(decoded.pending_request_frame != null);
 
+    const missing_pending_state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .turn_index = request.turn_index,
+        .status = .parked_on_port,
+    });
+    const missing_pending_image = world.RunImage.init(.{
+        .kind = .parked_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = import_set.import_set_fingerprint,
+        .current_state = missing_pending_state,
+        .pending_request_frame = request,
+    });
+    try std.testing.expectError(error.HandoffPendingFrameMismatch, missing_pending_image.validate(.{}));
+
+    const wrong_turn_state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .pending_request_fingerprint = request.frame_fingerprint,
+        .turn_index = request.turn_index + 1,
+        .status = .parked_on_port,
+    });
+    const wrong_turn_image = world.RunImage.init(.{
+        .kind = .parked_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = import_set.import_set_fingerprint,
+        .current_state = wrong_turn_state,
+        .pending_request_frame = request,
+    });
+    try std.testing.expectError(error.HandoffPendingFrameMismatch, wrong_turn_image.validate(.{}));
+
     var malformed = try std.testing.allocator.dupe(u8, encoded);
     defer std.testing.allocator.free(malformed);
     malformed[8] +%= 1;
