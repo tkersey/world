@@ -4623,6 +4623,7 @@ pub const Handoff = struct {
     }
 
     pub fn preflightWithPermit(self: *@This(), comptime Target: type, comptime Env: type, mode: HandoffMode, permit: RunPermit) AcceptanceReport {
+        const accepting = mode != .inspect_only;
         if (permit.mode != modeToRunMode(mode)) {
             return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.SupervisionPolicyMismatch});
         }
@@ -4645,13 +4646,13 @@ pub const Handoff = struct {
         if (permit.binding_plan_fingerprint != cert.binding_plan_fingerprint) {
             return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.SupervisionPolicyMismatch});
         }
-        if (!permit.policy.allow_handoff_accept) {
+        if (accepting and !permit.policy.allow_handoff_accept) {
             return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.SupervisionPolicyMismatch});
         }
-        if (permit.handoff_policy == .deny) {
+        if (accepting and permit.handoff_policy == .deny) {
             return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.SupervisionPolicyMismatch});
         }
-        if (permit.handoff_policy == .require_new_permit) {
+        if (accepting and permit.handoff_policy == .require_new_permit) {
             const prior_permit_fingerprint = self.run_image.prior_run_permit_fingerprint orelse {
                 return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.SupervisionPolicyMismatch});
             };
@@ -4663,6 +4664,7 @@ pub const Handoff = struct {
         if (!supervision_report.accepted) return supervision_report;
         const report = self.preflight(Target, Env, mode);
         if (!report.accepted) return report;
+        if (!accepting) return report;
         var supervisor = Supervision.Supervisor.init(self.allocator, permit, Target.WorldPortTable.entries.len) catch {
             return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.SupervisionPolicyMismatch});
         };

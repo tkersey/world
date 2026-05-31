@@ -4106,6 +4106,20 @@ test "handoff preflight rejects target mismatch and accepts replay handoff with 
     const replay_report = handoff.preflight(fixtures.Ports.Target, PortsReplayEnv, .accept_replay);
     try std.testing.expect(replay_report.accepted);
 
+    const inspect_policy = world.SupervisionPolicy.init(.{
+        .allow_audit_only = true,
+        .allow_native_adapters = true,
+        .require_environment_certificate = true,
+    });
+    const inspect_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .audit,
+        .policy = inspect_policy,
+        .transcript_image_available = true,
+        .handoff_policy = .require_new_permit,
+    });
+    const inspect_report = handoff.preflightWithPermit(fixtures.Ports.Target, PortsEnv, .inspect_only, inspect_permit);
+    try std.testing.expect(inspect_report.accepted);
+
     const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const parked_completed_state = world.RunState.init(.{
         .target_ref_fingerprint = target_ref.target_ref_fingerprint,
