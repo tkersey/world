@@ -4926,11 +4926,17 @@ fn validateTranscriptForEnvironment(comptime Env: type, transcript: *const Trans
 fn validateTranscriptImageForEnvironment(comptime Env: type, image: *const TranscriptImage) !void {
     for (image.events) |event| {
         if (event.request_frame) |frame| try validateRequestFramePolicy(frame, try valuePolicyForEnvironmentPort(Env, frame.world_port_id, .request));
-        if (event.response_frame) |frame| try validateResponseFramePolicy(frame, try valuePolicyForEnvironmentPort(Env, frame.world_port_id, .response));
+        if (event.response_frame) |frame| try validateResponseFramePolicy(frame, try replayImageValuePolicyForEnvironmentPort(Env, frame.world_port_id));
     }
 }
 
 const FrameValuePolicyKind = enum { request, response };
+
+fn replayImageValuePolicyForEnvironmentPort(comptime Env: type, world_port_id: u32) !ValuePolicy {
+    var policy = try valuePolicyForEnvironmentPort(Env, world_port_id, .response);
+    policy.require_response_images_for_replay = true;
+    return policy;
+}
 
 fn valuePolicyForEnvironmentPort(comptime Env: type, world_port_id: u32, comptime kind: FrameValuePolicyKind) !ValuePolicy {
     if (world_port_id >= Env.TargetType.WorldPortTable.entries.len) return error.WrongPortId;
