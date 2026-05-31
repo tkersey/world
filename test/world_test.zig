@@ -5642,6 +5642,24 @@ test "supervised branch and checkpoint budgets are enforced" {
     try std.testing.expectEqual(world.Supervision.Blocker.branch_denied, branch_supervisor.last_check.?.blocker.?);
 }
 
+test "checkpoint value image bytes are charged to cost budgets" {
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.branch_limited,
+        .budget = world.Budget.init(.{ .max_total_cost_units = 4 }),
+        .cost_model = world.CostModel.init(.{
+            .checkpoint_cost = 1,
+            .value_image_byte_cost = 2,
+        }),
+    });
+    var supervisor = try world.Supervisor.init(std.testing.allocator, permit, fixtures.Ports.Target.WorldPortTable.entries.len);
+    defer supervisor.deinit();
+    try std.testing.expectError(error.BudgetExceeded, supervisor.beforeCheckpoint(2));
+    try std.testing.expectEqual(@as(usize, 2), supervisor.ledger.total_value_image_bytes);
+    try std.testing.expectEqual(@as(u64, 5), supervisor.ledger.total_cost_units);
+    try std.testing.expectEqual(world.Supervision.BudgetExceededKind.total_cost_units, supervisor.ledger.exceeded_budget.?);
+}
+
 test "supervised agent run completes under budget and over-budget agent is denied" {
     var ok_runtime = boundary.Runtime.init(std.testing.allocator);
     defer ok_runtime.deinit();
