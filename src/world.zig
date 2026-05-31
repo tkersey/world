@@ -2836,6 +2836,9 @@ pub const Handoff = struct {
         }
         if (mode == .accept_fresh) {
             const pending_frame = self.run_image.pending_request_frame.?;
+            validateRequestFramePolicy(pending_frame, valuePolicyForEnvironmentPort(Env, pending_frame.world_port_id, .request)) catch {
+                return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.NativeOnlyValueRejected});
+            };
             if (self.run_image.transcript_image) |*image| {
                 validateTranscriptImageForEnvironment(Env, image) catch {
                     return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.NativeOnlyValueRejected});
@@ -2910,6 +2913,12 @@ pub const Handoff = struct {
                     var request = request_frame;
                     defer request.deinit(run.allocator);
                     if (pending_frame.frame_fingerprint == request.frame_fingerprint) {
+                        if (self.run_image.transcript_image) |*image| {
+                            image.assertReplayComplete() catch |err| {
+                                run.audit.replay_mismatch_count += 1;
+                                return err;
+                            };
+                        }
                         try self.validatePendingFrame(request);
                         break;
                     }

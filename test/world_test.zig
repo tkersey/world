@@ -3576,6 +3576,51 @@ test "run image encode decode roundtrip includes TargetRef TranscriptImage branc
         .policy = world.EnvironmentPolicy.test_fixture,
     });
     try std.testing.expect(PortsPayloadCapEnv.acceptanceReport(.fresh, false).accepted);
+    var capped_payload_image: ?world.Frame.ValueImage = try world.Frame.ValueImage.fromValue(
+        std.testing.allocator,
+        0,
+        null,
+        null,
+        @as([]const u8, "oversized"),
+        world.ValuePolicy.portable,
+    );
+    errdefer if (capped_payload_image) |*payload| payload.deinit(std.testing.allocator);
+    var capped_request = world.Frame.Request.init(.{
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .world_surface_replay_scope_fingerprint = fixtures.Ports.Target.WorldSurface.replayScopeRef().fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .world_port_id = 0,
+        .residual_site_index = fixtures.Ports.ApprovalRequest.index,
+        .residual_site_fingerprint = fixtures.Ports.ApprovalRequest.fingerprint,
+        .request_fingerprint = 0xabc0_ffee,
+        .turn_index = 0,
+        .payload_value_table_id = 0,
+        .expected_response_value_table_id = 1,
+        .payload_image = capped_payload_image,
+    });
+    capped_payload_image = null;
+    defer capped_request.deinit(std.testing.allocator);
+    const capped_pending_state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .pending_request_fingerprint = capped_request.frame_fingerprint,
+        .turn_index = capped_request.turn_index,
+        .status = .parked_on_port,
+    });
+    const capped_pending_image = world.RunImage.init(.{
+        .kind = .parked_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = import_set.import_set_fingerprint,
+        .current_state = capped_pending_state,
+        .pending_request_frame = capped_request,
+    });
+    const capped_pending_encoded = try capped_pending_image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(capped_pending_encoded);
+    var capped_pending_handoff = try world.Handoff.fromRunImage(std.testing.allocator, capped_pending_encoded);
+    defer capped_pending_handoff.deinit();
+    const capped_pending_report = capped_pending_handoff.preflight(fixtures.Ports.Target, PortsPayloadCapEnv, .accept_fresh);
+    try std.testing.expect(!capped_pending_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.NativeOnlyValueRejected, capped_pending_report.blockers[0]);
+
     var cap_handoff = try world.Handoff.fromRunImage(std.testing.allocator, encoded);
     defer cap_handoff.deinit();
     const cap_report = cap_handoff.preflight(fixtures.Ports.Target, PortsPayloadCapEnv, .accept_fresh);
