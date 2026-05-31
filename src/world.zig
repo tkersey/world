@@ -4490,6 +4490,8 @@ pub const Handoff = struct {
         if (mode == .accept_fresh and !permit.policy.allow_handoff_accept) {
             return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.SupervisionPolicyMismatch});
         }
+        const supervision_report = Env.acceptanceReportWithSupervision(modeToRunMode(mode), self.run_image.transcript_image != null, permit.policy);
+        if (!supervision_report.accepted) return supervision_report;
         return self.preflight(Target, Env, mode);
     }
 
@@ -4875,6 +4877,26 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     if (self.parkIfSupervisorInterrupted()) return Error.HandlerPending;
                     try self.markRunFailed();
                     return err;
+                }
+
+                fn handlerErrorStatus(err: anyerror) ResponseStatus {
+                    return switch (err) {
+                        error.HandlerPending => .pending,
+                        error.HandlerRejected => .rejected,
+                        else => .failed,
+                    };
+                }
+
+                fn accountNativeHandlerError(self: *Self, world_port_id: u32, err: anyerror) !void {
+                    if (self.supervisor) |*supervisor| {
+                        supervisor.afterAdapterResponse(.{
+                            .world_port_id = world_port_id,
+                            .status = handlerErrorStatus(err),
+                        }) catch |supervision_err| {
+                            try self.handleSupervisionError(supervision_err);
+                            unreachable;
+                        };
+                    }
                 }
 
                 fn recordRunEvent(self: *Self, kind: EventKind, status: ?ResponseStatus, source_run: bool) !void {
@@ -5436,7 +5458,10 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
 
                 fn callFresh(self: *Self, comptime Decl: type, request: PortRequest(Target, Decl.SiteType)) !Decl.Response {
                     if (!@hasField(Options, "ctx")) return Error.MissingHandler;
-                    const response = try callHandler(Decl, @field(self.options, "ctx"), request);
+                    const response = callHandler(Decl, @field(self.options, "ctx"), request) catch |err| {
+                        try self.accountNativeHandlerError(Decl.world_port_id, err);
+                        return err;
+                    };
                     defer Decl.response_deinit(@field(self.options, "ctx"), response);
                     if (self.supervisor) |*supervisor| {
                         supervisor.afterAdapterResponse(.{
@@ -5637,7 +5662,10 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         }
                     }
                     self.audit.replayed_response_count += 1;
-                    const fresh = try callHandler(Decl, @field(self.options, "ctx"), request);
+                    const fresh = callHandler(Decl, @field(self.options, "ctx"), request) catch |err| {
+                        try self.accountNativeHandlerError(Decl.world_port_id, err);
+                        return err;
+                    };
                     defer Decl.response_deinit(@field(self.options, "ctx"), fresh);
                     if (self.supervisor) |*supervisor| {
                         supervisor.afterAdapterResponse(.{

@@ -26,10 +26,18 @@ fn approveRequest(ctx: *PortsCtx, request: world.PortRequest(fixtures.Ports.Targ
     return ctx.response;
 }
 
+fn failApproval(ctx: *PortsCtx, payload: []const u8) !i32 {
+    try std.testing.expectEqualStrings("deploy-prod", payload);
+    ctx.calls += 1;
+    return error.HandlerFailed;
+}
+
 const PortsDecl = world.port(fixtures.Ports.Target, fixtures.Ports.ApprovalRequest, approve);
+const FailingPortsDecl = world.port(fixtures.Ports.Target, fixtures.Ports.ApprovalRequest, failApproval);
 const PortsByIdDecl = world.portById(fixtures.Ports.Target, 0, fixtures.Ports.ApprovalRequest, approve);
 const PortsRequestDecl = world.port(fixtures.Ports.Target, fixtures.Ports.ApprovalRequest, approveRequest);
 const PortsNativeBinding = world.bind(PortsDecl, world.NativeAdapter(approve));
+const FailingPortsNativeBinding = world.bind(FailingPortsDecl, world.NativeAdapter(failApproval));
 const PortsAltNativeBinding = world.bind(PortsDecl, world.NativeAdapter(approveRequest));
 const PortsReplayBinding = world.bind(PortsDecl, world.ReplayAdapter(0x7777_aaaa));
 const PortsByteBinding = world.bind(PortsDecl, world.ByteAdapter("test-byte"));
@@ -195,6 +203,10 @@ const PortsEnv = world.Environment(fixtures.Ports.Target, .{
     .bindings = .{PortsNativeBinding},
     .policy = world.EnvironmentPolicy.fresh_and_replay,
 });
+const FailingPortsEnv = world.Environment(fixtures.Ports.Target, .{
+    .bindings = .{FailingPortsNativeBinding},
+    .policy = world.EnvironmentPolicy.fresh_and_replay,
+});
 const PortsReplayEnv = world.Environment(fixtures.Ports.Target, .{
     .bindings = .{PortsReplayBinding},
     .policy = world.EnvironmentPolicy.strict_replay,
@@ -213,6 +225,10 @@ const PortsDuplicateEnv = world.Environment(fixtures.Ports.Target, .{
 });
 const PortsMachineEnv = world.Machine(fixtures.Ports.Target, .{
     .environment = PortsEnv,
+    .strict_handler_coverage = true,
+});
+const FailingPortsMachineEnv = world.Machine(fixtures.Ports.Target, .{
+    .environment = FailingPortsEnv,
     .strict_handler_coverage = true,
 });
 const PortsReplayMachineEnv = world.Machine(fixtures.Ports.Target, .{
@@ -4974,6 +4990,30 @@ test "mode-denied supervision checks preserve requested mode blocker" {
     try std.testing.expectEqual(world.Supervision.Blocker.verify_call_denied, supervisor.last_check.?.blocker.?);
 }
 
+test "native handler failures are accounted by supervision" {
+    const permit = world.Supervision.issue(fixtures.Ports.Target, FailingPortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var ctx: PortsCtx = .{};
+    var run = try FailingPortsMachineEnv.start(&runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+        .permit = permit,
+    });
+    defer run.deinit();
+    switch (try run.next()) {
+        .port_required => {},
+        else => return error.ExpectedPortRequired,
+    }
+    try std.testing.expectError(error.HandlerFailed, run.dispatch());
+    try std.testing.expectEqual(@as(usize, 1), ctx.calls);
+    try std.testing.expectEqual(world.Supervision.Blocker.failed_denied, run.supervisor.?.last_check.?.blocker.?);
+}
+
 test "usage ledger supervision check and run receipt fingerprints are stable" {
     const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
         .mode = .fresh,
@@ -5107,6 +5147,18 @@ test "supervised handoff receiver can issue stricter permit and inspect prior re
     forged_receiver_permit.budget.max_port_requests = 99;
     const forged_report = handoff.preflightWithPermit(fixtures.Ports.Target, PortsEnv, .accept_fresh, forged_receiver_permit);
     try std.testing.expect(!forged_report.accepted);
+    const adapter_deny_policy = world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .allow_native_adapters = false,
+        .allow_handoff_accept = true,
+        .require_environment_certificate = true,
+    });
+    const adapter_deny_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = adapter_deny_policy,
+    });
+    const adapter_deny_report = handoff.preflightWithPermit(fixtures.Ports.Target, PortsEnv, .accept_fresh, adapter_deny_permit);
+    try std.testing.expect(!adapter_deny_report.accepted);
 
     const denying_receiver_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
         .mode = .fresh,
