@@ -2585,6 +2585,7 @@ pub const RunImage = struct {
 
     pub fn validate(self: @This(), options: ValidateOptions) !void {
         if (!options.allow_reference_target and self.kind == .reference_target_run) return error.InvalidFrameEncoding;
+        if (options.require_known_target and self.kind == .reference_target_run) return error.InvalidFrameEncoding;
         if (self.metadata.len > options.max_image_bytes) return error.InvalidFrameEncoding;
         if (self.target_ref.target_label) |label| {
             if (label.len > options.max_image_bytes) return error.InvalidFrameEncoding;
@@ -2605,6 +2606,7 @@ pub const RunImage = struct {
             }
             try image.validateValuePolicy(value_policy);
         }
+        try validateRunImageKindState(self);
         if (self.current_state.target_ref_fingerprint != self.target_ref.target_ref_fingerprint) return error.HandoffTargetMismatch;
         if (self.current_state.checkpoint_fingerprint) |checkpoint_fingerprint| {
             var found_checkpoint = false;
@@ -2795,6 +2797,22 @@ pub const RunImage = struct {
         return result;
     }
 };
+
+fn validateRunImageKindState(image: RunImage) !void {
+    switch (image.kind) {
+        .completed_run => {
+            if (image.current_state.status != .completed) return error.HandoffTargetMismatch;
+        },
+        .replay_only_run => switch (image.current_state.status) {
+            .completed, .failed => {},
+            else => return error.HandoffTargetMismatch,
+        },
+        .parked_run => {
+            if (image.current_state.status != .parked_on_port) return error.HandoffPendingFrameMismatch;
+        },
+        else => {},
+    }
+}
 
 pub const HandoffMode = enum {
     accept_fresh,

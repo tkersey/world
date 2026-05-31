@@ -3605,6 +3605,19 @@ test "run image encode decode roundtrip includes TargetRef TranscriptImage branc
         .environment_certificate_fingerprint = PortsEnv.certificate(.fresh, false).certificate_fingerprint,
         .acceptance_report_fingerprint = PortsEnv.acceptanceReport(.fresh, false).report_fingerprint,
     });
+    const running_replay_state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .transcript_image_fingerprint = image.transcript_image_fingerprint,
+        .status = .running,
+    });
+    const contradictory_replay_image = world.RunImage.init(.{
+        .kind = .replay_only_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = import_set.import_set_fingerprint,
+        .transcript_image = image,
+        .current_state = running_replay_state,
+    });
+    try std.testing.expectError(error.HandoffTargetMismatch, contradictory_replay_image.validate(.{}));
 
     const encoded = try run_image.encode(std.testing.allocator);
     defer std.testing.allocator.free(encoded);
@@ -3876,6 +3889,7 @@ test "run image decode rejects oversized timeline counts before allocation" {
         .import_set_fingerprint = import_set.import_set_fingerprint,
         .current_state = base_state,
     });
+    try std.testing.expectError(error.InvalidFrameEncoding, base_image.validate(.{ .require_known_target = true }));
     const base_encoded = try base_image.encode(std.testing.allocator);
     defer std.testing.allocator.free(base_encoded);
 
