@@ -3701,6 +3701,29 @@ test "parked handoff replays transcript prefix before selected pending request" 
     const accepted_fresh = handoff.preflight(fixtures.Agent.Target, AgentEnv, .accept_fresh);
     try std.testing.expect(accepted_fresh.accepted);
 
+    const stale_state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .transcript_image_fingerprint = image.transcript_image_fingerprint,
+        .pending_request_fingerprint = model_request.frame_fingerprint,
+        .turn_index = model_request.turn_index,
+        .status = .parked_on_port,
+    });
+    const stale_run_image = world.RunImage.init(.{
+        .kind = .parked_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Agent.Target).import_set_fingerprint,
+        .transcript_image = image,
+        .current_state = stale_state,
+        .pending_request_frame = model_request,
+    });
+    const stale_encoded = try stale_run_image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(stale_encoded);
+    var stale_handoff = try world.Handoff.fromRunImage(std.testing.allocator, stale_encoded);
+    defer stale_handoff.deinit();
+    const stale_report = stale_handoff.preflight(fixtures.Agent.Target, AgentEnv, .accept_fresh);
+    try std.testing.expect(!stale_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.ReplaySourceMissing, stale_report.blockers[0]);
+
     const missing_prefix_state = world.RunState.init(.{
         .target_ref_fingerprint = target_ref.target_ref_fingerprint,
         .pending_request_fingerprint = tool_request.frame_fingerprint,

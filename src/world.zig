@@ -2166,8 +2166,8 @@ pub const TranscriptImage = struct {
         if (self.target_certificate_fingerprint != expected_target_certificate_fingerprint) return error.ReplayTargetCertificateMismatch;
         var active_start: ?usize = null;
         var active_is_source_run = false;
-        var selected_start: ?usize = null;
-        var selected_limit: ?usize = null;
+        var active_pending_index: ?usize = null;
+        var active_pending_fingerprint: ?u64 = null;
         for (self.events, 0..) |event, index| {
             switch (event.kind) {
                 .run_started => {
@@ -2176,6 +2176,8 @@ pub const TranscriptImage = struct {
                     if (event.target_certificate_fingerprint != expected_target_certificate_fingerprint) return error.ReplayTargetCertificateMismatch;
                     active_start = index;
                     active_is_source_run = event.source_run;
+                    active_pending_index = null;
+                    active_pending_fingerprint = null;
                 },
                 .run_completed,
                 .run_failed,
@@ -2183,30 +2185,43 @@ pub const TranscriptImage = struct {
                     if (active_start == null) continue;
                     if (event.world_surface_fingerprint != expected_world_surface_fingerprint) return error.ReplaySurfaceMismatch;
                     if (event.target_certificate_fingerprint != expected_target_certificate_fingerprint) return error.ReplayTargetCertificateMismatch;
-                    if (active_is_source_run and selected_start == active_start) {
-                        selected_start = null;
-                        selected_limit = null;
-                    }
                     active_start = null;
                     active_is_source_run = false;
+                    active_pending_index = null;
+                    active_pending_fingerprint = null;
                 },
                 .port_requested,
                 .frame_requested,
                 => {
-                    const start = active_start orelse continue;
+                    _ = active_start orelse continue;
                     if (!active_is_source_run) continue;
                     const request_frame = event.request_frame orelse return error.ReplayMissing;
-                    if (request_frame.frame_fingerprint == pending_request_frame_fingerprint) {
-                        selected_start = start;
-                        selected_limit = index;
+                    active_pending_index = index;
+                    active_pending_fingerprint = request_frame.frame_fingerprint;
+                },
+                .port_responded,
+                .port_replayed,
+                .port_rejected,
+                .port_failed,
+                .frame_responded,
+                .frame_replayed,
+                .frame_verified,
+                .frame_rejected,
+                .frame_failed,
+                => {
+                    if (active_start != null and active_is_source_run) {
+                        active_pending_index = null;
+                        active_pending_fingerprint = null;
                     }
                 },
                 else => {},
             }
         }
-        if (active_start == null) return error.ReplayMissing;
-        self.replay_cursor = (selected_start orelse return error.ReplayMissing) + 1;
-        self.replay_limit = selected_limit orelse return error.ReplayMissing;
+        const start = active_start orelse return error.ReplayMissing;
+        const pending_index = active_pending_index orelse return error.ReplayMissing;
+        if ((active_pending_fingerprint orelse return error.ReplayMissing) != pending_request_frame_fingerprint) return error.ReplayMissing;
+        self.replay_cursor = start + 1;
+        self.replay_limit = pending_index;
     }
 
     pub fn validateValuePolicy(self: *const @This(), policy: ValuePolicy) !void {
