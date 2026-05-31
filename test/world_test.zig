@@ -4198,6 +4198,18 @@ test "parked handoff replays transcript prefix before selected pending request" 
     defer replayed.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings("final=actuate skeleton complete", replayed.value);
     try std.testing.expectEqual(@as(usize, 3), replayed.audit.replayed_response_count);
+
+    receiver_transcript.resetReplay();
+    var transcript_replay_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer transcript_replay_runtime.deinit();
+    var transcript_replayed = try AgentMachineEnv.run(&transcript_replay_runtime, AgentArgs{ @as(usize, 3), fixtures.Agent.initialObservation(.skeleton) }, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.replay,
+        .transcript = &receiver_transcript,
+    });
+    defer transcript_replayed.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("final=actuate skeleton complete", transcript_replayed.value);
+    try std.testing.expectEqual(@as(usize, 3), transcript_replayed.audit.replayed_response_count);
 }
 
 test "replay handoff replays completed run without native handler calls" {

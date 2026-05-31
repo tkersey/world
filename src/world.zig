@@ -1653,11 +1653,11 @@ pub const Transcript = struct {
         while (self.replay_cursor < replay_limit) : (self.replay_cursor += 1) {
             const index = self.replay_cursor;
             const event = &self.events.items[index];
-            if (event.kind != .port_responded and event.kind != .frame_responded) continue;
+            if (!eventKindIsSourceResponse(event.kind)) continue;
             if (event.status) |status| {
                 if (status != .responded) return Error.ReplayMissing;
             }
-            if (event.kind == .frame_responded and event.response_frame == null) return Error.ReplayMissing;
+            if ((event.kind == .frame_responded or event.kind == .frame_replayed) and event.response_frame == null) return Error.ReplayMissing;
             if (event.response_frame) |frame| {
                 if (frame.status != .responded) return Error.ReplayMissing;
             }
@@ -1679,7 +1679,7 @@ pub const Transcript = struct {
         const replay_limit = self.replay_limit orelse self.events.items.len;
         var index = self.replay_cursor;
         while (index < replay_limit) : (index += 1) {
-            if (self.events.items[index].kind == .port_responded or self.events.items[index].kind == .frame_responded) return Error.ReplayUnusedEvent;
+            if (eventKindIsSourceResponse(self.events.items[index].kind)) return Error.ReplayUnusedEvent;
         }
     }
 
@@ -1732,7 +1732,9 @@ pub const Transcript = struct {
                     latest_run_failed = failed_source_run;
                 },
                 .port_responded,
+                .port_replayed,
                 .frame_responded,
+                .frame_replayed,
                 => {
                     if (active_start != null) {
                         active_has_port_event = true;
@@ -1740,11 +1742,9 @@ pub const Transcript = struct {
                     }
                 },
                 .port_requested,
-                .port_replayed,
                 .port_rejected,
                 .port_failed,
                 .frame_requested,
-                .frame_replayed,
                 .frame_verified,
                 .frame_rejected,
                 .frame_failed,
@@ -2128,7 +2128,9 @@ pub const TranscriptImage = struct {
                     latest_run_failed = failed_source_run;
                 },
                 .port_responded,
+                .port_replayed,
                 .frame_responded,
+                .frame_replayed,
                 => {
                     if (active_start != null) {
                         active_has_port_event = true;
@@ -2136,11 +2138,9 @@ pub const TranscriptImage = struct {
                     }
                 },
                 .port_requested,
-                .port_replayed,
                 .port_rejected,
                 .port_failed,
                 .frame_requested,
-                .frame_replayed,
                 .frame_verified,
                 .frame_rejected,
                 .frame_failed,
