@@ -4694,11 +4694,10 @@ pub const Handoff = struct {
             return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.SupervisionPolicyMismatch});
         }
         if (accepting and permit.handoff_policy == .require_new_permit) {
-            const prior_permit_fingerprint = self.run_image.prior_run_permit_fingerprint orelse {
-                return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.SupervisionPolicyMismatch});
-            };
-            if (prior_permit_fingerprint == permit.permit_fingerprint) {
-                return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.SupervisionPolicyMismatch});
+            if (self.run_image.prior_run_permit_fingerprint) |prior_permit_fingerprint| {
+                if (prior_permit_fingerprint == permit.permit_fingerprint) {
+                    return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.SupervisionPolicyMismatch});
+                }
             }
         }
         const supervision_report = Env.acceptanceReportWithPermit(modeToRunMode(mode), self.run_image.transcript_image != null, permit);
@@ -5677,6 +5676,12 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 fn resumeFrameWithProvenance(self: *Self, response_frame: Frame.Response, comptime replayed: bool) !void {
                     const request = self.pending_request orelse return error.UnknownResidualSite;
                     const world_port_id = self.pending_port_id orelse return error.UnknownWorldPort;
+                    var frame = try self.pendingRequestFrame(false);
+                    defer frame.deinit(self.allocator);
+                    if (response_frame.world_surface_fingerprint != frame.world_surface_fingerprint) return error.FrameSurfaceMismatch;
+                    if (response_frame.target_certificate_fingerprint != frame.target_certificate_fingerprint) return error.FrameTargetCertificateMismatch;
+                    if (response_frame.world_port_id != world_port_id) return error.FramePortMismatch;
+                    if (response_frame.request_fingerprint != frame.request_fingerprint) return error.FrameRequestFingerprintMismatch;
                     if (response_frame.status == .pending) {
                         if (self.supervisor) |*supervisor| {
                             try validateResponseFrameImage(response_frame);
@@ -5694,12 +5699,6 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         return error.HandlerPending;
                     }
                     if (self.effective_mode != .fresh) return Error.InvalidMode;
-                    var frame = try self.pendingRequestFrame(false);
-                    defer frame.deinit(self.allocator);
-                    if (response_frame.world_surface_fingerprint != frame.world_surface_fingerprint) return error.FrameSurfaceMismatch;
-                    if (response_frame.target_certificate_fingerprint != frame.target_certificate_fingerprint) return error.FrameTargetCertificateMismatch;
-                    if (response_frame.world_port_id != world_port_id) return error.FramePortMismatch;
-                    if (response_frame.request_fingerprint != frame.request_fingerprint) return error.FrameRequestFingerprintMismatch;
                     if (response_frame.status == .responded and response_frame.response_value_table_id != frame.expected_response_value_table_id) return error.FrameValueTableMismatch;
                     try validateResponseFrameImage(response_frame);
                     const deferred_response_fingerprint = response_frame.responseFingerprintDeferred();

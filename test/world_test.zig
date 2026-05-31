@@ -2136,7 +2136,7 @@ test "step frame nextFrame resumeFrame and verify adapter image path work" {
                 .response_fingerprint = 0,
                 .replay_key = 0,
             });
-            try std.testing.expectError(error.HandlerPending, run.resumeFrame(pending_response));
+            try std.testing.expectError(error.FrameRequestFingerprintMismatch, run.resumeFrame(pending_response));
             var wrong_value_table_response = try world.Frame.Response.fromValue(std.testing.allocator, request, null, response_fingerprint, .@"resume", @as(i32, 7), .portable);
             defer wrong_value_table_response.deinit(std.testing.allocator);
             try std.testing.expectError(error.FrameValueTableMismatch, run.resumeFrame(wrong_value_table_response));
@@ -5132,7 +5132,20 @@ test "supervised pending frame responses are accounted before parking" {
         .response_fingerprint = 0,
         .replay_key = 0,
     });
-    try std.testing.expectError(error.HandlerPending, run.resumeFrame(pending_response));
+    try std.testing.expectError(error.FrameRequestFingerprintMismatch, run.resumeFrame(pending_response));
+    try std.testing.expectEqual(ledger_before_pending, run.supervisor.?.ledger.ledger_fingerprint);
+    try std.testing.expectEqual(@as(usize, 0), run.supervisor.?.ledger.total_port_responses);
+
+    const valid_pending_response = world.Frame.Response.init(.{
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .target_certificate_fingerprint = request.target_certificate_fingerprint,
+        .world_port_id = request.world_port_id,
+        .request_fingerprint = request.request_fingerprint,
+        .status = .pending,
+        .response_fingerprint = 0,
+        .replay_key = 0,
+    });
+    try std.testing.expectError(error.HandlerPending, run.resumeFrame(valid_pending_response));
     try std.testing.expect(run.supervisor.?.ledger.ledger_fingerprint != ledger_before_pending);
     try std.testing.expectEqual(@as(usize, 1), run.supervisor.?.ledger.total_port_responses);
     try std.testing.expectEqual(@as(usize, 1), run.supervisor.?.ledger.total_pending_calls);
@@ -5962,7 +5975,7 @@ test "supervised handoff receiver can issue stricter permit and inspect prior re
     var unwitnessed_handoff = try world.Handoff.fromRunImage(std.testing.allocator, unwitnessed_encoded);
     defer unwitnessed_handoff.deinit();
     const unwitnessed_report = unwitnessed_handoff.preflightWithPermit(fixtures.Ports.Target, PortsEnv, .accept_fresh, receiver_permit);
-    try std.testing.expect(!unwitnessed_report.accepted);
+    try std.testing.expect(unwitnessed_report.accepted);
     const reused_permit_image = world.RunImage.init(.{
         .kind = .parked_run,
         .target_ref = target_ref,
