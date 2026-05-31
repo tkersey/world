@@ -330,7 +330,7 @@ pub fn build(b: *std.Build) void {
             .expected_stdout =
             \\received_run_image_fingerprint=ac6d8395b707f76e
             \\receiver_permit_fingerprint=3375ddcdc320bbf9
-            \\receiver_receipt_fingerprint=47d42d5b0de4eb2b
+            \\receiver_receipt_fingerprint=6f68ceb099281ec0
             \\final_result=7
             \\
             ,
