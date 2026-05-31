@@ -1897,6 +1897,7 @@ pub const Supervision = struct {
         pub fn beforeAdapterCall(self: *@This(), args: struct {
             world_port_id: u32,
             mode: Mode,
+            accounting_mode: ?Mode = null,
             adapter_kind: AdapterKind,
             authority_kind: ?PortAuthority.Kind = null,
             value_policy: ValuePolicy = .native_compatible,
@@ -1932,7 +1933,7 @@ pub const Supervision = struct {
             var replay_delta: usize = 0;
             var verify_delta: usize = 0;
             var cost_delta: u64 = 0;
-            switch (args.mode) {
+            switch (args.accounting_mode orelse args.mode) {
                 .fresh, .audit => {
                     fresh_delta = 1;
                     cost_delta = self.permit.cost_model.freshCost(args.world_port_id);
@@ -5326,6 +5327,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                                 @hasField(Options, "transcript_image")
                             else
                                 transcript_available;
+                            if (permit.policy.require_transcript_image_for_replay and modeConsumesTranscript(effective) and !supervision_transcript_available) return Error.TranscriptImageRequired;
                             const supervision_report = Config.environment.acceptanceReportWithPermit(mode_value, supervision_transcript_available, permit);
                             if (!supervision_report.accepted) return acceptanceError(supervision_report);
                             const cert = Config.environment.certificate(mode_value, transcript_available);
@@ -5795,6 +5797,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         supervisor.beforeAdapterCall(.{
                             .world_port_id = Decl.world_port_id,
                             .mode = self.mode,
+                            .accounting_mode = if (self.mode == .audit and self.effective_mode != .fresh) self.effective_mode else null,
                             .adapter_kind = comptime adapterKindForDecl(Decl),
                             .authority_kind = comptime authorityKindForDecl(Decl),
                             .value_policy = if (comptime @hasDecl(Decl, "value_policy")) Decl.value_policy else .native_compatible,

@@ -2957,6 +2957,7 @@ test "supervised audit permits authorize requested mode not source mode" {
     const replay_audit_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
         .mode = world.Mode.audit,
         .policy = strict_audit_policy,
+        .budget = world.Budget.init(.{ .max_fresh_calls = 0, .max_replay_calls = 1 }),
     });
     var replay_audit_runtime = boundary.Runtime.init(std.testing.allocator);
     defer replay_audit_runtime.deinit();
@@ -2974,6 +2975,32 @@ test "supervised audit permits authorize requested mode not source mode" {
     try std.testing.expectEqual(@as(usize, 0), replay_audit_ctx.calls);
     try std.testing.expectEqual(@as(usize, 1), replay_audited.audit.replayed_response_count);
     try std.testing.expect(replay_audited.receipt != null);
+
+    const image_required_audit_policy = world.SupervisionPolicy.init(.{
+        .allow_audit_only = true,
+        .allow_native_adapters = true,
+        .require_environment_certificate = true,
+        .require_transcript_image_for_replay = true,
+    });
+    const image_required_audit_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = world.Mode.audit,
+        .policy = image_required_audit_policy,
+    });
+    var mutable_replay_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer mutable_replay_runtime.deinit();
+    var mutable_replay_ctx: PortsCtx = .{};
+    var mutable_replay_transcript = world.Transcript.init(std.testing.allocator);
+    defer mutable_replay_transcript.deinit();
+    try recordPortsTranscript(&mutable_replay_transcript);
+    try std.testing.expectError(error.TranscriptImageRequired, PortsMachineEnv.run(&mutable_replay_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.audit,
+        .audit_source = world.Mode.replay,
+        .ctx = &mutable_replay_ctx,
+        .transcript = &mutable_replay_transcript,
+        .permit = image_required_audit_permit,
+    }));
+    try std.testing.expectEqual(@as(usize, 0), mutable_replay_ctx.calls);
 
     const fresh_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
         .mode = world.Mode.fresh,
