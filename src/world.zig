@@ -4588,6 +4588,11 @@ pub const Handoff = struct {
         if (permit.handoff_policy == .deny) {
             return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.SupervisionPolicyMismatch});
         }
+        if (permit.handoff_policy == .require_new_permit) {
+            if (self.run_image.prior_run_permit_fingerprint == permit.permit_fingerprint) {
+                return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.SupervisionPolicyMismatch});
+            }
+        }
         const supervision_report = Env.acceptanceReportWithSupervision(modeToRunMode(mode), self.run_image.transcript_image != null, permit.policy);
         if (!supervision_report.accepted) return supervision_report;
         return self.preflight(Target, Env, mode);
@@ -4684,6 +4689,18 @@ pub const Handoff = struct {
                         }
                     else
                         return error.HandoffPendingFrameMismatch;
+                    if (run.supervisor) |*supervisor| {
+                        supervisor.beforeAdapterCall(.{
+                            .world_port_id = request.world_port_id,
+                            .mode = .replay,
+                            .adapter_kind = .replay,
+                            .authority_kind = PortAuthority.replay_source.authority_kind,
+                            .value_policy = .portable,
+                        }) catch |err| {
+                            try run.handleSupervisionError(err);
+                            return Error.HandlerPending;
+                        };
+                    }
                     try run.resumeReplayedFrame(response.*);
                 },
                 else => return error.HandoffPendingFrameMismatch,

@@ -4312,6 +4312,24 @@ test "parked handoff replays transcript prefix before selected pending request" 
     try std.testing.expectEqual(tool_request.frame_fingerprint, prefix_image.events[prefix_limit].request_frame.?.frame_fingerprint);
     prefix_image.resetReplay();
 
+    var replay_denied_handoff = try world.Handoff.fromRunImage(std.testing.allocator, encoded);
+    defer replay_denied_handoff.deinit();
+    const replay_denied_permit = world.Supervision.issue(fixtures.Agent.Target, AgentEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.handoff_receiver,
+        .budget = world.Budget.init(.{ .max_replay_calls = 0 }),
+    });
+    var replay_denied_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer replay_denied_runtime.deinit();
+    var replay_denied_ctx: AgentCtx = .{ .allocator = std.testing.allocator, .scenario = .skeleton };
+    try std.testing.expectError(error.BudgetExceeded, replay_denied_handoff.resumeWithPermit(fixtures.Agent.Target, AgentEnv, &replay_denied_runtime, AgentArgs{ @as(usize, 3), fixtures.Agent.initialObservation(.skeleton) }, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &replay_denied_ctx,
+    }, .accept_fresh, replay_denied_permit));
+    try std.testing.expectEqual(@as(usize, 0), replay_denied_ctx.model_calls);
+    try std.testing.expectEqual(@as(usize, 0), replay_denied_ctx.tool_calls);
+
     var receiver_runtime = boundary.Runtime.init(std.testing.allocator);
     defer receiver_runtime.deinit();
     var receiver_ctx: AgentCtx = .{ .allocator = std.testing.allocator, .scenario = .skeleton };
@@ -5461,6 +5479,20 @@ test "supervised handoff receiver can issue stricter permit and inspect prior re
     });
     const report = handoff.preflightWithPermit(fixtures.Ports.Target, PortsEnv, .accept_fresh, receiver_permit);
     try std.testing.expect(report.accepted);
+    const reused_permit_image = world.RunImage.init(.{
+        .kind = .parked_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = state,
+        .pending_request_frame = request_frame,
+        .prior_run_permit_fingerprint = receiver_permit.permit_fingerprint,
+    });
+    const reused_permit_encoded = try reused_permit_image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(reused_permit_encoded);
+    var reused_permit_handoff = try world.Handoff.fromRunImage(std.testing.allocator, reused_permit_encoded);
+    defer reused_permit_handoff.deinit();
+    const reused_permit_report = reused_permit_handoff.preflightWithPermit(fixtures.Ports.Target, PortsEnv, .accept_fresh, receiver_permit);
+    try std.testing.expect(!reused_permit_report.accepted);
     var forged_receiver_permit = receiver_permit;
     forged_receiver_permit.budget.max_port_requests = 99;
     const forged_report = handoff.preflightWithPermit(fixtures.Ports.Target, PortsEnv, .accept_fresh, forged_receiver_permit);
