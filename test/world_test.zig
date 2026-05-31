@@ -5130,6 +5130,34 @@ test "supervised replay accounts transcript image response frame bytes" {
 }
 
 test "supervised verify accounts transcript image response frame bytes" {
+    var live_transcript = world.Transcript.init(std.testing.allocator);
+    defer live_transcript.deinit();
+    try recordPortsTranscript(&live_transcript);
+    const live_policy = world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .allow_verify_calls = true,
+        .allow_native_adapters = true,
+        .require_environment_certificate = true,
+        .require_transcript_image_for_replay = false,
+    });
+    const live_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .verify,
+        .policy = live_policy,
+        .budget = world.Budget.init(.{ .max_port_responses = 0 }),
+        .transcript_image_available = true,
+    });
+    var live_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer live_runtime.deinit();
+    var live_ctx: PortsCtx = .{};
+    try std.testing.expectError(error.BudgetExceeded, PortsMachineEnv.run(&live_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.verify,
+        .ctx = &live_ctx,
+        .transcript = &live_transcript,
+        .permit = live_permit,
+    }));
+    try std.testing.expectEqual(@as(usize, 0), live_ctx.calls);
+
     var transcript = world.Transcript.init(std.testing.allocator);
     defer transcript.deinit();
     try recordPortsTranscript(&transcript);

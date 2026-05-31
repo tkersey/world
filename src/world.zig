@@ -6147,6 +6147,14 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                                 try self.handleSupervisionError(err);
                                 return Error.HandlerPending;
                             };
+                        } else {
+                            supervisor.afterAdapterResponse(.{
+                                .world_port_id = Decl.world_port_id,
+                                .status = .responded,
+                            }) catch |err| {
+                                try self.handleSupervisionError(err);
+                                return Error.HandlerPending;
+                            };
                         }
                     }
                     const fresh = callHandler(Decl, @field(self.options, "ctx"), request) catch |err| {
