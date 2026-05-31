@@ -1723,6 +1723,11 @@ pub const Supervision = struct {
         interrupted: bool = false,
         blocker: ?Blocker = null,
 
+        const SupervisionEventReservation = enum {
+            recorded,
+            audit_only_exceeded,
+        };
+
         pub fn init(allocator: std.mem.Allocator, permit: Supervision.RunPermit, port_count: usize) !@This() {
             try validatePermitForRun(permit, port_count);
             const ledger = try Supervision.UsageLedger.init(allocator, permit, port_count);
@@ -2072,11 +2077,27 @@ pub const Supervision = struct {
                 return self.exceed(kind, world_port_id, exceeded_kind, candidate, if (rule) |r| r.rule_fingerprint else null, summary);
             }
             const usage_before = self.ledger.ledger_fingerprint;
-            try self.reserveSupervisionEvent(kind, world_port_id, usage_before, if (rule) |r| r.rule_fingerprint else null, "max supervision events");
+            const reservation = try self.reserveSupervisionEvent(kind, world_port_id, usage_before, if (rule) |r| r.rule_fingerprint else null, "max supervision events");
             self.ledger.deinit(self.allocator);
             self.ledger = candidate.*;
             candidate.per_port_usage = &.{};
             self.ledger.refreshFingerprint();
+            if (reservation == .audit_only_exceeded) {
+                self.last_check = Supervision.SupervisionCheck.init(.{
+                    .run_permit_fingerprint = self.permit.permit_fingerprint,
+                    .event_kind = kind,
+                    .world_port_id = world_port_id,
+                    .usage_before_fingerprint = usage_before,
+                    .usage_after_fingerprint = self.ledger.ledger_fingerprint,
+                    .allowed = true,
+                    .blocker = .max_supervision_events_exceeded,
+                    .budget_exceeded = .supervision_events,
+                    .rule_fingerprint = if (rule) |r| r.rule_fingerprint else null,
+                    .budget_fingerprint = self.permit.budget_fingerprint,
+                    .summary = "max supervision events",
+                });
+                return;
+            }
             self.last_check = Supervision.SupervisionCheck.init(.{
                 .run_permit_fingerprint = self.permit.permit_fingerprint,
                 .event_kind = kind,
@@ -2093,7 +2114,7 @@ pub const Supervision = struct {
 
         fn deny(self: *@This(), kind: Supervision.SupervisionCheck.EventKind, world_port_id: ?u32, blocker: Supervision.Blocker, rule_fingerprint: ?u64, summary: []const u8) !void {
             const usage_before = self.ledger.ledger_fingerprint;
-            try self.reserveSupervisionEvent(kind, world_port_id, usage_before, rule_fingerprint, "max supervision events");
+            _ = try self.reserveSupervisionEvent(kind, world_port_id, usage_before, rule_fingerprint, "max supervision events");
             self.blocker = blocker;
             self.last_check = Supervision.SupervisionCheck.init(.{
                 .run_permit_fingerprint = self.permit.permit_fingerprint,
@@ -2114,7 +2135,7 @@ pub const Supervision = struct {
             candidate.exceeded_budget = exceeded_kind;
             candidate.refreshFingerprint();
             const usage_before = self.ledger.ledger_fingerprint;
-            try self.reserveSupervisionEvent(kind, world_port_id, usage_before, rule_fingerprint, "max supervision events");
+            _ = try self.reserveSupervisionEvent(kind, world_port_id, usage_before, rule_fingerprint, "max supervision events");
             self.ledger.deinit(self.allocator);
             self.ledger = candidate.*;
             candidate.per_port_usage = &.{};
@@ -2149,11 +2170,11 @@ pub const Supervision = struct {
             }
         }
 
-        fn reserveSupervisionEvent(self: *@This(), kind: Supervision.SupervisionCheck.EventKind, world_port_id: ?u32, usage_before: u64, rule_fingerprint: ?u64, summary: []const u8) !void {
+        fn reserveSupervisionEvent(self: *@This(), kind: Supervision.SupervisionCheck.EventKind, world_port_id: ?u32, usage_before: u64, rule_fingerprint: ?u64, summary: []const u8) !SupervisionEventReservation {
             if (self.permit.policy.max_supervision_events) |max| {
                 if (self.supervision_event_count >= max) {
                     self.blocker = .max_supervision_events_exceeded;
-                    self.last_check = Supervision.SupervisionCheck.init(.{
+                    var check = Supervision.SupervisionCheck.init(.{
                         .run_permit_fingerprint = self.permit.permit_fingerprint,
                         .event_kind = kind,
                         .world_port_id = world_port_id,
@@ -2166,11 +2187,28 @@ pub const Supervision = struct {
                         .budget_fingerprint = self.permit.budget_fingerprint,
                         .summary = summary,
                     });
-                    if (self.permit.policy.budgetBehavior() == .park) self.interrupted = true;
-                    return Error.BudgetExceeded;
+                    switch (self.permit.policy.budgetBehavior()) {
+                        .fail => {
+                            self.last_check = check;
+                            return Error.BudgetExceeded;
+                        },
+                        .park => {
+                            self.interrupted = true;
+                            self.last_check = check;
+                            return Error.BudgetExceeded;
+                        },
+                        .audit_only => {
+                            self.warning_count += 1;
+                            check.allowed = true;
+                            check.check_fingerprint = fingerprintSupervisionCheck(check);
+                            self.last_check = check;
+                            return .audit_only_exceeded;
+                        },
+                    }
                 }
             }
             self.supervision_event_count += 1;
+            return .recorded;
         }
     };
 
@@ -4963,6 +5001,56 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     }
                 }
 
+                const ResponseAccounting = struct {
+                    response_bytes: usize = 0,
+                    value_image_bytes: usize = 0,
+                };
+
+                fn responseFrameAccounting(self: *Self, frame: Frame.Response) !ResponseAccounting {
+                    const encoded_response = try frame.encode(self.allocator);
+                    defer self.allocator.free(encoded_response);
+                    return .{
+                        .response_bytes = encoded_response.len,
+                        .value_image_bytes = if (frame.response_image) |image| image.bytes.len else 0,
+                    };
+                }
+
+                fn nativeResponseAccounting(self: *Self, comptime Decl: type, trace: anytype, response_fingerprint: u64, response: Decl.Response) !ResponseAccounting {
+                    if (comptime !@hasField(Options, "transcript")) return .{};
+                    const value_policy: ValuePolicy = if (comptime @hasDecl(Decl, "value_policy")) Decl.value_policy else .native_compatible;
+                    var response_image: ?Frame.ValueImage = Frame.ValueImage.fromValue(
+                        self.allocator,
+                        valueIdForRuntime(Target, Decl.world_port_id, .@"resume"),
+                        response_fingerprint,
+                        null,
+                        response,
+                        value_policy,
+                    ) catch |err| switch (err) {
+                        error.UnsupportedValueImage => if (value_policy.allow_native_only_values and value_policy.max_value_image_bytes == null) null else return err,
+                        else => return err,
+                    };
+                    defer if (response_image) |*image| image.deinit(self.allocator);
+                    const image = response_image orelse return .{};
+                    const replay_key = ReplayKey{
+                        .world_surface_scope_fingerprint = Target.WorldSurface.replayScopeRef().fingerprint,
+                        .world_port_id = Decl.world_port_id,
+                        .request_fingerprint = trace.fingerprint,
+                        .response_fingerprint = response_fingerprint,
+                    };
+                    const frame = Frame.Response.init(.{
+                        .world_surface_fingerprint = Target.WorldSurface.surface_fingerprint,
+                        .target_certificate_fingerprint = Target.Certificate.certificate_fingerprint,
+                        .world_port_id = Decl.world_port_id,
+                        .request_fingerprint = trace.fingerprint,
+                        .response_kind = .@"resume",
+                        .response_value_table_id = valueIdForRuntime(Target, Decl.world_port_id, .@"resume"),
+                        .response_fingerprint = response_fingerprint,
+                        .response_image = image,
+                        .replay_key = replay_key.fingerprint(),
+                    });
+                    return self.responseFrameAccounting(frame);
+                }
+
                 fn recordRunEvent(self: *Self, kind: EventKind, status: ?ResponseStatus, source_run: bool) !void {
                     const supervisor = if (self.supervisor) |*active| active else null;
                     try appendRunEventSupervised(self.allocator, Target, self.options, supervisor, kind, status, source_run);
@@ -5535,17 +5623,21 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         return err;
                     };
                     defer Decl.response_deinit(@field(self.options, "ctx"), response);
+                    const typed = try (self.pending_request orelse return Error.UnknownResidualSite).as(Decl.SiteType);
+                    const trace = (self.pending_request orelse return Error.UnknownResidualSite).trace();
+                    const response_trace = try typed.responseTrace(.@"resume", response);
+                    const accounting = try self.nativeResponseAccounting(Decl, trace, response_trace.fingerprint, response);
                     if (self.supervisor) |*supervisor| {
                         supervisor.afterAdapterResponse(.{
                             .world_port_id = Decl.world_port_id,
                             .status = .responded,
+                            .response_bytes = accounting.response_bytes,
+                            .value_image_bytes = accounting.value_image_bytes,
                         }) catch |err| {
                             try self.handleSupervisionError(err);
                             return Error.HandlerPending;
                         };
                     }
-                    const typed = try (self.pending_request orelse return Error.UnknownResidualSite).as(Decl.SiteType);
-                    const response_trace = try typed.responseTrace(.@"resume", response);
                     var stored: ?StoredValue = null;
                     if (comptime @hasField(Options, "transcript")) {
                         stored = try StoredValue.init(@field(self.options, "transcript").allocator, response);
@@ -5743,6 +5835,10 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         }
                     }
                     self.audit.replayed_response_count += 1;
+                    const expected_accounting = if (expected_response_frame) |frame|
+                        try self.responseFrameAccounting(frame)
+                    else
+                        ResponseAccounting{};
                     const fresh = callHandler(Decl, @field(self.options, "ctx"), request) catch |err| {
                         try self.accountNativeHandlerError(Decl.world_port_id, err);
                         return err;
@@ -5752,6 +5848,8 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         supervisor.afterAdapterResponse(.{
                             .world_port_id = Decl.world_port_id,
                             .status = .responded,
+                            .response_bytes = expected_accounting.response_bytes,
+                            .value_image_bytes = expected_accounting.value_image_bytes,
                         }) catch |err| {
                             try self.handleSupervisionError(err);
                             return Error.HandlerPending;
