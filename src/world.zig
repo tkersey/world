@@ -4701,6 +4701,14 @@ pub const Handoff = struct {
         const pending_frame = self.run_image.pending_request_frame orelse return error.HandoffPendingFrameMismatch;
         const image = if (self.run_image.transcript_image) |*image| image else {
             if (pending_frame.turn_index != 0) return error.TranscriptImageRequired;
+            try self.preflightRequestFrameWithSupervisor(supervisor, pending_frame);
+            try supervisor.beforeAdapterCall(.{
+                .world_port_id = pending_frame.world_port_id,
+                .mode = .fresh,
+                .adapter_kind = try adapterKindForEnvironmentPort(Env, pending_frame.world_port_id),
+                .authority_kind = try authorityKindForEnvironmentPort(Env, pending_frame.world_port_id),
+                .value_policy = try valuePolicyForEnvironmentPort(Env, pending_frame.world_port_id, .request),
+            });
             return;
         };
         try image.prepareReplayPrefixForPendingRequest(
@@ -6953,7 +6961,7 @@ fn validateTranscriptEventFrameBindings(event: TranscriptImage.EventImage) !void
 }
 
 fn superviseTranscriptAppendForEvent(allocator: std.mem.Allocator, transcript: *const Transcript, supervisor: *Supervision.Supervisor, event: Transcript.Event) !void {
-    const event_count_after_append = transcript.events.items.len + 1;
+    const event_count_after_append = supervisor.ledger.total_transcript_events + 1;
     var transcript_image_bytes: usize = 0;
     if (supervisor.permit.budget.max_transcript_image_bytes != null) {
         var projected = Transcript.init(allocator);

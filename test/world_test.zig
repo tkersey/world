@@ -5926,6 +5926,9 @@ test "supervised handoff receiver can issue stricter permit and inspect prior re
         .policy = world.SupervisionPolicy.handoff_receiver,
         .budget = world.Budget.init(.{ .max_port_requests = 0 }),
     });
+    const denying_receiver_report = handoff.preflightWithPermit(fixtures.Ports.Target, PortsEnv, .accept_fresh, denying_receiver_permit);
+    try std.testing.expect(!denying_receiver_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.SupervisionBudgetExceeded, denying_receiver_report.blockers[0]);
     var resume_runtime = boundary.Runtime.init(std.testing.allocator);
     defer resume_runtime.deinit();
     var resume_ctx: PortsCtx = .{};
