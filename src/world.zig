@@ -3247,6 +3247,20 @@ pub const Transcript = struct {
         self.* = undefined;
     }
 
+    pub fn truncateRetainingCapacity(self: *@This(), new_len: usize) void {
+        std.debug.assert(new_len <= self.events.items.len);
+        for (self.events.items[new_len..]) |*event| {
+            if (event.value) |*stored| stored.deinit(self.allocator);
+            if (event.request_frame) |*frame| frame.deinit(self.allocator);
+            if (event.response_frame) |*frame| frame.deinit(self.allocator);
+        }
+        self.events.shrinkRetainingCapacity(new_len);
+        if (self.replay_cursor > new_len) self.replay_cursor = new_len;
+        if (self.replay_limit) |limit| {
+            if (limit > new_len) self.replay_limit = new_len;
+        }
+    }
+
     pub fn append(self: *@This(), event: Event) !void {
         var cloned = event;
         cloned.value = null;
@@ -5453,6 +5467,8 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             );
                         }
                         const active_supervisor = if (supervisor) |*active| active else null;
+                        const startup_event_count = @field(options, "transcript").events.items.len;
+                        errdefer @field(options, "transcript").truncateRetainingCapacity(startup_event_count);
                         try appendRunEventSupervised(allocator, Target, options, active_supervisor, .run_started, null, effective == .fresh);
                         if (supervisor) |*active| {
                             try appendRunEventSupervised(allocator, Target, options, active, .permit_issued, null, false);

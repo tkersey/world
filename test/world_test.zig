@@ -5417,8 +5417,11 @@ test "supervised transcript appends enforce event and image budgets" {
         .permit = event_budget_permit,
     }));
     try std.testing.expectEqual(@as(usize, 0), event_ctx.calls);
-    try std.testing.expectEqual(@as(usize, 1), event_transcript.events.items.len);
-    try std.testing.expectEqual(world.EventKind.run_started, event_transcript.events.items[0].kind);
+    try std.testing.expectEqual(@as(usize, 0), event_transcript.events.items.len);
+    try std.testing.expectError(error.ReplayMissing, event_transcript.validateReplayRun(
+        fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        fixtures.Ports.Target.Certificate.certificate_fingerprint,
+    ));
 
     const image_budget_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
         .mode = .fresh,
