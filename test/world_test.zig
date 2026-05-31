@@ -4802,6 +4802,8 @@ test "supervised transcript appends enforce event and image budgets" {
         .permit = event_budget_permit,
     }));
     try std.testing.expectEqual(@as(usize, 0), event_ctx.calls);
+    try std.testing.expectEqual(@as(usize, 1), event_transcript.events.items.len);
+    try std.testing.expectEqual(world.EventKind.run_started, event_transcript.events.items[0].kind);
 
     const image_budget_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
         .mode = .fresh,
@@ -4821,6 +4823,61 @@ test "supervised transcript appends enforce event and image budgets" {
         .permit = image_budget_permit,
     }));
     try std.testing.expectEqual(@as(usize, 0), image_ctx.calls);
+    try std.testing.expectEqual(@as(usize, 0), image_transcript.events.items.len);
+}
+
+test "park-on-budget returns parked run state instead of failing" {
+    const policy = world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .allow_native_adapters = true,
+        .require_environment_certificate = true,
+        .park_on_budget_exceeded = true,
+    });
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = policy,
+        .budget = world.Budget.init(.{ .max_session_steps = 0 }),
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var ctx: PortsCtx = .{};
+    var run = try PortsMachineEnv.start(&runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+        .permit = permit,
+    });
+    defer run.deinit();
+    switch (try run.next()) {
+        .parked => {},
+        else => return error.ExpectedParked,
+    }
+    try std.testing.expectEqual(@as(usize, 0), ctx.calls);
+    try std.testing.expectEqual(world.AuditReport.Status.parked, run.audit.final_status);
+}
+
+test "max supervision events is enforced before recording another check" {
+    const policy = world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .allow_native_adapters = true,
+        .require_environment_certificate = true,
+        .max_supervision_events = 1,
+    });
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = policy,
+    });
+    var supervisor = try world.Supervisor.init(std.testing.allocator, permit, fixtures.Ports.Target.WorldPortTable.entries.len);
+    defer supervisor.deinit();
+    try supervisor.beforeSessionStep();
+    try std.testing.expectEqual(@as(usize, 1), supervisor.supervision_event_count);
+    try std.testing.expectEqual(@as(usize, 1), supervisor.ledger.total_session_steps);
+    try std.testing.expectError(error.BudgetExceeded, supervisor.beforeSessionStep());
+    try std.testing.expectEqual(@as(usize, 1), supervisor.supervision_event_count);
+    try std.testing.expectEqual(@as(usize, 1), supervisor.ledger.total_session_steps);
+    try std.testing.expectEqual(world.Supervision.Blocker.max_supervision_events_exceeded, supervisor.last_check.?.blocker.?);
+    try std.testing.expectEqual(world.Supervision.BudgetExceededKind.supervision_events, supervisor.last_check.?.budget_exceeded.?);
+    try std.testing.expect(supervisor.last_check.?.validateFingerprint());
 }
 
 test "usage ledger supervision check and run receipt fingerprints are stable" {

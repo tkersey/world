@@ -1667,6 +1667,7 @@ pub const Supervision = struct {
         ledger: Supervision.UsageLedger,
         last_check: ?Supervision.SupervisionCheck = null,
         warning_count: usize = 0,
+        supervision_event_count: usize = 0,
         interrupted: bool = false,
         blocker: ?Blocker = null,
 
@@ -1969,6 +1970,7 @@ pub const Supervision = struct {
                 return self.exceed(kind, world_port_id, exceeded_kind, candidate, if (rule) |r| r.rule_fingerprint else null, summary);
             }
             const usage_before = self.ledger.ledger_fingerprint;
+            try self.reserveSupervisionEvent(kind, world_port_id, usage_before, if (rule) |r| r.rule_fingerprint else null, "max supervision events");
             self.ledger = candidate;
             self.ledger.refreshFingerprint();
             self.last_check = Supervision.SupervisionCheck.init(.{
@@ -1987,6 +1989,7 @@ pub const Supervision = struct {
 
         fn deny(self: *@This(), kind: Supervision.SupervisionCheck.EventKind, world_port_id: ?u32, blocker: Supervision.Blocker, rule_fingerprint: ?u64, summary: []const u8) !void {
             const usage_before = self.ledger.ledger_fingerprint;
+            try self.reserveSupervisionEvent(kind, world_port_id, usage_before, rule_fingerprint, "max supervision events");
             self.blocker = blocker;
             self.last_check = Supervision.SupervisionCheck.init(.{
                 .run_permit_fingerprint = self.permit.permit_fingerprint,
@@ -2008,6 +2011,7 @@ pub const Supervision = struct {
             next.exceeded_budget = exceeded_kind;
             next.refreshFingerprint();
             const usage_before = self.ledger.ledger_fingerprint;
+            try self.reserveSupervisionEvent(kind, world_port_id, usage_before, rule_fingerprint, "max supervision events");
             self.ledger = next;
             self.blocker = .budget_exceeded;
             self.last_check = Supervision.SupervisionCheck.init(.{
@@ -2038,6 +2042,30 @@ pub const Supervision = struct {
                     return;
                 },
             }
+        }
+
+        fn reserveSupervisionEvent(self: *@This(), kind: Supervision.SupervisionCheck.EventKind, world_port_id: ?u32, usage_before: u64, rule_fingerprint: ?u64, summary: []const u8) !void {
+            if (self.permit.policy.max_supervision_events) |max| {
+                if (self.supervision_event_count >= max) {
+                    self.blocker = .max_supervision_events_exceeded;
+                    self.last_check = Supervision.SupervisionCheck.init(.{
+                        .run_permit_fingerprint = self.permit.permit_fingerprint,
+                        .event_kind = kind,
+                        .world_port_id = world_port_id,
+                        .usage_before_fingerprint = usage_before,
+                        .usage_after_fingerprint = usage_before,
+                        .allowed = false,
+                        .blocker = .max_supervision_events_exceeded,
+                        .budget_exceeded = .supervision_events,
+                        .rule_fingerprint = rule_fingerprint,
+                        .budget_fingerprint = self.permit.budget_fingerprint,
+                        .summary = summary,
+                    });
+                    if (self.permit.policy.budgetBehavior() == .park) self.interrupted = true;
+                    return Error.BudgetExceeded;
+                }
+            }
+            self.supervision_event_count += 1;
         }
     };
 
@@ -4443,8 +4471,8 @@ pub const Handoff = struct {
         errdefer if (!resume_committed) run.markRunFailed() catch {};
         if (run.supervisor) |*supervisor| {
             supervisor.beforeHandoffAccept() catch |err| {
-                try run.markRunFailed();
-                return err;
+                try run.handleSupervisionError(err);
+                unreachable;
             };
         }
         if (self.run_image.transcript_image) |*image| {
@@ -4672,6 +4700,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         return .{ .value = value, .audit = audit, .receipt = receipt };
                     },
                     .port_required => run_state.dispatch() catch |err| {
+                        if (run_state.audit.final_status == .parked) return Error.HandlerPending;
                         try run_state.markRunFailed();
                         return err;
                     },
@@ -4752,15 +4781,31 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     return null;
                 }
 
-                fn superviseTranscriptAppend(self: *Self) !void {
+                fn parkIfSupervisorInterrupted(self: *Self) bool {
                     if (self.supervisor) |*supervisor| {
-                        try superviseTranscriptAppendForOptions(self.allocator, self.options, supervisor);
+                        if (supervisor.interrupted) {
+                            self.audit.final_status = .parked;
+                            return true;
+                        }
                     }
+                    return false;
+                }
+
+                fn handleSupervisionStepError(self: *Self, err: anyerror) !Step {
+                    if (self.parkIfSupervisorInterrupted()) return .parked;
+                    try self.markRunFailed();
+                    return err;
+                }
+
+                fn handleSupervisionError(self: *Self, err: anyerror) !void {
+                    if (self.parkIfSupervisorInterrupted()) return Error.HandlerPending;
+                    try self.markRunFailed();
+                    return err;
                 }
 
                 fn recordRunEvent(self: *Self, kind: EventKind, status: ?ResponseStatus, source_run: bool) !void {
-                    try appendRunEvent(Target, self.options, kind, status, source_run);
-                    try self.superviseTranscriptAppend();
+                    const supervisor = if (self.supervisor) |*active| active else null;
+                    try appendRunEventSupervised(self.allocator, Target, self.options, supervisor, kind, status, source_run);
                 }
 
                 fn recordPortEvent(
@@ -4774,13 +4819,14 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     request_frame: ?Frame.Request,
                     response_frame: ?Frame.Response,
                 ) !void {
-                    try appendPortEvent(Target, self.options, kind, world_port_id, trace, response_fingerprint, response_kind, value, request_frame, response_frame);
-                    try self.superviseTranscriptAppend();
+                    const supervisor = if (self.supervisor) |*active| active else null;
+                    try appendPortEventSupervised(self.allocator, Target, self.options, supervisor, kind, world_port_id, trace, response_fingerprint, response_kind, value, request_frame, response_frame);
                 }
 
                 fn markRunFailed(self: *Self) !void {
                     if (self.audit.final_status == .failed) return;
                     if (self.audit.final_status == .completed) return;
+                    if (self.audit.final_status == .parked) return;
                     self.pending_request = null;
                     self.pending_port_id = null;
                     self.audit.final_status = .failed;
@@ -4881,11 +4927,10 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                                 Target.Certificate.certificate_fingerprint,
                             );
                         }
-                        try appendRunEvent(Target, options, .run_started, null, effective == .fresh);
+                        const active_supervisor = if (supervisor) |*active| active else null;
+                        try appendRunEventSupervised(allocator, Target, options, active_supervisor, .run_started, null, effective == .fresh);
                         if (supervisor) |*active| {
-                            try superviseTranscriptAppendForOptions(allocator, options, active);
-                            try appendRunEvent(Target, options, .permit_issued, null, false);
-                            try superviseTranscriptAppendForOptions(allocator, options, active);
+                            try appendRunEventSupervised(allocator, Target, options, active, .permit_issued, null, false);
                             if (active.last_check) |check| {
                                 _ = check;
                             }
@@ -4929,11 +4974,11 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         return .{ .done = self.done_value };
                     }
                     if (self.audit.final_status == .failed) return .failed;
+                    if (self.audit.final_status == .parked) return .parked;
                     if (self.pending_request != null) return .port_required;
                     if (self.supervisor) |*supervisor| {
                         supervisor.beforeSessionStep() catch |err| {
-                            try self.markRunFailed();
-                            return err;
+                            return self.handleSupervisionStepError(err);
                         };
                     }
                     const session_step = self.session.next() catch |err| {
@@ -4989,8 +5034,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             }
                             if (self.supervisor) |*supervisor| {
                                 supervisor.beforePortRequest(world_port_id, 0, 0) catch |err| {
-                                    try self.markRunFailed();
-                                    return err;
+                                    return self.handleSupervisionStepError(err);
                                 };
                             }
                             self.pending_request = request;
@@ -5018,6 +5062,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             const Handler = comptime handlerForWorldPortId(Target, Config, @intCast(id));
                             if (Handler) |Decl| {
                                 self.dispatchDecl(Decl, request) catch |err| {
+                                    if (self.audit.final_status == .parked) return err;
                                     self.audit.failed_count += 1;
                                     try self.recordPortEvent(.port_failed, world_port_id, trace, null, null, null, null, null);
                                     try self.markRunFailed();
@@ -5070,8 +5115,8 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             .response_bytes = 0,
                             .value_image_bytes = if (response_frame.response_image) |image| image.bytes.len else 0,
                         }) catch |err| {
-                            try self.markRunFailed();
-                            return err;
+                            try self.handleSupervisionError(err);
+                            return Error.HandlerPending;
                         };
                     }
                     if (response_frame.status == .pending) return error.HandlerPending;
@@ -5169,8 +5214,8 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                                 encoded.len,
                                 if (frame.payload_image) |image| image.bytes.len else 0,
                             ) catch |err| {
-                                try self.markRunFailed();
-                                return err;
+                                try self.handleSupervisionError(err);
+                                return Error.HandlerPending;
                             };
                         }
                     }
@@ -5278,8 +5323,8 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             .authority_kind = if (comptime @hasDecl(Decl, "authority")) Decl.authority.authority_kind else null,
                             .value_policy = if (comptime @hasDecl(Decl, "value_policy")) Decl.value_policy else .native_compatible,
                         }) catch |err| {
-                            try self.markRunFailed();
-                            return err;
+                            try self.handleSupervisionError(err);
+                            return Error.HandlerPending;
                         };
                     }
                     const public_request = PortRequest(Target, Decl.SiteType){
@@ -5324,8 +5369,8 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             .world_port_id = Decl.world_port_id,
                             .status = .responded,
                         }) catch |err| {
-                            try self.markRunFailed();
-                            return err;
+                            try self.handleSupervisionError(err);
+                            return Error.HandlerPending;
                         };
                     }
                     const typed = try (self.pending_request orelse return Error.UnknownResidualSite).as(Decl.SiteType);
@@ -5383,8 +5428,8 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                                 .status = .responded,
                                 .value_image_bytes = if (frame.response_image) |value_image| value_image.bytes.len else 0,
                             }) catch |err| {
-                                try self.markRunFailed();
-                                return err;
+                                try self.handleSupervisionError(err);
+                                return Error.HandlerPending;
                             };
                         }
                         try self.recordPortEvent(.frame_replayed, Decl.world_port_id, trace, response_trace.fingerprint, .@"resume", null, null, frame.*);
@@ -5423,8 +5468,8 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             .status = .responded,
                             .value_image_bytes = if (event.response_frame) |frame| if (frame.response_image) |image| image.bytes.len else 0 else 0,
                         }) catch |err| {
-                            try self.markRunFailed();
-                            return err;
+                            try self.handleSupervisionError(err);
+                            return Error.HandlerPending;
                         };
                     }
                     try self.recordPortEvent(.port_replayed, Decl.world_port_id, trace, response_trace.fingerprint, .@"resume", null, null, if (event.response_frame) |frame| frame else null);
@@ -5525,8 +5570,8 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             .world_port_id = Decl.world_port_id,
                             .status = .responded,
                         }) catch |err| {
-                            try self.markRunFailed();
-                            return err;
+                            try self.handleSupervisionError(err);
+                            return Error.HandlerPending;
                         };
                     }
                     const response_trace = try typed_request.responseTrace(.@"resume", fresh);
@@ -6291,34 +6336,42 @@ fn validateTranscriptEventFrameBindings(event: TranscriptImage.EventImage) !void
     }
 }
 
-fn superviseTranscriptAppendForOptions(allocator: std.mem.Allocator, options: anytype, supervisor: *Supervision.Supervisor) !void {
-    if (!@hasField(@TypeOf(options), "transcript")) return;
-    const transcript = @field(options, "transcript");
+fn superviseTranscriptAppendForEvent(allocator: std.mem.Allocator, transcript: *const Transcript, supervisor: *Supervision.Supervisor, event: Transcript.Event) !void {
+    const event_count_after_append = transcript.events.items.len + 1;
     var transcript_image_bytes: usize = 0;
     if (supervisor.permit.budget.max_transcript_image_bytes != null) {
-        var image = try transcript.toImage(allocator, .{ .value_policy = ValuePolicy.portable });
+        var projected = Transcript.init(allocator);
+        defer projected.deinit();
+        for (transcript.events.items) |existing| try projected.append(existing);
+        try projected.append(event);
+        var image = try projected.toImage(allocator, .{ .value_policy = ValuePolicy.portable });
         defer image.deinit(allocator);
         const encoded = try image.encode(allocator);
         defer allocator.free(encoded);
         transcript_image_bytes = encoded.len;
     }
-    try supervisor.beforeTranscriptAppend(transcript.events.items.len, transcript_image_bytes);
+    try supervisor.beforeTranscriptAppend(event_count_after_append, transcript_image_bytes);
 }
 
-fn appendRunEvent(comptime Target: type, options: anytype, kind: EventKind, status: ?ResponseStatus, source_run: bool) !void {
+fn appendRunEventSupervised(allocator: std.mem.Allocator, comptime Target: type, options: anytype, supervisor: ?*Supervision.Supervisor, kind: EventKind, status: ?ResponseStatus, source_run: bool) !void {
     if (!@hasField(@TypeOf(options), "transcript")) return;
-    try @field(options, "transcript").append(.{
+    const transcript = @field(options, "transcript");
+    const event = Transcript.Event{
         .kind = kind,
         .world_surface_fingerprint = Target.WorldSurface.surface_fingerprint,
         .target_certificate_fingerprint = Target.Certificate.certificate_fingerprint,
         .status = status,
         .source_run = source_run,
-    });
+    };
+    if (supervisor) |active| try superviseTranscriptAppendForEvent(allocator, transcript, active, event);
+    try transcript.append(event);
 }
 
-fn appendPortEvent(
+fn appendPortEventSupervised(
+    allocator: std.mem.Allocator,
     comptime Target: type,
     options: anytype,
+    supervisor: ?*Supervision.Supervisor,
     kind: EventKind,
     world_port_id: u32,
     trace: anytype,
@@ -6384,6 +6437,7 @@ fn appendPortEvent(
     cloned_response_frame = null;
     errdefer if (event.request_frame) |*frame| frame.deinit(transcript.allocator);
     errdefer if (event.response_frame) |*frame| frame.deinit(transcript.allocator);
+    if (supervisor) |active| try superviseTranscriptAppendForEvent(allocator, transcript, active, event);
     try transcript.appendOwned(&event);
 }
 
