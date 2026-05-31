@@ -50,6 +50,63 @@ const PortsWrongPortBinding = struct {
     pub const authority = world.PortAuthority.native_function;
     pub const value_policy = world.ValuePolicy.native_compatible;
 };
+const PortsBindingRecordMutation = enum {
+    wrong_surface,
+    wrong_certificate,
+    wrong_requirement,
+};
+fn mutatedPortsBindingRecord(comptime mutation: PortsBindingRecordMutation) world.Binding {
+    const record = PortsNativeBinding.bindingRecord();
+    return world.Binding.init(.{
+        .target_ref_fingerprint = record.target_ref_fingerprint,
+        .world_surface_fingerprint = if (mutation == .wrong_surface) record.world_surface_fingerprint + 1 else record.world_surface_fingerprint,
+        .target_certificate_fingerprint = if (mutation == .wrong_certificate) record.target_certificate_fingerprint + 1 else record.target_certificate_fingerprint,
+        .world_port_id = record.world_port_id,
+        .import_requirement_fingerprint = if (mutation == .wrong_requirement) record.import_requirement_fingerprint + 1 else record.import_requirement_fingerprint,
+        .world_port_ref_fingerprint = record.world_port_ref_fingerprint,
+        .source_effect_shape_ref_fingerprint = record.source_effect_shape_ref_fingerprint,
+        .payload_value_table_id = record.payload_value_table_id,
+        .response_value_table_id = record.response_value_table_id,
+        .adapter_kind = record.adapter_kind,
+        .binding_mode_policy = record.binding_mode_policy,
+        .value_policy = record.value_policy,
+        .authority_fingerprint = record.authority_fingerprint,
+        .adapter_descriptor_fingerprint = record.adapter_descriptor_fingerprint,
+        .label = record.label,
+        .tags = record.tags,
+        .metadata = record.metadata,
+    });
+}
+const PortsWrongSurfaceRecordBinding = struct {
+    pub const TargetType = fixtures.Ports.Target;
+    pub const world_port_id = PortsDecl.world_port_id;
+    pub const adapter_kind = world.AdapterKind.native;
+    pub const authority = world.PortAuthority.native_function;
+    pub const value_policy = world.ValuePolicy.native_compatible;
+    pub fn bindingRecord() world.Binding {
+        return mutatedPortsBindingRecord(.wrong_surface);
+    }
+};
+const PortsWrongCertificateRecordBinding = struct {
+    pub const TargetType = fixtures.Ports.Target;
+    pub const world_port_id = PortsDecl.world_port_id;
+    pub const adapter_kind = world.AdapterKind.native;
+    pub const authority = world.PortAuthority.native_function;
+    pub const value_policy = world.ValuePolicy.native_compatible;
+    pub fn bindingRecord() world.Binding {
+        return mutatedPortsBindingRecord(.wrong_certificate);
+    }
+};
+const PortsWrongRequirementRecordBinding = struct {
+    pub const TargetType = fixtures.Ports.Target;
+    pub const world_port_id = PortsDecl.world_port_id;
+    pub const adapter_kind = world.AdapterKind.native;
+    pub const authority = world.PortAuthority.native_function;
+    pub const value_policy = world.ValuePolicy.native_compatible;
+    pub fn bindingRecord() world.Binding {
+        return mutatedPortsBindingRecord(.wrong_requirement);
+    }
+};
 const PortsEnv = world.Environment(fixtures.Ports.Target, .{
     .bindings = .{PortsNativeBinding},
     .policy = world.EnvironmentPolicy.fresh_and_replay,
@@ -3107,6 +3164,27 @@ test "world environment accepts bindings and reports missing duplicate and repla
     const wrong_port_cert = wrong_port_env.certificate(.fresh, false);
     try std.testing.expectEqual(wrong_port_report.report_fingerprint, wrong_port_cert.acceptance_report_fingerprint);
     try std.testing.expectEqual(wrong_port_plan.plan_fingerprint, wrong_port_cert.binding_plan_fingerprint);
+
+    const wrong_surface_report = world.Environment(fixtures.Ports.Target, .{
+        .bindings = .{PortsWrongSurfaceRecordBinding},
+        .policy = world.EnvironmentPolicy.test_fixture,
+    }).acceptanceReport(.fresh, false);
+    try std.testing.expect(!wrong_surface_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.WrongWorldSurface, wrong_surface_report.blockers[0]);
+
+    const wrong_certificate_report = world.Environment(fixtures.Ports.Target, .{
+        .bindings = .{PortsWrongCertificateRecordBinding},
+        .policy = world.EnvironmentPolicy.test_fixture,
+    }).acceptanceReport(.fresh, false);
+    try std.testing.expect(!wrong_certificate_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.WrongTargetCertificate, wrong_certificate_report.blockers[0]);
+
+    const wrong_requirement_report = world.Environment(fixtures.Ports.Target, .{
+        .bindings = .{PortsWrongRequirementRecordBinding},
+        .policy = world.EnvironmentPolicy.test_fixture,
+    }).acceptanceReport(.fresh, false);
+    try std.testing.expect(!wrong_requirement_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.HandoffTargetMismatch, wrong_requirement_report.blockers[0]);
 
     const replay_missing_bindings = world.Environment(fixtures.Ports.Target, .{
         .bindings = .{},

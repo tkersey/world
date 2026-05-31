@@ -3906,6 +3906,7 @@ fn acceptanceReportFor(
     inline for (bindings, 0..) |BindingDecl, index| {
         if (BindingDecl.TargetType != Target) return rejectedReport(report, &.{.HandoffTargetMismatch});
         if (BindingDecl.world_port_id >= Target.WorldPortTable.entries.len) return rejectedReport(report, &.{.WrongPortId});
+        if (bindingRecordBlockerFor(Target, BindingDecl, policy)) |blocker| return rejectedReport(report, &.{blocker});
         inline for (bindings, 0..) |Other, other_index| {
             if (other_index > index and BindingDecl.world_port_id == Other.world_port_id) return rejectedReport(report, &.{.ExtraBinding});
         }
@@ -3943,6 +3944,23 @@ fn acceptanceReportFor(
     if (requested_mode == .verify and !transcript_image_available and !policy.allow_verify_without_transcript) return rejectedReport(report, &.{.VerifyTranscriptMissing});
     report.report_fingerprint = fingerprintAcceptanceReport(report);
     return report;
+}
+
+fn bindingRecordBlockerFor(comptime Target: type, comptime BindingDecl: type, policy: EnvironmentPolicy) ?AcceptanceBlocker {
+    const target_ref = TargetRef.fromTarget(Target);
+    const requirement = ImportRequirement.fromTargetPort(Target, BindingDecl.world_port_id);
+    const record = bindingRecordFor(Target, BindingDecl);
+    if (record.binding_fingerprint != fingerprintBinding(record)) return .HandoffTargetMismatch;
+    if (record.target_ref_fingerprint != target_ref.target_ref_fingerprint) return .HandoffTargetMismatch;
+    if (policy.reject_wrong_surface and record.world_surface_fingerprint != Target.WorldSurface.surface_fingerprint) return .WrongWorldSurface;
+    if (policy.require_target_certificate_match and record.target_certificate_fingerprint != Target.Certificate.certificate_fingerprint) return .WrongTargetCertificate;
+    if (record.world_port_id != BindingDecl.world_port_id) return .WrongPortId;
+    if (record.import_requirement_fingerprint != requirement.requirement_fingerprint) return .HandoffTargetMismatch;
+    if (record.world_port_ref_fingerprint != requirement.world_port_ref_fingerprint) return .HandoffTargetMismatch;
+    if (record.source_effect_shape_ref_fingerprint != requirement.source_effect_shape_ref_fingerprint) return .HandoffTargetMismatch;
+    if (record.payload_value_table_id != requirement.payload_value_table_id) return .PayloadValueMismatch;
+    if (record.response_value_table_id != requirement.response_value_table_id) return .ResponseValueMismatch;
+    return null;
 }
 
 fn acceptedModeMask(report: AcceptanceReport) EnvironmentCertificate.ModeMask {
