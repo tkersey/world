@@ -113,10 +113,18 @@ pub const EventKind = enum {
     receipt_recorded,
 };
 
-test "EventKind keeps v1 transcript ordinals stable" {
+test "EventKind keeps legacy transcript ordinals behind v2 image format" {
+    try std.testing.expectEqual(@as(u32, 2), world_transcript_image_format_version);
     try std.testing.expectEqual(@as(u8, 15), @intFromEnum(EventKind.run_completed));
     try std.testing.expectEqual(@as(u8, 16), @intFromEnum(EventKind.run_failed));
     try std.testing.expect(@intFromEnum(EventKind.permit_issued) > @intFromEnum(EventKind.run_failed));
+}
+
+test "TranscriptImage rejects legacy v1 event stream after supervision event vocabulary bump" {
+    var header = [_]u8{0} ** 49;
+    std.mem.writeInt(u32, header[0..4], 1, .little);
+    std.mem.writeInt(u32, header[4..8], world_transcript_image_fingerprint_version, .little);
+    try std.testing.expectError(error.InvalidFrameEncoding, TranscriptImage.decode(std.testing.allocator, &header));
 }
 
 pub const ReplayKey = struct {
@@ -158,7 +166,7 @@ pub const world_frame_response_format_version: u32 = 1;
 pub const world_frame_response_fingerprint_version: u32 = 1;
 pub const world_frame_value_image_format_version: u32 = 1;
 pub const world_frame_value_image_fingerprint_version: u32 = 1;
-pub const world_transcript_image_format_version: u32 = 1;
+pub const world_transcript_image_format_version: u32 = 2;
 pub const world_transcript_image_fingerprint_version: u32 = 1;
 pub const world_timeline_event_format_version: u32 = 1;
 pub const world_timeline_event_fingerprint_version: u32 = 1;
@@ -1755,11 +1763,30 @@ pub const Supervision = struct {
             if (permit.policy.require_transcript_image_for_replay and permit.mode == .replay and permit.binding_plan_fingerprint == 0) return Error.TranscriptImageRequired;
         }
 
+        fn addSatUsize(a: usize, b: usize) usize {
+            return a +| b;
+        }
+
+        fn addSatU64(a: u64, b: u64) u64 {
+            return a +| b;
+        }
+
+        fn addSatU64Many(values: []const u64) u64 {
+            var total: u64 = 0;
+            for (values) |value| total = addSatU64(total, value);
+            return total;
+        }
+
+        fn mulSatUsizeU64(a: usize, b: u64) u64 {
+            const narrowed = std.math.cast(u64, a) orelse std.math.maxInt(u64);
+            return narrowed *| b;
+        }
+
         pub fn beforeSessionStep(self: *@This()) !void {
             var next = try self.ledger.clone(self.allocator);
             defer next.deinit(self.allocator);
-            next.total_session_steps += 1;
-            next.total_cost_units += self.permit.cost_model.session_step_cost;
+            next.total_session_steps = addSatUsize(next.total_session_steps, 1);
+            next.total_cost_units = addSatU64(next.total_cost_units, self.permit.cost_model.session_step_cost);
             try self.commitCheck(.before_session_step, null, &next, null, null, "session step");
         }
 
@@ -1767,12 +1794,13 @@ pub const Supervision = struct {
             var next = try self.ledger.clone(self.allocator);
             defer next.deinit(self.allocator);
             const request_cost = self.permit.cost_model.requestCost(world_port_id);
-            const request_byte_cost = @as(u64, @intCast(request_bytes)) * self.permit.cost_model.frameByteCost(world_port_id);
-            const value_image_cost = @as(u64, @intCast(value_image_bytes)) * self.permit.cost_model.valueImageByteCost(world_port_id);
+            const request_byte_cost = mulSatUsizeU64(request_bytes, self.permit.cost_model.frameByteCost(world_port_id));
+            const value_image_cost = mulSatUsizeU64(value_image_bytes, self.permit.cost_model.valueImageByteCost(world_port_id));
             const current_usage = next.per_port_usage[world_port_id];
-            const next_requests = current_usage.requests + 1;
-            const next_value_image_bytes = current_usage.value_image_bytes + value_image_bytes;
-            const next_cost_units = current_usage.cost_units + request_cost + request_byte_cost + value_image_cost;
+            const cost_delta = addSatU64Many(&.{ request_cost, request_byte_cost, value_image_cost });
+            const next_requests = addSatUsize(current_usage.requests, 1);
+            const next_value_image_bytes = addSatUsize(current_usage.value_image_bytes, value_image_bytes);
+            const next_cost_units = addSatU64(current_usage.cost_units, cost_delta);
             const rule = self.permit.ruleFor(world_port_id);
             if (rule) |port_rule| {
                 if (port_rule.max_payload_image_bytes) |max| {
@@ -1785,10 +1813,10 @@ pub const Supervision = struct {
                     if (next_cost_units > max) return self.deny(.before_port_request, world_port_id, .port_rule_denied, port_rule.rule_fingerprint, "rule cost cap");
                 }
             }
-            next.total_port_requests += 1;
-            next.total_frame_request_bytes += request_bytes;
-            next.total_value_image_bytes += value_image_bytes;
-            next.total_cost_units += request_cost + request_byte_cost + value_image_cost;
+            next.total_port_requests = addSatUsize(next.total_port_requests, 1);
+            next.total_frame_request_bytes = addSatUsize(next.total_frame_request_bytes, request_bytes);
+            next.total_value_image_bytes = addSatUsize(next.total_value_image_bytes, value_image_bytes);
+            next.total_cost_units = addSatU64(next.total_cost_units, cost_delta);
             const usage = &next.per_port_usage[world_port_id];
             usage.requests = next_requests;
             usage.value_image_bytes = next_value_image_bytes;
@@ -1800,11 +1828,12 @@ pub const Supervision = struct {
             if (request_bytes == 0 and value_image_bytes == 0) return;
             var next = try self.ledger.clone(self.allocator);
             defer next.deinit(self.allocator);
-            const request_byte_cost = @as(u64, @intCast(request_bytes)) * self.permit.cost_model.frameByteCost(world_port_id);
-            const value_image_cost = @as(u64, @intCast(value_image_bytes)) * self.permit.cost_model.valueImageByteCost(world_port_id);
+            const request_byte_cost = mulSatUsizeU64(request_bytes, self.permit.cost_model.frameByteCost(world_port_id));
+            const value_image_cost = mulSatUsizeU64(value_image_bytes, self.permit.cost_model.valueImageByteCost(world_port_id));
+            const cost_delta = addSatU64(request_byte_cost, value_image_cost);
             const current_usage = next.per_port_usage[world_port_id];
-            const next_value_image_bytes = current_usage.value_image_bytes + value_image_bytes;
-            const next_cost_units = current_usage.cost_units + request_byte_cost + value_image_cost;
+            const next_value_image_bytes = addSatUsize(current_usage.value_image_bytes, value_image_bytes);
+            const next_cost_units = addSatU64(current_usage.cost_units, cost_delta);
             const rule = self.permit.ruleFor(world_port_id);
             if (rule) |port_rule| {
                 if (port_rule.max_payload_image_bytes) |max| {
@@ -1814,9 +1843,9 @@ pub const Supervision = struct {
                     if (next_cost_units > max) return self.deny(.before_port_request, world_port_id, .port_rule_denied, port_rule.rule_fingerprint, "rule cost cap");
                 }
             }
-            next.total_frame_request_bytes += request_bytes;
-            next.total_value_image_bytes += value_image_bytes;
-            next.total_cost_units += request_byte_cost + value_image_cost;
+            next.total_frame_request_bytes = addSatUsize(next.total_frame_request_bytes, request_bytes);
+            next.total_value_image_bytes = addSatUsize(next.total_value_image_bytes, value_image_bytes);
+            next.total_cost_units = addSatU64(next.total_cost_units, cost_delta);
             const usage = &next.per_port_usage[world_port_id];
             usage.value_image_bytes = next_value_image_bytes;
             usage.cost_units = next_cost_units;
@@ -1874,18 +1903,18 @@ pub const Supervision = struct {
             const rule = self.permit.ruleFor(args.world_port_id);
             if (rule) |port_rule| {
                 if (port_rule.max_cost_units) |max| {
-                    if (current_usage.cost_units + cost_delta > max) return self.deny(.before_adapter_call, args.world_port_id, .port_rule_denied, port_rule.rule_fingerprint, "rule cost cap");
+                    if (addSatU64(current_usage.cost_units, cost_delta) > max) return self.deny(.before_adapter_call, args.world_port_id, .port_rule_denied, port_rule.rule_fingerprint, "rule cost cap");
                 }
             }
-            next.total_fresh_calls += fresh_delta;
-            next.total_replay_calls += replay_delta;
-            next.total_verify_calls += verify_delta;
-            next.total_cost_units += cost_delta;
+            next.total_fresh_calls = addSatUsize(next.total_fresh_calls, fresh_delta);
+            next.total_replay_calls = addSatUsize(next.total_replay_calls, replay_delta);
+            next.total_verify_calls = addSatUsize(next.total_verify_calls, verify_delta);
+            next.total_cost_units = addSatU64(next.total_cost_units, cost_delta);
             const usage = &next.per_port_usage[args.world_port_id];
-            usage.fresh_calls += fresh_delta;
-            usage.replay_calls += replay_delta;
-            usage.verify_calls += verify_delta;
-            usage.cost_units += cost_delta;
+            usage.fresh_calls = addSatUsize(usage.fresh_calls, fresh_delta);
+            usage.replay_calls = addSatUsize(usage.replay_calls, replay_delta);
+            usage.verify_calls = addSatUsize(usage.verify_calls, verify_delta);
+            usage.cost_units = addSatU64(usage.cost_units, cost_delta);
             try self.commitCheck(.before_adapter_call, args.world_port_id, &next, null, rule, "adapter call");
         }
 
@@ -1916,8 +1945,8 @@ pub const Supervision = struct {
             var next = try self.ledger.clone(self.allocator);
             defer next.deinit(self.allocator);
             const response_cost = self.permit.cost_model.responseCost(args.world_port_id);
-            const response_byte_cost = @as(u64, @intCast(args.response_bytes)) * self.permit.cost_model.frameByteCost(args.world_port_id);
-            const value_image_cost = @as(u64, @intCast(args.value_image_bytes)) * self.permit.cost_model.valueImageByteCost(args.world_port_id);
+            const response_byte_cost = mulSatUsizeU64(args.response_bytes, self.permit.cost_model.frameByteCost(args.world_port_id));
+            const value_image_cost = mulSatUsizeU64(args.value_image_bytes, self.permit.cost_model.valueImageByteCost(args.world_port_id));
             const current_usage = next.per_port_usage[args.world_port_id];
             var pending_delta: usize = 0;
             var rejected_delta: usize = 0;
@@ -1938,31 +1967,31 @@ pub const Supervision = struct {
                     status_cost = self.permit.cost_model.failedCost(args.world_port_id);
                 },
             }
-            const cost_delta = response_cost + response_byte_cost + value_image_cost + status_cost;
+            const cost_delta = addSatU64Many(&.{ response_cost, response_byte_cost, value_image_cost, status_cost });
             const rule = self.permit.ruleFor(args.world_port_id);
             if (rule) |port_rule| {
                 if (port_rule.max_response_image_bytes) |max| {
                     if (args.value_image_bytes > max) return self.deny(.after_adapter_response, args.world_port_id, .port_rule_denied, port_rule.rule_fingerprint, "rule response image cap");
                 }
                 if (port_rule.max_cost_units) |max| {
-                    if (current_usage.cost_units + cost_delta > max) return self.deny(.after_adapter_response, args.world_port_id, .port_rule_denied, port_rule.rule_fingerprint, "rule cost cap");
+                    if (addSatU64(current_usage.cost_units, cost_delta) > max) return self.deny(.after_adapter_response, args.world_port_id, .port_rule_denied, port_rule.rule_fingerprint, "rule cost cap");
                 }
             }
-            next.total_port_responses += 1;
-            next.total_frame_response_bytes += args.response_bytes;
-            next.total_value_image_bytes += args.value_image_bytes;
-            next.total_cost_units += cost_delta;
-            next.total_pending_calls += pending_delta;
-            next.total_rejected_calls += rejected_delta;
-            next.total_failed_calls += failed_delta;
+            next.total_port_responses = addSatUsize(next.total_port_responses, 1);
+            next.total_frame_response_bytes = addSatUsize(next.total_frame_response_bytes, args.response_bytes);
+            next.total_value_image_bytes = addSatUsize(next.total_value_image_bytes, args.value_image_bytes);
+            next.total_cost_units = addSatU64(next.total_cost_units, cost_delta);
+            next.total_pending_calls = addSatUsize(next.total_pending_calls, pending_delta);
+            next.total_rejected_calls = addSatUsize(next.total_rejected_calls, rejected_delta);
+            next.total_failed_calls = addSatUsize(next.total_failed_calls, failed_delta);
             const usage = &next.per_port_usage[args.world_port_id];
-            usage.responses += 1;
-            usage.response_bytes += args.response_bytes;
-            usage.value_image_bytes += args.value_image_bytes;
-            usage.cost_units += cost_delta;
-            usage.pending_calls += pending_delta;
-            usage.rejected_calls += rejected_delta;
-            usage.failed_calls += failed_delta;
+            usage.responses = addSatUsize(usage.responses, 1);
+            usage.response_bytes = addSatUsize(usage.response_bytes, args.response_bytes);
+            usage.value_image_bytes = addSatUsize(usage.value_image_bytes, args.value_image_bytes);
+            usage.cost_units = addSatU64(usage.cost_units, cost_delta);
+            usage.pending_calls = addSatUsize(usage.pending_calls, pending_delta);
+            usage.rejected_calls = addSatUsize(usage.rejected_calls, rejected_delta);
+            usage.failed_calls = addSatUsize(usage.failed_calls, failed_delta);
             try self.commitCheck(.after_adapter_response, args.world_port_id, &next, null, rule, "adapter response");
         }
 
@@ -1978,9 +2007,9 @@ pub const Supervision = struct {
             if (!self.permit.policy.allow_checkpoints) return self.deny(.before_checkpoint, null, .checkpoint_denied, null, "checkpoint denied");
             var next = try self.ledger.clone(self.allocator);
             defer next.deinit(self.allocator);
-            next.total_checkpoints += 1;
-            next.total_value_image_bytes += value_image_bytes;
-            next.total_cost_units += self.permit.cost_model.checkpoint_cost;
+            next.total_checkpoints = addSatUsize(next.total_checkpoints, 1);
+            next.total_value_image_bytes = addSatUsize(next.total_value_image_bytes, value_image_bytes);
+            next.total_cost_units = addSatU64(next.total_cost_units, self.permit.cost_model.checkpoint_cost);
             try self.commitCheck(.before_checkpoint, null, &next, null, null, "checkpoint");
         }
 
@@ -1988,8 +2017,8 @@ pub const Supervision = struct {
             if (!self.permit.policy.allow_branching or self.permit.branch_policy != .inherit) return self.deny(.before_branch, null, .branch_denied, null, "branch denied");
             var next = try self.ledger.clone(self.allocator);
             defer next.deinit(self.allocator);
-            next.total_branches += 1;
-            next.total_cost_units += self.permit.cost_model.branch_cost;
+            next.total_branches = addSatUsize(next.total_branches, 1);
+            next.total_cost_units = addSatU64(next.total_cost_units, self.permit.cost_model.branch_cost);
             if (self.permit.budget.max_branch_depth) |max| {
                 if (depth > max) return self.exceed(.before_branch, null, .branch_depth, &next, null, "branch depth");
             }
@@ -2000,8 +2029,8 @@ pub const Supervision = struct {
             if (!self.permit.policy.allow_handoff_export or self.permit.handoff_policy == .deny) return self.deny(.before_handoff_export, null, .handoff_denied, null, "handoff export denied");
             var next = try self.ledger.clone(self.allocator);
             defer next.deinit(self.allocator);
-            next.total_handoff_exports += 1;
-            next.total_cost_units += self.permit.cost_model.handoff_export_cost;
+            next.total_handoff_exports = addSatUsize(next.total_handoff_exports, 1);
+            next.total_cost_units = addSatU64(next.total_cost_units, self.permit.cost_model.handoff_export_cost);
             try self.commitCheck(.before_handoff_export, null, &next, null, null, "handoff export");
         }
 
@@ -2014,8 +2043,8 @@ pub const Supervision = struct {
             if (!self.permit.policy.allow_handoff_accept or self.permit.handoff_policy == .deny) return self.deny(.before_handoff_accept, null, .handoff_denied, null, "handoff accept denied");
             var next = try self.ledger.clone(self.allocator);
             defer next.deinit(self.allocator);
-            next.total_handoff_accepts += 1;
-            next.total_cost_units += self.permit.cost_model.handoff_accept_cost;
+            next.total_handoff_accepts = addSatUsize(next.total_handoff_accepts, 1);
+            next.total_cost_units = addSatU64(next.total_cost_units, self.permit.cost_model.handoff_accept_cost);
             try self.commitCheck(.before_handoff_accept, null, &next, null, null, "handoff accept");
         }
 

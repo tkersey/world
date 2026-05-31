@@ -5251,6 +5251,20 @@ test "usage ledger supervision check and run receipt fingerprints are stable" {
     try std.testing.expectEqual(@as(usize, 1), receipt_a.total_port_requests);
 }
 
+test "supervision cost overflow saturates into budget exceeded" {
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+        .budget = world.Budget.init(.{ .max_total_cost_units = std.math.maxInt(u64) - 1 }),
+        .cost_model = world.CostModel.init(.{ .frame_byte_cost = std.math.maxInt(u64) }),
+    });
+    var supervisor = try world.Supervisor.init(std.testing.allocator, permit, fixtures.Ports.Target.WorldPortTable.entries.len);
+    defer supervisor.deinit();
+    try std.testing.expectError(error.BudgetExceeded, supervisor.beforePortRequest(0, 2, 0));
+    try std.testing.expectEqual(world.Supervision.BudgetExceededKind.total_cost_units, supervisor.ledger.exceeded_budget.?);
+    try std.testing.expectEqual(std.math.maxInt(u64), supervisor.ledger.total_cost_units);
+}
+
 test "policy membrane prevents fresh handler calls and run receipt is available after permitted run" {
     const ok_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
         .mode = .fresh,
