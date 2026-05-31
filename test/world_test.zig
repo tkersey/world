@@ -5147,7 +5147,7 @@ test "supervised verify accounts transcript image response frame bytes" {
         else => return error.ExpectedPortRequired,
     }
     try std.testing.expectError(error.BudgetExceeded, run.dispatch());
-    try std.testing.expectEqual(@as(usize, 1), ctx.calls);
+    try std.testing.expectEqual(@as(usize, 0), ctx.calls);
     try std.testing.expectEqual(world.Supervision.BudgetExceededKind.frame_response_bytes, run.supervisor.?.ledger.exceeded_budget.?);
 }
 

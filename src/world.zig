@@ -6078,6 +6078,20 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         }
                     }
                     self.audit.replayed_response_count += 1;
+                    if (self.supervisor) |*supervisor| {
+                        if (expected_response_frame) |frame| {
+                            const expected_accounting = try self.responseFrameAccounting(frame);
+                            supervisor.afterAdapterResponse(.{
+                                .world_port_id = Decl.world_port_id,
+                                .status = .responded,
+                                .response_bytes = expected_accounting.response_bytes,
+                                .value_image_bytes = expected_accounting.value_image_bytes,
+                            }) catch |err| {
+                                try self.handleSupervisionError(err);
+                                return Error.HandlerPending;
+                            };
+                        }
+                    }
                     const fresh = callHandler(Decl, @field(self.options, "ctx"), request) catch |err| {
                         try self.accountNativeHandlerError(Decl.world_port_id, err);
                         return err;
