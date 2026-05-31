@@ -2386,6 +2386,7 @@ pub const RunImage = struct {
     owns_target_ref_bytes: bool = false,
     import_set_fingerprint: u64,
     transcript_image: ?TranscriptImage = null,
+    owns_transcript_image: bool = false,
     current_state: RunState,
     checkpoints: []const Timeline.Checkpoint = &.{},
     branches: []Timeline.Branch = &.{},
@@ -2480,7 +2481,9 @@ pub const RunImage = struct {
             if (self.target_ref.target_label) |label| allocator.free(@constCast(label));
             allocator.free(@constCast(self.target_ref.metadata));
         }
-        if (self.transcript_image) |*image| image.deinit(allocator);
+        if (self.owns_transcript_image) {
+            if (self.transcript_image) |*image| image.deinit(allocator);
+        }
         if (self.pending_request_frame) |*frame| frame.deinit(allocator);
         if (self.final_result_image) |*image| image.deinit(allocator);
         if (self.owns_checkpoints) allocator.free(self.checkpoints);
@@ -2662,6 +2665,7 @@ pub const RunImage = struct {
             .owns_target_ref_bytes = true,
             .import_set_fingerprint = import_set_fingerprint,
             .transcript_image = transcript_image,
+            .owns_transcript_image = transcript_image != null,
             .current_state = current_state,
             .checkpoints = checkpoints,
             .branches = branches,
@@ -2743,14 +2747,28 @@ pub const Handoff = struct {
         var run = try MachineType.start(runtime, args, options);
         errdefer run.deinit();
         if (self.run_image.current_state.status == .parked_on_port) {
-            const step = try run.nextFrame();
-            switch (step) {
-                .port_request => |request_frame| {
-                    var request = request_frame;
-                    defer request.deinit(run.allocator);
-                    try self.validatePendingFrame(request);
-                },
-                else => return error.HandoffPendingFrameMismatch,
+            if (self.run_image.transcript_image) |*image| image.resetReplay();
+            while (true) {
+                const step = try run.nextFrame();
+                switch (step) {
+                    .port_request => |request_frame| {
+                        var request = request_frame;
+                        defer request.deinit(run.allocator);
+                        if ((self.run_image.pending_request_frame orelse return error.HandoffPendingFrameMismatch).frame_fingerprint == request.frame_fingerprint) {
+                            try self.validatePendingFrame(request);
+                            break;
+                        }
+                        const response = if (self.run_image.transcript_image) |*image|
+                            image.nextResponse(request.replay_key_seed, Target.Certificate.certificate_fingerprint, .@"resume") catch |err| {
+                                run.audit.replay_mismatch_count += 1;
+                                return err;
+                            }
+                        else
+                            return error.HandoffPendingFrameMismatch;
+                        try run.resumeFrame(response.*);
+                    },
+                    else => return error.HandoffPendingFrameMismatch,
+                }
             }
         }
         return run;

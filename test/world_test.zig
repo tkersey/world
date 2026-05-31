@@ -2683,8 +2683,19 @@ fn tool(ctx: *AgentCtx, command: []const u8) ![]const u8 {
 
 const AgentDecideDecl = world.port(fixtures.Agent.Target, fixtures.Agent.Decide, decide);
 const AgentToolDecl = world.port(fixtures.Agent.Target, fixtures.Agent.Tool, tool);
+const AgentEnv = world.Environment(fixtures.Agent.Target, .{
+    .bindings = .{
+        world.bind(AgentDecideDecl, world.NativeAdapter(decide)),
+        world.bind(AgentToolDecl, world.NativeAdapter(tool)),
+    },
+    .policy = world.EnvironmentPolicy.fresh_and_replay,
+});
 const AgentMachine = world.Machine(fixtures.Agent.Target, .{
     .ports = .{ AgentDecideDecl, AgentToolDecl },
+    .strict_handler_coverage = true,
+});
+const AgentMachineEnv = world.Machine(fixtures.Agent.Target, .{
+    .environment = AgentEnv,
     .strict_handler_coverage = true,
 });
 const AgentArgs = struct { usize, []const u8 };
@@ -3314,6 +3325,8 @@ test "handoff preflight rejects target mismatch and accepts replay handoff with 
     const run_image = world.RunImage.fromTranscriptImage(fixtures.Ports.Target, image, .replay_only_run);
     const encoded = try run_image.encode(std.testing.allocator);
     defer std.testing.allocator.free(encoded);
+    var borrowed_image_owner = world.RunImage.fromTranscriptImage(fixtures.Ports.Target, image, .replay_only_run);
+    borrowed_image_owner.deinit(std.testing.allocator);
     var handoff = try world.Handoff.fromRunImage(std.testing.allocator, encoded);
     defer handoff.deinit();
 
@@ -3401,6 +3414,90 @@ test "parked handoff resumes selected pending request on receiver environment" {
         .done => |value| value,
         else => return error.ExpectedDone,
     });
+}
+
+test "parked handoff replays transcript prefix before selected pending request" {
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var ctx: AgentCtx = .{ .allocator = std.testing.allocator, .scenario = .skeleton };
+    var run = try AgentMachineEnv.start(&runtime, AgentArgs{ @as(usize, 3), fixtures.Agent.initialObservation(.skeleton) }, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+        .transcript = &transcript,
+    });
+    defer run.deinit();
+    var model_request = switch (try run.nextFrame()) {
+        .port_request => |frame| frame,
+        else => return error.ExpectedPortRequest,
+    };
+    defer model_request.deinit(std.testing.allocator);
+    try run.dispatch();
+    var tool_request = switch (try run.nextFrame()) {
+        .port_request => |frame| frame,
+        else => return error.ExpectedPortRequest,
+    };
+    defer tool_request.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 1), ctx.model_calls);
+    try std.testing.expectEqual(@as(usize, 0), ctx.tool_calls);
+
+    var image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer image.deinit(std.testing.allocator);
+    const target_ref = world.TargetRef.fromTarget(fixtures.Agent.Target);
+    const state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .transcript_image_fingerprint = image.transcript_image_fingerprint,
+        .pending_request_fingerprint = tool_request.frame_fingerprint,
+        .turn_index = tool_request.turn_index,
+        .status = .parked_on_port,
+    });
+    const run_image = world.RunImage.init(.{
+        .kind = .parked_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Agent.Target).import_set_fingerprint,
+        .transcript_image = image,
+        .current_state = state,
+        .pending_request_frame = tool_request,
+    });
+    const encoded = try run_image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(encoded);
+    var handoff = try world.Handoff.fromRunImage(std.testing.allocator, encoded);
+    defer handoff.deinit();
+
+    var receiver_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer receiver_runtime.deinit();
+    var receiver_ctx: AgentCtx = .{ .allocator = std.testing.allocator, .scenario = .skeleton };
+    var receiver_run = try handoff.@"resume"(fixtures.Agent.Target, AgentEnv, &receiver_runtime, AgentArgs{ @as(usize, 3), fixtures.Agent.initialObservation(.skeleton) }, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &receiver_ctx,
+    }, .accept_fresh);
+    defer receiver_run.deinit();
+    try std.testing.expectEqual(@as(usize, 0), receiver_ctx.model_calls);
+    try std.testing.expectEqual(@as(usize, 0), receiver_ctx.tool_calls);
+
+    var receiver_request = switch (try receiver_run.nextFrame()) {
+        .port_request => |frame| frame,
+        else => return error.ExpectedPortRequest,
+    };
+    defer receiver_request.deinit(std.testing.allocator);
+    try std.testing.expectEqual(tool_request.frame_fingerprint, receiver_request.frame_fingerprint);
+    try receiver_run.dispatch();
+    var final_model_request = switch (try receiver_run.nextFrame()) {
+        .port_request => |frame| frame,
+        else => return error.ExpectedPortRequest,
+    };
+    defer final_model_request.deinit(std.testing.allocator);
+    try receiver_run.dispatch();
+    const done = try receiver_run.nextFrame();
+    try std.testing.expectEqualStrings("final=actuate skeleton complete", switch (done) {
+        .done => |value| value,
+        else => return error.ExpectedDone,
+    });
+    try std.testing.expectEqual(@as(usize, 1), receiver_ctx.model_calls);
+    try std.testing.expectEqual(@as(usize, 1), receiver_ctx.tool_calls);
 }
 
 test "replay handoff replays completed run without native handler calls" {
