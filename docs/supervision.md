@@ -83,6 +83,7 @@ Handoff receivers may issue a new local permit:
 const permit = world.Supervision.issue(Target, ReceiverEnv, .{
     .mode = .fresh,
     .policy = world.SupervisionPolicy.handoff_receiver,
+    .handoff_policy = .allow,
 });
 
 const report = handoff.preflightWithPermit(Target, ReceiverEnv, .accept_fresh, permit);
