@@ -3559,6 +3559,13 @@ test "replay handoff replays completed run without native handler calls" {
 
     const report = handoff.preflight(fixtures.Ports.Target, PortsReplayEnv, .accept_replay);
     try std.testing.expect(report.accepted);
+    var rejected_resume_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer rejected_resume_runtime.deinit();
+    try std.testing.expectError(error.InvalidMode, handoff.@"resume"(fixtures.Ports.Target, PortsReplayEnv, &rejected_resume_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.replay,
+    }, .accept_replay));
+
     var runtime = boundary.Runtime.init(std.testing.allocator);
     defer runtime.deinit();
     var replayed = try PortsReplayMachineEnv.run(&runtime, .{}, .{

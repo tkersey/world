@@ -2749,6 +2749,7 @@ pub const Handoff = struct {
         options: anytype,
         mode: HandoffMode,
     ) !Machine(Target, Env.machine_config).Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)) {
+        if (mode != .accept_fresh) return Error.InvalidMode;
         const report = self.preflight(Target, Env, mode);
         if (!report.accepted) return acceptanceError(report);
         const MachineType = Machine(Target, Env.machine_config);
