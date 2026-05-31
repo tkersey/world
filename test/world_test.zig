@@ -4966,6 +4966,12 @@ test "mode-denied supervision checks preserve requested mode blocker" {
         .adapter_kind = .native,
     }));
     try std.testing.expectEqual(world.Supervision.Blocker.replay_call_denied, supervisor.last_check.?.blocker.?);
+    try std.testing.expectError(error.SupervisionDenied, supervisor.beforeAdapterCall(.{
+        .world_port_id = 0,
+        .mode = .verify,
+        .adapter_kind = .native,
+    }));
+    try std.testing.expectEqual(world.Supervision.Blocker.verify_call_denied, supervisor.last_check.?.blocker.?);
 }
 
 test "usage ledger supervision check and run receipt fingerprints are stable" {
@@ -5097,6 +5103,10 @@ test "supervised handoff receiver can issue stricter permit and inspect prior re
     });
     const report = handoff.preflightWithPermit(fixtures.Ports.Target, PortsEnv, .accept_fresh, receiver_permit);
     try std.testing.expect(report.accepted);
+    var forged_receiver_permit = receiver_permit;
+    forged_receiver_permit.budget.max_port_requests = 99;
+    const forged_report = handoff.preflightWithPermit(fixtures.Ports.Target, PortsEnv, .accept_fresh, forged_receiver_permit);
+    try std.testing.expect(!forged_report.accepted);
 
     const denying_receiver_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
         .mode = .fresh,

@@ -2205,7 +2205,7 @@ pub const Supervision = struct {
             .native_value_rejected => Error.NativeValueRejected,
             .fresh_call_denied => Error.FreshCallDenied,
             .replay_call_denied => Error.ReplayCallDenied,
-            .verify_call_denied => Error.VerifyDivergence,
+            .verify_call_denied => Error.SupervisionDenied,
             .pending_denied => Error.PendingDenied,
             .rejected_denied => Error.HandlerRejected,
             .failed_denied => Error.HandlerFailed,
@@ -4207,8 +4207,10 @@ pub const RunImage = struct {
         try writeOptionalU64(&out, allocator, self.environment_certificate_fingerprint);
         try writeOptionalU64(&out, allocator, self.acceptance_report_fingerprint);
         try writeOptionalU64(&out, allocator, self.audit_image_fingerprint);
-        try writeOptionalU64(&out, allocator, self.prior_run_permit_fingerprint);
-        try writeOptionalU64(&out, allocator, self.prior_run_receipt_fingerprint);
+        if (self.format_version >= 2) {
+            try writeOptionalU64(&out, allocator, self.prior_run_permit_fingerprint);
+            try writeOptionalU64(&out, allocator, self.prior_run_receipt_fingerprint);
+        }
         try writeBytes(&out, allocator, self.metadata);
         return out.toOwnedSlice(allocator);
     }
@@ -4362,6 +4364,13 @@ test "RunImage decoder accepts v1 layout without prior receipt refs" {
     try std.testing.expectEqual(@as(?u64, null), decoded.prior_run_receipt_fingerprint);
     try std.testing.expectEqualStrings("legacy", decoded.metadata);
     try decoded.validate(.{});
+
+    const reencoded = try decoded.encode(allocator);
+    defer allocator.free(reencoded);
+    var redecode = try RunImage.decode(allocator, reencoded);
+    defer redecode.deinit(allocator);
+    try std.testing.expectEqual(@as(u32, 1), redecode.format_version);
+    try std.testing.expectEqualStrings("legacy", redecode.metadata);
 }
 
 fn validateRunImageKindState(image: RunImage) !void {
@@ -4468,6 +4477,9 @@ pub const Handoff = struct {
         if (permit.mode != modeToRunMode(mode)) {
             return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.SupervisionPolicyMismatch});
         }
+        Supervision.Supervisor.validatePermitForRun(permit, Target.WorldPortTable.entries.len) catch {
+            return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.SupervisionPolicyMismatch});
+        };
         if (permit.target_ref_fingerprint != TargetRef.fromTarget(Target).target_ref_fingerprint) {
             return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.HandoffTargetMismatch});
         }
