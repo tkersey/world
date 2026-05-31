@@ -70,6 +70,19 @@ const PortsPayloadCapAuthorityBinding = world.bind(PortsDecl, struct {
     });
     pub const value_policy = world.ValuePolicy.portable;
 });
+const PortsAcceptedPayloadCapBinding = world.bind(PortsDecl, struct {
+    pub const kind: world.AdapterKind = .native;
+    pub const authority = world.PortAuthority.init(.{
+        .authority_label = "accepted-payload-cap",
+        .authority_kind = .fixture,
+        .max_payload_image_bytes = 1,
+    });
+    pub const value_policy = world.ValuePolicy{
+        .require_portable_values = true,
+        .allow_native_only_values = false,
+        .max_value_image_bytes = 1,
+    };
+});
 const PortsWrongPortBinding = struct {
     pub const TargetType = fixtures.Ports.Target;
     pub const world_port_id: u32 = 99;
@@ -81,6 +94,10 @@ const PortsBindingRecordMutation = enum {
     wrong_surface,
     wrong_certificate,
     wrong_requirement,
+    wrong_adapter,
+    wrong_value_policy,
+    wrong_authority,
+    wrong_descriptor,
 };
 fn mutatedPortsBindingRecord(comptime mutation: PortsBindingRecordMutation) world.Binding {
     const record = PortsNativeBinding.bindingRecord();
@@ -94,11 +111,11 @@ fn mutatedPortsBindingRecord(comptime mutation: PortsBindingRecordMutation) worl
         .source_effect_shape_ref_fingerprint = record.source_effect_shape_ref_fingerprint,
         .payload_value_table_id = record.payload_value_table_id,
         .response_value_table_id = record.response_value_table_id,
-        .adapter_kind = record.adapter_kind,
+        .adapter_kind = if (mutation == .wrong_adapter) .replay else record.adapter_kind,
         .binding_mode_policy = record.binding_mode_policy,
-        .value_policy = record.value_policy,
-        .authority_fingerprint = record.authority_fingerprint,
-        .adapter_descriptor_fingerprint = record.adapter_descriptor_fingerprint,
+        .value_policy = if (mutation == .wrong_value_policy) world.ValuePolicy.portable else record.value_policy,
+        .authority_fingerprint = if (mutation == .wrong_authority) world.PortAuthority.fixture.authority_fingerprint else record.authority_fingerprint,
+        .adapter_descriptor_fingerprint = if (mutation == .wrong_descriptor) record.adapter_descriptor_fingerprint + 1 else record.adapter_descriptor_fingerprint,
         .label = record.label,
         .tags = record.tags,
         .metadata = record.metadata,
@@ -132,6 +149,46 @@ const PortsWrongRequirementRecordBinding = struct {
     pub const value_policy = world.ValuePolicy.native_compatible;
     pub fn bindingRecord() world.Binding {
         return mutatedPortsBindingRecord(.wrong_requirement);
+    }
+};
+const PortsWrongAdapterRecordBinding = struct {
+    pub const TargetType = fixtures.Ports.Target;
+    pub const world_port_id = PortsDecl.world_port_id;
+    pub const adapter_kind = world.AdapterKind.native;
+    pub const authority = world.PortAuthority.native_function;
+    pub const value_policy = world.ValuePolicy.native_compatible;
+    pub fn bindingRecord() world.Binding {
+        return mutatedPortsBindingRecord(.wrong_adapter);
+    }
+};
+const PortsWrongValuePolicyRecordBinding = struct {
+    pub const TargetType = fixtures.Ports.Target;
+    pub const world_port_id = PortsDecl.world_port_id;
+    pub const adapter_kind = world.AdapterKind.native;
+    pub const authority = world.PortAuthority.native_function;
+    pub const value_policy = world.ValuePolicy.native_compatible;
+    pub fn bindingRecord() world.Binding {
+        return mutatedPortsBindingRecord(.wrong_value_policy);
+    }
+};
+const PortsWrongAuthorityRecordBinding = struct {
+    pub const TargetType = fixtures.Ports.Target;
+    pub const world_port_id = PortsDecl.world_port_id;
+    pub const adapter_kind = world.AdapterKind.native;
+    pub const authority = world.PortAuthority.native_function;
+    pub const value_policy = world.ValuePolicy.native_compatible;
+    pub fn bindingRecord() world.Binding {
+        return mutatedPortsBindingRecord(.wrong_authority);
+    }
+};
+const PortsWrongDescriptorRecordBinding = struct {
+    pub const TargetType = fixtures.Ports.Target;
+    pub const world_port_id = PortsDecl.world_port_id;
+    pub const adapter_kind = world.AdapterKind.native;
+    pub const authority = world.PortAuthority.native_function;
+    pub const value_policy = world.ValuePolicy.native_compatible;
+    pub fn bindingRecord() world.Binding {
+        return mutatedPortsBindingRecord(.wrong_descriptor);
     }
 };
 const PortsEnv = world.Environment(fixtures.Ports.Target, .{
@@ -3213,6 +3270,34 @@ test "world environment accepts bindings and reports missing duplicate and repla
     try std.testing.expect(!wrong_requirement_report.accepted);
     try std.testing.expectEqual(world.AcceptanceBlocker.HandoffTargetMismatch, wrong_requirement_report.blockers[0]);
 
+    const wrong_adapter_report = world.Environment(fixtures.Ports.Target, .{
+        .bindings = .{PortsWrongAdapterRecordBinding},
+        .policy = world.EnvironmentPolicy.test_fixture,
+    }).acceptanceReport(.fresh, false);
+    try std.testing.expect(!wrong_adapter_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.AdapterModeNotAllowed, wrong_adapter_report.blockers[0]);
+
+    const wrong_value_policy_report = world.Environment(fixtures.Ports.Target, .{
+        .bindings = .{PortsWrongValuePolicyRecordBinding},
+        .policy = world.EnvironmentPolicy.test_fixture,
+    }).acceptanceReport(.fresh, false);
+    try std.testing.expect(!wrong_value_policy_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.HandoffTargetMismatch, wrong_value_policy_report.blockers[0]);
+
+    const wrong_authority_report = world.Environment(fixtures.Ports.Target, .{
+        .bindings = .{PortsWrongAuthorityRecordBinding},
+        .policy = world.EnvironmentPolicy.test_fixture,
+    }).acceptanceReport(.fresh, false);
+    try std.testing.expect(!wrong_authority_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.HandoffTargetMismatch, wrong_authority_report.blockers[0]);
+
+    const wrong_descriptor_report = world.Environment(fixtures.Ports.Target, .{
+        .bindings = .{PortsWrongDescriptorRecordBinding},
+        .policy = world.EnvironmentPolicy.test_fixture,
+    }).acceptanceReport(.fresh, false);
+    try std.testing.expect(!wrong_descriptor_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.HandoffTargetMismatch, wrong_descriptor_report.blockers[0]);
+
     const authority_portable_report = world.Environment(fixtures.Ports.Target, .{
         .bindings = .{PortsPortableAuthorityBinding},
         .policy = world.EnvironmentPolicy.test_fixture,
@@ -3475,6 +3560,17 @@ test "run image encode decode roundtrip includes TargetRef TranscriptImage branc
     try std.testing.expectEqual(@as(usize, 1), decoded.checkpoints.len);
     try std.testing.expectEqual(@as(usize, 1), decoded.branches.len);
     try std.testing.expect(decoded.pending_request_frame != null);
+
+    const PortsPayloadCapEnv = world.Environment(fixtures.Ports.Target, .{
+        .bindings = .{PortsAcceptedPayloadCapBinding},
+        .policy = world.EnvironmentPolicy.test_fixture,
+    });
+    try std.testing.expect(PortsPayloadCapEnv.acceptanceReport(.fresh, false).accepted);
+    var cap_handoff = try world.Handoff.fromRunImage(std.testing.allocator, encoded);
+    defer cap_handoff.deinit();
+    const cap_report = cap_handoff.preflight(fixtures.Ports.Target, PortsPayloadCapEnv, .accept_fresh);
+    try std.testing.expect(!cap_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.NativeOnlyValueRejected, cap_report.blockers[0]);
 
     const missing_pending_state = world.RunState.init(.{
         .target_ref_fingerprint = target_ref.target_ref_fingerprint,

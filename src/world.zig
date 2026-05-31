@@ -591,6 +591,8 @@ pub fn bind(comptime Decl: type, comptime Adapter: type) type {
         pub const adapter_kind: AdapterKind = Adapter.kind;
         pub const authority = Adapter.authority;
         pub const value_policy = Adapter.value_policy;
+        pub const replay_source_fingerprint: ?u64 = if (@hasDecl(Adapter, "replay_fingerprint")) Adapter.replay_fingerprint else null;
+        pub const byte_adapter_protocol_label: ?[]const u8 = if (Adapter.kind == .byte and @hasDecl(Adapter, "label")) Adapter.label else null;
         pub const handler = if (@hasDecl(Adapter, "handler"))
             Adapter.handler
         else if (Adapter.kind == .native)
@@ -612,8 +614,8 @@ pub fn bind(comptime Decl: type, comptime Adapter: type) type {
                 .value_policy = value_policy,
                 .authority_fingerprint = authority.authority_fingerprint,
                 .label = suggested_name,
-                .replay_source_fingerprint = if (@hasDecl(Adapter, "replay_fingerprint")) Adapter.replay_fingerprint else null,
-                .byte_adapter_protocol_label = if (adapter_kind == .byte) Adapter.label else null,
+                .replay_source_fingerprint = replay_source_fingerprint,
+                .byte_adapter_protocol_label = byte_adapter_protocol_label,
             });
             return Binding.init(.{
                 .target_ref_fingerprint = target_ref.target_ref_fingerprint,
@@ -3972,6 +3974,13 @@ fn bindingRecordBlockerFor(comptime Target: type, comptime BindingDecl: type, po
     if (record.source_effect_shape_ref_fingerprint != requirement.source_effect_shape_ref_fingerprint) return .HandoffTargetMismatch;
     if (record.payload_value_table_id != requirement.payload_value_table_id) return .PayloadValueMismatch;
     if (record.response_value_table_id != requirement.response_value_table_id) return .ResponseValueMismatch;
+    const declared_kind: AdapterKind = if (@hasDecl(BindingDecl, "adapter_kind")) BindingDecl.adapter_kind else .native;
+    const declared_value_policy: ValuePolicy = if (@hasDecl(BindingDecl, "value_policy")) BindingDecl.value_policy else .native_compatible;
+    const declared_authority_fingerprint = if (@hasDecl(BindingDecl, "authority")) BindingDecl.authority.authority_fingerprint else null;
+    if (record.adapter_kind != declared_kind) return .AdapterModeNotAllowed;
+    if (!std.meta.eql(record.value_policy, declared_value_policy)) return .HandoffTargetMismatch;
+    if (record.authority_fingerprint != declared_authority_fingerprint) return .HandoffTargetMismatch;
+    if (record.adapter_descriptor_fingerprint != adapterDescriptorFingerprintForBindingDecl(Target, BindingDecl)) return .HandoffTargetMismatch;
     return null;
 }
 
@@ -3983,8 +3992,28 @@ fn rejectedReportForBindingRecordBlocker(base: AcceptanceReport, blocker: Accept
         .WrongPortId => rejectedReport(base, &.{.WrongPortId}),
         .PayloadValueMismatch => rejectedReport(base, &.{.PayloadValueMismatch}),
         .ResponseValueMismatch => rejectedReport(base, &.{.ResponseValueMismatch}),
+        .AdapterModeNotAllowed => rejectedReport(base, &.{.AdapterModeNotAllowed}),
         else => unreachable,
     };
+}
+
+fn adapterDescriptorFingerprintForBindingDecl(comptime Target: type, comptime BindingDecl: type) u64 {
+    const target_ref = TargetRef.fromTarget(Target);
+    const declared_kind: AdapterKind = if (@hasDecl(BindingDecl, "adapter_kind")) BindingDecl.adapter_kind else .native;
+    const declared_value_policy: ValuePolicy = if (@hasDecl(BindingDecl, "value_policy")) BindingDecl.value_policy else .native_compatible;
+    const declared_authority_fingerprint = if (@hasDecl(BindingDecl, "authority")) BindingDecl.authority.authority_fingerprint else null;
+    const label = if (@hasDecl(BindingDecl, "suggested_name")) BindingDecl.suggested_name else "";
+    return AdapterDescriptor.init(.{
+        .adapter_kind = declared_kind,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = Target.WorldSurface.surface_fingerprint,
+        .world_port_id = BindingDecl.world_port_id,
+        .value_policy = declared_value_policy,
+        .authority_fingerprint = declared_authority_fingerprint,
+        .label = label,
+        .replay_source_fingerprint = if (@hasDecl(BindingDecl, "replay_source_fingerprint")) BindingDecl.replay_source_fingerprint else null,
+        .byte_adapter_protocol_label = if (@hasDecl(BindingDecl, "byte_adapter_protocol_label")) BindingDecl.byte_adapter_protocol_label else null,
+    }).descriptor_fingerprint;
 }
 
 fn acceptedModeMask(report: AcceptanceReport) EnvironmentCertificate.ModeMask {
@@ -4845,12 +4874,35 @@ fn modeToRunMode(mode: HandoffMode) Mode {
 }
 
 fn valuePolicyForEnvironment(comptime Env: type) ValuePolicy {
-    return .{
+    var policy = ValuePolicy{
         .require_portable_values = Env.policy_decl.require_portable_values,
         .allow_native_only_values = Env.policy_decl.allow_native_only_values,
         .require_response_images_for_replay = Env.policy_decl.require_frame_images_for_replay,
         .allow_diagnostic_type_labels = Env.policy_decl.allow_native_only_values,
     };
+    inline for (Env.bindings_decl) |BindingDecl| {
+        const binding_policy: ValuePolicy = if (@hasDecl(BindingDecl, "value_policy")) BindingDecl.value_policy else .native_compatible;
+        if (binding_policy.require_portable_values) policy.require_portable_values = true;
+        if (!binding_policy.allow_native_only_values) policy.allow_native_only_values = false;
+        if (binding_policy.require_response_images_for_replay) policy.require_response_images_for_replay = true;
+        if (!binding_policy.allow_diagnostic_type_labels) policy.allow_diagnostic_type_labels = false;
+        tightenValuePolicyMax(&policy, binding_policy.max_value_image_bytes);
+        if (@hasDecl(BindingDecl, "authority")) {
+            if (BindingDecl.authority.requires_portable_values) policy.require_portable_values = true;
+            if (!BindingDecl.authority.allows_native_only_values) policy.allow_native_only_values = false;
+            tightenValuePolicyMax(&policy, BindingDecl.authority.max_payload_image_bytes);
+            tightenValuePolicyMax(&policy, BindingDecl.authority.max_response_image_bytes);
+        }
+    }
+    return policy;
+}
+
+fn tightenValuePolicyMax(policy: *ValuePolicy, limit: ?usize) void {
+    if (limit) |max| {
+        if (policy.max_value_image_bytes == null or policy.max_value_image_bytes.? > max) {
+            policy.max_value_image_bytes = max;
+        }
+    }
 }
 
 fn valuePolicyForRunImageValidation(options: RunImage.ValidateOptions) ValuePolicy {
