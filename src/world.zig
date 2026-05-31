@@ -6080,27 +6080,24 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         }
                     }
                     self.audit.replayed_response_count += 1;
-                    const expected_accounting = if (expected_response_frame) |frame|
-                        try self.responseFrameAccounting(frame)
-                    else
-                        ResponseAccounting{};
                     const fresh = callHandler(Decl, @field(self.options, "ctx"), request) catch |err| {
                         try self.accountNativeHandlerError(Decl.world_port_id, err);
                         return err;
                     };
                     defer Decl.response_deinit(@field(self.options, "ctx"), fresh);
+                    const response_trace = try typed_request.responseTrace(.@"resume", fresh);
+                    const fresh_accounting = try self.nativeResponseAccounting(Decl, (self.pending_request orelse return Error.UnknownResidualSite).trace(), response_trace.fingerprint, fresh);
                     if (self.supervisor) |*supervisor| {
                         supervisor.afterAdapterResponse(.{
                             .world_port_id = Decl.world_port_id,
                             .status = .responded,
-                            .response_bytes = expected_accounting.response_bytes,
-                            .value_image_bytes = expected_accounting.value_image_bytes,
+                            .response_bytes = fresh_accounting.response_bytes,
+                            .value_image_bytes = fresh_accounting.value_image_bytes,
                         }) catch |err| {
                             try self.handleSupervisionError(err);
                             return Error.HandlerPending;
                         };
                     }
-                    const response_trace = try typed_request.responseTrace(.@"resume", fresh);
                     if (response_trace.fingerprint != expected_response_fingerprint) {
                         self.audit.replay_mismatch_count += 1;
                         return Error.VerifyDivergence;
