@@ -2920,6 +2920,8 @@ pub const Handoff = struct {
         const MachineType = Machine(Target, Env.machine_config);
         var run = try MachineType.startWithHandoffTranscript(runtime, args, options);
         errdefer run.deinit();
+        var resume_committed = false;
+        errdefer if (!resume_committed) run.markRunFailed() catch {};
         if (self.run_image.transcript_image) |*image| {
             try image.prepareReplayPrefixForPendingRequest(
                 Target.WorldSurface.surface_fingerprint,
@@ -2955,6 +2957,7 @@ pub const Handoff = struct {
                 else => return error.HandoffPendingFrameMismatch,
             }
         }
+        resume_committed = true;
         return run;
     }
 };

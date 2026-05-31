@@ -4190,6 +4190,26 @@ test "parked handoff replays transcript prefix before selected pending request" 
     try std.testing.expect(!rejected_replay.accepted);
     try std.testing.expectEqual(world.AcceptanceBlocker.ReplaySourceMissing, rejected_replay.blockers[0]);
 
+    var failed_handoff = try world.Handoff.fromRunImage(std.testing.allocator, encoded);
+    defer failed_handoff.deinit();
+    var failed_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer failed_runtime.deinit();
+    var failed_ctx: AgentCtx = .{ .allocator = std.testing.allocator, .scenario = .skeleton };
+    var failed_transcript = world.Transcript.init(std.testing.allocator);
+    defer failed_transcript.deinit();
+    if (failed_handoff.@"resume"(fixtures.Agent.Target, AgentEnv, &failed_runtime, AgentArgs{ @as(usize, 3), "goal=mismatch" }, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &failed_ctx,
+        .transcript = &failed_transcript,
+    }, .accept_fresh)) |unexpected_run| {
+        var run_to_deinit = unexpected_run;
+        run_to_deinit.deinit();
+        return error.ExpectedFailure;
+    } else |_| {}
+    try std.testing.expectEqual(@as(usize, 1), failed_transcript.summary().run_started);
+    try std.testing.expectEqual(@as(usize, 1), failed_transcript.summary().run_failed);
+
     var prefix_image = &handoff.run_image.transcript_image.?;
     try prefix_image.prepareReplayPrefixForPendingRequest(
         fixtures.Agent.Target.WorldSurface.surface_fingerprint,
