@@ -2837,7 +2837,7 @@ pub const Handoff = struct {
         if (mode == .accept_fresh) {
             const pending_frame = self.run_image.pending_request_frame.?;
             if (self.run_image.transcript_image) |*image| {
-                image.validateValuePolicy(valuePolicyForEnvironment(Env)) catch {
+                validateTranscriptImageForEnvironment(Env, image) catch {
                     return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.NativeOnlyValueRejected});
                 };
                 image.prepareReplayPrefixForPendingRequest(
@@ -2858,7 +2858,7 @@ pub const Handoff = struct {
                 image
             else
                 return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.TranscriptImageRequired});
-            image.validateValuePolicy(valuePolicyForEnvironment(Env)) catch {
+            validateTranscriptImageForEnvironment(Env, image) catch {
                 return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.NativeOnlyValueRejected});
             };
             image.resetReplay();
@@ -3189,6 +3189,14 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             (@hasField(Options, "transcript") and Config.environment.policy_decl.allow_native_adapters);
                         const report = Config.environment.acceptanceReport(effective, transcript_available);
                         if (!report.accepted) return acceptanceError(report);
+                        if (modeConsumesTranscript(effective)) {
+                            if (comptime @hasField(Options, "transcript_image")) {
+                                try validateTranscriptImageForEnvironment(Config.environment, @field(options, "transcript_image"));
+                            }
+                            if (comptime @hasField(Options, "transcript")) {
+                                try validateTranscriptForEnvironment(Config.environment, @field(options, "transcript"));
+                            }
+                        }
                     }
                     var session = try Program.Session.startWithArgs(runtime, Program.Handlers{}, args);
                     errdefer session.deinit();
@@ -4874,24 +4882,50 @@ fn modeToRunMode(mode: HandoffMode) Mode {
 }
 
 fn valuePolicyForEnvironment(comptime Env: type) ValuePolicy {
-    var policy = ValuePolicy{
+    return .{
         .require_portable_values = Env.policy_decl.require_portable_values,
         .allow_native_only_values = Env.policy_decl.allow_native_only_values,
         .require_response_images_for_replay = Env.policy_decl.require_frame_images_for_replay,
         .allow_diagnostic_type_labels = Env.policy_decl.allow_native_only_values,
     };
+}
+
+fn validateTranscriptForEnvironment(comptime Env: type, transcript: *const Transcript) !void {
+    for (transcript.events.items) |event| {
+        if (event.request_frame) |frame| try validateRequestFramePolicy(frame, valuePolicyForEnvironmentPort(Env, frame.world_port_id, .request));
+        if (event.response_frame) |frame| try validateResponseFramePolicy(frame, valuePolicyForEnvironmentPort(Env, frame.world_port_id, .response));
+    }
+}
+
+fn validateTranscriptImageForEnvironment(comptime Env: type, image: *const TranscriptImage) !void {
+    for (image.events) |event| {
+        if (event.request_frame) |frame| try validateRequestFramePolicy(frame, valuePolicyForEnvironmentPort(Env, frame.world_port_id, .request));
+        if (event.response_frame) |frame| try validateResponseFramePolicy(frame, valuePolicyForEnvironmentPort(Env, frame.world_port_id, .response));
+    }
+}
+
+const FrameValuePolicyKind = enum { request, response };
+
+fn valuePolicyForEnvironmentPort(comptime Env: type, world_port_id: u32, comptime kind: FrameValuePolicyKind) ValuePolicy {
+    var policy = valuePolicyForEnvironment(Env);
     inline for (Env.bindings_decl) |BindingDecl| {
-        const binding_policy: ValuePolicy = if (@hasDecl(BindingDecl, "value_policy")) BindingDecl.value_policy else .native_compatible;
-        if (binding_policy.require_portable_values) policy.require_portable_values = true;
-        if (!binding_policy.allow_native_only_values) policy.allow_native_only_values = false;
-        if (binding_policy.require_response_images_for_replay) policy.require_response_images_for_replay = true;
-        if (!binding_policy.allow_diagnostic_type_labels) policy.allow_diagnostic_type_labels = false;
-        tightenValuePolicyMax(&policy, binding_policy.max_value_image_bytes);
-        if (@hasDecl(BindingDecl, "authority")) {
-            if (BindingDecl.authority.requires_portable_values) policy.require_portable_values = true;
-            if (!BindingDecl.authority.allows_native_only_values) policy.allow_native_only_values = false;
-            tightenValuePolicyMax(&policy, BindingDecl.authority.max_payload_image_bytes);
-            tightenValuePolicyMax(&policy, BindingDecl.authority.max_response_image_bytes);
+        if (comptime BindingDecl.TargetType == Env.TargetType) {
+            if (BindingDecl.world_port_id == world_port_id) {
+                const binding_policy: ValuePolicy = if (@hasDecl(BindingDecl, "value_policy")) BindingDecl.value_policy else .native_compatible;
+                if (binding_policy.require_portable_values) policy.require_portable_values = true;
+                if (!binding_policy.allow_native_only_values) policy.allow_native_only_values = false;
+                if (binding_policy.require_response_images_for_replay) policy.require_response_images_for_replay = true;
+                if (!binding_policy.allow_diagnostic_type_labels) policy.allow_diagnostic_type_labels = false;
+                tightenValuePolicyMax(&policy, binding_policy.max_value_image_bytes);
+                if (@hasDecl(BindingDecl, "authority")) {
+                    if (BindingDecl.authority.requires_portable_values) policy.require_portable_values = true;
+                    if (!BindingDecl.authority.allows_native_only_values) policy.allow_native_only_values = false;
+                    switch (kind) {
+                        .request => tightenValuePolicyMax(&policy, BindingDecl.authority.max_payload_image_bytes),
+                        .response => tightenValuePolicyMax(&policy, BindingDecl.authority.max_response_image_bytes),
+                    }
+                }
+            }
         }
     }
     return policy;
