@@ -43,6 +43,13 @@ const PortsRejectBinding = world.bind(PortsDecl, struct {
     pub const authority = world.PortAuthority.fixture;
     pub const value_policy = world.ValuePolicy.portable;
 });
+const PortsWrongPortBinding = struct {
+    pub const TargetType = fixtures.Ports.Target;
+    pub const world_port_id: u32 = 99;
+    pub const adapter_kind = world.AdapterKind.native;
+    pub const authority = world.PortAuthority.native_function;
+    pub const value_policy = world.ValuePolicy.native_compatible;
+};
 const PortsEnv = world.Environment(fixtures.Ports.Target, .{
     .bindings = .{PortsNativeBinding},
     .policy = world.EnvironmentPolicy.fresh_and_replay,
@@ -3085,6 +3092,21 @@ test "world environment accepts bindings and reports missing duplicate and repla
     const duplicate_report = PortsDuplicateEnv.acceptanceReport(.fresh, false);
     try std.testing.expect(!duplicate_report.accepted);
     try std.testing.expectEqual(world.AcceptanceBlocker.ExtraBinding, duplicate_report.blockers[0]);
+
+    const wrong_port_env = world.Environment(fixtures.Ports.Target, .{
+        .bindings = .{PortsWrongPortBinding},
+        .policy = world.EnvironmentPolicy.test_fixture,
+    });
+    const wrong_port_report = wrong_port_env.acceptanceReport(.fresh, false);
+    try std.testing.expect(!wrong_port_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.WrongPortId, wrong_port_report.blockers[0]);
+    const wrong_port_plan = wrong_port_env.bindingPlan();
+    try std.testing.expect(!wrong_port_plan.accepted);
+    try std.testing.expectEqual(@as(usize, 1), wrong_port_plan.binding_count);
+    try std.testing.expectEqual(@as(usize, 0), wrong_port_plan.dense_entries.len);
+    const wrong_port_cert = wrong_port_env.certificate(.fresh, false);
+    try std.testing.expectEqual(wrong_port_report.report_fingerprint, wrong_port_cert.acceptance_report_fingerprint);
+    try std.testing.expectEqual(wrong_port_plan.plan_fingerprint, wrong_port_cert.binding_plan_fingerprint);
 
     const replay_missing_bindings = world.Environment(fixtures.Ports.Target, .{
         .bindings = .{},

@@ -3821,21 +3821,23 @@ fn boundPorts(comptime bindings: anytype) [bindings.len]type {
     return result;
 }
 
-fn bindingPlanEntries(comptime Target: type, comptime bindings: anytype) [bindings.len]BindingPlan.Entry {
-    var result: [bindings.len]BindingPlan.Entry = undefined;
+fn bindingPlanEntryCount(comptime Target: type, comptime bindings: anytype) comptime_int {
+    var count: usize = 0;
+    inline for (bindings) |BindingDecl| {
+        if (BindingDecl.TargetType == Target and BindingDecl.world_port_id < Target.WorldPortTable.entries.len) count += 1;
+    }
+    return count;
+}
+
+fn bindingPlanEntries(comptime Target: type, comptime bindings: anytype) [bindingPlanEntryCount(Target, bindings)]BindingPlan.Entry {
+    var result: [bindingPlanEntryCount(Target, bindings)]BindingPlan.Entry = undefined;
     var out_index: usize = 0;
     inline for (0..Target.WorldPortTable.entries.len) |world_port_id| {
         inline for (bindings, 0..) |BindingDecl, binding_index| {
-            if (BindingDecl.world_port_id == world_port_id) {
+            if (BindingDecl.TargetType == Target and BindingDecl.world_port_id == world_port_id) {
                 result[out_index] = bindingPlanEntryFor(Target, BindingDecl, binding_index);
                 out_index += 1;
             }
-        }
-    }
-    inline for (bindings, 0..) |BindingDecl, binding_index| {
-        if (BindingDecl.world_port_id >= Target.WorldPortTable.entries.len) {
-            result[out_index] = bindingPlanEntryFor(Target, BindingDecl, binding_index);
-            out_index += 1;
         }
     }
     return result;
