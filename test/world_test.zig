@@ -4120,6 +4120,19 @@ test "parked handoff replays transcript prefix before selected pending request" 
     try std.testing.expectEqual(@as(usize, 1), receiver_run.audit.replayed_response_count);
     try std.testing.expectEqual(@as(usize, 1), receiver_transcript.summary().frame_replayed);
     try std.testing.expectEqual(@as(usize, 0), receiver_transcript.summary().frame_responded);
+
+    var receiver_image = try receiver_transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer receiver_image.deinit(std.testing.allocator);
+    var replay_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer replay_runtime.deinit();
+    var replayed = try AgentMachineEnv.run(&replay_runtime, AgentArgs{ @as(usize, 3), fixtures.Agent.initialObservation(.skeleton) }, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.replay,
+        .transcript_image = &receiver_image,
+    });
+    defer replayed.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("final=actuate skeleton complete", replayed.value);
+    try std.testing.expectEqual(@as(usize, 3), replayed.audit.replayed_response_count);
 }
 
 test "replay handoff replays completed run without native handler calls" {

@@ -4399,7 +4399,7 @@ fn modeConsumesTranscript(mode: Mode) bool {
 }
 
 fn eventKindIsSourceResponse(kind: EventKind) bool {
-    return kind == .port_responded or kind == .frame_responded;
+    return kind == .port_responded or kind == .frame_responded or kind == .port_replayed or kind == .frame_replayed;
 }
 
 fn eventKindAllowsResponseFrame(kind: EventKind) bool {
