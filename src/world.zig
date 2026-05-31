@@ -1481,6 +1481,7 @@ pub const Supervision = struct {
         total_frame_response_bytes: usize = 0,
         total_value_image_bytes: usize = 0,
         total_transcript_events: usize = 0,
+        total_transcript_image_bytes: usize = 0,
         total_checkpoints: usize = 0,
         total_branches: usize = 0,
         total_handoff_exports: usize = 0,
@@ -1573,6 +1574,10 @@ pub const Supervision = struct {
             };
             result.check_fingerprint = fingerprintSupervisionCheck(result);
             return result;
+        }
+
+        pub fn validateFingerprint(self: @This()) bool {
+            return self.check_fingerprint == fingerprintSupervisionCheck(self);
         }
     };
 
@@ -1674,6 +1679,18 @@ pub const Supervision = struct {
         }
 
         pub fn validatePermitForRun(permit: Supervision.RunPermit) !void {
+            const policy = permit.policy.withFingerprint();
+            if (permit.policy.policy_fingerprint != policy.policy_fingerprint) return Error.SupervisionDenied;
+            if (permit.supervision_policy_fingerprint != policy.policy_fingerprint) return Error.SupervisionDenied;
+            const budget = permit.budget.withFingerprint();
+            if (permit.budget.budget_fingerprint != budget.budget_fingerprint) return Error.SupervisionDenied;
+            if (permit.budget_fingerprint != budget.budget_fingerprint) return Error.SupervisionDenied;
+            const cost_model = permit.cost_model.withFingerprint();
+            if (permit.cost_model.cost_model_fingerprint != cost_model.cost_model_fingerprint) return Error.SupervisionDenied;
+            if (permit.cost_model_fingerprint != cost_model.cost_model_fingerprint) return Error.SupervisionDenied;
+            for (permit.port_rules) |rule| {
+                if (rule.rule_fingerprint != fingerprintPortRule(rule)) return Error.SupervisionDenied;
+            }
             if (permit.permit_fingerprint != fingerprintRunPermit(permit)) return Error.SupervisionDenied;
             if (permit.policy.require_environment_certificate and permit.environment_certificate_fingerprint == 0) return Error.SupervisionDenied;
             if (permit.policy.require_transcript_image_for_replay and permit.mode == .replay and permit.binding_plan_fingerprint == 0) return Error.TranscriptImageRequired;
@@ -1691,14 +1708,27 @@ pub const Supervision = struct {
             next.total_port_requests += 1;
             next.total_frame_request_bytes += request_bytes;
             next.total_value_image_bytes += value_image_bytes;
-            next.total_cost_units += self.permit.cost_model.requestCost(world_port_id);
-            next.total_cost_units += @as(u64, @intCast(request_bytes)) * self.permit.cost_model.frame_byte_cost;
-            next.total_cost_units += @as(u64, @intCast(value_image_bytes)) * self.permit.cost_model.value_image_byte_cost;
+            const request_cost = self.permit.cost_model.requestCost(world_port_id);
+            const request_byte_cost = @as(u64, @intCast(request_bytes)) * self.permit.cost_model.frame_byte_cost;
+            const value_image_cost = @as(u64, @intCast(value_image_bytes)) * self.permit.cost_model.value_image_byte_cost;
+            next.total_cost_units += request_cost + request_byte_cost + value_image_cost;
             const usage = &next.per_port_usage[world_port_id];
             usage.requests += 1;
             usage.value_image_bytes += value_image_bytes;
-            usage.cost_units += self.permit.cost_model.requestCost(world_port_id);
-            try self.commitCheck(.before_port_request, world_port_id, next, null, self.permit.ruleFor(world_port_id), "port request");
+            usage.cost_units += request_cost + request_byte_cost + value_image_cost;
+            const rule = self.permit.ruleFor(world_port_id);
+            if (rule) |port_rule| {
+                if (port_rule.max_payload_image_bytes) |max| {
+                    if (value_image_bytes > max) return self.deny(.before_port_request, world_port_id, .port_rule_denied, port_rule.rule_fingerprint, "rule payload image cap");
+                }
+                if (port_rule.max_requests) |max| {
+                    if (usage.requests > max) return self.deny(.before_port_request, world_port_id, .port_rule_denied, port_rule.rule_fingerprint, "rule request cap");
+                }
+                if (port_rule.max_cost_units) |max| {
+                    if (usage.cost_units > max) return self.deny(.before_port_request, world_port_id, .port_rule_denied, port_rule.rule_fingerprint, "rule cost cap");
+                }
+            }
+            try self.commitCheck(.before_port_request, world_port_id, next, null, rule, "port request");
         }
 
         pub fn beforeAdapterCall(self: *@This(), args: struct {
@@ -1716,6 +1746,7 @@ pub const Supervision = struct {
             if (self.permit.ruleFor(args.world_port_id)) |rule| {
                 if (!rule.permitsMode(args.mode)) return self.deny(.before_adapter_call, args.world_port_id, .port_rule_denied, rule.rule_fingerprint, "rule mode denied");
                 if (!rule.allowed_adapter_kinds.allows(args.adapter_kind)) return self.deny(.before_adapter_call, args.world_port_id, .adapter_kind_denied, rule.rule_fingerprint, "rule adapter denied");
+                if (rule.require_portable_values and !args.value_policy.require_portable_values) return self.deny(.before_adapter_call, args.world_port_id, .portable_value_required, rule.rule_fingerprint, "rule portable value required");
                 if (args.authority_kind) |kind| {
                     if (!rule.allowed_authority_kinds.allows(kind)) return self.deny(.before_adapter_call, args.world_port_id, .authority_denied, rule.rule_fingerprint, "rule authority denied");
                 }
@@ -1745,7 +1776,13 @@ pub const Supervision = struct {
                     usage.cost_units += cost;
                 },
             }
-            try self.commitCheck(.before_adapter_call, args.world_port_id, next, null, self.permit.ruleFor(args.world_port_id), "adapter call");
+            const rule = self.permit.ruleFor(args.world_port_id);
+            if (rule) |port_rule| {
+                if (port_rule.max_cost_units) |max| {
+                    if (usage.cost_units > max) return self.deny(.before_adapter_call, args.world_port_id, .port_rule_denied, port_rule.rule_fingerprint, "rule cost cap");
+                }
+            }
+            try self.commitCheck(.before_adapter_call, args.world_port_id, next, null, rule, "adapter call");
         }
 
         pub fn afterAdapterResponse(self: *@This(), args: struct {
@@ -1776,42 +1813,56 @@ pub const Supervision = struct {
             next.total_port_responses += 1;
             next.total_frame_response_bytes += args.response_bytes;
             next.total_value_image_bytes += args.value_image_bytes;
-            next.total_cost_units += self.permit.cost_model.responseCost(args.world_port_id);
-            next.total_cost_units += @as(u64, @intCast(args.response_bytes)) * self.permit.cost_model.frame_byte_cost;
-            next.total_cost_units += @as(u64, @intCast(args.value_image_bytes)) * self.permit.cost_model.value_image_byte_cost;
+            const response_cost = self.permit.cost_model.responseCost(args.world_port_id);
+            const response_byte_cost = @as(u64, @intCast(args.response_bytes)) * self.permit.cost_model.frame_byte_cost;
+            const value_image_cost = @as(u64, @intCast(args.value_image_bytes)) * self.permit.cost_model.value_image_byte_cost;
+            next.total_cost_units += response_cost + response_byte_cost + value_image_cost;
             const usage = &next.per_port_usage[args.world_port_id];
             usage.responses += 1;
             usage.response_bytes += args.response_bytes;
             usage.value_image_bytes += args.value_image_bytes;
-            usage.cost_units += self.permit.cost_model.responseCost(args.world_port_id);
+            usage.cost_units += response_cost + response_byte_cost + value_image_cost;
             switch (args.status) {
                 .responded => {},
                 .pending => {
+                    const status_cost = self.permit.cost_model.pending_call_cost;
                     next.total_pending_calls += 1;
                     usage.pending_calls += 1;
-                    next.total_cost_units += self.permit.cost_model.pending_call_cost;
+                    next.total_cost_units += status_cost;
+                    usage.cost_units += status_cost;
                 },
                 .rejected => {
+                    const status_cost = self.permit.cost_model.rejected_call_cost;
                     next.total_rejected_calls += 1;
                     usage.rejected_calls += 1;
-                    next.total_cost_units += self.permit.cost_model.rejected_call_cost;
+                    next.total_cost_units += status_cost;
+                    usage.cost_units += status_cost;
                 },
                 .failed => {
+                    const status_cost = self.permit.cost_model.failed_call_cost;
                     next.total_failed_calls += 1;
                     usage.failed_calls += 1;
-                    next.total_cost_units += self.permit.cost_model.failed_call_cost;
+                    next.total_cost_units += status_cost;
+                    usage.cost_units += status_cost;
                 },
             }
-            try self.commitCheck(.after_adapter_response, args.world_port_id, next, null, self.permit.ruleFor(args.world_port_id), "adapter response");
+            const rule = self.permit.ruleFor(args.world_port_id);
+            if (rule) |port_rule| {
+                if (port_rule.max_response_image_bytes) |max| {
+                    if (args.value_image_bytes > max) return self.deny(.after_adapter_response, args.world_port_id, .port_rule_denied, port_rule.rule_fingerprint, "rule response image cap");
+                }
+                if (port_rule.max_cost_units) |max| {
+                    if (usage.cost_units > max) return self.deny(.after_adapter_response, args.world_port_id, .port_rule_denied, port_rule.rule_fingerprint, "rule cost cap");
+                }
+            }
+            try self.commitCheck(.after_adapter_response, args.world_port_id, next, null, rule, "adapter response");
         }
 
         pub fn beforeTranscriptAppend(self: *@This(), event_count_after_append: usize, image_bytes_after_append: usize) !void {
             var next = self.ledger;
             next.total_transcript_events = event_count_after_append;
+            next.total_transcript_image_bytes = image_bytes_after_append;
             try self.commitCheck(.before_transcript_append, null, next, null, null, "transcript append");
-            if (self.permit.budget.max_transcript_image_bytes) |max| {
-                if (image_bytes_after_append > max) return self.exceed(.before_transcript_append, null, .transcript_image_bytes, next, null, "transcript image budget");
-            }
         }
 
         pub fn beforeCheckpoint(self: *@This(), value_image_bytes: usize) !void {
@@ -1937,7 +1988,10 @@ pub const Supervision = struct {
                 },
                 .audit_only => {
                     self.warning_count += 1;
-                    self.last_check.?.allowed = true;
+                    var check = self.last_check.?;
+                    check.allowed = true;
+                    check.check_fingerprint = fingerprintSupervisionCheck(check);
+                    self.last_check = check;
                     return;
                 },
             }
@@ -1988,6 +2042,7 @@ pub const Supervision = struct {
         if (budget.max_frame_response_bytes) |max| if (ledger.total_frame_response_bytes > max) return .frame_response_bytes;
         if (budget.max_value_image_bytes) |max| if (ledger.total_value_image_bytes > max) return .value_image_bytes;
         if (budget.max_transcript_events) |max| if (ledger.total_transcript_events > max) return .transcript_events;
+        if (budget.max_transcript_image_bytes) |max| if (ledger.total_transcript_image_bytes > max) return .transcript_image_bytes;
         if (budget.max_checkpoints) |max| if (ledger.total_checkpoints > max) return .checkpoints;
         if (budget.max_branches) |max| if (ledger.total_branches > max) return .branches;
         if (budget.max_handoff_exports) |max| if (ledger.total_handoff_exports > max) return .handoff_exports;
@@ -4262,13 +4317,29 @@ pub const Handoff = struct {
         options: anytype,
         mode: HandoffMode,
     ) !Machine(Target, Env.machine_config).Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)) {
+        return self.resumeWithSupervisorPermit(Target, Env, runtime, args, options, mode, null);
+    }
+
+    fn resumeWithSupervisorPermit(
+        self: *@This(),
+        comptime Target: type,
+        comptime Env: type,
+        runtime: anytype,
+        args: anytype,
+        options: anytype,
+        mode: HandoffMode,
+        permit_override: ?RunPermit,
+    ) !Machine(Target, Env.machine_config).Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)) {
         if (mode != .accept_fresh) return Error.InvalidMode;
         const report = self.preflight(Target, Env, mode);
         if (!report.accepted) return acceptanceError(report);
         if (self.run_image.current_state.status != .parked_on_port) return error.HandoffPendingFrameMismatch;
         const pending_frame = self.run_image.pending_request_frame orelse return error.HandoffPendingFrameMismatch;
         const MachineType = Machine(Target, Env.machine_config);
-        var run = try MachineType.startWithHandoffTranscript(runtime, args, options);
+        var run = if (permit_override) |permit|
+            try MachineType.startWithHandoffTranscriptPermit(runtime, args, options, permit)
+        else
+            try MachineType.startWithHandoffTranscript(runtime, args, options);
         errdefer run.deinit();
         var resume_committed = false;
         errdefer if (!resume_committed) run.markRunFailed() catch {};
@@ -4323,7 +4394,7 @@ pub const Handoff = struct {
     ) !Machine(Target, Env.machine_config).Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)) {
         const report = self.preflightWithPermit(Target, Env, mode, permit);
         if (!report.accepted) return acceptanceError(report);
-        return self.@"resume"(Target, Env, runtime, args, options, mode);
+        return self.resumeWithSupervisorPermit(Target, Env, runtime, args, options, mode, permit);
     }
 };
 
@@ -4480,6 +4551,10 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
             return Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)).startWithTranscriptAvailable(runtime, args, options, true);
         }
 
+        fn startWithHandoffTranscriptPermit(runtime: anytype, args: anytype, options: anytype, permit: RunPermit) !Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)) {
+            return Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)).startWithTranscriptAvailablePermit(runtime, args, options, true, permit);
+        }
+
         pub fn run(runtime: anytype, args: anytype, options: anytype) !Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)).Result {
             var run_state = try start(runtime, args, options);
             defer run_state.deinit();
@@ -4573,20 +4648,50 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     return null;
                 }
 
+                fn superviseTranscriptAppend(self: *Self) !void {
+                    if (self.supervisor) |*supervisor| {
+                        try superviseTranscriptAppendForOptions(self.allocator, self.options, supervisor);
+                    }
+                }
+
+                fn recordRunEvent(self: *Self, kind: EventKind, status: ?ResponseStatus, source_run: bool) !void {
+                    try appendRunEvent(Target, self.options, kind, status, source_run);
+                    try self.superviseTranscriptAppend();
+                }
+
+                fn recordPortEvent(
+                    self: *Self,
+                    kind: EventKind,
+                    world_port_id: u32,
+                    trace: anytype,
+                    response_fingerprint: ?u64,
+                    response_kind: ?ResponseKind,
+                    value: ?StoredValue,
+                    request_frame: ?Frame.Request,
+                    response_frame: ?Frame.Response,
+                ) !void {
+                    try appendPortEvent(Target, self.options, kind, world_port_id, trace, response_fingerprint, response_kind, value, request_frame, response_frame);
+                    try self.superviseTranscriptAppend();
+                }
+
                 fn markRunFailed(self: *Self) !void {
                     if (self.audit.final_status == .failed) return;
                     if (self.audit.final_status == .completed) return;
                     self.pending_request = null;
                     self.pending_port_id = null;
                     self.audit.final_status = .failed;
-                    try appendRunEvent(Target, self.options, .run_failed, null, false);
+                    try self.recordRunEvent(.run_failed, null, false);
                 }
 
                 fn start(runtime: RuntimePtr, args: anytype, options: Options) !Self {
-                    return startWithTranscriptAvailable(runtime, args, options, false);
+                    return startWithTranscriptAvailablePermit(runtime, args, options, false, null);
                 }
 
                 fn startWithTranscriptAvailable(runtime: RuntimePtr, args: anytype, options: Options, comptime handoff_transcript_available: bool) !Self {
+                    return startWithTranscriptAvailablePermit(runtime, args, options, handoff_transcript_available, null);
+                }
+
+                fn startWithTranscriptAvailablePermit(runtime: RuntimePtr, args: anytype, options: Options, comptime handoff_transcript_available: bool, permit_override: ?RunPermit) !Self {
                     const allocator = @field(options, "allocator");
                     const mode_value: Mode = if (@hasField(Options, "mode")) @field(options, "mode") else .fresh;
                     const effective = if (mode_value == .audit and @hasField(Options, "audit_source"))
@@ -4630,8 +4735,13 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     }
                     var supervisor: ?Supervision.Supervisor = null;
                     errdefer if (supervisor) |*owned| owned.deinit();
-                    if (comptime @hasField(Options, "permit")) {
-                        const permit: RunPermit = @field(options, "permit");
+                    const maybe_permit: ?RunPermit = if (permit_override) |permit|
+                        permit
+                    else if (comptime @hasField(Options, "permit"))
+                        @field(options, "permit")
+                    else
+                        null;
+                    if (maybe_permit) |permit| {
                         if (permit.target_ref_fingerprint != TargetRef.fromTarget(Target).target_ref_fingerprint) return Error.SupervisionDenied;
                         if (permit.world_surface_fingerprint != Target.WorldSurface.surface_fingerprint) return Error.SupervisionDenied;
                         if (permit.target_certificate_fingerprint != Target.Certificate.certificate_fingerprint) return Error.SupervisionDenied;
@@ -4669,7 +4779,9 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         }
                         try appendRunEvent(Target, options, .run_started, null, effective == .fresh);
                         if (supervisor) |*active| {
+                            try superviseTranscriptAppendForOptions(allocator, options, active);
                             try appendRunEvent(Target, options, .permit_issued, null, false);
+                            try superviseTranscriptAppendForOptions(allocator, options, active);
                             if (active.last_check) |check| {
                                 _ = check;
                             }
@@ -4746,7 +4858,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                                 };
                             }
                             self.audit.final_status = .completed;
-                            try appendRunEvent(Target, self.options, .run_completed, null, self.effective_mode == .fresh);
+                            try self.recordRunEvent(.run_completed, null, self.effective_mode == .fresh);
                             return .{ .done = self.done_value };
                         },
                         .after => {
@@ -4783,7 +4895,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             self.per_port_counts[world_port_id] += 1;
                             if (self.effective_mode == .fresh) {
                                 if (!self.frame_step_request) {
-                                    try appendPortEvent(Target, self.options, .port_requested, world_port_id, trace, null, null, null, null, null);
+                                    try self.recordPortEvent(.port_requested, world_port_id, trace, null, null, null, null, null);
                                 }
                             }
                             return .port_required;
@@ -4803,7 +4915,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             if (Handler) |Decl| {
                                 self.dispatchDecl(Decl, request) catch |err| {
                                     self.audit.failed_count += 1;
-                                    try appendPortEvent(Target, self.options, .port_failed, world_port_id, trace, null, null, null, null, null);
+                                    try self.recordPortEvent(.port_failed, world_port_id, trace, null, null, null, null, null);
                                     try self.markRunFailed();
                                     return err;
                                 };
@@ -4872,13 +4984,13 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     if (!deferred_response_fingerprint and response_frame.replay_key != frame.replay_key_seed.withResponse(response_frame.response_fingerprint).fingerprint()) return error.ReplayMissing;
                     if (response_frame.status == .rejected) {
                         self.audit.rejected_count += 1;
-                        try appendPortEvent(Target, self.options, .frame_rejected, world_port_id, request.trace(), response_frame.response_fingerprint, response_frame.response_kind, null, null, response_frame);
+                        try self.recordPortEvent(.frame_rejected, world_port_id, request.trace(), response_frame.response_fingerprint, response_frame.response_kind, null, null, response_frame);
                         try self.markRunFailed();
                         return error.HandlerRejected;
                     }
                     if (response_frame.status == .failed) {
                         self.audit.failed_count += 1;
-                        try appendPortEvent(Target, self.options, .frame_failed, world_port_id, request.trace(), response_frame.response_fingerprint, response_frame.response_kind, null, null, response_frame);
+                        try self.recordPortEvent(.frame_failed, world_port_id, request.trace(), response_frame.response_fingerprint, response_frame.response_kind, null, null, response_frame);
                         try self.markRunFailed();
                         return error.HandlerFailed;
                     }
@@ -4945,7 +5057,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     payload_image = null;
                     errdefer frame.deinit(self.allocator);
                     if (record_event and self.effective_mode == .fresh) {
-                        try appendPortEvent(Target, self.options, .frame_requested, world_port_id, trace, null, null, null, frame, null);
+                        try self.recordPortEvent(.frame_requested, world_port_id, trace, null, null, null, frame, null);
                     }
                     return frame;
                 }
@@ -4982,9 +5094,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         retained.deinit(self.allocator);
                     };
                     const retained_value = try self.retained_values.items[self.retained_values.items.len - 1].borrow(Decl.Response);
-                    try appendPortEvent(
-                        Target,
-                        self.options,
+                    try self.recordPortEvent(
                         if (replayed) .frame_replayed else .frame_responded,
                         Decl.world_port_id,
                         request.trace(),
@@ -5013,7 +5123,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             .replay_key = effective_response_frame.replay_key,
                             .status = .failed,
                         });
-                        try appendPortEvent(Target, self.options, .frame_failed, Decl.world_port_id, request.trace(), response_trace.fingerprint, effective_response_frame.response_kind, null, null, failed_response_frame);
+                        try self.recordPortEvent(.frame_failed, Decl.world_port_id, request.trace(), response_trace.fingerprint, effective_response_frame.response_kind, null, null, failed_response_frame);
                         try self.markRunFailed();
                         return err;
                     };
@@ -5033,7 +5143,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 fn recordMissingHandler(self: *Self, world_port_id: u32, trace: anytype) !void {
                     self.audit.missing_handler_count += 1;
                     self.audit.failed_count += 1;
-                    try appendPortEvent(Target, self.options, .port_failed, world_port_id, trace, null, null, null, null, null);
+                    try self.recordPortEvent(.port_failed, world_port_id, trace, null, null, null, null, null);
                     try self.markRunFailed();
                 }
 
@@ -5111,9 +5221,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             owned.deinit(@field(self.options, "transcript").allocator);
                         }
                     };
-                    try appendPortEvent(
-                        Target,
-                        self.options,
+                    try self.recordPortEvent(
                         .port_responded,
                         Decl.world_port_id,
                         (self.pending_request orelse return Error.UnknownResidualSite).trace(),
@@ -5161,7 +5269,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                                 return err;
                             };
                         }
-                        try appendPortEvent(Target, self.options, .frame_replayed, Decl.world_port_id, trace, response_trace.fingerprint, .@"resume", null, null, frame.*);
+                        try self.recordPortEvent(.frame_replayed, Decl.world_port_id, trace, response_trace.fingerprint, .@"resume", null, null, frame.*);
                         self.audit.replayed_response_count += 1;
                         var run_value = try StoredValue.initOwned(self.allocator, value);
                         value_owned = false;
@@ -5201,7 +5309,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             return err;
                         };
                     }
-                    try appendPortEvent(Target, self.options, .port_replayed, Decl.world_port_id, trace, response_trace.fingerprint, .@"resume", null, null, if (event.response_frame) |frame| frame else null);
+                    try self.recordPortEvent(.port_replayed, Decl.world_port_id, trace, response_trace.fingerprint, .@"resume", null, null, if (event.response_frame) |frame| frame else null);
                     self.audit.replayed_response_count += 1;
                     var run_value = try StoredValue.initOwned(self.allocator, value);
                     value_owned = false;
@@ -5321,7 +5429,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         if (fresh_image.value_image_fingerprint != expected_image_fingerprint) return error.VerifyValueImageMismatch;
                     }
                     if (expected_response_frame) |frame| {
-                        try appendPortEvent(Target, self.options, .frame_verified, Decl.world_port_id, (self.pending_request orelse return Error.UnknownResidualSite).trace(), expected_response_fingerprint, .@"resume", null, null, frame);
+                        try self.recordPortEvent(.frame_verified, Decl.world_port_id, (self.pending_request orelse return Error.UnknownResidualSite).trace(), expected_response_fingerprint, .@"resume", null, null, frame);
                     }
                     self.audit.fresh_response_count += 1;
                     return try self.retainResponse(Decl.Response, fresh);
@@ -6063,6 +6171,20 @@ fn validateTranscriptEventFrameBindings(event: TranscriptImage.EventImage) !void
             if (frame.status != status) return error.InvalidFrameEncoding;
         }
     }
+}
+
+fn superviseTranscriptAppendForOptions(allocator: std.mem.Allocator, options: anytype, supervisor: *Supervision.Supervisor) !void {
+    if (!@hasField(@TypeOf(options), "transcript")) return;
+    const transcript = @field(options, "transcript");
+    var transcript_image_bytes: usize = 0;
+    if (supervisor.permit.budget.max_transcript_image_bytes != null) {
+        var image = try transcript.toImage(allocator, .{ .value_policy = ValuePolicy.portable });
+        defer image.deinit(allocator);
+        const encoded = try image.encode(allocator);
+        defer allocator.free(encoded);
+        transcript_image_bytes = encoded.len;
+    }
+    try supervisor.beforeTranscriptAppend(transcript.events.items.len, transcript_image_bytes);
 }
 
 fn appendRunEvent(comptime Target: type, options: anytype, kind: EventKind, status: ?ResponseStatus, source_run: bool) !void {
@@ -7114,6 +7236,7 @@ fn fingerprintUsageLedger(ledger: UsageLedger) u64 {
     hashU64(&hasher, ledger.total_frame_response_bytes);
     hashU64(&hasher, ledger.total_value_image_bytes);
     hashU64(&hasher, ledger.total_transcript_events);
+    hashU64(&hasher, ledger.total_transcript_image_bytes);
     hashU64(&hasher, ledger.total_checkpoints);
     hashU64(&hasher, ledger.total_branches);
     hashU64(&hasher, ledger.total_handoff_exports);
