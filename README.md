@@ -35,6 +35,11 @@ The public root is intentionally small:
 - `world.BindingPlan`
 - `world.AcceptanceReport`
 - `world.EnvironmentCertificate`
+- `world.Supervision`
+- `world.Supervisor`
+- `world.RunPermit`
+- `world.SupervisionPolicy`
+- `world.RunReceipt`
 - `world.RunState`
 - `world.RunImage`
 - `world.Handoff`
@@ -157,6 +162,22 @@ World Handoff packages execution state. Environment binds the receiving host. Bo
 
 `world.Handoff` decodes and validates a `RunImage`, preflights it against a local target and environment, validates parked pending frames, supports replay-only and verify-on-receive flows through transcript images, and keeps branch metadata portable. Future Boundary module images can be referenced by `TargetRef`/`RunImage` without making World a storage, transport, or module-image implementation.
 
+## World Supervision
+
+Environment says what the host can provide. Supervision says what the host is willing to allow.
+
+`world.RunPermit` is a deterministic local authorization-to-run object. It binds the target ref, WorldSurface, target certificate, environment certificate, binding plan, mode, `SupervisionPolicy`, `Budget`, `CostModel`, branch policy, handoff policy, metadata bytes, and label. It is not cryptographic, contains no credentials, and excludes handler function pointers, allocator/runtime/thread pointers, and request tokens from its fingerprint.
+
+`world.SupervisionPolicy` is the fail-closed policy membrane: it controls fresh/replay/verify/audit calls, native/byte/replay adapters, pending/rejected/failed responses, branching, checkpoints, handoff export/accept, portable value requirements, native-only value rejection, replay transcript requirements, and budget-exceeded behavior. Presets include `strict_fresh`, `strict_replay`, `verify_replay`, `agent_fixture`, `audit_only`, `handoff_receiver`, and `branch_limited`.
+
+`world.Budget` sets deterministic quotas for steps, requests, responses, fresh/replay/verify calls, failed/rejected/pending calls, frame/value/transcript bytes, transcript events, checkpoints, branches, handoff export/accept, total cost units, and per-port budgets. `world.CostModel` accounts deterministic integer units only; World does not implement billing, money, wall-clock metering, or external price feeds.
+
+`world.PortRule` constrains an individual dense `world_port_id` by adapter kinds, authority kinds, modes, response status permissions, portable value policy, payload/response byte caps, request caps, and per-port cost units. `world.UsageLedger` records deterministic usage during a run. `world.SupervisionCheck` records each policy decision. `world.RunReceipt` summarizes the enforced permit, environment, target, run/transcript references, ledger, final state, final status, exceeded budgets, blockers, warnings, and summary counts.
+
+`world.Supervisor` owns the policy membrane around `Machine` execution. If no permit is supplied, existing machine behavior is preserved. If a permit is supplied, Machine validates the permit against the target/environment/mode, denies disallowed requests before handler calls, updates the usage ledger, and exposes a receipt on successful `Machine.run`.
+
+Handoff receivers may issue a new local permit with tighter limits using `Handoff.preflightWithPermit` and `Handoff.resumeWithPermit`. `RunImage` can carry prior permit and receipt fingerprints for inspection; receivers do not have to trust them.
+
 ## Audit Reports
 
 `world.AuditReport` includes the WorldSurface fingerprint, target certificate fingerprint, run mode, final status, request counts, fresh/replayed/rejected/failed counts, replay mismatches, missing handlers, and per-port counts.
@@ -180,6 +201,11 @@ zig build run-world-handoff-parked
 zig build run-world-handoff-replay
 zig build run-world-handoff-verify
 zig build run-world-agent-handoff
+zig build run-world-supervised-budget
+zig build run-world-supervised-agent
+zig build run-world-supervised-handoff
+zig build run-world-supervised-branch
+zig build run-world-supervised-replay-verify
 ```
 
 `world_run_strict` runs a strict closed zero-port target.
@@ -209,6 +235,20 @@ zig build run-world-agent-handoff
 `world_handoff_verify` verifies a transferred transcript against matching local handlers and detects a changed handler.
 
 `world_agent_handoff` packages an agent-shaped run image with checkpoint metadata and replays it on the receiver side.
+
+`world_supervised_budget` runs under a one-call permit and then shows a zero-call permit denying execution before the handler call.
+
+`world_supervised_agent` runs an agent-shaped target under per-run budgets and reports model/tool calls plus deterministic cost units.
+
+`world_supervised_handoff` transfers a parked run, issues a stricter receiver permit, resumes, and receipts the receiver run.
+
+`world_supervised_branch` records supervised checkpoint/branch usage and denies a second branch over budget.
+
+`world_supervised_replay_verify` records a fresh receipt, replays under a replay-only permit without handlers, and detects verify divergence under a verify permit.
+
+## Non-goals
+
+World Supervision does not add storage, xitdb, network transport, a scheduler, an async runtime, real model/tool/file/human integrations, provider lifecycle, service discovery, a WASM ABI, Boundary closure or normalization, billing, signing, encryption, or cryptographic security claims.
 
 ## Validation
 

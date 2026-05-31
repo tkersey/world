@@ -1,25 +1,23 @@
 <proposed_plan>
 Iteration: 7
 
-# World Handoff Kernel Execution Campaign
+# World Supervision Kernel Implementation Plan
 
 ## Summary
-Build World Handoff Kernel by adding deterministic target/run/environment handoff objects above the Timeline Kernel, integrating environments into `Machine`, and proving parked, replay, verify, branch, and agent transfer without storage, transport, scheduler, async, WASM, or real integrations. First wave creates stable identity/import/binding primitives; completion means `$st` tasks are complete, `$fixed-point-driver` reaches no unresolved truth-owner findings, every listed Zig command passes, and `$ship` opens/updates the PR with proof.
+Build the World Supervision Kernel by adding deterministic supervision primitives to `src/world.zig`, wiring them through the existing Machine/Handoff/Environment/Timeline boundaries, and proving that supervised execution is bounded without changing unsupervised behavior. First wave is the core value model and fingerprint tests; done means all supervised examples, filtered supervision tests, existing examples, `zig build check`, and lint pass.
 
 ## Non-Goals/Out of Scope
-- No storage backend, xitdb integration, network/transport, scheduler, async runtime, provider lifecycle, service discovery, security/signing/encryption, WASM ABI, or linear-memory layout.
-- No real model/tool/file/human integrations, provider catalog, morphism catalog, agent framework, or service discovery.
-- No Boundary closure, normalization, Boundary module image implementation, TreatyResolver hot path, ProviderHarness hot path, closure graph traversal, or operation-name string dispatch.
-- No sender-supplied acceptance certificate may authorize execution on the receiver; receiver must recompute acceptance locally.
+No storage backend, xitdb, network/transport, scheduler, async runtime, real model/tool/file/human integrations, provider lifecycle, service discovery, WASM ABI, Boundary module image implementation, Boundary closure/normalization, TreatyResolver or ProviderHarness hot path, signing/encryption, cryptographic security claims, agent framework, billing/money, or wall-clock time in deterministic fingerprints.
 
 ## Implementation Brief
-- step=st-201 identity/import foundation; owner=implementation; success_criteria=TargetRef, ImportRequirement, ImportSet, PortAuthority, AdapterDescriptor, Binding structs/constants/fingerprints compile and focused tests pass
-- step=st-202 environment acceptance; owner=implementation; success_criteria=Environment.Policy, BindingPlan, AcceptanceReport, EnvironmentCertificate validate correct/wrong/missing/extra bindings and produce stable pointer-free fingerprints
-- step=st-203 Machine integration; owner=implementation; success_criteria=Machine accepts Environment, legacy `.ports` remains sugar, BindingPlan drives dense dispatch, Native/Replay/Verify/Byte adapters work through Environment
-- step=st-204 run state/image; owner=implementation; success_criteria=RunState and RunImage encode/decode/validate parked/completed/failed/branch states, include required refs, and reject malformed/oversized/native identity
-- step=st-205 handoff workflows; owner=implementation; success_criteria=Handoff preflight/resume/replay/verify supports parked port, replay-only, verify divergence, target mismatch rejection, pending/checkpoint mismatch rejection, branch selection/fork metadata
-- step=st-206 examples/docs/build; owner=implementation; success_criteria=five requested examples/run steps added; README, `docs/environment.md`, and `docs/handoff.md` document framing and non-goals; `zig build check` includes new work
-- step=st-207 fixed-point proof and ship; owner=implementation; success_criteria=`$fixed-point-driver` reports no material normal-form findings, full Zig proof bundle passes, `$st` projection is clean, PR body contains requested summary/proof, and `$ship` opens/updates PR without merge
+1. step=core_model; owner=implementation; success_criteria=version constants, supervision structs, fingerprint helpers, and isolated fingerprint/exclusion tests compile and pass.
+2. step=policy_accounting; owner=implementation; success_criteria=policy presets, budgets, per-port budgets, cost model, port rules, ledger, and checks enforce deterministic limits.
+3. step=membrane; owner=implementation; success_criteria=single `Supervisor`/`PolicyMembrane` path denies before adapter calls, transcript appends, branch/checkpoint, and handoff side effects.
+4. step=machine_integration; owner=implementation; success_criteria=optional permit, strict permit enforcement, receipt availability, no-permit compatibility.
+5. step=timeline_environment_handoff; owner=implementation; success_criteria=supervision timeline events, Environment blockers, receiver-issued handoff permit APIs, prior receipt inspection.
+6. step=branch_checkpoint_handoff_budgets; owner=implementation; success_criteria=max counts/depth/cost/inherit/new-permit policies tested.
+7. step=examples_docs_build; owner=implementation; success_criteria=five new examples, run steps, README update, `docs/supervision.md`, check step coverage.
+8. step=proof_closeout; owner=implementation; success_criteria=run required proof commands, inspect diff, report any blockers with exact failing command.
 
 Iteration: 7
 </proposed_plan>
