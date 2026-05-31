@@ -328,9 +328,9 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-supervised-handoff",
             .desc = "Run the supervised handoff World example.",
             .expected_stdout =
-            \\received_run_image_fingerprint=b38c1759900f20a
+            \\received_run_image_fingerprint=ac6d8395b707f76e
             \\receiver_permit_fingerprint=3375ddcdc320bbf9
-            \\receiver_receipt_fingerprint=6f68ceb099281ec0
+            \\receiver_receipt_fingerprint=47d42d5b0de4eb2b
             \\final_result=7
             \\
             ,
