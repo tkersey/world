@@ -3886,6 +3886,7 @@ fn acceptanceReportFor(
         if (kind == .pending_stub and !policy.allow_pending_adapters) return rejectedReport(report, &.{.AdapterModeNotAllowed});
         if (kind == .null_reject and !policy.allow_reject_adapters) return rejectedReport(report, &.{.AdapterModeNotAllowed});
         if (kind == .replay and requested_mode != .replay) return rejectedReport(report, &.{.AdapterModeNotAllowed});
+        if (requested_mode == .verify and kind != .native) return rejectedReport(report, &.{.AdapterModeNotAllowed});
         if (kind == .replay and !policy.allow_replay_without_handlers) return rejectedReport(report, &.{.AdapterModeNotAllowed});
         if (@hasDecl(BindingDecl, "authority") and !authorityAllowsMode(BindingDecl.authority, requested_mode)) return rejectedReport(report, &.{.AdapterModeNotAllowed});
         const value_policy: ValuePolicy = if (@hasDecl(BindingDecl, "value_policy")) BindingDecl.value_policy else .native_compatible;

@@ -3101,6 +3101,10 @@ test "world environment accepts bindings and reports missing duplicate and repla
     try std.testing.expect(!replay_verify_report.accepted);
     try std.testing.expectEqual(world.AcceptanceBlocker.AdapterModeNotAllowed, replay_verify_report.blockers[0]);
 
+    const byte_verify_report = PortsByteEnv.acceptanceReport(.verify, true);
+    try std.testing.expect(!byte_verify_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.AdapterModeNotAllowed, byte_verify_report.blockers[0]);
+
     const replay_without_handlers_report = world.Environment(fixtures.Ports.Target, .{
         .bindings = .{PortsReplayBinding},
         .policy = world.EnvironmentPolicy.strict_fresh,
