@@ -5379,6 +5379,23 @@ test "supervised handoff receiver can issue stricter permit and inspect prior re
     const wrong_surface_report = handoff.preflightWithPermit(fixtures.Ports.Target, PortsEnv, .accept_fresh, wrong_surface_permit);
     try std.testing.expect(!wrong_surface_report.accepted);
 
+    const handoff_deny_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.handoff_receiver,
+        .handoff_policy = .deny,
+    });
+    const handoff_deny_report = handoff.preflightWithPermit(fixtures.Ports.Target, PortsEnv, .accept_fresh, handoff_deny_permit);
+    try std.testing.expect(!handoff_deny_report.accepted);
+    var deny_policy_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer deny_policy_runtime.deinit();
+    var deny_policy_ctx: PortsCtx = .{};
+    try std.testing.expectError(error.SupervisionDenied, handoff.resumeWithPermit(fixtures.Ports.Target, PortsEnv, &deny_policy_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &deny_policy_ctx,
+    }, .accept_fresh, handoff_deny_permit));
+    try std.testing.expectEqual(@as(usize, 0), deny_policy_ctx.calls);
+
     const denying_receiver_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
         .mode = .fresh,
         .policy = world.SupervisionPolicy.handoff_receiver,

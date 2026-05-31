@@ -2011,7 +2011,7 @@ pub const Supervision = struct {
         }
 
         pub fn beforeHandoffAccept(self: *@This()) !void {
-            if (!self.permit.policy.allow_handoff_accept) return self.deny(.before_handoff_accept, null, .handoff_denied, null, "handoff accept denied");
+            if (!self.permit.policy.allow_handoff_accept or self.permit.handoff_policy == .deny) return self.deny(.before_handoff_accept, null, .handoff_denied, null, "handoff accept denied");
             var next = try self.ledger.clone(self.allocator);
             defer next.deinit(self.allocator);
             next.total_handoff_accepts += 1;
@@ -4515,6 +4515,9 @@ pub const Handoff = struct {
             return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.SupervisionPolicyMismatch});
         }
         if (!permit.policy.allow_handoff_accept) {
+            return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.SupervisionPolicyMismatch});
+        }
+        if (permit.handoff_policy == .deny) {
             return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.SupervisionPolicyMismatch});
         }
         const supervision_report = Env.acceptanceReportWithSupervision(modeToRunMode(mode), self.run_image.transcript_image != null, permit.policy);
