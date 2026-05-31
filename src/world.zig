@@ -587,11 +587,15 @@ pub fn bind(comptime Decl: type, comptime Adapter: type) type {
         pub const source_ref = BasePortDecl.source_ref;
         pub const world_port_ref = BasePortDecl.world_port_ref;
         pub const suggested_name = BasePortDecl.suggested_name;
-        pub const handler = if (@hasDecl(Adapter, "handler")) Adapter.handler else BasePortDecl.handler;
         pub const response_deinit = BasePortDecl.response_deinit;
         pub const adapter_kind: AdapterKind = Adapter.kind;
         pub const authority = Adapter.authority;
         pub const value_policy = Adapter.value_policy;
+        pub const handler = if (@hasDecl(Adapter, "handler"))
+            Adapter.handler
+        else if (Adapter.kind == .native)
+            BasePortDecl.handler
+        else {};
 
         pub fn replayKey(request_fingerprint: u64) ReplayKeySeed {
             return BasePortDecl.replayKey(request_fingerprint);
@@ -3504,10 +3508,12 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     };
                     switch (self.effective_mode) {
                         .fresh, .audit => {
+                            if (comptime adapterKindForDecl(Decl) != .native) return Error.MissingHandler;
                             const value = try self.callFresh(Decl, public_request);
                             try self.session.resumeTyped(typed_request, value);
                         },
                         .verify => {
+                            if (comptime adapterKindForDecl(Decl) != .native) return Error.MissingHandler;
                             const value = try self.callVerify(Decl, public_request, typed_request, replay_key);
                             try self.session.resumeTyped(typed_request, value);
                         },
@@ -4737,10 +4743,16 @@ fn modeToRunMode(mode: HandoffMode) Mode {
 }
 
 fn valuePolicyForEnvironment(comptime Env: type) ValuePolicy {
-    return if (Env.policy_decl.require_portable_values or !Env.policy_decl.allow_native_only_values or Env.policy_decl.require_frame_images_for_replay)
-        ValuePolicy.portable
-    else
-        ValuePolicy.native_compatible;
+    return .{
+        .require_portable_values = Env.policy_decl.require_portable_values,
+        .allow_native_only_values = Env.policy_decl.allow_native_only_values,
+        .require_response_images_for_replay = Env.policy_decl.require_frame_images_for_replay,
+        .allow_diagnostic_type_labels = Env.policy_decl.allow_native_only_values,
+    };
+}
+
+fn adapterKindForDecl(comptime Decl: type) AdapterKind {
+    return if (@hasDecl(Decl, "adapter_kind")) Decl.adapter_kind else .native;
 }
 
 fn authoritySetFingerprint(entries: []const BindingPlan.Entry) u64 {

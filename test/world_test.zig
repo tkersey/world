@@ -3218,6 +3218,21 @@ test "Machine accepts Environment while legacy ports config remains valid" {
     try std.testing.expectEqual(@as(usize, 1), legacy_plan);
 }
 
+test "byte adapter environment does not dispatch native handler" {
+    const PortsByteMachineEnv = world.Machine(fixtures.Ports.Target, .{
+        .environment = PortsByteEnv,
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var ctx: PortsCtx = .{};
+    try std.testing.expectError(error.MissingHandler, PortsByteMachineEnv.run(&runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+    }));
+    try std.testing.expectEqual(@as(usize, 0), ctx.calls);
+}
+
 test "run state fingerprints bind parked and completed state without runtime pointers" {
     const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const parked = world.RunState.init(.{
@@ -3472,6 +3487,8 @@ test "handoff preflight rejects target mismatch and accepts replay handoff with 
     defer std.testing.allocator.free(native_encoded);
     var native_handoff = try world.Handoff.fromRunImage(std.testing.allocator, native_encoded);
     defer native_handoff.deinit();
+    const native_compatible_report = native_handoff.preflight(fixtures.Ports.Target, PortsEnv, .accept_replay);
+    try std.testing.expect(native_compatible_report.accepted);
     const native_replay_report = native_handoff.preflight(fixtures.Ports.Target, PortsReplayEnv, .accept_replay);
     try std.testing.expect(!native_replay_report.accepted);
     try std.testing.expectEqual(world.AcceptanceBlocker.NativeOnlyValueRejected, native_replay_report.blockers[0]);
