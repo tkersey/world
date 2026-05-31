@@ -251,9 +251,9 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-handoff-parked",
             .desc = "Run the parked World handoff example.",
             .expected_stdout =
-            \\run_image_fingerprint=c7b6f33bb0484fa1
+            \\run_image_fingerprint=b9ea83e6295dbaf0
             \\pending_request_fingerprint=f167057cbf38adb0
-            \\environment_certificate_fingerprint=bfbf44a09f7c4357
+            \\environment_certificate_fingerprint=18eae8043c9acdfb
             \\final_result=7
             \\
             ,

@@ -3411,12 +3411,16 @@ test "binding plan and binding descriptors exclude native function pointer ident
     try std.testing.expectEqual(@as(u32, 1), agent_plan.dense_entries[1].world_port_id);
     try std.testing.expectEqual(@as(u32, 0), reordered_agent_plan.dense_entries[0].world_port_id);
     try std.testing.expectEqual(@as(u32, 1), reordered_agent_plan.dense_entries[1].world_port_id);
-    try std.testing.expectEqual(agent_plan.plan_fingerprint, reordered_agent_plan.plan_fingerprint);
+    try std.testing.expectEqual(@as(usize, 0), agent_plan.dense_entries[0].adapter_slot);
+    try std.testing.expectEqual(@as(usize, 1), agent_plan.dense_entries[1].adapter_slot);
+    try std.testing.expectEqual(@as(usize, 1), reordered_agent_plan.dense_entries[0].adapter_slot);
+    try std.testing.expectEqual(@as(usize, 0), reordered_agent_plan.dense_entries[1].adapter_slot);
+    try std.testing.expect(agent_plan.plan_fingerprint != reordered_agent_plan.plan_fingerprint);
     const agent_cert = AgentEnv.certificate(.fresh, false);
     const reordered_agent_cert = AgentEnvReordered.certificate(.fresh, false);
     try std.testing.expectEqual(agent_cert.authority_descriptor_fingerprint, reordered_agent_cert.authority_descriptor_fingerprint);
     try std.testing.expectEqual(agent_cert.adapter_descriptor_fingerprint, reordered_agent_cert.adapter_descriptor_fingerprint);
-    try std.testing.expectEqual(agent_cert.certificate_fingerprint, reordered_agent_cert.certificate_fingerprint);
+    try std.testing.expect(agent_cert.certificate_fingerprint != reordered_agent_cert.certificate_fingerprint);
 }
 
 test "acceptance report port authority adapter descriptor and environment certificate fingerprints are stable" {

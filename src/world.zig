@@ -2836,7 +2836,7 @@ pub const Handoff = struct {
         }
         if (mode == .accept_fresh) {
             const pending_frame = self.run_image.pending_request_frame.?;
-            validateRequestFramePolicy(pending_frame, valuePolicyForEnvironmentPort(Env, pending_frame.world_port_id, .request)) catch {
+            validateTransferredRequestFramePolicy(pending_frame, valuePolicyForEnvironmentPort(Env, pending_frame.world_port_id, .request)) catch {
                 return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.NativeOnlyValueRejected});
             };
             if (self.run_image.transcript_image) |*image| {
@@ -4482,6 +4482,11 @@ fn validateRequestFramePolicy(frame: Frame.Request, policy: ValuePolicy) !void {
     if (frame.payload_image) |image| try validateValueImagePolicy(image, policy);
 }
 
+fn validateTransferredRequestFramePolicy(frame: Frame.Request, policy: ValuePolicy) !void {
+    try validateRequestFramePolicy(frame, policy);
+    if (frame.payload_image == null and (policy.require_portable_values or !policy.allow_native_only_values)) return error.MissingValueImage;
+}
+
 fn validateResponseFramePolicy(frame: Frame.Response, policy: ValuePolicy) !void {
     if (frame.status != .responded) return;
     const image = frame.response_image orelse {
@@ -5312,6 +5317,7 @@ fn fingerprintBindingPlan(plan: BindingPlan) u64 {
     hashU64(&hasher, plan.binding_count);
     for (plan.dense_entries) |entry| {
         hashU64(&hasher, entry.world_port_id);
+        hashU64(&hasher, entry.adapter_slot);
         hashU64(&hasher, entry.binding_fingerprint);
         hashU64(&hasher, @intFromEnum(entry.adapter_kind));
         hashValuePolicy(&hasher, entry.value_policy);
