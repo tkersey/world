@@ -3554,15 +3554,31 @@ test "run state fingerprints bind parked and completed state without runtime poi
 }
 
 test "run image encode decode roundtrip includes TargetRef TranscriptImage branches checkpoints and pending frame" {
+    const request = testRequestFrame();
     var transcript = world.Transcript.init(std.testing.allocator);
     defer transcript.deinit();
-    try recordPortsTranscript(&transcript);
+    try transcript.append(.{
+        .kind = .run_started,
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .target_certificate_fingerprint = request.target_certificate_fingerprint,
+        .source_run = true,
+    });
+    try transcript.append(.{
+        .kind = .frame_requested,
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .target_certificate_fingerprint = request.target_certificate_fingerprint,
+        .world_port_id = request.world_port_id,
+        .request_fingerprint = request.request_fingerprint,
+        .turn_index = request.turn_index,
+        .residual_site_index = request.residual_site_index,
+        .residual_site_fingerprint = request.residual_site_fingerprint,
+        .request_frame = request,
+    });
     var image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
     defer image.deinit(std.testing.allocator);
 
     const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const import_set = world.ImportSet.fromTarget(fixtures.Ports.Target);
-    const request = testRequestFrame();
     const checkpoint = world.Timeline.Checkpoint.init(.{
         .world_surface_fingerprint = request.world_surface_fingerprint,
         .target_certificate_fingerprint = request.target_certificate_fingerprint,
@@ -3819,7 +3835,10 @@ test "run image encode decode roundtrip includes TargetRef TranscriptImage branc
     });
     try std.testing.expectError(error.HandoffTargetMismatch, wrong_status_binding.validate(.{}));
 
-    var native_image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.native_compatible });
+    var completed_transcript = world.Transcript.init(std.testing.allocator);
+    defer completed_transcript.deinit();
+    try recordPortsTranscript(&completed_transcript);
+    var native_image = try completed_transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.native_compatible });
     defer native_image.deinit(std.testing.allocator);
     const native_image_state = world.RunState.init(.{
         .target_ref_fingerprint = target_ref.target_ref_fingerprint,
@@ -3966,6 +3985,21 @@ test "handoff preflight rejects target mismatch and accepts replay handoff with 
     const replay_report = handoff.preflight(fixtures.Ports.Target, PortsReplayEnv, .accept_replay);
     try std.testing.expect(replay_report.accepted);
 
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const parked_completed_state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .transcript_image_fingerprint = image.transcript_image_fingerprint,
+        .status = .parked_on_port,
+    });
+    const parked_completed_image = world.RunImage.init(.{
+        .kind = .parked_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .transcript_image = image,
+        .current_state = parked_completed_state,
+    });
+    try std.testing.expectError(error.HandoffTargetMismatch, parked_completed_image.validate(.{}));
+
     var native_image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.native_compatible });
     defer native_image.deinit(std.testing.allocator);
     const native_run_image = world.RunImage.fromTranscriptImage(fixtures.Ports.Target, native_image, .replay_only_run);
@@ -3979,7 +4013,6 @@ test "handoff preflight rejects target mismatch and accepts replay handoff with 
     try std.testing.expect(!native_replay_report.accepted);
     try std.testing.expectEqual(world.AcceptanceBlocker.NativeOnlyValueRejected, native_replay_report.blockers[0]);
 
-    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const forged_state = world.RunState.init(.{
         .target_ref_fingerprint = target_ref.target_ref_fingerprint,
         .status = .not_started,

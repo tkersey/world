@@ -2600,8 +2600,8 @@ pub const RunImage = struct {
             if (image.target_certificate_fingerprint != self.target_ref.target_certificate_fingerprint) return error.TargetCertificateMismatch;
             if (self.current_state.transcript_image_fingerprint != image.transcript_image_fingerprint) return error.HandoffTargetMismatch;
             switch (image.final_status) {
-                .completed => if (self.current_state.status != .completed and self.current_state.status != .parked_on_port) return error.HandoffTargetMismatch,
-                .failed => if (self.current_state.status != .failed and self.current_state.status != .parked_on_port) return error.HandoffTargetMismatch,
+                .completed => if (self.current_state.status != .completed) return error.HandoffTargetMismatch,
+                .failed => if (self.current_state.status != .failed) return error.HandoffTargetMismatch,
                 .running => if (self.current_state.status != .running and self.current_state.status != .parked_on_port) return error.HandoffTargetMismatch,
             }
             try image.validateValuePolicy(value_policy);
