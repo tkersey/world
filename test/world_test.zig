@@ -4761,6 +4761,13 @@ test "run permit fingerprint stable binds target environment policy budget cost 
 }
 
 test "run permit validation rejects nested policy budget cost and rule drift" {
+    const mode_denied_policy = world.SupervisionPolicy.init(.{ .require_environment_certificate = false });
+    const mode_denied_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = mode_denied_policy,
+    });
+    try std.testing.expectError(error.SupervisionDenied, world.Supervisor.init(std.testing.allocator, mode_denied_permit, fixtures.Ports.Target.WorldPortTable.entries.len));
+
     const rules = [_]world.PortRule{world.PortRule.init(.{
         .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
         .world_port_id = 0,

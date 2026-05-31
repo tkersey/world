@@ -1748,6 +1748,7 @@ pub const Supervision = struct {
         }
 
         pub fn validatePermitForRun(permit: Supervision.RunPermit, port_count: usize) !void {
+            if (!modeAllowedByPolicy(permit.policy, permit.mode)) return Error.SupervisionDenied;
             const policy = permit.policy.withFingerprint();
             if (permit.policy.policy_fingerprint != policy.policy_fingerprint) return Error.SupervisionDenied;
             if (permit.supervision_policy_fingerprint != policy.policy_fingerprint) return Error.SupervisionDenied;
