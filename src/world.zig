@@ -5084,6 +5084,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 done_value_present: bool = false,
                 frame_step_request: bool = false,
                 handoff_pending_frame_fingerprint: ?u64 = null,
+                pending_adapter_call_accounted: bool = false,
                 retained_values: std.ArrayList(StoredValue) = .empty,
                 supervisor: ?Supervision.Supervisor = null,
 
@@ -5466,6 +5467,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             }
                             self.pending_request = request;
                             self.pending_port_id = world_port_id;
+                            self.pending_adapter_call_accounted = false;
                             self.audit.port_request_count += 1;
                             self.per_port_counts[world_port_id] += 1;
                             if (!self.frame_step_request) {
@@ -5514,6 +5516,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                                 };
                                 self.pending_request = null;
                                 self.pending_port_id = null;
+                                self.pending_adapter_call_accounted = false;
                                 return;
                             }
                             return self.markMissingHandler(world_port_id, trace);
@@ -5537,7 +5540,14 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         .done => |value| .{ .done = value },
                         .failed => .failed,
                         .parked => error.HandlerPending,
-                        .port_required => .{ .port_request = try self.pendingRequestFrame(!had_pending_request) },
+                        .port_required => request: {
+                            var frame = try self.pendingRequestFrame(!had_pending_request);
+                            errdefer frame.deinit(self.allocator);
+                            if (self.handoff_pending_frame_fingerprint == null and !self.pending_adapter_call_accounted) {
+                                try self.accountPendingAdapterCall(frame.world_port_id);
+                            }
+                            break :request .{ .port_request = frame };
+                        },
                     };
                 }
 
@@ -5611,6 +5621,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                                 try self.resumeFrameDecl(Decl, request, frame, response_frame, replayed);
                                 self.pending_request = null;
                                 self.pending_port_id = null;
+                                self.pending_adapter_call_accounted = false;
                                 return;
                             }
                             return self.markMissingHandler(world_port_id, request.trace());
@@ -5667,22 +5678,6 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     errdefer frame.deinit(self.allocator);
                     if (record_event) {
                         if (self.supervisor) |*supervisor| {
-                            const charge_adapter_call = if (self.handoff_pending_frame_fingerprint) |fingerprint|
-                                fingerprint == frame.frame_fingerprint
-                            else
-                                true;
-                            if (charge_adapter_call) {
-                                supervisor.beforeAdapterCall(.{
-                                    .world_port_id = world_port_id,
-                                    .mode = self.mode,
-                                    .adapter_kind = comptime adapterKindForDecl(Decl),
-                                    .authority_kind = comptime authorityKindForDecl(Decl),
-                                    .value_policy = if (comptime @hasDecl(Decl, "value_policy")) Decl.value_policy else .native_compatible,
-                                }) catch |err| {
-                                    try self.handleSupervisionError(err);
-                                    return Error.HandlerPending;
-                                };
-                            }
                             const encoded = try frame.encode(self.allocator);
                             defer self.allocator.free(encoded);
                             supervisor.accountPortRequestBytes(
@@ -5779,18 +5774,23 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     return Error.MissingHandler;
                 }
 
-                fn recordMissingHandler(self: *Self, world_port_id: u32, trace: anytype) !void {
-                    self.audit.missing_handler_count += 1;
-                    self.audit.failed_count += 1;
-                    try self.recordPortEvent(.port_failed, world_port_id, trace, null, null, null, null, null);
-                    try self.markRunFailed();
+                fn accountPendingAdapterCall(self: *Self, world_port_id: u32) !void {
+                    if (Target.WorldPortTable.entries.len == 0) return Error.UnknownWorldPort;
+                    switch (world_port_id) {
+                        inline 0...Target.WorldPortTable.entries.len - 1 => |id| {
+                            const Handler = comptime handlerForWorldPortId(Target, Config, @intCast(id));
+                            if (Handler) |Decl| {
+                                try self.accountPendingAdapterCallDecl(Decl);
+                                return;
+                            }
+                            return Error.MissingHandler;
+                        },
+                        else => return Error.UnknownWorldPort,
+                    }
                 }
 
-                fn dispatchDecl(self: *Self, comptime Decl: type, request: Request) !void {
-                    const typed_request = try request.as(Decl.SiteType);
-                    const payload = try typed_request.payload();
-                    const trace = request.trace();
-                    const replay_key = Decl.replayKey(trace.fingerprint);
+                fn accountPendingAdapterCallDecl(self: *Self, comptime Decl: type) !void {
+                    if (self.pending_adapter_call_accounted) return;
                     if (self.supervisor) |*supervisor| {
                         supervisor.beforeAdapterCall(.{
                             .world_port_id = Decl.world_port_id,
@@ -5803,6 +5803,22 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             return Error.HandlerPending;
                         };
                     }
+                    self.pending_adapter_call_accounted = true;
+                }
+
+                fn recordMissingHandler(self: *Self, world_port_id: u32, trace: anytype) !void {
+                    self.audit.missing_handler_count += 1;
+                    self.audit.failed_count += 1;
+                    try self.recordPortEvent(.port_failed, world_port_id, trace, null, null, null, null, null);
+                    try self.markRunFailed();
+                }
+
+                fn dispatchDecl(self: *Self, comptime Decl: type, request: Request) !void {
+                    const typed_request = try request.as(Decl.SiteType);
+                    const payload = try typed_request.payload();
+                    const trace = request.trace();
+                    const replay_key = Decl.replayKey(trace.fingerprint);
+                    try self.accountPendingAdapterCallDecl(Decl);
                     const public_request = PortRequest(Target, Decl.SiteType){
                         .world_surface_fingerprint = Target.WorldSurface.surface_fingerprint,
                         .target_certificate_fingerprint = Target.Certificate.certificate_fingerprint,

@@ -4410,8 +4410,9 @@ test "parked handoff replays transcript prefix before selected pending request" 
         .ctx = &fresh_limited_ctx,
     }, .accept_fresh, fresh_limited_permit);
     defer fresh_limited_run.deinit();
+    try fresh_limited_run.dispatch();
     try std.testing.expectEqual(@as(usize, 0), fresh_limited_ctx.model_calls);
-    try std.testing.expectEqual(@as(usize, 0), fresh_limited_ctx.tool_calls);
+    try std.testing.expectEqual(@as(usize, 1), fresh_limited_ctx.tool_calls);
     try std.testing.expectEqual(@as(usize, 1), fresh_limited_run.supervisor.?.ledger.total_fresh_calls);
     try std.testing.expectEqual(@as(usize, 1), fresh_limited_run.supervisor.?.ledger.total_replay_calls);
 
