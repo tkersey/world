@@ -2870,6 +2870,7 @@ fn validateTranscriptEventFrameBindings(event: TranscriptImage.EventImage) !void
     if (event.response_frame) |frame| {
         if (!eventKindAllowsResponseFrame(event.kind)) return error.InvalidFrameEncoding;
         try validateResponseFrameImage(frame);
+        if (frame.responseFingerprintDeferred()) return error.InvalidFrameEncoding;
         if (frame.world_surface_fingerprint != event.world_surface_fingerprint) return error.InvalidFrameEncoding;
         if (frame.target_certificate_fingerprint != event.target_certificate_fingerprint) return error.InvalidFrameEncoding;
         if (event.world_port_id) |world_port_id| {

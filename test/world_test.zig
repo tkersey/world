@@ -2451,6 +2451,22 @@ test "world timeline port frame byte adapter native adapter replay adapter agent
     defer decoded_response.deinit(std.testing.allocator);
     try std.testing.expectEqual(response.frame_fingerprint, decoded_response.frame_fingerprint);
 
+    var deferred_transcript = world.Transcript.init(std.testing.allocator);
+    defer deferred_transcript.deinit();
+    try deferred_transcript.append(.{
+        .kind = .frame_responded,
+        .world_surface_fingerprint = response.world_surface_fingerprint,
+        .target_certificate_fingerprint = response.target_certificate_fingerprint,
+        .world_port_id = response.world_port_id,
+        .request_fingerprint = response.request_fingerprint,
+        .response_fingerprint = response.response_fingerprint,
+        .response_kind = response.response_kind,
+        .replay_key = response.replay_key,
+        .status = response.status,
+        .response_frame = response,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, deferred_transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable }));
+
     var frame_runtime = boundary.Runtime.init(std.testing.allocator);
     defer frame_runtime.deinit();
     var frame_run = try PortsMachine.start(&frame_runtime, .{}, .{
