@@ -3384,6 +3384,20 @@ test "run image encode decode roundtrip includes TargetRef TranscriptImage branc
     });
     try std.testing.expectError(error.HandoffTargetMismatch, stale_transcript_binding.validate(.{}));
 
+    const wrong_status_state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .transcript_image_fingerprint = image.transcript_image_fingerprint,
+        .status = .failed,
+    });
+    const wrong_status_binding = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = import_set.import_set_fingerprint,
+        .transcript_image = image,
+        .current_state = wrong_status_state,
+    });
+    try std.testing.expectError(error.HandoffTargetMismatch, wrong_status_binding.validate(.{}));
+
     var native_image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.native_compatible });
     defer native_image.deinit(std.testing.allocator);
     const native_image_state = world.RunState.init(.{
