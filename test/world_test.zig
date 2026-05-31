@@ -229,6 +229,21 @@ fn hashTestU64(hasher: *std.hash.Wyhash, value: anytype) void {
     hasher.update(&buffer);
 }
 
+fn writeLittleU64(bytes: []u8, value: anytype) void {
+    var buffer: [8]u8 = undefined;
+    std.mem.writeInt(u64, &buffer, @intCast(value), .little);
+    @memcpy(bytes, &buffer);
+}
+
+fn firstDiffAfter(left: []const u8, right: []const u8, start: usize) !usize {
+    const limit = @min(left.len, right.len);
+    var index = start;
+    while (index < limit) : (index += 1) {
+        if (left[index] != right[index]) return index;
+    }
+    return error.MissingDiff;
+}
+
 fn testTranscriptImageFingerprint(image: world.TranscriptImage) u64 {
     var hasher = std.hash.Wyhash.init(0);
     hashTestBytes(&hasher, "world.transcript.image.fingerprint");
@@ -2982,6 +2997,17 @@ test "world environment accepts bindings and reports missing duplicate and repla
         .policy = world.EnvironmentPolicy.strict_replay,
     }).acceptanceReport(.replay, true);
     try std.testing.expect(replay_without_handlers.accepted);
+
+    const replay_fresh_report = PortsReplayEnv.acceptanceReport(.fresh, false);
+    try std.testing.expect(!replay_fresh_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.AdapterModeNotAllowed, replay_fresh_report.blockers[0]);
+
+    const replay_verify_report = PortsReplayEnv.acceptanceReport(.verify, true);
+    try std.testing.expect(!replay_verify_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.AdapterModeNotAllowed, replay_verify_report.blockers[0]);
+
+    const replay_report = PortsReplayEnv.acceptanceReport(.replay, true);
+    try std.testing.expect(replay_report.accepted);
 }
 
 test "binding plan and binding descriptors exclude native function pointer identity" {
@@ -3021,6 +3047,16 @@ test "acceptance report port authority adapter descriptor and environment certif
     const cert_again = PortsEnv.certificate(.fresh, false);
     try std.testing.expectEqual(cert.certificate_fingerprint, cert_again.certificate_fingerprint);
     try std.testing.expectEqual(PortsEnv.bindingPlan().plan_fingerprint, cert.binding_plan_fingerprint);
+    try std.testing.expectEqual(world.EnvironmentCertificate.ModeMask.fresh, cert.accepted_modes);
+
+    const missing_cert = PortsMissingEnv.certificate(.fresh, false);
+    try std.testing.expectEqual(world.EnvironmentCertificate.ModeMask.none, missing_cert.accepted_modes);
+
+    const replay_cert = PortsReplayEnv.certificate(.replay, true);
+    try std.testing.expectEqual(world.EnvironmentCertificate.ModeMask.replay, replay_cert.accepted_modes);
+
+    const replay_fresh_cert = PortsReplayEnv.certificate(.fresh, false);
+    try std.testing.expectEqual(world.EnvironmentCertificate.ModeMask.none, replay_fresh_cert.accepted_modes);
 }
 
 test "Machine accepts Environment while legacy ports config remains valid" {
@@ -3131,6 +3167,63 @@ test "run image encode decode roundtrip includes TargetRef TranscriptImage branc
     defer std.testing.allocator.free(malformed);
     malformed[8] +%= 1;
     try std.testing.expectError(error.InvalidFrameEncoding, world.RunImage.decode(std.testing.allocator, malformed));
+}
+
+test "run image decode rejects oversized timeline counts before allocation" {
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const import_set = world.ImportSet.fromTarget(fixtures.Ports.Target);
+    const base_state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .not_started,
+    });
+    const base_image = world.RunImage.init(.{
+        .kind = .reference_target_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = import_set.import_set_fingerprint,
+        .current_state = base_state,
+    });
+    const base_encoded = try base_image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(base_encoded);
+
+    const checkpoint = world.Timeline.Checkpoint.init(.{
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = target_ref.target_certificate_fingerprint,
+        .event_index = 1,
+        .turn_index = 1,
+        .transcript_prefix_fingerprint = 0,
+        .branch_id = 0,
+        .status = .running,
+    });
+    const checkpoint_image = world.RunImage.init(.{
+        .kind = .reference_target_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = import_set.import_set_fingerprint,
+        .current_state = base_state,
+        .checkpoints = &.{checkpoint},
+    });
+    const checkpoint_encoded = try checkpoint_image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(checkpoint_encoded);
+
+    const checkpoint_count_offset = try firstDiffAfter(base_encoded, checkpoint_encoded, 17);
+
+    var oversized_checkpoints = try std.testing.allocator.dupe(u8, base_encoded);
+    defer std.testing.allocator.free(oversized_checkpoints);
+    writeLittleU64(
+        oversized_checkpoints[checkpoint_count_offset..][0..8],
+        (world.RunImage.ValidateOptions{}).max_checkpoints + 1,
+    );
+    var fixed_buffer: [1024]u8 = undefined;
+    var fixed_allocator = std.heap.FixedBufferAllocator.init(&fixed_buffer);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.RunImage.decode(fixed_allocator.allocator(), oversized_checkpoints));
+
+    var oversized_branches = try std.testing.allocator.dupe(u8, base_encoded);
+    defer std.testing.allocator.free(oversized_branches);
+    writeLittleU64(
+        oversized_branches[checkpoint_count_offset + 8 ..][0..8],
+        (world.RunImage.ValidateOptions{}).max_branches + 1,
+    );
+    var fixed_allocator_again = std.heap.FixedBufferAllocator.init(&fixed_buffer);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.RunImage.decode(fixed_allocator_again.allocator(), oversized_branches));
 }
 
 test "handoff preflight rejects target mismatch and accepts replay handoff with transcript image" {

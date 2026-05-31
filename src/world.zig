@@ -428,7 +428,7 @@ pub const PortAuthority = struct {
 
     pub const fixture = init(.{ .authority_label = "fixture", .authority_kind = .fixture, .allowed_modes = .all });
     pub const replay_source = init(.{ .authority_label = "replay", .authority_kind = .replay_source, .allowed_modes = .replay, .allows_fresh_calls = false, .allows_verify = false });
-    pub const native_function = init(.{ .authority_label = "native", .authority_kind = .native_function, .allowed_modes = .fresh_and_replay });
+    pub const native_function = init(.{ .authority_label = "native", .authority_kind = .native_function, .allowed_modes = .all });
 };
 
 pub const AdapterDescriptor = struct {
@@ -817,6 +817,7 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
                 .policy_fingerprint = policy.policy_fingerprint,
                 .authority_descriptor_fingerprint = authoritySetFingerprint(bindings),
                 .adapter_descriptor_fingerprint = adapterSetFingerprint(bindings),
+                .accepted_modes = acceptedModeMask(report),
                 .blocker_count = report.blockers.len,
             };
             cert.certificate_fingerprint = fingerprintEnvironmentCertificate(cert);
@@ -2612,11 +2613,13 @@ pub const RunImage = struct {
         }
         errdefer if (transcript_image) |*image| image.deinit(allocator);
         const checkpoint_count = try readU64AsUsize(bytes, &cursor);
+        if (checkpoint_count > (ValidateOptions{}).max_checkpoints) return error.InvalidFrameEncoding;
         if (checkpoint_count > (bytes.len - cursor) / 8) return error.InvalidFrameEncoding;
         const checkpoints = try allocator.alloc(Timeline.Checkpoint, checkpoint_count);
         errdefer allocator.free(checkpoints);
         for (checkpoints) |*checkpoint| checkpoint.* = try decodeCheckpoint(bytes, &cursor);
         const branch_count = try readU64AsUsize(bytes, &cursor);
+        if (branch_count > (ValidateOptions{}).max_branches) return error.InvalidFrameEncoding;
         if (branch_count > (bytes.len - cursor) / 8) return error.InvalidFrameEncoding;
         const branches = try allocator.alloc(Timeline.Branch, branch_count);
         errdefer allocator.free(branches);
@@ -3689,6 +3692,8 @@ fn acceptanceReportFor(
         }
         if (kind == .native and !policy.allow_native_adapters) return rejectedReport(report, &.{.AdapterModeNotAllowed});
         if (kind == .byte and !policy.allow_byte_adapters) return rejectedReport(report, &.{.AdapterModeNotAllowed});
+        if (kind == .replay and requested_mode != .replay) return rejectedReport(report, &.{.AdapterModeNotAllowed});
+        if (@hasDecl(BindingDecl, "authority") and !authorityAllowsMode(BindingDecl.authority, requested_mode)) return rejectedReport(report, &.{.AdapterModeNotAllowed});
         const value_policy: ValuePolicy = if (@hasDecl(BindingDecl, "value_policy")) BindingDecl.value_policy else .native_compatible;
         if (value_policy.require_portable_values) report.portable_value_compatible_count += 1 else report.native_only_value_count += 1;
         if (policy.require_portable_values and !value_policy.require_portable_values) return rejectedReport(report, &.{.PortableValuesRequired});
@@ -3708,6 +3713,37 @@ fn acceptanceReportFor(
     if (requested_mode == .verify and !transcript_image_available and !policy.allow_verify_without_transcript) return rejectedReport(report, &.{.VerifyTranscriptMissing});
     report.report_fingerprint = fingerprintAcceptanceReport(report);
     return report;
+}
+
+fn acceptedModeMask(report: AcceptanceReport) EnvironmentCertificate.ModeMask {
+    if (!report.accepted) return .none;
+    return switch (report.requested_mode) {
+        .fresh => .fresh,
+        .replay => .replay,
+        .verify => .verify,
+        .audit => .audit,
+    };
+}
+
+fn authorityAllowsMode(authority: PortAuthority, requested_mode: Mode) bool {
+    if (!portAuthorityModeMaskAllows(authority.allowed_modes, requested_mode)) return false;
+    return switch (requested_mode) {
+        .fresh => authority.allows_fresh_calls,
+        .replay => authority.allows_replay,
+        .verify => authority.allows_verify,
+        .audit => true,
+    };
+}
+
+fn portAuthorityModeMaskAllows(mask: PortAuthority.ModeMask, requested_mode: Mode) bool {
+    return switch (mask) {
+        .fresh => requested_mode == .fresh,
+        .replay => requested_mode == .replay,
+        .verify => requested_mode == .verify,
+        .audit => requested_mode == .audit,
+        .fresh_and_replay => requested_mode == .fresh or requested_mode == .replay,
+        .all => true,
+    };
 }
 
 fn rejectedReport(base: AcceptanceReport, blockers: []const AcceptanceBlocker) AcceptanceReport {
