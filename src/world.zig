@@ -2836,12 +2836,15 @@ pub const Handoff = struct {
         }
         if (mode == .accept_fresh) {
             const pending_frame = self.run_image.pending_request_frame.?;
-            validateTransferredRequestFramePolicy(pending_frame, valuePolicyForEnvironmentPort(Env, pending_frame.world_port_id, .request)) catch {
-                return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.NativeOnlyValueRejected});
+            const pending_policy = valuePolicyForEnvironmentPort(Env, pending_frame.world_port_id, .request) catch |err| {
+                return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{environmentValidationBlocker(err)});
+            };
+            validateTransferredRequestFramePolicy(pending_frame, pending_policy) catch |err| {
+                return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{environmentValidationBlocker(err)});
             };
             if (self.run_image.transcript_image) |*image| {
-                validateTranscriptImageForEnvironment(Env, image) catch {
-                    return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.NativeOnlyValueRejected});
+                validateTranscriptImageForEnvironment(Env, image) catch |err| {
+                    return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{environmentValidationBlocker(err)});
                 };
                 image.prepareReplayPrefixForPendingRequest(
                     Target.WorldSurface.surface_fingerprint,
@@ -2861,8 +2864,8 @@ pub const Handoff = struct {
                 image
             else
                 return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.TranscriptImageRequired});
-            validateTranscriptImageForEnvironment(Env, image) catch {
-                return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.NativeOnlyValueRejected});
+            validateTranscriptImageForEnvironment(Env, image) catch |err| {
+                return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{environmentValidationBlocker(err)});
             };
             image.resetReplay();
             image.validateReplayRun(
@@ -4915,25 +4918,28 @@ fn valuePolicyForEnvironment(comptime Env: type) ValuePolicy {
 
 fn validateTranscriptForEnvironment(comptime Env: type, transcript: *const Transcript) !void {
     for (transcript.events.items) |event| {
-        if (event.request_frame) |frame| try validateRequestFramePolicy(frame, valuePolicyForEnvironmentPort(Env, frame.world_port_id, .request));
-        if (event.response_frame) |frame| try validateResponseFramePolicy(frame, valuePolicyForEnvironmentPort(Env, frame.world_port_id, .response));
+        if (event.request_frame) |frame| try validateRequestFramePolicy(frame, try valuePolicyForEnvironmentPort(Env, frame.world_port_id, .request));
+        if (event.response_frame) |frame| try validateResponseFramePolicy(frame, try valuePolicyForEnvironmentPort(Env, frame.world_port_id, .response));
     }
 }
 
 fn validateTranscriptImageForEnvironment(comptime Env: type, image: *const TranscriptImage) !void {
     for (image.events) |event| {
-        if (event.request_frame) |frame| try validateRequestFramePolicy(frame, valuePolicyForEnvironmentPort(Env, frame.world_port_id, .request));
-        if (event.response_frame) |frame| try validateResponseFramePolicy(frame, valuePolicyForEnvironmentPort(Env, frame.world_port_id, .response));
+        if (event.request_frame) |frame| try validateRequestFramePolicy(frame, try valuePolicyForEnvironmentPort(Env, frame.world_port_id, .request));
+        if (event.response_frame) |frame| try validateResponseFramePolicy(frame, try valuePolicyForEnvironmentPort(Env, frame.world_port_id, .response));
     }
 }
 
 const FrameValuePolicyKind = enum { request, response };
 
-fn valuePolicyForEnvironmentPort(comptime Env: type, world_port_id: u32, comptime kind: FrameValuePolicyKind) ValuePolicy {
+fn valuePolicyForEnvironmentPort(comptime Env: type, world_port_id: u32, comptime kind: FrameValuePolicyKind) !ValuePolicy {
+    if (world_port_id >= Env.TargetType.WorldPortTable.entries.len) return error.WrongPortId;
     var policy = valuePolicyForEnvironment(Env);
+    var found = false;
     inline for (Env.bindings_decl) |BindingDecl| {
         if (comptime BindingDecl.TargetType == Env.TargetType) {
             if (BindingDecl.world_port_id == world_port_id) {
+                found = true;
                 const binding_policy: ValuePolicy = if (@hasDecl(BindingDecl, "value_policy")) BindingDecl.value_policy else .native_compatible;
                 if (binding_policy.require_portable_values) policy.require_portable_values = true;
                 if (!binding_policy.allow_native_only_values) policy.allow_native_only_values = false;
@@ -4951,7 +4957,16 @@ fn valuePolicyForEnvironmentPort(comptime Env: type, world_port_id: u32, comptim
             }
         }
     }
+    if (!found) return error.MissingBinding;
     return policy;
+}
+
+fn environmentValidationBlocker(err: anyerror) AcceptanceBlocker {
+    return switch (err) {
+        error.WrongPortId => .WrongPortId,
+        error.MissingBinding => .MissingBinding,
+        else => .NativeOnlyValueRejected,
+    };
 }
 
 fn tightenValuePolicyMax(policy: *ValuePolicy, limit: ?usize) void {

@@ -3625,6 +3625,51 @@ test "run image encode decode roundtrip includes TargetRef TranscriptImage branc
     try std.testing.expect(!capped_pending_report.accepted);
     try std.testing.expectEqual(world.AcceptanceBlocker.NativeOnlyValueRejected, capped_pending_report.blockers[0]);
 
+    var unknown_payload_image: ?world.Frame.ValueImage = try world.Frame.ValueImage.fromValue(
+        std.testing.allocator,
+        0,
+        null,
+        null,
+        @as([]const u8, "portable"),
+        world.ValuePolicy.portable,
+    );
+    errdefer if (unknown_payload_image) |*payload| payload.deinit(std.testing.allocator);
+    var unknown_port_request = world.Frame.Request.init(.{
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .world_surface_replay_scope_fingerprint = fixtures.Ports.Target.WorldSurface.replayScopeRef().fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .world_port_id = 99,
+        .residual_site_index = fixtures.Ports.ApprovalRequest.index,
+        .residual_site_fingerprint = fixtures.Ports.ApprovalRequest.fingerprint,
+        .request_fingerprint = 0xabc0_ffee,
+        .turn_index = 0,
+        .payload_value_table_id = 0,
+        .expected_response_value_table_id = 1,
+        .payload_image = unknown_payload_image,
+    });
+    unknown_payload_image = null;
+    defer unknown_port_request.deinit(std.testing.allocator);
+    const unknown_port_state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .pending_request_fingerprint = unknown_port_request.frame_fingerprint,
+        .turn_index = unknown_port_request.turn_index,
+        .status = .parked_on_port,
+    });
+    const unknown_port_image = world.RunImage.init(.{
+        .kind = .parked_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = import_set.import_set_fingerprint,
+        .current_state = unknown_port_state,
+        .pending_request_frame = unknown_port_request,
+    });
+    const unknown_port_encoded = try unknown_port_image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(unknown_port_encoded);
+    var unknown_port_handoff = try world.Handoff.fromRunImage(std.testing.allocator, unknown_port_encoded);
+    defer unknown_port_handoff.deinit();
+    const unknown_port_report = unknown_port_handoff.preflight(fixtures.Ports.Target, PortsEnv, .accept_fresh);
+    try std.testing.expect(!unknown_port_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.WrongPortId, unknown_port_report.blockers[0]);
+
     var cap_handoff = try world.Handoff.fromRunImage(std.testing.allocator, encoded);
     defer cap_handoff.deinit();
     const cap_report = cap_handoff.preflight(fixtures.Ports.Target, PortsPayloadCapEnv, .accept_fresh);
