@@ -1037,6 +1037,20 @@ test "environment replay and verify accept in-memory transcripts" {
     }
 }
 
+test "replay-only environment requires transcript image" {
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    try recordPortsTranscript(&transcript);
+
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    try std.testing.expectError(error.TranscriptImageRequired, PortsReplayMachineEnv.run(&runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.replay,
+        .transcript = &transcript,
+    }));
+}
+
 test "world replay rejects forged transcript dimensions" {
     {
         var transcript = world.Transcript.init(std.testing.allocator);
@@ -3590,6 +3604,17 @@ test "parked handoff replays transcript prefix before selected pending request" 
     const rejected_replay = handoff.preflight(fixtures.Agent.Target, AgentEnv, .accept_replay);
     try std.testing.expect(!rejected_replay.accepted);
     try std.testing.expectEqual(world.AcceptanceBlocker.ReplaySourceMissing, rejected_replay.blockers[0]);
+
+    var prefix_image = &handoff.run_image.transcript_image.?;
+    try prefix_image.prepareReplayPrefixForPendingRequest(
+        fixtures.Agent.Target.WorldSurface.surface_fingerprint,
+        fixtures.Agent.Target.Certificate.certificate_fingerprint,
+        tool_request.frame_fingerprint,
+    );
+    const prefix_limit = prefix_image.replay_limit orelse return error.ExpectedReplayLimit;
+    try std.testing.expect(prefix_limit < prefix_image.events.len);
+    try std.testing.expectEqual(tool_request.frame_fingerprint, prefix_image.events[prefix_limit].request_frame.?.frame_fingerprint);
+    prefix_image.resetReplay();
 
     var receiver_runtime = boundary.Runtime.init(std.testing.allocator);
     defer receiver_runtime.deinit();

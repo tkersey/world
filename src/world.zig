@@ -2151,6 +2151,59 @@ pub const TranscriptImage = struct {
         self.replay_limit = selected_limit orelse return error.ReplayMissing;
     }
 
+    pub fn prepareReplayPrefixForPendingRequest(
+        self: *@This(),
+        expected_world_surface_fingerprint: u64,
+        expected_target_certificate_fingerprint: u64,
+        pending_request_frame_fingerprint: u64,
+    ) !void {
+        if (self.world_surface_fingerprint != expected_world_surface_fingerprint) return error.ReplaySurfaceMismatch;
+        if (self.target_certificate_fingerprint != expected_target_certificate_fingerprint) return error.ReplayTargetCertificateMismatch;
+        var active_start: ?usize = null;
+        var active_is_source_run = false;
+        var selected_start: ?usize = null;
+        var selected_limit: ?usize = null;
+        for (self.events, 0..) |event, index| {
+            switch (event.kind) {
+                .run_started => {
+                    if (active_start != null) return error.ReplayMissing;
+                    if (event.world_surface_fingerprint != expected_world_surface_fingerprint) return error.ReplaySurfaceMismatch;
+                    if (event.target_certificate_fingerprint != expected_target_certificate_fingerprint) return error.ReplayTargetCertificateMismatch;
+                    active_start = index;
+                    active_is_source_run = event.source_run;
+                },
+                .run_completed,
+                .run_failed,
+                => {
+                    if (active_start == null) continue;
+                    if (event.world_surface_fingerprint != expected_world_surface_fingerprint) return error.ReplaySurfaceMismatch;
+                    if (event.target_certificate_fingerprint != expected_target_certificate_fingerprint) return error.ReplayTargetCertificateMismatch;
+                    if (active_is_source_run and selected_start == active_start) {
+                        selected_start = null;
+                        selected_limit = null;
+                    }
+                    active_start = null;
+                    active_is_source_run = false;
+                },
+                .port_requested,
+                .frame_requested,
+                => {
+                    const start = active_start orelse continue;
+                    if (!active_is_source_run) continue;
+                    const request_frame = event.request_frame orelse return error.ReplayMissing;
+                    if (request_frame.frame_fingerprint == pending_request_frame_fingerprint) {
+                        selected_start = start;
+                        selected_limit = index;
+                    }
+                },
+                else => {},
+            }
+        }
+        if (active_start == null) return error.ReplayMissing;
+        self.replay_cursor = (selected_start orelse return error.ReplayMissing) + 1;
+        self.replay_limit = selected_limit orelse return error.ReplayMissing;
+    }
+
     pub fn nextResponse(
         self: *@This(),
         key: ReplayKeySeed,
@@ -2764,18 +2817,25 @@ pub const Handoff = struct {
         if (mode != .accept_fresh) return Error.InvalidMode;
         const report = self.preflight(Target, Env, mode);
         if (!report.accepted) return acceptanceError(report);
-        if (self.run_image.current_state.status != .parked_on_port or self.run_image.pending_request_frame == null) return error.HandoffPendingFrameMismatch;
+        if (self.run_image.current_state.status != .parked_on_port) return error.HandoffPendingFrameMismatch;
+        const pending_frame = self.run_image.pending_request_frame orelse return error.HandoffPendingFrameMismatch;
         const MachineType = Machine(Target, Env.machine_config);
         var run = try MachineType.start(runtime, args, options);
         errdefer run.deinit();
-        if (self.run_image.transcript_image) |*image| image.resetReplay();
+        if (self.run_image.transcript_image) |*image| {
+            try image.prepareReplayPrefixForPendingRequest(
+                Target.WorldSurface.surface_fingerprint,
+                Target.Certificate.certificate_fingerprint,
+                pending_frame.frame_fingerprint,
+            );
+        }
         while (true) {
             const step = try run.nextFrame();
             switch (step) {
                 .port_request => |request_frame| {
                     var request = request_frame;
                     defer request.deinit(run.allocator);
-                    if ((self.run_image.pending_request_frame orelse return error.HandoffPendingFrameMismatch).frame_fingerprint == request.frame_fingerprint) {
+                    if (pending_frame.frame_fingerprint == request.frame_fingerprint) {
                         try self.validatePendingFrame(request);
                         break;
                     }
@@ -3051,7 +3111,8 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         return Error.MissingHandler;
                     }
                     if (comptime @hasField(@TypeOf(Config), "environment")) {
-                        const transcript_available = comptime @hasField(Options, "transcript_image") or @hasField(Options, "transcript");
+                        const transcript_available = comptime @hasField(Options, "transcript_image") or
+                            (@hasField(Options, "transcript") and Config.environment.policy_decl.allow_native_adapters);
                         const report = Config.environment.acceptanceReport(effective, transcript_available);
                         if (!report.accepted) return acceptanceError(report);
                     }
