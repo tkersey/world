@@ -5063,6 +5063,17 @@ test "mode-denied supervision checks preserve requested mode blocker" {
     try std.testing.expectEqual(world.Supervision.Blocker.verify_call_denied, supervisor.last_check.?.blocker.?);
 }
 
+test "supervision preflight rejects policies that disable requested mode" {
+    const policy = world.SupervisionPolicy.init(.{
+        .allow_native_adapters = true,
+        .require_environment_certificate = true,
+    });
+    const report = PortsEnv.acceptanceReportWithSupervision(.fresh, false, policy);
+    try std.testing.expect(!report.accepted);
+    try std.testing.expectEqual(@as(usize, 1), report.blockers.len);
+    try std.testing.expectEqual(world.AcceptanceBlocker.FreshCallDenied, report.blockers[0]);
+}
+
 test "supervision replay permits requiring transcript images reject live transcript only runs" {
     var transcript = world.Transcript.init(std.testing.allocator);
     defer transcript.deinit();

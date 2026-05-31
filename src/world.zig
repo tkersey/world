@@ -270,6 +270,9 @@ pub const AcceptanceBlocker = enum {
     SupervisionPolicyMismatch,
     SupervisionBudgetExceeded,
     SupervisionPortRuleDenied,
+    FreshCallDenied,
+    ReplayCallDenied,
+    VerifyCallDenied,
 };
 
 pub const TargetRef = struct {
@@ -2241,6 +2244,7 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
         pub fn acceptanceReportWithSupervision(requested_mode: Mode, transcript_image_available: bool, supervision_policy: SupervisionPolicy) AcceptanceReport {
             const report = acceptanceReportFor(Target, bindings, policy, requested_mode, transcript_image_available);
             if (!report.accepted) return report;
+            if (!Supervision.modeAllowedByPolicy(supervision_policy, requested_mode)) return rejectedReport(report, &.{supervisionModeAcceptanceBlocker(requested_mode)});
             if (supervision_policy.require_transcript_image_for_replay and modeConsumesTranscript(requested_mode) and !transcript_image_available) {
                 return rejectedReport(report, &.{.TranscriptImageRequired});
             }
@@ -5976,6 +5980,14 @@ fn portAuthorityModeMaskAllows(mask: PortAuthority.ModeMask, requested_mode: Mod
     };
 }
 
+fn supervisionModeAcceptanceBlocker(requested_mode: Mode) AcceptanceBlocker {
+    return switch (requested_mode) {
+        .fresh, .audit => .FreshCallDenied,
+        .replay => .ReplayCallDenied,
+        .verify => .VerifyCallDenied,
+    };
+}
+
 fn rejectedReport(base: AcceptanceReport, blockers: []const AcceptanceBlocker) AcceptanceReport {
     var report = base;
     report.accepted = false;
@@ -6021,6 +6033,9 @@ fn acceptanceError(report: AcceptanceReport) Error {
         .SupervisionPolicyMismatch => Error.SupervisionDenied,
         .SupervisionBudgetExceeded => Error.BudgetExceeded,
         .SupervisionPortRuleDenied => Error.PortRuleDenied,
+        .FreshCallDenied => Error.FreshCallDenied,
+        .ReplayCallDenied => Error.ReplayCallDenied,
+        .VerifyCallDenied => Error.SupervisionDenied,
         .SurfaceProfileIncompatible => Error.SurfaceProfileIncompatible,
         .PayloadValueMismatch => Error.FrameValueTableMismatch,
         .ResponseValueMismatch => Error.FrameValueTableMismatch,
