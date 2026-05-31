@@ -4669,10 +4669,14 @@ pub const Handoff = struct {
         supervisor.beforeHandoffAccept() catch |err| {
             return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{supervisionPreflightBlocker(err)});
         };
-        if (mode == .accept_fresh) {
-            self.preflightReplayPrefixWithSupervisor(Target, Env, &supervisor) catch |err| {
+        switch (mode) {
+            .accept_fresh => self.preflightReplayPrefixWithSupervisor(Target, Env, &supervisor) catch |err| {
                 return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{supervisionPreflightBlocker(err)});
-            };
+            },
+            .accept_replay, .accept_verify => self.preflightReplayRunWithSupervisor(Target, Env, modeToRunMode(mode), &supervisor) catch |err| {
+                return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{supervisionPreflightBlocker(err)});
+            },
+            .inspect_only => {},
         }
         return report;
     }
@@ -4747,6 +4751,50 @@ pub const Handoff = struct {
             .authority_kind = try authorityKindForEnvironmentPort(Env, pending_frame.world_port_id),
             .value_policy = try valuePolicyForEnvironmentPort(Env, pending_frame.world_port_id, .request),
         });
+    }
+
+    fn preflightReplayRunWithSupervisor(self: *@This(), comptime Target: type, comptime Env: type, run_mode: Mode, supervisor: *Supervision.Supervisor) !void {
+        const image = if (self.run_image.transcript_image) |*image| image else return error.TranscriptImageRequired;
+        try image.validateReplayRun(
+            Target.WorldSurface.surface_fingerprint,
+            Target.Certificate.certificate_fingerprint,
+        );
+        defer image.resetReplay();
+        var index = image.replay_cursor;
+        const limit = image.replay_limit orelse image.events.len;
+        while (index < limit) : (index += 1) {
+            const event = image.events[index];
+            switch (event.kind) {
+                .port_requested,
+                .frame_requested,
+                => {
+                    const request_frame = event.request_frame orelse return error.ReplayMissing;
+                    try self.preflightRequestFrameWithSupervisor(supervisor, request_frame);
+                    try supervisor.beforeAdapterCall(.{
+                        .world_port_id = request_frame.world_port_id,
+                        .mode = run_mode,
+                        .adapter_kind = try adapterKindForEnvironmentPort(Env, request_frame.world_port_id),
+                        .authority_kind = try authorityKindForEnvironmentPort(Env, request_frame.world_port_id),
+                        .value_policy = try valuePolicyForEnvironmentPort(Env, request_frame.world_port_id, .request),
+                    });
+                },
+                else => {},
+            }
+            if (eventKindIsSourceResponse(event.kind)) {
+                const response_frame = event.response_frame orelse return error.ReplayMissing;
+                const response_bytes = bytes: {
+                    const encoded = try response_frame.encode(self.allocator);
+                    defer self.allocator.free(encoded);
+                    break :bytes encoded.len;
+                };
+                try supervisor.afterAdapterResponse(.{
+                    .world_port_id = response_frame.world_port_id,
+                    .status = response_frame.status,
+                    .response_bytes = response_bytes,
+                    .value_image_bytes = if (response_frame.response_image) |image_value| image_value.bytes.len else 0,
+                });
+            }
+        }
     }
 
     pub fn inspectPriorReceipts(self: *@This()) struct {

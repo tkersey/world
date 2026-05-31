@@ -4546,6 +4546,16 @@ test "replay handoff replays completed run without native handler calls" {
     });
     const replay_accept_report = handoff.preflightWithPermit(fixtures.Ports.Target, PortsReplayEnv, .accept_replay, replay_accept_permit);
     try std.testing.expect(replay_accept_report.accepted);
+    const replay_budget_deny_permit = world.Supervision.issue(fixtures.Ports.Target, PortsReplayEnv, .{
+        .mode = .replay,
+        .policy = replay_accept_policy,
+        .budget = world.Budget.init(.{ .max_replay_calls = 0 }),
+        .transcript_image_available = true,
+        .handoff_policy = .allow,
+    });
+    const replay_budget_deny_report = handoff.preflightWithPermit(fixtures.Ports.Target, PortsReplayEnv, .accept_replay, replay_budget_deny_permit);
+    try std.testing.expect(!replay_budget_deny_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.SupervisionBudgetExceeded, replay_budget_deny_report.blockers[0]);
     const fresh_report = handoff.preflight(fixtures.Ports.Target, PortsEnv, .accept_fresh);
     try std.testing.expect(!fresh_report.accepted);
     try std.testing.expectEqual(world.AcceptanceBlocker.HandoffPendingFrameMismatch, fresh_report.blockers[0]);
