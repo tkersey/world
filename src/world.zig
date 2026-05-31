@@ -1887,8 +1887,11 @@ pub const Supervision = struct {
                 if (!rule.permitsMode(args.mode)) return self.deny(.before_adapter_call, args.world_port_id, .port_rule_denied, rule.rule_fingerprint, "rule mode denied");
                 if (!rule.allowed_adapter_kinds.allows(args.adapter_kind)) return self.deny(.before_adapter_call, args.world_port_id, .adapter_kind_denied, rule.rule_fingerprint, "rule adapter denied");
                 if (rule.require_portable_values and !args.value_policy.require_portable_values) return self.deny(.before_adapter_call, args.world_port_id, .portable_value_required, rule.rule_fingerprint, "rule portable value required");
-                if (args.authority_kind) |kind| {
+                const authority_kind = args.authority_kind orelse if (args.adapter_kind == .native) PortAuthority.native_function.authority_kind else null;
+                if (authority_kind) |kind| {
                     if (!rule.allowed_authority_kinds.allows(kind)) return self.deny(.before_adapter_call, args.world_port_id, .authority_denied, rule.rule_fingerprint, "rule authority denied");
+                } else if (!std.meta.eql(rule.allowed_authority_kinds, Supervision.AllowedAuthorityKinds.all)) {
+                    return self.deny(.before_adapter_call, args.world_port_id, .authority_denied, rule.rule_fingerprint, "rule authority missing");
                 }
             }
             var next = try self.ledger.clone(self.allocator);
@@ -2364,8 +2367,11 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
                     if (!rule.allowed_adapter_kinds.allows(adapter_kind)) return rejectedReport(report, &.{.SupervisionPortRuleDenied});
                     const value_policy: ValuePolicy = if (@hasDecl(BindingDecl, "value_policy")) BindingDecl.value_policy else .native_compatible;
                     if (rule.require_portable_values and !value_policy.require_portable_values) return rejectedReport(report, &.{.SupervisionPortRuleDenied});
-                    if (@hasDecl(BindingDecl, "authority")) {
-                        if (!rule.allowed_authority_kinds.allows(BindingDecl.authority.authority_kind)) return rejectedReport(report, &.{.SupervisionPortRuleDenied});
+                    const authority_kind = comptime authorityKindForDecl(BindingDecl);
+                    if (authority_kind) |kind| {
+                        if (!rule.allowed_authority_kinds.allows(kind)) return rejectedReport(report, &.{.SupervisionPortRuleDenied});
+                    } else if (!std.meta.eql(rule.allowed_authority_kinds, Supervision.AllowedAuthorityKinds.all)) {
+                        return rejectedReport(report, &.{.SupervisionPortRuleDenied});
                     }
                 }
             }
@@ -4588,9 +4594,6 @@ pub const Handoff = struct {
         if (permit.mode != modeToRunMode(mode)) {
             return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.SupervisionPolicyMismatch});
         }
-        if (mode != .accept_fresh) {
-            return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.SupervisionPolicyMismatch});
-        }
         Supervision.Supervisor.validatePermitForRun(permit, Target.WorldPortTable.entries.len) catch {
             return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.SupervisionPolicyMismatch});
         };
@@ -5636,7 +5639,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             .world_port_id = Decl.world_port_id,
                             .mode = self.mode,
                             .adapter_kind = comptime adapterKindForDecl(Decl),
-                            .authority_kind = if (comptime @hasDecl(Decl, "authority")) Decl.authority.authority_kind else null,
+                            .authority_kind = comptime authorityKindForDecl(Decl),
                             .value_policy = if (comptime @hasDecl(Decl, "value_policy")) Decl.value_policy else .native_compatible,
                         }) catch |err| {
                             try self.handleSupervisionError(err);
@@ -7154,6 +7157,11 @@ fn valuePolicyForRunImageValidation(options: RunImage.ValidateOptions) ValuePoli
 
 fn adapterKindForDecl(comptime Decl: type) AdapterKind {
     return if (@hasDecl(Decl, "adapter_kind")) Decl.adapter_kind else .native;
+}
+
+fn authorityKindForDecl(comptime Decl: type) ?PortAuthority.Kind {
+    if (@hasDecl(Decl, "authority")) return Decl.authority.authority_kind;
+    return if (adapterKindForDecl(Decl) == .native) PortAuthority.native_function.authority_kind else null;
 }
 
 fn authoritySetFingerprint(entries: []const BindingPlan.Entry) u64 {

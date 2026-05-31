@@ -4412,6 +4412,7 @@ test "replay handoff replays completed run without native handler calls" {
     const replay_permit = world.Supervision.issue(fixtures.Ports.Target, PortsReplayEnv, .{
         .mode = .replay,
         .policy = world.SupervisionPolicy.strict_replay,
+        .transcript_image_available = true,
     });
     const replay_permit_report = handoff.preflightWithPermit(fixtures.Ports.Target, PortsReplayEnv, .accept_replay, replay_permit);
     try std.testing.expect(!replay_permit_report.accepted);
@@ -4427,9 +4428,10 @@ test "replay handoff replays completed run without native handler calls" {
     const replay_accept_permit = world.Supervision.issue(fixtures.Ports.Target, PortsReplayEnv, .{
         .mode = .replay,
         .policy = replay_accept_policy,
+        .transcript_image_available = true,
     });
     const replay_accept_report = handoff.preflightWithPermit(fixtures.Ports.Target, PortsReplayEnv, .accept_replay, replay_accept_permit);
-    try std.testing.expect(!replay_accept_report.accepted);
+    try std.testing.expect(replay_accept_report.accepted);
     const fresh_report = handoff.preflight(fixtures.Ports.Target, PortsEnv, .accept_fresh);
     try std.testing.expect(!fresh_report.accepted);
     try std.testing.expectEqual(world.AcceptanceBlocker.HandoffPendingFrameMismatch, fresh_report.blockers[0]);
@@ -4752,6 +4754,24 @@ test "port rules enforce portable values and rule-owned caps" {
         .world_port_id = 0,
         .status = .responded,
         .value_image_bytes = 2,
+    }));
+
+    const authority_deny_rules = [_]world.PortRule{world.PortRule.init(.{
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .world_port_id = 0,
+        .allowed_authority_kinds = world.Supervision.AllowedAuthorityKinds.fixtures,
+    })};
+    const authority_deny_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+        .port_rules = &authority_deny_rules,
+    });
+    var authority_deny_supervisor = try world.Supervisor.init(std.testing.allocator, authority_deny_permit, fixtures.Ports.Target.WorldPortTable.entries.len);
+    defer authority_deny_supervisor.deinit();
+    try std.testing.expectError(error.AuthorityDenied, authority_deny_supervisor.beforeAdapterCall(.{
+        .world_port_id = 0,
+        .mode = .fresh,
+        .adapter_kind = .native,
     }));
 }
 
