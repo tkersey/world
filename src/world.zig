@@ -5001,7 +5001,11 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             const transcript_available = comptime handoff_transcript_available or
                                 @hasField(Options, "transcript_image") or
                                 (@hasField(Options, "transcript") and Config.environment.policy_decl.allow_native_adapters);
-                            const supervision_report = Config.environment.acceptanceReportWithSupervision(effective, transcript_available, permit.policy);
+                            const supervision_transcript_available = if (permit.policy.require_transcript_image_for_replay and modeConsumesTranscript(effective))
+                                @hasField(Options, "transcript_image")
+                            else
+                                transcript_available;
+                            const supervision_report = Config.environment.acceptanceReportWithSupervision(effective, supervision_transcript_available, permit.policy);
                             if (!supervision_report.accepted) return acceptanceError(supervision_report);
                             const cert = Config.environment.certificate(effective, transcript_available);
                             if (permit.environment_certificate_fingerprint != cert.certificate_fingerprint) return Error.SupervisionDenied;

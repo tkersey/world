@@ -5063,6 +5063,27 @@ test "mode-denied supervision checks preserve requested mode blocker" {
     try std.testing.expectEqual(world.Supervision.Blocker.verify_call_denied, supervisor.last_check.?.blocker.?);
 }
 
+test "supervision replay permits requiring transcript images reject live transcript only runs" {
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    try recordPortsTranscript(&transcript);
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .replay,
+        .policy = world.SupervisionPolicy.strict_replay,
+        .transcript_image_available = true,
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var ctx: PortsCtx = .{};
+    try std.testing.expectError(error.TranscriptImageRequired, PortsMachineEnv.run(&runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.replay,
+        .ctx = &ctx,
+        .transcript = &transcript,
+        .permit = permit,
+    }));
+}
+
 test "native handler failures are accounted by supervision" {
     const permit = world.Supervision.issue(fixtures.Ports.Target, FailingPortsEnv, .{
         .mode = .fresh,
