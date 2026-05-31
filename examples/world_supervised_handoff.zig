@@ -50,7 +50,7 @@ pub fn main(init: std.process.Init) !void {
         .prior_run_permit_fingerprint = sender_permit.permit_fingerprint,
         .prior_run_receipt_fingerprint = sender_receipt.receipt_fingerprint,
     });
-    const encoded = try run_image.encode(allocator);
+    const encoded = try sender.supervisor.?.encodeHandoffExport(run_image);
     defer allocator.free(encoded);
     var handoff = try world.Handoff.fromRunImage(allocator, encoded);
     defer handoff.deinit();

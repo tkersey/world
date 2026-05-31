@@ -2005,6 +2005,11 @@ pub const Supervision = struct {
             try self.commitCheck(.before_handoff_export, null, &next, null, null, "handoff export");
         }
 
+        pub fn encodeHandoffExport(self: *@This(), image: RunImage) ![]const u8 {
+            try self.beforeHandoffExport();
+            return image.encode(self.allocator);
+        }
+
         pub fn beforeHandoffAccept(self: *@This()) !void {
             if (!self.permit.policy.allow_handoff_accept) return self.deny(.before_handoff_accept, null, .handoff_denied, null, "handoff accept denied");
             var next = try self.ledger.clone(self.allocator);
@@ -4487,6 +4492,9 @@ pub const Handoff = struct {
         if (permit.mode != modeToRunMode(mode)) {
             return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.SupervisionPolicyMismatch});
         }
+        if (mode != .accept_fresh) {
+            return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.SupervisionPolicyMismatch});
+        }
         Supervision.Supervisor.validatePermitForRun(permit, Target.WorldPortTable.entries.len) catch {
             return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.SupervisionPolicyMismatch});
         };
@@ -5554,9 +5562,12 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             return error.VerifyResponseFingerprintMismatch;
                         }
                         if (self.supervisor) |*supervisor| {
+                            const encoded_response = try frame.encode(self.allocator);
+                            defer self.allocator.free(encoded_response);
                             supervisor.afterAdapterResponse(.{
                                 .world_port_id = Decl.world_port_id,
                                 .status = .responded,
+                                .response_bytes = encoded_response.len,
                                 .value_image_bytes = if (frame.response_image) |value_image| value_image.bytes.len else 0,
                             }) catch |err| {
                                 try self.handleSupervisionError(err);
@@ -5594,9 +5605,15 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         return Error.ReplayResponseKindMismatch;
                     }
                     if (self.supervisor) |*supervisor| {
+                        const response_bytes = if (event.response_frame) |frame| bytes: {
+                            const encoded_response = try frame.encode(self.allocator);
+                            defer self.allocator.free(encoded_response);
+                            break :bytes encoded_response.len;
+                        } else 0;
                         supervisor.afterAdapterResponse(.{
                             .world_port_id = Decl.world_port_id,
                             .status = .responded,
+                            .response_bytes = response_bytes,
                             .value_image_bytes = if (event.response_frame) |frame| if (frame.response_image) |image| image.bytes.len else 0 else 0,
                         }) catch |err| {
                             try self.handleSupervisionError(err);

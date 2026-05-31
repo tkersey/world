@@ -354,7 +354,7 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the supervised replay/verify World example.",
             .expected_stdout =
             \\fresh_receipt=7e16526a4d96862d
-            \\replay_receipt=f2d68c58c0adbd02
+            \\replay_receipt=b98408e8912d6bd6
             \\verify_divergence_detected=true
             \\
             ,

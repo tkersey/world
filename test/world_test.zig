@@ -4355,6 +4355,21 @@ test "replay handoff replays completed run without native handler calls" {
     });
     const replay_permit_report = handoff.preflightWithPermit(fixtures.Ports.Target, PortsReplayEnv, .accept_replay, replay_permit);
     try std.testing.expect(!replay_permit_report.accepted);
+    const replay_accept_policy = world.SupervisionPolicy.init(.{
+        .allow_replay_calls = true,
+        .allow_replay_adapters = true,
+        .allow_handoff_accept = true,
+        .require_portable_value_images = true,
+        .reject_native_only_values = true,
+        .require_environment_certificate = true,
+        .require_transcript_image_for_replay = true,
+    });
+    const replay_accept_permit = world.Supervision.issue(fixtures.Ports.Target, PortsReplayEnv, .{
+        .mode = .replay,
+        .policy = replay_accept_policy,
+    });
+    const replay_accept_report = handoff.preflightWithPermit(fixtures.Ports.Target, PortsReplayEnv, .accept_replay, replay_accept_permit);
+    try std.testing.expect(!replay_accept_report.accepted);
     const fresh_report = handoff.preflight(fixtures.Ports.Target, PortsEnv, .accept_fresh);
     try std.testing.expect(!fresh_report.accepted);
     try std.testing.expectEqual(world.AcceptanceBlocker.HandoffPendingFrameMismatch, fresh_report.blockers[0]);
@@ -4726,6 +4741,36 @@ test "supervised frame response bytes are accounted before framed resume" {
     try std.testing.expectError(error.BudgetExceeded, run.resumeFrame(response));
     try std.testing.expectEqual(world.Supervision.BudgetExceededKind.frame_response_bytes, run.supervisor.?.ledger.exceeded_budget.?);
     try std.testing.expectEqual(@as(usize, 0), ctx.calls);
+}
+
+test "supervised replay accounts transcript image response frame bytes" {
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    try recordPortsTranscript(&transcript);
+    var image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer image.deinit(std.testing.allocator);
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsReplayEnv, .{
+        .mode = .replay,
+        .policy = world.SupervisionPolicy.strict_replay,
+        .budget = world.Budget.init(.{ .max_frame_response_bytes = 1 }),
+        .transcript_image_available = true,
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var run = try PortsReplayMachineEnv.start(&runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.replay,
+        .transcript_image = &image,
+        .permit = permit,
+    });
+    defer run.deinit();
+    var request = switch (try run.nextFrame()) {
+        .port_request => |frame| frame,
+        else => return error.ExpectedFrameRequest,
+    };
+    defer request.deinit(std.testing.allocator);
+    try std.testing.expectError(error.BudgetExceeded, run.dispatch());
+    try std.testing.expectEqual(world.Supervision.BudgetExceededKind.frame_response_bytes, run.supervisor.?.ledger.exceeded_budget.?);
 }
 
 test "budget zero port budget denies first port and usage ledger records cost model units" {
@@ -5330,6 +5375,83 @@ test "supervised handoff receiver can issue stricter permit and inspect prior re
     }, .accept_fresh, handoff_accept_deny_permit));
     try std.testing.expectEqual(@as(usize, 0), accept_ctx.calls);
     try std.testing.expectEqual(@as(usize, 0), accept_transcript.events.items.len);
+}
+
+test "supervised handoff export is charged before encoded bytes are returned" {
+    const denied_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.agent_fixture,
+        .budget = world.Budget.init(.{ .max_handoff_exports = 0 }),
+    });
+    var denied_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer denied_runtime.deinit();
+    var denied_ctx: PortsCtx = .{};
+    var denied_run = try PortsMachineEnv.start(&denied_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &denied_ctx,
+        .permit = denied_permit,
+    });
+    defer denied_run.deinit();
+    var denied_request = switch (try denied_run.nextFrame()) {
+        .port_request => |frame| frame,
+        else => return error.ExpectedFrameRequest,
+    };
+    defer denied_request.deinit(std.testing.allocator);
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const denied_state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .parked_on_port,
+        .pending_request_fingerprint = denied_request.frame_fingerprint,
+        .turn_index = denied_request.turn_index,
+    });
+    const denied_image = world.RunImage.init(.{
+        .kind = .parked_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = denied_state,
+        .pending_request_frame = denied_request,
+    });
+    try std.testing.expectError(error.BudgetExceeded, denied_run.supervisor.?.encodeHandoffExport(denied_image));
+    try std.testing.expectEqual(@as(usize, 1), denied_run.supervisor.?.ledger.total_handoff_exports);
+
+    const allowed_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.agent_fixture,
+        .budget = world.Budget.init(.{ .max_handoff_exports = 1 }),
+    });
+    var allowed_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer allowed_runtime.deinit();
+    var allowed_ctx: PortsCtx = .{};
+    var allowed_run = try PortsMachineEnv.start(&allowed_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &allowed_ctx,
+        .permit = allowed_permit,
+    });
+    defer allowed_run.deinit();
+    var allowed_request = switch (try allowed_run.nextFrame()) {
+        .port_request => |frame| frame,
+        else => return error.ExpectedFrameRequest,
+    };
+    defer allowed_request.deinit(std.testing.allocator);
+    const allowed_state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .parked_on_port,
+        .pending_request_fingerprint = allowed_request.frame_fingerprint,
+        .turn_index = allowed_request.turn_index,
+    });
+    const allowed_image = world.RunImage.init(.{
+        .kind = .parked_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = allowed_state,
+        .pending_request_frame = allowed_request,
+    });
+    const encoded = try allowed_run.supervisor.?.encodeHandoffExport(allowed_image);
+    defer std.testing.allocator.free(encoded);
+    try std.testing.expect(encoded.len > 0);
+    try std.testing.expectEqual(@as(usize, 1), allowed_run.supervisor.?.ledger.total_handoff_exports);
 }
 
 test "supervised branch and checkpoint budgets are enforced" {
