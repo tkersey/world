@@ -5439,6 +5439,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 fn resumeFrameWithProvenance(self: *Self, response_frame: Frame.Response, comptime replayed: bool) !void {
                     const request = self.pending_request orelse return error.UnknownResidualSite;
                     const world_port_id = self.pending_port_id orelse return error.UnknownWorldPort;
+                    if (response_frame.status == .pending and self.supervisor == null) return error.HandlerPending;
                     if (self.effective_mode != .fresh) return Error.InvalidMode;
                     var frame = try self.pendingRequestFrame(false);
                     defer frame.deinit(self.allocator);

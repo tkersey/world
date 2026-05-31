@@ -2127,6 +2127,16 @@ test "step frame nextFrame resumeFrame and verify adapter image path work" {
             const payload_value_fingerprint_offset = 4 + 4 + 8 + 8 + 1 + 8 + 8 + 4 + 8 + 8 + 8 + 8 + 1 + 4 + 1 + 4 + 1;
             tampered_request[payload_value_fingerprint_offset] ^= 1;
             try std.testing.expectError(error.InvalidFrameEncoding, world.Frame.Request.decode(std.testing.allocator, tampered_request));
+            const pending_response = world.Frame.Response.init(.{
+                .world_surface_fingerprint = request.world_surface_fingerprint,
+                .target_certificate_fingerprint = request.target_certificate_fingerprint,
+                .world_port_id = request.world_port_id,
+                .request_fingerprint = request.request_fingerprint + 1,
+                .status = .pending,
+                .response_fingerprint = 0,
+                .replay_key = 0,
+            });
+            try std.testing.expectError(error.HandlerPending, run.resumeFrame(pending_response));
             var wrong_value_table_response = try world.Frame.Response.fromValue(std.testing.allocator, request, null, response_fingerprint, .@"resume", @as(i32, 7), .portable);
             defer wrong_value_table_response.deinit(std.testing.allocator);
             try std.testing.expectError(error.FrameValueTableMismatch, run.resumeFrame(wrong_value_table_response));
