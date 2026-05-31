@@ -5574,7 +5574,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     if (self.supervisor) |*supervisor| {
                         supervisor.beforeAdapterCall(.{
                             .world_port_id = Decl.world_port_id,
-                            .mode = self.effective_mode,
+                            .mode = self.mode,
                             .adapter_kind = comptime adapterKindForDecl(Decl),
                             .authority_kind = if (comptime @hasDecl(Decl, "authority")) Decl.authority.authority_kind else null,
                             .value_policy = if (comptime @hasDecl(Decl, "value_policy")) Decl.value_policy else .native_compatible,

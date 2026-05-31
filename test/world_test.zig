@@ -2915,9 +2915,14 @@ test "world audit mode rejects self-referential audit source" {
 }
 
 test "supervised audit permits authorize requested mode not source mode" {
+    const strict_audit_policy = world.SupervisionPolicy.init(.{
+        .allow_audit_only = true,
+        .allow_native_adapters = true,
+        .require_environment_certificate = true,
+    });
     const audit_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
         .mode = world.Mode.audit,
-        .policy = world.SupervisionPolicy.audit_only,
+        .policy = strict_audit_policy,
     });
     var audit_runtime = boundary.Runtime.init(std.testing.allocator);
     defer audit_runtime.deinit();
