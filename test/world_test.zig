@@ -5264,6 +5264,18 @@ test "supervised handoff receiver can issue stricter permit and inspect prior re
     });
     const adapter_deny_report = handoff.preflightWithPermit(fixtures.Ports.Target, PortsEnv, .accept_fresh, adapter_deny_permit);
     try std.testing.expect(!adapter_deny_report.accepted);
+    const cert = PortsEnv.certificate(.fresh, false);
+    const wrong_surface_permit = world.RunPermit.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint + 1,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .environment_certificate_fingerprint = cert.certificate_fingerprint,
+        .binding_plan_fingerprint = cert.binding_plan_fingerprint,
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.handoff_receiver,
+    });
+    const wrong_surface_report = handoff.preflightWithPermit(fixtures.Ports.Target, PortsEnv, .accept_fresh, wrong_surface_permit);
+    try std.testing.expect(!wrong_surface_report.accepted);
 
     const denying_receiver_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
         .mode = .fresh,
@@ -5312,6 +5324,15 @@ test "supervised branch and checkpoint budgets are enforced" {
     try supervisor.beforeBranch(1);
     try std.testing.expectError(error.BudgetExceeded, supervisor.beforeBranch(1));
     try std.testing.expectEqual(world.Supervision.BudgetExceededKind.branches, supervisor.ledger.exceeded_budget.?);
+    const branch_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.branch_limited,
+        .branch_policy = .require_new_permit,
+    });
+    var branch_supervisor = try world.Supervisor.init(std.testing.allocator, branch_permit, fixtures.Ports.Target.WorldPortTable.entries.len);
+    defer branch_supervisor.deinit();
+    try std.testing.expectError(error.BranchDenied, branch_supervisor.beforeBranch(1));
+    try std.testing.expectEqual(world.Supervision.Blocker.branch_denied, branch_supervisor.last_check.?.blocker.?);
 }
 
 test "supervised agent run completes under budget and over-budget agent is denied" {

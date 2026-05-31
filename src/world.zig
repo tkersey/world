@@ -1979,7 +1979,7 @@ pub const Supervision = struct {
         }
 
         pub fn beforeBranch(self: *@This(), depth: usize) !void {
-            if (!self.permit.policy.allow_branching or self.permit.branch_policy == .deny) return self.deny(.before_branch, null, .branch_denied, null, "branch denied");
+            if (!self.permit.policy.allow_branching or self.permit.branch_policy != .inherit) return self.deny(.before_branch, null, .branch_denied, null, "branch denied");
             var next = try self.ledger.clone(self.allocator);
             defer next.deinit(self.allocator);
             next.total_branches += 1;
@@ -4488,7 +4488,16 @@ pub const Handoff = struct {
             return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.HandoffTargetMismatch});
         }
         const cert = Env.certificate(modeToRunMode(mode), self.run_image.transcript_image != null);
+        if (permit.world_surface_fingerprint != Target.WorldSurface.surface_fingerprint) {
+            return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.SupervisionPolicyMismatch});
+        }
+        if (permit.target_certificate_fingerprint != Target.Certificate.certificate_fingerprint) {
+            return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.SupervisionPolicyMismatch});
+        }
         if (permit.environment_certificate_fingerprint != cert.certificate_fingerprint) {
+            return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.SupervisionPolicyMismatch});
+        }
+        if (permit.binding_plan_fingerprint != cert.binding_plan_fingerprint) {
             return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.SupervisionPolicyMismatch});
         }
         if (!permit.policy.allow_handoff_accept) {
