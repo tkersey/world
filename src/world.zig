@@ -2568,13 +2568,20 @@ pub const RunImage = struct {
 
     pub fn validate(self: @This(), options: ValidateOptions) !void {
         if (!options.allow_reference_target and self.kind == .reference_target_run) return error.InvalidFrameEncoding;
+        if (self.metadata.len > options.max_image_bytes) return error.InvalidFrameEncoding;
+        if (self.target_ref.target_label) |label| {
+            if (label.len > options.max_image_bytes) return error.InvalidFrameEncoding;
+        }
+        if (self.target_ref.metadata.len > options.max_image_bytes) return error.InvalidFrameEncoding;
         if (self.checkpoints.len > options.max_checkpoints) return error.InvalidFrameEncoding;
         if (self.branches.len > options.max_branches) return error.InvalidFrameEncoding;
+        const value_policy = valuePolicyForRunImageValidation(options);
         if (self.transcript_image) |image| {
             if (image.events.len > options.max_timeline_events) return error.InvalidFrameEncoding;
             if (image.world_surface_fingerprint != self.target_ref.world_surface_fingerprint) return error.TranscriptImageSurfaceMismatch;
             if (image.target_certificate_fingerprint != self.target_ref.target_certificate_fingerprint) return error.TargetCertificateMismatch;
             if (self.current_state.transcript_image_fingerprint != image.transcript_image_fingerprint) return error.HandoffTargetMismatch;
+            try image.validateValuePolicy(value_policy);
         }
         if (self.current_state.target_ref_fingerprint != self.target_ref.target_ref_fingerprint) return error.HandoffTargetMismatch;
         if (self.current_state.checkpoint_fingerprint) |checkpoint_fingerprint| {
@@ -2602,6 +2609,7 @@ pub const RunImage = struct {
             if (!found_branch) return error.HandoffCheckpointMismatch;
         }
         for (self.branches) |branch| {
+            if (branch.branch_label.len > options.max_image_bytes) return error.InvalidFrameEncoding;
             var found_checkpoint = false;
             for (self.checkpoints) |checkpoint| {
                 if (checkpoint.checkpoint_fingerprint == branch.checkpoint_fingerprint) {
@@ -2614,6 +2622,7 @@ pub const RunImage = struct {
         if (self.current_state.status == .parked_on_port and self.pending_request_frame == null) return error.HandoffPendingFrameMismatch;
         if (self.pending_request_frame) |frame| {
             try validateRequestFrameImage(frame);
+            try validateRequestFramePolicy(frame, value_policy);
             if (frame.world_surface_fingerprint != self.target_ref.world_surface_fingerprint) return error.FrameSurfaceMismatch;
             if (frame.target_certificate_fingerprint != self.target_ref.target_certificate_fingerprint) return error.FrameTargetCertificateMismatch;
             if (self.current_state.status == .parked_on_port) {
@@ -2626,7 +2635,7 @@ pub const RunImage = struct {
         }
         if (self.final_result_image) |image| {
             try validateValueImage(image);
-            if (options.require_portable_values and image.diagnostic_type_label != null) return error.NativeOnlyValueRejected;
+            try validateValueImagePolicy(image, value_policy);
             if (self.current_state.final_value_image_fingerprint != image.value_image_fingerprint) return error.InvalidFrameEncoding;
         }
         if (fingerprintRunState(self.current_state) != self.current_state.run_state_fingerprint) return error.InvalidFrameEncoding;
@@ -4777,6 +4786,12 @@ fn valuePolicyForEnvironment(comptime Env: type) ValuePolicy {
         .require_response_images_for_replay = Env.policy_decl.require_frame_images_for_replay,
         .allow_diagnostic_type_labels = Env.policy_decl.allow_native_only_values,
     };
+}
+
+fn valuePolicyForRunImageValidation(options: RunImage.ValidateOptions) ValuePolicy {
+    var policy = if (options.require_portable_values) ValuePolicy.portable else ValuePolicy.native_compatible;
+    policy.max_value_image_bytes = options.max_image_bytes;
+    return policy;
 }
 
 fn adapterKindForDecl(comptime Decl: type) AdapterKind {

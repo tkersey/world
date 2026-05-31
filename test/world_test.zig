@@ -3384,6 +3384,23 @@ test "run image encode decode roundtrip includes TargetRef TranscriptImage branc
     });
     try std.testing.expectError(error.HandoffTargetMismatch, stale_transcript_binding.validate(.{}));
 
+    var native_image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.native_compatible });
+    defer native_image.deinit(std.testing.allocator);
+    const native_image_state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .transcript_image_fingerprint = native_image.transcript_image_fingerprint,
+        .status = .completed,
+    });
+    const native_transcript_binding = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = import_set.import_set_fingerprint,
+        .transcript_image = native_image,
+        .current_state = native_image_state,
+    });
+    try std.testing.expectError(error.UnsupportedValueImage, native_transcript_binding.validate(.{ .require_portable_values = true }));
+    try std.testing.expectError(error.InvalidFrameEncoding, native_transcript_binding.validate(.{ .max_image_bytes = 1 }));
+
     var final_image = try world.Frame.ValueImage.fromValue(std.testing.allocator, 1, null, null, @as(i32, 7), .portable);
     defer final_image.deinit(std.testing.allocator);
     const borrowed_final_state = world.RunState.init(.{
