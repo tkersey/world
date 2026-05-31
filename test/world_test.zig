@@ -4359,6 +4359,27 @@ test "parked handoff replays transcript prefix before selected pending request" 
     const replay_denied_report = replay_denied_handoff.preflightWithPermit(fixtures.Agent.Target, AgentEnv, .accept_fresh, replay_denied_permit);
     try std.testing.expect(!replay_denied_report.accepted);
     try std.testing.expectEqual(world.AcceptanceBlocker.SupervisionPolicyMismatch, replay_denied_report.blockers[0]);
+
+    const request_denied_permit = world.Supervision.issue(fixtures.Agent.Target, AgentEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.handoff_receiver,
+        .budget = world.Budget.init(.{ .max_port_requests = 0 }),
+        .handoff_policy = .allow,
+    });
+    const request_denied_report = replay_denied_handoff.preflightWithPermit(fixtures.Agent.Target, AgentEnv, .accept_fresh, request_denied_permit);
+    try std.testing.expect(!request_denied_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.SupervisionPolicyMismatch, request_denied_report.blockers[0]);
+
+    const step_denied_permit = world.Supervision.issue(fixtures.Agent.Target, AgentEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.handoff_receiver,
+        .budget = world.Budget.init(.{ .max_session_steps = 0 }),
+        .handoff_policy = .allow,
+    });
+    const step_denied_report = replay_denied_handoff.preflightWithPermit(fixtures.Agent.Target, AgentEnv, .accept_fresh, step_denied_permit);
+    try std.testing.expect(!step_denied_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.SupervisionPolicyMismatch, step_denied_report.blockers[0]);
+
     var replay_denied_runtime = boundary.Runtime.init(std.testing.allocator);
     defer replay_denied_runtime.deinit();
     var replay_denied_ctx: AgentCtx = .{ .allocator = std.testing.allocator, .scenario = .skeleton };
@@ -4852,6 +4873,26 @@ test "supervised frame request bytes are accounted before frame handoff" {
         .mode = .fresh,
         .policy = world.SupervisionPolicy.strict_fresh,
         .budget = world.Budget.init(.{ .max_frame_request_bytes = 1 }),
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var ctx: PortsCtx = .{};
+    var run = try PortsMachineEnv.start(&runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+        .permit = permit,
+    });
+    defer run.deinit();
+    try std.testing.expectError(error.BudgetExceeded, run.nextFrame());
+    try std.testing.expectEqual(@as(usize, 0), ctx.calls);
+}
+
+test "supervised frame handoff enforces adapter budget before exposing request" {
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+        .budget = world.Budget.init(.{ .max_fresh_calls = 0 }),
     });
     var runtime = boundary.Runtime.init(std.testing.allocator);
     defer runtime.deinit();

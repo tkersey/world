@@ -4664,14 +4664,29 @@ pub const Handoff = struct {
         const report = self.preflight(Target, Env, mode);
         if (!report.accepted) return report;
         if (mode == .accept_fresh) {
-            self.preflightReplayPrefixWithPermit(Target, permit) catch {
+            self.preflightReplayPrefixWithPermit(Target, Env, permit) catch {
                 return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.SupervisionPolicyMismatch});
             };
         }
         return report;
     }
 
-    fn preflightReplayPrefixWithPermit(self: *@This(), comptime Target: type, permit: RunPermit) !void {
+    fn preflightRequestFrameWithSupervisor(self: *@This(), supervisor: *Supervision.Supervisor, frame: Frame.Request) !void {
+        try supervisor.beforeSessionStep();
+        try supervisor.beforePortRequest(frame.world_port_id, 0, 0);
+        const request_bytes = bytes: {
+            const encoded = try frame.encode(self.allocator);
+            defer self.allocator.free(encoded);
+            break :bytes encoded.len;
+        };
+        try supervisor.accountPortRequestBytes(
+            frame.world_port_id,
+            request_bytes,
+            if (frame.payload_image) |image| image.bytes.len else 0,
+        );
+    }
+
+    fn preflightReplayPrefixWithPermit(self: *@This(), comptime Target: type, comptime Env: type, permit: RunPermit) !void {
         const pending_frame = self.run_image.pending_request_frame orelse return error.HandoffPendingFrameMismatch;
         const image = if (self.run_image.transcript_image) |*image| image else {
             if (pending_frame.turn_index != 0) return error.TranscriptImageRequired;
@@ -4694,6 +4709,7 @@ pub const Handoff = struct {
                 .frame_requested,
                 => {
                     const request_frame = event.request_frame orelse return error.ReplayMissing;
+                    try self.preflightRequestFrameWithSupervisor(&supervisor, request_frame);
                     try supervisor.beforeAdapterCall(.{
                         .world_port_id = request_frame.world_port_id,
                         .mode = .replay,
@@ -4719,6 +4735,14 @@ pub const Handoff = struct {
                 });
             }
         }
+        try self.preflightRequestFrameWithSupervisor(&supervisor, pending_frame);
+        try supervisor.beforeAdapterCall(.{
+            .world_port_id = pending_frame.world_port_id,
+            .mode = .fresh,
+            .adapter_kind = try adapterKindForEnvironmentPort(Env, pending_frame.world_port_id),
+            .authority_kind = try authorityKindForEnvironmentPort(Env, pending_frame.world_port_id),
+            .value_policy = try valuePolicyForEnvironmentPort(Env, pending_frame.world_port_id, .request),
+        });
     }
 
     pub fn inspectPriorReceipts(self: *@This()) struct {
@@ -5640,6 +5664,16 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     errdefer frame.deinit(self.allocator);
                     if (record_event) {
                         if (self.supervisor) |*supervisor| {
+                            supervisor.beforeAdapterCall(.{
+                                .world_port_id = world_port_id,
+                                .mode = self.mode,
+                                .adapter_kind = comptime adapterKindForDecl(Decl),
+                                .authority_kind = comptime authorityKindForDecl(Decl),
+                                .value_policy = if (comptime @hasDecl(Decl, "value_policy")) Decl.value_policy else .native_compatible,
+                            }) catch |err| {
+                                try self.handleSupervisionError(err);
+                                return Error.HandlerPending;
+                            };
                             const encoded = try frame.encode(self.allocator);
                             defer self.allocator.free(encoded);
                             supervisor.accountPortRequestBytes(
@@ -7245,6 +7279,26 @@ fn valuePolicyForEnvironmentPort(comptime Env: type, world_port_id: u32, comptim
     }
     if (!found) return error.MissingBinding;
     return policy;
+}
+
+fn adapterKindForEnvironmentPort(comptime Env: type, world_port_id: u32) !AdapterKind {
+    if (world_port_id >= Env.TargetType.WorldPortTable.entries.len) return error.WrongPortId;
+    inline for (Env.bindings_decl) |BindingDecl| {
+        if (comptime BindingDecl.TargetType == Env.TargetType) {
+            if (BindingDecl.world_port_id == world_port_id) return adapterKindForDecl(BindingDecl);
+        }
+    }
+    return error.MissingBinding;
+}
+
+fn authorityKindForEnvironmentPort(comptime Env: type, world_port_id: u32) !?PortAuthority.Kind {
+    if (world_port_id >= Env.TargetType.WorldPortTable.entries.len) return error.WrongPortId;
+    inline for (Env.bindings_decl) |BindingDecl| {
+        if (comptime BindingDecl.TargetType == Env.TargetType) {
+            if (BindingDecl.world_port_id == world_port_id) return authorityKindForDecl(BindingDecl);
+        }
+    }
+    return error.MissingBinding;
 }
 
 fn environmentValidationBlocker(err: anyerror) AcceptanceBlocker {
