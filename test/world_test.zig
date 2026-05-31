@@ -2949,6 +2949,32 @@ test "supervised audit permits authorize requested mode not source mode" {
     try std.testing.expectEqual(@as(usize, 1), audit_ctx.calls);
     try std.testing.expect(audited.receipt != null);
 
+    var replay_transcript = world.Transcript.init(std.testing.allocator);
+    defer replay_transcript.deinit();
+    try recordPortsTranscript(&replay_transcript);
+    var replay_image = try replay_transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer replay_image.deinit(std.testing.allocator);
+    const replay_audit_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = world.Mode.audit,
+        .policy = strict_audit_policy,
+    });
+    var replay_audit_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer replay_audit_runtime.deinit();
+    var replay_audit_ctx: PortsCtx = .{};
+    var replay_audited = try PortsMachineEnv.run(&replay_audit_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.audit,
+        .audit_source = world.Mode.replay,
+        .ctx = &replay_audit_ctx,
+        .transcript_image = &replay_image,
+        .permit = replay_audit_permit,
+    });
+    defer replay_audited.deinit(std.testing.allocator);
+    try std.testing.expectEqual(world.Mode.audit, replay_audited.audit.mode);
+    try std.testing.expectEqual(@as(usize, 0), replay_audit_ctx.calls);
+    try std.testing.expectEqual(@as(usize, 1), replay_audited.audit.replayed_response_count);
+    try std.testing.expect(replay_audited.receipt != null);
+
     const fresh_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
         .mode = world.Mode.fresh,
         .policy = world.SupervisionPolicy.strict_fresh,
@@ -4330,10 +4356,13 @@ test "parked handoff replays transcript prefix before selected pending request" 
         .budget = world.Budget.init(.{ .max_replay_calls = 0 }),
         .handoff_policy = .allow,
     });
+    const replay_denied_report = replay_denied_handoff.preflightWithPermit(fixtures.Agent.Target, AgentEnv, .accept_fresh, replay_denied_permit);
+    try std.testing.expect(!replay_denied_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.SupervisionPolicyMismatch, replay_denied_report.blockers[0]);
     var replay_denied_runtime = boundary.Runtime.init(std.testing.allocator);
     defer replay_denied_runtime.deinit();
     var replay_denied_ctx: AgentCtx = .{ .allocator = std.testing.allocator, .scenario = .skeleton };
-    try std.testing.expectError(error.BudgetExceeded, replay_denied_handoff.resumeWithPermit(fixtures.Agent.Target, AgentEnv, &replay_denied_runtime, AgentArgs{ @as(usize, 3), fixtures.Agent.initialObservation(.skeleton) }, .{
+    try std.testing.expectError(error.SupervisionDenied, replay_denied_handoff.resumeWithPermit(fixtures.Agent.Target, AgentEnv, &replay_denied_runtime, AgentArgs{ @as(usize, 3), fixtures.Agent.initialObservation(.skeleton) }, .{
         .allocator = std.testing.allocator,
         .mode = world.Mode.fresh,
         .ctx = &replay_denied_ctx,
