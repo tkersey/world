@@ -3039,7 +3039,7 @@ fn eventImageFromTranscriptEvent(allocator: std.mem.Allocator, event: Transcript
                 null,
                 policy,
             ) catch |err| switch (err) {
-                error.UnsupportedValueImage => if (policy.allow_native_only_values) null else return err,
+                error.UnsupportedValueImage => if (policy.allow_native_only_values and policy.max_value_image_bytes == null) null else return err,
                 else => return err,
             };
         }

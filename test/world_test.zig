@@ -2293,6 +2293,30 @@ test "native compatible transcript image omits unsupported response value images
     try std.testing.expectEqual(@as(usize, 1), audit.native_only_value_count);
 }
 
+test "transcript image enforces byte caps on stored response values" {
+    const request = testRequestFrame();
+    var stored = try world.StoredValue.init(std.testing.allocator, @as([]const u8, "too-big"));
+    defer stored.deinit(std.testing.allocator);
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    try transcript.append(.{
+        .kind = .frame_responded,
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .target_certificate_fingerprint = request.target_certificate_fingerprint,
+        .world_port_id = request.world_port_id,
+        .request_fingerprint = request.request_fingerprint,
+        .response_fingerprint = 0xdec1_5100,
+        .response_kind = .@"resume",
+        .replay_key = request.replay_key_seed.withResponse(0xdec1_5100).fingerprint(),
+        .turn_index = request.turn_index,
+        .residual_site_index = request.residual_site_index,
+        .residual_site_fingerprint = request.residual_site_fingerprint,
+        .status = .responded,
+        .value = stored,
+    });
+    try std.testing.expectError(error.UnsupportedValueImage, transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy{ .max_value_image_bytes = 1 } }));
+}
+
 test "transcript image final status resets on later run start" {
     var transcript = world.Transcript.init(std.testing.allocator);
     defer transcript.deinit();
