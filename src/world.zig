@@ -1867,6 +1867,24 @@ pub const Supervision = struct {
             try self.commitCheck(.before_port_request, world_port_id, &next, null, rule, "port request bytes");
         }
 
+        pub fn needsPortRequestByteAccounting(self: *@This(), world_port_id: u32) !bool {
+            try self.validateWorldPortId(world_port_id);
+            if (self.permit.budget.max_frame_request_bytes != null) return true;
+            if (self.permit.budget.max_value_image_bytes != null) return true;
+            if (self.permit.budget.perPort(world_port_id)) |budget| {
+                if (budget.max_value_image_bytes != null) return true;
+                if (budget.max_cost_units != null and
+                    (self.permit.cost_model.frameByteCost(world_port_id) != 0 or self.permit.cost_model.valueImageByteCost(world_port_id) != 0)) return true;
+            }
+            if (self.permit.cost_model.frameByteCost(world_port_id) != 0) return true;
+            if (self.permit.cost_model.valueImageByteCost(world_port_id) != 0) return true;
+            if (self.permit.ruleFor(world_port_id)) |rule| {
+                if (rule.max_payload_image_bytes != null) return true;
+                if (rule.max_cost_units != null and self.permit.cost_model.valueImageByteCost(world_port_id) != 0) return true;
+            }
+            return false;
+        }
+
         pub fn beforeAdapterCall(self: *@This(), args: struct {
             world_port_id: u32,
             mode: Mode,
@@ -5359,17 +5377,19 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             self.per_port_counts[world_port_id] += 1;
                             if (!self.frame_step_request) {
                                 if (self.supervisor) |*supervisor| {
-                                    var request_frame = try self.pendingRequestFrame(false);
-                                    defer request_frame.deinit(self.allocator);
-                                    const encoded = try request_frame.encode(self.allocator);
-                                    defer self.allocator.free(encoded);
-                                    supervisor.accountPortRequestBytes(
-                                        world_port_id,
-                                        encoded.len,
-                                        if (request_frame.payload_image) |image| image.bytes.len else 0,
-                                    ) catch |err| {
-                                        return self.handleSupervisionStepError(err);
-                                    };
+                                    if (try supervisor.needsPortRequestByteAccounting(world_port_id)) {
+                                        var request_frame = try self.pendingRequestFrame(false);
+                                        defer request_frame.deinit(self.allocator);
+                                        const encoded = try request_frame.encode(self.allocator);
+                                        defer self.allocator.free(encoded);
+                                        supervisor.accountPortRequestBytes(
+                                            world_port_id,
+                                            encoded.len,
+                                            if (request_frame.payload_image) |image| image.bytes.len else 0,
+                                        ) catch |err| {
+                                            return self.handleSupervisionStepError(err);
+                                        };
+                                    }
                                 }
                             }
                             if (self.effective_mode == .fresh) {
