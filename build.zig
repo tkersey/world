@@ -329,7 +329,7 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World admission parked handoff example.",
             .expected_stdout =
             \\package_fingerprint=91d0e487f35697a
-            \\admission_receipt_fingerprint=709978db564cc08f
+            \\admission_receipt_fingerprint=3fc3b17b3c3b406c
             \\receiver_permit_fingerprint=3375ddcdc320bbf9
             \\final_result=7
             \\
@@ -341,8 +341,8 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-admission-replay-verify",
             .desc = "Run the World admission replay/verify example.",
             .expected_stdout =
-            \\replay_admission_receipt=1d4df1154eb1dcf5
-            \\verify_admission_receipt=2a71d34fd0a639e5
+            \\replay_admission_receipt=d72926fc9d34c852
+            \\verify_admission_receipt=f713ac408924ab99
             \\divergence_detected=true
             \\
             ,
@@ -356,7 +356,7 @@ pub fn build(b: *std.Build) void {
             \\module_ref_fingerprint=8980705f83427fa6
             \\model_port_id=0
             \\tool_port_id=1
-            \\admission_receipt=ef9577702fff2040
+            \\admission_receipt=9d7be967811df139
             \\final_result=final=actuate skeleton complete
             \\
             ,

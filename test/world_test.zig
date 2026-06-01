@@ -6843,6 +6843,20 @@ test "admission rejects parked handoff that fails handoff preflight" {
     }).admitForTarget(fixtures.Ports.Target, PortsEnv, package, .{ .allocator = std.testing.allocator });
     try std.testing.expect(!result.report.accepted);
     try std.testing.expectEqual(world.Admission.AdmissionBlocker.EnvironmentRejected, result.report.blockers[0]);
+
+    const branch_package = world.Admission.TransferPackage.init(.{
+        .kind = .parked_run,
+        .target_ref = target_ref,
+        .module_ref = module_ref,
+        .run_image = run_image,
+        .requested_mode = .branch_resume,
+    });
+    const missing_branch = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, branch_package, .{ .allocator = std.testing.allocator });
+    try std.testing.expect(!missing_branch.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.RunImageInvalid, missing_branch.report.blockers[0]);
 }
 
 test "admitted run constructed for accepted local target" {
@@ -7019,6 +7033,7 @@ test "admitted run start enforces admitted transcript image" {
         .policy = world.Admission.AdmissionPolicy.replay_only,
     }).admitForTarget(fixtures.Ports.Target, PortsReplayEnv, package, .{});
     try std.testing.expect(result.report.accepted);
+    try std.testing.expect(result.report.handoff_preflight_report_fingerprint != null);
     var admitted = result.admitted_run orelse return error.ExpectedAdmittedRun;
 
     var wrong_image = image;

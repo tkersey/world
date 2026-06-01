@@ -2141,6 +2141,8 @@ pub const Admission = struct {
             }
             if (args.requested_branch_id) |branch_id| {
                 if (!packageContainsBranch(package, branch_id)) return rejectedResult(request, package, target_ref, module_ref, match, &.{.BranchMismatch}, "requested branch is not present in transfer package");
+            } else if (mode == .branch_resume) {
+                return rejectedResult(request, package, target_ref, module_ref, match, &.{.BranchMismatch}, "branch resume requires a selected branch");
             }
             if (args.requested_checkpoint_ref) |checkpoint_ref| {
                 if (!packageContainsCheckpoint(package, checkpoint_ref)) return rejectedResult(request, package, target_ref, module_ref, match, &.{.CheckpointMismatch}, "requested checkpoint is not present in transfer package");
@@ -2205,6 +2207,7 @@ pub const Admission = struct {
                     return rejectedResult(request, package, target_ref, module_ref, match, &.{.PermitRejected}, "permit preflight rejected admission");
                 }
             }
+            var handoff_preflight_report_fingerprint: ?u64 = null;
             if (admissionModeToHandoffMode(mode)) |handoff_mode| {
                 var handoff_run_image = package.run_image.?;
                 if (handoff_run_image.transcript_image == null) {
@@ -2218,6 +2221,7 @@ pub const Admission = struct {
                 if (!handoff_report.accepted) {
                     return rejectedResult(request, package, target_ref, module_ref, match, &.{if (args.permit != null) .PermitRejected else .EnvironmentRejected}, "handoff preflight rejected admission");
                 }
+                handoff_preflight_report_fingerprint = handoff_report.report_fingerprint;
             }
             const report = Admission.AdmissionReport.accept(.{
                 .request = request,
@@ -2229,6 +2233,7 @@ pub const Admission = struct {
                 .import_set_fingerprint = ImportSet.fromTarget(Target).import_set_fingerprint,
                 .environment_acceptance_report_fingerprint = Env.acceptanceReport(admissionModeToRunMode(mode), transcript_available).report_fingerprint,
                 .run_permit_fingerprint = if (args.permit) |permit| permit.permit_fingerprint else null,
+                .handoff_preflight_report_fingerprint = handoff_preflight_report_fingerprint,
                 .summary = "admission accepted for local execution",
             });
             var receipt = Admission.AdmissionReceipt.init(.{
@@ -8943,7 +8948,8 @@ fn providedFingerprintMatches(provided: ?u64, expected: ?u64) bool {
 fn runImageFitsAdmissionMode(image: RunImage, mode: Admission.AdmissionMode) bool {
     return switch (mode) {
         .inspect_only, .local_target_match_only, .continue_fresh => false,
-        .resume_parked, .branch_resume => image.kind == .parked_run and image.current_state.status == .parked_on_port,
+        .resume_parked => image.kind == .parked_run and image.current_state.status == .parked_on_port,
+        .branch_resume => image.kind == .parked_run and image.current_state.status == .parked_on_port and image.branches.len != 0,
         .completed_replay => image.kind == .completed_run and image.current_state.status == .completed,
         .replay_only, .verify_only => switch (image.kind) {
             .completed_run => image.current_state.status == .completed,
@@ -9129,29 +9135,48 @@ fn decodeModuleRef(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usi
     if (format_version != world_module_ref_format_version) return error.InvalidFrameEncoding;
     const fingerprint_version = try readU32(bytes, cursor);
     if (fingerprint_version != world_module_ref_fingerprint_version) return error.InvalidFrameEncoding;
+    const module_ref_fingerprint = try readU64(bytes, cursor);
+    const boundary_module_fingerprint = try readU64(bytes, cursor);
+    const module_kind = try enumFromByte(Admission.BoundaryModuleKind, try readU8(bytes, cursor));
+    const target_ref_fingerprint = try readU64(bytes, cursor);
+    const world_surface_fingerprint = try readU64(bytes, cursor);
+    const target_certificate_fingerprint = try readU64(bytes, cursor);
+    const residual_program_plan_hash = try readOptionalU64(bytes, cursor);
+    const import_surface_fingerprint = try readOptionalU64(bytes, cursor);
+    const export_surface_fingerprint = try readOptionalU64(bytes, cursor);
+    const module_graph_fingerprint = try readOptionalU64(bytes, cursor);
+    const normal_form_kind = try enumFromByte(NormalFormKind, try readU8(bytes, cursor));
+    const world_port_count = try readU64AsUsize(bytes, cursor);
+    const world_port_table_fingerprint = try readOptionalU64(bytes, cursor);
+    const world_value_table_fingerprint = try readOptionalU64(bytes, cursor);
+    const world_dispatch_table_fingerprint = try readOptionalU64(bytes, cursor);
+    const label = try readOptionalBytesOwned(allocator, bytes, cursor);
+    errdefer if (label) |owned| allocator.free(@constCast(owned));
+    const metadata = try readBytesOwned(allocator, bytes, cursor);
+    errdefer allocator.free(@constCast(metadata));
     const result = Admission.ModuleRef{
         .format_version = format_version,
         .fingerprint_version = fingerprint_version,
-        .module_ref_fingerprint = try readU64(bytes, cursor),
-        .boundary_module_fingerprint = try readU64(bytes, cursor),
-        .module_kind = try enumFromByte(Admission.BoundaryModuleKind, try readU8(bytes, cursor)),
-        .target_ref_fingerprint = try readU64(bytes, cursor),
-        .world_surface_fingerprint = try readU64(bytes, cursor),
-        .target_certificate_fingerprint = try readU64(bytes, cursor),
-        .residual_program_plan_hash = try readOptionalU64(bytes, cursor),
-        .import_surface_fingerprint = try readOptionalU64(bytes, cursor),
-        .export_surface_fingerprint = try readOptionalU64(bytes, cursor),
-        .module_graph_fingerprint = try readOptionalU64(bytes, cursor),
-        .normal_form_kind = try enumFromByte(NormalFormKind, try readU8(bytes, cursor)),
-        .world_port_count = try readU64AsUsize(bytes, cursor),
-        .world_port_table_fingerprint = try readOptionalU64(bytes, cursor),
-        .world_value_table_fingerprint = try readOptionalU64(bytes, cursor),
-        .world_dispatch_table_fingerprint = try readOptionalU64(bytes, cursor),
-        .label = try readOptionalBytesOwned(allocator, bytes, cursor),
-        .metadata = try readBytesOwned(allocator, bytes, cursor),
+        .module_ref_fingerprint = module_ref_fingerprint,
+        .boundary_module_fingerprint = boundary_module_fingerprint,
+        .module_kind = module_kind,
+        .target_ref_fingerprint = target_ref_fingerprint,
+        .world_surface_fingerprint = world_surface_fingerprint,
+        .target_certificate_fingerprint = target_certificate_fingerprint,
+        .residual_program_plan_hash = residual_program_plan_hash,
+        .import_surface_fingerprint = import_surface_fingerprint,
+        .export_surface_fingerprint = export_surface_fingerprint,
+        .module_graph_fingerprint = module_graph_fingerprint,
+        .normal_form_kind = normal_form_kind,
+        .world_port_count = world_port_count,
+        .world_port_table_fingerprint = world_port_table_fingerprint,
+        .world_value_table_fingerprint = world_value_table_fingerprint,
+        .world_dispatch_table_fingerprint = world_dispatch_table_fingerprint,
+        .label = label,
+        .metadata = metadata,
     };
     errdefer {
-        if (result.label) |label| allocator.free(@constCast(label));
+        if (result.label) |owned_label| allocator.free(@constCast(owned_label));
         allocator.free(@constCast(result.metadata));
     }
     if (result.module_ref_fingerprint != fingerprintModuleRef(result)) return error.InvalidFrameEncoding;
