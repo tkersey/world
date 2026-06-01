@@ -5967,6 +5967,28 @@ test "supervised handoff receiver can issue stricter permit and inspect prior re
     });
     const report = handoff.preflightWithPermit(fixtures.Ports.Target, PortsEnv, .accept_fresh, receiver_permit);
     try std.testing.expect(report.accepted);
+    const module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
+    const module_image = image.withModuleRef(module_ref, null);
+    const module_encoded = try module_image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(module_encoded);
+    var module_handoff = try world.Handoff.fromRunImage(std.testing.allocator, module_encoded);
+    defer module_handoff.deinit();
+    const module_scoped_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .module_ref_fingerprint = module_ref.module_ref_fingerprint,
+        .policy = world.SupervisionPolicy.handoff_receiver,
+        .budget = world.Budget.init(.{ .max_port_requests = 1 }),
+    });
+    const module_report = module_handoff.preflightWithPermit(fixtures.Ports.Target, PortsEnv, .accept_fresh, module_scoped_permit);
+    try std.testing.expect(module_report.accepted);
+    const wrong_module_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .module_ref_fingerprint = module_ref.module_ref_fingerprint +% 1,
+        .policy = world.SupervisionPolicy.handoff_receiver,
+        .budget = world.Budget.init(.{ .max_port_requests = 1 }),
+    });
+    const wrong_module_report = module_handoff.preflightWithPermit(fixtures.Ports.Target, PortsEnv, .accept_fresh, wrong_module_permit);
+    try std.testing.expect(!wrong_module_report.accepted);
     const unwitnessed_image = world.RunImage.init(.{
         .kind = .parked_run,
         .target_ref = target_ref,
@@ -5980,6 +6002,8 @@ test "supervised handoff receiver can issue stricter permit and inspect prior re
     defer unwitnessed_handoff.deinit();
     const unwitnessed_report = unwitnessed_handoff.preflightWithPermit(fixtures.Ports.Target, PortsEnv, .accept_fresh, receiver_permit);
     try std.testing.expect(unwitnessed_report.accepted);
+    const unwitnessed_module_report = unwitnessed_handoff.preflightWithPermit(fixtures.Ports.Target, PortsEnv, .accept_fresh, module_scoped_permit);
+    try std.testing.expect(!unwitnessed_module_report.accepted);
     const reused_permit_image = world.RunImage.init(.{
         .kind = .parked_run,
         .target_ref = target_ref,

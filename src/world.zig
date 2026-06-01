@@ -6347,6 +6347,14 @@ pub const Handoff = struct {
         if (permit.target_ref_fingerprint != TargetRef.fromTarget(Target).target_ref_fingerprint) {
             return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.HandoffTargetMismatch});
         }
+        if (permit.module_ref_fingerprint) |permit_module_ref_fingerprint| {
+            const run_module_ref_fingerprint = self.run_image.module_ref_fingerprint orelse {
+                return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.SupervisionPolicyMismatch});
+            };
+            if (run_module_ref_fingerprint != permit_module_ref_fingerprint) {
+                return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.SupervisionPolicyMismatch});
+            }
+        }
         const cert = Env.certificate(modeToRunMode(mode), self.run_image.transcript_image != null);
         if (permit.world_surface_fingerprint != Target.WorldSurface.surface_fingerprint) {
             return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.SupervisionPolicyMismatch});
