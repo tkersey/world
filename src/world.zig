@@ -2126,8 +2126,15 @@ pub const Admission = struct {
             }
             const use_stored_transcript = modeConsumesTranscript(requested_mode) and
                 supplied_transcript_image == null and
-                !transcript_sink_available and
                 stored_transcript_image != null;
+            if (use_stored_transcript) {
+                const image = stored_transcript_image.?;
+                image.resetReplay();
+                image.validateReplayRun(
+                    Target.WorldSurface.surface_fingerprint,
+                    Target.Certificate.certificate_fingerprint,
+                ) catch return Error.HandoffDenied;
+            }
             if (self.run_permit) |permit| {
                 if (comptime !@hasField(Options, "permit")) return Error.SupervisionDenied;
                 if (@field(options, "permit").permit_fingerprint != permit.permit_fingerprint) return Error.SupervisionDenied;
@@ -7355,7 +7362,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         }
                     }
                     if (@hasField(Options, "transcript")) {
-                        if (modeConsumesTranscript(effective) and !@hasField(Options, "transcript_image")) {
+                        if (modeConsumesTranscript(effective) and !@hasField(Options, "transcript_image") and admitted_transcript_image == null) {
                             @field(options, "transcript").resetReplay();
                             try @field(options, "transcript").validateReplayRun(
                                 Target.WorldSurface.surface_fingerprint,
@@ -7430,7 +7437,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             defer result.deinit();
                             self.done_value = try cloneRunValue(self.allocator, result.value);
                             self.done_value_present = true;
-                            if (modeConsumesTranscript(self.effective_mode) and @hasField(Options, "transcript") and !@hasField(Options, "transcript_image")) {
+                            if (modeConsumesTranscript(self.effective_mode) and @hasField(Options, "transcript") and !@hasField(Options, "transcript_image") and self.admitted_transcript_image == null) {
                                 @field(self.options, "transcript").assertReplayComplete() catch |err| {
                                     self.audit.replay_mismatch_count += 1;
                                     try self.markRunFailed();
@@ -9707,6 +9714,8 @@ fn validateTranscriptImageFingerprint(image: TranscriptImage) !void {
     for (image.events) |event| {
         if (image.format_version < 3 and eventKindRequiresAdmissionWitness(event.kind)) return error.InvalidFrameEncoding;
         if (image.format_version >= 3) try validateAdmissionEventWitness(event);
+        if (event.world_surface_fingerprint != image.world_surface_fingerprint) return error.InvalidFrameEncoding;
+        if (event.target_certificate_fingerprint != image.target_certificate_fingerprint) return error.InvalidFrameEncoding;
         try validateTranscriptEventFrameBindings(event);
         if (fingerprintTranscriptEventImageForFormat(image.format_version, event) != event.event_fingerprint) return error.InvalidFrameEncoding;
         if (event.response_frame != null) response_count += 1;

@@ -1951,6 +1951,16 @@ test "transcript image encode decode round trip stable and image replay works wi
     defer decoded.deinit(std.testing.allocator);
     try std.testing.expectEqual(image.transcript_image_fingerprint, decoded.transcript_image_fingerprint);
     try std.testing.expectEqual(@as(usize, 1), decoded.response_count);
+    var forged_event_scope_image = decoded;
+    forged_event_scope_image.events[0].world_surface_fingerprint +%= 1;
+    const forged_event_scope_package = world.Admission.TransferPackage.init(.{
+        .kind = .replay_run,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target),
+        .transcript_image = forged_event_scope_image,
+        .requested_mode = .replay_only,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_event_scope_package.validate(.{}));
+    forged_event_scope_image.events[0].world_surface_fingerprint -%= 1;
     var unsupported_format_image = decoded;
     unsupported_format_image.format_version = world.world_transcript_image_format_version + 1;
     const unsupported_transcript_package = world.Admission.TransferPackage.init(.{
@@ -8180,6 +8190,27 @@ test "admitted run start enforces admitted transcript image" {
                 break;
             },
             .port_required => try transcript_only_run.dispatch(),
+            .parked => return error.ExpectedReplayCompletion,
+            .failed => return error.ExpectedReplayCompletion,
+        }
+    }
+    var replay_sink_transcript = world.Transcript.init(std.testing.allocator);
+    defer replay_sink_transcript.deinit();
+    var replay_sink_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer replay_sink_runtime.deinit();
+    var replay_sink_run = try transcript_only_admitted.start(fixtures.Ports.Target, PortsReplayEnv, &replay_sink_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.replay,
+        .transcript = &replay_sink_transcript,
+    });
+    defer replay_sink_run.deinit();
+    while (true) {
+        switch (try replay_sink_run.next()) {
+            .done => |value| {
+                try std.testing.expectEqual(@as(i32, 7), value);
+                break;
+            },
+            .port_required => try replay_sink_run.dispatch(),
             .parked => return error.ExpectedReplayCompletion,
             .failed => return error.ExpectedReplayCompletion,
         }
