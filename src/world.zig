@@ -226,7 +226,8 @@ pub const world_admission_receipt_fingerprint_version: u32 = 1;
 pub const world_admitted_run_fingerprint_version: u32 = 1;
 pub const world_max_decoded_byte_field_len: usize = 16 * 1024 * 1024;
 const frame_response_deferred_fingerprint_flag: u32 = 1 << 0;
-const world_min_transcript_event_image_encoded_len: usize = 8 + 1 + 8 + 8 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1;
+const world_min_transcript_event_image_encoded_len_v2: usize = 8 + 1 + 8 + 8 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1;
+const world_min_transcript_event_image_encoded_len: usize = world_min_transcript_event_image_encoded_len_v2 + 1 + 1 + 1;
 
 pub const ValuePolicy = struct {
     require_portable_values: bool = false,
@@ -5643,14 +5644,14 @@ pub const TranscriptImage = struct {
         try writeU8(&out, allocator, @intFromEnum(self.final_status));
         try writeU64(&out, allocator, self.response_count);
         try writeU64(&out, allocator, self.events.len);
-        for (self.events) |event| try encodeTranscriptEventImage(&out, allocator, event);
+        for (self.events) |event| try encodeTranscriptEventImage(&out, allocator, event, self.format_version);
         return out.toOwnedSlice(allocator);
     }
 
     pub fn decode(allocator: std.mem.Allocator, bytes: []const u8) !@This() {
         var cursor: usize = 0;
         const format_version = try readU32(bytes, &cursor);
-        if (format_version != world_transcript_image_format_version) return error.InvalidFrameEncoding;
+        if (format_version != 2 and format_version != world_transcript_image_format_version) return error.InvalidFrameEncoding;
         const fingerprint_version = try readU32(bytes, &cursor);
         if (fingerprint_version != world_transcript_image_fingerprint_version) return error.InvalidFrameEncoding;
         const transcript_image_fingerprint = try readU64(bytes, &cursor);
@@ -5659,13 +5660,14 @@ pub const TranscriptImage = struct {
         const final_status = try enumFromByte(FinalStatus, try readU8(bytes, &cursor));
         const response_count = try readU64AsUsize(bytes, &cursor);
         const event_count = try readU64AsUsize(bytes, &cursor);
-        if (event_count > (bytes.len - cursor) / world_min_transcript_event_image_encoded_len) return error.InvalidFrameEncoding;
+        const min_event_len = if (format_version == 2) world_min_transcript_event_image_encoded_len_v2 else world_min_transcript_event_image_encoded_len;
+        if (event_count > (bytes.len - cursor) / min_event_len) return error.InvalidFrameEncoding;
         const events = try allocator.alloc(EventImage, event_count);
         errdefer allocator.free(events);
         var initialized: usize = 0;
         errdefer for (events[0..initialized]) |*event| event.deinit(allocator);
         for (events) |*event| {
-            event.* = try decodeTranscriptEventImage(allocator, bytes, &cursor);
+            event.* = try decodeTranscriptEventImage(allocator, bytes, &cursor, format_version);
             initialized += 1;
         }
         if (cursor != bytes.len) return error.InvalidFrameEncoding;
@@ -5680,6 +5682,7 @@ pub const TranscriptImage = struct {
         if (decoded_response_count != response_count) return error.InvalidFrameEncoding;
         if (finalStatusFromEvents(events) != final_status) return error.InvalidFrameEncoding;
         const image = @This(){
+            .format_version = format_version,
             .transcript_image_fingerprint = transcript_image_fingerprint,
             .world_surface_fingerprint = world_surface_fingerprint,
             .target_certificate_fingerprint = target_certificate_fingerprint,
@@ -8990,7 +8993,7 @@ fn finalStatusFromEvents(events: []const TranscriptImage.EventImage) TranscriptI
     return status;
 }
 
-fn encodeTranscriptEventImage(out: *std.ArrayList(u8), allocator: std.mem.Allocator, event: TranscriptImage.EventImage) !void {
+fn encodeTranscriptEventImage(out: *std.ArrayList(u8), allocator: std.mem.Allocator, event: TranscriptImage.EventImage, format_version: u32) !void {
     try writeU64(out, allocator, event.event_fingerprint);
     try writeU8(out, allocator, @intFromEnum(event.kind));
     try writeU64(out, allocator, event.world_surface_fingerprint);
@@ -9005,9 +9008,11 @@ fn encodeTranscriptEventImage(out: *std.ArrayList(u8), allocator: std.mem.Alloca
         try writeBool(out, allocator, false);
     }
     try writeOptionalU64(out, allocator, event.replay_key);
-    try writeOptionalU64(out, allocator, event.admission_receipt_fingerprint);
-    try writeOptionalU64(out, allocator, event.module_ref_fingerprint);
-    try writeOptionalU64(out, allocator, event.target_match_fingerprint);
+    if (format_version >= 3) {
+        try writeOptionalU64(out, allocator, event.admission_receipt_fingerprint);
+        try writeOptionalU64(out, allocator, event.module_ref_fingerprint);
+        try writeOptionalU64(out, allocator, event.target_match_fingerprint);
+    }
     try writeOptionalU64(out, allocator, event.turn_index);
     try writeOptionalU64(out, allocator, event.residual_site_index);
     try writeOptionalU64(out, allocator, event.residual_site_fingerprint);
@@ -9036,7 +9041,7 @@ fn encodeTranscriptEventImage(out: *std.ArrayList(u8), allocator: std.mem.Alloca
     }
 }
 
-fn decodeTranscriptEventImage(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) !TranscriptImage.EventImage {
+fn decodeTranscriptEventImage(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, format_version: u32) !TranscriptImage.EventImage {
     var event = TranscriptImage.EventImage{
         .event_fingerprint = try readU64(bytes, cursor),
         .kind = try enumFromByte(EventKind, try readU8(bytes, cursor)),
@@ -9047,9 +9052,9 @@ fn decodeTranscriptEventImage(allocator: std.mem.Allocator, bytes: []const u8, c
         .response_fingerprint = try readOptionalU64(bytes, cursor),
         .response_kind = if (try readBool(bytes, cursor)) try enumFromByte(ResponseKind, try readU8(bytes, cursor)) else null,
         .replay_key = try readOptionalU64(bytes, cursor),
-        .admission_receipt_fingerprint = try readOptionalU64(bytes, cursor),
-        .module_ref_fingerprint = try readOptionalU64(bytes, cursor),
-        .target_match_fingerprint = try readOptionalU64(bytes, cursor),
+        .admission_receipt_fingerprint = if (format_version >= 3) try readOptionalU64(bytes, cursor) else null,
+        .module_ref_fingerprint = if (format_version >= 3) try readOptionalU64(bytes, cursor) else null,
+        .target_match_fingerprint = if (format_version >= 3) try readOptionalU64(bytes, cursor) else null,
         .turn_index = try readOptionalUsize(bytes, cursor),
         .residual_site_index = try readOptionalUsize(bytes, cursor),
         .residual_site_fingerprint = try readOptionalU64(bytes, cursor),
@@ -9070,7 +9075,7 @@ fn decodeTranscriptEventImage(allocator: std.mem.Allocator, bytes: []const u8, c
         event.response_frame = try Frame.Response.decode(allocator, encoded);
     }
     try validateTranscriptEventFrameBindings(event);
-    if (fingerprintTranscriptEventImage(event) != event.event_fingerprint) return error.InvalidFrameEncoding;
+    if (fingerprintTranscriptEventImageForFormat(format_version, event) != event.event_fingerprint) return error.InvalidFrameEncoding;
     return event;
 }
 
@@ -9265,7 +9270,7 @@ fn addSatEncodedSize(a: usize, b: usize) usize {
 
 fn transcriptImageEncodedByteSize(image: TranscriptImage) usize {
     var size: usize = 4 + 4 + 8 + 8 + 8 + 1 + 8 + 8;
-    for (image.events) |event| size = addSatEncodedSize(size, transcriptEventImageEncodedByteSize(event));
+    for (image.events) |event| size = addSatEncodedSize(size, transcriptEventImageEncodedByteSizeForFormat(image.format_version, event));
     return size;
 }
 
@@ -9427,23 +9432,25 @@ fn validateTranscriptImageFingerprint(image: TranscriptImage) !void {
     var response_count: usize = 0;
     for (image.events) |event| {
         try validateTranscriptEventFrameBindings(event);
-        if (fingerprintTranscriptEventImage(event) != event.event_fingerprint) return error.InvalidFrameEncoding;
+        if (fingerprintTranscriptEventImageForFormat(image.format_version, event) != event.event_fingerprint) return error.InvalidFrameEncoding;
         if (event.response_frame != null) response_count += 1;
     }
     if (image.response_count != response_count) return error.InvalidFrameEncoding;
     if (fingerprintTranscriptImage(image) != image.transcript_image_fingerprint) return error.InvalidFrameEncoding;
 }
 
-fn transcriptEventImageEncodedByteSize(event: TranscriptImage.EventImage) usize {
+fn transcriptEventImageEncodedByteSizeForFormat(format_version: u32, event: TranscriptImage.EventImage) usize {
     var size: usize = 8 + 1 + 8 + 8;
     size = addSatEncodedSize(size, optionalU32EncodedByteSize(event.world_port_id));
     size = addSatEncodedSize(size, optionalU64EncodedByteSize(event.request_fingerprint));
     size = addSatEncodedSize(size, optionalU64EncodedByteSize(event.response_fingerprint));
     size = addSatEncodedSize(size, optionalEnumByteEncodedByteSize(event.response_kind));
     size = addSatEncodedSize(size, optionalU64EncodedByteSize(event.replay_key));
-    size = addSatEncodedSize(size, optionalU64EncodedByteSize(event.admission_receipt_fingerprint));
-    size = addSatEncodedSize(size, optionalU64EncodedByteSize(event.module_ref_fingerprint));
-    size = addSatEncodedSize(size, optionalU64EncodedByteSize(event.target_match_fingerprint));
+    if (format_version >= 3) {
+        size = addSatEncodedSize(size, optionalU64EncodedByteSize(event.admission_receipt_fingerprint));
+        size = addSatEncodedSize(size, optionalU64EncodedByteSize(event.module_ref_fingerprint));
+        size = addSatEncodedSize(size, optionalU64EncodedByteSize(event.target_match_fingerprint));
+    }
     size = addSatEncodedSize(size, optionalUsizeEncodedByteSize(event.turn_index));
     size = addSatEncodedSize(size, optionalUsizeEncodedByteSize(event.residual_site_index));
     size = addSatEncodedSize(size, optionalU64EncodedByteSize(event.residual_site_fingerprint));
@@ -9452,6 +9459,10 @@ fn transcriptEventImageEncodedByteSize(event: TranscriptImage.EventImage) usize 
     size = addSatEncodedSize(size, optionalRequestFrameEncodedByteSize(event.request_frame));
     size = addSatEncodedSize(size, optionalResponseFrameEncodedByteSize(event.response_frame));
     return size;
+}
+
+fn transcriptEventImageEncodedByteSize(event: TranscriptImage.EventImage) usize {
+    return transcriptEventImageEncodedByteSizeForFormat(world_transcript_image_format_version, event);
 }
 
 fn optionalU32EncodedByteSize(value: ?u32) usize {
@@ -10993,6 +11004,10 @@ fn fingerprintValueImage(
 }
 
 fn fingerprintTranscriptEventImage(event: TranscriptImage.EventImage) u64 {
+    return fingerprintTranscriptEventImageForFormat(world_transcript_image_format_version, event);
+}
+
+fn fingerprintTranscriptEventImageForFormat(format_version: u32, event: TranscriptImage.EventImage) u64 {
     var hasher = std.hash.Wyhash.init(0);
     hashBytes(&hasher, "world.transcript.event_image.fingerprint");
     hashU64(&hasher, world_timeline_event_fingerprint_version);
@@ -11009,9 +11024,11 @@ fn fingerprintTranscriptEventImage(event: TranscriptImage.EventImage) u64 {
         hashBool(&hasher, false);
     }
     hashOptionalU64(&hasher, event.replay_key);
-    hashOptionalU64(&hasher, event.admission_receipt_fingerprint);
-    hashOptionalU64(&hasher, event.module_ref_fingerprint);
-    hashOptionalU64(&hasher, event.target_match_fingerprint);
+    if (format_version >= 3) {
+        hashOptionalU64(&hasher, event.admission_receipt_fingerprint);
+        hashOptionalU64(&hasher, event.module_ref_fingerprint);
+        hashOptionalU64(&hasher, event.target_match_fingerprint);
+    }
     if (event.turn_index) |turn| {
         hashBool(&hasher, true);
         hashU64(&hasher, turn);

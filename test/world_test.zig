@@ -403,6 +403,50 @@ fn hashTestU64(hasher: *std.hash.Wyhash, value: anytype) void {
     hasher.update(&buffer);
 }
 
+fn hashTestBool(hasher: *std.hash.Wyhash, value: bool) void {
+    hashTestU64(hasher, @as(u8, if (value) 1 else 0));
+}
+
+fn hashTestOptionalU64(hasher: *std.hash.Wyhash, value: ?u64) void {
+    if (value) |present| {
+        hashTestBool(hasher, true);
+        hashTestU64(hasher, present);
+    } else {
+        hashTestBool(hasher, false);
+    }
+}
+
+fn hashTestOptionalU32(hasher: *std.hash.Wyhash, value: ?u32) void {
+    if (value) |present| {
+        hashTestBool(hasher, true);
+        hashTestU64(hasher, present);
+    } else {
+        hashTestBool(hasher, false);
+    }
+}
+
+fn testTranscriptEventImageV2Fingerprint(event: world.TranscriptImage.EventImage) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashTestBytes(&hasher, "world.transcript.event_image.fingerprint");
+    hashTestU64(&hasher, world.world_timeline_event_fingerprint_version);
+    hashTestU64(&hasher, @intFromEnum(event.kind));
+    hashTestU64(&hasher, event.world_surface_fingerprint);
+    hashTestU64(&hasher, event.target_certificate_fingerprint);
+    hashTestOptionalU32(&hasher, event.world_port_id);
+    hashTestOptionalU64(&hasher, event.request_fingerprint);
+    hashTestOptionalU64(&hasher, event.response_fingerprint);
+    hashTestBool(&hasher, false);
+    hashTestOptionalU64(&hasher, event.replay_key);
+    hashTestBool(&hasher, false);
+    hashTestBool(&hasher, false);
+    hashTestOptionalU64(&hasher, event.residual_site_fingerprint);
+    hashTestBool(&hasher, false);
+    hashTestBool(&hasher, event.source_run);
+    hashTestBool(&hasher, false);
+    hashTestBool(&hasher, false);
+    return hasher.final();
+}
+
 fn writeLittleU64(bytes: []u8, value: anytype) void {
     var buffer: [8]u8 = undefined;
     std.mem.writeInt(u64, &buffer, @intCast(value), .little);
@@ -1898,6 +1942,35 @@ test "transcript image encode decode round trip stable and image replay works wi
     var restored_admission_transcript = try world.Transcript.fromImage(std.testing.allocator, decoded_admission_image);
     defer restored_admission_transcript.deinit();
     try std.testing.expectEqual(@as(?u64, 0xdef), restored_admission_transcript.events.items[0].module_ref_fingerprint);
+
+    var v2_events = try std.testing.allocator.alloc(world.TranscriptImage.EventImage, 1);
+    var v2_events_owned = true;
+    errdefer if (v2_events_owned) std.testing.allocator.free(v2_events);
+    v2_events[0] = .{
+        .event_fingerprint = 0,
+        .kind = .run_started,
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .source_run = true,
+    };
+    v2_events[0].event_fingerprint = testTranscriptEventImageV2Fingerprint(v2_events[0]);
+    var v2_image = world.TranscriptImage{
+        .format_version = 2,
+        .transcript_image_fingerprint = 0,
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .events = v2_events,
+        .final_status = .running,
+    };
+    v2_events_owned = false;
+    v2_image.transcript_image_fingerprint = testTranscriptImageFingerprint(v2_image);
+    const v2_encoded = try v2_image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(v2_encoded);
+    defer v2_image.deinit(std.testing.allocator);
+    var decoded_v2_image = try world.TranscriptImage.decode(std.testing.allocator, v2_encoded);
+    defer decoded_v2_image.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u32, 2), decoded_v2_image.format_version);
+    try std.testing.expectEqual(@as(?u64, null), decoded_v2_image.events[0].admission_receipt_fingerprint);
     var forged_status_image = decoded;
     forged_status_image.final_status = .failed;
     forged_status_image.transcript_image_fingerprint = testTranscriptImageFingerprint(forged_status_image);
