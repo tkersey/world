@@ -1799,6 +1799,13 @@ pub const Admission = struct {
             };
         }
 
+        pub fn withFingerprint(self: Admission.AdmissionPolicy) Admission.AdmissionPolicy {
+            var result = self;
+            result.policy_fingerprint = 0;
+            result.policy_fingerprint = fingerprintAdmissionPolicy(result);
+            return result;
+        }
+
         pub const strict_local_execution = init(.{});
         pub const inspect_modules = init(.{
             .allow_full_modules = true,
@@ -2147,6 +2154,7 @@ pub const Admission = struct {
             allocator: std.mem.Allocator = std.heap.page_allocator,
         }) AdmissionResult {
             const mode = args.mode orelse package.requested_mode;
+            const policy = self.policy.withFingerprint();
             const transcript_available = package.transcript_image != null or
                 (package.run_image != null and package.run_image.?.transcript_image != null) or
                 (mode == .continue_fresh and args.fresh_transcript_sink_available and Env.policy_decl.allow_native_adapters);
@@ -2157,7 +2165,7 @@ pub const Admission = struct {
             const request = Admission.AdmissionRequest.init(.{
                 .package_fingerprint = package.package_fingerprint,
                 .mode = mode,
-                .policy_fingerprint = self.policy.policy_fingerprint,
+                .policy_fingerprint = policy.policy_fingerprint,
                 .target_registry_fingerprint = self.registry.registry_fingerprint,
                 .environment_certificate_fingerprint = environment_certificate_fingerprint,
                 .run_permit_fingerprint = if (args.permit) |permit| permit.permit_fingerprint else null,
@@ -2166,7 +2174,10 @@ pub const Admission = struct {
                 .metadata = args.metadata,
             });
             if (package.kind == .target_reference_only and package.target_ref == null and package.run_image == null) {
-                return rejectedResult(request, package, TargetRef.fromTarget(Target), null, null, &.{.TargetRefMissing}, "target reference package is missing target ref");
+                return rejectedResult(request, package, null, null, null, &.{.TargetRefMissing}, "target reference package is missing target ref");
+            }
+            if (package.target_ref == null and package.run_image == null and package.module_image_bytes == null and package.module_ref != null) {
+                return rejectedResult(request, package, null, package.module_ref, null, &.{.TargetRefMissing}, "module package is missing target ref");
             }
             const target_ref = package.target_ref orelse if (package.run_image) |image| image.target_ref else TargetRef.fromTarget(Target);
             var module_ref = package.module_ref;
@@ -2174,16 +2185,16 @@ pub const Admission = struct {
                 return rejectedResult(request, package, target_ref, module_ref, null, &.{.PackageInvalid}, "admission mode does not match package requested mode");
             }
             package.validate(.{
-                .max_package_bytes = self.policy.max_package_bytes,
-                .max_module_bytes = self.policy.max_module_bytes,
-                .max_transcript_bytes = self.policy.max_transcript_bytes,
-                .max_branches = self.policy.max_branches,
-                .max_checkpoints = self.policy.max_checkpoints,
+                .max_package_bytes = policy.max_package_bytes,
+                .max_module_bytes = policy.max_module_bytes,
+                .max_transcript_bytes = policy.max_transcript_bytes,
+                .max_branches = policy.max_branches,
+                .max_checkpoints = policy.max_checkpoints,
                 .require_target_ref = false,
                 .require_run_image = admissionModeNeedsRunImage(mode),
-                .allow_full_module = self.policy.allow_full_modules or (mode == .inspect_only and self.policy.allow_inspect_only_full_modules),
-                .allow_reference_only = self.policy.allow_reference_targets,
-                .allow_inspect_only = self.policy.allow_inspect_only_full_modules,
+                .allow_full_module = policy.allow_full_modules or (mode == .inspect_only and policy.allow_inspect_only_full_modules),
+                .allow_reference_only = policy.allow_reference_targets,
+                .allow_inspect_only = policy.allow_inspect_only_full_modules,
             }) catch {
                 return rejectedResult(request, package, target_ref, module_ref, null, &.{.PackageInvalid}, "package validation failed");
             };
@@ -2225,19 +2236,19 @@ pub const Admission = struct {
             self.registry.validate() catch {
                 return rejectedResult(request, package, target_ref, module_ref, null, &.{.TargetMismatch}, "target registry contains conflicting entries");
             };
-            if (mode == .inspect_only and !self.policy.allow_reference_targets and module_ref == null and package.module_image_bytes == null) {
+            if (mode == .inspect_only and !policy.allow_reference_targets and module_ref == null and package.module_image_bytes == null) {
                 return rejectedResult(request, package, target_ref, module_ref, null, &.{.PackageInvalid}, "inspect-only admission requires module evidence");
             }
-            if (!self.policy.allowsMode(mode)) {
+            if (!policy.allowsMode(mode)) {
                 return rejectedResult(request, package, target_ref, module_ref, null, &.{.AdmissionModeNotAllowed}, "admission mode is not allowed by policy");
             }
             const match = self.registry.match(target_ref, module_ref);
-            if (self.policy.require_local_target_for_execution or mode != .inspect_only) {
-                if (!match.matched and module_ref != null and self.policy.reject_module_mismatch) return rejectedResult(request, package, target_ref, module_ref, match, &.{.ModuleInvalid}, "module mismatch");
+            if (policy.require_local_target_for_execution or mode != .inspect_only) {
+                if (!match.matched and module_ref != null and policy.reject_module_mismatch) return rejectedResult(request, package, target_ref, module_ref, match, &.{.ModuleInvalid}, "module mismatch");
                 if (!match.matched) return rejectedResult(request, package, target_ref, module_ref, match, &.{.TargetNotRegistered}, "target not registered");
-                if (self.policy.reject_target_mismatch and match.match_mode == .mismatch) return rejectedResult(request, package, target_ref, module_ref, match, &.{.TargetMismatch}, "target mismatch");
+                if (policy.reject_target_mismatch and match.match_mode == .mismatch) return rejectedResult(request, package, target_ref, module_ref, match, &.{.TargetMismatch}, "target mismatch");
             }
-            if (self.policy.reject_prior_receipt_mismatch) {
+            if (policy.reject_prior_receipt_mismatch) {
                 if (package.run_image) |image| {
                     if (image.prior_run_permit_fingerprint) |fingerprint| {
                         if (!containsU64(package.prior_run_permit_refs, fingerprint)) return rejectedResult(request, package, target_ref, module_ref, match, &.{.PriorReceiptMismatch}, "run image prior permit is not listed in package prior permits");
@@ -2262,7 +2273,7 @@ pub const Admission = struct {
                 return rejectedResult(request, package, target_ref, module_ref, match, &.{.TargetMismatch}, "registry match does not name requested local target");
             }
             if (module_ref) |module| {
-                if (module.module_kind == .full_module and mode != .inspect_only and self.policy.require_local_target_for_execution and !match.matched) {
+                if (module.module_kind == .full_module and mode != .inspect_only and policy.require_local_target_for_execution and !match.matched) {
                     return rejectedResult(request, package, target_ref, module_ref, match, &.{.ModuleRequiresLocalTarget}, "full module requires local target for execution");
                 }
             }
@@ -2287,7 +2298,7 @@ pub const Admission = struct {
                 return .{ .request = request, .report = report, .receipt = receipt, .target_match = match };
             }
             const cert = Env.certificate(admissionModeToRunMode(mode), transcript_available);
-            if (self.policy.require_environment_preflight) {
+            if (policy.require_environment_preflight) {
                 const env_report = Env.acceptanceReport(admissionModeToRunMode(mode), transcript_available);
                 if (!env_report.accepted) {
                     const report = Admission.AdmissionReport.rejected(.{
@@ -2305,7 +2316,7 @@ pub const Admission = struct {
                     return .{ .request = request, .report = report, .target_match = match };
                 }
             }
-            if (self.policy.require_supervision_permit and args.permit == null) {
+            if (policy.require_supervision_permit and args.permit == null) {
                 return rejectedResult(request, package, target_ref, module_ref, match, &.{.PermitMissing}, "receiver permit is required");
             }
             if (args.permit) |permit| {
@@ -2422,12 +2433,12 @@ pub const Admission = struct {
             return .{ .request = request, .report = report, .receipt = receipt, .admitted_run = admitted, .target_match = match };
         }
 
-        fn rejectedResult(request: Admission.AdmissionRequest, package: Admission.TransferPackage, target_ref: TargetRef, module_ref: ?Admission.ModuleRef, match: ?Admission.TargetMatch, blockers: []const AdmissionBlocker, summary: []const u8) AdmissionResult {
+        fn rejectedResult(request: Admission.AdmissionRequest, package: Admission.TransferPackage, target_ref: ?TargetRef, module_ref: ?Admission.ModuleRef, match: ?Admission.TargetMatch, blockers: []const AdmissionBlocker, summary: []const u8) AdmissionResult {
             const report = Admission.AdmissionReport.rejected(.{
                 .request = request,
                 .package_fingerprint = package.package_fingerprint,
                 .manifest_fingerprint = package.manifest.manifest_fingerprint,
-                .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+                .target_ref_fingerprint = if (target_ref) |target| target.target_ref_fingerprint else null,
                 .module_ref_fingerprint = if (module_ref) |module| module.module_ref_fingerprint else null,
                 .target_match_fingerprint = if (match) |target_match| target_match.match_fingerprint else null,
                 .blockers = blockers,

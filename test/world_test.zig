@@ -6763,6 +6763,16 @@ test "admitter accepts inspect-only full module and rejects missing permit for e
     try std.testing.expect(bytes_only_inspect.report.accepted);
     try std.testing.expectEqual(module_ref.module_ref_fingerprint, bytes_only_inspect.report.module_ref_fingerprint.?);
 
+    const module_without_target = world.Admission.TransferPackage.init(.{
+        .kind = .module_reference,
+        .module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Agent.Target),
+        .requested_mode = .inspect_only,
+    });
+    const module_without_target_result = inspect_admitter.admitForTarget(fixtures.Ports.Target, PortsEnv, module_without_target, .{});
+    try std.testing.expect(!module_without_target_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.TargetRefMissing, module_without_target_result.report.blockers[0]);
+    try std.testing.expectEqual(@as(?u64, null), module_without_target_result.report.target_ref_fingerprint);
+
     const stale_ref_package = world.Admission.TransferPackage.init(.{
         .kind = .full_module,
         .module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target),
@@ -6967,6 +6977,20 @@ test "replay-only admission policy rejects resume modes" {
     }).admitForTarget(fixtures.Ports.Target, PortsEnv, fresh_package, .{});
     try std.testing.expect(!verify_fresh_result.report.accepted);
     try std.testing.expectEqual(world.Admission.AdmissionBlocker.AdmissionModeNotAllowed, verify_fresh_result.report.blockers[0]);
+
+    var stale_policy = world.Admission.AdmissionPolicy.strict_local_execution;
+    stale_policy.allow_continue_fresh = false;
+    stale_policy.policy_fingerprint = 0;
+    const expected_policy = world.Admission.AdmissionPolicy.init(.{
+        .allow_continue_fresh = false,
+    });
+    const stale_policy_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = stale_policy,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, fresh_package, .{});
+    try std.testing.expect(!stale_policy_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.AdmissionModeNotAllowed, stale_policy_result.report.blockers[0]);
+    try std.testing.expectEqual(expected_policy.policy_fingerprint, stale_policy_result.request.policy_fingerprint);
 
     const pending_request = world.Frame.Request.init(.{
         .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
