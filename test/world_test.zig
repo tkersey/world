@@ -2001,6 +2001,16 @@ test "transcript image encode decode round trip stable and image replay works wi
     try std.testing.expectEqual(@as(?u64, 0x456), restored_admission_transcript.events.items[0].admission_request_fingerprint);
     try std.testing.expectEqual(@as(?u64, 0x789), restored_admission_transcript.events.items[0].admission_report_fingerprint);
     try std.testing.expectEqual(@as(?u64, 0xdef), restored_admission_transcript.events.items[0].module_ref_fingerprint);
+    var malformed_admission_transcript = world.Transcript.init(std.testing.allocator);
+    defer malformed_admission_transcript.deinit();
+    try malformed_admission_transcript.append(.{
+        .kind = .admission_accepted,
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .admission_request_fingerprint = 0x456,
+        .admission_report_fingerprint = 0x789,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, malformed_admission_transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable }));
 
     var v2_events = try std.testing.allocator.alloc(world.TranscriptImage.EventImage, 1);
     var v2_events_owned = true;

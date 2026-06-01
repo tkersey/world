@@ -9278,6 +9278,7 @@ fn eventImageFromTranscriptEvent(allocator: std.mem.Allocator, event: Transcript
         .response_frame = response_frame,
     };
     try validateTranscriptEventFrameBindings(image);
+    try validateAdmissionEventWitness(image);
     image.event_fingerprint = fingerprintTranscriptEventImage(image);
     return image;
 }
