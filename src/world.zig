@@ -1315,9 +1315,10 @@ pub const Admission = struct {
             if (self.target_ref) |target_ref| {
                 if (target_ref.target_ref_fingerprint != fingerprintTargetRef(target_ref)) return error.InvalidFrameEncoding;
                 if (self.module_ref) |module_ref| {
-                    if (module_ref.target_ref_fingerprint != target_ref.target_ref_fingerprint) return error.HandoffTargetMismatch;
+                    if (module_ref.module_kind != .full_module and module_ref.target_ref_fingerprint != target_ref.target_ref_fingerprint) return error.HandoffTargetMismatch;
                     if (module_ref.world_surface_fingerprint != target_ref.world_surface_fingerprint) return error.HandoffTargetMismatch;
                     if (module_ref.target_certificate_fingerprint != target_ref.target_certificate_fingerprint) return error.HandoffTargetMismatch;
+                    if (module_ref.residual_program_plan_hash != target_ref.residual_program_plan_hash) return error.HandoffTargetMismatch;
                 }
             }
             if (self.run_image) |image| {
@@ -1341,6 +1342,10 @@ pub const Admission = struct {
                 }
             }
             if (self.transcript_image) |image| {
+                if (self.target_ref) |target_ref| {
+                    if (image.world_surface_fingerprint != target_ref.world_surface_fingerprint) return error.TranscriptImageSurfaceMismatch;
+                    if (image.target_certificate_fingerprint != target_ref.target_certificate_fingerprint) return error.TargetCertificateMismatch;
+                }
                 if (self.run_image) |run_image| {
                     if (run_image.current_state.transcript_image_fingerprint) |state_fingerprint| {
                         if (state_fingerprint != image.transcript_image_fingerprint) return error.InvalidFrameEncoding;
@@ -1501,7 +1506,7 @@ pub const Admission = struct {
                 if (target.normal_form_kind != entry.normal_form_kind and first_mismatch == null) first_mismatch = .NormalForm;
             }
             if (module_ref) |module| {
-                if (module.target_ref_fingerprint != entry.target_ref.target_ref_fingerprint and first_mismatch == null) first_mismatch = .ProgramPlanHash;
+                if (module.module_kind != .full_module and module.target_ref_fingerprint != entry.target_ref.target_ref_fingerprint and first_mismatch == null) first_mismatch = .ProgramPlanHash;
                 if (module.world_surface_fingerprint != entry.world_surface_fingerprint and first_mismatch == null) first_mismatch = .WorldSurface;
                 if (module.target_certificate_fingerprint != entry.target_certificate_fingerprint and first_mismatch == null) first_mismatch = .TargetCertificate;
                 if (module.residual_program_plan_hash != entry.program_plan_hash and first_mismatch == null) first_mismatch = .ProgramPlanHash;

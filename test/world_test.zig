@@ -6525,7 +6525,11 @@ test "module gateway validates full module inspect-only and reports unsupported 
     const module_ref = world.Admission.ModuleGateway.refFromBoundaryModule(loaded);
     const import_set = world.Admission.ModuleGateway.importSetFromBoundaryModule(loaded);
     const summary = world.Admission.ModuleGateway.exportSummaryFromBoundaryModule(loaded);
+    const registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Ports.Target)});
+    const match = registry.match(null, module_ref);
     try std.testing.expectEqual(loaded.manifest().module_fingerprint, module_ref.boundary_module_fingerprint);
+    try std.testing.expect(match.matched);
+    try std.testing.expectEqual(world.Admission.MatchMode.module_full_to_local_target, match.match_mode);
     try std.testing.expectEqual(@as(usize, 1), import_set.required_count);
     try std.testing.expect(!summary.loaded_execution_supported);
 }
@@ -7066,6 +7070,19 @@ test "admitted run start enforces admitted transcript image" {
     }).admitForTarget(fixtures.Ports.Target, PortsReplayEnv, no_replay_evidence_package, .{});
     try std.testing.expect(!no_replay_evidence_result.report.accepted);
     try std.testing.expectEqual(world.Admission.AdmissionBlocker.RunImageInvalid, no_replay_evidence_result.report.blockers[0]);
+
+    const transcript_target_mismatch_package = world.Admission.TransferPackage.init(.{
+        .kind = .replay_run,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Agent.Target),
+        .transcript_image = image,
+        .requested_mode = .replay_only,
+    });
+    const transcript_target_mismatch_result = world.Admission.Admitter.init(.{
+        .registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Agent.Target)}),
+        .policy = world.Admission.AdmissionPolicy.replay_only,
+    }).admitForTarget(fixtures.Agent.Target, AgentEnv, transcript_target_mismatch_package, .{});
+    try std.testing.expect(!transcript_target_mismatch_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, transcript_target_mismatch_result.report.blockers[0]);
 
     const transcript_only_package = world.Admission.TransferPackage.init(.{
         .kind = .replay_run,
