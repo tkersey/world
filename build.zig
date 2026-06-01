@@ -186,7 +186,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-transcript-image-replay",
             .desc = "Run the transcript image replay World example.",
             .expected_stdout =
-            \\transcript_image_fingerprint=a3353484a43e8cc3
+            \\transcript_image_fingerprint=64fea44e8213ec3
             \\replayed_response_count=1
             \\final_result=7
             \\
@@ -210,7 +210,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-agent-timeline",
             .desc = "Run the agent timeline World example.",
             .expected_stdout =
-            \\transcript_image_fingerprint=449b31be63c5adbe
+            \\transcript_image_fingerprint=aa3dd05381fca5cb
             \\event_count=8
             \\tool_call_count=1
             \\replay_verified=true
@@ -224,9 +224,9 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-agent-branch",
             .desc = "Run the agent branch World example.",
             .expected_stdout =
-            \\checkpoint_fingerprint=1b669a36f42ec5a
-            \\baseline_transcript_fingerprint=449b31be63c5adbe
-            \\branch_transcript_fingerprint=b1a9f6a618e53453
+            \\checkpoint_fingerprint=41a07ca32c074d08
+            \\baseline_transcript_fingerprint=aa3dd05381fca5cb
+            \\branch_transcript_fingerprint=7cc91fbb223c4ca
             \\baseline_final_result=final=actuate skeleton complete
             \\branch_final_result=final=branch alternate
             \\
@@ -241,7 +241,7 @@ pub fn build(b: *std.Build) void {
             \\fresh_missing_accepted=false
             \\fresh_blocker=MissingBinding
             \\replay_without_handlers_accepted=true
-            \\transcript_image_fingerprint=a3353484a43e8cc3
+            \\transcript_image_fingerprint=64fea44e8213ec3
             \\
             ,
         },
@@ -264,7 +264,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-handoff-replay",
             .desc = "Run the replay World handoff example.",
             .expected_stdout =
-            \\run_image_fingerprint=ae5a0442d14cd6f1
+            \\run_image_fingerprint=edfe08cd947151e5
             \\replayed_response_count=1
             \\final_result=7
             \\
@@ -287,8 +287,8 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-agent-handoff",
             .desc = "Run the agent World handoff example.",
             .expected_stdout =
-            \\run_image_fingerprint=6d489fbd15f5edb5
-            \\checkpoint_fingerprint=1b669a36f42ec5a
+            \\run_image_fingerprint=f55a3fb93cf4962
+            \\checkpoint_fingerprint=41a07ca32c074d08
             \\branch_id=1
             \\model_port_id=0
             \\tool_port_id=1
@@ -341,8 +341,8 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-admission-replay-verify",
             .desc = "Run the World admission replay/verify example.",
             .expected_stdout =
-            \\replay_admission_receipt=82e0f7cdc49cd341
-            \\verify_admission_receipt=569eefab1f55ef95
+            \\replay_admission_receipt=28cf87b7eac7b791
+            \\verify_admission_receipt=b67cec857bfbcb99
             \\divergence_detected=true
             \\
             ,
@@ -356,7 +356,7 @@ pub fn build(b: *std.Build) void {
             \\module_ref_fingerprint=8980705f83427fa6
             \\model_port_id=0
             \\tool_port_id=1
-            \\admission_receipt=3485a322b3e1a163
+            \\admission_receipt=36f01506c840535
             \\final_result=final=actuate skeleton complete
             \\
             ,
@@ -419,7 +419,7 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the supervised replay/verify World example.",
             .expected_stdout =
             \\fresh_receipt=18c2f35d72d66171
-            \\replay_receipt=8393e895fb138ac3
+            \\replay_receipt=10dc84132ed1fe4a
             \\verify_divergence_detected=true
             \\
             ,

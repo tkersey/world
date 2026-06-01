@@ -2087,17 +2087,27 @@ pub const Admission = struct {
             self.* = undefined;
         }
 
-        pub fn start(self: Admission.AdmittedRun, comptime Target: type, comptime Env: type, runtime: anytype, args: anytype, options: anytype) !Machine(Target, Env.machine_config).Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)) {
+        pub fn start(self: *Admission.AdmittedRun, comptime Target: type, comptime Env: type, runtime: anytype, args: anytype, options: anytype) !Machine(Target, Env.machine_config).Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)) {
             if (!self.target_ref.matchesTarget(Target)) return Error.HandoffTargetMismatch;
             const Options = @TypeOf(options);
             const requested_mode: Mode = if (comptime @hasField(Options, "mode")) @field(options, "mode") else .fresh;
             if (requested_mode != admissionModeToRunMode(self.mode)) return Error.HandoffDenied;
             if (self.mode == .resume_parked or self.mode == .branch_resume) return Error.HandoffDenied;
+            const stored_transcript_image: ?*TranscriptImage = if (self.transcript_image) |*image|
+                image
+            else if (self.run_image) |*image|
+                if (image.transcript_image) |*transcript_image| transcript_image else null
+            else
+                null;
+            const supplied_transcript_image: ?*TranscriptImage = if (comptime @hasField(Options, "transcript_image"))
+                @field(options, "transcript_image")
+            else
+                null;
             const transcript_sink_available = comptime @hasField(Options, "transcript") and Env.policy_decl.allow_native_adapters;
             const transcript_available = if (requested_mode == .fresh)
                 transcript_sink_available
             else
-                (comptime @hasField(Options, "transcript_image")) or transcript_sink_available;
+                supplied_transcript_image != null or stored_transcript_image != null or transcript_sink_available;
             if (self.environment_certificate_fingerprint) |fingerprint| {
                 if (Env.certificate(requested_mode, transcript_available).certificate_fingerprint != fingerprint) return Error.HandoffDenied;
             }
@@ -2110,17 +2120,22 @@ pub const Admission = struct {
             else
                 null;
             if (expected_transcript_fingerprint) |fingerprint| {
-                if (comptime !@hasField(Options, "transcript_image")) return Error.HandoffDenied;
-                const supplied_transcript_image = @field(options, "transcript_image");
-                validateTranscriptImageFingerprint(supplied_transcript_image.*) catch return Error.HandoffDenied;
-                if (supplied_transcript_image.transcript_image_fingerprint != fingerprint) return Error.HandoffDenied;
+                const candidate = supplied_transcript_image orelse stored_transcript_image orelse return Error.HandoffDenied;
+                validateTranscriptImageFingerprint(candidate.*) catch return Error.HandoffDenied;
+                if (candidate.transcript_image_fingerprint != fingerprint) return Error.HandoffDenied;
             }
+            const use_stored_transcript = modeConsumesTranscript(requested_mode) and
+                supplied_transcript_image == null and
+                !transcript_sink_available and
+                stored_transcript_image != null;
             if (self.run_permit) |permit| {
                 if (comptime !@hasField(Options, "permit")) return Error.SupervisionDenied;
                 if (@field(options, "permit").permit_fingerprint != permit.permit_fingerprint) return Error.SupervisionDenied;
                 const scoped_permit = scopePermitToAdmission(permit, self.admission_receipt_fingerprint);
+                if (use_stored_transcript) return Machine(Target, Env.machine_config).startWithAdmittedTranscriptPermit(runtime, args, options, scoped_permit, stored_transcript_image.?);
                 return Machine(Target, Env.machine_config).startWithPermit(runtime, args, options, scoped_permit);
             }
+            if (use_stored_transcript) return Machine(Target, Env.machine_config).startWithAdmittedTranscript(runtime, args, options, stored_transcript_image.?);
             return Machine(Target, Env.machine_config).start(runtime, args, options);
         }
 
@@ -2232,7 +2247,7 @@ pub const Admission = struct {
                 .require_run_image = admissionModeNeedsRunImage(mode),
                 .allow_full_module = policy.allow_full_modules or (mode == .inspect_only and policy.allow_inspect_only_full_modules),
                 .allow_reference_only = policy.allow_reference_targets,
-                .allow_inspect_only = policy.allow_inspect_only_full_modules,
+                .allow_inspect_only = policy.allow_reference_targets or policy.allow_inspect_only_full_modules,
             }) catch {
                 return rejectedResult(request, package, target_ref, module_ref, null, &.{.PackageInvalid}, "package validation failed");
             };
@@ -4896,6 +4911,8 @@ pub const Transcript = struct {
         response_fingerprint: ?u64 = null,
         response_kind: ?ResponseKind = null,
         replay_key: ?u64 = null,
+        admission_request_fingerprint: ?u64 = null,
+        admission_report_fingerprint: ?u64 = null,
         admission_receipt_fingerprint: ?u64 = null,
         module_ref_fingerprint: ?u64 = null,
         target_match_fingerprint: ?u64 = null,
@@ -5158,6 +5175,8 @@ pub const Transcript = struct {
                 .response_fingerprint = event.response_fingerprint,
                 .response_kind = event.response_kind,
                 .replay_key = event.replay_key,
+                .admission_request_fingerprint = event.admission_request_fingerprint,
+                .admission_report_fingerprint = event.admission_report_fingerprint,
                 .admission_receipt_fingerprint = event.admission_receipt_fingerprint,
                 .module_ref_fingerprint = event.module_ref_fingerprint,
                 .target_match_fingerprint = event.target_match_fingerprint,
@@ -5410,6 +5429,8 @@ pub const TranscriptImage = struct {
         response_fingerprint: ?u64 = null,
         response_kind: ?ResponseKind = null,
         replay_key: ?u64 = null,
+        admission_request_fingerprint: ?u64 = null,
+        admission_report_fingerprint: ?u64 = null,
         admission_receipt_fingerprint: ?u64 = null,
         module_ref_fingerprint: ?u64 = null,
         target_match_fingerprint: ?u64 = null,
@@ -6983,7 +7004,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
         }
 
         fn startWithPermit(runtime: anytype, args: anytype, options: anytype, permit: RunPermit) !Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)) {
-            return Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)).startWithTranscriptAvailablePermit(runtime, args, options, false, permit);
+            return Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)).startWithTranscriptAvailablePermit(runtime, args, options, false, permit, null);
         }
 
         fn startWithHandoffTranscript(runtime: anytype, args: anytype, options: anytype) !Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)) {
@@ -6991,7 +7012,15 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
         }
 
         fn startWithHandoffTranscriptPermit(runtime: anytype, args: anytype, options: anytype, permit: RunPermit) !Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)) {
-            return Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)).startWithTranscriptAvailablePermit(runtime, args, options, true, permit);
+            return Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)).startWithTranscriptAvailablePermit(runtime, args, options, true, permit, null);
+        }
+
+        fn startWithAdmittedTranscript(runtime: anytype, args: anytype, options: anytype, transcript_image: *TranscriptImage) !Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)) {
+            return Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)).startWithTranscriptAvailablePermit(runtime, args, options, false, null, transcript_image);
+        }
+
+        fn startWithAdmittedTranscriptPermit(runtime: anytype, args: anytype, options: anytype, permit: RunPermit, transcript_image: *TranscriptImage) !Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)) {
+            return Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)).startWithTranscriptAvailablePermit(runtime, args, options, false, permit, transcript_image);
         }
 
         pub fn run(runtime: anytype, args: anytype, options: anytype) !Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)).Result {
@@ -7040,6 +7069,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 done_value_present: bool = false,
                 frame_step_request: bool = false,
                 handoff_pending_frame_fingerprint: ?u64 = null,
+                admitted_transcript_image: ?*TranscriptImage = null,
                 pending_adapter_call_accounted: bool = false,
                 retained_values: std.ArrayList(StoredValue) = .empty,
                 supervisor: ?Supervision.Supervisor = null,
@@ -7076,6 +7106,8 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             .target_ref_fingerprint = TargetRef.fromTarget(Target).target_ref_fingerprint,
                             .transcript_image_fingerprint = if (comptime @hasField(Options, "transcript_image"))
                                 @field(self.options, "transcript_image").transcript_image_fingerprint
+                            else if (self.admitted_transcript_image) |image|
+                                image.transcript_image_fingerprint
                             else
                                 null,
                             .turn_index = self.audit.port_request_count,
@@ -7212,14 +7244,14 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 }
 
                 fn start(runtime: RuntimePtr, args: anytype, options: Options) !Self {
-                    return startWithTranscriptAvailablePermit(runtime, args, options, false, null);
+                    return startWithTranscriptAvailablePermit(runtime, args, options, false, null, null);
                 }
 
                 fn startWithTranscriptAvailable(runtime: RuntimePtr, args: anytype, options: Options, comptime handoff_transcript_available: bool) !Self {
-                    return startWithTranscriptAvailablePermit(runtime, args, options, handoff_transcript_available, null);
+                    return startWithTranscriptAvailablePermit(runtime, args, options, handoff_transcript_available, null, null);
                 }
 
-                fn startWithTranscriptAvailablePermit(runtime: RuntimePtr, args: anytype, options: Options, comptime handoff_transcript_available: bool, permit_override: ?RunPermit) !Self {
+                fn startWithTranscriptAvailablePermit(runtime: RuntimePtr, args: anytype, options: Options, comptime handoff_transcript_available: bool, permit_override: ?RunPermit, admitted_transcript_image: ?*TranscriptImage) !Self {
                     const allocator = @field(options, "allocator");
                     const mode_value: Mode = if (@hasField(Options, "mode")) @field(options, "mode") else .fresh;
                     const effective = if (mode_value == .audit and @hasField(Options, "audit_source"))
@@ -7235,19 +7267,21 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     try validateRuntimeSurfaceOptions(Target, options);
                     if (modeConsumesTranscript(effective) and
                         !@hasField(Options, "transcript") and
-                        !@hasField(Options, "transcript_image"))
+                        !@hasField(Options, "transcript_image") and
+                        admitted_transcript_image == null)
                     {
                         return Error.ReplayMissing;
                     }
                     if (modeConsumesTranscript(effective) and
-                        @hasField(Options, "transcript_image") and
+                        (@hasField(Options, "transcript_image") or admitted_transcript_image != null) and
                         ConfigPorts.len == 0 and
                         Target.WorldPortTable.entries.len != 0)
                     {
                         return Error.MissingHandler;
                     }
                     if (comptime @hasField(@TypeOf(Config), "environment")) {
-                        const transcript_available = comptime handoff_transcript_available or
+                        const transcript_available = handoff_transcript_available or
+                            admitted_transcript_image != null or
                             @hasField(Options, "transcript_image") or
                             (@hasField(Options, "transcript") and Config.environment.policy_decl.allow_native_adapters);
                         const report = Config.environment.acceptanceReport(effective, transcript_available);
@@ -7255,6 +7289,9 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         if (modeConsumesTranscript(effective)) {
                             if (comptime @hasField(Options, "transcript_image")) {
                                 try validateTranscriptImageForEnvironment(Config.environment, @field(options, "transcript_image"));
+                            }
+                            if (admitted_transcript_image) |image| {
+                                try validateTranscriptImageForEnvironment(Config.environment, image);
                             }
                             if (comptime @hasField(Options, "transcript")) {
                                 try validateTranscriptForEnvironment(Config.environment, @field(options, "transcript"));
@@ -7276,11 +7313,12 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         if (permit.target_certificate_fingerprint != Target.Certificate.certificate_fingerprint) return Error.SupervisionDenied;
                         if (permit.mode != mode_value) return Error.SupervisionDenied;
                         if (comptime @hasField(@TypeOf(Config), "environment")) {
-                            const transcript_available = comptime handoff_transcript_available or
+                            const transcript_available = handoff_transcript_available or
+                                admitted_transcript_image != null or
                                 @hasField(Options, "transcript_image") or
                                 (@hasField(Options, "transcript") and Config.environment.policy_decl.allow_native_adapters);
                             const supervision_transcript_available = if (permit.policy.require_transcript_image_for_replay and modeConsumesTranscript(effective))
-                                @hasField(Options, "transcript_image")
+                                @hasField(Options, "transcript_image") or admitted_transcript_image != null
                             else
                                 transcript_available;
                             if (permit.policy.require_transcript_image_for_replay and modeConsumesTranscript(effective) and !supervision_transcript_available) return Error.TranscriptImageRequired;
@@ -7302,6 +7340,15 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             Target.WorldSurface.surface_fingerprint,
                             Target.Certificate.certificate_fingerprint,
                         );
+                    }
+                    if (admitted_transcript_image) |image| {
+                        if (modeConsumesTranscript(effective)) {
+                            image.resetReplay();
+                            try image.validateReplayRun(
+                                Target.WorldSurface.surface_fingerprint,
+                                Target.Certificate.certificate_fingerprint,
+                            );
+                        }
                     }
                     if (@hasField(Options, "transcript")) {
                         if (modeConsumesTranscript(effective) and !@hasField(Options, "transcript_image")) {
@@ -7337,6 +7384,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         },
                         .per_port_counts = per_port_counts,
                         .supervisor = supervisor,
+                        .admitted_transcript_image = admitted_transcript_image,
                     };
                     supervisor = null;
                     return result;
@@ -7391,6 +7439,15 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                                     try self.markRunFailed();
                                     return err;
                                 };
+                            }
+                            if (modeConsumesTranscript(self.effective_mode)) {
+                                if (self.admitted_transcript_image) |image| {
+                                    image.assertReplayComplete() catch |err| {
+                                        self.audit.replay_mismatch_count += 1;
+                                        try self.markRunFailed();
+                                        return err;
+                                    };
+                                }
                             }
                             self.recordRunEvent(.run_completed, null, self.effective_mode == .fresh) catch |err| {
                                 return self.handleSupervisionStepError(err);
@@ -7867,43 +7924,10 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     trace: anytype,
                 ) !Decl.Response {
                     if (comptime @hasField(Options, "transcript_image")) {
-                        const image = @field(self.options, "transcript_image");
-                        const frame = image.nextResponse(replay_key, Target.Certificate.certificate_fingerprint, .@"resume") catch |err| {
-                            self.audit.replay_mismatch_count += 1;
-                            return err;
-                        };
-                        if (frame.response_value_table_id != valueIdForRuntime(Target, Decl.world_port_id, .@"resume")) return error.FrameValueTableMismatch;
-                        try validateResponseFrameImage(frame.*);
-                        const value = try frame.decodeValue(self.allocator, Decl.Response);
-                        var value_owned = true;
-                        errdefer if (value_owned) deinitOwnedValue(self.allocator, value);
-                        const response_trace = try typed_request.responseTrace(.@"resume", value);
-                        if (response_trace.fingerprint != frame.response_fingerprint) {
-                            self.audit.replay_mismatch_count += 1;
-                            return error.VerifyResponseFingerprintMismatch;
-                        }
-                        if (self.supervisor) |*supervisor| {
-                            const encoded_response = try frame.encode(self.allocator);
-                            defer self.allocator.free(encoded_response);
-                            supervisor.afterAdapterResponse(.{
-                                .world_port_id = Decl.world_port_id,
-                                .status = .responded,
-                                .response_bytes = encoded_response.len,
-                                .value_image_bytes = if (frame.response_image) |value_image| value_image.bytes.len else 0,
-                            }) catch |err| {
-                                try self.handleSupervisionError(err);
-                                return Error.HandlerPending;
-                            };
-                        }
-                        try self.recordPortEvent(.frame_replayed, Decl.world_port_id, trace, response_trace.fingerprint, .@"resume", null, null, frame.*);
-                        self.audit.replayed_response_count += 1;
-                        var run_value = try StoredValue.initOwned(self.allocator, value);
-                        value_owned = false;
-                        var run_value_owned = true;
-                        errdefer if (run_value_owned) run_value.deinit(self.allocator);
-                        try self.retained_values.append(self.allocator, run_value);
-                        run_value_owned = false;
-                        return self.retained_values.items[self.retained_values.items.len - 1].borrow(Decl.Response);
+                        return self.callReplayImage(Decl, typed_request, replay_key, trace, @field(self.options, "transcript_image"));
+                    }
+                    if (self.admitted_transcript_image) |image| {
+                        return self.callReplayImage(Decl, typed_request, replay_key, trace, image);
                     }
                     if (!@hasField(Options, "transcript")) return Error.ReplayMissing;
                     const transcript = @field(self.options, "transcript");
@@ -7952,6 +7976,52 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     return self.retained_values.items[self.retained_values.items.len - 1].borrow(Decl.Response);
                 }
 
+                fn callReplayImage(
+                    self: *Self,
+                    comptime Decl: type,
+                    typed_request: anytype,
+                    replay_key: ReplayKeySeed,
+                    trace: anytype,
+                    image: *TranscriptImage,
+                ) !Decl.Response {
+                    const frame = image.nextResponse(replay_key, Target.Certificate.certificate_fingerprint, .@"resume") catch |err| {
+                        self.audit.replay_mismatch_count += 1;
+                        return err;
+                    };
+                    if (frame.response_value_table_id != valueIdForRuntime(Target, Decl.world_port_id, .@"resume")) return error.FrameValueTableMismatch;
+                    try validateResponseFrameImage(frame.*);
+                    const value = try frame.decodeValue(self.allocator, Decl.Response);
+                    var value_owned = true;
+                    errdefer if (value_owned) deinitOwnedValue(self.allocator, value);
+                    const response_trace = try typed_request.responseTrace(.@"resume", value);
+                    if (response_trace.fingerprint != frame.response_fingerprint) {
+                        self.audit.replay_mismatch_count += 1;
+                        return error.VerifyResponseFingerprintMismatch;
+                    }
+                    if (self.supervisor) |*supervisor| {
+                        const encoded_response = try frame.encode(self.allocator);
+                        defer self.allocator.free(encoded_response);
+                        supervisor.afterAdapterResponse(.{
+                            .world_port_id = Decl.world_port_id,
+                            .status = .responded,
+                            .response_bytes = encoded_response.len,
+                            .value_image_bytes = if (frame.response_image) |value_image| value_image.bytes.len else 0,
+                        }) catch |err| {
+                            try self.handleSupervisionError(err);
+                            return Error.HandlerPending;
+                        };
+                    }
+                    try self.recordPortEvent(.frame_replayed, Decl.world_port_id, trace, response_trace.fingerprint, .@"resume", null, null, frame.*);
+                    self.audit.replayed_response_count += 1;
+                    var run_value = try StoredValue.initOwned(self.allocator, value);
+                    value_owned = false;
+                    var run_value_owned = true;
+                    errdefer if (run_value_owned) run_value.deinit(self.allocator);
+                    try self.retained_values.append(self.allocator, run_value);
+                    run_value_owned = false;
+                    return self.retained_values.items[self.retained_values.items.len - 1].borrow(Decl.Response);
+                }
+
                 fn callVerify(
                     self: *Self,
                     comptime Decl: type,
@@ -7968,31 +8038,33 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     var expected_value_policy = ValuePolicy.portable;
                     var expected_response_frame: ?Frame.Response = null;
                     if (comptime @hasField(Options, "transcript_image")) {
-                        const image = @field(self.options, "transcript_image");
-                        const frame = image.nextResponse(replay_key, Target.Certificate.certificate_fingerprint, .@"resume") catch |err| {
-                            self.audit.replay_mismatch_count += 1;
-                            return err;
-                        };
-                        try validateResponseFrameImage(frame.*);
-                        expected_response_frame = frame.*;
-                        expected_response_fingerprint = frame.response_fingerprint;
-                        if (frame.response_value_table_id != valueIdForRuntime(Target, Decl.world_port_id, .@"resume")) return error.FrameValueTableMismatch;
-                        if (frame.response_image) |response_image| {
-                            expected_value_image_fingerprint = response_image.value_image_fingerprint;
-                            expected_value_table_id = response_image.value_table_id;
-                            expected_boundary_value_fingerprint = response_image.boundary_value_fingerprint;
-                            expected_codec_schema_descriptor_fingerprint = response_image.codec_schema_descriptor_fingerprint;
-                            if (response_image.diagnostic_type_label != null) expected_value_policy = ValuePolicy.native_compatible;
-                        } else {
-                            expected_value_image_fingerprint = frame.response_value_fingerprint;
-                        }
-                        const replay_value = try frame.decodeValue(self.allocator, Decl.Response);
-                        defer deinitOwnedValue(self.allocator, replay_value);
-                        const replay_trace = try typed_request.responseTrace(.@"resume", replay_value);
-                        if (replay_trace.fingerprint != expected_response_fingerprint) {
-                            self.audit.replay_mismatch_count += 1;
-                            return error.VerifyDivergence;
-                        }
+                        try self.loadVerifyExpectationsFromImage(
+                            Decl,
+                            typed_request,
+                            replay_key,
+                            @field(self.options, "transcript_image"),
+                            &expected_response_fingerprint,
+                            &expected_value_image_fingerprint,
+                            &expected_value_table_id,
+                            &expected_boundary_value_fingerprint,
+                            &expected_codec_schema_descriptor_fingerprint,
+                            &expected_value_policy,
+                            &expected_response_frame,
+                        );
+                    } else if (self.admitted_transcript_image) |image| {
+                        try self.loadVerifyExpectationsFromImage(
+                            Decl,
+                            typed_request,
+                            replay_key,
+                            image,
+                            &expected_response_fingerprint,
+                            &expected_value_image_fingerprint,
+                            &expected_value_table_id,
+                            &expected_boundary_value_fingerprint,
+                            &expected_codec_schema_descriptor_fingerprint,
+                            &expected_value_policy,
+                            &expected_response_frame,
+                        );
                     } else {
                         if (!@hasField(Options, "transcript")) return Error.ReplayMissing;
                         const transcript = @field(self.options, "transcript");
@@ -8093,6 +8165,46 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     }
                     self.audit.fresh_response_count += 1;
                     return try self.retainResponse(Decl.Response, fresh);
+                }
+
+                fn loadVerifyExpectationsFromImage(
+                    self: *Self,
+                    comptime Decl: type,
+                    typed_request: anytype,
+                    replay_key: ReplayKeySeed,
+                    image: *TranscriptImage,
+                    expected_response_fingerprint: *u64,
+                    expected_value_image_fingerprint: *?u64,
+                    expected_value_table_id: *?u32,
+                    expected_boundary_value_fingerprint: *?u64,
+                    expected_codec_schema_descriptor_fingerprint: *?u64,
+                    expected_value_policy: *ValuePolicy,
+                    expected_response_frame: *?Frame.Response,
+                ) !void {
+                    const frame = image.nextResponse(replay_key, Target.Certificate.certificate_fingerprint, .@"resume") catch |err| {
+                        self.audit.replay_mismatch_count += 1;
+                        return err;
+                    };
+                    try validateResponseFrameImage(frame.*);
+                    expected_response_frame.* = frame.*;
+                    expected_response_fingerprint.* = frame.response_fingerprint;
+                    if (frame.response_value_table_id != valueIdForRuntime(Target, Decl.world_port_id, .@"resume")) return error.FrameValueTableMismatch;
+                    if (frame.response_image) |response_image| {
+                        expected_value_image_fingerprint.* = response_image.value_image_fingerprint;
+                        expected_value_table_id.* = response_image.value_table_id;
+                        expected_boundary_value_fingerprint.* = response_image.boundary_value_fingerprint;
+                        expected_codec_schema_descriptor_fingerprint.* = response_image.codec_schema_descriptor_fingerprint;
+                        if (response_image.diagnostic_type_label != null) expected_value_policy.* = ValuePolicy.native_compatible;
+                    } else {
+                        expected_value_image_fingerprint.* = frame.response_value_fingerprint;
+                    }
+                    const replay_value = try frame.decodeValue(self.allocator, Decl.Response);
+                    defer deinitOwnedValue(self.allocator, replay_value);
+                    const replay_trace = try typed_request.responseTrace(.@"resume", replay_value);
+                    if (replay_trace.fingerprint != expected_response_fingerprint.*) {
+                        self.audit.replay_mismatch_count += 1;
+                        return error.VerifyDivergence;
+                    }
                 }
 
                 fn retainResponse(self: *Self, comptime Response: type, value: Response) !Response {
@@ -8749,6 +8861,27 @@ fn eventKindRequiresAdmissionWitness(kind: EventKind) bool {
     };
 }
 
+fn validateAdmissionEventWitness(event: TranscriptImage.EventImage) !void {
+    switch (event.kind) {
+        .admission_requested => {
+            if (event.admission_request_fingerprint == null) return error.InvalidFrameEncoding;
+        },
+        .admission_accepted => {
+            if (event.admission_request_fingerprint == null) return error.InvalidFrameEncoding;
+            if (event.admission_report_fingerprint == null) return error.InvalidFrameEncoding;
+            if (event.admission_receipt_fingerprint == null) return error.InvalidFrameEncoding;
+        },
+        .admission_rejected => {
+            if (event.admission_request_fingerprint == null) return error.InvalidFrameEncoding;
+            if (event.admission_report_fingerprint == null) return error.InvalidFrameEncoding;
+        },
+        .module_matched_target => {
+            if (event.target_match_fingerprint == null) return error.InvalidFrameEncoding;
+        },
+        else => {},
+    }
+}
+
 fn validateResponseFrameImage(frame: Frame.Response) !void {
     if (frame.format_version != world_frame_response_format_version) return error.InvalidFrameEncoding;
     if (frame.fingerprint_version != world_frame_response_fingerprint_version) return error.InvalidFrameEncoding;
@@ -9078,6 +9211,8 @@ fn eventImageFromTranscriptEvent(allocator: std.mem.Allocator, event: Transcript
         .response_fingerprint = event.response_fingerprint,
         .response_kind = event.response_kind,
         .replay_key = event.replay_key,
+        .admission_request_fingerprint = event.admission_request_fingerprint,
+        .admission_report_fingerprint = event.admission_report_fingerprint,
         .admission_receipt_fingerprint = event.admission_receipt_fingerprint,
         .module_ref_fingerprint = event.module_ref_fingerprint,
         .target_match_fingerprint = event.target_match_fingerprint,
@@ -9123,6 +9258,8 @@ fn encodeTranscriptEventImage(out: *std.ArrayList(u8), allocator: std.mem.Alloca
     }
     try writeOptionalU64(out, allocator, event.replay_key);
     if (format_version >= 3) {
+        try writeOptionalU64(out, allocator, event.admission_request_fingerprint);
+        try writeOptionalU64(out, allocator, event.admission_report_fingerprint);
         try writeOptionalU64(out, allocator, event.admission_receipt_fingerprint);
         try writeOptionalU64(out, allocator, event.module_ref_fingerprint);
         try writeOptionalU64(out, allocator, event.target_match_fingerprint);
@@ -9166,6 +9303,8 @@ fn decodeTranscriptEventImage(allocator: std.mem.Allocator, bytes: []const u8, c
         .response_fingerprint = try readOptionalU64(bytes, cursor),
         .response_kind = if (try readBool(bytes, cursor)) try enumFromByte(ResponseKind, try readU8(bytes, cursor)) else null,
         .replay_key = try readOptionalU64(bytes, cursor),
+        .admission_request_fingerprint = if (format_version >= 3) try readOptionalU64(bytes, cursor) else null,
+        .admission_report_fingerprint = if (format_version >= 3) try readOptionalU64(bytes, cursor) else null,
         .admission_receipt_fingerprint = if (format_version >= 3) try readOptionalU64(bytes, cursor) else null,
         .module_ref_fingerprint = if (format_version >= 3) try readOptionalU64(bytes, cursor) else null,
         .target_match_fingerprint = if (format_version >= 3) try readOptionalU64(bytes, cursor) else null,
@@ -9179,6 +9318,7 @@ fn decodeTranscriptEventImage(allocator: std.mem.Allocator, bytes: []const u8, c
     };
     errdefer event.deinit(allocator);
     if (format_version < 3 and eventKindRequiresAdmissionWitness(event.kind)) return error.InvalidFrameEncoding;
+    if (format_version >= 3) try validateAdmissionEventWitness(event);
     if (try readBool(bytes, cursor)) {
         const encoded = try readBytesOwned(allocator, bytes, cursor);
         defer allocator.free(encoded);
@@ -9550,6 +9690,7 @@ fn validateTranscriptImageFingerprint(image: TranscriptImage) !void {
     var response_count: usize = 0;
     for (image.events) |event| {
         if (image.format_version < 3 and eventKindRequiresAdmissionWitness(event.kind)) return error.InvalidFrameEncoding;
+        if (image.format_version >= 3) try validateAdmissionEventWitness(event);
         try validateTranscriptEventFrameBindings(event);
         if (fingerprintTranscriptEventImageForFormat(image.format_version, event) != event.event_fingerprint) return error.InvalidFrameEncoding;
         if (event.response_frame != null) response_count += 1;
@@ -9566,6 +9707,8 @@ fn transcriptEventImageEncodedByteSizeForFormat(format_version: u32, event: Tran
     size = addSatEncodedSize(size, optionalEnumByteEncodedByteSize(event.response_kind));
     size = addSatEncodedSize(size, optionalU64EncodedByteSize(event.replay_key));
     if (format_version >= 3) {
+        size = addSatEncodedSize(size, optionalU64EncodedByteSize(event.admission_request_fingerprint));
+        size = addSatEncodedSize(size, optionalU64EncodedByteSize(event.admission_report_fingerprint));
         size = addSatEncodedSize(size, optionalU64EncodedByteSize(event.admission_receipt_fingerprint));
         size = addSatEncodedSize(size, optionalU64EncodedByteSize(event.module_ref_fingerprint));
         size = addSatEncodedSize(size, optionalU64EncodedByteSize(event.target_match_fingerprint));
@@ -11207,6 +11350,8 @@ fn fingerprintTranscriptEventImageForFormat(format_version: u32, event: Transcri
     }
     hashOptionalU64(&hasher, event.replay_key);
     if (format_version >= 3) {
+        hashOptionalU64(&hasher, event.admission_request_fingerprint);
+        hashOptionalU64(&hasher, event.admission_report_fingerprint);
         hashOptionalU64(&hasher, event.admission_receipt_fingerprint);
         hashOptionalU64(&hasher, event.module_ref_fingerprint);
         hashOptionalU64(&hasher, event.target_match_fingerprint);

@@ -447,6 +447,38 @@ fn testTranscriptEventImageV2Fingerprint(event: world.TranscriptImage.EventImage
     return hasher.final();
 }
 
+fn testTranscriptEventImageFingerprint(event: world.TranscriptImage.EventImage) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashTestBytes(&hasher, "world.transcript.event_image.fingerprint");
+    hashTestU64(&hasher, world.world_timeline_event_fingerprint_version);
+    hashTestU64(&hasher, @intFromEnum(event.kind));
+    hashTestU64(&hasher, event.world_surface_fingerprint);
+    hashTestU64(&hasher, event.target_certificate_fingerprint);
+    hashTestOptionalU32(&hasher, event.world_port_id);
+    hashTestOptionalU64(&hasher, event.request_fingerprint);
+    hashTestOptionalU64(&hasher, event.response_fingerprint);
+    if (event.response_kind) |kind| {
+        hashTestBool(&hasher, true);
+        hashTestU64(&hasher, @intFromEnum(kind));
+    } else {
+        hashTestBool(&hasher, false);
+    }
+    hashTestOptionalU64(&hasher, event.replay_key);
+    hashTestOptionalU64(&hasher, event.admission_request_fingerprint);
+    hashTestOptionalU64(&hasher, event.admission_report_fingerprint);
+    hashTestOptionalU64(&hasher, event.admission_receipt_fingerprint);
+    hashTestOptionalU64(&hasher, event.module_ref_fingerprint);
+    hashTestOptionalU64(&hasher, event.target_match_fingerprint);
+    hashTestBool(&hasher, false);
+    hashTestBool(&hasher, false);
+    hashTestOptionalU64(&hasher, event.residual_site_fingerprint);
+    hashTestBool(&hasher, false);
+    hashTestBool(&hasher, event.source_run);
+    hashTestBool(&hasher, false);
+    hashTestBool(&hasher, false);
+    return hasher.final();
+}
+
 fn writeLittleU64(bytes: []u8, value: anytype) void {
     var buffer: [8]u8 = undefined;
     std.mem.writeInt(u64, &buffer, @intCast(value), .little);
@@ -1934,12 +1966,16 @@ test "transcript image encode decode round trip stable and image replay works wi
         .kind = .admission_accepted,
         .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
         .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .admission_request_fingerprint = 0x456,
+        .admission_report_fingerprint = 0x789,
         .admission_receipt_fingerprint = 0xabc,
         .module_ref_fingerprint = 0xdef,
         .target_match_fingerprint = 0x123,
     });
     var admission_image = try admission_transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
     defer admission_image.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(?u64, 0x456), admission_image.events[0].admission_request_fingerprint);
+    try std.testing.expectEqual(@as(?u64, 0x789), admission_image.events[0].admission_report_fingerprint);
     try std.testing.expectEqual(@as(?u64, 0xabc), admission_image.events[0].admission_receipt_fingerprint);
     try std.testing.expectEqual(@as(?u64, 0xdef), admission_image.events[0].module_ref_fingerprint);
     try std.testing.expectEqual(@as(?u64, 0x123), admission_image.events[0].target_match_fingerprint);
@@ -1947,9 +1983,13 @@ test "transcript image encode decode round trip stable and image replay works wi
     defer std.testing.allocator.free(admission_encoded);
     var decoded_admission_image = try world.TranscriptImage.decode(std.testing.allocator, admission_encoded);
     defer decoded_admission_image.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(?u64, 0x456), decoded_admission_image.events[0].admission_request_fingerprint);
+    try std.testing.expectEqual(@as(?u64, 0x789), decoded_admission_image.events[0].admission_report_fingerprint);
     try std.testing.expectEqual(@as(?u64, 0xabc), decoded_admission_image.events[0].admission_receipt_fingerprint);
     var restored_admission_transcript = try world.Transcript.fromImage(std.testing.allocator, decoded_admission_image);
     defer restored_admission_transcript.deinit();
+    try std.testing.expectEqual(@as(?u64, 0x456), restored_admission_transcript.events.items[0].admission_request_fingerprint);
+    try std.testing.expectEqual(@as(?u64, 0x789), restored_admission_transcript.events.items[0].admission_report_fingerprint);
     try std.testing.expectEqual(@as(?u64, 0xdef), restored_admission_transcript.events.items[0].module_ref_fingerprint);
 
     var v2_events = try std.testing.allocator.alloc(world.TranscriptImage.EventImage, 1);
@@ -2004,6 +2044,31 @@ test "transcript image encode decode round trip stable and image replay works wi
     defer std.testing.allocator.free(forged_v2_admission_encoded);
     defer forged_v2_admission_image.deinit(std.testing.allocator);
     try std.testing.expectError(error.InvalidFrameEncoding, world.TranscriptImage.decode(std.testing.allocator, forged_v2_admission_encoded));
+    var forged_v3_events = try std.testing.allocator.alloc(world.TranscriptImage.EventImage, 1);
+    var forged_v3_events_owned = true;
+    errdefer if (forged_v3_events_owned) std.testing.allocator.free(forged_v3_events);
+    forged_v3_events[0] = .{
+        .event_fingerprint = 0,
+        .kind = .admission_accepted,
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .admission_request_fingerprint = 0x456,
+        .admission_report_fingerprint = 0x789,
+    };
+    forged_v3_events[0].event_fingerprint = testTranscriptEventImageFingerprint(forged_v3_events[0]);
+    var forged_v3_admission_image = world.TranscriptImage{
+        .transcript_image_fingerprint = 0,
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .events = forged_v3_events,
+        .final_status = .running,
+    };
+    forged_v3_events_owned = false;
+    forged_v3_admission_image.transcript_image_fingerprint = testTranscriptImageFingerprint(forged_v3_admission_image);
+    const forged_v3_admission_encoded = try forged_v3_admission_image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(forged_v3_admission_encoded);
+    defer forged_v3_admission_image.deinit(std.testing.allocator);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.TranscriptImage.decode(std.testing.allocator, forged_v3_admission_encoded));
     var forged_status_image = decoded;
     forged_status_image.final_status = .failed;
     forged_status_image.transcript_image_fingerprint = testTranscriptImageFingerprint(forged_status_image);
@@ -7042,6 +7107,10 @@ test "admitter accepts inspect-only full module and rejects missing permit for e
         .target_ref = target_ref,
         .requested_mode = .inspect_only,
     });
+    const reference_inspect_result = inspect_admitter.admitForTarget(fixtures.Ports.Target, PortsEnv, inspect_target_only, .{});
+    try std.testing.expect(reference_inspect_result.report.accepted);
+    try std.testing.expect(reference_inspect_result.admitted_run == null);
+
     const inspect_module_only_policy = world.Admission.AdmissionPolicy.init(.{
         .allow_reference_targets = false,
         .allow_inspect_only_full_modules = true,
@@ -8076,6 +8145,25 @@ test "admitted run start enforces admitted transcript image" {
     try std.testing.expect(transcript_only_result.report.handoff_preflight_report_fingerprint == null);
     try std.testing.expect(transcript_only_result.admitted_run.?.run_image == null);
     try std.testing.expectEqual(image.transcript_image_fingerprint, transcript_only_result.admitted_run.?.transcript_image.?.transcript_image_fingerprint);
+    var transcript_only_admitted = transcript_only_result.admitted_run orelse return error.ExpectedAdmittedRun;
+    var transcript_only_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer transcript_only_runtime.deinit();
+    var transcript_only_run = try transcript_only_admitted.start(fixtures.Ports.Target, PortsReplayEnv, &transcript_only_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.replay,
+    });
+    defer transcript_only_run.deinit();
+    while (true) {
+        switch (try transcript_only_run.next()) {
+            .done => |value| {
+                try std.testing.expectEqual(@as(i32, 7), value);
+                break;
+            },
+            .port_required => try transcript_only_run.dispatch(),
+            .parked => return error.ExpectedReplayCompletion,
+            .failed => return error.ExpectedReplayCompletion,
+        }
+    }
 
     const package = world.Admission.TransferPackage.init(.{
         .kind = .replay_run,
