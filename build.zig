@@ -341,7 +341,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-admission-replay-verify",
             .desc = "Run the World admission replay/verify example.",
             .expected_stdout =
-            \\replay_admission_receipt=d72926fc9d34c852
+            \\replay_admission_receipt=18e12b477a8f8c1a
             \\verify_admission_receipt=f713ac408924ab99
             \\divergence_detected=true
             \\

@@ -1278,14 +1278,15 @@ pub const Admission = struct {
             if (self.format_version != world_transfer_package_format_version) return error.InvalidFrameEncoding;
             if (self.fingerprint_version != world_transfer_package_fingerprint_version) return error.InvalidFrameEncoding;
             if (self.metadata.len > options.max_package_bytes) return error.InvalidFrameEncoding;
-            const encoded_package = self.encode(std.heap.page_allocator) catch return error.InvalidFrameEncoding;
-            defer std.heap.page_allocator.free(encoded_package);
-            if (encoded_package.len > options.max_package_bytes) return error.InvalidFrameEncoding;
             if (options.require_target_ref and self.target_ref == null and self.run_image == null) return error.InvalidFrameEncoding;
             if (options.require_run_image and self.run_image == null) return error.InvalidFrameEncoding;
             if (!options.allow_inspect_only and self.kind == .inspect_only) return error.InvalidFrameEncoding;
             if (self.kind == .target_reference_only and self.target_ref == null and self.run_image == null) return error.InvalidFrameEncoding;
             if (!options.allow_reference_only and self.kind == .target_reference_only) return error.InvalidFrameEncoding;
+            if (self.target_ref) |target_ref| {
+                if (target_ref.target_label) |label| if (label.len > options.max_package_bytes) return error.InvalidFrameEncoding;
+                if (target_ref.metadata.len > options.max_package_bytes) return error.InvalidFrameEncoding;
+            }
             switch (self.kind) {
                 .target_reference_only, .inspect_only => {},
                 .module_reference => if (self.module_ref == null) return error.InvalidFrameEncoding,
@@ -1305,21 +1306,14 @@ pub const Admission = struct {
                 if (self.kind != .full_module) return error.InvalidFrameEncoding;
                 if (!options.allow_full_module) return error.InvalidFrameEncoding;
                 if (bytes.len > options.max_module_bytes) return error.InvalidFrameEncoding;
+                if (bytes.len > options.max_package_bytes) return error.InvalidFrameEncoding;
             }
             if (self.checkpoint_refs.len > options.max_checkpoints) return error.InvalidFrameEncoding;
             if (self.branch_refs.len > options.max_branches) return error.InvalidFrameEncoding;
             if (self.transcript_image) |image| {
                 try validateTranscriptImageFingerprint(image);
                 if (transcriptImageEncodedByteSize(image) > options.max_transcript_bytes) return error.InvalidFrameEncoding;
-            }
-            if (self.target_ref) |target_ref| {
-                if (target_ref.target_ref_fingerprint != fingerprintTargetRef(target_ref)) return error.InvalidFrameEncoding;
-                if (self.module_ref) |module_ref| {
-                    if (module_ref.module_kind != .full_module and module_ref.target_ref_fingerprint != target_ref.target_ref_fingerprint) return error.HandoffTargetMismatch;
-                    if (module_ref.world_surface_fingerprint != target_ref.world_surface_fingerprint) return error.HandoffTargetMismatch;
-                    if (module_ref.target_certificate_fingerprint != target_ref.target_certificate_fingerprint) return error.HandoffTargetMismatch;
-                    if (module_ref.residual_program_plan_hash != target_ref.residual_program_plan_hash) return error.HandoffTargetMismatch;
-                }
+                if (transcriptImageEncodedByteSize(image) > options.max_package_bytes) return error.InvalidFrameEncoding;
             }
             if (self.run_image) |image| {
                 try image.validate(.{
@@ -1330,7 +1324,22 @@ pub const Admission = struct {
                 if (image.transcript_image) |embedded| {
                     try validateTranscriptImageFingerprint(embedded);
                     if (transcriptImageEncodedByteSize(embedded) > options.max_transcript_bytes) return error.InvalidFrameEncoding;
+                    if (transcriptImageEncodedByteSize(embedded) > options.max_package_bytes) return error.InvalidFrameEncoding;
                 }
+            }
+            const encoded_package = self.encode(std.heap.page_allocator) catch return error.InvalidFrameEncoding;
+            defer std.heap.page_allocator.free(encoded_package);
+            if (encoded_package.len > options.max_package_bytes) return error.InvalidFrameEncoding;
+            if (self.target_ref) |target_ref| {
+                if (target_ref.target_ref_fingerprint != fingerprintTargetRef(target_ref)) return error.InvalidFrameEncoding;
+                if (self.module_ref) |module_ref| {
+                    if (module_ref.module_kind != .full_module and module_ref.target_ref_fingerprint != target_ref.target_ref_fingerprint) return error.HandoffTargetMismatch;
+                    if (module_ref.world_surface_fingerprint != target_ref.world_surface_fingerprint) return error.HandoffTargetMismatch;
+                    if (module_ref.target_certificate_fingerprint != target_ref.target_certificate_fingerprint) return error.HandoffTargetMismatch;
+                    if (module_ref.residual_program_plan_hash != target_ref.residual_program_plan_hash) return error.HandoffTargetMismatch;
+                }
+            }
+            if (self.run_image) |image| {
                 if (self.target_ref) |target_ref| {
                     if (image.target_ref.target_ref_fingerprint != target_ref.target_ref_fingerprint) return error.HandoffTargetMismatch;
                 }
@@ -1761,6 +1770,8 @@ pub const Admission = struct {
             .require_environment_preflight = false,
             .require_supervision_permit = false,
             .allow_replay_without_environment = true,
+            .allow_parked_resume = false,
+            .allow_branch_resume = false,
         });
         pub const handoff_receiver = init(.{});
         pub const verify_receiver = init(.{

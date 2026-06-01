@@ -6354,6 +6354,26 @@ test "transfer package rejects malformed and oversized packages" {
         .metadata = "tiny",
     });
     try std.testing.expectError(error.InvalidFrameEncoding, package.validate(.{ .max_package_bytes = 1 }));
+    var oversized_target_ref = target_ref;
+    oversized_target_ref.metadata = "target metadata exceeds the narrow package cap";
+    const target_metadata_package = world.Admission.TransferPackage.init(.{
+        .kind = .target_reference_only,
+        .target_ref = oversized_target_ref,
+        .requested_mode = .local_target_match_only,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, target_metadata_package.validate(.{ .max_package_bytes = 8 }));
+    const oversized_module_package = world.Admission.TransferPackage.init(.{
+        .kind = .full_module,
+        .target_ref = target_ref,
+        .module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target),
+        .module_image_bytes = "not-a-full-module-package",
+        .requested_mode = .inspect_only,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, oversized_module_package.validate(.{
+        .allow_full_module = true,
+        .allow_inspect_only = true,
+        .max_module_bytes = 8,
+    }));
     var stale_manifest = package;
     stale_manifest.manifest.package_kind = .full_module;
     try std.testing.expectError(error.InvalidFrameEncoding, stale_manifest.validate(.{}));
@@ -6728,6 +6748,50 @@ test "admission target-match-only is non-executable and ignores permit requireme
     try std.testing.expect(result.report.accepted);
     try std.testing.expect(result.receipt != null);
     try std.testing.expect(result.admitted_run == null);
+}
+
+test "replay-only admission policy rejects resume modes" {
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Ports.Target)});
+    const policy = world.Admission.AdmissionPolicy.replay_only;
+    try std.testing.expect(!policy.allowsMode(.resume_parked));
+    try std.testing.expect(!policy.allowsMode(.branch_resume));
+    try std.testing.expect(policy.allowsMode(.replay_only));
+
+    const pending_request = world.Frame.Request.init(.{
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .world_surface_replay_scope_fingerprint = fixtures.Ports.Target.WorldSurface.replayScopeRef().fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .world_port_id = 0,
+        .residual_site_index = fixtures.Ports.ApprovalRequest.index,
+        .residual_site_fingerprint = fixtures.Ports.ApprovalRequest.fingerprint,
+        .request_fingerprint = 44,
+        .turn_index = 0,
+    });
+    const state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .pending_request_fingerprint = pending_request.frame_fingerprint,
+        .status = .parked_on_port,
+    });
+    const parked_image = world.RunImage.init(.{
+        .kind = .parked_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = state,
+        .pending_request_frame = pending_request,
+    });
+    const parked_package = world.Admission.TransferPackage.init(.{
+        .kind = .parked_run,
+        .target_ref = target_ref,
+        .run_image = parked_image,
+        .requested_mode = .resume_parked,
+    });
+    const parked_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = policy,
+    }).admitForTarget(fixtures.Ports.Target, PortsReplayEnv, parked_package, .{});
+    try std.testing.expect(!parked_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.AdmissionModeNotAllowed, parked_result.report.blockers[0]);
 }
 
 test "admission rejects run images that do not fit requested mode" {
