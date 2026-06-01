@@ -6839,6 +6839,25 @@ test "target match diagnostics identify mismatched field" {
     });
     const partial_match = world.Admission.TargetMatch.matchModule(partial_ref, fixtures.Ports.Target);
     try std.testing.expect(!partial_match.matched);
+
+    const stale_boundary_ref = world.Admission.ModuleRef.init(.{
+        .boundary_module_fingerprint = base_ref.boundary_module_fingerprint +% 1,
+        .module_kind = .reference_only,
+        .target_ref_fingerprint = base_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = base_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = base_ref.target_certificate_fingerprint,
+        .residual_program_plan_hash = base_ref.residual_program_plan_hash,
+        .import_surface_fingerprint = base_ref.import_surface_fingerprint,
+        .export_surface_fingerprint = base_ref.export_surface_fingerprint,
+        .normal_form_kind = base_ref.normal_form_kind,
+        .world_port_count = base_ref.world_port_count,
+        .world_port_table_fingerprint = base_ref.world_port_table_fingerprint,
+        .world_value_table_fingerprint = base_ref.world_value_table_fingerprint,
+        .world_dispatch_table_fingerprint = base_ref.world_dispatch_table_fingerprint,
+    });
+    const stale_boundary_match = world.Admission.TargetMatch.matchModule(stale_boundary_ref, fixtures.Ports.Target);
+    try std.testing.expect(!stale_boundary_match.matched);
+    try std.testing.expectEqual(world.Admission.MatchMismatch.BoundaryModule, stale_boundary_match.mismatches[0]);
 }
 
 test "module gateway validates full module inspect-only and reports unsupported loaded execution" {

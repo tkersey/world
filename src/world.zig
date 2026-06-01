@@ -182,7 +182,7 @@ pub const world_timeline_branch_format_version: u32 = 1;
 pub const world_timeline_branch_fingerprint_version: u32 = 1;
 pub const world_audit_image_format_version: u32 = 1;
 pub const world_audit_image_fingerprint_version: u32 = 1;
-pub const world_target_ref_format_version: u32 = 1;
+pub const world_target_ref_format_version: u32 = 2;
 pub const world_target_ref_fingerprint_version: u32 = 1;
 pub const world_import_requirement_fingerprint_version: u32 = 1;
 pub const world_import_set_fingerprint_version: u32 = 1;
@@ -904,6 +904,7 @@ pub const Admission = struct {
         WorldSurface,
         TargetCertificate,
         ProgramPlanHash,
+        BoundaryModule,
         WorldPortTable,
         WorldValueTable,
         WorldDispatchTable,
@@ -1560,6 +1561,7 @@ pub const Admission = struct {
                 if (module.world_surface_fingerprint != entry.world_surface_fingerprint and first_mismatch == null) first_mismatch = .WorldSurface;
                 if (module.target_certificate_fingerprint != entry.target_certificate_fingerprint and first_mismatch == null) first_mismatch = .TargetCertificate;
                 if (module.residual_program_plan_hash != entry.program_plan_hash and first_mismatch == null) first_mismatch = .ProgramPlanHash;
+                if (module.module_kind != .full_module and module.boundary_module_fingerprint != (entry.target_ref.boundary_module_fingerprint orelse entry.target_ref.target_ref_fingerprint) and first_mismatch == null) first_mismatch = .BoundaryModule;
                 if (module.normal_form_kind != .unknown and module.normal_form_kind != entry.normal_form_kind and first_mismatch == null) first_mismatch = .NormalForm;
                 if (module.world_port_count != 0 and module.world_port_count != entry.world_port_count and first_mismatch == null) first_mismatch = .WorldPortTable;
                 if (!providedFingerprintMatches(module.import_surface_fingerprint, entry.import_surface_fingerprint) and first_mismatch == null) first_mismatch = .ImportSet;
@@ -6307,6 +6309,53 @@ test "RunImage decoder accepts v1 layout without prior receipt refs" {
     try std.testing.expectEqualStrings("legacy", redecode.metadata);
 }
 
+test "TargetRef decoder accepts v1 layouts with and without boundary module" {
+    const allocator = std.testing.allocator;
+    var legacy_ref = TargetRef{
+        .format_version = 1,
+        .target_ref_fingerprint = 0,
+        .world_surface_fingerprint = 11,
+        .target_certificate_fingerprint = 22,
+        .metadata = "legacy-target",
+    };
+    legacy_ref.target_ref_fingerprint = fingerprintTargetRef(legacy_ref);
+    var legacy_out: std.ArrayList(u8) = .empty;
+    defer legacy_out.deinit(allocator);
+    try writeU32(&legacy_out, allocator, legacy_ref.format_version);
+    try writeU32(&legacy_out, allocator, legacy_ref.fingerprint_version);
+    try writeU64(&legacy_out, allocator, legacy_ref.target_ref_fingerprint);
+    try writeOptionalBytes(&legacy_out, allocator, legacy_ref.target_label);
+    try writeU64(&legacy_out, allocator, legacy_ref.world_surface_fingerprint);
+    try writeOptionalU64(&legacy_out, allocator, legacy_ref.world_surface_replay_scope_fingerprint);
+    try writeU64(&legacy_out, allocator, legacy_ref.target_certificate_fingerprint);
+    try writeOptionalU64(&legacy_out, allocator, legacy_ref.residual_program_plan_hash);
+    try writeU8(&legacy_out, allocator, @intFromEnum(legacy_ref.normal_form_kind));
+    try writeOptionalU64(&legacy_out, allocator, legacy_ref.world_port_table_fingerprint);
+    try writeOptionalU64(&legacy_out, allocator, legacy_ref.world_value_table_fingerprint);
+    try writeOptionalU64(&legacy_out, allocator, legacy_ref.world_dispatch_table_fingerprint);
+    try writeOptionalU64(&legacy_out, allocator, legacy_ref.surface_profile_fingerprint);
+    try writeBytes(&legacy_out, allocator, legacy_ref.metadata);
+    var legacy_cursor: usize = 0;
+    const decoded_legacy = try decodeTargetRef(allocator, legacy_out.items, &legacy_cursor);
+    defer allocator.free(@constCast(decoded_legacy.metadata));
+    try std.testing.expectEqual(legacy_out.items.len, legacy_cursor);
+    try std.testing.expectEqual(legacy_ref.target_ref_fingerprint, decoded_legacy.target_ref_fingerprint);
+    try std.testing.expectEqual(@as(?u64, null), decoded_legacy.boundary_module_fingerprint);
+
+    var boundary_ref = legacy_ref;
+    boundary_ref.boundary_module_fingerprint = 33;
+    boundary_ref.target_ref_fingerprint = fingerprintTargetRef(boundary_ref);
+    var boundary_out: std.ArrayList(u8) = .empty;
+    defer boundary_out.deinit(allocator);
+    try encodeTargetRef(&boundary_out, allocator, boundary_ref);
+    var boundary_cursor: usize = 0;
+    const decoded_boundary = try decodeTargetRef(allocator, boundary_out.items, &boundary_cursor);
+    defer allocator.free(@constCast(decoded_boundary.metadata));
+    try std.testing.expectEqual(boundary_out.items.len, boundary_cursor);
+    try std.testing.expectEqual(boundary_ref.target_ref_fingerprint, decoded_boundary.target_ref_fingerprint);
+    try std.testing.expectEqual(boundary_ref.boundary_module_fingerprint, decoded_boundary.boundary_module_fingerprint);
+}
+
 fn validateRunImageKindState(image: RunImage) !void {
     switch (image.kind) {
         .completed_run => {
@@ -9249,6 +9298,7 @@ fn mismatchSlice(mismatch: ?Admission.MatchMismatch) []const Admission.MatchMism
         .WorldSurface => &.{.WorldSurface},
         .TargetCertificate => &.{.TargetCertificate},
         .ProgramPlanHash => &.{.ProgramPlanHash},
+        .BoundaryModule => &.{.BoundaryModule},
         .WorldPortTable => &.{.WorldPortTable},
         .WorldValueTable => &.{.WorldValueTable},
         .WorldDispatchTable => &.{.WorldDispatchTable},
@@ -9334,6 +9384,7 @@ fn targetRefEncodedByteSize(target_ref: TargetRef) usize {
     size = addSatEncodedSize(size, optionalU64EncodedByteSize(target_ref.world_value_table_fingerprint));
     size = addSatEncodedSize(size, optionalU64EncodedByteSize(target_ref.world_dispatch_table_fingerprint));
     size = addSatEncodedSize(size, optionalU64EncodedByteSize(target_ref.surface_profile_fingerprint));
+    if (targetRefEncodesBoundaryModule(target_ref)) size = addSatEncodedSize(size, optionalU64EncodedByteSize(target_ref.boundary_module_fingerprint));
     size = addSatEncodedSize(size, bytesEncodedByteSize(target_ref.metadata));
     return size;
 }
@@ -10010,12 +10061,29 @@ fn encodeTargetRef(out: *std.ArrayList(u8), allocator: std.mem.Allocator, target
     try writeOptionalU64(out, allocator, target_ref.world_value_table_fingerprint);
     try writeOptionalU64(out, allocator, target_ref.world_dispatch_table_fingerprint);
     try writeOptionalU64(out, allocator, target_ref.surface_profile_fingerprint);
+    if (targetRefEncodesBoundaryModule(target_ref)) try writeOptionalU64(out, allocator, target_ref.boundary_module_fingerprint);
     try writeBytes(out, allocator, target_ref.metadata);
 }
 
+const DecodedTargetRefHead = struct {
+    format_version: u32,
+    fingerprint_version: u32,
+    target_ref_fingerprint: u64,
+    target_label: ?[]const u8,
+    world_surface_fingerprint: u64,
+    world_surface_replay_scope_fingerprint: ?u64,
+    target_certificate_fingerprint: u64,
+    residual_program_plan_hash: ?u64,
+    normal_form_kind: NormalFormKind,
+    world_port_table_fingerprint: ?u64,
+    world_value_table_fingerprint: ?u64,
+    world_dispatch_table_fingerprint: ?u64,
+    surface_profile_fingerprint: ?u64,
+};
+
 fn decodeTargetRef(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) !TargetRef {
     const format_version = try readU32(bytes, cursor);
-    if (format_version != world_target_ref_format_version) return error.InvalidFrameEncoding;
+    if (format_version != 1 and format_version != world_target_ref_format_version) return error.InvalidFrameEncoding;
     const fingerprint_version = try readU32(bytes, cursor);
     if (fingerprint_version != world_target_ref_fingerprint_version) return error.InvalidFrameEncoding;
     const target_ref_fingerprint = try readU64(bytes, cursor);
@@ -10030,11 +10098,9 @@ fn decodeTargetRef(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usi
     const world_value_table_fingerprint = try readOptionalU64(bytes, cursor);
     const world_dispatch_table_fingerprint = try readOptionalU64(bytes, cursor);
     const surface_profile_fingerprint = try readOptionalU64(bytes, cursor);
-    const metadata = try readBytesOwned(allocator, bytes, cursor);
-    errdefer allocator.free(metadata);
-    // TargetRef labels/metadata are intentionally leaked into the owning RunImage lifetime;
-    // RunImage does not currently expose a separate TargetRef deinit path.
-    const result = TargetRef{
+    const head = DecodedTargetRefHead{
+        .format_version = format_version,
+        .fingerprint_version = fingerprint_version,
         .target_ref_fingerprint = target_ref_fingerprint,
         .target_label = target_label,
         .world_surface_fingerprint = world_surface_fingerprint,
@@ -10046,9 +10112,35 @@ fn decodeTargetRef(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usi
         .world_value_table_fingerprint = world_value_table_fingerprint,
         .world_dispatch_table_fingerprint = world_dispatch_table_fingerprint,
         .surface_profile_fingerprint = surface_profile_fingerprint,
+    };
+    if (format_version == world_target_ref_format_version) return try decodeTargetRefTail(allocator, bytes, cursor, head, true);
+    const tail_cursor = cursor.*;
+    if (decodeTargetRefTail(allocator, bytes, cursor, head, true)) |result| return result else |_| cursor.* = tail_cursor;
+    return try decodeTargetRefTail(allocator, bytes, cursor, head, false);
+}
+
+fn decodeTargetRefTail(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, head: DecodedTargetRefHead, include_boundary_module: bool) !TargetRef {
+    const boundary_module_fingerprint = if (include_boundary_module) try readOptionalU64(bytes, cursor) else null;
+    const metadata = try readBytesOwned(allocator, bytes, cursor);
+    errdefer allocator.free(metadata);
+    const result = TargetRef{
+        .format_version = head.format_version,
+        .fingerprint_version = head.fingerprint_version,
+        .target_ref_fingerprint = head.target_ref_fingerprint,
+        .target_label = head.target_label,
+        .world_surface_fingerprint = head.world_surface_fingerprint,
+        .world_surface_replay_scope_fingerprint = head.world_surface_replay_scope_fingerprint,
+        .target_certificate_fingerprint = head.target_certificate_fingerprint,
+        .residual_program_plan_hash = head.residual_program_plan_hash,
+        .normal_form_kind = head.normal_form_kind,
+        .world_port_table_fingerprint = head.world_port_table_fingerprint,
+        .world_value_table_fingerprint = head.world_value_table_fingerprint,
+        .world_dispatch_table_fingerprint = head.world_dispatch_table_fingerprint,
+        .surface_profile_fingerprint = head.surface_profile_fingerprint,
+        .boundary_module_fingerprint = boundary_module_fingerprint,
         .metadata = metadata,
     };
-    if (fingerprintTargetRef(result) != target_ref_fingerprint) return error.InvalidFrameEncoding;
+    if (fingerprintTargetRef(result) != head.target_ref_fingerprint) return error.InvalidFrameEncoding;
     return result;
 }
 
@@ -10160,7 +10252,16 @@ fn decodeBranch(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize)
     return branch;
 }
 
+fn targetRefEncodesBoundaryModule(target_ref: TargetRef) bool {
+    return target_ref.format_version >= 2 or target_ref.boundary_module_fingerprint != null;
+}
+
 fn fingerprintTargetRef(target_ref: TargetRef) u64 {
+    if (!targetRefEncodesBoundaryModule(target_ref)) return fingerprintTargetRefWithoutBoundaryModule(target_ref);
+    return fingerprintTargetRefWithBoundaryModule(target_ref);
+}
+
+fn fingerprintTargetRefWithoutBoundaryModule(target_ref: TargetRef) u64 {
     var hasher = std.hash.Wyhash.init(0);
     hashBytes(&hasher, "world.target_ref.fingerprint");
     hashU64(&hasher, world_target_ref_fingerprint_version);
@@ -10174,6 +10275,26 @@ fn fingerprintTargetRef(target_ref: TargetRef) u64 {
     hashOptionalU64(&hasher, target_ref.world_value_table_fingerprint);
     hashOptionalU64(&hasher, target_ref.world_dispatch_table_fingerprint);
     hashOptionalU64(&hasher, target_ref.surface_profile_fingerprint);
+    hashU64(&hasher, target_ref.metadata.len);
+    hashBytes(&hasher, target_ref.metadata);
+    return hasher.final();
+}
+
+fn fingerprintTargetRefWithBoundaryModule(target_ref: TargetRef) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.target_ref.fingerprint");
+    hashU64(&hasher, world_target_ref_fingerprint_version);
+    hashOptionalBytes(&hasher, target_ref.target_label);
+    hashU64(&hasher, target_ref.world_surface_fingerprint);
+    hashOptionalU64(&hasher, target_ref.world_surface_replay_scope_fingerprint);
+    hashU64(&hasher, target_ref.target_certificate_fingerprint);
+    hashOptionalU64(&hasher, target_ref.residual_program_plan_hash);
+    hashU64(&hasher, @intFromEnum(target_ref.normal_form_kind));
+    hashOptionalU64(&hasher, target_ref.world_port_table_fingerprint);
+    hashOptionalU64(&hasher, target_ref.world_value_table_fingerprint);
+    hashOptionalU64(&hasher, target_ref.world_dispatch_table_fingerprint);
+    hashOptionalU64(&hasher, target_ref.surface_profile_fingerprint);
+    hashOptionalU64(&hasher, target_ref.boundary_module_fingerprint);
     hashU64(&hasher, target_ref.metadata.len);
     hashBytes(&hasher, target_ref.metadata);
     return hasher.final();
