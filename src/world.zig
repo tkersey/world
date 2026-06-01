@@ -2057,7 +2057,9 @@ pub const Admission = struct {
                 null;
             if (expected_transcript_fingerprint) |fingerprint| {
                 if (comptime !@hasField(Options, "transcript_image")) return Error.HandoffDenied;
-                if (@field(options, "transcript_image").transcript_image_fingerprint != fingerprint) return Error.HandoffDenied;
+                const supplied_transcript_image = @field(options, "transcript_image");
+                validateTranscriptImageFingerprint(supplied_transcript_image.*) catch return Error.HandoffDenied;
+                if (supplied_transcript_image.transcript_image_fingerprint != fingerprint) return Error.HandoffDenied;
             }
             if (self.run_permit) |permit| {
                 if (comptime !@hasField(Options, "permit")) return Error.SupervisionDenied;

@@ -7486,6 +7486,19 @@ test "admitted run start enforces admitted transcript image" {
         .mode = world.Mode.replay,
         .transcript_image = &wrong_image,
     }));
+    const forged_encoded = try image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(forged_encoded);
+    var forged_image = try world.TranscriptImage.decode(std.testing.allocator, forged_encoded);
+    defer forged_image.deinit(std.testing.allocator);
+    forged_image.events[0].source_run = !forged_image.events[0].source_run;
+    try std.testing.expectEqual(image.transcript_image_fingerprint, forged_image.transcript_image_fingerprint);
+    var forged_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer forged_runtime.deinit();
+    try std.testing.expectError(error.HandoffDenied, admitted.start(fixtures.Ports.Target, PortsReplayEnv, &forged_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.replay,
+        .transcript_image = &forged_image,
+    }));
 }
 
 test "decoded admission owns admitted run images after package deinit" {
