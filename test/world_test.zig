@@ -6361,6 +6361,16 @@ test "transfer package validates module fingerprints and transcript byte limits"
     });
     try transcript_package.validate(.{ .max_transcript_bytes = encoded.len });
     try std.testing.expectError(error.InvalidFrameEncoding, transcript_package.validate(.{ .max_transcript_bytes = image.events.len }));
+
+    const embedded_run_image = world.RunImage.fromTranscriptImage(fixtures.Ports.Target, image, .replay_only_run);
+    const embedded_package = world.Admission.TransferPackage.init(.{
+        .kind = .replay_run,
+        .target_ref = target_ref,
+        .run_image = embedded_run_image,
+        .requested_mode = .replay_only,
+    });
+    try embedded_package.validate(.{ .max_transcript_bytes = encoded.len });
+    try std.testing.expectError(error.InvalidFrameEncoding, embedded_package.validate(.{ .max_transcript_bytes = image.events.len }));
 }
 
 test "module ref binds target identity and RunImage module refs decode" {
@@ -6511,14 +6521,16 @@ test "admission policy request report and receipt fingerprints are stable" {
 
 test "admitter accepts inspect-only full module and rejects missing permit for execution" {
     const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
-    const module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
     const entry = world.Admission.TargetRegistry.register(fixtures.Ports.Target);
     const registry = world.Admission.TargetRegistry.init(&.{entry});
     const full_module_bytes = try fixtures.Ports.Target.Module.fullImage(std.testing.allocator);
     defer std.testing.allocator.free(full_module_bytes);
+    var loaded_module = try world.Admission.ModuleGateway.decodeBoundaryModule(fixtures.Ports.Target, std.testing.allocator, full_module_bytes);
+    defer loaded_module.deinit();
+    const module_ref = world.Admission.ModuleGateway.refFromBoundaryModule(loaded_module);
+    const reference_module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
     const inspect_package = world.Admission.TransferPackage.init(.{
         .kind = .full_module,
-        .target_ref = target_ref,
         .module_ref = module_ref,
         .module_image_bytes = full_module_bytes,
         .requested_mode = .inspect_only,
@@ -6530,6 +6542,16 @@ test "admitter accepts inspect-only full module and rejects missing permit for e
     const inspect = inspect_admitter.admitForTarget(fixtures.Ports.Target, PortsEnv, inspect_package, .{});
     try std.testing.expect(inspect.report.accepted);
     try std.testing.expect(inspect.admitted_run == null);
+
+    const stale_ref_package = world.Admission.TransferPackage.init(.{
+        .kind = .full_module,
+        .module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target),
+        .module_image_bytes = full_module_bytes,
+        .requested_mode = .inspect_only,
+    });
+    const stale_ref_result = inspect_admitter.admitForTarget(fixtures.Ports.Target, PortsEnv, stale_ref_package, .{});
+    try std.testing.expect(!stale_ref_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.ModuleInvalid, stale_ref_result.report.blockers[0]);
 
     const inspect_only_full_module_policy = world.Admission.AdmissionPolicy.init(.{
         .allow_reference_targets = true,
@@ -6554,7 +6576,7 @@ test "admitter accepts inspect-only full module and rejects missing permit for e
     const missing_bytes_full_module = world.Admission.TransferPackage.init(.{
         .kind = .full_module,
         .target_ref = target_ref,
-        .module_ref = module_ref,
+        .module_ref = reference_module_ref,
         .requested_mode = .inspect_only,
     });
     const missing_bytes_result = inspect_admitter.admitForTarget(fixtures.Ports.Target, PortsEnv, missing_bytes_full_module, .{});
@@ -6564,7 +6586,7 @@ test "admitter accepts inspect-only full module and rejects missing permit for e
     const execute_package = world.Admission.TransferPackage.init(.{
         .kind = .target_reference_only,
         .target_ref = target_ref,
-        .module_ref = module_ref,
+        .module_ref = reference_module_ref,
         .requested_mode = .continue_fresh,
     });
     const execution_admitter = world.Admission.Admitter.init(.{

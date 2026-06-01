@@ -106,22 +106,24 @@ pub const EventKind = enum {
     run_completed,
     run_failed,
     permit_issued,
-    admission_requested,
-    admission_accepted,
-    admission_rejected,
-    module_matched_target,
     supervision_check,
     budget_exceeded,
     supervision_denied,
     run_interrupted,
     receipt_recorded,
+    admission_requested,
+    admission_accepted,
+    admission_rejected,
+    module_matched_target,
 };
 
 test "EventKind keeps legacy transcript ordinals behind v2 image format" {
     try std.testing.expectEqual(@as(u32, 2), world_transcript_image_format_version);
     try std.testing.expectEqual(@as(u8, 15), @intFromEnum(EventKind.run_completed));
     try std.testing.expectEqual(@as(u8, 16), @intFromEnum(EventKind.run_failed));
-    try std.testing.expect(@intFromEnum(EventKind.permit_issued) > @intFromEnum(EventKind.run_failed));
+    try std.testing.expectEqual(@as(u8, 17), @intFromEnum(EventKind.permit_issued));
+    try std.testing.expectEqual(@as(u8, 18), @intFromEnum(EventKind.supervision_check));
+    try std.testing.expect(@intFromEnum(EventKind.admission_requested) > @intFromEnum(EventKind.receipt_recorded));
 }
 
 test "TranscriptImage rejects legacy v1 event stream after supervision event vocabulary bump" {
@@ -1315,6 +1317,9 @@ pub const Admission = struct {
                     .max_branches = options.max_branches,
                     .max_checkpoints = options.max_checkpoints,
                 });
+                if (image.transcript_image) |embedded| {
+                    if (transcriptImageEncodedByteSize(embedded) > options.max_transcript_bytes) return error.InvalidFrameEncoding;
+                }
                 if (self.target_ref) |target_ref| {
                     if (image.target_ref.target_ref_fingerprint != target_ref.target_ref_fingerprint) return error.HandoffTargetMismatch;
                 }
@@ -2088,6 +2093,22 @@ pub const Admission = struct {
                 _ = Target.Module.validate(module_bytes, .{}) catch {
                     return rejectedResult(request, package, target_ref, module_ref, null, &.{.ModuleInvalid}, "full module bytes failed validation");
                 };
+                var loaded_module = Admission.ModuleGateway.decodeBoundaryModule(Target, args.allocator, module_bytes) catch {
+                    return rejectedResult(request, package, target_ref, module_ref, null, &.{.ModuleInvalid}, "full module bytes failed decoding");
+                };
+                defer loaded_module.deinit();
+                const loaded_module_ref = Admission.ModuleGateway.refFromBoundaryModule(loaded_module);
+                if (module_ref) |supplied| {
+                    if (supplied.module_ref_fingerprint != loaded_module_ref.module_ref_fingerprint) {
+                        return rejectedResult(request, package, target_ref, module_ref, null, &.{.ModuleInvalid}, "module ref does not match full module bytes");
+                    }
+                }
+                if (target_ref.world_surface_fingerprint != loaded_module_ref.world_surface_fingerprint or
+                    target_ref.target_certificate_fingerprint != loaded_module_ref.target_certificate_fingerprint or
+                    target_ref.residual_program_plan_hash != loaded_module_ref.residual_program_plan_hash)
+                {
+                    return rejectedResult(request, package, target_ref, module_ref, null, &.{.ModuleInvalid}, "target ref does not match full module bytes");
+                }
             }
             self.registry.validate() catch {
                 return rejectedResult(request, package, target_ref, module_ref, null, &.{.TargetMismatch}, "target registry contains conflicting entries");
