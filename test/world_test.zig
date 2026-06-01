@@ -6357,6 +6357,21 @@ test "target registry finds targets and matches module refs" {
     try std.testing.expectEqual(entry.target_ref.target_ref_fingerprint, match.local_target_ref_fingerprint.?);
 }
 
+test "target registry rejects module import and table witness mismatches" {
+    var module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
+
+    module_ref.import_surface_fingerprint = if (module_ref.import_surface_fingerprint) |fingerprint| fingerprint +% 1 else 1;
+    const import_mismatch = world.Admission.TargetMatch.matchModule(module_ref, fixtures.Ports.Target);
+    try std.testing.expect(!import_mismatch.matched);
+    try std.testing.expectEqual(world.Admission.MatchMismatch.ImportSet, import_mismatch.mismatches[0]);
+
+    module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
+    module_ref.world_value_table_fingerprint = if (module_ref.world_value_table_fingerprint) |fingerprint| fingerprint +% 1 else 1;
+    const table_mismatch = world.Admission.TargetMatch.matchModule(module_ref, fixtures.Ports.Target);
+    try std.testing.expect(!table_mismatch.matched);
+    try std.testing.expectEqual(world.Admission.MatchMismatch.WorldValueTable, table_mismatch.mismatches[0]);
+}
+
 test "target registry rejects duplicate conflicting target" {
     const entry = world.Admission.TargetRegistry.register(fixtures.Ports.Target);
     var conflicting = entry;
@@ -6513,7 +6528,10 @@ test "admitted run constructed for accepted local target" {
     }).admitForTarget(fixtures.Ports.Target, PortsEnv, package, .{});
     try std.testing.expect(result.report.accepted);
     try std.testing.expect(result.admitted_run != null);
+    try std.testing.expect(result.receipt != null);
     try std.testing.expectEqual(target_ref.target_ref_fingerprint, result.admitted_run.?.target_ref.target_ref_fingerprint);
+    try std.testing.expectEqual(result.receipt.?.receipt_fingerprint, result.admitted_run.?.admission_receipt_fingerprint);
+    try std.testing.expectEqual(result.receipt.?.admitted_run_fingerprint.?, result.admitted_run.?.admitted_run_fingerprint);
 }
 
 test "admission rejects permit mode mismatch before receipt" {
@@ -6562,6 +6580,39 @@ test "admitted run start requires stored permit" {
         .allocator = std.testing.allocator,
         .mode = world.Mode.fresh,
         .ctx = &ctx,
+    }));
+}
+
+test "admitted run start enforces admitted target and mode without stored permit" {
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Ports.Target)});
+    const package = world.Admission.TransferPackage.init(.{
+        .kind = .target_reference_only,
+        .target_ref = target_ref,
+        .requested_mode = .continue_fresh,
+    });
+    const result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, package, .{});
+    var admitted = result.admitted_run orelse return error.ExpectedAdmittedRun;
+
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var ctx: PortsCtx = .{};
+    try std.testing.expectError(error.HandoffDenied, admitted.start(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.replay,
+        .ctx = &ctx,
+    }));
+
+    var agent_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer agent_runtime.deinit();
+    var agent_ctx: AgentCtx = .{ .allocator = std.testing.allocator, .scenario = .skeleton };
+    try std.testing.expectError(error.HandoffTargetMismatch, admitted.start(fixtures.Agent.Target, AgentEnv, &agent_runtime, AgentArgs{ @as(usize, 3), fixtures.Agent.initialObservation(.skeleton) }, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &agent_ctx,
     }));
 }
 

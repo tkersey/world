@@ -906,6 +906,7 @@ pub const Admission = struct {
         WorldDispatchTable,
         NormalForm,
         ImportSet,
+        ExportSet,
     };
 
     pub const AdmissionBlocker = enum {
@@ -948,6 +949,9 @@ pub const Admission = struct {
         module_graph_fingerprint: ?u64 = null,
         normal_form_kind: NormalFormKind = .unknown,
         world_port_count: usize = 0,
+        world_port_table_fingerprint: ?u64 = null,
+        world_value_table_fingerprint: ?u64 = null,
+        world_dispatch_table_fingerprint: ?u64 = null,
         label: ?[]const u8 = null,
         metadata: []const u8 = "",
 
@@ -963,6 +967,9 @@ pub const Admission = struct {
             module_graph_fingerprint: ?u64 = null,
             normal_form_kind: NormalFormKind = .unknown,
             world_port_count: usize = 0,
+            world_port_table_fingerprint: ?u64 = null,
+            world_value_table_fingerprint: ?u64 = null,
+            world_dispatch_table_fingerprint: ?u64 = null,
             label: ?[]const u8 = null,
             metadata: []const u8 = "",
         }) Admission.ModuleRef {
@@ -979,6 +986,9 @@ pub const Admission = struct {
                 .module_graph_fingerprint = args.module_graph_fingerprint,
                 .normal_form_kind = args.normal_form_kind,
                 .world_port_count = args.world_port_count,
+                .world_port_table_fingerprint = args.world_port_table_fingerprint,
+                .world_value_table_fingerprint = args.world_value_table_fingerprint,
+                .world_dispatch_table_fingerprint = args.world_dispatch_table_fingerprint,
                 .label = args.label,
                 .metadata = args.metadata,
             };
@@ -999,6 +1009,9 @@ pub const Admission = struct {
                 .export_surface_fingerprint = if (@hasDecl(Target, "Module")) Target.Module.manifest.export_surface_fingerprint else null,
                 .normal_form_kind = target_ref.normal_form_kind,
                 .world_port_count = Target.WorldPortTable.entries.len,
+                .world_port_table_fingerprint = target_ref.world_port_table_fingerprint,
+                .world_value_table_fingerprint = target_ref.world_value_table_fingerprint,
+                .world_dispatch_table_fingerprint = target_ref.world_dispatch_table_fingerprint,
                 .label = target_ref.target_label,
             });
         }
@@ -1330,8 +1343,13 @@ pub const Admission = struct {
             world_surface_fingerprint: u64,
             target_certificate_fingerprint: u64,
             program_plan_hash: ?u64 = null,
+            import_surface_fingerprint: ?u64 = null,
+            export_surface_fingerprint: ?u64 = null,
             import_set_fingerprint: u64,
             world_port_count: usize = 0,
+            world_port_table_fingerprint: ?u64 = null,
+            world_value_table_fingerprint: ?u64 = null,
+            world_dispatch_table_fingerprint: ?u64 = null,
             normal_form_kind: NormalFormKind = .unknown,
             label: ?[]const u8 = null,
             metadata: []const u8 = "",
@@ -1345,8 +1363,13 @@ pub const Admission = struct {
                     .world_surface_fingerprint = target_ref.world_surface_fingerprint,
                     .target_certificate_fingerprint = target_ref.target_certificate_fingerprint,
                     .program_plan_hash = target_ref.residual_program_plan_hash,
+                    .import_surface_fingerprint = if (@hasDecl(Target, "Module")) Target.Module.manifest.import_surface_fingerprint else null,
+                    .export_surface_fingerprint = if (@hasDecl(Target, "Module")) Target.Module.manifest.export_surface_fingerprint else null,
                     .import_set_fingerprint = import_set.import_set_fingerprint,
                     .world_port_count = import_set.world_port_count,
+                    .world_port_table_fingerprint = target_ref.world_port_table_fingerprint,
+                    .world_value_table_fingerprint = target_ref.world_value_table_fingerprint,
+                    .world_dispatch_table_fingerprint = target_ref.world_dispatch_table_fingerprint,
                     .normal_form_kind = target_ref.normal_form_kind,
                     .label = target_ref.target_label,
                 };
@@ -1454,6 +1477,11 @@ pub const Admission = struct {
                 if (module.residual_program_plan_hash != entry.program_plan_hash and first_mismatch == null) first_mismatch = .ProgramPlanHash;
                 if (module.normal_form_kind != .unknown and module.normal_form_kind != entry.normal_form_kind and first_mismatch == null) first_mismatch = .NormalForm;
                 if (module.world_port_count != 0 and module.world_port_count != entry.world_port_count and first_mismatch == null) first_mismatch = .WorldPortTable;
+                if (!providedFingerprintMatches(module.import_surface_fingerprint, entry.import_surface_fingerprint) and first_mismatch == null) first_mismatch = .ImportSet;
+                if (!providedFingerprintMatches(module.export_surface_fingerprint, entry.export_surface_fingerprint) and first_mismatch == null) first_mismatch = .ExportSet;
+                if (!providedFingerprintMatches(module.world_port_table_fingerprint, entry.world_port_table_fingerprint) and first_mismatch == null) first_mismatch = .WorldPortTable;
+                if (!providedFingerprintMatches(module.world_value_table_fingerprint, entry.world_value_table_fingerprint) and first_mismatch == null) first_mismatch = .WorldValueTable;
+                if (!providedFingerprintMatches(module.world_dispatch_table_fingerprint, entry.world_dispatch_table_fingerprint) and first_mismatch == null) first_mismatch = .WorldDispatchTable;
             }
             const matched = first_mismatch == null;
             var result = Admission.TargetMatch{
@@ -1932,8 +1960,11 @@ pub const Admission = struct {
         }
 
         pub fn start(self: Admission.AdmittedRun, comptime Target: type, comptime Env: type, runtime: anytype, args: anytype, options: anytype) !Machine(Target, Env.machine_config).Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)) {
+            if (!self.target_ref.matchesTarget(Target)) return Error.HandoffTargetMismatch;
+            const Options = @TypeOf(options);
+            const requested_mode: Mode = if (comptime @hasField(Options, "mode")) @field(options, "mode") else .fresh;
+            if (requested_mode != admissionModeToRunMode(self.mode)) return Error.HandoffDenied;
             if (self.run_permit) |permit| {
-                const Options = @TypeOf(options);
                 if (comptime !@hasField(Options, "permit")) return Error.SupervisionDenied;
                 if (@field(options, "permit").permit_fingerprint != permit.permit_fingerprint) return Error.SupervisionDenied;
             }
@@ -2130,7 +2161,6 @@ pub const Admission = struct {
             receipt.admitted_run_fingerprint = admitted.admitted_run_fingerprint;
             receipt.receipt_fingerprint = fingerprintAdmissionReceipt(receipt);
             admitted.admission_receipt_fingerprint = receipt.receipt_fingerprint;
-            admitted.admitted_run_fingerprint = fingerprintAdmittedRun(admitted);
             return .{ .request = request, .report = report, .receipt = receipt, .admitted_run = admitted, .target_match = match };
         }
 
@@ -8787,7 +8817,13 @@ fn mismatchSlice(mismatch: ?Admission.MatchMismatch) []const Admission.MatchMism
         .WorldDispatchTable => &.{.WorldDispatchTable},
         .NormalForm => &.{.NormalForm},
         .ImportSet => &.{.ImportSet},
+        .ExportSet => &.{.ExportSet},
     };
+}
+
+fn providedFingerprintMatches(provided: ?u64, expected: ?u64) bool {
+    const actual = provided orelse return true;
+    return expected != null and expected.? == actual;
 }
 
 fn containsU64(values: []const u64, needle: u64) bool {
@@ -8826,6 +8862,9 @@ fn encodeModuleRef(out: *std.ArrayList(u8), allocator: std.mem.Allocator, module
     try writeOptionalU64(out, allocator, module_ref.module_graph_fingerprint);
     try writeU8(out, allocator, @intFromEnum(module_ref.normal_form_kind));
     try writeU64(out, allocator, module_ref.world_port_count);
+    try writeOptionalU64(out, allocator, module_ref.world_port_table_fingerprint);
+    try writeOptionalU64(out, allocator, module_ref.world_value_table_fingerprint);
+    try writeOptionalU64(out, allocator, module_ref.world_dispatch_table_fingerprint);
     try writeOptionalBytes(out, allocator, module_ref.label);
     try writeBytes(out, allocator, module_ref.metadata);
 }
@@ -8850,6 +8889,9 @@ fn decodeModuleRef(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usi
         .module_graph_fingerprint = try readOptionalU64(bytes, cursor),
         .normal_form_kind = try enumFromByte(NormalFormKind, try readU8(bytes, cursor)),
         .world_port_count = try readU64AsUsize(bytes, cursor),
+        .world_port_table_fingerprint = try readOptionalU64(bytes, cursor),
+        .world_value_table_fingerprint = try readOptionalU64(bytes, cursor),
+        .world_dispatch_table_fingerprint = try readOptionalU64(bytes, cursor),
         .label = try readOptionalBytesOwned(allocator, bytes, cursor),
         .metadata = try readBytesOwned(allocator, bytes, cursor),
     };
@@ -9951,6 +9993,9 @@ fn fingerprintModuleRef(module_ref: Admission.ModuleRef) u64 {
     hashOptionalU64(&hasher, module_ref.module_graph_fingerprint);
     hashU64(&hasher, @intFromEnum(module_ref.normal_form_kind));
     hashU64(&hasher, module_ref.world_port_count);
+    hashOptionalU64(&hasher, module_ref.world_port_table_fingerprint);
+    hashOptionalU64(&hasher, module_ref.world_value_table_fingerprint);
+    hashOptionalU64(&hasher, module_ref.world_dispatch_table_fingerprint);
     hashOptionalBytes(&hasher, module_ref.label);
     hashU64(&hasher, module_ref.metadata.len);
     hashBytes(&hasher, module_ref.metadata);
@@ -10010,8 +10055,13 @@ fn fingerprintTargetRegistryEntry(entry: Admission.TargetRegistry.Entry) u64 {
     hashU64(&hasher, entry.world_surface_fingerprint);
     hashU64(&hasher, entry.target_certificate_fingerprint);
     hashOptionalU64(&hasher, entry.program_plan_hash);
+    hashOptionalU64(&hasher, entry.import_surface_fingerprint);
+    hashOptionalU64(&hasher, entry.export_surface_fingerprint);
     hashU64(&hasher, entry.import_set_fingerprint);
     hashU64(&hasher, entry.world_port_count);
+    hashOptionalU64(&hasher, entry.world_port_table_fingerprint);
+    hashOptionalU64(&hasher, entry.world_value_table_fingerprint);
+    hashOptionalU64(&hasher, entry.world_dispatch_table_fingerprint);
     hashU64(&hasher, @intFromEnum(entry.normal_form_kind));
     hashOptionalBytes(&hasher, entry.label);
     hashU64(&hasher, entry.metadata.len);
@@ -10153,7 +10203,6 @@ fn fingerprintAdmittedRun(run: Admission.AdmittedRun) u64 {
     var hasher = std.hash.Wyhash.init(0);
     hashBytes(&hasher, "world.admitted_run.fingerprint");
     hashU64(&hasher, world_admitted_run_fingerprint_version);
-    hashU64(&hasher, run.admission_receipt_fingerprint);
     hashU64(&hasher, run.target_ref.target_ref_fingerprint);
     hashOptionalU64(&hasher, run.environment_certificate_fingerprint);
     hashOptionalU64(&hasher, if (run.run_permit) |permit| permit.permit_fingerprint else null);
