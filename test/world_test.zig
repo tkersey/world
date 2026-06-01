@@ -6375,6 +6375,26 @@ test "transfer package rejects malformed and oversized packages" {
         .requested_mode = .completed_replay,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, misleading_reference_kind.validate(.{}));
+    const inspect_run_image_package = world.Admission.TransferPackage.init(.{
+        .kind = .inspect_only,
+        .target_ref = target_ref,
+        .run_image = completed_image,
+        .requested_mode = .inspect_only,
+    });
+    try inspect_run_image_package.validate(.{ .allow_inspect_only = true });
+    const branched_image = world.RunImage.init(.{
+        .kind = .branched_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = completed_state,
+    });
+    const branched_replay_package = world.Admission.TransferPackage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .run_image = branched_image,
+        .requested_mode = .completed_replay,
+    });
+    try branched_replay_package.validate(.{});
 
     var package = world.Admission.TransferPackage.init(.{
         .kind = .target_reference_only,

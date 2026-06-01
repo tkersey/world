@@ -1296,7 +1296,7 @@ pub const Admission = struct {
                 .run_reference, .parked_run, .completed_run, .branch_run => if (self.run_image == null) return error.InvalidFrameEncoding,
             }
             if (self.run_image) |image| {
-                if (!transferPackageKindMatchesRunImage(self.kind, image.kind)) return error.InvalidFrameEncoding;
+                if (!transferPackageKindMatchesRunImage(self.kind, image.kind, self.requested_mode)) return error.InvalidFrameEncoding;
             }
             if (self.module_ref) |module_ref| {
                 if (module_ref.module_ref_fingerprint != fingerprintModuleRef(module_ref)) return error.InvalidFrameEncoding;
@@ -8990,14 +8990,16 @@ fn admissionModeNeedsRunImage(mode: Admission.AdmissionMode) bool {
     };
 }
 
-fn transferPackageKindMatchesRunImage(kind: Admission.PackageKind, image_kind: RunImage.Kind) bool {
+fn transferPackageKindMatchesRunImage(kind: Admission.PackageKind, image_kind: RunImage.Kind, requested_mode: Admission.AdmissionMode) bool {
     return switch (kind) {
         .run_reference => image_kind == .reference_target_run or image_kind == .full_target_run,
         .parked_run => image_kind == .parked_run,
-        .completed_run => image_kind == .completed_run,
-        .replay_run => image_kind == .replay_only_run,
+        .completed_run => image_kind == .completed_run or image_kind == .branched_run,
+        .replay_run => image_kind == .replay_only_run or image_kind == .branched_run,
         .branch_run => image_kind == .parked_run,
-        .target_reference_only, .module_reference, .full_module, .inspect_only => false,
+        .target_reference_only => image_kind == .reference_target_run,
+        .inspect_only => requested_mode == .inspect_only,
+        .module_reference, .full_module => false,
     };
 }
 
@@ -9123,10 +9125,11 @@ fn runImageFitsAdmissionMode(image: RunImage, mode: Admission.AdmissionMode) boo
         .inspect_only, .local_target_match_only, .continue_fresh => false,
         .resume_parked => image.kind == .parked_run and image.current_state.status == .parked_on_port,
         .branch_resume => image.kind == .parked_run and image.current_state.status == .parked_on_port and image.branches.len != 0,
-        .completed_replay => image.kind == .completed_run and image.current_state.status == .completed,
+        .completed_replay => (image.kind == .completed_run or image.kind == .branched_run) and image.current_state.status == .completed,
         .replay_only, .verify_only => switch (image.kind) {
             .completed_run => image.current_state.status == .completed,
             .replay_only_run => image.current_state.status == .completed or image.current_state.status == .failed,
+            .branched_run => image.current_state.status == .completed,
             else => false,
         },
     };
