@@ -6344,6 +6344,21 @@ test "module ref binds target identity and RunImage module refs decode" {
     try std.testing.expectEqual(@as(u32, 3), decoded.format_version);
     try std.testing.expectEqual(module_ref.module_ref_fingerprint, decoded.module_ref_fingerprint.?);
     try std.testing.expectEqual(module_ref.boundary_module_fingerprint, decoded.boundary_module_fingerprint.?);
+
+    const direct_image = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = state,
+        .module_ref_fingerprint = module_ref.module_ref_fingerprint,
+        .boundary_module_fingerprint = module_ref.boundary_module_fingerprint,
+    });
+    const direct_encoded = try direct_image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(direct_encoded);
+    var direct_decoded = try world.RunImage.decode(std.testing.allocator, direct_encoded);
+    defer direct_decoded.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u32, 3), direct_decoded.format_version);
+    try std.testing.expectEqual(module_ref.module_ref_fingerprint, direct_decoded.module_ref_fingerprint.?);
 }
 
 test "target registry finds targets and matches module refs" {
@@ -6466,6 +6481,26 @@ test "admitter accepts inspect-only full module and rejects missing permit for e
     try std.testing.expect(inspect.report.accepted);
     try std.testing.expect(inspect.admitted_run == null);
 
+    const inspect_only_full_module_policy = world.Admission.AdmissionPolicy.init(.{
+        .allow_reference_targets = true,
+        .allow_full_modules = false,
+        .allow_inspect_only_full_modules = true,
+        .require_supervision_permit = false,
+    });
+    const executable_full_module = world.Admission.TransferPackage.init(.{
+        .kind = .full_module,
+        .target_ref = target_ref,
+        .module_ref = module_ref,
+        .module_image_bytes = "fake-full-module-bytes",
+        .requested_mode = .continue_fresh,
+    });
+    const executable_full_module_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = inspect_only_full_module_policy,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, executable_full_module, .{});
+    try std.testing.expect(!executable_full_module_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, executable_full_module_result.report.blockers[0]);
+
     const execute_package = world.Admission.TransferPackage.init(.{
         .kind = .target_reference_only,
         .target_ref = target_ref,
@@ -6479,6 +6514,27 @@ test "admitter accepts inspect-only full module and rejects missing permit for e
     const rejected = execution_admitter.admitForTarget(fixtures.Ports.Target, PortsEnv, execute_package, .{});
     try std.testing.expect(!rejected.report.accepted);
     try std.testing.expectEqual(world.Admission.AdmissionBlocker.PermitMissing, rejected.report.blockers[0]);
+}
+
+test "admission rejects bare target reference when reference targets are disabled" {
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Ports.Target)});
+    const package = world.Admission.TransferPackage.init(.{
+        .kind = .target_reference_only,
+        .target_ref = target_ref,
+        .requested_mode = .continue_fresh,
+    });
+    const policy = world.Admission.AdmissionPolicy.init(.{
+        .allow_reference_targets = false,
+        .allow_full_modules = true,
+        .require_supervision_permit = false,
+    });
+    const result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = policy,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, package, .{});
+    try std.testing.expect(!result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, result.report.blockers[0]);
 }
 
 test "admission rejects prior receipt mismatch when policy requires it" {

@@ -1279,6 +1279,7 @@ pub const Admission = struct {
             if (options.require_target_ref and self.target_ref == null and self.run_image == null) return error.InvalidFrameEncoding;
             if (options.require_run_image and self.run_image == null) return error.InvalidFrameEncoding;
             if (!options.allow_inspect_only and self.kind == .inspect_only) return error.InvalidFrameEncoding;
+            if (!options.allow_reference_only and self.kind == .target_reference_only) return error.InvalidFrameEncoding;
             if (self.module_ref) |module_ref| {
                 if (!options.allow_reference_only and module_ref.module_kind == .reference_only) return error.InvalidFrameEncoding;
                 if (!options.allow_full_module and module_ref.module_kind == .full_module) return error.InvalidFrameEncoding;
@@ -2037,7 +2038,7 @@ pub const Admission = struct {
                 .max_checkpoints = self.policy.max_checkpoints,
                 .require_target_ref = false,
                 .require_run_image = admissionModeNeedsRunImage(mode),
-                .allow_full_module = self.policy.allow_full_modules or self.policy.allow_inspect_only_full_modules,
+                .allow_full_module = self.policy.allow_full_modules or (mode == .inspect_only and self.policy.allow_inspect_only_full_modules),
                 .allow_reference_only = self.policy.allow_reference_targets,
                 .allow_inspect_only = self.policy.allow_inspect_only_full_modules,
             }) catch {
@@ -5620,8 +5621,19 @@ pub const RunImage = struct {
             .module_image_fingerprint = args.module_image_fingerprint,
             .metadata = args.metadata,
         };
-        result.run_image_fingerprint = fingerprintRunImage(result);
+        if (result.hasModuleWitness()) {
+            result.format_version = 3;
+            result.run_image_fingerprint = fingerprintRunImageV3(result);
+        } else {
+            result.run_image_fingerprint = fingerprintRunImage(result);
+        }
         return result;
+    }
+
+    fn hasModuleWitness(self: @This()) bool {
+        return self.module_ref_fingerprint != null or
+            self.boundary_module_fingerprint != null or
+            self.module_image_fingerprint != null;
     }
 
     pub fn withModuleRef(self: @This(), module_ref: Admission.ModuleRef, module_image_fingerprint: ?u64) @This() {
