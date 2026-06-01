@@ -2282,6 +2282,23 @@ pub const Admission = struct {
                 };
                 defer loaded_module.deinit();
                 const loaded_module_ref = Admission.ModuleGateway.refFromBoundaryModule(loaded_module);
+                if (package.run_image) |image| {
+                    if (image.module_ref_fingerprint) |fingerprint| {
+                        if (fingerprint != loaded_module_ref.module_ref_fingerprint) {
+                            return rejectedResult(request, package, target_ref, module_ref, null, &.{.ModuleInvalid}, "run image module ref does not match module bytes");
+                        }
+                    }
+                    if (image.boundary_module_fingerprint) |fingerprint| {
+                        if (fingerprint != loaded_module_ref.boundary_module_fingerprint) {
+                            return rejectedResult(request, package, target_ref, module_ref, null, &.{.ModuleInvalid}, "run image boundary module does not match module bytes");
+                        }
+                    }
+                    if (image.module_image_fingerprint) |fingerprint| {
+                        if (fingerprint != moduleImageFingerprint(module_bytes)) {
+                            return rejectedResult(request, package, target_ref, module_ref, null, &.{.ModuleInvalid}, "run image module image does not match module bytes");
+                        }
+                    }
+                }
                 if (module_ref) |supplied| {
                     if (supplied.module_ref_fingerprint != loaded_module_ref.module_ref_fingerprint) {
                         return rejectedResult(request, package, target_ref, module_ref, null, &.{.ModuleInvalid}, "module ref does not match module bytes");

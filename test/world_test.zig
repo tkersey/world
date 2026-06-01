@@ -7246,6 +7246,28 @@ test "admitter accepts inspect-only full module and rejects missing permit for e
     }).admitForTarget(fixtures.Ports.Target, PortsReplayEnv, executable_module_bytes_witness_package, .{});
     try std.testing.expect(executable_module_bytes_witness_result.report.accepted);
     try std.testing.expectEqual(module_ref.module_ref_fingerprint, executable_module_bytes_witness_result.report.module_ref_fingerprint.?);
+    const stale_run_module_witness_package = world.Admission.TransferPackage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .module_image_bytes = full_module_bytes,
+        .run_image = world.RunImage.init(.{
+            .kind = executable_module_bytes_witness.kind,
+            .target_ref = executable_module_bytes_witness.target_ref,
+            .import_set_fingerprint = executable_module_bytes_witness.import_set_fingerprint,
+            .transcript_image = executable_module_bytes_witness.transcript_image,
+            .current_state = executable_module_bytes_witness.current_state,
+        }).withModuleRef(
+            world.Admission.ModuleRef.fromTarget(fixtures.Agent.Target),
+            world.Admission.moduleImageFingerprintForBytes(full_module_bytes),
+        ),
+        .requested_mode = .completed_replay,
+    });
+    const stale_run_module_witness_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, PortsReplayEnv, stale_run_module_witness_package, .{});
+    try std.testing.expect(!stale_run_module_witness_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.ModuleInvalid, stale_run_module_witness_result.report.blockers[0]);
 
     const unbound_transcript_inspect_package = world.Admission.TransferPackage.init(.{
         .kind = .inspect_only,
