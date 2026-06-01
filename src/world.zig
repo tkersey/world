@@ -227,7 +227,7 @@ pub const world_admitted_run_fingerprint_version: u32 = 1;
 pub const world_max_decoded_byte_field_len: usize = 16 * 1024 * 1024;
 const frame_response_deferred_fingerprint_flag: u32 = 1 << 0;
 const world_min_transcript_event_image_encoded_len_v2: usize = 8 + 1 + 8 + 8 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1;
-const world_min_transcript_event_image_encoded_len: usize = world_min_transcript_event_image_encoded_len_v2 + 1 + 1 + 1;
+const world_min_transcript_event_image_encoded_len: usize = world_min_transcript_event_image_encoded_len_v2 + 1 + 1 + 1 + 1 + 1;
 
 pub const ValuePolicy = struct {
     require_portable_values: bool = false,
