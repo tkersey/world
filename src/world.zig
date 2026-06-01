@@ -6333,6 +6333,7 @@ test "RunImage decoder accepts v1 layout without prior receipt refs" {
     var decoded = try RunImage.decode(allocator, out.items);
     defer decoded.deinit(allocator);
     try std.testing.expectEqual(@as(u32, 1), decoded.format_version);
+    try std.testing.expectEqual(@as(u32, 1), decoded.target_ref.format_version);
     try std.testing.expectEqual(@as(?u64, null), decoded.prior_run_permit_fingerprint);
     try std.testing.expectEqual(@as(?u64, null), decoded.prior_run_receipt_fingerprint);
     try std.testing.expectEqualStrings("legacy", decoded.metadata);
@@ -6343,6 +6344,7 @@ test "RunImage decoder accepts v1 layout without prior receipt refs" {
     var redecode = try RunImage.decode(allocator, reencoded);
     defer redecode.deinit(allocator);
     try std.testing.expectEqual(@as(u32, 1), redecode.format_version);
+    try std.testing.expectEqual(@as(u32, 1), redecode.target_ref.format_version);
     try std.testing.expectEqualStrings("legacy", redecode.metadata);
 }
 
@@ -10171,9 +10173,8 @@ fn decodeTargetRefTail(allocator: std.mem.Allocator, bytes: []const u8, cursor: 
     const boundary_module_fingerprint = if (include_boundary_module) try readOptionalU64(bytes, cursor) else null;
     const metadata = try readBytesOwned(allocator, bytes, cursor);
     errdefer allocator.free(metadata);
-    const result_format_version = if (include_boundary_module and head.format_version == 1) world_target_ref_format_version else head.format_version;
     const result = TargetRef{
-        .format_version = result_format_version,
+        .format_version = head.format_version,
         .fingerprint_version = head.fingerprint_version,
         .target_ref_fingerprint = head.target_ref_fingerprint,
         .target_label = head.target_label,
