@@ -7055,6 +7055,18 @@ test "admitted run start enforces admitted transcript image" {
     try std.testing.expect(!missing_transcript_result.report.accepted);
     try std.testing.expectEqual(world.Admission.AdmissionBlocker.EnvironmentRejected, missing_transcript_result.report.blockers[0]);
 
+    const no_replay_evidence_package = world.Admission.TransferPackage.init(.{
+        .kind = .target_reference_only,
+        .target_ref = target_ref,
+        .requested_mode = .replay_only,
+    });
+    const no_replay_evidence_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.replay_only,
+    }).admitForTarget(fixtures.Ports.Target, PortsReplayEnv, no_replay_evidence_package, .{});
+    try std.testing.expect(!no_replay_evidence_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.RunImageInvalid, no_replay_evidence_result.report.blockers[0]);
+
     const transcript_only_package = world.Admission.TransferPackage.init(.{
         .kind = .replay_run,
         .target_ref = target_ref,

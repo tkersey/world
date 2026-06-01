@@ -2121,6 +2121,9 @@ pub const Admission = struct {
                     return rejectedResult(request, package, target_ref, module_ref, null, &.{.RunImageInvalid}, "run image does not match requested admission mode");
                 }
             }
+            if ((mode == .replay_only or mode == .verify_only) and package.run_image == null and package.transcript_image == null) {
+                return rejectedResult(request, package, target_ref, module_ref, null, &.{.RunImageInvalid}, "replay or verify admission requires run or transcript evidence");
+            }
             if (package.kind == .full_module) {
                 const module_bytes = package.module_image_bytes orelse return rejectedResult(request, package, target_ref, module_ref, null, &.{.ModuleInvalid}, "full module package is missing module bytes");
                 if (comptime !@hasDecl(Target, "Module")) {
