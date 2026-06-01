@@ -2160,8 +2160,9 @@ pub const Admission = struct {
                 image.transcript_image = self.transcript_image;
                 refreshRunImageFingerprint(&image);
             }
+            const transcript_sink_available = comptime @hasField(Options, "transcript") and Env.policy_decl.allow_native_adapters;
             if (self.environment_certificate_fingerprint) |fingerprint| {
-                if (Env.certificate(.fresh, image.transcript_image != null).certificate_fingerprint != fingerprint) return Error.HandoffDenied;
+                if (Env.certificate(.fresh, image.transcript_image != null or transcript_sink_available).certificate_fingerprint != fingerprint) return Error.HandoffDenied;
             }
             const encoded = try image.encode(allocator);
             defer allocator.free(encoded);
@@ -2213,10 +2214,11 @@ pub const Admission = struct {
             const package_transcript_available = package.transcript_image != null or
                 (package.run_image != null and package.run_image.?.transcript_image != null);
             const fresh_transcript_sink_available = args.fresh_transcript_sink_available and Env.policy_decl.allow_native_adapters;
-            const transcript_available = if (mode == .continue_fresh)
-                fresh_transcript_sink_available
-            else
-                package_transcript_available;
+            const transcript_available = switch (mode) {
+                .continue_fresh => fresh_transcript_sink_available,
+                .resume_parked, .branch_resume => package_transcript_available or fresh_transcript_sink_available,
+                else => package_transcript_available,
+            };
             const environment_certificate_fingerprint: ?u64 = if (mode == .inspect_only)
                 null
             else
@@ -2436,9 +2438,9 @@ pub const Admission = struct {
                     }
                     var handoff = Handoff{ .allocator = args.allocator, .run_image = handoff_run_image };
                     const handoff_report = if (args.permit) |permit|
-                        handoff.preflightWithPermit(Target, Env, handoff_mode, permit)
+                        handoff.preflightWithPermitFreshTranscriptSink(Target, Env, handoff_mode, permit, fresh_transcript_sink_available)
                     else
-                        handoff.preflight(Target, Env, handoff_mode);
+                        handoff.preflightWithFreshTranscriptSink(Target, Env, handoff_mode, fresh_transcript_sink_available);
                     if (!handoff_report.accepted) {
                         return rejectedResult(request, package, target_ref, module_ref, match, handoffPreflightBlockers(args.permit != null), "handoff preflight rejected admission");
                     }
@@ -6476,14 +6478,22 @@ pub const Handoff = struct {
         self.* = undefined;
     }
 
+    fn transcriptAvailableForFreshHandoff(self: *@This(), mode: HandoffMode, fresh_transcript_sink_available: bool) bool {
+        return self.run_image.transcript_image != null or (mode == .accept_fresh and fresh_transcript_sink_available);
+    }
+
     pub fn preflight(self: *@This(), comptime Target: type, comptime Env: type, mode: HandoffMode) AcceptanceReport {
+        return self.preflightWithFreshTranscriptSink(Target, Env, mode, false);
+    }
+
+    fn preflightWithFreshTranscriptSink(self: *@This(), comptime Target: type, comptime Env: type, mode: HandoffMode, fresh_transcript_sink_available: bool) AcceptanceReport {
         if (!self.run_image.target_ref.matchesTarget(Target)) {
             return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.HandoffTargetMismatch});
         }
         if (self.run_image.import_set_fingerprint != Env.import_set.import_set_fingerprint) {
             return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.HandoffTargetMismatch});
         }
-        const has_transcript = self.run_image.transcript_image != null;
+        const has_transcript = self.transcriptAvailableForFreshHandoff(mode, fresh_transcript_sink_available);
         const report = Env.acceptanceReport(modeToRunMode(mode), has_transcript);
         if (!report.accepted) return report;
         if (mode == .accept_fresh and
@@ -6538,7 +6548,12 @@ pub const Handoff = struct {
     }
 
     pub fn preflightWithPermit(self: *@This(), comptime Target: type, comptime Env: type, mode: HandoffMode, permit: RunPermit) AcceptanceReport {
+        return self.preflightWithPermitFreshTranscriptSink(Target, Env, mode, permit, false);
+    }
+
+    fn preflightWithPermitFreshTranscriptSink(self: *@This(), comptime Target: type, comptime Env: type, mode: HandoffMode, permit: RunPermit, fresh_transcript_sink_available: bool) AcceptanceReport {
         const accepting = mode != .inspect_only;
+        const has_transcript = self.transcriptAvailableForFreshHandoff(mode, fresh_transcript_sink_available);
         if (permit.mode != modeToRunMode(mode)) {
             return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.SupervisionPolicyMismatch});
         }
@@ -6556,7 +6571,7 @@ pub const Handoff = struct {
                 return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.SupervisionPolicyMismatch});
             }
         }
-        const cert = Env.certificate(modeToRunMode(mode), self.run_image.transcript_image != null);
+        const cert = Env.certificate(modeToRunMode(mode), has_transcript);
         if (permit.world_surface_fingerprint != Target.WorldSurface.surface_fingerprint) {
             return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.SupervisionPolicyMismatch});
         }
@@ -6582,9 +6597,9 @@ pub const Handoff = struct {
                 }
             }
         }
-        const supervision_report = Env.acceptanceReportWithPermit(modeToRunMode(mode), self.run_image.transcript_image != null, permit);
+        const supervision_report = Env.acceptanceReportWithPermit(modeToRunMode(mode), has_transcript, permit);
         if (!supervision_report.accepted) return supervision_report;
-        const report = self.preflight(Target, Env, mode);
+        const report = self.preflightWithFreshTranscriptSink(Target, Env, mode, fresh_transcript_sink_available);
         if (!report.accepted) return report;
         if (!accepting) return report;
         var supervisor = Supervision.Supervisor.init(self.allocator, permit, Target.WorldPortTable.entries.len) catch {
@@ -6778,10 +6793,11 @@ pub const Handoff = struct {
         const Options = @TypeOf(options);
         const options_permit: ?RunPermit = if (comptime @hasField(Options, "permit")) @field(options, "permit") else null;
         const effective_permit = permit_override orelse options_permit;
+        const fresh_transcript_sink_available = comptime @hasField(Options, "transcript") and Env.policy_decl.allow_native_adapters;
         const report = if (effective_permit) |permit|
-            self.preflightWithPermit(Target, Env, mode, permit)
+            self.preflightWithPermitFreshTranscriptSink(Target, Env, mode, permit, fresh_transcript_sink_available)
         else
-            self.preflight(Target, Env, mode);
+            self.preflightWithFreshTranscriptSink(Target, Env, mode, fresh_transcript_sink_available);
         if (!report.accepted) return acceptanceError(report);
         if (self.run_image.current_state.status != .parked_on_port) return error.HandoffPendingFrameMismatch;
         const pending_frame = self.run_image.pending_request_frame orelse return error.HandoffPendingFrameMismatch;

@@ -8017,6 +8017,114 @@ test "admitted run start enforces admitted target and mode without stored permit
     }));
 }
 
+test "admission permits parked resume with fresh transcript sink" {
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
+    const registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Ports.Target)});
+    const TranscriptRequiredPortsEnv = world.Environment(fixtures.Ports.Target, .{
+        .bindings = .{PortsNativeBinding},
+        .policy = world.EnvironmentPolicy.init(.{ .allow_fresh_without_transcript = false }),
+    });
+    const pending_request = world.Frame.Request.init(.{
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .world_surface_replay_scope_fingerprint = fixtures.Ports.Target.WorldSurface.replayScopeRef().fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .world_port_id = 0,
+        .residual_site_index = fixtures.Ports.ApprovalRequest.index,
+        .residual_site_fingerprint = fixtures.Ports.ApprovalRequest.fingerprint,
+        .request_fingerprint = 0x51_51,
+        .turn_index = 0,
+    });
+    const state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .pending_request_fingerprint = pending_request.frame_fingerprint,
+        .status = .parked_on_port,
+    });
+    const parked_image = world.RunImage.init(.{
+        .kind = .parked_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = state,
+        .pending_request_frame = pending_request,
+    }).withModuleRef(module_ref, null);
+    const package = world.Admission.TransferPackage.init(.{
+        .kind = .parked_run,
+        .target_ref = target_ref,
+        .module_ref = module_ref,
+        .run_image = parked_image,
+        .requested_mode = .resume_parked,
+    });
+    const admitter = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    });
+    const sink_missing = admitter.admitForTarget(fixtures.Ports.Target, TranscriptRequiredPortsEnv, package, .{ .allocator = std.testing.allocator });
+    try std.testing.expect(!sink_missing.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.EnvironmentRejected, sink_missing.report.blockers[0]);
+
+    const sink_result = admitter.admitForTarget(fixtures.Ports.Target, TranscriptRequiredPortsEnv, package, .{
+        .allocator = std.testing.allocator,
+        .fresh_transcript_sink_available = true,
+    });
+    try std.testing.expect(sink_result.report.accepted);
+    var admitted = sink_result.admitted_run orelse return error.ExpectedAdmittedRun;
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var ctx: PortsCtx = .{};
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    try std.testing.expectError(error.HandoffPendingFrameMismatch, admitted.@"resume"(std.testing.allocator, fixtures.Ports.Target, TranscriptRequiredPortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+        .transcript = &transcript,
+    }));
+
+    var branch_checkpoints = [_]world.Timeline.Checkpoint{world.Timeline.Checkpoint.init(.{
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = target_ref.target_certificate_fingerprint,
+        .event_index = 0,
+        .turn_index = 0,
+        .transcript_prefix_fingerprint = 0x52_52,
+        .branch_id = 7,
+        .status = .parked_on_port,
+    })};
+    var branches = [_]world.Timeline.Branch{.{
+        .branch_id = 7,
+        .checkpoint_fingerprint = branch_checkpoints[0].checkpoint_fingerprint,
+        .start_event_index = 0,
+    }};
+    const branch_state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .branch_id = 7,
+        .checkpoint_fingerprint = branch_checkpoints[0].checkpoint_fingerprint,
+        .pending_request_fingerprint = pending_request.frame_fingerprint,
+        .status = .parked_on_port,
+    });
+    const branch_image = world.RunImage.init(.{
+        .kind = .parked_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = branch_state,
+        .checkpoints = branch_checkpoints[0..],
+        .branches = branches[0..],
+        .pending_request_frame = pending_request,
+    }).withModuleRef(module_ref, null);
+    const branch_package = world.Admission.TransferPackage.init(.{
+        .kind = .branch_run,
+        .target_ref = target_ref,
+        .module_ref = module_ref,
+        .run_image = branch_image,
+        .requested_mode = .branch_resume,
+    });
+    const branch_result = admitter.admitForTarget(fixtures.Ports.Target, TranscriptRequiredPortsEnv, branch_package, .{
+        .allocator = std.testing.allocator,
+        .fresh_transcript_sink_available = true,
+        .requested_branch_id = 7,
+    });
+    try std.testing.expect(branch_result.report.accepted);
+}
+
 test "admitted run start enforces admitted transcript image" {
     const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
