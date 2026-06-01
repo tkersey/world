@@ -5950,9 +5950,9 @@ test "usage ledger supervision check and run receipt fingerprints are stable" {
     try std.testing.expectEqual(@as(usize, 1), receipt_a.total_port_requests);
 }
 
-test "direct machine start rejects module scoped permits" {
+test "direct machine start rejects scoped permits" {
     const module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
-    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+    const module_scoped_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
         .mode = .fresh,
         .module_ref_fingerprint = module_ref.module_ref_fingerprint,
         .policy = world.SupervisionPolicy.strict_fresh,
@@ -5964,7 +5964,21 @@ test "direct machine start rejects module scoped permits" {
         .allocator = std.testing.allocator,
         .mode = world.Mode.fresh,
         .ctx = &ctx,
-        .permit = permit,
+        .permit = module_scoped_permit,
+    }));
+
+    const admission_scoped_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .admission_receipt_fingerprint = 0xabc,
+        .policy = world.SupervisionPolicy.strict_fresh,
+    });
+    var admission_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer admission_runtime.deinit();
+    try std.testing.expectError(error.SupervisionDenied, PortsMachineEnv.run(&admission_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+        .permit = admission_scoped_permit,
     }));
 }
 
