@@ -10285,7 +10285,7 @@ fn decodeBranch(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize)
 }
 
 fn targetRefEncodesBoundaryModule(target_ref: TargetRef) bool {
-    return target_ref.format_version >= 2 or target_ref.boundary_module_fingerprint != null;
+    return target_ref.format_version >= 1;
 }
 
 fn fingerprintTargetRef(target_ref: TargetRef) u64 {
