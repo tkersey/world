@@ -9334,7 +9334,6 @@ fn targetRefEncodedByteSize(target_ref: TargetRef) usize {
     size = addSatEncodedSize(size, optionalU64EncodedByteSize(target_ref.world_value_table_fingerprint));
     size = addSatEncodedSize(size, optionalU64EncodedByteSize(target_ref.world_dispatch_table_fingerprint));
     size = addSatEncodedSize(size, optionalU64EncodedByteSize(target_ref.surface_profile_fingerprint));
-    size = addSatEncodedSize(size, optionalU64EncodedByteSize(target_ref.boundary_module_fingerprint));
     size = addSatEncodedSize(size, bytesEncodedByteSize(target_ref.metadata));
     return size;
 }
@@ -10011,7 +10010,6 @@ fn encodeTargetRef(out: *std.ArrayList(u8), allocator: std.mem.Allocator, target
     try writeOptionalU64(out, allocator, target_ref.world_value_table_fingerprint);
     try writeOptionalU64(out, allocator, target_ref.world_dispatch_table_fingerprint);
     try writeOptionalU64(out, allocator, target_ref.surface_profile_fingerprint);
-    try writeOptionalU64(out, allocator, target_ref.boundary_module_fingerprint);
     try writeBytes(out, allocator, target_ref.metadata);
 }
 
@@ -10032,7 +10030,6 @@ fn decodeTargetRef(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usi
     const world_value_table_fingerprint = try readOptionalU64(bytes, cursor);
     const world_dispatch_table_fingerprint = try readOptionalU64(bytes, cursor);
     const surface_profile_fingerprint = try readOptionalU64(bytes, cursor);
-    const boundary_module_fingerprint = try readOptionalU64(bytes, cursor);
     const metadata = try readBytesOwned(allocator, bytes, cursor);
     errdefer allocator.free(metadata);
     // TargetRef labels/metadata are intentionally leaked into the owning RunImage lifetime;
@@ -10049,7 +10046,6 @@ fn decodeTargetRef(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usi
         .world_value_table_fingerprint = world_value_table_fingerprint,
         .world_dispatch_table_fingerprint = world_dispatch_table_fingerprint,
         .surface_profile_fingerprint = surface_profile_fingerprint,
-        .boundary_module_fingerprint = boundary_module_fingerprint,
         .metadata = metadata,
     };
     if (fingerprintTargetRef(result) != target_ref_fingerprint) return error.InvalidFrameEncoding;
@@ -10178,7 +10174,6 @@ fn fingerprintTargetRef(target_ref: TargetRef) u64 {
     hashOptionalU64(&hasher, target_ref.world_value_table_fingerprint);
     hashOptionalU64(&hasher, target_ref.world_dispatch_table_fingerprint);
     hashOptionalU64(&hasher, target_ref.surface_profile_fingerprint);
-    hashOptionalU64(&hasher, target_ref.boundary_module_fingerprint);
     hashU64(&hasher, target_ref.metadata.len);
     hashBytes(&hasher, target_ref.metadata);
     return hasher.final();
