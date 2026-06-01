@@ -6289,3 +6289,327 @@ test "supervised agent run completes under budget and over-budget agent is denie
     try std.testing.expectEqual(@as(usize, 0), denied_ctx.model_calls);
     try std.testing.expectEqual(@as(usize, 0), denied_ctx.tool_calls);
 }
+
+test "transfer package encode/decode roundtrip and manifest fingerprint are stable" {
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
+    const package = world.Admission.TransferPackage.init(.{
+        .kind = .module_reference,
+        .target_ref = target_ref,
+        .module_ref = module_ref,
+        .requested_mode = .local_target_match_only,
+        .metadata = "admission package fixture",
+    });
+    try package.validate(.{});
+    const encoded = try package.encode(std.testing.allocator);
+    defer std.testing.allocator.free(encoded);
+    var decoded = try world.Admission.TransferPackage.decode(std.testing.allocator, encoded);
+    defer decoded.deinit(std.testing.allocator);
+    try std.testing.expectEqual(package.package_fingerprint, decoded.package_fingerprint);
+    try std.testing.expectEqual(package.manifest.manifest_fingerprint, decoded.manifest.manifest_fingerprint);
+    try std.testing.expectEqual(module_ref.module_ref_fingerprint, decoded.module_ref.?.module_ref_fingerprint);
+    try std.testing.expectEqualStrings("admission package fixture", decoded.metadata);
+}
+
+test "transfer package rejects malformed and oversized packages" {
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    var package = world.Admission.TransferPackage.init(.{
+        .kind = .target_reference_only,
+        .target_ref = target_ref,
+        .requested_mode = .local_target_match_only,
+        .metadata = "tiny",
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, package.validate(.{ .max_package_bytes = 1 }));
+    package.package_fingerprint +%= 1;
+    try std.testing.expectError(error.InvalidFrameEncoding, package.validate(.{}));
+}
+
+test "module ref binds target identity and RunImage module refs decode" {
+    const module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .completed,
+    });
+    const image = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = state,
+    }).withModuleRef(module_ref, null);
+    const encoded = try image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(encoded);
+    var decoded = try world.RunImage.decode(std.testing.allocator, encoded);
+    defer decoded.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u32, 3), decoded.format_version);
+    try std.testing.expectEqual(module_ref.module_ref_fingerprint, decoded.module_ref_fingerprint.?);
+    try std.testing.expectEqual(module_ref.boundary_module_fingerprint, decoded.boundary_module_fingerprint.?);
+}
+
+test "target registry finds targets and matches module refs" {
+    const entry = world.Admission.TargetRegistry.register(fixtures.Ports.Target);
+    const registry = world.Admission.TargetRegistry.init(&.{entry});
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    try std.testing.expect(registry.find(target_ref) != null);
+    const module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
+    const match = registry.match(target_ref, module_ref);
+    try std.testing.expect(match.matched);
+    try std.testing.expectEqual(entry.target_ref.target_ref_fingerprint, match.local_target_ref_fingerprint.?);
+}
+
+test "target registry rejects duplicate conflicting target" {
+    const entry = world.Admission.TargetRegistry.register(fixtures.Ports.Target);
+    var conflicting = entry;
+    conflicting.import_set_fingerprint +%= 1;
+    conflicting.entry_fingerprint +%= 1;
+    const registry = world.Admission.TargetRegistry.init(&.{ entry, conflicting });
+    try std.testing.expectError(error.TargetRegistryConflict, registry.validate());
+    try std.testing.expectError(error.TargetRegistryConflict, world.Admission.TargetRegistry.initChecked(&.{ entry, conflicting }));
+}
+
+test "target match diagnostics identify mismatched field" {
+    const module_ref = world.Admission.ModuleRef.init(.{
+        .boundary_module_fingerprint = 1,
+        .module_kind = .reference_only,
+        .target_ref_fingerprint = 2,
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint +% 1,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .residual_program_plan_hash = world.TargetRef.fromTarget(fixtures.Ports.Target).residual_program_plan_hash,
+        .normal_form_kind = world.TargetRef.fromTarget(fixtures.Ports.Target).normal_form_kind,
+        .world_port_count = fixtures.Ports.Target.WorldPortTable.entries.len,
+    });
+    const match = world.Admission.TargetMatch.matchModule(module_ref, fixtures.Ports.Target);
+    try std.testing.expect(!match.matched);
+    try std.testing.expectEqual(world.Admission.MatchMismatch.WorldSurface, match.mismatches[0]);
+}
+
+test "module gateway validates full module inspect-only and reports unsupported loaded execution" {
+    const bytes = try fixtures.Ports.Target.Module.fullImage(std.testing.allocator);
+    defer std.testing.allocator.free(bytes);
+    var loaded = try world.Admission.ModuleGateway.decodeBoundaryModule(fixtures.Ports.Target, std.testing.allocator, bytes);
+    defer loaded.deinit();
+    const module_ref = world.Admission.ModuleGateway.refFromBoundaryModule(loaded);
+    const import_set = world.Admission.ModuleGateway.importSetFromBoundaryModule(loaded);
+    const summary = world.Admission.ModuleGateway.exportSummaryFromBoundaryModule(loaded);
+    try std.testing.expectEqual(loaded.manifest().module_fingerprint, module_ref.boundary_module_fingerprint);
+    try std.testing.expectEqual(@as(usize, 1), import_set.required_count);
+    try std.testing.expect(!summary.loaded_execution_supported);
+}
+
+test "admission policy request report and receipt fingerprints are stable" {
+    const policy = world.Admission.AdmissionPolicy.handoff_receiver;
+    const request = world.Admission.AdmissionRequest.init(.{
+        .package_fingerprint = 11,
+        .mode = .resume_parked,
+        .policy_fingerprint = policy.policy_fingerprint,
+        .target_registry_fingerprint = 22,
+        .environment_certificate_fingerprint = 33,
+        .run_permit_fingerprint = 44,
+    });
+    const report = world.Admission.AdmissionReport.accept(.{
+        .request = request,
+        .package_fingerprint = 11,
+        .manifest_fingerprint = 55,
+        .target_ref_fingerprint = 66,
+        .run_permit_fingerprint = 44,
+    });
+    const receipt = world.Admission.AdmissionReceipt.init(.{
+        .request = request,
+        .report = report,
+        .target_ref_fingerprint = 66,
+        .environment_certificate_fingerprint = 33,
+        .run_permit_fingerprint = 44,
+    });
+    try std.testing.expect(report.accepted);
+    try std.testing.expectEqual(report.report_fingerprint, world.Admission.AdmissionReport.accept(.{
+        .request = request,
+        .package_fingerprint = 11,
+        .manifest_fingerprint = 55,
+        .target_ref_fingerprint = 66,
+        .run_permit_fingerprint = 44,
+    }).report_fingerprint);
+    try std.testing.expect(receipt.receipt_fingerprint != 0);
+}
+
+test "admitter accepts inspect-only full module and rejects missing permit for execution" {
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
+    const entry = world.Admission.TargetRegistry.register(fixtures.Ports.Target);
+    const registry = world.Admission.TargetRegistry.init(&.{entry});
+    const inspect_package = world.Admission.TransferPackage.init(.{
+        .kind = .full_module,
+        .target_ref = target_ref,
+        .module_ref = module_ref,
+        .module_image_bytes = "fake-full-module-bytes",
+        .requested_mode = .inspect_only,
+    });
+    const inspect_admitter = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.inspect_modules,
+    });
+    const inspect = inspect_admitter.admitForTarget(fixtures.Ports.Target, PortsEnv, inspect_package, .{});
+    try std.testing.expect(inspect.report.accepted);
+    try std.testing.expect(inspect.admitted_run == null);
+
+    const execute_package = world.Admission.TransferPackage.init(.{
+        .kind = .target_reference_only,
+        .target_ref = target_ref,
+        .module_ref = module_ref,
+        .requested_mode = .continue_fresh,
+    });
+    const execution_admitter = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.handoff_receiver,
+    });
+    const rejected = execution_admitter.admitForTarget(fixtures.Ports.Target, PortsEnv, execute_package, .{});
+    try std.testing.expect(!rejected.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PermitMissing, rejected.report.blockers[0]);
+}
+
+test "admission rejects prior receipt mismatch when policy requires it" {
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
+    const registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Ports.Target)});
+    const state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .completed,
+    });
+    const run_image = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = state,
+        .prior_run_receipt_fingerprint = 123,
+    }).withModuleRef(module_ref, null);
+    const package = world.Admission.TransferPackage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .module_ref = module_ref,
+        .run_image = run_image,
+        .requested_mode = .completed_replay,
+    });
+    const policy = world.Admission.AdmissionPolicy.init(.{
+        .allow_reference_targets = true,
+        .require_supervision_permit = false,
+        .allow_completed_replay = true,
+        .reject_prior_receipt_mismatch = true,
+    });
+    const admitted = world.Admission.Admitter.init(.{ .registry = registry, .policy = policy }).admitForTarget(fixtures.Ports.Target, PortsEnv, package, .{});
+    try std.testing.expect(!admitted.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PriorReceiptMismatch, admitted.report.blockers[0]);
+}
+
+test "admitted run constructed for accepted local target" {
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Ports.Target)});
+    const package = world.Admission.TransferPackage.init(.{
+        .kind = .target_reference_only,
+        .target_ref = target_ref,
+        .requested_mode = .continue_fresh,
+    });
+    const result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, package, .{});
+    try std.testing.expect(result.report.accepted);
+    try std.testing.expect(result.admitted_run != null);
+    try std.testing.expectEqual(target_ref.target_ref_fingerprint, result.admitted_run.?.target_ref.target_ref_fingerprint);
+}
+
+test "admission rejects permit mode mismatch before receipt" {
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Ports.Target)});
+    const package = world.Admission.TransferPackage.init(.{
+        .kind = .target_reference_only,
+        .target_ref = target_ref,
+        .requested_mode = .continue_fresh,
+    });
+    const wrong_mode_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .replay,
+        .transcript_image_available = true,
+        .policy = world.SupervisionPolicy.strict_replay,
+    });
+    const result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.strict_local_execution,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, package, .{ .permit = wrong_mode_permit });
+    try std.testing.expect(!result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PermitRejected, result.report.blockers[0]);
+}
+
+test "admitted run start requires stored permit" {
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Ports.Target)});
+    const package = world.Admission.TransferPackage.init(.{
+        .kind = .target_reference_only,
+        .target_ref = target_ref,
+        .requested_mode = .continue_fresh,
+    });
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+    });
+    const result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.strict_local_execution,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, package, .{ .permit = permit });
+    try std.testing.expect(result.report.accepted);
+    var admitted = result.admitted_run orelse return error.ExpectedAdmittedRun;
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var ctx: PortsCtx = .{};
+    try std.testing.expectError(error.SupervisionDenied, admitted.start(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+    }));
+}
+
+test "module handoff admission rejects target mismatch" {
+    const ports_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const agent_ref = world.TargetRef.fromTarget(fixtures.Agent.Target);
+    const module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
+    const registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Ports.Target)});
+    const state = world.RunState.init(.{
+        .target_ref_fingerprint = ports_ref.target_ref_fingerprint,
+        .status = .completed,
+    });
+    const run_image = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = ports_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = state,
+    }).withModuleRef(module_ref, null);
+    const package = world.Admission.TransferPackage.init(.{
+        .kind = .completed_run,
+        .target_ref = agent_ref,
+        .module_ref = module_ref,
+        .run_image = run_image,
+        .requested_mode = .completed_replay,
+    });
+    const result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, package, .{});
+    try std.testing.expect(!result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, result.report.blockers[0]);
+}
+
+test "agent admission transfer admitted" {
+    const target_ref = world.TargetRef.fromTarget(fixtures.Agent.Target);
+    const module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Agent.Target);
+    const registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Agent.Target)});
+    const package = world.Admission.TransferPackage.init(.{
+        .kind = .module_reference,
+        .target_ref = target_ref,
+        .module_ref = module_ref,
+        .requested_mode = .continue_fresh,
+    });
+    const result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Agent.Target, AgentEnv, package, .{});
+    try std.testing.expect(result.report.accepted);
+    try std.testing.expect(result.admitted_run != null);
+    try std.testing.expectEqual(module_ref.module_ref_fingerprint, result.report.module_ref_fingerprint.?);
+}

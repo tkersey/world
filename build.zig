@@ -297,6 +297,71 @@ pub fn build(b: *std.Build) void {
             ,
         },
         .{
+            .name = "world-admission-reference",
+            .path = "examples/world_admission_reference.zig",
+            .step = "run-world-admission-reference",
+            .desc = "Run the World admission target-reference example.",
+            .expected_stdout =
+            \\package_fingerprint=5a5e606018190afc
+            \\target_match_fingerprint=c4108ddb5ef704d9
+            \\admission_receipt_fingerprint=2f9b5183a44f4ee7
+            \\final_result=7
+            \\
+            ,
+        },
+        .{
+            .name = "world-admission-full-module-inspect",
+            .path = "examples/world_admission_full_module_inspect.zig",
+            .step = "run-world-admission-full-module-inspect",
+            .desc = "Run the World admission full-module inspect example.",
+            .expected_stdout =
+            \\module_ref_fingerprint=dbeb0920e144aed6
+            \\import_count=1
+            \\loaded_execution_supported=false
+            \\admission_accepted=true
+            \\
+            ,
+        },
+        .{
+            .name = "world-admission-parked-handoff",
+            .path = "examples/world_admission_parked_handoff.zig",
+            .step = "run-world-admission-parked-handoff",
+            .desc = "Run the World admission parked handoff example.",
+            .expected_stdout =
+            \\package_fingerprint=f0b6b94ae9d5313a
+            \\admission_receipt_fingerprint=dac18f5f27c66916
+            \\receiver_permit_fingerprint=3375ddcdc320bbf9
+            \\final_result=7
+            \\
+            ,
+        },
+        .{
+            .name = "world-admission-replay-verify",
+            .path = "examples/world_admission_replay_verify.zig",
+            .step = "run-world-admission-replay-verify",
+            .desc = "Run the World admission replay/verify example.",
+            .expected_stdout =
+            \\replay_admission_receipt=b980d972dab1f96e
+            \\verify_admission_receipt=72566211c6641112
+            \\divergence_detected=true
+            \\
+            ,
+        },
+        .{
+            .name = "world-admission-agent-transfer",
+            .path = "examples/world_admission_agent_transfer.zig",
+            .step = "run-world-admission-agent-transfer",
+            .desc = "Run the World admission agent transfer example.",
+            .expected_stdout =
+            \\module_ref_fingerprint=6140913f751ba9eb
+            \\model_port_id=0
+            \\tool_port_id=1
+            \\admission_receipt=4423c2cd962aeeec
+            \\final_result=final=actuate skeleton complete
+            \\
+            ,
+        },
+        .{
             .name = "world-supervised-budget",
             .path = "examples/world_supervised_budget.zig",
             .step = "run-world-supervised-budget",
