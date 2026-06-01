@@ -1980,6 +1980,30 @@ test "transcript image encode decode round trip stable and image replay works wi
     defer decoded_v2_image.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(u32, 2), decoded_v2_image.format_version);
     try std.testing.expectEqual(@as(?u64, null), decoded_v2_image.events[0].admission_receipt_fingerprint);
+    var forged_v2_events = try std.testing.allocator.alloc(world.TranscriptImage.EventImage, 1);
+    var forged_v2_events_owned = true;
+    errdefer if (forged_v2_events_owned) std.testing.allocator.free(forged_v2_events);
+    forged_v2_events[0] = .{
+        .event_fingerprint = 0,
+        .kind = .admission_requested,
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+    };
+    forged_v2_events[0].event_fingerprint = testTranscriptEventImageV2Fingerprint(forged_v2_events[0]);
+    var forged_v2_admission_image = world.TranscriptImage{
+        .format_version = 2,
+        .transcript_image_fingerprint = 0,
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .events = forged_v2_events,
+        .final_status = .running,
+    };
+    forged_v2_events_owned = false;
+    forged_v2_admission_image.transcript_image_fingerprint = testTranscriptImageFingerprint(forged_v2_admission_image);
+    const forged_v2_admission_encoded = try forged_v2_admission_image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(forged_v2_admission_encoded);
+    defer forged_v2_admission_image.deinit(std.testing.allocator);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.TranscriptImage.decode(std.testing.allocator, forged_v2_admission_encoded));
     var forged_status_image = decoded;
     forged_status_image.final_status = .failed;
     forged_status_image.transcript_image_fingerprint = testTranscriptImageFingerprint(forged_status_image);

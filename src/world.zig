@@ -8705,6 +8705,17 @@ fn eventKindAllowsResponseFrame(kind: EventKind) bool {
     };
 }
 
+fn eventKindRequiresAdmissionWitness(kind: EventKind) bool {
+    return switch (kind) {
+        .admission_requested,
+        .admission_accepted,
+        .admission_rejected,
+        .module_matched_target,
+        => true,
+        else => false,
+    };
+}
+
 fn validateResponseFrameImage(frame: Frame.Response) !void {
     if (frame.format_version != world_frame_response_format_version) return error.InvalidFrameEncoding;
     if (frame.fingerprint_version != world_frame_response_fingerprint_version) return error.InvalidFrameEncoding;
@@ -9134,6 +9145,7 @@ fn decodeTranscriptEventImage(allocator: std.mem.Allocator, bytes: []const u8, c
         .response_frame = null,
     };
     errdefer event.deinit(allocator);
+    if (format_version < 3 and eventKindRequiresAdmissionWitness(event.kind)) return error.InvalidFrameEncoding;
     if (try readBool(bytes, cursor)) {
         const encoded = try readBytesOwned(allocator, bytes, cursor);
         defer allocator.free(encoded);
@@ -9504,6 +9516,7 @@ fn validateTranscriptImageFingerprint(image: TranscriptImage) !void {
     if (image.final_status != finalStatusFromEvents(image.events)) return error.InvalidFrameEncoding;
     var response_count: usize = 0;
     for (image.events) |event| {
+        if (image.format_version < 3 and eventKindRequiresAdmissionWitness(event.kind)) return error.InvalidFrameEncoding;
         try validateTranscriptEventFrameBindings(event);
         if (fingerprintTranscriptEventImageForFormat(image.format_version, event) != event.event_fingerprint) return error.InvalidFrameEncoding;
         if (event.response_frame != null) response_count += 1;
