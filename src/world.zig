@@ -9175,10 +9175,6 @@ fn decodeModuleRef(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usi
         .label = label,
         .metadata = metadata,
     };
-    errdefer {
-        if (result.label) |owned_label| allocator.free(@constCast(owned_label));
-        allocator.free(@constCast(result.metadata));
-    }
     if (result.module_ref_fingerprint != fingerprintModuleRef(result)) return error.InvalidFrameEncoding;
     return result;
 }
