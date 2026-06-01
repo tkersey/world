@@ -2019,6 +2019,9 @@ pub const Admission = struct {
             if (image.transcript_image == null) {
                 image.transcript_image = self.transcript_image;
             }
+            if (self.environment_certificate_fingerprint) |fingerprint| {
+                if (Env.certificate(.fresh, image.transcript_image != null).certificate_fingerprint != fingerprint) return Error.HandoffDenied;
+            }
             const encoded = try image.encode(allocator);
             defer allocator.free(encoded);
             var handoff = try Handoff.fromRunImage(allocator, encoded);
@@ -2227,7 +2230,7 @@ pub const Admission = struct {
                 else
                     handoff.preflight(Target, Env, handoff_mode);
                 if (!handoff_report.accepted) {
-                    return rejectedResult(request, package, target_ref, module_ref, match, &.{if (args.permit != null) .PermitRejected else .EnvironmentRejected}, "handoff preflight rejected admission");
+                    return rejectedResult(request, package, target_ref, module_ref, match, handoffPreflightBlockers(args.permit != null), "handoff preflight rejected admission");
                 }
                 handoff_preflight_report_fingerprint = handoff_report.report_fingerprint;
             }
@@ -9102,6 +9105,10 @@ fn packageContainsCheckpoint(package: Admission.TransferPackage, checkpoint_ref:
         }
     }
     return false;
+}
+
+fn handoffPreflightBlockers(has_permit: bool) []const Admission.AdmissionBlocker {
+    return if (has_permit) &.{.PermitRejected} else &.{.EnvironmentRejected};
 }
 
 fn writeOptionalTargetRef(out: *std.ArrayList(u8), allocator: std.mem.Allocator, value: ?TargetRef) !void {
