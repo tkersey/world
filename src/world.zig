@@ -5920,6 +5920,14 @@ pub const RunImage = struct {
 
     pub fn withModuleRef(self: @This(), module_ref: Admission.ModuleRef, module_image_fingerprint: ?u64) @This() {
         var result = self;
+        result.owns_target_ref_bytes = false;
+        result.owns_transcript_image = false;
+        result.owns_checkpoints = false;
+        result.owns_branches = false;
+        result.owns_branch_labels = false;
+        result.owns_pending_request_frame = false;
+        result.owns_final_result_image = false;
+        result.owns_metadata = false;
         result.format_version = 3;
         result.module_ref_fingerprint = module_ref.module_ref_fingerprint;
         result.boundary_module_fingerprint = module_ref.boundary_module_fingerprint;

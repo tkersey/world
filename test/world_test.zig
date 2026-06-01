@@ -5973,6 +5973,14 @@ test "supervised handoff receiver can issue stricter permit and inspect prior re
     defer std.testing.allocator.free(module_encoded);
     var module_handoff = try world.Handoff.fromRunImage(std.testing.allocator, module_encoded);
     defer module_handoff.deinit();
+    var owned_decoded_image = try world.RunImage.decode(std.testing.allocator, encoded);
+    defer owned_decoded_image.deinit(std.testing.allocator);
+    var borrowed_module_image = owned_decoded_image.withModuleRef(module_ref, null);
+    defer borrowed_module_image.deinit(std.testing.allocator);
+    try std.testing.expect(!borrowed_module_image.owns_target_ref_bytes);
+    try std.testing.expect(!borrowed_module_image.owns_pending_request_frame);
+    const borrowed_module_encoded = try borrowed_module_image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(borrowed_module_encoded);
     const module_scoped_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
         .mode = .fresh,
         .module_ref_fingerprint = module_ref.module_ref_fingerprint,
