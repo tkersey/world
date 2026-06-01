@@ -6215,6 +6215,25 @@ test "supervised handoff receiver can issue stricter permit and inspect prior re
     });
     const module_report = module_handoff.preflightWithPermit(fixtures.Ports.Target, PortsEnv, .accept_fresh, module_scoped_permit);
     try std.testing.expect(module_report.accepted);
+    const registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Ports.Target)});
+    const package_level_module_witness = world.Admission.TransferPackage.init(.{
+        .kind = .parked_run,
+        .target_ref = target_ref,
+        .module_ref = module_ref,
+        .run_image = image,
+        .requested_mode = .resume_parked,
+    });
+    const package_level_module_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.init(.{
+            .require_supervision_permit = true,
+        }),
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, package_level_module_witness, .{
+        .allocator = std.testing.allocator,
+        .permit = module_scoped_permit,
+    });
+    try std.testing.expect(package_level_module_result.report.accepted);
+    try std.testing.expectEqual(module_ref.module_ref_fingerprint, package_level_module_result.admitted_run.?.run_image.?.module_ref_fingerprint.?);
     const wrong_module_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
         .mode = .fresh,
         .module_ref_fingerprint = module_ref.module_ref_fingerprint +% 1,
@@ -7749,10 +7768,11 @@ test "admission rejects permit mode mismatch before receipt" {
         .requested_mode = .completed_replay,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, missing_module_ref_package.validate(.{}));
-    const module_scoped_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+    const module_scoped_permit = world.Supervision.issue(fixtures.Ports.Target, PortsReplayEnv, .{
         .mode = .replay,
+        .transcript_image_available = true,
         .module_ref_fingerprint = module_ref.module_ref_fingerprint,
-        .policy = world.SupervisionPolicy.strict_replay,
+        .policy = world.SupervisionPolicy.handoff_receiver,
     });
     const missing_module_ref_result = world.Admission.Admitter.init(.{
         .registry = registry,
@@ -7760,7 +7780,7 @@ test "admission rejects permit mode mismatch before receipt" {
             .require_environment_preflight = false,
             .require_supervision_permit = true,
         }),
-    }).admitForTarget(fixtures.Ports.Target, PortsEnv, missing_module_ref_package, .{ .permit = module_scoped_permit });
+    }).admitForTarget(fixtures.Ports.Target, PortsReplayEnv, missing_module_ref_package, .{ .permit = module_scoped_permit });
     try std.testing.expect(!missing_module_ref_result.report.accepted);
     try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, missing_module_ref_result.report.blockers[0]);
 }

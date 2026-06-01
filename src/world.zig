@@ -2413,6 +2413,7 @@ pub const Admission = struct {
             if (admissionModeToHandoffMode(mode)) |handoff_mode| {
                 if (package.run_image) |run_image| {
                     var handoff_run_image = run_image;
+                    attachPackageModuleWitnessToRunImage(&handoff_run_image, package, module_ref);
                     if (handoff_run_image.transcript_image == null) {
                         handoff_run_image.transcript_image = package.transcript_image;
                         refreshRunImageFingerprint(&handoff_run_image);
@@ -2463,6 +2464,9 @@ pub const Admission = struct {
                     admitted_owns_run_image = true;
                 } else {
                     admitted_run_image = image;
+                }
+                if (admitted_run_image) |*admitted_image| {
+                    attachPackageModuleWitnessToRunImage(admitted_image, package, module_ref);
                 }
             }
             var admitted_transcript_image: ?TranscriptImage = null;
@@ -9392,6 +9396,18 @@ fn refreshRunImageFingerprint(image: *RunImage) void {
         fingerprintRunImageV3(image.*)
     else
         fingerprintRunImage(image.*);
+}
+
+fn attachPackageModuleWitnessToRunImage(image: *RunImage, package: Admission.TransferPackage, module_ref: ?Admission.ModuleRef) void {
+    if (image.module_ref_fingerprint != null) return;
+    const module = module_ref orelse return;
+    image.format_version = world_run_image_format_version;
+    image.module_ref_fingerprint = module.module_ref_fingerprint;
+    image.boundary_module_fingerprint = module.boundary_module_fingerprint;
+    if (image.module_image_fingerprint == null) {
+        image.module_image_fingerprint = if (package.module_image_bytes) |bytes| moduleImageFingerprint(bytes) else null;
+    }
+    refreshRunImageFingerprint(image);
 }
 
 fn admissionModeToHandoffMode(mode: Admission.AdmissionMode) ?HandoffMode {
