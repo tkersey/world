@@ -1308,6 +1308,7 @@ pub const Admission = struct {
             if (self.checkpoint_refs.len > options.max_checkpoints) return error.InvalidFrameEncoding;
             if (self.branch_refs.len > options.max_branches) return error.InvalidFrameEncoding;
             if (self.transcript_image) |image| {
+                try validateTranscriptImageFingerprint(image);
                 if (transcriptImageEncodedByteSize(image) > options.max_transcript_bytes) return error.InvalidFrameEncoding;
             }
             if (self.target_ref) |target_ref| {
@@ -1325,6 +1326,7 @@ pub const Admission = struct {
                     .max_checkpoints = options.max_checkpoints,
                 });
                 if (image.transcript_image) |embedded| {
+                    try validateTranscriptImageFingerprint(embedded);
                     if (transcriptImageEncodedByteSize(embedded) > options.max_transcript_bytes) return error.InvalidFrameEncoding;
                 }
                 if (self.target_ref) |target_ref| {
@@ -8980,6 +8982,18 @@ fn transcriptImageEncodedByteSize(image: TranscriptImage) usize {
     var size: usize = 4 + 4 + 8 + 8 + 8 + 1 + 8 + 8;
     for (image.events) |event| size = addSatEncodedSize(size, transcriptEventImageEncodedByteSize(event));
     return size;
+}
+
+fn validateTranscriptImageFingerprint(image: TranscriptImage) !void {
+    if (image.final_status != finalStatusFromEvents(image.events)) return error.InvalidFrameEncoding;
+    var response_count: usize = 0;
+    for (image.events) |event| {
+        try validateTranscriptEventFrameBindings(event);
+        if (fingerprintTranscriptEventImage(event) != event.event_fingerprint) return error.InvalidFrameEncoding;
+        if (event.response_frame != null) response_count += 1;
+    }
+    if (image.response_count != response_count) return error.InvalidFrameEncoding;
+    if (fingerprintTranscriptImage(image) != image.transcript_image_fingerprint) return error.InvalidFrameEncoding;
 }
 
 fn transcriptEventImageEncodedByteSize(event: TranscriptImage.EventImage) usize {
