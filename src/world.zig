@@ -2139,7 +2139,7 @@ pub const Admission = struct {
                 return rejectedResult(request, package, TargetRef.fromTarget(Target), null, null, &.{.TargetRefMissing}, "target reference package is missing target ref");
             }
             const target_ref = package.target_ref orelse if (package.run_image) |image| image.target_ref else TargetRef.fromTarget(Target);
-            const module_ref = package.module_ref;
+            var module_ref = package.module_ref;
             package.validate(.{
                 .max_package_bytes = self.policy.max_package_bytes,
                 .max_module_bytes = self.policy.max_module_bytes,
@@ -2179,6 +2179,8 @@ pub const Admission = struct {
                     if (supplied.module_ref_fingerprint != loaded_module_ref.module_ref_fingerprint) {
                         return rejectedResult(request, package, target_ref, module_ref, null, &.{.ModuleInvalid}, "module ref does not match full module bytes");
                     }
+                } else {
+                    module_ref = loaded_module_ref;
                 }
                 if (target_ref.world_surface_fingerprint != loaded_module_ref.world_surface_fingerprint or
                     target_ref.target_certificate_fingerprint != loaded_module_ref.target_certificate_fingerprint or
@@ -8995,7 +8997,7 @@ fn transferPackageKindMatchesRunImage(kind: Admission.PackageKind, image_kind: R
         .completed_run => image_kind == .completed_run,
         .replay_run => image_kind == .replay_only_run,
         .branch_run => image_kind == .parked_run,
-        .target_reference_only, .module_reference, .full_module, .inspect_only => true,
+        .target_reference_only, .module_reference, .full_module, .inspect_only => false,
     };
 }
 

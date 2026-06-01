@@ -6368,6 +6368,13 @@ test "transfer package rejects malformed and oversized packages" {
         .requested_mode = .resume_parked,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, mismatched_run_kind.validate(.{}));
+    const misleading_reference_kind = world.Admission.TransferPackage.init(.{
+        .kind = .target_reference_only,
+        .target_ref = target_ref,
+        .run_image = completed_image,
+        .requested_mode = .completed_replay,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, misleading_reference_kind.validate(.{}));
 
     var package = world.Admission.TransferPackage.init(.{
         .kind = .target_reference_only,
@@ -6646,6 +6653,15 @@ test "admitter accepts inspect-only full module and rejects missing permit for e
     const inspect = inspect_admitter.admitForTarget(fixtures.Ports.Target, PortsEnv, inspect_package, .{});
     try std.testing.expect(inspect.report.accepted);
     try std.testing.expect(inspect.admitted_run == null);
+
+    const bytes_only_inspect_package = world.Admission.TransferPackage.init(.{
+        .kind = .full_module,
+        .module_image_bytes = full_module_bytes,
+        .requested_mode = .inspect_only,
+    });
+    const bytes_only_inspect = inspect_admitter.admitForTarget(fixtures.Ports.Target, PortsEnv, bytes_only_inspect_package, .{});
+    try std.testing.expect(bytes_only_inspect.report.accepted);
+    try std.testing.expectEqual(module_ref.module_ref_fingerprint, bytes_only_inspect.report.module_ref_fingerprint.?);
 
     const stale_ref_package = world.Admission.TransferPackage.init(.{
         .kind = .full_module,
