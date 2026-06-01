@@ -7079,6 +7079,20 @@ test "admitter accepts inspect-only full module and rejects missing permit for e
     try std.testing.expect(inspect_run_result.report.accepted);
     try std.testing.expect(inspect_run_result.admitted_run == null);
 
+    var inspect_transcript = world.Transcript.init(std.testing.allocator);
+    defer inspect_transcript.deinit();
+    try recordPortsTranscript(&inspect_transcript);
+    var inspect_transcript_image = try inspect_transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer inspect_transcript_image.deinit(std.testing.allocator);
+    const unbound_transcript_inspect_package = world.Admission.TransferPackage.init(.{
+        .kind = .inspect_only,
+        .transcript_image = inspect_transcript_image,
+        .requested_mode = .inspect_only,
+    });
+    const unbound_transcript_result = inspect_admitter.admitForTarget(fixtures.Ports.Target, PortsEnv, unbound_transcript_inspect_package, .{});
+    try std.testing.expect(!unbound_transcript_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.TargetRefMissing, unbound_transcript_result.report.blockers[0]);
+
     const malformed_run_module_bytes = "not-a-boundary-module-image";
     const reference_run_module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
     const malformed_run_with_module_bytes = completed_image.withModuleRef(

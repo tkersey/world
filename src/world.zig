@@ -2205,6 +2205,9 @@ pub const Admission = struct {
             if (package.kind == .target_reference_only and package.target_ref == null and package.run_image == null) {
                 return rejectedResult(request, package, null, null, null, &.{.TargetRefMissing}, "target reference package is missing target ref");
             }
+            if (package.transcript_image != null and package.target_ref == null and package.run_image == null and package.module_ref == null) {
+                return rejectedResult(request, package, null, null, null, &.{.TargetRefMissing}, "transcript package is missing target binding");
+            }
             const module_reference_only = package.target_ref == null and package.run_image == null and package.module_image_bytes == null and package.module_ref != null;
             const target_ref = package.target_ref orelse if (package.run_image) |image| image.target_ref else TargetRef.fromTarget(Target);
             var module_ref = package.module_ref;
@@ -2304,6 +2307,13 @@ pub const Admission = struct {
             if (module_ref) |module| {
                 if (module.module_kind == .full_module and mode != .inspect_only and policy.require_local_target_for_execution and !match.matched) {
                     return rejectedResult(request, package, target_ref, module_ref, match, &.{.ModuleRequiresLocalTarget}, "full module requires local target for execution");
+                }
+            }
+            if (package.transcript_image) |image| {
+                if (image.world_surface_fingerprint != target_ref.world_surface_fingerprint or
+                    image.target_certificate_fingerprint != target_ref.target_certificate_fingerprint)
+                {
+                    return rejectedResult(request, package, target_ref, module_ref, match, &.{.TranscriptTargetMismatch}, "transcript image does not match target");
                 }
             }
             if (mode == .inspect_only or mode == .local_target_match_only) {
