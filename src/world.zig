@@ -1286,6 +1286,13 @@ pub const Admission = struct {
             if (!options.allow_inspect_only and self.kind == .inspect_only) return error.InvalidFrameEncoding;
             if (self.kind == .target_reference_only and self.target_ref == null and self.run_image == null) return error.InvalidFrameEncoding;
             if (!options.allow_reference_only and self.kind == .target_reference_only) return error.InvalidFrameEncoding;
+            switch (self.kind) {
+                .target_reference_only, .inspect_only => {},
+                .module_reference => if (self.module_ref == null) return error.InvalidFrameEncoding,
+                .full_module => if (self.module_image_bytes == null) return error.InvalidFrameEncoding,
+                .replay_run => if (self.run_image == null and self.transcript_image == null) return error.InvalidFrameEncoding,
+                .run_reference, .parked_run, .completed_run, .branch_run => if (self.run_image == null) return error.InvalidFrameEncoding,
+            }
             if (self.module_ref) |module_ref| {
                 if (module_ref.module_ref_fingerprint != fingerprintModuleRef(module_ref)) return error.InvalidFrameEncoding;
                 if (!options.allow_reference_only and module_ref.module_kind == .reference_only) return error.InvalidFrameEncoding;
@@ -2131,6 +2138,12 @@ pub const Admission = struct {
                         if (!containsU64(package.prior_run_receipt_refs, fingerprint)) return rejectedResult(request, package, target_ref, module_ref, match, &.{.PriorReceiptMismatch}, "run image prior receipt is not listed in package prior receipts");
                     }
                 }
+            }
+            if (args.requested_branch_id) |branch_id| {
+                if (!packageContainsBranch(package, branch_id)) return rejectedResult(request, package, target_ref, module_ref, match, &.{.BranchMismatch}, "requested branch is not present in transfer package");
+            }
+            if (args.requested_checkpoint_ref) |checkpoint_ref| {
+                if (!packageContainsCheckpoint(package, checkpoint_ref)) return rejectedResult(request, package, target_ref, module_ref, match, &.{.CheckpointMismatch}, "requested checkpoint is not present in transfer package");
             }
             const local_target_ref = TargetRef.fromTarget(Target);
             if (match.matched and match.local_target_ref_fingerprint != local_target_ref.target_ref_fingerprint) {
@@ -9051,6 +9064,26 @@ fn responseFrameEncodedByteSize(frame: Frame.Response) usize {
 fn containsU64(values: []const u64, needle: u64) bool {
     for (values) |value| {
         if (value == needle) return true;
+    }
+    return false;
+}
+
+fn packageContainsBranch(package: Admission.TransferPackage, branch_id: u64) bool {
+    if (containsU64(package.branch_refs, branch_id)) return true;
+    if (package.run_image) |image| {
+        for (image.branches) |branch| {
+            if (branch.branch_id == branch_id) return true;
+        }
+    }
+    return false;
+}
+
+fn packageContainsCheckpoint(package: Admission.TransferPackage, checkpoint_ref: u64) bool {
+    if (containsU64(package.checkpoint_refs, checkpoint_ref)) return true;
+    if (package.run_image) |image| {
+        for (image.checkpoints) |checkpoint| {
+            if (checkpoint.checkpoint_fingerprint == checkpoint_ref) return true;
+        }
     }
     return false;
 }

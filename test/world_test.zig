@@ -6322,6 +6322,18 @@ test "transfer package rejects malformed and oversized packages" {
     defer std.testing.allocator.free(envelope_encoded);
     try envelope_package.validate(.{ .max_package_bytes = envelope_encoded.len });
     try std.testing.expectError(error.InvalidFrameEncoding, envelope_package.validate(.{ .max_package_bytes = envelope_encoded.len - 1 }));
+    const empty_module_reference = world.Admission.TransferPackage.init(.{
+        .kind = .module_reference,
+        .target_ref = target_ref,
+        .requested_mode = .local_target_match_only,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, empty_module_reference.validate(.{}));
+    const empty_replay = world.Admission.TransferPackage.init(.{
+        .kind = .replay_run,
+        .target_ref = target_ref,
+        .requested_mode = .replay_only,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, empty_replay.validate(.{}));
 
     var package = world.Admission.TransferPackage.init(.{
         .kind = .target_reference_only,
@@ -6742,6 +6754,39 @@ test "admission rejects run images that do not fit requested mode" {
     }).admitForTarget(fixtures.Ports.Target, PortsEnv, parked_as_completed, .{});
     try std.testing.expect(!parked_result.report.accepted);
     try std.testing.expectEqual(world.Admission.AdmissionBlocker.RunImageInvalid, parked_result.report.blockers[0]);
+}
+
+test "admission rejects missing branch and checkpoint selections" {
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
+    const registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Ports.Target)});
+    const state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .completed,
+    });
+    const run_image = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = state,
+    }).withModuleRef(module_ref, null);
+    const package = world.Admission.TransferPackage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .module_ref = module_ref,
+        .run_image = run_image,
+        .requested_mode = .completed_replay,
+    });
+    const admitter = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    });
+    const missing_branch = admitter.admitForTarget(fixtures.Ports.Target, PortsReplayEnv, package, .{ .requested_branch_id = 42 });
+    try std.testing.expect(!missing_branch.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.BranchMismatch, missing_branch.report.blockers[0]);
+    const missing_checkpoint = admitter.admitForTarget(fixtures.Ports.Target, PortsReplayEnv, package, .{ .requested_checkpoint_ref = 42 });
+    try std.testing.expect(!missing_checkpoint.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.CheckpointMismatch, missing_checkpoint.report.blockers[0]);
 }
 
 test "admission rejects parked handoff that fails handoff preflight" {
