@@ -1509,7 +1509,8 @@ pub const Admission = struct {
                 if (!providedFingerprintMatches(module.world_value_table_fingerprint, entry.world_value_table_fingerprint) and first_mismatch == null) first_mismatch = .WorldValueTable;
                 if (!providedFingerprintMatches(module.world_dispatch_table_fingerprint, entry.world_dispatch_table_fingerprint) and first_mismatch == null) first_mismatch = .WorldDispatchTable;
             }
-            const matched = first_mismatch == null;
+            const supported_module_kind = if (module_ref) |module| module.module_kind != .partial_module else true;
+            const matched = first_mismatch == null and supported_module_kind;
             var result = Admission.TargetMatch{
                 .match_fingerprint = 0,
                 .transferred_target_ref_fingerprint = if (target_ref) |target| target.target_ref_fingerprint else if (module_ref) |module| module.target_ref_fingerprint else null,
@@ -2013,6 +2014,9 @@ pub const Admission = struct {
 
         pub fn @"resume"(self: *Admission.AdmittedRun, allocator: std.mem.Allocator, comptime Target: type, comptime Env: type, runtime: anytype, args: anytype, options: anytype) !Machine(Target, Env.machine_config).Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)) {
             var image = self.run_image orelse return error.HandoffPendingFrameMismatch;
+            if (image.transcript_image == null) {
+                image.transcript_image = self.transcript_image;
+            }
             const encoded = try image.encode(allocator);
             defer allocator.free(encoded);
             var handoff = try Handoff.fromRunImage(allocator, encoded);
