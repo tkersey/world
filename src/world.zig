@@ -1288,7 +1288,8 @@ pub const Admission = struct {
                 if (target_ref.metadata.len > options.max_package_bytes) return error.InvalidFrameEncoding;
             }
             switch (self.kind) {
-                .target_reference_only, .inspect_only => {},
+                .target_reference_only => {},
+                .inspect_only => if (self.target_ref == null and self.module_ref == null and self.module_image_bytes == null and self.run_image == null and self.transcript_image == null) return error.InvalidFrameEncoding,
                 .module_reference => if (self.module_ref == null) return error.InvalidFrameEncoding,
                 .full_module => if (self.module_image_bytes == null) return error.InvalidFrameEncoding,
                 .replay_run => if (self.run_image == null and self.transcript_image == null) return error.InvalidFrameEncoding,
@@ -2254,6 +2255,9 @@ pub const Admission = struct {
             if (args.permit) |permit| {
                 if (permit.target_ref_fingerprint != local_target_ref.target_ref_fingerprint) {
                     return rejectedResult(request, package, target_ref, module_ref, match, &.{.PermitRejected}, "permit target mismatch");
+                }
+                if (permit.admission_receipt_fingerprint != null) {
+                    return rejectedResult(request, package, target_ref, module_ref, match, &.{.PermitRejected}, "permit admission scope mismatch");
                 }
                 if (permit.module_ref_fingerprint) |permit_module_ref| {
                     if (module_ref == null or module_ref.?.module_ref_fingerprint != permit_module_ref) {

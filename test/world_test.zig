@@ -6332,6 +6332,11 @@ test "transfer package rejects malformed and oversized packages" {
         .requested_mode = .local_target_match_only,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, empty_module_reference.validate(.{}));
+    const empty_inspect = world.Admission.TransferPackage.init(.{
+        .kind = .inspect_only,
+        .requested_mode = .inspect_only,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, empty_inspect.validate(.{ .allow_inspect_only = true }));
     const stray_module_bytes = world.Admission.TransferPackage.init(.{
         .kind = .module_reference,
         .target_ref = target_ref,
@@ -7018,6 +7023,18 @@ test "admission rejects permit mode mismatch before receipt" {
     }).admitForTarget(fixtures.Ports.Target, PortsEnv, package, .{ .permit = wrong_mode_permit });
     try std.testing.expect(!result.report.accepted);
     try std.testing.expectEqual(world.Admission.AdmissionBlocker.PermitRejected, result.report.blockers[0]);
+
+    const stale_admission_scope_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+        .admission_receipt_fingerprint = 0xabc,
+    });
+    const stale_admission_scope_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.strict_local_execution,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, package, .{ .permit = stale_admission_scope_permit });
+    try std.testing.expect(!stale_admission_scope_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PermitRejected, stale_admission_scope_result.report.blockers[0]);
 
     const module_package = world.Admission.TransferPackage.init(.{
         .kind = .module_reference,
