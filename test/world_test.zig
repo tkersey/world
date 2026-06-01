@@ -7151,6 +7151,30 @@ test "admission rejects bare target reference when reference targets are disable
     });
     try std.testing.expectError(error.InvalidFrameEncoding, reference_run_package.validate(.{ .allow_reference_only = false }));
 
+    var future_target_ref = target_ref;
+    future_target_ref.format_version = world.world_target_ref_format_version + 1;
+    const future_target_package = world.Admission.TransferPackage.init(.{
+        .kind = .target_reference_only,
+        .target_ref = future_target_ref,
+        .requested_mode = .local_target_match_only,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, future_target_package.validate(.{}));
+
+    var bad_fingerprint_version_ref = target_ref;
+    bad_fingerprint_version_ref.fingerprint_version += 1;
+    const bad_version_run_image = world.RunImage.init(.{
+        .kind = .reference_target_run,
+        .target_ref = bad_fingerprint_version_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = state,
+    });
+    const bad_version_run_package = world.Admission.TransferPackage.init(.{
+        .kind = .inspect_only,
+        .run_image = bad_version_run_image,
+        .requested_mode = .inspect_only,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, bad_version_run_package.validate(.{}));
+
     const package = world.Admission.TransferPackage.init(.{
         .kind = .target_reference_only,
         .target_ref = target_ref,

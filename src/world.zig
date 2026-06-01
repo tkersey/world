@@ -1346,7 +1346,7 @@ pub const Admission = struct {
             }
             if (transferPackageEncodedByteSize(self) > options.max_package_bytes) return error.InvalidFrameEncoding;
             if (self.target_ref) |target_ref| {
-                if (target_ref.target_ref_fingerprint != fingerprintTargetRef(target_ref)) return error.InvalidFrameEncoding;
+                try validateTargetRef(target_ref);
                 if (self.module_ref) |module_ref| {
                     if (module_ref.module_kind != .full_module and module_ref.target_ref_fingerprint != target_ref.target_ref_fingerprint) return error.HandoffTargetMismatch;
                     if (module_ref.world_surface_fingerprint != target_ref.world_surface_fingerprint) return error.HandoffTargetMismatch;
@@ -1355,7 +1355,6 @@ pub const Admission = struct {
                 }
             }
             if (self.run_image) |image| {
-                if (image.target_ref.target_ref_fingerprint != fingerprintTargetRef(image.target_ref)) return error.InvalidFrameEncoding;
                 if (self.target_ref) |target_ref| {
                     if (image.target_ref.target_ref_fingerprint != target_ref.target_ref_fingerprint) return error.HandoffTargetMismatch;
                 }
@@ -6031,6 +6030,7 @@ pub const RunImage = struct {
     pub fn validate(self: @This(), options: ValidateOptions) !void {
         if (!isSupportedRunImageFormatVersion(self.format_version)) return error.InvalidFrameEncoding;
         if (self.fingerprint_version != world_run_image_fingerprint_version) return error.InvalidFrameEncoding;
+        try validateTargetRef(self.target_ref);
         if (!options.allow_reference_target and self.kind == .reference_target_run) return error.InvalidFrameEncoding;
         if (options.require_known_target and self.kind == .reference_target_run) return error.InvalidFrameEncoding;
         if (self.metadata.len > options.max_image_bytes) return error.InvalidFrameEncoding;
@@ -6271,6 +6271,16 @@ pub const RunImage = struct {
 
 fn isSupportedRunImageFormatVersion(format_version: u32) bool {
     return format_version == 1 or format_version == 2 or format_version == world_run_image_format_version;
+}
+
+fn isSupportedTargetRefFormatVersion(format_version: u32) bool {
+    return format_version == 1 or format_version == world_target_ref_format_version;
+}
+
+fn validateTargetRef(target_ref: TargetRef) !void {
+    if (!isSupportedTargetRefFormatVersion(target_ref.format_version)) return error.InvalidFrameEncoding;
+    if (target_ref.fingerprint_version != world_target_ref_fingerprint_version) return error.InvalidFrameEncoding;
+    if (target_ref.target_ref_fingerprint != fingerprintTargetRef(target_ref)) return error.InvalidFrameEncoding;
 }
 
 test "RunImage decoder accepts v1 layout without prior receipt refs" {
