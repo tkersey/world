@@ -6804,6 +6804,13 @@ test "target registry rejects module import and table witness mismatches" {
     const table_mismatch = world.Admission.TargetMatch.matchModule(module_ref, fixtures.Ports.Target);
     try std.testing.expect(!table_mismatch.matched);
     try std.testing.expectEqual(world.Admission.MatchMismatch.WorldValueTable, table_mismatch.mismatches[0]);
+
+    module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
+    var stale_target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    stale_target_ref.world_dispatch_table_fingerprint = if (stale_target_ref.world_dispatch_table_fingerprint) |fingerprint| fingerprint +% 1 else 1;
+    const stale_target_match = registry.match(stale_target_ref, module_ref);
+    try std.testing.expect(!stale_target_match.matched);
+    try std.testing.expectEqual(world.Admission.MatchMismatch.WorldDispatchTable, stale_target_match.mismatches[0]);
 }
 
 test "target registry rejects duplicate conflicting target" {

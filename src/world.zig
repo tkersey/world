@@ -1560,6 +1560,9 @@ pub const Admission = struct {
                 if (target.target_certificate_fingerprint != entry.target_certificate_fingerprint and first_mismatch == null) first_mismatch = .TargetCertificate;
                 if (target.residual_program_plan_hash != entry.program_plan_hash and first_mismatch == null) first_mismatch = .ProgramPlanHash;
                 if (target.normal_form_kind != entry.normal_form_kind and first_mismatch == null) first_mismatch = .NormalForm;
+                if (!providedFingerprintMatches(target.world_port_table_fingerprint, entry.world_port_table_fingerprint) and first_mismatch == null) first_mismatch = .WorldPortTable;
+                if (!providedFingerprintMatches(target.world_value_table_fingerprint, entry.world_value_table_fingerprint) and first_mismatch == null) first_mismatch = .WorldValueTable;
+                if (!providedFingerprintMatches(target.world_dispatch_table_fingerprint, entry.world_dispatch_table_fingerprint) and first_mismatch == null) first_mismatch = .WorldDispatchTable;
             }
             if (module_ref) |module| {
                 if (module.module_kind != .full_module and module.target_ref_fingerprint != entry.target_ref.target_ref_fingerprint and first_mismatch == null) first_mismatch = .ProgramPlanHash;
