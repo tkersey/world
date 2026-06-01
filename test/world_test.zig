@@ -6572,6 +6572,11 @@ test "target registry rejects duplicate conflicting target" {
     stale_registry.registry_fingerprint +%= 1;
     try std.testing.expectError(error.TargetRegistryConflict, stale_registry.validate());
 
+    var inconsistent_target_ref = entry;
+    inconsistent_target_ref.target_ref.world_surface_fingerprint +%= 1;
+    const inconsistent_target_ref_registry = world.Admission.TargetRegistry.init(&.{inconsistent_target_ref});
+    try std.testing.expectError(error.TargetRegistryConflict, inconsistent_target_ref_registry.validate());
+
     var conflicting = entry;
     conflicting.import_set_fingerprint +%= 1;
     conflicting.entry_fingerprint +%= 1;

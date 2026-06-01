@@ -1447,6 +1447,7 @@ pub const Admission = struct {
 
         pub fn validate(self: Admission.TargetRegistry) !void {
             for (self.entries) |entry| {
+                try validateTargetRegistryEntry(entry);
                 if (entry.entry_fingerprint != fingerprintTargetRegistryEntry(entry)) return error.TargetRegistryConflict;
             }
             if (self.registry_fingerprint != fingerprintTargetRegistry(self)) return error.TargetRegistryConflict;
@@ -9008,6 +9009,17 @@ fn admissionModeNeedsRunImage(mode: Admission.AdmissionMode) bool {
 fn effectiveAdmissionModeMatchesPackage(requested: Admission.AdmissionMode, effective: Admission.AdmissionMode) bool {
     if (requested == effective) return true;
     return requested == .replay_only and effective == .verify_only;
+}
+
+fn validateTargetRegistryEntry(entry: Admission.TargetRegistry.Entry) !void {
+    if (entry.target_ref.target_ref_fingerprint != fingerprintTargetRef(entry.target_ref)) return error.TargetRegistryConflict;
+    if (entry.world_surface_fingerprint != entry.target_ref.world_surface_fingerprint) return error.TargetRegistryConflict;
+    if (entry.target_certificate_fingerprint != entry.target_ref.target_certificate_fingerprint) return error.TargetRegistryConflict;
+    if (entry.program_plan_hash != entry.target_ref.residual_program_plan_hash) return error.TargetRegistryConflict;
+    if (entry.world_port_table_fingerprint != entry.target_ref.world_port_table_fingerprint) return error.TargetRegistryConflict;
+    if (entry.world_value_table_fingerprint != entry.target_ref.world_value_table_fingerprint) return error.TargetRegistryConflict;
+    if (entry.world_dispatch_table_fingerprint != entry.target_ref.world_dispatch_table_fingerprint) return error.TargetRegistryConflict;
+    if (entry.normal_form_kind != entry.target_ref.normal_form_kind) return error.TargetRegistryConflict;
 }
 
 fn runImageHasModuleWitness(image: RunImage) bool {
