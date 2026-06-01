@@ -1875,6 +1875,29 @@ test "transcript image encode decode round trip stable and image replay works wi
     defer decoded.deinit(std.testing.allocator);
     try std.testing.expectEqual(image.transcript_image_fingerprint, decoded.transcript_image_fingerprint);
     try std.testing.expectEqual(@as(usize, 1), decoded.response_count);
+    var admission_transcript = world.Transcript.init(std.testing.allocator);
+    defer admission_transcript.deinit();
+    try admission_transcript.append(.{
+        .kind = .admission_accepted,
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .admission_receipt_fingerprint = 0xabc,
+        .module_ref_fingerprint = 0xdef,
+        .target_match_fingerprint = 0x123,
+    });
+    var admission_image = try admission_transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer admission_image.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(?u64, 0xabc), admission_image.events[0].admission_receipt_fingerprint);
+    try std.testing.expectEqual(@as(?u64, 0xdef), admission_image.events[0].module_ref_fingerprint);
+    try std.testing.expectEqual(@as(?u64, 0x123), admission_image.events[0].target_match_fingerprint);
+    const admission_encoded = try admission_image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(admission_encoded);
+    var decoded_admission_image = try world.TranscriptImage.decode(std.testing.allocator, admission_encoded);
+    defer decoded_admission_image.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(?u64, 0xabc), decoded_admission_image.events[0].admission_receipt_fingerprint);
+    var restored_admission_transcript = try world.Transcript.fromImage(std.testing.allocator, decoded_admission_image);
+    defer restored_admission_transcript.deinit();
+    try std.testing.expectEqual(@as(?u64, 0xdef), restored_admission_transcript.events.items[0].module_ref_fingerprint);
     var forged_status_image = decoded;
     forged_status_image.final_status = .failed;
     forged_status_image.transcript_image_fingerprint = testTranscriptImageFingerprint(forged_status_image);
@@ -7432,6 +7455,27 @@ test "admitted run start requires stored permit" {
         .mode = world.Mode.fresh,
         .ctx = &ctx,
     }));
+    var scoped_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer scoped_runtime.deinit();
+    var scoped_run = try admitted.start(fixtures.Ports.Target, PortsEnv, &scoped_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+        .permit = permit,
+    });
+    defer scoped_run.deinit();
+    if (scoped_run.supervisor) |*supervisor| {
+        try std.testing.expectEqual(result.receipt.?.receipt_fingerprint, supervisor.permit.admission_receipt_fingerprint.?);
+        try std.testing.expect(supervisor.permit.permit_fingerprint != permit.permit_fingerprint);
+        const run_state = world.RunState.init(.{
+            .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+            .status = .completed,
+        });
+        const run_receipt = supervisor.receipt(.completed, run_state.run_state_fingerprint, null, null);
+        try std.testing.expectEqual(result.receipt.?.receipt_fingerprint, run_receipt.admission_receipt_fingerprint.?);
+    } else {
+        return error.ExpectedSupervisor;
+    }
 }
 
 test "admitted run start enforces admitted target and mode without stored permit" {

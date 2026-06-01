@@ -118,7 +118,7 @@ pub const EventKind = enum {
 };
 
 test "EventKind keeps legacy transcript ordinals behind v2 image format" {
-    try std.testing.expectEqual(@as(u32, 2), world_transcript_image_format_version);
+    try std.testing.expectEqual(@as(u32, 3), world_transcript_image_format_version);
     try std.testing.expectEqual(@as(u8, 15), @intFromEnum(EventKind.run_completed));
     try std.testing.expectEqual(@as(u8, 16), @intFromEnum(EventKind.run_failed));
     try std.testing.expectEqual(@as(u8, 17), @intFromEnum(EventKind.permit_issued));
@@ -172,7 +172,7 @@ pub const world_frame_response_format_version: u32 = 1;
 pub const world_frame_response_fingerprint_version: u32 = 1;
 pub const world_frame_value_image_format_version: u32 = 1;
 pub const world_frame_value_image_fingerprint_version: u32 = 1;
-pub const world_transcript_image_format_version: u32 = 2;
+pub const world_transcript_image_format_version: u32 = 3;
 pub const world_transcript_image_fingerprint_version: u32 = 1;
 pub const world_timeline_event_format_version: u32 = 1;
 pub const world_timeline_event_fingerprint_version: u32 = 1;
@@ -226,7 +226,7 @@ pub const world_admission_receipt_fingerprint_version: u32 = 1;
 pub const world_admitted_run_fingerprint_version: u32 = 1;
 pub const world_max_decoded_byte_field_len: usize = 16 * 1024 * 1024;
 const frame_response_deferred_fingerprint_flag: u32 = 1 << 0;
-const world_min_transcript_event_image_encoded_len: usize = 8 + 1 + 8 + 8 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1;
+const world_min_transcript_event_image_encoded_len: usize = 8 + 1 + 8 + 8 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1;
 
 pub const ValuePolicy = struct {
     require_portable_values: bool = false,
@@ -2103,6 +2103,8 @@ pub const Admission = struct {
             if (self.run_permit) |permit| {
                 if (comptime !@hasField(Options, "permit")) return Error.SupervisionDenied;
                 if (@field(options, "permit").permit_fingerprint != permit.permit_fingerprint) return Error.SupervisionDenied;
+                const scoped_permit = scopePermitToAdmission(permit, self.admission_receipt_fingerprint);
+                return Machine(Target, Env.machine_config).startWithPermit(runtime, args, options, scoped_permit);
             }
             return Machine(Target, Env.machine_config).start(runtime, args, options);
         }
@@ -2121,7 +2123,8 @@ pub const Admission = struct {
             var handoff = try Handoff.fromRunImage(allocator, encoded);
             defer handoff.deinit();
             if (self.run_permit) |permit| {
-                return handoff.resumeWithPermit(Target, Env, runtime, args, options, .accept_fresh, permit);
+                const scoped_permit = scopePermitToAdmission(permit, self.admission_receipt_fingerprint);
+                return handoff.resumeWithPermit(Target, Env, runtime, args, options, .accept_fresh, scoped_permit);
             }
             return handoff.@"resume"(Target, Env, runtime, args, options, .accept_fresh);
         }
@@ -4859,6 +4862,9 @@ pub const Transcript = struct {
         response_fingerprint: ?u64 = null,
         response_kind: ?ResponseKind = null,
         replay_key: ?u64 = null,
+        admission_receipt_fingerprint: ?u64 = null,
+        module_ref_fingerprint: ?u64 = null,
+        target_match_fingerprint: ?u64 = null,
         world_surface_replay_scope_fingerprint: ?u64 = null,
         payload_value_table_id: ?u32 = null,
         expected_response_value_table_id: ?u32 = null,
@@ -5118,6 +5124,9 @@ pub const Transcript = struct {
                 .response_fingerprint = event.response_fingerprint,
                 .response_kind = event.response_kind,
                 .replay_key = event.replay_key,
+                .admission_receipt_fingerprint = event.admission_receipt_fingerprint,
+                .module_ref_fingerprint = event.module_ref_fingerprint,
+                .target_match_fingerprint = event.target_match_fingerprint,
                 .world_surface_replay_scope_fingerprint = if (event.request_frame) |frame| frame.world_surface_replay_scope_fingerprint else null,
                 .payload_value_table_id = if (event.request_frame) |frame| frame.payload_value_table_id else null,
                 .expected_response_value_table_id = if (event.request_frame) |frame| frame.expected_response_value_table_id else null,
@@ -5367,6 +5376,9 @@ pub const TranscriptImage = struct {
         response_fingerprint: ?u64 = null,
         response_kind: ?ResponseKind = null,
         replay_key: ?u64 = null,
+        admission_receipt_fingerprint: ?u64 = null,
+        module_ref_fingerprint: ?u64 = null,
+        target_match_fingerprint: ?u64 = null,
         turn_index: ?usize = null,
         residual_site_index: ?usize = null,
         residual_site_fingerprint: ?u64 = null,
@@ -6863,6 +6875,10 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
 
         pub fn start(runtime: anytype, args: anytype, options: anytype) !Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)) {
             return Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)).start(runtime, args, options);
+        }
+
+        fn startWithPermit(runtime: anytype, args: anytype, options: anytype, permit: RunPermit) !Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)) {
+            return Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)).startWithTranscriptAvailablePermit(runtime, args, options, false, permit);
         }
 
         fn startWithHandoffTranscript(runtime: anytype, args: anytype, options: anytype) !Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)) {
@@ -8945,6 +8961,9 @@ fn eventImageFromTranscriptEvent(allocator: std.mem.Allocator, event: Transcript
         .response_fingerprint = event.response_fingerprint,
         .response_kind = event.response_kind,
         .replay_key = event.replay_key,
+        .admission_receipt_fingerprint = event.admission_receipt_fingerprint,
+        .module_ref_fingerprint = event.module_ref_fingerprint,
+        .target_match_fingerprint = event.target_match_fingerprint,
         .turn_index = event.turn_index,
         .residual_site_index = event.residual_site_index,
         .residual_site_fingerprint = event.residual_site_fingerprint,
@@ -8986,6 +9005,9 @@ fn encodeTranscriptEventImage(out: *std.ArrayList(u8), allocator: std.mem.Alloca
         try writeBool(out, allocator, false);
     }
     try writeOptionalU64(out, allocator, event.replay_key);
+    try writeOptionalU64(out, allocator, event.admission_receipt_fingerprint);
+    try writeOptionalU64(out, allocator, event.module_ref_fingerprint);
+    try writeOptionalU64(out, allocator, event.target_match_fingerprint);
     try writeOptionalU64(out, allocator, event.turn_index);
     try writeOptionalU64(out, allocator, event.residual_site_index);
     try writeOptionalU64(out, allocator, event.residual_site_fingerprint);
@@ -9025,6 +9047,9 @@ fn decodeTranscriptEventImage(allocator: std.mem.Allocator, bytes: []const u8, c
         .response_fingerprint = try readOptionalU64(bytes, cursor),
         .response_kind = if (try readBool(bytes, cursor)) try enumFromByte(ResponseKind, try readU8(bytes, cursor)) else null,
         .replay_key = try readOptionalU64(bytes, cursor),
+        .admission_receipt_fingerprint = try readOptionalU64(bytes, cursor),
+        .module_ref_fingerprint = try readOptionalU64(bytes, cursor),
+        .target_match_fingerprint = try readOptionalU64(bytes, cursor),
         .turn_index = try readOptionalUsize(bytes, cursor),
         .residual_site_index = try readOptionalUsize(bytes, cursor),
         .residual_site_fingerprint = try readOptionalU64(bytes, cursor),
@@ -9416,6 +9441,9 @@ fn transcriptEventImageEncodedByteSize(event: TranscriptImage.EventImage) usize 
     size = addSatEncodedSize(size, optionalU64EncodedByteSize(event.response_fingerprint));
     size = addSatEncodedSize(size, optionalEnumByteEncodedByteSize(event.response_kind));
     size = addSatEncodedSize(size, optionalU64EncodedByteSize(event.replay_key));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(event.admission_receipt_fingerprint));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(event.module_ref_fingerprint));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(event.target_match_fingerprint));
     size = addSatEncodedSize(size, optionalUsizeEncodedByteSize(event.turn_index));
     size = addSatEncodedSize(size, optionalUsizeEncodedByteSize(event.residual_site_index));
     size = addSatEncodedSize(size, optionalU64EncodedByteSize(event.residual_site_fingerprint));
@@ -9536,6 +9564,14 @@ fn packageContainsCheckpoint(package: Admission.TransferPackage, checkpoint_ref:
 
 fn handoffPreflightBlockers(has_permit: bool) []const Admission.AdmissionBlocker {
     return if (has_permit) &.{.PermitRejected} else &.{.EnvironmentRejected};
+}
+
+fn scopePermitToAdmission(permit: RunPermit, admission_receipt_fingerprint: u64) RunPermit {
+    var scoped = permit;
+    scoped.permit_fingerprint = 0;
+    scoped.admission_receipt_fingerprint = admission_receipt_fingerprint;
+    scoped.permit_fingerprint = fingerprintRunPermit(scoped);
+    return scoped;
 }
 
 fn writeOptionalTargetRef(out: *std.ArrayList(u8), allocator: std.mem.Allocator, value: ?TargetRef) !void {
@@ -10973,6 +11009,9 @@ fn fingerprintTranscriptEventImage(event: TranscriptImage.EventImage) u64 {
         hashBool(&hasher, false);
     }
     hashOptionalU64(&hasher, event.replay_key);
+    hashOptionalU64(&hasher, event.admission_receipt_fingerprint);
+    hashOptionalU64(&hasher, event.module_ref_fingerprint);
+    hashOptionalU64(&hasher, event.target_match_fingerprint);
     if (event.turn_index) |turn| {
         hashBool(&hasher, true);
         hashU64(&hasher, turn);
