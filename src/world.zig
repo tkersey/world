@@ -2141,11 +2141,13 @@ pub const Admission = struct {
             }
             if (args.requested_branch_id) |branch_id| {
                 if (!packageContainsBranch(package, branch_id)) return rejectedResult(request, package, target_ref, module_ref, match, &.{.BranchMismatch}, "requested branch is not present in transfer package");
+                if (package.run_image == null or package.run_image.?.current_state.branch_id != branch_id) return rejectedResult(request, package, target_ref, module_ref, match, &.{.BranchMismatch}, "requested branch does not match current run state");
             } else if (mode == .branch_resume) {
                 return rejectedResult(request, package, target_ref, module_ref, match, &.{.BranchMismatch}, "branch resume requires a selected branch");
             }
             if (args.requested_checkpoint_ref) |checkpoint_ref| {
                 if (!packageContainsCheckpoint(package, checkpoint_ref)) return rejectedResult(request, package, target_ref, module_ref, match, &.{.CheckpointMismatch}, "requested checkpoint is not present in transfer package");
+                if (package.run_image == null or package.run_image.?.current_state.checkpoint_fingerprint != checkpoint_ref) return rejectedResult(request, package, target_ref, module_ref, match, &.{.CheckpointMismatch}, "requested checkpoint does not match current run state");
             }
             const local_target_ref = TargetRef.fromTarget(Target);
             if (match.matched and match.local_target_ref_fingerprint != local_target_ref.target_ref_fingerprint) {
@@ -3562,6 +3564,8 @@ pub const Supervision = struct {
                 .target_ref_fingerprint = self.permit.target_ref_fingerprint,
                 .run_image_fingerprint = run_image_fingerprint,
                 .transcript_image_fingerprint = transcript_image_fingerprint,
+                .admission_receipt_fingerprint = self.permit.admission_receipt_fingerprint,
+                .module_ref_fingerprint = self.permit.module_ref_fingerprint,
                 .usage_ledger_fingerprint = self.ledger.ledger_fingerprint,
                 .final_run_state_fingerprint = final_run_state_fingerprint,
                 .final_status = final_status,

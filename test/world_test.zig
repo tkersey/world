@@ -5825,6 +5825,8 @@ test "usage ledger supervision check and run receipt fingerprints are stable" {
         .mode = .fresh,
         .policy = world.SupervisionPolicy.strict_fresh,
         .budget = world.Budget.init(.{ .max_port_requests = 2, .max_total_cost_units = 100 }),
+        .admission_receipt_fingerprint = 0xabc,
+        .module_ref_fingerprint = 0xdef,
     });
     var supervisor = try world.Supervisor.init(std.testing.allocator, permit, fixtures.Ports.Target.WorldPortTable.entries.len);
     defer supervisor.deinit();
@@ -5847,6 +5849,8 @@ test "usage ledger supervision check and run receipt fingerprints are stable" {
     const receipt_b = supervisor.receipt(.completed, state.run_state_fingerprint, null, null);
     try std.testing.expectEqual(receipt_a.receipt_fingerprint, receipt_b.receipt_fingerprint);
     try std.testing.expectEqual(supervisor.ledger.ledger_fingerprint, receipt_a.usage_ledger_fingerprint);
+    try std.testing.expectEqual(@as(?u64, 0xabc), receipt_a.admission_receipt_fingerprint);
+    try std.testing.expectEqual(@as(?u64, 0xdef), receipt_a.module_ref_fingerprint);
     try std.testing.expectEqual(@as(usize, 1), receipt_a.total_port_requests);
 }
 
