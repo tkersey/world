@@ -2192,6 +2192,9 @@ pub const Admission = struct {
             self.registry.validate() catch {
                 return rejectedResult(request, package, target_ref, module_ref, null, &.{.TargetMismatch}, "target registry contains conflicting entries");
             };
+            if (mode == .inspect_only and !self.policy.allow_reference_targets and module_ref == null and package.module_image_bytes == null) {
+                return rejectedResult(request, package, target_ref, module_ref, null, &.{.PackageInvalid}, "inspect-only admission requires module evidence");
+            }
             if (!self.policy.allowsMode(mode)) {
                 return rejectedResult(request, package, target_ref, module_ref, null, &.{.AdmissionModeNotAllowed}, "admission mode is not allowed by policy");
             }
@@ -9074,7 +9077,9 @@ fn manifestForTransferPackage(package: Admission.TransferPackage) Admission.Pack
 }
 
 fn packageManifestEquals(actual: Admission.PackageManifest, expected: Admission.PackageManifest) bool {
-    return actual.manifest_fingerprint == expected.manifest_fingerprint and
+    return actual.format_version == expected.format_version and
+        actual.fingerprint_version == expected.fingerprint_version and
+        actual.manifest_fingerprint == expected.manifest_fingerprint and
         actual.package_fingerprint == expected.package_fingerprint and
         actual.package_kind == expected.package_kind and
         actual.target_ref_fingerprint == expected.target_ref_fingerprint and

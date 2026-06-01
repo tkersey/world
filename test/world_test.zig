@@ -6426,6 +6426,9 @@ test "transfer package rejects malformed and oversized packages" {
     var stale_manifest = package;
     stale_manifest.manifest.package_kind = .full_module;
     try std.testing.expectError(error.InvalidFrameEncoding, stale_manifest.validate(.{}));
+    var stale_manifest_version = package;
+    stale_manifest_version.manifest.format_version +%= 1;
+    try std.testing.expectError(error.InvalidFrameEncoding, stale_manifest_version.validate(.{}));
     package.package_fingerprint +%= 1;
     try std.testing.expectError(error.InvalidFrameEncoding, package.validate(.{}));
 }
@@ -6712,6 +6715,23 @@ test "admitter accepts inspect-only full module and rejects missing permit for e
     }).admitForTarget(fixtures.Ports.Target, PortsEnv, executable_full_module, .{});
     try std.testing.expect(!executable_full_module_result.report.accepted);
     try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, executable_full_module_result.report.blockers[0]);
+
+    const inspect_target_only = world.Admission.TransferPackage.init(.{
+        .kind = .inspect_only,
+        .target_ref = target_ref,
+        .requested_mode = .inspect_only,
+    });
+    const inspect_module_only_policy = world.Admission.AdmissionPolicy.init(.{
+        .allow_reference_targets = false,
+        .allow_inspect_only_full_modules = true,
+        .require_supervision_permit = false,
+    });
+    const inspect_target_only_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = inspect_module_only_policy,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, inspect_target_only, .{});
+    try std.testing.expect(!inspect_target_only_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, inspect_target_only_result.report.blockers[0]);
 
     const missing_bytes_full_module = world.Admission.TransferPackage.init(.{
         .kind = .full_module,
