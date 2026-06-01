@@ -6770,6 +6770,31 @@ test "admitter accepts inspect-only full module and rejects missing permit for e
     const rejected = execution_admitter.admitForTarget(fixtures.Ports.Target, PortsEnv, execute_package, .{});
     try std.testing.expect(!rejected.report.accepted);
     try std.testing.expectEqual(world.Admission.AdmissionBlocker.PermitMissing, rejected.report.blockers[0]);
+
+    const completed_state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .completed,
+    });
+    const completed_image = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = completed_state,
+    });
+    const inspect_run_package = world.Admission.TransferPackage.init(.{
+        .kind = .inspect_only,
+        .target_ref = target_ref,
+        .run_image = completed_image,
+        .requested_mode = .inspect_only,
+    });
+    const overridden_mode = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, inspect_run_package, .{ .mode = .completed_replay });
+    try std.testing.expect(!overridden_mode.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, overridden_mode.report.blockers[0]);
+    try std.testing.expect(overridden_mode.receipt == null);
+    try std.testing.expect(overridden_mode.admitted_run == null);
 }
 
 test "admission rejects bare target reference when reference targets are disabled" {

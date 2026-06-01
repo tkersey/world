@@ -2140,6 +2140,9 @@ pub const Admission = struct {
             }
             const target_ref = package.target_ref orelse if (package.run_image) |image| image.target_ref else TargetRef.fromTarget(Target);
             var module_ref = package.module_ref;
+            if (!effectiveAdmissionModeMatchesPackage(package.requested_mode, mode)) {
+                return rejectedResult(request, package, target_ref, module_ref, null, &.{.PackageInvalid}, "admission mode does not match package requested mode");
+            }
             package.validate(.{
                 .max_package_bytes = self.policy.max_package_bytes,
                 .max_module_bytes = self.policy.max_module_bytes,
@@ -8991,6 +8994,11 @@ fn admissionModeNeedsRunImage(mode: Admission.AdmissionMode) bool {
         .inspect_only, .local_target_match_only, .continue_fresh, .replay_only, .verify_only => false,
         .resume_parked, .branch_resume, .completed_replay => true,
     };
+}
+
+fn effectiveAdmissionModeMatchesPackage(requested: Admission.AdmissionMode, effective: Admission.AdmissionMode) bool {
+    if (requested == effective) return true;
+    return requested == .replay_only and effective == .verify_only;
 }
 
 fn transferPackageKindMatchesRunImage(kind: Admission.PackageKind, image_kind: RunImage.Kind, requested_mode: Admission.AdmissionMode) bool {
