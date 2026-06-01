@@ -2070,6 +2070,7 @@ pub const Admission = struct {
             var image = self.run_image orelse return error.HandoffPendingFrameMismatch;
             if (image.transcript_image == null) {
                 image.transcript_image = self.transcript_image;
+                refreshRunImageFingerprint(&image);
             }
             if (self.environment_certificate_fingerprint) |fingerprint| {
                 if (Env.certificate(.fresh, image.transcript_image != null).certificate_fingerprint != fingerprint) return Error.HandoffDenied;
@@ -2301,6 +2302,7 @@ pub const Admission = struct {
                     var handoff_run_image = run_image;
                     if (handoff_run_image.transcript_image == null) {
                         handoff_run_image.transcript_image = package.transcript_image;
+                        refreshRunImageFingerprint(&handoff_run_image);
                     }
                     var handoff = Handoff{ .allocator = args.allocator, .run_image = handoff_run_image };
                     const handoff_report = if (args.permit) |permit|
@@ -8995,6 +8997,15 @@ fn transferPackageKindMatchesRunImage(kind: Admission.PackageKind, image_kind: R
         .branch_run => image_kind == .parked_run,
         .target_reference_only, .module_reference, .full_module, .inspect_only => true,
     };
+}
+
+fn refreshRunImageFingerprint(image: *RunImage) void {
+    image.run_image_fingerprint = if (image.format_version == 1)
+        fingerprintRunImageV1(image.*)
+    else if (image.format_version >= 3)
+        fingerprintRunImageV3(image.*)
+    else
+        fingerprintRunImage(image.*);
 }
 
 fn admissionModeToHandoffMode(mode: Admission.AdmissionMode) ?HandoffMode {
