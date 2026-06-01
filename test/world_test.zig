@@ -6703,6 +6703,62 @@ test "admission rejects run images that do not fit requested mode" {
     try std.testing.expectEqual(world.Admission.AdmissionBlocker.RunImageInvalid, parked_result.report.blockers[0]);
 }
 
+test "admission rejects parked handoff that fails handoff preflight" {
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
+    const registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Ports.Target)});
+    var payload_image: ?world.Frame.ValueImage = try world.Frame.ValueImage.fromValue(
+        std.testing.allocator,
+        0,
+        null,
+        null,
+        @as([]const u8, "portable"),
+        world.ValuePolicy.portable,
+    );
+    errdefer if (payload_image) |*payload| payload.deinit(std.testing.allocator);
+    var request = world.Frame.Request.init(.{
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .world_surface_replay_scope_fingerprint = fixtures.Ports.Target.WorldSurface.replayScopeRef().fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .world_port_id = 99,
+        .residual_site_index = fixtures.Ports.ApprovalRequest.index,
+        .residual_site_fingerprint = fixtures.Ports.ApprovalRequest.fingerprint,
+        .request_fingerprint = 0xabc0_ffee,
+        .turn_index = 0,
+        .payload_value_table_id = 0,
+        .expected_response_value_table_id = 1,
+        .payload_image = payload_image,
+    });
+    payload_image = null;
+    defer request.deinit(std.testing.allocator);
+    const state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .pending_request_fingerprint = request.frame_fingerprint,
+        .turn_index = request.turn_index,
+        .status = .parked_on_port,
+    });
+    const run_image = world.RunImage.init(.{
+        .kind = .parked_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = state,
+        .pending_request_frame = request,
+    }).withModuleRef(module_ref, null);
+    const package = world.Admission.TransferPackage.init(.{
+        .kind = .parked_run,
+        .target_ref = target_ref,
+        .module_ref = module_ref,
+        .run_image = run_image,
+        .requested_mode = .resume_parked,
+    });
+    const result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, package, .{ .allocator = std.testing.allocator });
+    try std.testing.expect(!result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.EnvironmentRejected, result.report.blockers[0]);
+}
+
 test "admitted run constructed for accepted local target" {
     const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Ports.Target)});
@@ -6823,6 +6879,34 @@ test "admitted run start enforces admitted transcript image" {
     var image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
     defer image.deinit(std.testing.allocator);
     const run_image = world.RunImage.fromTranscriptImage(fixtures.Ports.Target, image, .replay_only_run).withModuleRef(module_ref, null);
+    const bare_state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .transcript_image_fingerprint = image.transcript_image_fingerprint,
+        .status = .completed,
+    });
+    const bare_run_image = world.RunImage.init(.{
+        .kind = .replay_only_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = bare_state,
+    }).withModuleRef(module_ref, null);
+    var mismatched_standalone_image = image;
+    mismatched_standalone_image.transcript_image_fingerprint +%= 1;
+    const mismatched_package = world.Admission.TransferPackage.init(.{
+        .kind = .replay_run,
+        .target_ref = target_ref,
+        .module_ref = module_ref,
+        .run_image = bare_run_image,
+        .transcript_image = mismatched_standalone_image,
+        .requested_mode = .replay_only,
+    });
+    const mismatched_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.replay_only,
+    }).admitForTarget(fixtures.Ports.Target, PortsReplayEnv, mismatched_package, .{});
+    try std.testing.expect(!mismatched_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, mismatched_result.report.blockers[0]);
+
     const package = world.Admission.TransferPackage.init(.{
         .kind = .replay_run,
         .target_ref = target_ref,

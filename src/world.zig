@@ -1324,6 +1324,9 @@ pub const Admission = struct {
             }
             if (self.transcript_image) |image| {
                 if (self.run_image) |run_image| {
+                    if (run_image.current_state.transcript_image_fingerprint) |state_fingerprint| {
+                        if (state_fingerprint != image.transcript_image_fingerprint) return error.InvalidFrameEncoding;
+                    }
                     if (run_image.transcript_image) |embedded| {
                         if (embedded.transcript_image_fingerprint != image.transcript_image_fingerprint) return error.InvalidFrameEncoding;
                     }
@@ -2027,6 +2030,7 @@ pub const Admission = struct {
             requested_branch_id: ?u64 = null,
             requested_checkpoint_ref: ?u64 = null,
             metadata: []const u8 = "",
+            allocator: std.mem.Allocator = std.heap.page_allocator,
         }) AdmissionResult {
             const mode = args.mode orelse package.requested_mode;
             const transcript_available = package.transcript_image != null or (package.run_image != null and package.run_image.?.transcript_image != null);
@@ -2158,6 +2162,16 @@ pub const Admission = struct {
                 const permit_report = Env.acceptanceReportWithPermit(admissionModeToRunMode(mode), transcript_available, permit);
                 if (!permit_report.accepted) {
                     return rejectedResult(request, package, target_ref, module_ref, match, &.{.PermitRejected}, "permit preflight rejected admission");
+                }
+            }
+            if (admissionModeToHandoffMode(mode)) |handoff_mode| {
+                var handoff = Handoff{ .allocator = args.allocator, .run_image = package.run_image.? };
+                const handoff_report = if (args.permit) |permit|
+                    handoff.preflightWithPermit(Target, Env, handoff_mode, permit)
+                else
+                    handoff.preflight(Target, Env, handoff_mode);
+                if (!handoff_report.accepted) {
+                    return rejectedResult(request, package, target_ref, module_ref, match, &.{if (args.permit != null) .PermitRejected else .EnvironmentRejected}, "handoff preflight rejected admission");
                 }
             }
             const report = Admission.AdmissionReport.accept(.{
@@ -8798,6 +8812,13 @@ fn admissionModeNeedsRunImage(mode: Admission.AdmissionMode) bool {
     return switch (mode) {
         .inspect_only, .local_target_match_only, .continue_fresh => false,
         .replay_only, .verify_only, .resume_parked, .branch_resume, .completed_replay => true,
+    };
+}
+
+fn admissionModeToHandoffMode(mode: Admission.AdmissionMode) ?HandoffMode {
+    return switch (mode) {
+        .resume_parked, .branch_resume => .accept_fresh,
+        else => null,
     };
 }
 
