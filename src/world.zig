@@ -72,6 +72,12 @@ pub const Error = error{
     VerifyResponseKindMismatch,
     VerifyResponseFingerprintMismatch,
     VerifyValueImageMismatch,
+    StaleRunHandle,
+    RunspaceAdmissionRequired,
+    RunspaceInstallDenied,
+    InvalidRunspaceTransition,
+    InvalidPendingPortTransition,
+    PendingPortConsumed,
     OutOfMemory,
 };
 
@@ -224,6 +230,11 @@ pub const world_admission_report_fingerprint_version: u32 = 1;
 pub const world_admission_receipt_format_version: u32 = 1;
 pub const world_admission_receipt_fingerprint_version: u32 = 1;
 pub const world_admitted_run_fingerprint_version: u32 = 1;
+pub const world_run_handle_format_version: u32 = 1;
+pub const world_run_handle_fingerprint_version: u32 = 1;
+pub const world_pending_port_format_version: u32 = 1;
+pub const world_pending_port_fingerprint_version: u32 = 1;
+pub const world_runspace_event_fingerprint_version: u32 = 1;
 pub const world_max_decoded_byte_field_len: usize = 16 * 1024 * 1024;
 const frame_response_deferred_fingerprint_flag: u32 = 1 << 0;
 const world_min_transcript_event_image_encoded_len_v2: usize = 8 + 1 + 8 + 8 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1;
@@ -6332,6 +6343,1420 @@ pub const RunImage = struct {
     }
 };
 
+pub const RunHandle = struct {
+    format_version: u32 = world_run_handle_format_version,
+    fingerprint_version: u32 = world_run_handle_fingerprint_version,
+    handle_fingerprint: u64,
+    runspace_fingerprint: u64,
+    local_run_id: u64,
+    target_ref_fingerprint: u64,
+    admission_receipt_fingerprint: ?u64 = null,
+    permit_fingerprint: ?u64 = null,
+    branch_id: ?u64 = null,
+    generation: u64 = 0,
+
+    pub fn init(args: struct {
+        runspace_fingerprint: u64,
+        local_run_id: u64,
+        target_ref_fingerprint: u64,
+        admission_receipt_fingerprint: ?u64 = null,
+        permit_fingerprint: ?u64 = null,
+        branch_id: ?u64 = null,
+        generation: u64 = 0,
+    }) @This() {
+        var result = @This(){
+            .handle_fingerprint = 0,
+            .runspace_fingerprint = args.runspace_fingerprint,
+            .local_run_id = args.local_run_id,
+            .target_ref_fingerprint = args.target_ref_fingerprint,
+            .admission_receipt_fingerprint = args.admission_receipt_fingerprint,
+            .permit_fingerprint = args.permit_fingerprint,
+            .branch_id = args.branch_id,
+            .generation = args.generation,
+        };
+        result.handle_fingerprint = fingerprintRunHandle(result);
+        return result;
+    }
+
+    pub fn validate(self: @This()) !void {
+        if (self.format_version != world_run_handle_format_version) return error.InvalidFrameEncoding;
+        if (self.fingerprint_version != world_run_handle_fingerprint_version) return error.InvalidFrameEncoding;
+        if (fingerprintRunHandle(self) != self.handle_fingerprint) return error.StaleRunHandle;
+    }
+
+    pub fn validateForRunspace(self: @This(), runspace_fingerprint: u64) !void {
+        try self.validate();
+        if (self.runspace_fingerprint != runspace_fingerprint) return error.StaleRunHandle;
+    }
+
+    pub fn matchesSlot(self: @This(), slot: Runspace.RunSlot) bool {
+        return self.handle_fingerprint == slot.handle.handle_fingerprint and
+            self.generation == slot.handle.generation and
+            self.local_run_id == slot.handle.local_run_id and
+            self.runspace_fingerprint == slot.handle.runspace_fingerprint;
+    }
+};
+
+pub const Runspace = struct {
+    allocator: std.mem.Allocator,
+    config: Config,
+    runspace_fingerprint: u64,
+    next_run_id: u64 = 0,
+    next_mailbox_id: u64 = 0,
+    next_event_index: u64 = 0,
+    slots: std.ArrayList(@This().RunSlot) = .empty,
+    events: std.ArrayList(@This().RunspaceEvent) = .empty,
+    mailbox: @This().Mailbox,
+
+    pub const Policy = enum {
+        deterministic,
+    };
+
+    pub const Config = struct {
+        policy: Policy = .deterministic,
+        max_runs: ?usize = null,
+        max_pending_ports: ?usize = null,
+        max_events: ?usize = null,
+        preserve_completed_runs: bool = true,
+        require_supervision: bool = false,
+        require_admission: bool = false,
+        allow_direct_target_install: bool = true,
+        allow_handoff_install: bool = true,
+        allow_replay_install: bool = true,
+        auto_dispatch: bool = false,
+    };
+
+    pub const RunStatus = enum {
+        admitted,
+        runnable,
+        running,
+        parked_on_port,
+        parked_on_supervision,
+        completed,
+        failed,
+        exported,
+        rejected,
+    };
+
+    pub const PendingStatus = enum {
+        pending,
+        responded,
+        cancelled,
+        exported,
+        failed,
+    };
+
+    pub const EventKind = enum {
+        run_installed,
+        run_admitted,
+        run_started,
+        run_stepped,
+        run_parked_on_port,
+        run_parked_on_supervision,
+        port_enqueued,
+        port_responded,
+        port_rejected,
+        port_failed,
+        run_resumed,
+        run_completed,
+        run_failed,
+        run_exported,
+        run_branch_created,
+        checkpoint_created,
+        handoff_created,
+    };
+
+    const DriverStep = union(enum) {
+        done,
+        port_request: Frame.Request,
+        failed,
+    };
+
+    const SlotDriver = struct {
+        ptr: *anyopaque,
+        vtable: *const VTable,
+
+        const VTable = struct {
+            nextFrame: *const fn (*anyopaque) anyerror!DriverStep,
+            resumeFrame: *const fn (*anyopaque, Frame.Response) anyerror!void,
+            dispatch: *const fn (*anyopaque) anyerror!void,
+            snapshotRunImage: *const fn (*anyopaque) anyerror!RunImage,
+            deinit: *const fn (*anyopaque, std.mem.Allocator) void,
+        };
+
+        fn nextFrame(self: @This()) !DriverStep {
+            return self.vtable.nextFrame(self.ptr);
+        }
+
+        fn resumeFrame(self: @This(), response: Frame.Response) !void {
+            return self.vtable.resumeFrame(self.ptr, response);
+        }
+
+        fn dispatch(self: @This()) !void {
+            return self.vtable.dispatch(self.ptr);
+        }
+
+        fn snapshotRunImage(self: @This()) !RunImage {
+            return self.vtable.snapshotRunImage(self.ptr);
+        }
+
+        fn deinit(self: @This(), allocator: std.mem.Allocator) void {
+            self.vtable.deinit(self.ptr, allocator);
+        }
+
+        fn forRun(comptime RunType: type, run: *RunType) @This() {
+            const Impl = struct {
+                fn runNextFrame(ptr: *anyopaque) anyerror!DriverStep {
+                    const active: *RunType = @ptrCast(@alignCast(ptr));
+                    const frame_step = try active.nextFrame();
+                    return switch (frame_step) {
+                        .done => .done,
+                        .port_request => |request| .{ .port_request = request },
+                        .failed => .failed,
+                    };
+                }
+
+                fn runResumeFrame(ptr: *anyopaque, response: Frame.Response) anyerror!void {
+                    const active: *RunType = @ptrCast(@alignCast(ptr));
+                    return active.resumeFrame(response);
+                }
+
+                fn runDispatch(ptr: *anyopaque) anyerror!void {
+                    const active: *RunType = @ptrCast(@alignCast(ptr));
+                    return active.dispatch();
+                }
+
+                fn runSnapshotRunImage(ptr: *anyopaque) anyerror!RunImage {
+                    const active: *RunType = @ptrCast(@alignCast(ptr));
+                    return active.snapshotRunImage();
+                }
+
+                fn runDeinit(ptr: *anyopaque, allocator: std.mem.Allocator) void {
+                    const active: *RunType = @ptrCast(@alignCast(ptr));
+                    active.deinit();
+                    allocator.destroy(active);
+                }
+
+                const vtable = VTable{
+                    .nextFrame = runNextFrame,
+                    .resumeFrame = runResumeFrame,
+                    .dispatch = runDispatch,
+                    .snapshotRunImage = runSnapshotRunImage,
+                    .deinit = runDeinit,
+                };
+            };
+            return .{
+                .ptr = @ptrCast(run),
+                .vtable = &Impl.vtable,
+            };
+        }
+    };
+
+    pub fn canTransition(from: RunStatus, to: RunStatus) bool {
+        return switch (from) {
+            .admitted => switch (to) {
+                .runnable, .rejected, .failed => true,
+                else => false,
+            },
+            .runnable => switch (to) {
+                .running, .parked_on_port, .parked_on_supervision, .completed, .failed, .exported => true,
+                else => false,
+            },
+            .running => switch (to) {
+                .parked_on_port, .parked_on_supervision, .completed, .failed => true,
+                else => false,
+            },
+            .parked_on_port, .parked_on_supervision => switch (to) {
+                .runnable, .failed, .exported => true,
+                else => false,
+            },
+            .completed, .failed, .exported, .rejected => false,
+        };
+    }
+
+    pub const RunSlot = struct {
+        handle: RunHandle,
+        target_ref: TargetRef,
+        current_state: RunState,
+        status: RunStatus,
+        admission_receipt_fingerprint: ?u64 = null,
+        run_permit_fingerprint: ?u64 = null,
+        run_receipt_fingerprint: ?u64 = null,
+        pending_mailbox_id: ?u64 = null,
+        branch_id: ?u64 = null,
+        checkpoint_fingerprint: ?u64 = null,
+        target_match_fingerprint: ?u64 = null,
+        module_ref_fingerprint: ?u64 = null,
+        driver: ?SlotDriver = null,
+
+        pub const Status = RunStatus;
+        pub const Transition = enum {
+            step,
+            park_on_port,
+            resume_from_port,
+            complete,
+            fail,
+            @"export",
+            reject,
+        };
+
+        pub fn init(handle: RunHandle) @This() {
+            const state = RunState.init(.{
+                .target_ref_fingerprint = handle.target_ref_fingerprint,
+                .status = .not_started,
+            });
+            return .{
+                .handle = handle,
+                .target_ref = .{
+                    .target_ref_fingerprint = handle.target_ref_fingerprint,
+                    .world_surface_fingerprint = 0,
+                    .target_certificate_fingerprint = 0,
+                },
+                .current_state = state,
+                .status = .admitted,
+                .admission_receipt_fingerprint = handle.admission_receipt_fingerprint,
+                .run_permit_fingerprint = handle.permit_fingerprint,
+                .branch_id = handle.branch_id,
+            };
+        }
+
+        pub fn fromState(args: struct {
+            handle: RunHandle,
+            target_ref: TargetRef,
+            current_state: RunState,
+            status: RunStatus = .admitted,
+            admission_receipt_fingerprint: ?u64 = null,
+            run_permit_fingerprint: ?u64 = null,
+            run_receipt_fingerprint: ?u64 = null,
+            pending_mailbox_id: ?u64 = null,
+            branch_id: ?u64 = null,
+            checkpoint_fingerprint: ?u64 = null,
+            target_match_fingerprint: ?u64 = null,
+            module_ref_fingerprint: ?u64 = null,
+            driver: ?SlotDriver = null,
+        }) @This() {
+            return .{
+                .handle = args.handle,
+                .target_ref = args.target_ref,
+                .current_state = args.current_state,
+                .status = args.status,
+                .admission_receipt_fingerprint = args.admission_receipt_fingerprint,
+                .run_permit_fingerprint = args.run_permit_fingerprint,
+                .run_receipt_fingerprint = args.run_receipt_fingerprint,
+                .pending_mailbox_id = args.pending_mailbox_id,
+                .branch_id = args.branch_id,
+                .checkpoint_fingerprint = args.checkpoint_fingerprint,
+                .target_match_fingerprint = args.target_match_fingerprint,
+                .module_ref_fingerprint = args.module_ref_fingerprint,
+                .driver = args.driver,
+            };
+        }
+
+        pub fn toHandle(self: @This()) RunHandle {
+            return self.handle;
+        }
+
+        pub fn transition(self: *@This(), transition_kind: Transition, mailbox_id: ?u64) !void {
+            switch (transition_kind) {
+                .step => switch (self.status) {
+                    .admitted, .runnable => {
+                        self.status = .runnable;
+                        self.current_state = RunState.init(.{
+                            .target_ref_fingerprint = self.handle.target_ref_fingerprint,
+                            .turn_index = self.current_state.turn_index,
+                            .status = .running,
+                        });
+                    },
+                    else => return error.InvalidRunspaceTransition,
+                },
+                .park_on_port => switch (self.status) {
+                    .runnable, .running => {
+                        const pending_mailbox_id = mailbox_id orelse return error.InvalidRunspaceTransition;
+                        self.status = .parked_on_port;
+                        self.pending_mailbox_id = pending_mailbox_id;
+                        self.current_state = RunState.init(.{
+                            .target_ref_fingerprint = self.handle.target_ref_fingerprint,
+                            .turn_index = self.current_state.turn_index,
+                            .status = .parked_on_port,
+                        });
+                    },
+                    else => return error.InvalidRunspaceTransition,
+                },
+                .resume_from_port => switch (self.status) {
+                    .parked_on_port => {
+                        if (mailbox_id) |expected| {
+                            if (self.pending_mailbox_id != expected) return error.StaleRunHandle;
+                        }
+                        self.status = .runnable;
+                        self.pending_mailbox_id = null;
+                        self.current_state = RunState.init(.{
+                            .target_ref_fingerprint = self.handle.target_ref_fingerprint,
+                            .turn_index = self.current_state.turn_index + 1,
+                            .status = .running,
+                        });
+                    },
+                    else => return error.InvalidRunspaceTransition,
+                },
+                .complete => switch (self.status) {
+                    .runnable, .running => {
+                        self.status = .completed;
+                        self.current_state = RunState.init(.{
+                            .target_ref_fingerprint = self.handle.target_ref_fingerprint,
+                            .turn_index = self.current_state.turn_index,
+                            .status = .completed,
+                        });
+                    },
+                    else => return error.InvalidRunspaceTransition,
+                },
+                .fail => switch (self.status) {
+                    .admitted, .runnable, .running, .parked_on_port, .parked_on_supervision => {
+                        self.status = .failed;
+                        self.current_state = RunState.init(.{
+                            .target_ref_fingerprint = self.handle.target_ref_fingerprint,
+                            .turn_index = self.current_state.turn_index,
+                            .status = .failed,
+                        });
+                    },
+                    else => return error.InvalidRunspaceTransition,
+                },
+                .@"export" => switch (self.status) {
+                    .parked_on_port, .completed => self.status = .exported,
+                    else => return error.InvalidRunspaceTransition,
+                },
+                .reject => switch (self.status) {
+                    .admitted => self.status = .rejected,
+                    else => return error.InvalidRunspaceTransition,
+                },
+            }
+        }
+
+        pub fn summary(self: @This()) RunSlotSummary {
+            return .{
+                .handle = self.handle,
+                .target_ref_fingerprint = self.target_ref.target_ref_fingerprint,
+                .run_state_fingerprint = self.current_state.run_state_fingerprint,
+                .status = self.status,
+                .admission_receipt_fingerprint = self.admission_receipt_fingerprint,
+                .run_permit_fingerprint = self.run_permit_fingerprint,
+                .run_receipt_fingerprint = self.run_receipt_fingerprint,
+                .pending_mailbox_id = self.pending_mailbox_id,
+                .branch_id = self.branch_id,
+                .checkpoint_fingerprint = self.checkpoint_fingerprint,
+                .target_match_fingerprint = self.target_match_fingerprint,
+                .module_ref_fingerprint = self.module_ref_fingerprint,
+            };
+        }
+    };
+
+    pub const RunSlotSummary = struct {
+        handle: RunHandle,
+        target_ref_fingerprint: u64,
+        run_state_fingerprint: u64,
+        status: RunStatus,
+        admission_receipt_fingerprint: ?u64 = null,
+        run_permit_fingerprint: ?u64 = null,
+        run_receipt_fingerprint: ?u64 = null,
+        pending_mailbox_id: ?u64 = null,
+        branch_id: ?u64 = null,
+        checkpoint_fingerprint: ?u64 = null,
+        target_match_fingerprint: ?u64 = null,
+        module_ref_fingerprint: ?u64 = null,
+    };
+
+    pub const PendingPort = struct {
+        format_version: u32 = world_pending_port_format_version,
+        fingerprint_version: u32 = world_pending_port_fingerprint_version,
+        pending_port_fingerprint: u64,
+        handle: RunHandle,
+        mailbox_id: u64,
+        world_surface_fingerprint: u64,
+        target_certificate_fingerprint: u64,
+        world_port_id: u32,
+        request_fingerprint: u64,
+        request_frame_fingerprint: u64,
+        request_frame: ?Frame.Request = null,
+        owns_request_frame: bool = false,
+        expected_response_kind: ResponseKind = .@"resume",
+        expected_response_value_table_id: ?u32 = null,
+        residual_site_index: usize,
+        residual_site_fingerprint: u64,
+        target_ref_fingerprint: u64,
+        environment_certificate_fingerprint: ?u64 = null,
+        run_permit_fingerprint: ?u64 = null,
+        turn_index: usize,
+        inserted_event_index: u64,
+        status: PendingStatus = .pending,
+
+        pub const Status = PendingStatus;
+
+        pub fn init(args: struct {
+            handle: RunHandle,
+            mailbox_id: u64,
+            request: Frame.Request,
+            target_ref_fingerprint: u64 = 0,
+            environment_certificate_fingerprint: ?u64 = null,
+            run_permit_fingerprint: ?u64 = null,
+            inserted_event_index: u64 = 0,
+        }) @This() {
+            var result = @This(){
+                .pending_port_fingerprint = 0,
+                .handle = args.handle,
+                .mailbox_id = args.mailbox_id,
+                .world_surface_fingerprint = args.request.world_surface_fingerprint,
+                .target_certificate_fingerprint = args.request.target_certificate_fingerprint,
+                .world_port_id = args.request.world_port_id,
+                .request_fingerprint = args.request.request_fingerprint,
+                .request_frame_fingerprint = args.request.frame_fingerprint,
+                .request_frame = args.request,
+                .owns_request_frame = true,
+                .expected_response_value_table_id = args.request.expected_response_value_table_id,
+                .residual_site_index = args.request.residual_site_index,
+                .residual_site_fingerprint = args.request.residual_site_fingerprint,
+                .target_ref_fingerprint = if (args.target_ref_fingerprint != 0) args.target_ref_fingerprint else args.handle.target_ref_fingerprint,
+                .environment_certificate_fingerprint = args.environment_certificate_fingerprint,
+                .run_permit_fingerprint = args.run_permit_fingerprint,
+                .turn_index = args.request.turn_index,
+                .inserted_event_index = args.inserted_event_index,
+            };
+            result.pending_port_fingerprint = fingerprintPendingPort(result);
+            return result;
+        }
+
+        pub fn withStatus(self: @This(), status: PendingStatus) @This() {
+            var result = self;
+            result.status = status;
+            result.pending_port_fingerprint = fingerprintPendingPort(result);
+            return result;
+        }
+
+        pub fn transition(self: *@This(), status: PendingStatus) !void {
+            if (self.status != .pending) return error.InvalidPendingPortTransition;
+            if (status == .pending) return error.InvalidPendingPortTransition;
+            self.status = status;
+            self.pending_port_fingerprint = fingerprintPendingPort(self.*);
+        }
+
+        pub fn validateResponse(self: @This(), response: Frame.Response) !void {
+            if (self.status != .pending) return error.PendingPortConsumed;
+            if (response.world_surface_fingerprint != self.world_surface_fingerprint) return error.FrameSurfaceMismatch;
+            if (response.target_certificate_fingerprint != self.target_certificate_fingerprint) return error.FrameTargetCertificateMismatch;
+            if (response.world_port_id != self.world_port_id) return error.FramePortMismatch;
+            if (response.request_fingerprint != self.request_fingerprint) return error.FrameRequestFingerprintMismatch;
+            if (response.response_kind != self.expected_response_kind) return error.VerifyResponseKindMismatch;
+            if (response.status == .responded and response.response_value_table_id != self.expected_response_value_table_id) return error.FrameValueTableMismatch;
+        }
+
+        pub fn validate(self: @This()) !void {
+            if (self.format_version != world_pending_port_format_version) return error.InvalidFrameEncoding;
+            if (self.fingerprint_version != world_pending_port_fingerprint_version) return error.InvalidFrameEncoding;
+            try self.handle.validate();
+            if (fingerprintPendingPort(self) != self.pending_port_fingerprint) return error.InvalidFrameEncoding;
+        }
+
+        pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+            if (self.owns_request_frame) {
+                if (self.request_frame) |*frame| frame.deinit(allocator);
+            }
+            self.* = undefined;
+        }
+    };
+
+    pub const Mailbox = struct {
+        allocator: std.mem.Allocator,
+        pending: std.ArrayList(Runspace.PendingPort) = .empty,
+        max_pending_ports: ?usize = null,
+
+        pub fn init(allocator: std.mem.Allocator, max_pending_ports: ?usize) @This() {
+            return .{
+                .allocator = allocator,
+                .max_pending_ports = max_pending_ports,
+            };
+        }
+
+        pub fn deinit(self: *@This()) void {
+            for (self.pending.items) |*pending_port| pending_port.deinit(self.allocator);
+            self.pending.deinit(self.allocator);
+            self.* = undefined;
+        }
+
+        pub fn push(self: *@This(), args: struct {
+            run_handle: RunHandle,
+            mailbox_id: u64,
+            request: Frame.Request,
+            target_ref_fingerprint: u64,
+            environment_certificate_fingerprint: ?u64 = null,
+            run_permit_fingerprint: ?u64 = null,
+            inserted_event_index: u64,
+        }) !Runspace.PendingPort {
+            if (self.max_pending_ports) |max| {
+                if (self.pendingCount() >= max) return error.BudgetExceeded;
+            }
+            try self.assertNoDuplicateRequestFingerprint(args.run_handle, args.request.request_fingerprint);
+            const pending_port = Runspace.PendingPort.init(.{
+                .handle = args.run_handle,
+                .mailbox_id = args.mailbox_id,
+                .request = args.request,
+                .target_ref_fingerprint = args.target_ref_fingerprint,
+                .environment_certificate_fingerprint = args.environment_certificate_fingerprint,
+                .run_permit_fingerprint = args.run_permit_fingerprint,
+                .inserted_event_index = args.inserted_event_index,
+            });
+            try self.pending.append(self.allocator, pending_port);
+            return pending_port;
+        }
+
+        pub fn get(self: *const @This(), mailbox_id: u64) !Runspace.PendingPort {
+            const index = try self.indexOf(mailbox_id);
+            return self.pending.items[index];
+        }
+
+        pub fn listPending(self: *const @This()) []const Runspace.PendingPort {
+            return self.pending.items;
+        }
+
+        pub fn respond(self: *@This(), mailbox_id: u64, response: Frame.Response) !Runspace.PendingPort {
+            const index = try self.indexOf(mailbox_id);
+            const current = self.pending.items[index];
+            try current.validateResponse(response);
+            const responded = current.withStatus(.responded);
+            self.pending.items[index] = responded;
+            return responded;
+        }
+
+        pub fn markResponded(self: *@This(), mailbox_id: u64) !Runspace.PendingPort {
+            const index = try self.indexOf(mailbox_id);
+            const current = self.pending.items[index];
+            if (current.status != .pending) return error.PendingPortConsumed;
+            const responded = current.withStatus(.responded);
+            self.pending.items[index] = responded;
+            return responded;
+        }
+
+        pub fn cancel(self: *@This(), mailbox_id: u64, reason: []const u8) !Runspace.PendingPort {
+            _ = reason;
+            const index = try self.indexOf(mailbox_id);
+            const current = self.pending.items[index];
+            if (current.status != .pending) return error.PendingPortConsumed;
+            const cancelled = current.withStatus(.cancelled);
+            self.pending.items[index] = cancelled;
+            return cancelled;
+        }
+
+        pub fn markExported(self: *@This(), mailbox_id: u64) !Runspace.PendingPort {
+            const index = try self.indexOf(mailbox_id);
+            const current = self.pending.items[index];
+            if (current.status != .pending) return error.PendingPortConsumed;
+            const exported = current.withStatus(.exported);
+            self.pending.items[index] = exported;
+            return exported;
+        }
+
+        pub fn fail(self: *@This(), mailbox_id: u64, reason: []const u8) !Runspace.PendingPort {
+            _ = reason;
+            const index = try self.indexOf(mailbox_id);
+            const current = self.pending.items[index];
+            if (current.status != .pending) return error.PendingPortConsumed;
+            const failed = current.withStatus(.failed);
+            self.pending.items[index] = failed;
+            return failed;
+        }
+
+        pub fn assertNoDuplicateRequestFingerprint(self: *const @This(), run_handle: RunHandle, request_fingerprint: u64) !void {
+            for (self.pending.items) |pending_port| {
+                if (pending_port.status == .pending and
+                    pending_port.handle.handle_fingerprint == run_handle.handle_fingerprint and
+                    pending_port.request_fingerprint == request_fingerprint)
+                {
+                    return error.InvalidPendingPortTransition;
+                }
+            }
+        }
+
+        pub fn pendingCount(self: *const @This()) usize {
+            var count: usize = 0;
+            for (self.pending.items) |pending_port| {
+                if (pending_port.status == .pending) count += 1;
+            }
+            return count;
+        }
+
+        fn indexOf(self: *const @This(), mailbox_id: u64) !usize {
+            for (self.pending.items, 0..) |pending_port, index| {
+                if (pending_port.mailbox_id == mailbox_id) return index;
+            }
+            return error.InvalidPendingPortTransition;
+        }
+    };
+
+    pub const RunspaceEvent = struct {
+        event_fingerprint: u64,
+        kind: Runspace.EventKind,
+        runspace_fingerprint: u64,
+        event_index: u64,
+        run_handle: RunHandle,
+        pending_port_fingerprint: ?u64 = null,
+        request_frame_fingerprint: ?u64 = null,
+        response_frame_fingerprint: ?u64 = null,
+        run_state_fingerprint: u64,
+        run_receipt_fingerprint: ?u64 = null,
+        admission_receipt_fingerprint: ?u64 = null,
+        run_permit_fingerprint: ?u64 = null,
+        summary: []const u8 = "",
+
+        pub fn init(args: struct {
+            kind: Runspace.EventKind,
+            runspace_fingerprint: u64,
+            event_index: u64,
+            run_handle: RunHandle,
+            pending_port_fingerprint: ?u64 = null,
+            request_frame_fingerprint: ?u64 = null,
+            response_frame_fingerprint: ?u64 = null,
+            run_state_fingerprint: u64,
+            run_receipt_fingerprint: ?u64 = null,
+            admission_receipt_fingerprint: ?u64 = null,
+            run_permit_fingerprint: ?u64 = null,
+            summary: []const u8 = "",
+        }) @This() {
+            var result = @This(){
+                .event_fingerprint = 0,
+                .kind = args.kind,
+                .runspace_fingerprint = args.runspace_fingerprint,
+                .event_index = args.event_index,
+                .run_handle = args.run_handle,
+                .pending_port_fingerprint = args.pending_port_fingerprint,
+                .request_frame_fingerprint = args.request_frame_fingerprint,
+                .response_frame_fingerprint = args.response_frame_fingerprint,
+                .run_state_fingerprint = args.run_state_fingerprint,
+                .run_receipt_fingerprint = args.run_receipt_fingerprint,
+                .admission_receipt_fingerprint = args.admission_receipt_fingerprint,
+                .run_permit_fingerprint = args.run_permit_fingerprint,
+                .summary = args.summary,
+            };
+            result.event_fingerprint = fingerprintRunspaceEvent(result);
+            return result;
+        }
+    };
+
+    pub const RunspaceReport = struct {
+        runspace_fingerprint: u64,
+        event_count: usize,
+        run_count: usize,
+        runnable_count: usize,
+        parked_count: usize,
+        completed_count: usize,
+        failed_count: usize,
+        pending_port_count: usize,
+        emitted_events: []const Runspace.RunspaceEvent = &.{},
+        blocker_count: usize = 0,
+        warning_count: usize = 0,
+    };
+
+    pub fn init(allocator: std.mem.Allocator, config: Config) @This() {
+        const runspace_fingerprint = fingerprintRunspaceConfig(config);
+        return .{
+            .allocator = allocator,
+            .config = config,
+            .runspace_fingerprint = runspace_fingerprint,
+            .mailbox = Runspace.Mailbox.init(allocator, config.max_pending_ports),
+        };
+    }
+
+    pub fn deinit(self: *@This()) void {
+        for (self.slots.items) |*slot| {
+            if (slot.driver) |driver| {
+                driver.deinit(self.allocator);
+                slot.driver = null;
+            }
+        }
+        self.slots.deinit(self.allocator);
+        self.events.deinit(self.allocator);
+        self.mailbox.deinit();
+        self.* = undefined;
+    }
+
+    pub fn installAdmitted(self: *@This(), admitted_run: Admission.AdmittedRun) !RunHandle {
+        if (self.config.require_supervision and admitted_run.run_permit == null) return error.SupervisionDenied;
+        const target_ref = admitted_run.target_ref;
+        const current_state = if (admitted_run.run_image) |image| image.current_state else RunState.init(.{
+            .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+            .transcript_image_fingerprint = if (admitted_run.transcript_image) |image| image.transcript_image_fingerprint else null,
+            .branch_id = admitted_run.selected_branch_id orelse 0,
+            .checkpoint_fingerprint = admitted_run.selected_checkpoint_ref,
+            .status = .not_started,
+        });
+        const handle = try self.nextHandle(.{
+            .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+            .admission_receipt_fingerprint = admitted_run.admission_receipt_fingerprint,
+            .permit_fingerprint = if (admitted_run.run_permit) |permit| permit.permit_fingerprint else null,
+            .branch_id = admitted_run.selected_branch_id,
+        });
+        const slot = Runspace.RunSlot.fromState(.{
+            .handle = handle,
+            .target_ref = target_ref,
+            .current_state = current_state,
+            .status = statusFromRunState(current_state),
+            .admission_receipt_fingerprint = admitted_run.admission_receipt_fingerprint,
+            .run_permit_fingerprint = if (admitted_run.run_permit) |permit| permit.permit_fingerprint else null,
+            .pending_mailbox_id = null,
+            .branch_id = admitted_run.selected_branch_id,
+            .checkpoint_fingerprint = admitted_run.selected_checkpoint_ref,
+        });
+        try self.installSlot(slot, .run_admitted, "admitted run installed");
+        if (admitted_run.run_image) |image| {
+            if (image.current_state.status == .parked_on_port) {
+                const pending_frame = image.pending_request_frame orelse return error.HandoffPendingFrameMismatch;
+                try self.enqueueInstalledPending(self.slots.items.len - 1, pending_frame);
+            }
+        }
+        return handle;
+    }
+
+    pub fn installRunImage(self: *@This(), image: RunImage) !RunHandle {
+        if (self.config.require_admission) return error.RunspaceAdmissionRequired;
+        if (!self.config.allow_handoff_install) return error.RunspaceInstallDenied;
+        const handle = try self.nextHandle(.{
+            .target_ref_fingerprint = image.target_ref.target_ref_fingerprint,
+            .permit_fingerprint = image.prior_run_permit_fingerprint,
+            .branch_id = if (image.current_state.branch_id == 0) null else image.current_state.branch_id,
+        });
+        const slot = Runspace.RunSlot.fromState(.{
+            .handle = handle,
+            .target_ref = image.target_ref,
+            .current_state = image.current_state,
+            .status = statusFromRunState(image.current_state),
+            .run_permit_fingerprint = image.prior_run_permit_fingerprint,
+            .run_receipt_fingerprint = image.prior_run_receipt_fingerprint,
+            .branch_id = if (image.current_state.branch_id == 0) null else image.current_state.branch_id,
+            .checkpoint_fingerprint = image.current_state.checkpoint_fingerprint,
+            .module_ref_fingerprint = image.module_ref_fingerprint,
+        });
+        try self.installSlot(slot, .run_installed, "run image installed");
+        if (image.current_state.status == .parked_on_port) {
+            const pending_frame = image.pending_request_frame orelse return error.HandoffPendingFrameMismatch;
+            try self.enqueueInstalledPending(self.slots.items.len - 1, pending_frame);
+        }
+        return handle;
+    }
+
+    pub fn installTarget(self: *@This(), comptime Target: type, env: anytype, permit: ?RunPermit, args: anytype) !RunHandle {
+        _ = env;
+        _ = args;
+        if (self.config.require_admission) return error.RunspaceAdmissionRequired;
+        if (!self.config.allow_direct_target_install) return error.RunspaceInstallDenied;
+        if (self.config.require_supervision and permit == null) return error.SupervisionDenied;
+        const target_ref = TargetRef.fromTarget(Target);
+        const handle = try self.nextHandle(.{
+            .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+            .permit_fingerprint = if (permit) |run_permit| run_permit.permit_fingerprint else null,
+        });
+        const state = RunState.init(.{
+            .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+            .status = .not_started,
+        });
+        const slot = Runspace.RunSlot.fromState(.{
+            .handle = handle,
+            .target_ref = target_ref,
+            .current_state = state,
+            .status = .runnable,
+            .run_permit_fingerprint = if (permit) |run_permit| run_permit.permit_fingerprint else null,
+        });
+        try self.installSlot(slot, .run_installed, "direct target installed");
+        return handle;
+    }
+
+    pub fn installMachineRun(self: *@This(), comptime Target: type, comptime Env: type, runtime: anytype, args: anytype, options: anytype) !RunHandle {
+        if (self.config.require_admission) return error.RunspaceAdmissionRequired;
+        if (!self.config.allow_direct_target_install) return error.RunspaceInstallDenied;
+        const Options = @TypeOf(options);
+        const maybe_permit: ?RunPermit = if (comptime @hasField(Options, "permit")) @field(options, "permit") else null;
+        if (self.config.require_supervision and maybe_permit == null) return error.SupervisionDenied;
+        const MachineType = Machine(Target, Env.machine_config);
+        var run = try MachineType.start(runtime, args, options);
+        var run_owned = true;
+        errdefer if (run_owned) run.deinit();
+        const RunType = @TypeOf(run);
+        const run_ptr = try self.allocator.create(RunType);
+        errdefer self.allocator.destroy(run_ptr);
+        run_ptr.* = run;
+        run_owned = false;
+        var driver = SlotDriver.forRun(RunType, run_ptr);
+        var driver_owned = true;
+        errdefer if (driver_owned) driver.deinit(self.allocator);
+        const target_ref = TargetRef.fromTarget(Target);
+        const handle = try self.nextHandle(.{
+            .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+            .permit_fingerprint = if (maybe_permit) |permit| permit.permit_fingerprint else null,
+        });
+        const state = RunState.init(.{
+            .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+            .status = .not_started,
+        });
+        const slot = Runspace.RunSlot.fromState(.{
+            .handle = handle,
+            .target_ref = target_ref,
+            .current_state = state,
+            .status = .runnable,
+            .run_permit_fingerprint = if (maybe_permit) |permit| permit.permit_fingerprint else null,
+            .driver = driver,
+        });
+        try self.installSlot(slot, .run_installed, "machine run installed");
+        driver_owned = false;
+        return handle;
+    }
+
+    pub fn installReplay(self: *@This(), comptime Target: type, transcript_image: TranscriptImage, permit: ?RunPermit) !RunHandle {
+        if (self.config.require_admission) return error.RunspaceAdmissionRequired;
+        if (!self.config.allow_replay_install) return error.RunspaceInstallDenied;
+        if (self.config.require_supervision and permit == null) return error.SupervisionDenied;
+        var image = RunImage.fromTranscriptImage(Target, transcript_image, .replay_only_run);
+        image.prior_run_permit_fingerprint = if (permit) |run_permit| run_permit.permit_fingerprint else null;
+        image.run_image_fingerprint = fingerprintRunImageV3(image);
+        const handle = try self.nextHandle(.{
+            .target_ref_fingerprint = image.target_ref.target_ref_fingerprint,
+            .permit_fingerprint = image.prior_run_permit_fingerprint,
+            .branch_id = if (image.current_state.branch_id == 0) null else image.current_state.branch_id,
+        });
+        const slot = Runspace.RunSlot.fromState(.{
+            .handle = handle,
+            .target_ref = image.target_ref,
+            .current_state = image.current_state,
+            .status = statusFromRunState(image.current_state),
+            .run_permit_fingerprint = image.prior_run_permit_fingerprint,
+            .branch_id = if (image.current_state.branch_id == 0) null else image.current_state.branch_id,
+            .checkpoint_fingerprint = image.current_state.checkpoint_fingerprint,
+        });
+        try self.installSlot(slot, .run_installed, "replay run installed");
+        return handle;
+    }
+
+    pub fn installVerifyRun(self: *@This(), comptime Target: type, comptime Env: type, runtime: anytype, args: anytype, options: anytype) !RunHandle {
+        return self.installMachineRun(Target, Env, runtime, args, options);
+    }
+
+    pub fn getSlotSummary(self: *const @This(), handle: RunHandle) !Runspace.RunSlotSummary {
+        return self.slots.items[try self.slotIndex(handle)].summary();
+    }
+
+    pub fn listRunSummaries(self: *const @This(), allocator: std.mem.Allocator) ![]Runspace.RunSlotSummary {
+        const summaries = try allocator.alloc(Runspace.RunSlotSummary, self.slots.items.len);
+        for (self.slots.items, 0..) |slot, index| {
+            summaries[index] = slot.summary();
+        }
+        return summaries;
+    }
+
+    pub fn poll(self: *const @This()) Runspace.RunspaceReport {
+        return self.report();
+    }
+
+    pub fn tick(self: *@This()) !Runspace.RunspaceReport {
+        const initial_len = self.slots.items.len;
+        var index: usize = 0;
+        while (index < initial_len) : (index += 1) {
+            switch (self.slots.items[index].status) {
+                .admitted, .runnable => _ = try self.stepAt(index),
+                else => {},
+            }
+        }
+        return self.report();
+    }
+
+    pub fn stepOne(self: *@This()) !Runspace.RunspaceEvent {
+        for (self.slots.items, 0..) |slot, index| {
+            switch (slot.status) {
+                .admitted, .runnable => return self.stepAt(index),
+                else => {},
+            }
+        }
+        return error.InvalidRunspaceTransition;
+    }
+
+    pub fn step(self: *@This(), handle: RunHandle) !Runspace.RunspaceEvent {
+        return self.stepAt(try self.slotIndex(handle));
+    }
+
+    pub fn respond(self: *@This(), mailbox_id: u64, response: Frame.Response) !Runspace.RunspaceEvent {
+        const pending = try self.mailbox.respond(mailbox_id, response);
+        const index = try self.slotIndex(pending.handle);
+        var slot = &self.slots.items[index];
+        if (slot.pending_mailbox_id != mailbox_id or slot.status != .parked_on_port) return error.StaleRunHandle;
+        if (slot.driver) |driver| {
+            driver.resumeFrame(response) catch |err| {
+                slot.transition(.fail, null) catch {};
+                return err;
+            };
+        } else {
+            return error.InvalidRunspaceTransition;
+        }
+        try slot.transition(.resume_from_port, mailbox_id);
+        _ = try self.appendEvent(.{
+            .kind = .port_responded,
+            .run_handle = slot.handle,
+            .pending_port_fingerprint = pending.pending_port_fingerprint,
+            .response_frame_fingerprint = response.frame_fingerprint,
+            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+            .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .summary = "port responded",
+        });
+        return self.appendEvent(.{
+            .kind = .run_resumed,
+            .run_handle = slot.handle,
+            .pending_port_fingerprint = pending.pending_port_fingerprint,
+            .response_frame_fingerprint = response.frame_fingerprint,
+            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+            .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .summary = "run resumed",
+        });
+    }
+
+    pub fn respondValue(self: *@This(), mailbox_id: u64, value: anytype) !Runspace.RunspaceEvent {
+        const pending = try self.mailbox.get(mailbox_id);
+        const request = pending.request_frame orelse return error.InvalidPendingPortTransition;
+        var response = try Frame.Response.fromPortableValue(self.allocator, request, pending.expected_response_value_table_id, pending.expected_response_kind, value, .portable);
+        defer response.deinit(self.allocator);
+        return self.respond(mailbox_id, response);
+    }
+
+    pub fn exportRun(self: *@This(), handle: RunHandle) !RunImage {
+        const index = try self.slotIndex(handle);
+        var slot = &self.slots.items[index];
+        const image = try self.snapshotSlotImage(index);
+        errdefer {
+            var owned = image;
+            owned.deinit(self.allocator);
+        }
+        try slot.transition(.@"export", null);
+        _ = try self.appendEvent(.{
+            .kind = .run_exported,
+            .run_handle = slot.handle,
+            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+            .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .summary = "run exported",
+        });
+        return image;
+    }
+
+    pub fn exportPending(self: *@This(), mailbox_id: u64) !RunImage {
+        const pending = try self.mailbox.get(mailbox_id);
+        var image = try self.exportRun(pending.handle);
+        errdefer image.deinit(self.allocator);
+        _ = try self.mailbox.markExported(mailbox_id);
+        return image;
+    }
+
+    pub fn exportHandoff(self: *@This(), handle: RunHandle) !RunImage {
+        return self.exportRun(handle);
+    }
+
+    pub fn checkpoint(self: *@This(), handle: RunHandle) !Timeline.Checkpoint {
+        const index = try self.slotIndex(handle);
+        const slot = &self.slots.items[index];
+        const checkpoint_status: Timeline.Checkpoint.Status = switch (slot.status) {
+            .admitted, .runnable, .running => .running,
+            .parked_on_port, .parked_on_supervision => .parked_on_port,
+            .completed, .exported => .completed,
+            .failed, .rejected => .failed,
+        };
+        const checkpoint_value = Timeline.Checkpoint.init(.{
+            .world_surface_fingerprint = slot.target_ref.world_surface_fingerprint,
+            .target_certificate_fingerprint = slot.target_ref.target_certificate_fingerprint,
+            .event_index = self.events.items.len,
+            .turn_index = slot.current_state.turn_index,
+            .current_request_fingerprint = slot.current_state.pending_request_fingerprint,
+            .last_response_fingerprint = slot.current_state.final_response_fingerprint,
+            .transcript_prefix_fingerprint = slot.current_state.transcript_image_fingerprint orelse slot.current_state.run_state_fingerprint,
+            .branch_id = slot.branch_id orelse 0,
+            .status = checkpoint_status,
+        });
+        _ = try self.appendEvent(.{
+            .kind = .checkpoint_created,
+            .run_handle = slot.handle,
+            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+            .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .summary = "checkpoint created",
+        });
+        return checkpoint_value;
+    }
+
+    pub fn branch(self: *@This(), handle: RunHandle, checkpoint_value: Timeline.Checkpoint, options: anytype) !RunHandle {
+        const index = try self.slotIndex(handle);
+        const parent = self.slots.items[index];
+        if (parent.target_ref.world_surface_fingerprint != checkpoint_value.world_surface_fingerprint) return error.HandoffCheckpointMismatch;
+        if (parent.target_ref.target_certificate_fingerprint != checkpoint_value.target_certificate_fingerprint) return error.HandoffCheckpointMismatch;
+        const branch_id = self.next_run_id;
+        const branch_handle = try self.nextHandle(.{
+            .target_ref_fingerprint = parent.target_ref.target_ref_fingerprint,
+            .admission_receipt_fingerprint = parent.admission_receipt_fingerprint,
+            .permit_fingerprint = parent.run_permit_fingerprint,
+            .branch_id = branch_id,
+        });
+        var branch_state = parent.current_state;
+        branch_state.branch_id = branch_id;
+        branch_state.checkpoint_fingerprint = checkpoint_value.checkpoint_fingerprint;
+        branch_state.run_state_fingerprint = fingerprintRunState(branch_state);
+        const slot = Runspace.RunSlot.fromState(.{
+            .handle = branch_handle,
+            .target_ref = parent.target_ref,
+            .current_state = branch_state,
+            .status = parent.status,
+            .admission_receipt_fingerprint = parent.admission_receipt_fingerprint,
+            .run_permit_fingerprint = parent.run_permit_fingerprint,
+            .run_receipt_fingerprint = parent.run_receipt_fingerprint,
+            .branch_id = branch_id,
+            .checkpoint_fingerprint = checkpoint_value.checkpoint_fingerprint,
+            .target_match_fingerprint = parent.target_match_fingerprint,
+            .module_ref_fingerprint = parent.module_ref_fingerprint,
+        });
+        const summary_text = if (@hasField(@TypeOf(options), "summary")) @field(options, "summary") else "run branch created";
+        try self.installSlot(slot, .run_branch_created, summary_text);
+        return branch_handle;
+    }
+
+    pub fn listBranches(self: *const @This(), handle: RunHandle, allocator: std.mem.Allocator) ![]RunHandle {
+        const index = try self.slotIndex(handle);
+        const parent = self.slots.items[index];
+        var branches: std.ArrayList(RunHandle) = .empty;
+        errdefer branches.deinit(allocator);
+        for (self.slots.items) |slot| {
+            if (slot.handle.handle_fingerprint == parent.handle.handle_fingerprint) continue;
+            if (slot.target_ref.target_ref_fingerprint != parent.target_ref.target_ref_fingerprint) continue;
+            if (slot.branch_id != null) try branches.append(allocator, slot.handle);
+        }
+        return branches.toOwnedSlice(allocator);
+    }
+
+    pub fn summary(self: *const @This()) Runspace.RunspaceReport {
+        return self.report();
+    }
+
+    pub fn report(self: *const @This()) Runspace.RunspaceReport {
+        var result = Runspace.RunspaceReport{
+            .runspace_fingerprint = self.runspace_fingerprint,
+            .event_count = self.events.items.len,
+            .run_count = self.slots.items.len,
+            .runnable_count = 0,
+            .parked_count = 0,
+            .completed_count = 0,
+            .failed_count = 0,
+            .pending_port_count = self.mailbox.pendingCount(),
+            .emitted_events = self.events.items,
+        };
+        for (self.slots.items) |slot| {
+            switch (slot.status) {
+                .admitted, .runnable, .running => result.runnable_count += 1,
+                .parked_on_port, .parked_on_supervision => result.parked_count += 1,
+                .completed, .exported => result.completed_count += 1,
+                .failed, .rejected => result.failed_count += 1,
+            }
+        }
+        return result;
+    }
+
+    fn nextHandle(self: *@This(), args: struct {
+        target_ref_fingerprint: u64,
+        admission_receipt_fingerprint: ?u64 = null,
+        permit_fingerprint: ?u64 = null,
+        branch_id: ?u64 = null,
+    }) !RunHandle {
+        if (self.config.max_runs) |max| {
+            if (self.slots.items.len >= max) return error.BudgetExceeded;
+        }
+        const handle = RunHandle.init(.{
+            .runspace_fingerprint = self.runspace_fingerprint,
+            .local_run_id = self.next_run_id,
+            .target_ref_fingerprint = args.target_ref_fingerprint,
+            .admission_receipt_fingerprint = args.admission_receipt_fingerprint,
+            .permit_fingerprint = args.permit_fingerprint,
+            .branch_id = args.branch_id,
+            .generation = 0,
+        });
+        self.next_run_id += 1;
+        return handle;
+    }
+
+    fn installSlot(self: *@This(), slot: Runspace.RunSlot, event_kind: Runspace.EventKind, summary_text: []const u8) !void {
+        if (self.config.max_events) |max| {
+            if (self.events.items.len >= max) return error.BudgetExceeded;
+        }
+        try self.slots.append(self.allocator, slot);
+        const event = Runspace.RunspaceEvent.init(.{
+            .kind = event_kind,
+            .runspace_fingerprint = self.runspace_fingerprint,
+            .event_index = self.next_event_index,
+            .run_handle = slot.handle,
+            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+            .admission_receipt_fingerprint = slot.admission_receipt_fingerprint,
+            .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .summary = summary_text,
+        });
+        try self.events.append(self.allocator, event);
+        self.next_event_index += 1;
+    }
+
+    fn appendEvent(self: *@This(), args: struct {
+        kind: Runspace.EventKind,
+        run_handle: RunHandle,
+        pending_port_fingerprint: ?u64 = null,
+        request_frame_fingerprint: ?u64 = null,
+        response_frame_fingerprint: ?u64 = null,
+        run_state_fingerprint: u64,
+        run_receipt_fingerprint: ?u64 = null,
+        admission_receipt_fingerprint: ?u64 = null,
+        run_permit_fingerprint: ?u64 = null,
+        summary: []const u8 = "",
+    }) !Runspace.RunspaceEvent {
+        if (self.config.max_events) |max| {
+            if (self.events.items.len >= max) return error.BudgetExceeded;
+        }
+        const event = Runspace.RunspaceEvent.init(.{
+            .kind = args.kind,
+            .runspace_fingerprint = self.runspace_fingerprint,
+            .event_index = self.next_event_index,
+            .run_handle = args.run_handle,
+            .pending_port_fingerprint = args.pending_port_fingerprint,
+            .request_frame_fingerprint = args.request_frame_fingerprint,
+            .response_frame_fingerprint = args.response_frame_fingerprint,
+            .run_state_fingerprint = args.run_state_fingerprint,
+            .run_receipt_fingerprint = args.run_receipt_fingerprint,
+            .admission_receipt_fingerprint = args.admission_receipt_fingerprint,
+            .run_permit_fingerprint = args.run_permit_fingerprint,
+            .summary = args.summary,
+        });
+        try self.events.append(self.allocator, event);
+        self.next_event_index += 1;
+        return event;
+    }
+
+    fn snapshotSlotImage(self: *@This(), index: usize) !RunImage {
+        const slot = &self.slots.items[index];
+        if (slot.driver) |driver| return driver.snapshotRunImage();
+        var pending_frame: ?Frame.Request = null;
+        var owns_pending_frame = false;
+        errdefer if (owns_pending_frame) {
+            if (pending_frame) |*frame| frame.deinit(self.allocator);
+        };
+        if (slot.pending_mailbox_id) |mailbox_id| {
+            const pending = try self.mailbox.get(mailbox_id);
+            if (pending.request_frame) |request| {
+                pending_frame = try cloneRequestFrame(self.allocator, request);
+                owns_pending_frame = true;
+            }
+        }
+        var image = RunImage.init(.{
+            .kind = switch (slot.status) {
+                .parked_on_port, .parked_on_supervision => .parked_run,
+                .completed, .exported => .completed_run,
+                .failed, .rejected => .replay_only_run,
+                .admitted, .runnable, .running => .full_target_run,
+            },
+            .target_ref = slot.target_ref,
+            .import_set_fingerprint = 0,
+            .current_state = slot.current_state,
+            .pending_request_frame = pending_frame,
+            .prior_run_permit_fingerprint = slot.run_permit_fingerprint,
+            .prior_run_receipt_fingerprint = slot.run_receipt_fingerprint,
+            .module_ref_fingerprint = slot.module_ref_fingerprint,
+        });
+        image.owns_pending_request_frame = owns_pending_frame;
+        owns_pending_frame = false;
+        return image;
+    }
+
+    fn enqueueInstalledPending(self: *@This(), index: usize, request: Frame.Request) !void {
+        var slot = &self.slots.items[index];
+        const mailbox_id = self.next_mailbox_id;
+        var mailbox_request = try cloneRequestFrame(self.allocator, request);
+        var mailbox_request_owned = true;
+        errdefer if (mailbox_request_owned) mailbox_request.deinit(self.allocator);
+        const pending = try self.mailbox.push(.{
+            .run_handle = slot.handle,
+            .mailbox_id = mailbox_id,
+            .request = mailbox_request,
+            .target_ref_fingerprint = slot.target_ref.target_ref_fingerprint,
+            .environment_certificate_fingerprint = null,
+            .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .inserted_event_index = self.next_event_index,
+        });
+        mailbox_request_owned = false;
+        self.next_mailbox_id += 1;
+        slot.status = .parked_on_port;
+        slot.pending_mailbox_id = mailbox_id;
+        slot.current_state = RunState.init(.{
+            .target_ref_fingerprint = slot.target_ref.target_ref_fingerprint,
+            .pending_request_fingerprint = request.frame_fingerprint,
+            .turn_index = request.turn_index,
+            .status = .parked_on_port,
+        });
+        _ = try self.appendEvent(.{
+            .kind = .port_enqueued,
+            .run_handle = slot.handle,
+            .pending_port_fingerprint = pending.pending_port_fingerprint,
+            .request_frame_fingerprint = request.frame_fingerprint,
+            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+            .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .summary = "installed port enqueued",
+        });
+        _ = try self.appendEvent(.{
+            .kind = .run_parked_on_port,
+            .run_handle = slot.handle,
+            .pending_port_fingerprint = pending.pending_port_fingerprint,
+            .request_frame_fingerprint = request.frame_fingerprint,
+            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+            .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .summary = "installed run parked on port",
+        });
+    }
+
+    fn stepAt(self: *@This(), index: usize) !Runspace.RunspaceEvent {
+        var slot = &self.slots.items[index];
+        if (slot.driver == null) return error.InvalidRunspaceTransition;
+        try slot.transition(.step, null);
+        _ = try self.appendEvent(.{
+            .kind = .run_stepped,
+            .run_handle = slot.handle,
+            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+            .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .summary = "run stepped",
+        });
+        const driver = slot.driver.?;
+        const step_result = driver.nextFrame() catch |err| {
+            slot.transition(.fail, null) catch {};
+            _ = try self.appendEvent(.{
+                .kind = .run_failed,
+                .run_handle = slot.handle,
+                .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+                .run_permit_fingerprint = slot.run_permit_fingerprint,
+                .summary = "run failed",
+            });
+            return err;
+        };
+        switch (step_result) {
+            .done => {
+                try slot.transition(.complete, null);
+                return self.appendEvent(.{
+                    .kind = .run_completed,
+                    .run_handle = slot.handle,
+                    .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+                    .run_permit_fingerprint = slot.run_permit_fingerprint,
+                    .summary = "run completed",
+                });
+            },
+            .failed => {
+                try slot.transition(.fail, null);
+                return self.appendEvent(.{
+                    .kind = .run_failed,
+                    .run_handle = slot.handle,
+                    .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+                    .run_permit_fingerprint = slot.run_permit_fingerprint,
+                    .summary = "run failed",
+                });
+            },
+            .port_request => |request| {
+                const mailbox_id = self.next_mailbox_id;
+                const pending = try self.mailbox.push(.{
+                    .run_handle = slot.handle,
+                    .mailbox_id = mailbox_id,
+                    .request = request,
+                    .target_ref_fingerprint = slot.target_ref.target_ref_fingerprint,
+                    .environment_certificate_fingerprint = null,
+                    .run_permit_fingerprint = slot.run_permit_fingerprint,
+                    .inserted_event_index = self.next_event_index,
+                });
+                self.next_mailbox_id += 1;
+                slot.status = .parked_on_port;
+                slot.pending_mailbox_id = mailbox_id;
+                slot.current_state = RunState.init(.{
+                    .target_ref_fingerprint = slot.target_ref.target_ref_fingerprint,
+                    .pending_request_fingerprint = request.frame_fingerprint,
+                    .turn_index = request.turn_index,
+                    .status = .parked_on_port,
+                });
+                _ = try self.appendEvent(.{
+                    .kind = .port_enqueued,
+                    .run_handle = slot.handle,
+                    .pending_port_fingerprint = pending.pending_port_fingerprint,
+                    .request_frame_fingerprint = request.frame_fingerprint,
+                    .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+                    .run_permit_fingerprint = slot.run_permit_fingerprint,
+                    .summary = "port enqueued",
+                });
+                const parked_event = try self.appendEvent(.{
+                    .kind = .run_parked_on_port,
+                    .run_handle = slot.handle,
+                    .pending_port_fingerprint = pending.pending_port_fingerprint,
+                    .request_frame_fingerprint = request.frame_fingerprint,
+                    .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+                    .run_permit_fingerprint = slot.run_permit_fingerprint,
+                    .summary = "run parked on port",
+                });
+                if (self.config.auto_dispatch) return self.autoDispatchPending(index, pending, mailbox_id);
+                return parked_event;
+            },
+        }
+    }
+
+    fn autoDispatchPending(self: *@This(), index: usize, pending: Runspace.PendingPort, mailbox_id: u64) !Runspace.RunspaceEvent {
+        var slot = &self.slots.items[index];
+        const driver = slot.driver orelse return error.InvalidRunspaceTransition;
+        driver.dispatch() catch |err| {
+            slot.transition(.fail, null) catch {};
+            _ = try self.appendEvent(.{
+                .kind = .run_failed,
+                .run_handle = slot.handle,
+                .pending_port_fingerprint = pending.pending_port_fingerprint,
+                .request_frame_fingerprint = pending.request_frame_fingerprint,
+                .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+                .run_permit_fingerprint = slot.run_permit_fingerprint,
+                .summary = "auto-dispatch failed",
+            });
+            return err;
+        };
+        const responded = try self.mailbox.markResponded(mailbox_id);
+        try slot.transition(.resume_from_port, mailbox_id);
+        _ = try self.appendEvent(.{
+            .kind = .port_responded,
+            .run_handle = slot.handle,
+            .pending_port_fingerprint = responded.pending_port_fingerprint,
+            .request_frame_fingerprint = pending.request_frame_fingerprint,
+            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+            .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .summary = "port auto-dispatched",
+        });
+        return self.appendEvent(.{
+            .kind = .run_resumed,
+            .run_handle = slot.handle,
+            .pending_port_fingerprint = responded.pending_port_fingerprint,
+            .request_frame_fingerprint = pending.request_frame_fingerprint,
+            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+            .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .summary = "run resumed by auto-dispatch",
+        });
+    }
+
+    fn slotIndex(self: *const @This(), handle: RunHandle) !usize {
+        try handle.validateForRunspace(self.runspace_fingerprint);
+        for (self.slots.items, 0..) |slot, index| {
+            if (handle.matchesSlot(slot)) return index;
+        }
+        return error.StaleRunHandle;
+    }
+
+    fn statusFromRunState(state: RunState) RunStatus {
+        return switch (state.status) {
+            .not_started, .running => .runnable,
+            .parked_on_port => .parked_on_port,
+            .completed => .completed,
+            .failed => .failed,
+        };
+    }
+};
+
+pub const RunSlot = Runspace.RunSlot;
+pub const Mailbox = Runspace.Mailbox;
+pub const PendingPort = Runspace.PendingPort;
+pub const RunspaceEvent = Runspace.RunspaceEvent;
+pub const RunspaceReport = Runspace.RunspaceReport;
+
 fn isSupportedRunImageFormatVersion(format_version: u32) bool {
     return format_version == 1 or format_version == 2 or format_version == world_run_image_format_version;
 }
@@ -7623,6 +9048,86 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
 
                 pub fn resumeFrame(self: *Self, response_frame: Frame.Response) !void {
                     try self.resumeFrameWithProvenance(response_frame, false);
+                }
+
+                pub fn snapshotRunImage(self: *Self) !RunImage {
+                    const target_ref = TargetRef.fromTarget(Target);
+                    var transcript_image: ?TranscriptImage = null;
+                    var owns_transcript_image = false;
+                    errdefer if (owns_transcript_image) {
+                        if (transcript_image) |*image| image.deinit(self.allocator);
+                    };
+                    if (comptime @hasField(Options, "transcript")) {
+                        transcript_image = try @field(self.options, "transcript").toImage(self.allocator, .{ .value_policy = ValuePolicy.portable });
+                        owns_transcript_image = true;
+                    } else if (comptime @hasField(Options, "transcript_image")) {
+                        transcript_image = @field(self.options, "transcript_image").*;
+                    } else if (self.admitted_transcript_image) |image| {
+                        transcript_image = image.*;
+                    }
+
+                    var pending_frame: ?Frame.Request = null;
+                    var owns_pending_frame = false;
+                    errdefer if (owns_pending_frame) {
+                        if (pending_frame) |*frame| frame.deinit(self.allocator);
+                    };
+                    if (self.pending_request != null) {
+                        pending_frame = try self.pendingRequestFrame(false);
+                        owns_pending_frame = true;
+                    }
+
+                    const status: RunState.Status = if (self.audit.final_status == .completed)
+                        .completed
+                    else if (self.audit.final_status == .failed)
+                        .failed
+                    else if (pending_frame != null)
+                        .parked_on_port
+                    else
+                        .running;
+                    const state = RunState.init(.{
+                        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+                        .transcript_image_fingerprint = if (transcript_image) |image| image.transcript_image_fingerprint else null,
+                        .pending_request_fingerprint = if (pending_frame) |frame| frame.frame_fingerprint else null,
+                        .turn_index = self.audit.port_request_count,
+                        .status = status,
+                    });
+                    var image = RunImage.init(.{
+                        .kind = switch (status) {
+                            .parked_on_port => .parked_run,
+                            .completed => .completed_run,
+                            .failed => .replay_only_run,
+                            .not_started, .running => .full_target_run,
+                        },
+                        .target_ref = target_ref,
+                        .import_set_fingerprint = ImportSet.fromTarget(Target).import_set_fingerprint,
+                        .transcript_image = transcript_image,
+                        .current_state = state,
+                        .pending_request_frame = pending_frame,
+                        .environment_certificate_fingerprint = if (comptime @hasField(@TypeOf(Config), "environment"))
+                            Config.environment.certificate(self.mode, transcript_image != null).certificate_fingerprint
+                        else
+                            null,
+                        .acceptance_report_fingerprint = if (comptime @hasField(@TypeOf(Config), "environment"))
+                            Config.environment.acceptanceReport(self.mode, transcript_image != null).report_fingerprint
+                        else
+                            null,
+                        .audit_image_fingerprint = AuditImage.fromReport(self.audit, transcript_image).audit_fingerprint,
+                        .prior_run_permit_fingerprint = if (self.supervisor) |supervisor| supervisor.permit.permit_fingerprint else null,
+                        .prior_run_receipt_fingerprint = if (self.supervisor) |*supervisor| blk: {
+                            const final_status: RunReceipt.FinalStatus = switch (status) {
+                                .completed => .completed,
+                                .failed => .failed,
+                                .parked_on_port => .parked,
+                                .not_started, .running => .interrupted,
+                            };
+                            break :blk supervisor.receipt(final_status, state.run_state_fingerprint, state.transcript_image_fingerprint, null).receipt_fingerprint;
+                        } else null,
+                    });
+                    image.owns_transcript_image = owns_transcript_image;
+                    image.owns_pending_request_frame = owns_pending_frame;
+                    owns_transcript_image = false;
+                    owns_pending_frame = false;
+                    return image;
                 }
 
                 fn resumeReplayedFrame(self: *Self, response_frame: Frame.Response) !void {
@@ -8986,6 +10491,12 @@ fn validateRequestFrameImage(frame: Frame.Request) !void {
     } else if (frame.payload_value_fingerprint != null) {
         return error.InvalidFrameEncoding;
     }
+}
+
+fn cloneRequestFrame(allocator: std.mem.Allocator, frame: Frame.Request) !Frame.Request {
+    const encoded = try frame.encode(allocator);
+    defer allocator.free(encoded);
+    return Frame.Request.decode(allocator, encoded);
 }
 
 fn validateValueImagePolicy(image: Frame.ValueImage, policy: ValuePolicy) !void {
@@ -11087,6 +12598,82 @@ fn fingerprintRunState(state: RunState) u64 {
     hashOptionalU64(&hasher, state.final_value_image_fingerprint);
     hashU64(&hasher, state.turn_index);
     hashU64(&hasher, @intFromEnum(state.status));
+    return hasher.final();
+}
+
+fn fingerprintRunHandle(handle: RunHandle) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.run_handle.fingerprint");
+    hashU64(&hasher, world_run_handle_fingerprint_version);
+    hashU64(&hasher, handle.runspace_fingerprint);
+    hashU64(&hasher, handle.local_run_id);
+    hashU64(&hasher, handle.target_ref_fingerprint);
+    hashOptionalU64(&hasher, handle.admission_receipt_fingerprint);
+    hashOptionalU64(&hasher, handle.permit_fingerprint);
+    hashOptionalU64(&hasher, handle.branch_id);
+    hashU64(&hasher, handle.generation);
+    return hasher.final();
+}
+
+fn fingerprintRunspaceConfig(config: Runspace.Config) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.runspace.config.fingerprint");
+    hashU64(&hasher, world_run_handle_fingerprint_version);
+    hashU64(&hasher, @intFromEnum(config.policy));
+    hashOptionalU64(&hasher, config.max_runs);
+    hashOptionalU64(&hasher, config.max_pending_ports);
+    hashOptionalU64(&hasher, config.max_events);
+    hashBool(&hasher, config.preserve_completed_runs);
+    hashBool(&hasher, config.require_supervision);
+    hashBool(&hasher, config.require_admission);
+    hashBool(&hasher, config.allow_direct_target_install);
+    hashBool(&hasher, config.allow_handoff_install);
+    hashBool(&hasher, config.allow_replay_install);
+    hashBool(&hasher, config.auto_dispatch);
+    return hasher.final();
+}
+
+fn fingerprintPendingPort(pending_port: PendingPort) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.pending_port.fingerprint");
+    hashU64(&hasher, world_pending_port_fingerprint_version);
+    hashU64(&hasher, pending_port.handle.handle_fingerprint);
+    hashU64(&hasher, pending_port.mailbox_id);
+    hashU64(&hasher, pending_port.world_surface_fingerprint);
+    hashU64(&hasher, pending_port.target_certificate_fingerprint);
+    hashU64(&hasher, pending_port.world_port_id);
+    hashU64(&hasher, pending_port.request_fingerprint);
+    hashU64(&hasher, pending_port.request_frame_fingerprint);
+    hashU64(&hasher, @intFromEnum(pending_port.expected_response_kind));
+    hashOptionalU32(&hasher, pending_port.expected_response_value_table_id);
+    hashU64(&hasher, pending_port.residual_site_index);
+    hashU64(&hasher, pending_port.residual_site_fingerprint);
+    hashU64(&hasher, pending_port.target_ref_fingerprint);
+    hashOptionalU64(&hasher, pending_port.environment_certificate_fingerprint);
+    hashOptionalU64(&hasher, pending_port.run_permit_fingerprint);
+    hashU64(&hasher, pending_port.turn_index);
+    hashU64(&hasher, pending_port.inserted_event_index);
+    hashU64(&hasher, @intFromEnum(pending_port.status));
+    return hasher.final();
+}
+
+fn fingerprintRunspaceEvent(event: RunspaceEvent) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.runspace.event.fingerprint");
+    hashU64(&hasher, world_runspace_event_fingerprint_version);
+    hashU64(&hasher, @intFromEnum(event.kind));
+    hashU64(&hasher, event.runspace_fingerprint);
+    hashU64(&hasher, event.event_index);
+    hashU64(&hasher, event.run_handle.handle_fingerprint);
+    hashOptionalU64(&hasher, event.pending_port_fingerprint);
+    hashOptionalU64(&hasher, event.request_frame_fingerprint);
+    hashOptionalU64(&hasher, event.response_frame_fingerprint);
+    hashU64(&hasher, event.run_state_fingerprint);
+    hashOptionalU64(&hasher, event.run_receipt_fingerprint);
+    hashOptionalU64(&hasher, event.admission_receipt_fingerprint);
+    hashOptionalU64(&hasher, event.run_permit_fingerprint);
+    hashU64(&hasher, event.summary.len);
+    hashBytes(&hasher, event.summary);
     return hasher.final();
 }
 

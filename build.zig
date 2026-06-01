@@ -362,6 +362,68 @@ pub fn build(b: *std.Build) void {
             ,
         },
         .{
+            .name = "world-runspace-basic",
+            .path = "examples/world_runspace_basic.zig",
+            .step = "run-world-runspace-basic",
+            .desc = "Run the basic World runspace example.",
+            .expected_stdout =
+            \\run_handle=aff3ed10a6af0f8e
+            \\pending_port_id=0
+            \\final_result=7
+            \\
+            ,
+        },
+        .{
+            .name = "world-runspace-multi",
+            .path = "examples/world_runspace_multi.zig",
+            .step = "run-world-runspace-multi",
+            .desc = "Run the multi-run World runspace example.",
+            .expected_stdout =
+            \\first_run=aff3ed10a6af0f8e
+            \\second_run=242e889caa2366f0
+            \\pending_count=0
+            \\completed_count=2
+            \\
+            ,
+        },
+        .{
+            .name = "world-runspace-handoff",
+            .path = "examples/world_runspace_handoff.zig",
+            .step = "run-world-runspace-handoff",
+            .desc = "Run the handoff World runspace example.",
+            .expected_stdout =
+            \\admission_receipt=32caaa5f6251bfbb
+            \\run_handle=f9efeb97b95db7e6
+            \\final_result=7
+            \\
+            ,
+        },
+        .{
+            .name = "world-runspace-agent",
+            .path = "examples/world_runspace_agent.zig",
+            .step = "run-world-runspace-agent",
+            .desc = "Run the agent-shaped World runspace example.",
+            .expected_stdout =
+            \\model_pending_count=2
+            \\tool_pending_count=1
+            \\event_count=18
+            \\final_result=final=actuate skeleton complete
+            \\
+            ,
+        },
+        .{
+            .name = "world-runspace-supervised",
+            .path = "examples/world_runspace_supervised.zig",
+            .step = "run-world-runspace-supervised",
+            .desc = "Run the supervised World runspace example.",
+            .expected_stdout =
+            \\run_permit=802923ff46eb3109
+            \\budget_exceeded=true
+            \\receipt_fingerprint=be4b14f5cd3b0c2e
+            \\
+            ,
+        },
+        .{
             .name = "world-supervised-budget",
             .path = "examples/world_supervised_budget.zig",
             .step = "run-world-supervised-budget",

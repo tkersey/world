@@ -44,6 +44,8 @@ The public root is intentionally small:
 - `world.RunImage`
 - `world.Handoff`
 - `world.Admission`
+- `world.Runspace`
+- `world.RunHandle`
 - `world.AuditImage`
 - `world.AuditReport`
 - `world.Error`
@@ -197,6 +199,35 @@ Admission is the receiver-side proof that a transferred run can be interpreted l
 
 Admission keeps storage, xitdb, network transport, scheduler, async runtime, real integrations, WASM ABI, Boundary loaded execution, Boundary closure/normalization, signing, encryption, package management, and artifact registry out of World.
 
+## World Runspace
+
+Runspace is a deterministic local reactor. It does not schedule time, own storage, or perform transport.
+
+`world.Runspace` hosts many admitted or local runs in one in-memory arena. It assigns each run a local `RunHandle`, keeps an internal `RunSlot`, steps runnable slots in deterministic insertion order, parks runs on `Frame.Request`, records `PendingPort` mailbox entries, routes `Frame.Response` values back to the matching parked run, and records a separate runspace event log.
+
+`RunHandle` is local to one Runspace. Its fingerprint binds the runspace fingerprint, local run id, target ref, optional admission receipt, optional permit, optional branch id, and generation. It excludes handlers, request tokens, runtime pointers, allocators, threads, credentials, storage, and transport identity.
+
+`RunSlot` is internal mutable state. Public callers use summaries and reports instead of mutating slots directly. Slot status tracks admitted, runnable, running, parked on port, parked on supervision, completed, failed, exported, and rejected states.
+
+`Mailbox` stores pending `PendingPort` entries. A pending port binds the run handle, mailbox id, dense `world_port_id`, request fingerprint, request frame fingerprint, residual site, target ref, optional environment/permit fingerprints, and insertion turn. Responses are single-use and must match the pending request, port id, surface, response kind, and value table.
+
+Runspace is caller-driven:
+
+```zig
+var runspace = world.Runspace.init(allocator, .{});
+const handle = try runspace.installMachineRun(Target, Env, runtime, args, options);
+_ = try runspace.tick();
+const pending = try runspace.mailbox.get(0);
+_ = try runspace.respondValue(pending.mailbox_id, value);
+_ = try runspace.tick();
+```
+
+Manual mode is the default: every port request parks and waits for host action. `auto_dispatch = true` uses the existing `Environment`/`Machine` typed adapter path to answer synchronous local requests, while still recording mailbox and runspace events. Runspace does not call TreatyResolver or ProviderHarness on the hot path.
+
+Runspace integrates with Admission by installing `AdmittedRun` values and preserving admission receipt fingerprints. Parked run images install into the mailbox so hosts can inspect or export the pending request. It integrates with Supervision through the existing `Machine`/`Supervisor` membrane: permits are enforced before handlers, runspace limits cap runs, pending ports, and events, and handoff/checkpoint/branch operations record runspace events. It integrates with Timeline and Handoff by exporting `RunImage` snapshots, creating `Timeline.Checkpoint` metadata, and creating local branch handles.
+
+Runspace is not a scheduler, async runtime, storage backend, network transport, xitdb integration, agent framework, real model/tool/file/human integration, service discovery layer, WASM ABI, Boundary loaded execution path, Boundary closure/normalization path, package manager, artifact registry, signing layer, or encryption layer.
+
 ## Audit Reports
 
 `world.AuditReport` includes the WorldSurface fingerprint, target certificate fingerprint, run mode, final status, request counts, fresh/replayed/rejected/failed counts, replay mismatches, missing handlers, and per-port counts.
@@ -225,6 +256,11 @@ zig build run-world-admission-full-module-inspect
 zig build run-world-admission-parked-handoff
 zig build run-world-admission-replay-verify
 zig build run-world-admission-agent-transfer
+zig build run-world-runspace-basic
+zig build run-world-runspace-multi
+zig build run-world-runspace-handoff
+zig build run-world-runspace-agent
+zig build run-world-runspace-supervised
 zig build run-world-supervised-budget
 zig build run-world-supervised-agent
 zig build run-world-supervised-handoff
@@ -237,6 +273,16 @@ zig build run-world-supervised-replay-verify
 `world_run_ports` dispatches one residual WorldPort by dense `world_port_id`.
 
 `world_replay_ports` records a fresh transcript and replays without fresh handler calls.
+
+`world_runspace_basic` installs one machine run, parks on a mailbox request, responds manually, and completes.
+
+`world_runspace_multi` installs two runs, parks both deterministically, resumes one while the other remains parked, then completes both.
+
+`world_runspace_handoff` admits a parked transfer package, installs it into Runspace, exports the pending handoff image, and resumes through the existing Handoff path.
+
+`world_runspace_agent` drives an agent-shaped run with manual model/tool mailbox responses.
+
+`world_runspace_supervised` shows a supervised runspace run failing before over-budget handler dispatch.
 
 `world_agent_loop` demonstrates an agent-shaped residual surface with `model.decide` and `tool.call` ports. It is not an agent framework; it is a port dispatch and replay fixture.
 
