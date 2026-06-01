@@ -10153,8 +10153,9 @@ fn decodeTargetRefTail(allocator: std.mem.Allocator, bytes: []const u8, cursor: 
     const boundary_module_fingerprint = if (include_boundary_module) try readOptionalU64(bytes, cursor) else null;
     const metadata = try readBytesOwned(allocator, bytes, cursor);
     errdefer allocator.free(metadata);
+    const result_format_version = if (include_boundary_module and head.format_version == 1) world_target_ref_format_version else head.format_version;
     const result = TargetRef{
-        .format_version = head.format_version,
+        .format_version = result_format_version,
         .fingerprint_version = head.fingerprint_version,
         .target_ref_fingerprint = head.target_ref_fingerprint,
         .target_label = head.target_label,
@@ -10283,7 +10284,7 @@ fn decodeBranch(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize)
 }
 
 fn targetRefEncodesBoundaryModule(target_ref: TargetRef) bool {
-    return target_ref.format_version >= 1;
+    return target_ref.format_version >= 2 or target_ref.boundary_module_fingerprint != null;
 }
 
 fn fingerprintTargetRef(target_ref: TargetRef) u64 {
