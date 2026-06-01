@@ -1304,6 +1304,8 @@ pub const Admission = struct {
                 if (!transferPackageKindMatchesRunImage(self.kind, image.kind, self.requested_mode)) return error.InvalidFrameEncoding;
             }
             if (self.module_ref) |module_ref| {
+                if (module_ref.format_version != world_module_ref_format_version) return error.InvalidFrameEncoding;
+                if (module_ref.fingerprint_version != world_module_ref_fingerprint_version) return error.InvalidFrameEncoding;
                 if (module_ref.module_ref_fingerprint != fingerprintModuleRef(module_ref)) return error.InvalidFrameEncoding;
                 if (!options.allow_reference_only and module_ref.module_kind == .reference_only) return error.InvalidFrameEncoding;
                 if (!options.allow_full_module and module_ref.module_kind == .full_module) return error.InvalidFrameEncoding;
@@ -2117,6 +2119,10 @@ pub const Admission = struct {
             const Options = @TypeOf(options);
             const requested_mode: Mode = if (comptime @hasField(Options, "mode")) @field(options, "mode") else .fresh;
             if (requested_mode != .fresh) return Error.HandoffDenied;
+            if (self.run_permit) |permit| {
+                if (comptime !@hasField(Options, "permit")) return Error.SupervisionDenied;
+                if (@field(options, "permit").permit_fingerprint != permit.permit_fingerprint) return Error.SupervisionDenied;
+            }
             var image = self.run_image orelse return error.HandoffPendingFrameMismatch;
             if (image.transcript_image == null) {
                 image.transcript_image = self.transcript_image;
@@ -6001,6 +6007,8 @@ pub const RunImage = struct {
     }
 
     pub fn validate(self: @This(), options: ValidateOptions) !void {
+        if (self.format_version != 1 and self.format_version != world_run_image_format_version and self.format_version != 3) return error.InvalidFrameEncoding;
+        if (self.fingerprint_version != world_run_image_fingerprint_version) return error.InvalidFrameEncoding;
         if (!options.allow_reference_target and self.kind == .reference_target_run) return error.InvalidFrameEncoding;
         if (options.require_known_target and self.kind == .reference_target_run) return error.InvalidFrameEncoding;
         if (self.metadata.len > options.max_image_bytes) return error.InvalidFrameEncoding;
@@ -9434,6 +9442,8 @@ fn optionalRequestFramePayloadEncodedByteSize(frame: ?Frame.Request) usize {
 }
 
 fn validateTranscriptImageFingerprint(image: TranscriptImage) !void {
+    if (image.format_version != 2 and image.format_version != world_transcript_image_format_version) return error.InvalidFrameEncoding;
+    if (image.fingerprint_version != world_transcript_image_fingerprint_version) return error.InvalidFrameEncoding;
     if (image.final_status != finalStatusFromEvents(image.events)) return error.InvalidFrameEncoding;
     var response_count: usize = 0;
     for (image.events) |event| {

@@ -1919,6 +1919,15 @@ test "transcript image encode decode round trip stable and image replay works wi
     defer decoded.deinit(std.testing.allocator);
     try std.testing.expectEqual(image.transcript_image_fingerprint, decoded.transcript_image_fingerprint);
     try std.testing.expectEqual(@as(usize, 1), decoded.response_count);
+    var unsupported_format_image = decoded;
+    unsupported_format_image.format_version = world.world_transcript_image_format_version + 1;
+    const unsupported_transcript_package = world.Admission.TransferPackage.init(.{
+        .kind = .replay_run,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target),
+        .transcript_image = unsupported_format_image,
+        .requested_mode = .replay_only,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, unsupported_transcript_package.validate(.{}));
     var admission_transcript = world.Transcript.init(std.testing.allocator);
     defer admission_transcript.deinit();
     try admission_transcript.append(.{
@@ -6492,6 +6501,15 @@ test "transfer package rejects malformed and oversized packages" {
         .requested_mode = .local_target_match_only,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, empty_module_reference.validate(.{}));
+    var future_module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
+    future_module_ref.format_version = world.world_module_ref_format_version + 1;
+    const future_module_reference = world.Admission.TransferPackage.init(.{
+        .kind = .module_reference,
+        .target_ref = target_ref,
+        .module_ref = future_module_ref,
+        .requested_mode = .local_target_match_only,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, future_module_reference.validate(.{}));
     const empty_inspect = world.Admission.TransferPackage.init(.{
         .kind = .inspect_only,
         .requested_mode = .inspect_only,
@@ -6521,6 +6539,15 @@ test "transfer package rejects malformed and oversized packages" {
         .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
         .current_state = completed_state,
     });
+    var future_run_image = completed_image;
+    future_run_image.format_version = world.world_run_image_format_version + 100;
+    const future_run_image_package = world.Admission.TransferPackage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .run_image = future_run_image,
+        .requested_mode = .completed_replay,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, future_run_image_package.validate(.{}));
     const mismatched_run_kind = world.Admission.TransferPackage.init(.{
         .kind = .parked_run,
         .target_ref = target_ref,
@@ -7941,6 +7968,38 @@ test "admitted run resume rejects non fresh options" {
         .allocator = std.testing.allocator,
         .mode = world.Mode.replay,
         .ctx = &ctx,
+    }));
+
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+    });
+    var permit_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xdef,
+        .target_ref = target_ref,
+        .run_permit = permit,
+        .mode = .resume_parked,
+    });
+    var missing_permit_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer missing_permit_runtime.deinit();
+    try std.testing.expectError(error.SupervisionDenied, permit_admitted.@"resume"(std.testing.allocator, fixtures.Ports.Target, PortsEnv, &missing_permit_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+    }));
+
+    const wrong_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .admission_receipt_fingerprint = 0x123,
+        .policy = world.SupervisionPolicy.strict_fresh,
+    });
+    var wrong_permit_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer wrong_permit_runtime.deinit();
+    try std.testing.expectError(error.SupervisionDenied, permit_admitted.@"resume"(std.testing.allocator, fixtures.Ports.Target, PortsEnv, &wrong_permit_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+        .permit = wrong_permit,
     }));
 }
 
