@@ -1331,9 +1331,7 @@ pub const Admission = struct {
                     if (transcriptImageEncodedByteSize(embedded) > options.max_package_bytes) return error.InvalidFrameEncoding;
                 }
             }
-            const encoded_package = self.encode(std.heap.page_allocator) catch return error.InvalidFrameEncoding;
-            defer std.heap.page_allocator.free(encoded_package);
-            if (encoded_package.len > options.max_package_bytes) return error.InvalidFrameEncoding;
+            if (transferPackageEncodedByteSize(self) > options.max_package_bytes) return error.InvalidFrameEncoding;
             if (self.target_ref) |target_ref| {
                 if (target_ref.target_ref_fingerprint != fingerprintTargetRef(target_ref)) return error.InvalidFrameEncoding;
                 if (self.module_ref) |module_ref| {
@@ -9152,6 +9150,159 @@ fn transcriptImageEncodedByteSize(image: TranscriptImage) usize {
     return size;
 }
 
+fn transferPackageEncodedByteSize(package: Admission.TransferPackage) usize {
+    var size: usize = 4 + 4 + 8;
+    size = addSatEncodedSize(size, packageManifestEncodedByteSize(package.manifest));
+    size = addSatEncodedSize(size, 1 + 1);
+    size = addSatEncodedSize(size, optionalTargetRefEncodedByteSize(package.target_ref));
+    size = addSatEncodedSize(size, optionalModuleRefEncodedByteSize(package.module_ref));
+    size = addSatEncodedSize(size, optionalBytesEncodedByteSize(package.module_image_bytes));
+    size = addSatEncodedSize(size, optionalRunImageEncodedByteSize(package.run_image));
+    size = addSatEncodedSize(size, optionalTranscriptImageEncodedByteSize(package.transcript_image));
+    size = addSatEncodedSize(size, u64SliceEncodedByteSize(package.checkpoint_refs));
+    size = addSatEncodedSize(size, u64SliceEncodedByteSize(package.branch_refs));
+    size = addSatEncodedSize(size, u64SliceEncodedByteSize(package.prior_run_permit_refs));
+    size = addSatEncodedSize(size, u64SliceEncodedByteSize(package.prior_run_receipt_refs));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(package.requested_supervision_hint_fingerprint));
+    size = addSatEncodedSize(size, bytesEncodedByteSize(package.metadata));
+    return size;
+}
+
+fn packageManifestEncodedByteSize(manifest: Admission.PackageManifest) usize {
+    var size: usize = 4 + 4 + 8 + 8 + 1;
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(manifest.target_ref_fingerprint));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(manifest.module_ref_fingerprint));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(manifest.module_image_fingerprint));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(manifest.run_image_fingerprint));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(manifest.transcript_image_fingerprint));
+    size = addSatEncodedSize(size, 8 + 8 + 8 + 1);
+    size = addSatEncodedSize(size, bytesEncodedByteSize(manifest.summary_metadata));
+    return size;
+}
+
+fn optionalTargetRefEncodedByteSize(target_ref: ?TargetRef) usize {
+    return 1 + if (target_ref) |present| targetRefEncodedByteSize(present) else 0;
+}
+
+fn targetRefEncodedByteSize(target_ref: TargetRef) usize {
+    var size: usize = 4 + 4 + 8;
+    size = addSatEncodedSize(size, optionalBytesEncodedByteSize(target_ref.target_label));
+    size = addSatEncodedSize(size, 8);
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(target_ref.world_surface_replay_scope_fingerprint));
+    size = addSatEncodedSize(size, 8);
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(target_ref.residual_program_plan_hash));
+    size = addSatEncodedSize(size, 1);
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(target_ref.world_port_table_fingerprint));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(target_ref.world_value_table_fingerprint));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(target_ref.world_dispatch_table_fingerprint));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(target_ref.surface_profile_fingerprint));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(target_ref.boundary_module_fingerprint));
+    size = addSatEncodedSize(size, bytesEncodedByteSize(target_ref.metadata));
+    return size;
+}
+
+fn optionalModuleRefEncodedByteSize(module_ref: ?Admission.ModuleRef) usize {
+    return 1 + if (module_ref) |present| moduleRefEncodedByteSize(present) else 0;
+}
+
+fn moduleRefEncodedByteSize(module_ref: Admission.ModuleRef) usize {
+    var size: usize = 4 + 4 + 8 + 8 + 1 + 8 + 8 + 8;
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(module_ref.residual_program_plan_hash));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(module_ref.import_surface_fingerprint));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(module_ref.export_surface_fingerprint));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(module_ref.module_graph_fingerprint));
+    size = addSatEncodedSize(size, 1 + 8);
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(module_ref.world_port_table_fingerprint));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(module_ref.world_value_table_fingerprint));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(module_ref.world_dispatch_table_fingerprint));
+    size = addSatEncodedSize(size, optionalBytesEncodedByteSize(module_ref.label));
+    size = addSatEncodedSize(size, bytesEncodedByteSize(module_ref.metadata));
+    return size;
+}
+
+fn optionalRunImageEncodedByteSize(image: ?RunImage) usize {
+    return 1 + if (image) |present| bytesFieldEncodedByteSize(runImageEncodedByteSize(present)) else 0;
+}
+
+fn runImageEncodedByteSize(image: RunImage) usize {
+    var size: usize = 4 + 4 + 8 + 1;
+    size = addSatEncodedSize(size, targetRefEncodedByteSize(image.target_ref));
+    size = addSatEncodedSize(size, 8);
+    size = addSatEncodedSize(size, runStateEncodedByteSize(image.current_state));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(if (image.transcript_image) |transcript| transcript.transcript_image_fingerprint else null));
+    size = addSatEncodedSize(size, optionalTranscriptImagePayloadEncodedByteSize(image.transcript_image));
+    size = addSatEncodedSize(size, 8);
+    for (image.checkpoints) |checkpoint| size = addSatEncodedSize(size, checkpointEncodedByteSize(checkpoint));
+    size = addSatEncodedSize(size, 8);
+    for (image.branches) |branch| size = addSatEncodedSize(size, branchEncodedByteSize(branch));
+    size = addSatEncodedSize(size, optionalRequestFramePayloadEncodedByteSize(image.pending_request_frame));
+    size = addSatEncodedSize(size, optionalValueImageEncodedByteSize(image.final_result_image));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(image.environment_certificate_fingerprint));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(image.acceptance_report_fingerprint));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(image.audit_image_fingerprint));
+    if (image.format_version >= 2) {
+        size = addSatEncodedSize(size, optionalU64EncodedByteSize(image.prior_run_permit_fingerprint));
+        size = addSatEncodedSize(size, optionalU64EncodedByteSize(image.prior_run_receipt_fingerprint));
+    }
+    if (image.format_version >= 3) {
+        size = addSatEncodedSize(size, optionalU64EncodedByteSize(image.module_ref_fingerprint));
+        size = addSatEncodedSize(size, optionalU64EncodedByteSize(image.boundary_module_fingerprint));
+        size = addSatEncodedSize(size, optionalU64EncodedByteSize(image.module_image_fingerprint));
+    }
+    size = addSatEncodedSize(size, bytesEncodedByteSize(image.metadata));
+    return size;
+}
+
+fn optionalTranscriptImageEncodedByteSize(image: ?TranscriptImage) usize {
+    return 1 + if (image) |present| bytesFieldEncodedByteSize(transcriptImageEncodedByteSize(present)) else 0;
+}
+
+fn optionalTranscriptImagePayloadEncodedByteSize(image: ?TranscriptImage) usize {
+    return 1 + if (image) |present| bytesFieldEncodedByteSize(transcriptImageEncodedByteSize(present)) else 0;
+}
+
+fn u64SliceEncodedByteSize(values: []const u64) usize {
+    var size: usize = 8;
+    for (values) |_| size = addSatEncodedSize(size, 8);
+    return size;
+}
+
+fn runStateEncodedByteSize(state: RunState) usize {
+    var size: usize = 8 + 8;
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(state.transcript_image_fingerprint));
+    size = addSatEncodedSize(size, 8);
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(state.checkpoint_fingerprint));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(state.pending_request_fingerprint));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(state.final_response_fingerprint));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(state.final_value_image_fingerprint));
+    size = addSatEncodedSize(size, 8 + 1);
+    return size;
+}
+
+fn checkpointEncodedByteSize(checkpoint: Timeline.Checkpoint) usize {
+    var size: usize = 4 + 4 + 8 + 8 + 8 + 8 + 8;
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(checkpoint.current_request_fingerprint));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(checkpoint.last_response_fingerprint));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(checkpoint.capsule_image_fingerprint));
+    size = addSatEncodedSize(size, 8 + 8 + 1);
+    return size;
+}
+
+fn branchEncodedByteSize(branch: Timeline.Branch) usize {
+    var size: usize = 4 + 4 + 8;
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(branch.parent_branch_id));
+    size = addSatEncodedSize(size, 8);
+    size = addSatEncodedSize(size, bytesEncodedByteSize(branch.branch_label));
+    size = addSatEncodedSize(size, 8);
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(branch.final_event_index));
+    size = addSatEncodedSize(size, 1 + 8 + 8 + 8);
+    return size;
+}
+
+fn optionalRequestFramePayloadEncodedByteSize(frame: ?Frame.Request) usize {
+    return 1 + if (frame) |present| bytesFieldEncodedByteSize(requestFrameEncodedByteSize(present)) else 0;
+}
+
 fn validateTranscriptImageFingerprint(image: TranscriptImage) !void {
     if (image.final_status != finalStatusFromEvents(image.events)) return error.InvalidFrameEncoding;
     var response_count: usize = 0;
@@ -9210,7 +9361,7 @@ fn optionalBytesEncodedByteSize(bytes: ?[]const u8) usize {
 }
 
 fn optionalValueImageEncodedByteSize(image: ?Frame.ValueImage) usize {
-    return 1 + if (image) |present| valueImageEncodedByteSize(present) else 0;
+    return 1 + if (image) |present| bytesFieldEncodedByteSize(valueImageEncodedByteSize(present)) else 0;
 }
 
 fn valueImageEncodedByteSize(image: Frame.ValueImage) usize {

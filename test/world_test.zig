@@ -6382,6 +6382,16 @@ test "transfer package rejects malformed and oversized packages" {
         .requested_mode = .inspect_only,
     });
     try inspect_run_image_package.validate(.{ .allow_inspect_only = true });
+    const inspect_run_image_encoded = try inspect_run_image_package.encode(std.testing.allocator);
+    defer std.testing.allocator.free(inspect_run_image_encoded);
+    try inspect_run_image_package.validate(.{
+        .allow_inspect_only = true,
+        .max_package_bytes = inspect_run_image_encoded.len,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, inspect_run_image_package.validate(.{
+        .allow_inspect_only = true,
+        .max_package_bytes = inspect_run_image_encoded.len - 1,
+    }));
     const branched_image = world.RunImage.init(.{
         .kind = .branched_run,
         .target_ref = target_ref,
@@ -6458,7 +6468,11 @@ test "transfer package validates module fingerprints and transcript byte limits"
         .transcript_image = image,
         .requested_mode = .replay_only,
     });
+    const transcript_package_encoded = try transcript_package.encode(std.testing.allocator);
+    defer std.testing.allocator.free(transcript_package_encoded);
     try transcript_package.validate(.{ .max_transcript_bytes = encoded.len });
+    try transcript_package.validate(.{ .max_package_bytes = transcript_package_encoded.len });
+    try std.testing.expectError(error.InvalidFrameEncoding, transcript_package.validate(.{ .max_package_bytes = transcript_package_encoded.len - 1 }));
     try std.testing.expectError(error.InvalidFrameEncoding, transcript_package.validate(.{ .max_transcript_bytes = image.events.len }));
 
     const embedded_run_image = world.RunImage.fromTranscriptImage(fixtures.Ports.Target, image, .replay_only_run);
