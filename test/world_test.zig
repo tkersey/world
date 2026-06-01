@@ -7039,6 +7039,37 @@ test "admission rejects permit mode mismatch before receipt" {
     }).admitForTarget(fixtures.Ports.Target, PortsEnv, module_package, .{ .permit = wrong_module_permit });
     try std.testing.expect(!module_scoped_result.report.accepted);
     try std.testing.expectEqual(world.Admission.AdmissionBlocker.PermitRejected, module_scoped_result.report.blockers[0]);
+
+    const completed_state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .completed,
+    });
+    const run_image_with_module = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = completed_state,
+    }).withModuleRef(module_ref, null);
+    const missing_module_ref_package = world.Admission.TransferPackage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .run_image = run_image_with_module,
+        .requested_mode = .completed_replay,
+    });
+    const module_scoped_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .replay,
+        .module_ref_fingerprint = module_ref.module_ref_fingerprint,
+        .policy = world.SupervisionPolicy.strict_replay,
+    });
+    const missing_module_ref_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.init(.{
+            .require_environment_preflight = false,
+            .require_supervision_permit = true,
+        }),
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, missing_module_ref_package, .{ .permit = module_scoped_permit });
+    try std.testing.expect(!missing_module_ref_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PermitRejected, missing_module_ref_result.report.blockers[0]);
 }
 
 test "admitted run start requires stored permit" {

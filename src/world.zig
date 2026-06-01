@@ -2256,13 +2256,7 @@ pub const Admission = struct {
                     return rejectedResult(request, package, target_ref, module_ref, match, &.{.PermitRejected}, "permit target mismatch");
                 }
                 if (permit.module_ref_fingerprint) |permit_module_ref| {
-                    const admitted_module_ref = if (module_ref) |module|
-                        module.module_ref_fingerprint
-                    else if (package.run_image) |run_image|
-                        run_image.module_ref_fingerprint
-                    else
-                        null;
-                    if (admitted_module_ref == null or admitted_module_ref.? != permit_module_ref) {
+                    if (module_ref == null or module_ref.?.module_ref_fingerprint != permit_module_ref) {
                         return rejectedResult(request, package, target_ref, module_ref, match, &.{.PermitRejected}, "permit module mismatch");
                     }
                 }
