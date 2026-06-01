@@ -6354,6 +6354,9 @@ test "transfer package rejects malformed and oversized packages" {
         .metadata = "tiny",
     });
     try std.testing.expectError(error.InvalidFrameEncoding, package.validate(.{ .max_package_bytes = 1 }));
+    var stale_manifest = package;
+    stale_manifest.manifest.package_kind = .full_module;
+    try std.testing.expectError(error.InvalidFrameEncoding, stale_manifest.validate(.{}));
     package.package_fingerprint +%= 1;
     try std.testing.expectError(error.InvalidFrameEncoding, package.validate(.{}));
 }
@@ -7076,6 +7079,55 @@ test "admitted run start enforces admitted transcript image" {
         .mode = world.Mode.replay,
         .transcript_image = &wrong_image,
     }));
+}
+
+test "decoded admission owns admitted run images after package deinit" {
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
+    const registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Ports.Target)});
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    try recordPortsTranscript(&transcript);
+    var image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer image.deinit(std.testing.allocator);
+    const state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .transcript_image_fingerprint = image.transcript_image_fingerprint,
+        .status = .completed,
+    });
+    const run_image = world.RunImage.init(.{
+        .kind = .replay_only_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = state,
+    }).withModuleRef(module_ref, null);
+    const package = world.Admission.TransferPackage.init(.{
+        .kind = .replay_run,
+        .target_ref = target_ref,
+        .module_ref = module_ref,
+        .run_image = run_image,
+        .transcript_image = image,
+        .requested_mode = .replay_only,
+    });
+    const encoded = try package.encode(std.testing.allocator);
+    defer std.testing.allocator.free(encoded);
+    var decoded = try world.Admission.TransferPackage.decode(std.testing.allocator, encoded);
+    const decoded_run_events = decoded.run_image.?.transcript_image;
+    try std.testing.expect(decoded_run_events == null);
+    const decoded_transcript_events_ptr = decoded.transcript_image.?.events.ptr;
+
+    var result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.replay_only,
+    }).admitForTarget(fixtures.Ports.Target, PortsReplayEnv, decoded, .{ .allocator = std.testing.allocator });
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(result.report.accepted);
+    try std.testing.expect(result.admitted_run.?.owns_run_image);
+    try std.testing.expect(result.admitted_run.?.owns_transcript_image);
+    try std.testing.expect(result.admitted_run.?.transcript_image.?.events.ptr != decoded_transcript_events_ptr);
+
+    decoded.deinit(std.testing.allocator);
+    try std.testing.expectEqual(image.transcript_image_fingerprint, result.admitted_run.?.transcript_image.?.transcript_image_fingerprint);
 }
 
 test "module handoff admission rejects target mismatch" {

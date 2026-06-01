@@ -1354,7 +1354,7 @@ pub const Admission = struct {
             }
             if (self.package_fingerprint != fingerprintTransferPackageContent(self)) return error.InvalidFrameEncoding;
             const manifest = manifestForTransferPackage(self);
-            if (self.manifest.manifest_fingerprint != manifest.manifest_fingerprint) return error.InvalidFrameEncoding;
+            if (!packageManifestEquals(self.manifest, manifest)) return error.InvalidFrameEncoding;
         }
     };
 
@@ -1958,7 +1958,9 @@ pub const Admission = struct {
         environment_certificate_fingerprint: ?u64 = null,
         run_permit: ?RunPermit = null,
         run_image: ?RunImage = null,
+        owns_run_image: bool = false,
         transcript_image: ?TranscriptImage = null,
+        owns_transcript_image: bool = false,
         selected_branch_id: ?u64 = null,
         selected_checkpoint_ref: ?u64 = null,
         mode: Admission.AdmissionMode,
@@ -1969,7 +1971,9 @@ pub const Admission = struct {
             environment_certificate_fingerprint: ?u64 = null,
             run_permit: ?RunPermit = null,
             run_image: ?RunImage = null,
+            owns_run_image: bool = false,
             transcript_image: ?TranscriptImage = null,
+            owns_transcript_image: bool = false,
             selected_branch_id: ?u64 = null,
             selected_checkpoint_ref: ?u64 = null,
             mode: Admission.AdmissionMode,
@@ -1981,13 +1985,21 @@ pub const Admission = struct {
                 .environment_certificate_fingerprint = args.environment_certificate_fingerprint,
                 .run_permit = args.run_permit,
                 .run_image = args.run_image,
+                .owns_run_image = args.owns_run_image,
                 .transcript_image = args.transcript_image,
+                .owns_transcript_image = args.owns_transcript_image,
                 .selected_branch_id = args.selected_branch_id,
                 .selected_checkpoint_ref = args.selected_checkpoint_ref,
                 .mode = args.mode,
             };
             result.admitted_run_fingerprint = fingerprintAdmittedRun(result);
             return result;
+        }
+
+        pub fn deinit(self: *Admission.AdmittedRun, allocator: std.mem.Allocator) void {
+            if (self.owns_run_image) if (self.run_image) |*image| image.deinit(allocator);
+            if (self.owns_transcript_image) if (self.transcript_image) |*image| image.deinit(allocator);
+            self.* = undefined;
         }
 
         pub fn start(self: Admission.AdmittedRun, comptime Target: type, comptime Env: type, runtime: anytype, args: anytype, options: anytype) !Machine(Target, Env.machine_config).Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)) {
@@ -2042,6 +2054,11 @@ pub const Admission = struct {
         receipt: ?Admission.AdmissionReceipt = null,
         admitted_run: ?Admission.AdmittedRun = null,
         target_match: ?Admission.TargetMatch = null,
+
+        pub fn deinit(self: *Admission.AdmissionResult, allocator: std.mem.Allocator) void {
+            if (self.admitted_run) |*admitted| admitted.deinit(allocator);
+            self.* = undefined;
+        }
     };
 
     pub const Admitter = struct {
@@ -2260,13 +2277,40 @@ pub const Admission = struct {
                 .environment_certificate_fingerprint = cert.certificate_fingerprint,
                 .run_permit_fingerprint = if (args.permit) |permit| permit.permit_fingerprint else null,
             });
+            var admitted_run_image: ?RunImage = null;
+            var admitted_owns_run_image = false;
+            if (package.run_image) |image| {
+                if (package.owns_run_image) {
+                    admitted_run_image = cloneRunImage(args.allocator, image) catch {
+                        return rejectedResult(request, package, target_ref, module_ref, match, &.{.PackageInvalid}, "admitted run image ownership failed");
+                    };
+                    admitted_owns_run_image = true;
+                } else {
+                    admitted_run_image = image;
+                }
+            }
+            var admitted_transcript_image: ?TranscriptImage = null;
+            var admitted_owns_transcript_image = false;
+            if (package.transcript_image) |image| {
+                if (package.owns_transcript_image) {
+                    admitted_transcript_image = cloneTranscriptImage(args.allocator, image) catch {
+                        if (admitted_owns_run_image) if (admitted_run_image) |*owned| owned.deinit(args.allocator);
+                        return rejectedResult(request, package, target_ref, module_ref, match, &.{.PackageInvalid}, "admitted transcript image ownership failed");
+                    };
+                    admitted_owns_transcript_image = true;
+                } else {
+                    admitted_transcript_image = image;
+                }
+            }
             var admitted = Admission.AdmittedRun.init(.{
                 .admission_receipt_fingerprint = receipt.receipt_fingerprint,
                 .target_ref = local_target_ref,
                 .environment_certificate_fingerprint = cert.certificate_fingerprint,
                 .run_permit = args.permit,
-                .run_image = package.run_image,
-                .transcript_image = package.transcript_image,
+                .run_image = admitted_run_image,
+                .owns_run_image = admitted_owns_run_image,
+                .transcript_image = admitted_transcript_image,
+                .owns_transcript_image = admitted_owns_transcript_image,
                 .selected_branch_id = args.requested_branch_id,
                 .selected_checkpoint_ref = args.requested_checkpoint_ref,
                 .mode = mode,
@@ -8940,6 +8984,34 @@ fn manifestForTransferPackage(package: Admission.TransferPackage) Admission.Pack
         .requested_mode = package.requested_mode,
         .summary_metadata = package.metadata,
     });
+}
+
+fn packageManifestEquals(actual: Admission.PackageManifest, expected: Admission.PackageManifest) bool {
+    return actual.manifest_fingerprint == expected.manifest_fingerprint and
+        actual.package_fingerprint == expected.package_fingerprint and
+        actual.package_kind == expected.package_kind and
+        actual.target_ref_fingerprint == expected.target_ref_fingerprint and
+        actual.module_ref_fingerprint == expected.module_ref_fingerprint and
+        actual.module_image_fingerprint == expected.module_image_fingerprint and
+        actual.run_image_fingerprint == expected.run_image_fingerprint and
+        actual.transcript_image_fingerprint == expected.transcript_image_fingerprint and
+        actual.checkpoint_count == expected.checkpoint_count and
+        actual.branch_count == expected.branch_count and
+        actual.prior_receipt_count == expected.prior_receipt_count and
+        actual.requested_mode == expected.requested_mode and
+        std.mem.eql(u8, actual.summary_metadata, expected.summary_metadata);
+}
+
+fn cloneRunImage(allocator: std.mem.Allocator, image: RunImage) !RunImage {
+    const encoded = try image.encode(allocator);
+    defer allocator.free(encoded);
+    return try RunImage.decode(allocator, encoded);
+}
+
+fn cloneTranscriptImage(allocator: std.mem.Allocator, image: TranscriptImage) !TranscriptImage {
+    const encoded = try image.encode(allocator);
+    defer allocator.free(encoded);
+    return try TranscriptImage.decode(allocator, encoded);
 }
 
 fn mismatchSlice(mismatch: ?Admission.MatchMismatch) []const Admission.MatchMismatch {
