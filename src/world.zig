@@ -2089,7 +2089,9 @@ pub const Admission = struct {
             if (self.environment_certificate_fingerprint) |fingerprint| {
                 if (Env.certificate(requested_mode, transcript_available).certificate_fingerprint != fingerprint) return Error.HandoffDenied;
             }
-            const expected_transcript_fingerprint: ?u64 = if (self.transcript_image) |image|
+            const expected_transcript_fingerprint: ?u64 = if (self.mode == .continue_fresh)
+                null
+            else if (self.transcript_image) |image|
                 image.transcript_image_fingerprint
             else if (self.run_image) |image|
                 image.current_state.transcript_image_fingerprint
@@ -2111,6 +2113,10 @@ pub const Admission = struct {
         }
 
         pub fn @"resume"(self: *Admission.AdmittedRun, allocator: std.mem.Allocator, comptime Target: type, comptime Env: type, runtime: anytype, args: anytype, options: anytype) !Machine(Target, Env.machine_config).Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)) {
+            if (self.mode != .resume_parked and self.mode != .branch_resume) return Error.HandoffDenied;
+            const Options = @TypeOf(options);
+            const requested_mode: Mode = if (comptime @hasField(Options, "mode")) @field(options, "mode") else .fresh;
+            if (requested_mode != .fresh) return Error.HandoffDenied;
             var image = self.run_image orelse return error.HandoffPendingFrameMismatch;
             if (image.transcript_image == null) {
                 image.transcript_image = self.transcript_image;
@@ -2191,9 +2197,7 @@ pub const Admission = struct {
             if (package.kind == .target_reference_only and package.target_ref == null and package.run_image == null) {
                 return rejectedResult(request, package, null, null, null, &.{.TargetRefMissing}, "target reference package is missing target ref");
             }
-            if (package.target_ref == null and package.run_image == null and package.module_image_bytes == null and package.module_ref != null) {
-                return rejectedResult(request, package, null, package.module_ref, null, &.{.TargetRefMissing}, "module package is missing target ref");
-            }
+            const module_reference_only = package.target_ref == null and package.run_image == null and package.module_image_bytes == null and package.module_ref != null;
             const target_ref = package.target_ref orelse if (package.run_image) |image| image.target_ref else TargetRef.fromTarget(Target);
             var module_ref = package.module_ref;
             if (!effectiveAdmissionModeMatchesPackage(package.requested_mode, mode)) {
@@ -2259,6 +2263,7 @@ pub const Admission = struct {
                 return rejectedResult(request, package, target_ref, module_ref, null, &.{.AdmissionModeNotAllowed}, "admission mode is not allowed by policy");
             }
             const match = self.registry.match(target_ref, module_ref);
+            if (module_reference_only and !match.matched) return rejectedResult(request, package, target_ref, module_ref, match, &.{.TargetNotRegistered}, "module reference did not match a local target");
             if (policy.require_local_target_for_execution or mode != .inspect_only) {
                 if (!match.matched and module_ref != null and policy.reject_module_mismatch) return rejectedResult(request, package, target_ref, module_ref, match, &.{.ModuleInvalid}, "module mismatch");
                 if (!match.matched) return rejectedResult(request, package, target_ref, module_ref, match, &.{.TargetNotRegistered}, "target not registered");

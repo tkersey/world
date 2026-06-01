@@ -6885,6 +6885,15 @@ test "admitter accepts inspect-only full module and rejects missing permit for e
     try std.testing.expect(bytes_only_inspect.report.accepted);
     try std.testing.expectEqual(module_ref.module_ref_fingerprint, bytes_only_inspect.report.module_ref_fingerprint.?);
 
+    const module_reference_only = world.Admission.TransferPackage.init(.{
+        .kind = .module_reference,
+        .module_ref = reference_module_ref,
+        .requested_mode = .inspect_only,
+    });
+    const module_reference_only_result = inspect_admitter.admitForTarget(fixtures.Ports.Target, PortsEnv, module_reference_only, .{});
+    try std.testing.expect(module_reference_only_result.report.accepted);
+    try std.testing.expectEqual(reference_module_ref.module_ref_fingerprint, module_reference_only_result.report.module_ref_fingerprint.?);
+
     const module_without_target = world.Admission.TransferPackage.init(.{
         .kind = .module_reference,
         .module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Agent.Target),
@@ -6892,8 +6901,8 @@ test "admitter accepts inspect-only full module and rejects missing permit for e
     });
     const module_without_target_result = inspect_admitter.admitForTarget(fixtures.Ports.Target, PortsEnv, module_without_target, .{});
     try std.testing.expect(!module_without_target_result.report.accepted);
-    try std.testing.expectEqual(world.Admission.AdmissionBlocker.TargetRefMissing, module_without_target_result.report.blockers[0]);
-    try std.testing.expectEqual(@as(?u64, null), module_without_target_result.report.target_ref_fingerprint);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.TargetNotRegistered, module_without_target_result.report.blockers[0]);
+    try std.testing.expectEqual(target_ref.target_ref_fingerprint, module_without_target_result.report.target_ref_fingerprint.?);
 
     const stale_ref_package = world.Admission.TransferPackage.init(.{
         .kind = .full_module,
@@ -7638,6 +7647,21 @@ test "admitted run start enforces admitted target and mode without stored permit
     try std.testing.expect(!old_transcript_result.report.accepted);
     try std.testing.expectEqual(world.Admission.AdmissionBlocker.EnvironmentRejected, old_transcript_result.report.blockers[0]);
 
+    const stale_evidence_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, package_with_old_transcript, .{});
+    try std.testing.expect(stale_evidence_result.report.accepted);
+    var stale_evidence_admitted = stale_evidence_result.admitted_run orelse return error.ExpectedAdmittedRun;
+    var stale_evidence_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer stale_evidence_runtime.deinit();
+    var stale_evidence_run = try stale_evidence_admitted.start(fixtures.Ports.Target, PortsEnv, &stale_evidence_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+    });
+    defer stale_evidence_run.deinit();
+
     const sink_result = world.Admission.Admitter.init(.{
         .registry = registry,
         .policy = world.Admission.AdmissionPolicy.test_fixture,
@@ -7886,6 +7910,23 @@ test "admitted run start enforces admitted transcript image" {
         .allocator = std.testing.allocator,
         .mode = world.Mode.replay,
         .transcript_image = &forged_image,
+    }));
+}
+
+test "admitted run resume rejects non fresh options" {
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    var admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xabc,
+        .target_ref = target_ref,
+        .mode = .resume_parked,
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var ctx: PortsCtx = .{};
+    try std.testing.expectError(error.HandoffDenied, admitted.@"resume"(std.testing.allocator, fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.replay,
+        .ctx = &ctx,
     }));
 }
 
