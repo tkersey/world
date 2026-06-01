@@ -2241,6 +2241,17 @@ pub const Admission = struct {
                 if (permit.target_ref_fingerprint != local_target_ref.target_ref_fingerprint) {
                     return rejectedResult(request, package, target_ref, module_ref, match, &.{.PermitRejected}, "permit target mismatch");
                 }
+                if (permit.module_ref_fingerprint) |permit_module_ref| {
+                    const admitted_module_ref = if (module_ref) |module|
+                        module.module_ref_fingerprint
+                    else if (package.run_image) |run_image|
+                        run_image.module_ref_fingerprint
+                    else
+                        null;
+                    if (admitted_module_ref == null or admitted_module_ref.? != permit_module_ref) {
+                        return rejectedResult(request, package, target_ref, module_ref, match, &.{.PermitRejected}, "permit module mismatch");
+                    }
+                }
                 const permit_report = Env.acceptanceReportWithPermit(admissionModeToRunMode(mode), transcript_available, permit);
                 if (!permit_report.accepted) {
                     return rejectedResult(request, package, target_ref, module_ref, match, &.{.PermitRejected}, "permit preflight rejected admission");

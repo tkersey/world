@@ -6919,6 +6919,7 @@ test "admitted run constructed for accepted local target" {
 
 test "admission rejects permit mode mismatch before receipt" {
     const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
     const registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Ports.Target)});
     const package = world.Admission.TransferPackage.init(.{
         .kind = .target_reference_only,
@@ -6936,6 +6937,27 @@ test "admission rejects permit mode mismatch before receipt" {
     }).admitForTarget(fixtures.Ports.Target, PortsEnv, package, .{ .permit = wrong_mode_permit });
     try std.testing.expect(!result.report.accepted);
     try std.testing.expectEqual(world.Admission.AdmissionBlocker.PermitRejected, result.report.blockers[0]);
+
+    const module_package = world.Admission.TransferPackage.init(.{
+        .kind = .module_reference,
+        .target_ref = target_ref,
+        .module_ref = module_ref,
+        .requested_mode = .continue_fresh,
+    });
+    const wrong_module_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .module_ref_fingerprint = module_ref.module_ref_fingerprint +% 1,
+        .policy = world.SupervisionPolicy.strict_fresh,
+    });
+    const module_scoped_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.init(.{
+            .allow_reference_targets = true,
+            .require_supervision_permit = true,
+        }),
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, module_package, .{ .permit = wrong_module_permit });
+    try std.testing.expect(!module_scoped_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PermitRejected, module_scoped_result.report.blockers[0]);
 }
 
 test "admitted run start requires stored permit" {
