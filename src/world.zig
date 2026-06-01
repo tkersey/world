@@ -1362,6 +1362,8 @@ pub const Admission = struct {
                 if (self.run_image) |run_image| {
                     if (run_image.current_state.transcript_image_fingerprint) |state_fingerprint| {
                         if (state_fingerprint != image.transcript_image_fingerprint) return error.InvalidFrameEncoding;
+                    } else {
+                        return error.InvalidFrameEncoding;
                     }
                     if (run_image.transcript_image) |embedded| {
                         if (embedded.transcript_image_fingerprint != image.transcript_image_fingerprint) return error.InvalidFrameEncoding;

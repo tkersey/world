@@ -7179,6 +7179,31 @@ test "admitted run start enforces admitted transcript image" {
         .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
         .current_state = bare_state,
     }).withModuleRef(module_ref, null);
+    const unbound_state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .completed,
+    });
+    const unbound_run_image = world.RunImage.init(.{
+        .kind = .replay_only_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = unbound_state,
+    }).withModuleRef(module_ref, null);
+    const unbound_transcript_package = world.Admission.TransferPackage.init(.{
+        .kind = .replay_run,
+        .target_ref = target_ref,
+        .module_ref = module_ref,
+        .run_image = unbound_run_image,
+        .transcript_image = image,
+        .requested_mode = .replay_only,
+    });
+    const unbound_transcript_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.replay_only,
+    }).admitForTarget(fixtures.Ports.Target, PortsReplayEnv, unbound_transcript_package, .{});
+    try std.testing.expect(!unbound_transcript_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, unbound_transcript_result.report.blockers[0]);
+
     var mismatched_standalone_image = image;
     mismatched_standalone_image.transcript_image_fingerprint +%= 1;
     const mismatched_package = world.Admission.TransferPackage.init(.{
