@@ -1019,6 +1019,10 @@ pub const Admission = struct {
         }
     };
 
+    pub fn moduleImageFingerprintForBytes(bytes: []const u8) u64 {
+        return moduleImageFingerprint(bytes);
+    }
+
     pub const PackageManifest = struct {
         format_version: u32 = world_package_manifest_format_version,
         fingerprint_version: u32 = world_package_manifest_fingerprint_version,
@@ -1307,7 +1311,11 @@ pub const Admission = struct {
             }
             if (self.kind == .full_module and self.module_image_bytes == null) return error.InvalidFrameEncoding;
             if (self.module_image_bytes) |bytes| {
-                if (self.kind != .full_module) return error.InvalidFrameEncoding;
+                const module_image_matches_run = if (self.run_image) |image|
+                    if (image.module_image_fingerprint) |fingerprint| fingerprint == moduleImageFingerprint(bytes) else false
+                else
+                    false;
+                if (self.kind != .full_module and !module_image_matches_run) return error.InvalidFrameEncoding;
                 if (!options.allow_full_module) return error.InvalidFrameEncoding;
                 if (bytes.len > options.max_module_bytes) return error.InvalidFrameEncoding;
                 if (bytes.len > options.max_package_bytes) return error.InvalidFrameEncoding;

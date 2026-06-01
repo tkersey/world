@@ -6438,6 +6438,32 @@ test "transfer package rejects malformed and oversized packages" {
     });
     try branched_replay_package.validate(.{});
 
+    const full_module_bytes = try fixtures.Ports.Target.Module.fullImage(std.testing.allocator);
+    defer std.testing.allocator.free(full_module_bytes);
+    const module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
+    const run_with_module_image = completed_image.withModuleRef(
+        module_ref,
+        world.Admission.moduleImageFingerprintForBytes(full_module_bytes),
+    );
+    const run_module_image_package = world.Admission.TransferPackage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .module_ref = module_ref,
+        .module_image_bytes = full_module_bytes,
+        .run_image = run_with_module_image,
+        .requested_mode = .completed_replay,
+    });
+    try run_module_image_package.validate(.{ .allow_full_module = true });
+    const mismatched_run_module_image_package = world.Admission.TransferPackage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .module_ref = module_ref,
+        .module_image_bytes = "not-the-bound-module-image",
+        .run_image = run_with_module_image,
+        .requested_mode = .completed_replay,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, mismatched_run_module_image_package.validate(.{ .allow_full_module = true }));
+
     var package = world.Admission.TransferPackage.init(.{
         .kind = .target_reference_only,
         .target_ref = target_ref,
