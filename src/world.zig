@@ -8994,7 +8994,7 @@ fn transferPackageKindMatchesRunImage(kind: Admission.PackageKind, image_kind: R
         .parked_run => image_kind == .parked_run,
         .completed_run => image_kind == .completed_run,
         .replay_run => image_kind == .replay_only_run,
-        .branch_run => image_kind == .branched_run,
+        .branch_run => image_kind == .parked_run,
         .target_reference_only, .module_reference, .full_module, .inspect_only => true,
     };
 }

@@ -6921,6 +6921,58 @@ test "admission rejects missing branch and checkpoint selections" {
     const missing_checkpoint = admitter.admitForTarget(fixtures.Ports.Target, PortsReplayEnv, package, .{ .requested_checkpoint_ref = 42 });
     try std.testing.expect(!missing_checkpoint.report.accepted);
     try std.testing.expectEqual(world.Admission.AdmissionBlocker.CheckpointMismatch, missing_checkpoint.report.blockers[0]);
+
+    const branch_checkpoint = world.Timeline.Checkpoint.init(.{
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = target_ref.target_certificate_fingerprint,
+        .event_index = 0,
+        .turn_index = 0,
+        .transcript_prefix_fingerprint = 44,
+        .branch_id = 7,
+        .status = .parked_on_port,
+    });
+    var branch_checkpoints = [_]world.Timeline.Checkpoint{branch_checkpoint};
+    var branches = [_]world.Timeline.Branch{.{
+        .branch_id = 7,
+        .checkpoint_fingerprint = branch_checkpoint.checkpoint_fingerprint,
+        .start_event_index = 0,
+    }};
+    const pending_request = world.Frame.Request.init(.{
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .world_surface_replay_scope_fingerprint = fixtures.Ports.Target.WorldSurface.replayScopeRef().fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .world_port_id = 0,
+        .residual_site_index = fixtures.Ports.ApprovalRequest.index,
+        .residual_site_fingerprint = fixtures.Ports.ApprovalRequest.fingerprint,
+        .request_fingerprint = 45,
+        .turn_index = 0,
+    });
+    const branch_state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .branch_id = 7,
+        .checkpoint_fingerprint = branch_checkpoint.checkpoint_fingerprint,
+        .pending_request_fingerprint = pending_request.frame_fingerprint,
+        .status = .parked_on_port,
+    });
+    const branch_image = world.RunImage.init(.{
+        .kind = .parked_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = branch_state,
+        .checkpoints = branch_checkpoints[0..],
+        .branches = branches[0..],
+        .pending_request_frame = pending_request,
+    }).withModuleRef(module_ref, null);
+    const branch_run_package = world.Admission.TransferPackage.init(.{
+        .kind = .branch_run,
+        .target_ref = target_ref,
+        .module_ref = module_ref,
+        .run_image = branch_image,
+        .requested_mode = .branch_resume,
+    });
+    const branch_run_missing_selection = admitter.admitForTarget(fixtures.Ports.Target, PortsReplayEnv, branch_run_package, .{});
+    try std.testing.expect(!branch_run_missing_selection.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.BranchMismatch, branch_run_missing_selection.report.blockers[0]);
 }
 
 test "admission rejects parked handoff that fails handoff preflight" {
