@@ -1276,6 +1276,9 @@ pub const Admission = struct {
             if (self.format_version != world_transfer_package_format_version) return error.InvalidFrameEncoding;
             if (self.fingerprint_version != world_transfer_package_fingerprint_version) return error.InvalidFrameEncoding;
             if (self.metadata.len > options.max_package_bytes) return error.InvalidFrameEncoding;
+            const encoded_package = self.encode(std.heap.page_allocator) catch return error.InvalidFrameEncoding;
+            defer std.heap.page_allocator.free(encoded_package);
+            if (encoded_package.len > options.max_package_bytes) return error.InvalidFrameEncoding;
             if (options.require_target_ref and self.target_ref == null and self.run_image == null) return error.InvalidFrameEncoding;
             if (options.require_run_image and self.run_image == null) return error.InvalidFrameEncoding;
             if (!options.allow_inspect_only and self.kind == .inspect_only) return error.InvalidFrameEncoding;
@@ -1401,6 +1404,10 @@ pub const Admission = struct {
         }
 
         pub fn validate(self: Admission.TargetRegistry) !void {
+            for (self.entries) |entry| {
+                if (entry.entry_fingerprint != fingerprintTargetRegistryEntry(entry)) return error.TargetRegistryConflict;
+            }
+            if (self.registry_fingerprint != fingerprintTargetRegistry(self)) return error.TargetRegistryConflict;
             for (self.entries, 0..) |entry, index| {
                 for (self.entries[index + 1 ..]) |other| {
                     if (entry.target_ref.target_ref_fingerprint == other.target_ref.target_ref_fingerprint and
@@ -2165,7 +2172,11 @@ pub const Admission = struct {
                 }
             }
             if (admissionModeToHandoffMode(mode)) |handoff_mode| {
-                var handoff = Handoff{ .allocator = args.allocator, .run_image = package.run_image.? };
+                var handoff_run_image = package.run_image.?;
+                if (handoff_run_image.transcript_image == null) {
+                    handoff_run_image.transcript_image = package.transcript_image;
+                }
+                var handoff = Handoff{ .allocator = args.allocator, .run_image = handoff_run_image };
                 const handoff_report = if (args.permit) |permit|
                     handoff.preflightWithPermit(Target, Env, handoff_mode, permit)
                 else
@@ -8818,6 +8829,8 @@ fn admissionModeNeedsRunImage(mode: Admission.AdmissionMode) bool {
 fn admissionModeToHandoffMode(mode: Admission.AdmissionMode) ?HandoffMode {
     return switch (mode) {
         .resume_parked, .branch_resume => .accept_fresh,
+        .replay_only, .completed_replay => .accept_replay,
+        .verify_only => .accept_verify,
         else => null,
     };
 }

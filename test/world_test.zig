@@ -6313,6 +6313,16 @@ test "transfer package encode/decode roundtrip and manifest fingerprint are stab
 
 test "transfer package rejects malformed and oversized packages" {
     const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const envelope_package = world.Admission.TransferPackage.init(.{
+        .kind = .target_reference_only,
+        .target_ref = target_ref,
+        .requested_mode = .local_target_match_only,
+    });
+    const envelope_encoded = try envelope_package.encode(std.testing.allocator);
+    defer std.testing.allocator.free(envelope_encoded);
+    try envelope_package.validate(.{ .max_package_bytes = envelope_encoded.len });
+    try std.testing.expectError(error.InvalidFrameEncoding, envelope_package.validate(.{ .max_package_bytes = envelope_encoded.len - 1 }));
+
     var package = world.Admission.TransferPackage.init(.{
         .kind = .target_reference_only,
         .target_ref = target_ref,
@@ -6418,6 +6428,15 @@ test "target registry rejects module import and table witness mismatches" {
 
 test "target registry rejects duplicate conflicting target" {
     const entry = world.Admission.TargetRegistry.register(fixtures.Ports.Target);
+    var stale_entry = entry;
+    stale_entry.import_set_fingerprint +%= 1;
+    const stale_entry_registry = world.Admission.TargetRegistry.init(&.{stale_entry});
+    try std.testing.expectError(error.TargetRegistryConflict, stale_entry_registry.validate());
+
+    var stale_registry = world.Admission.TargetRegistry.init(&.{entry});
+    stale_registry.registry_fingerprint +%= 1;
+    try std.testing.expectError(error.TargetRegistryConflict, stale_registry.validate());
+
     var conflicting = entry;
     conflicting.import_set_fingerprint +%= 1;
     conflicting.entry_fingerprint +%= 1;
@@ -6906,6 +6925,20 @@ test "admitted run start enforces admitted transcript image" {
     }).admitForTarget(fixtures.Ports.Target, PortsReplayEnv, mismatched_package, .{});
     try std.testing.expect(!mismatched_result.report.accepted);
     try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, mismatched_result.report.blockers[0]);
+
+    const missing_transcript_package = world.Admission.TransferPackage.init(.{
+        .kind = .replay_run,
+        .target_ref = target_ref,
+        .module_ref = module_ref,
+        .run_image = bare_run_image,
+        .requested_mode = .replay_only,
+    });
+    const missing_transcript_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.replay_only,
+    }).admitForTarget(fixtures.Ports.Target, PortsReplayEnv, missing_transcript_package, .{});
+    try std.testing.expect(!missing_transcript_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.EnvironmentRejected, missing_transcript_result.report.blockers[0]);
 
     const package = world.Admission.TransferPackage.init(.{
         .kind = .replay_run,
