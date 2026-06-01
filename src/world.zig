@@ -1279,6 +1279,7 @@ pub const Admission = struct {
             if (options.require_target_ref and self.target_ref == null and self.run_image == null) return error.InvalidFrameEncoding;
             if (options.require_run_image and self.run_image == null) return error.InvalidFrameEncoding;
             if (!options.allow_inspect_only and self.kind == .inspect_only) return error.InvalidFrameEncoding;
+            if (self.kind == .target_reference_only and self.target_ref == null and self.run_image == null) return error.InvalidFrameEncoding;
             if (!options.allow_reference_only and self.kind == .target_reference_only) return error.InvalidFrameEncoding;
             if (self.module_ref) |module_ref| {
                 if (module_ref.module_ref_fingerprint != fingerprintModuleRef(module_ref)) return error.InvalidFrameEncoding;
@@ -1287,6 +1288,7 @@ pub const Admission = struct {
                 if (module_ref.metadata.len > options.max_package_bytes) return error.InvalidFrameEncoding;
                 if (module_ref.label) |label| if (label.len > options.max_package_bytes) return error.InvalidFrameEncoding;
             }
+            if (self.kind == .full_module and self.module_image_bytes == null) return error.InvalidFrameEncoding;
             if (self.module_image_bytes) |bytes| {
                 if (!options.allow_full_module) return error.InvalidFrameEncoding;
                 if (bytes.len > options.max_module_bytes) return error.InvalidFrameEncoding;
@@ -1966,6 +1968,20 @@ pub const Admission = struct {
             const Options = @TypeOf(options);
             const requested_mode: Mode = if (comptime @hasField(Options, "mode")) @field(options, "mode") else .fresh;
             if (requested_mode != admissionModeToRunMode(self.mode)) return Error.HandoffDenied;
+            const transcript_available = comptime @hasField(Options, "transcript_image");
+            if (self.environment_certificate_fingerprint) |fingerprint| {
+                if (Env.certificate(requested_mode, transcript_available).certificate_fingerprint != fingerprint) return Error.HandoffDenied;
+            }
+            const expected_transcript_fingerprint: ?u64 = if (self.transcript_image) |image|
+                image.transcript_image_fingerprint
+            else if (self.run_image) |image|
+                image.current_state.transcript_image_fingerprint
+            else
+                null;
+            if (expected_transcript_fingerprint) |fingerprint| {
+                if (comptime !@hasField(Options, "transcript_image")) return Error.HandoffDenied;
+                if (@field(options, "transcript_image").transcript_image_fingerprint != fingerprint) return Error.HandoffDenied;
+            }
             if (self.run_permit) |permit| {
                 if (comptime !@hasField(Options, "permit")) return Error.SupervisionDenied;
                 if (@field(options, "permit").permit_fingerprint != permit.permit_fingerprint) return Error.SupervisionDenied;
@@ -2029,6 +2045,9 @@ pub const Admission = struct {
                 .requested_checkpoint_ref = args.requested_checkpoint_ref,
                 .metadata = args.metadata,
             });
+            if (package.kind == .target_reference_only and package.target_ref == null and package.run_image == null) {
+                return rejectedResult(request, package, TargetRef.fromTarget(Target), null, null, &.{.TargetRefMissing}, "target reference package is missing target ref");
+            }
             const target_ref = package.target_ref orelse if (package.run_image) |image| image.target_ref else TargetRef.fromTarget(Target);
             const module_ref = package.module_ref;
             package.validate(.{
@@ -2049,6 +2068,15 @@ pub const Admission = struct {
                 if (!runImageFitsAdmissionMode(image, mode)) {
                     return rejectedResult(request, package, target_ref, module_ref, null, &.{.RunImageInvalid}, "run image does not match requested admission mode");
                 }
+            }
+            if (package.kind == .full_module) {
+                const module_bytes = package.module_image_bytes orelse return rejectedResult(request, package, target_ref, module_ref, null, &.{.ModuleInvalid}, "full module package is missing module bytes");
+                if (comptime !@hasDecl(Target, "Module")) {
+                    return rejectedResult(request, package, target_ref, module_ref, null, &.{.ModuleLoadedExecutionUnsupported}, "target has no Boundary module validator");
+                }
+                _ = Target.Module.validate(module_bytes, .{}) catch {
+                    return rejectedResult(request, package, target_ref, module_ref, null, &.{.ModuleInvalid}, "full module bytes failed validation");
+                };
             }
             self.registry.validate() catch {
                 return rejectedResult(request, package, target_ref, module_ref, null, &.{.TargetMismatch}, "target registry contains conflicting entries");

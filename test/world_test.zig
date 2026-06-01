@@ -6495,11 +6495,13 @@ test "admitter accepts inspect-only full module and rejects missing permit for e
     const module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
     const entry = world.Admission.TargetRegistry.register(fixtures.Ports.Target);
     const registry = world.Admission.TargetRegistry.init(&.{entry});
+    const full_module_bytes = try fixtures.Ports.Target.Module.fullImage(std.testing.allocator);
+    defer std.testing.allocator.free(full_module_bytes);
     const inspect_package = world.Admission.TransferPackage.init(.{
         .kind = .full_module,
         .target_ref = target_ref,
         .module_ref = module_ref,
-        .module_image_bytes = "fake-full-module-bytes",
+        .module_image_bytes = full_module_bytes,
         .requested_mode = .inspect_only,
     });
     const inspect_admitter = world.Admission.Admitter.init(.{
@@ -6529,6 +6531,16 @@ test "admitter accepts inspect-only full module and rejects missing permit for e
     }).admitForTarget(fixtures.Ports.Target, PortsEnv, executable_full_module, .{});
     try std.testing.expect(!executable_full_module_result.report.accepted);
     try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, executable_full_module_result.report.blockers[0]);
+
+    const missing_bytes_full_module = world.Admission.TransferPackage.init(.{
+        .kind = .full_module,
+        .target_ref = target_ref,
+        .module_ref = module_ref,
+        .requested_mode = .inspect_only,
+    });
+    const missing_bytes_result = inspect_admitter.admitForTarget(fixtures.Ports.Target, PortsEnv, missing_bytes_full_module, .{});
+    try std.testing.expect(!missing_bytes_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, missing_bytes_result.report.blockers[0]);
 
     const execute_package = world.Admission.TransferPackage.init(.{
         .kind = .target_reference_only,
@@ -6564,6 +6576,17 @@ test "admission rejects bare target reference when reference targets are disable
     }).admitForTarget(fixtures.Ports.Target, PortsEnv, package, .{});
     try std.testing.expect(!result.report.accepted);
     try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, result.report.blockers[0]);
+
+    const missing_target = world.Admission.TransferPackage.init(.{
+        .kind = .target_reference_only,
+        .requested_mode = .local_target_match_only,
+    });
+    const missing_target_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, missing_target, .{});
+    try std.testing.expect(!missing_target_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.TargetRefMissing, missing_target_result.report.blockers[0]);
 }
 
 test "admission rejects prior receipt mismatch when policy requires it" {
@@ -6779,6 +6802,49 @@ test "admitted run start enforces admitted target and mode without stored permit
         .allocator = std.testing.allocator,
         .mode = world.Mode.fresh,
         .ctx = &agent_ctx,
+    }));
+
+    var replay_env_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer replay_env_runtime.deinit();
+    try std.testing.expectError(error.HandoffDenied, admitted.start(fixtures.Ports.Target, PortsReplayEnv, &replay_env_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+    }));
+}
+
+test "admitted run start enforces admitted transcript image" {
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
+    const registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Ports.Target)});
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    try recordPortsTranscript(&transcript);
+    var image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer image.deinit(std.testing.allocator);
+    const run_image = world.RunImage.fromTranscriptImage(fixtures.Ports.Target, image, .replay_only_run).withModuleRef(module_ref, null);
+    const package = world.Admission.TransferPackage.init(.{
+        .kind = .replay_run,
+        .target_ref = target_ref,
+        .module_ref = module_ref,
+        .run_image = run_image,
+        .requested_mode = .replay_only,
+    });
+    const result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.replay_only,
+    }).admitForTarget(fixtures.Ports.Target, PortsReplayEnv, package, .{});
+    try std.testing.expect(result.report.accepted);
+    var admitted = result.admitted_run orelse return error.ExpectedAdmittedRun;
+
+    var wrong_image = image;
+    wrong_image.transcript_image_fingerprint +%= 1;
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    try std.testing.expectError(error.HandoffDenied, admitted.start(fixtures.Ports.Target, PortsReplayEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.replay,
+        .transcript_image = &wrong_image,
     }));
 }
 
