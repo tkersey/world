@@ -2080,8 +2080,11 @@ pub const Admission = struct {
             const requested_mode: Mode = if (comptime @hasField(Options, "mode")) @field(options, "mode") else .fresh;
             if (requested_mode != admissionModeToRunMode(self.mode)) return Error.HandoffDenied;
             if (self.mode == .resume_parked or self.mode == .branch_resume) return Error.HandoffDenied;
-            const transcript_available = comptime @hasField(Options, "transcript_image") or
-                (@hasField(Options, "transcript") and Env.policy_decl.allow_native_adapters);
+            const transcript_sink_available = comptime @hasField(Options, "transcript") and Env.policy_decl.allow_native_adapters;
+            const transcript_available = if (requested_mode == .fresh)
+                transcript_sink_available
+            else
+                (comptime @hasField(Options, "transcript_image")) or transcript_sink_available;
             if (self.environment_certificate_fingerprint) |fingerprint| {
                 if (Env.certificate(requested_mode, transcript_available).certificate_fingerprint != fingerprint) return Error.HandoffDenied;
             }
@@ -2159,9 +2162,13 @@ pub const Admission = struct {
         }) AdmissionResult {
             const mode = args.mode orelse package.requested_mode;
             const policy = self.policy.withFingerprint();
-            const transcript_available = package.transcript_image != null or
-                (package.run_image != null and package.run_image.?.transcript_image != null) or
-                (mode == .continue_fresh and args.fresh_transcript_sink_available and Env.policy_decl.allow_native_adapters);
+            const package_transcript_available = package.transcript_image != null or
+                (package.run_image != null and package.run_image.?.transcript_image != null);
+            const fresh_transcript_sink_available = args.fresh_transcript_sink_available and Env.policy_decl.allow_native_adapters;
+            const transcript_available = if (mode == .continue_fresh)
+                fresh_transcript_sink_available
+            else
+                package_transcript_available;
             const environment_certificate_fingerprint: ?u64 = if (mode == .inspect_only)
                 null
             else
@@ -2204,14 +2211,15 @@ pub const Admission = struct {
             };
             if (package.run_image) |image| {
                 if (!runImageFitsAdmissionMode(image, mode)) {
-                    return rejectedResult(request, package, target_ref, module_ref, null, &.{.RunImageInvalid}, "run image does not match requested admission mode");
+                    if (mode != .inspect_only) {
+                        return rejectedResult(request, package, target_ref, module_ref, null, &.{.RunImageInvalid}, "run image does not match requested admission mode");
+                    }
                 }
             }
             if ((mode == .replay_only or mode == .verify_only) and package.run_image == null and package.transcript_image == null) {
                 return rejectedResult(request, package, target_ref, module_ref, null, &.{.RunImageInvalid}, "replay or verify admission requires run or transcript evidence");
             }
-            if (package.kind == .full_module) {
-                const module_bytes = package.module_image_bytes orelse return rejectedResult(request, package, target_ref, module_ref, null, &.{.ModuleInvalid}, "full module package is missing module bytes");
+            if (package.module_image_bytes) |module_bytes| {
                 if (comptime !@hasDecl(Target, "Module")) {
                     return rejectedResult(request, package, target_ref, module_ref, null, &.{.ModuleLoadedExecutionUnsupported}, "target has no Boundary module validator");
                 }
@@ -2225,7 +2233,7 @@ pub const Admission = struct {
                 const loaded_module_ref = Admission.ModuleGateway.refFromBoundaryModule(loaded_module);
                 if (module_ref) |supplied| {
                     if (supplied.module_ref_fingerprint != loaded_module_ref.module_ref_fingerprint) {
-                        return rejectedResult(request, package, target_ref, module_ref, null, &.{.ModuleInvalid}, "module ref does not match full module bytes");
+                        return rejectedResult(request, package, target_ref, module_ref, null, &.{.ModuleInvalid}, "module ref does not match module bytes");
                     }
                 } else {
                     module_ref = loaded_module_ref;
@@ -2234,7 +2242,7 @@ pub const Admission = struct {
                     target_ref.target_certificate_fingerprint != loaded_module_ref.target_certificate_fingerprint or
                     target_ref.residual_program_plan_hash != loaded_module_ref.residual_program_plan_hash)
                 {
-                    return rejectedResult(request, package, target_ref, module_ref, null, &.{.ModuleInvalid}, "target ref does not match full module bytes");
+                    return rejectedResult(request, package, target_ref, module_ref, null, &.{.ModuleInvalid}, "target ref does not match module bytes");
                 }
             }
             self.registry.validate() catch {

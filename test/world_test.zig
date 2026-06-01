@@ -6860,6 +6860,31 @@ test "admitter accepts inspect-only full module and rejects missing permit for e
         .run_image = completed_image,
         .requested_mode = .inspect_only,
     });
+    const inspect_run_result = inspect_admitter.admitForTarget(fixtures.Ports.Target, PortsEnv, inspect_run_package, .{});
+    try std.testing.expect(inspect_run_result.report.accepted);
+    try std.testing.expect(inspect_run_result.admitted_run == null);
+
+    const malformed_run_module_bytes = "not-a-boundary-module-image";
+    const reference_run_module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
+    const malformed_run_with_module_bytes = completed_image.withModuleRef(
+        reference_run_module_ref,
+        world.Admission.moduleImageFingerprintForBytes(malformed_run_module_bytes),
+    );
+    const malformed_run_module_package = world.Admission.TransferPackage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .module_ref = reference_run_module_ref,
+        .module_image_bytes = malformed_run_module_bytes,
+        .run_image = malformed_run_with_module_bytes,
+        .requested_mode = .completed_replay,
+    });
+    const malformed_run_module_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, malformed_run_module_package, .{});
+    try std.testing.expect(!malformed_run_module_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.ModuleInvalid, malformed_run_module_result.report.blockers[0]);
+
     const overridden_mode = world.Admission.Admitter.init(.{
         .registry = registry,
         .policy = world.Admission.AdmissionPolicy.test_fixture,
@@ -7452,6 +7477,24 @@ test "admitted run start enforces admitted target and mode without stored permit
     try std.testing.expect(!sink_missing.report.accepted);
     try std.testing.expectEqual(world.Admission.AdmissionBlocker.EnvironmentRejected, sink_missing.report.blockers[0]);
 
+    var old_transcript = world.Transcript.init(std.testing.allocator);
+    defer old_transcript.deinit();
+    try recordPortsTranscript(&old_transcript);
+    var old_image = try old_transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer old_image.deinit(std.testing.allocator);
+    const package_with_old_transcript = world.Admission.TransferPackage.init(.{
+        .kind = .target_reference_only,
+        .target_ref = target_ref,
+        .transcript_image = old_image,
+        .requested_mode = .continue_fresh,
+    });
+    const old_transcript_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, TranscriptRequiredPortsEnv, package_with_old_transcript, .{});
+    try std.testing.expect(!old_transcript_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.EnvironmentRejected, old_transcript_result.report.blockers[0]);
+
     const sink_result = world.Admission.Admitter.init(.{
         .registry = registry,
         .policy = world.Admission.AdmissionPolicy.test_fixture,
@@ -7469,6 +7512,15 @@ test "admitted run start enforces admitted target and mode without stored permit
         .transcript = &sink_transcript,
     });
     defer sink_run.deinit();
+
+    var transcript_image_only_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer transcript_image_only_runtime.deinit();
+    try std.testing.expectError(error.HandoffDenied, sink_admitted.start(fixtures.Ports.Target, TranscriptRequiredPortsEnv, &transcript_image_only_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+        .transcript_image = &old_image,
+    }));
 }
 
 test "admitted run start enforces admitted transcript image" {
