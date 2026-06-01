@@ -2257,6 +2257,12 @@ pub const Admission = struct {
                     return rejectedResult(request, package, target_ref, module_ref, match, &.{.PermitRejected}, "permit preflight rejected admission");
                 }
             }
+            if ((mode == .replay_only or mode == .verify_only) and package.run_image == null) {
+                var transcript_image = package.transcript_image.?;
+                transcript_image.validateReplayRun(target_ref.world_surface_fingerprint, target_ref.target_certificate_fingerprint) catch {
+                    return rejectedResult(request, package, target_ref, module_ref, match, &.{.TranscriptImageInvalid}, "transcript image failed replay preflight");
+                };
+            }
             var handoff_preflight_report_fingerprint: ?u64 = null;
             if (admissionModeToHandoffMode(mode)) |handoff_mode| {
                 if (package.run_image) |run_image| {

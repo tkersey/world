@@ -7106,6 +7106,29 @@ test "admitted run start enforces admitted transcript image" {
     try std.testing.expect(!transcript_target_mismatch_result.report.accepted);
     try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, transcript_target_mismatch_result.report.blockers[0]);
 
+    var incomplete_transcript = world.Transcript.init(std.testing.allocator);
+    defer incomplete_transcript.deinit();
+    try incomplete_transcript.append(.{
+        .kind = .run_started,
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+    });
+    var incomplete_image = try incomplete_transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer incomplete_image.deinit(std.testing.allocator);
+    const incomplete_transcript_package = world.Admission.TransferPackage.init(.{
+        .kind = .replay_run,
+        .target_ref = target_ref,
+        .module_ref = module_ref,
+        .transcript_image = incomplete_image,
+        .requested_mode = .replay_only,
+    });
+    const incomplete_transcript_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.replay_only,
+    }).admitForTarget(fixtures.Ports.Target, PortsReplayEnv, incomplete_transcript_package, .{});
+    try std.testing.expect(!incomplete_transcript_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.TranscriptImageInvalid, incomplete_transcript_result.report.blockers[0]);
+
     const transcript_only_package = world.Admission.TransferPackage.init(.{
         .kind = .replay_run,
         .target_ref = target_ref,
