@@ -10147,10 +10147,7 @@ fn decodeTargetRef(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usi
         .world_dispatch_table_fingerprint = world_dispatch_table_fingerprint,
         .surface_profile_fingerprint = surface_profile_fingerprint,
     };
-    if (format_version == world_target_ref_format_version) return try decodeTargetRefTail(allocator, bytes, cursor, head, true);
-    const tail_cursor = cursor.*;
-    if (decodeTargetRefTail(allocator, bytes, cursor, head, true)) |result| return result else |_| cursor.* = tail_cursor;
-    return try decodeTargetRefTail(allocator, bytes, cursor, head, false);
+    return try decodeTargetRefTail(allocator, bytes, cursor, head, true);
 }
 
 fn decodeTargetRefTail(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, head: DecodedTargetRefHead, include_boundary_module: bool) !TargetRef {
