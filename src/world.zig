@@ -1813,6 +1813,10 @@ pub const Admission = struct {
             .require_local_target_for_execution = false,
             .require_environment_preflight = false,
             .require_supervision_permit = false,
+            .allow_continue_fresh = false,
+            .allow_parked_resume = false,
+            .allow_branch_resume = false,
+            .allow_completed_replay = false,
         });
         pub const replay_only = init(.{
             .require_environment_preflight = false,

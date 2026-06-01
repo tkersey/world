@@ -6965,6 +6965,13 @@ test "replay-only admission policy rejects resume modes" {
     try std.testing.expect(!verify_policy.allowsMode(.completed_replay));
     try std.testing.expect(!verify_policy.allowsMode(.continue_fresh));
     try std.testing.expect(verify_policy.allowsMode(.verify_only));
+    const inspect_policy = world.Admission.AdmissionPolicy.inspect_modules;
+    try std.testing.expect(!inspect_policy.allowsMode(.resume_parked));
+    try std.testing.expect(!inspect_policy.allowsMode(.branch_resume));
+    try std.testing.expect(!inspect_policy.allowsMode(.completed_replay));
+    try std.testing.expect(!inspect_policy.allowsMode(.continue_fresh));
+    try std.testing.expect(!inspect_policy.allowsMode(.replay_only));
+    try std.testing.expect(!inspect_policy.allowsMode(.verify_only));
 
     const fresh_package = world.Admission.TransferPackage.init(.{
         .kind = .target_reference_only,
@@ -7032,6 +7039,12 @@ test "replay-only admission policy rejects resume modes" {
     }).admitForTarget(fixtures.Ports.Target, PortsEnv, parked_package, .{});
     try std.testing.expect(!verify_parked_result.report.accepted);
     try std.testing.expectEqual(world.Admission.AdmissionBlocker.AdmissionModeNotAllowed, verify_parked_result.report.blockers[0]);
+    const inspect_parked_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = inspect_policy,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, parked_package, .{});
+    try std.testing.expect(!inspect_parked_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.AdmissionModeNotAllowed, inspect_parked_result.report.blockers[0]);
 }
 
 test "admission rejects run images that do not fit requested mode" {
