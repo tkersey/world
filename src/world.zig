@@ -7168,6 +7168,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     else
                         null;
                     if (maybe_permit) |permit| {
+                        if (permit_override == null and permit.module_ref_fingerprint != null) return Error.SupervisionDenied;
                         if (permit.target_ref_fingerprint != TargetRef.fromTarget(Target).target_ref_fingerprint) return Error.SupervisionDenied;
                         if (permit.world_surface_fingerprint != Target.WorldSurface.surface_fingerprint) return Error.SupervisionDenied;
                         if (permit.target_certificate_fingerprint != Target.Certificate.certificate_fingerprint) return Error.SupervisionDenied;

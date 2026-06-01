@@ -5950,6 +5950,24 @@ test "usage ledger supervision check and run receipt fingerprints are stable" {
     try std.testing.expectEqual(@as(usize, 1), receipt_a.total_port_requests);
 }
 
+test "direct machine start rejects module scoped permits" {
+    const module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .module_ref_fingerprint = module_ref.module_ref_fingerprint,
+        .policy = world.SupervisionPolicy.strict_fresh,
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var ctx: PortsCtx = .{};
+    try std.testing.expectError(error.SupervisionDenied, PortsMachineEnv.run(&runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+        .permit = permit,
+    }));
+}
+
 test "supervision cost overflow saturates into budget exceeded" {
     const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
         .mode = .fresh,
