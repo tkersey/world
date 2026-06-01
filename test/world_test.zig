@@ -2333,6 +2333,53 @@ test "runspace install target enforces config gates and deterministic local hand
     try std.testing.expectError(error.RunspaceInstallDenied, direct_denied.installTarget(fixtures.Strict.Target, .{}, null, .{}));
 }
 
+test "runspace handles are scoped to each local arena instance" {
+    var first_runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer first_runspace.deinit();
+    var second_runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer second_runspace.deinit();
+
+    try std.testing.expect(first_runspace.runspace_fingerprint != second_runspace.runspace_fingerprint);
+    const first_handle = try first_runspace.installTarget(fixtures.Strict.Target, .{}, null, .{});
+    _ = try second_runspace.installTarget(fixtures.Strict.Target, .{}, null, .{});
+
+    try std.testing.expectError(error.StaleRunHandle, second_runspace.getSlotSummary(first_handle));
+}
+
+test "runspace supervised handoff install requires prior permit fingerprint" {
+    var image = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Strict.Target),
+        .import_set_fingerprint = 0,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = world.TargetRef.fromTarget(fixtures.Strict.Target).target_ref_fingerprint,
+            .status = .completed,
+        }),
+    });
+    defer image.deinit(std.testing.allocator);
+
+    var runspace = world.Runspace.init(std.testing.allocator, .{
+        .require_supervision = true,
+    });
+    defer runspace.deinit();
+
+    try std.testing.expectError(error.SupervisionDenied, runspace.installRunImage(image));
+}
+
+test "runspace failed machine install transfers driver ownership once" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{
+        .max_runs = 0,
+    });
+    defer runspace.deinit();
+
+    try std.testing.expectError(error.BudgetExceeded, runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    }));
+}
+
 test "runspace install admitted and replay records receipts summaries and events" {
     const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const admitted = world.Admission.AdmittedRun.init(.{

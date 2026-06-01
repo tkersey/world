@@ -367,7 +367,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-runspace-basic",
             .desc = "Run the basic World runspace example.",
             .expected_stdout =
-            \\run_handle=aff3ed10a6af0f8e
+            \\run_handle=367cb72b9a8188ae
             \\pending_port_id=0
             \\final_result=7
             \\
@@ -379,8 +379,8 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-runspace-multi",
             .desc = "Run the multi-run World runspace example.",
             .expected_stdout =
-            \\first_run=aff3ed10a6af0f8e
-            \\second_run=242e889caa2366f0
+            \\first_run=367cb72b9a8188ae
+            \\second_run=8d63b7a77a33b921
             \\pending_count=0
             \\completed_count=2
             \\
@@ -393,7 +393,7 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the handoff World runspace example.",
             .expected_stdout =
             \\admission_receipt=32caaa5f6251bfbb
-            \\run_handle=f9efeb97b95db7e6
+            \\run_handle=a6dc8369ee5d317b
             \\final_result=7
             \\
             ,
@@ -419,7 +419,7 @@ pub fn build(b: *std.Build) void {
             .expected_stdout =
             \\run_permit=802923ff46eb3109
             \\budget_exceeded=true
-            \\receipt_fingerprint=be4b14f5cd3b0c2e
+            \\receipt_fingerprint=8930e2cd80e4846b
             \\
             ,
         },

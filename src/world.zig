@@ -235,6 +235,8 @@ pub const world_run_handle_fingerprint_version: u32 = 1;
 pub const world_pending_port_format_version: u32 = 1;
 pub const world_pending_port_fingerprint_version: u32 = 1;
 pub const world_runspace_event_fingerprint_version: u32 = 1;
+
+var next_runspace_instance_id: u64 = 0;
 pub const world_max_decoded_byte_field_len: usize = 16 * 1024 * 1024;
 const frame_response_deferred_fingerprint_flag: u32 = 1 << 0;
 const world_min_transcript_event_image_encoded_len_v2: usize = 8 + 1 + 8 + 8 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1;
@@ -7052,7 +7054,9 @@ pub const Runspace = struct {
     };
 
     pub fn init(allocator: std.mem.Allocator, config: Config) @This() {
-        const runspace_fingerprint = fingerprintRunspaceConfig(config);
+        const runspace_instance_id = next_runspace_instance_id;
+        next_runspace_instance_id += 1;
+        const runspace_fingerprint = fingerprintRunspaceConfig(config, runspace_instance_id);
         return .{
             .allocator = allocator,
             .config = config,
@@ -7114,6 +7118,7 @@ pub const Runspace = struct {
     pub fn installRunImage(self: *@This(), image: RunImage) !RunHandle {
         if (self.config.require_admission) return error.RunspaceAdmissionRequired;
         if (!self.config.allow_handoff_install) return error.RunspaceInstallDenied;
+        if (self.config.require_supervision and image.prior_run_permit_fingerprint == null) return error.SupervisionDenied;
         const handle = try self.nextHandle(.{
             .target_ref_fingerprint = image.target_ref.target_ref_fingerprint,
             .permit_fingerprint = image.prior_run_permit_fingerprint,
@@ -7176,10 +7181,12 @@ pub const Runspace = struct {
         errdefer if (run_owned) run.deinit();
         const RunType = @TypeOf(run);
         const run_ptr = try self.allocator.create(RunType);
-        errdefer self.allocator.destroy(run_ptr);
+        var run_ptr_owned = true;
+        errdefer if (run_ptr_owned) self.allocator.destroy(run_ptr);
         run_ptr.* = run;
         run_owned = false;
         var driver = SlotDriver.forRun(RunType, run_ptr);
+        run_ptr_owned = false;
         var driver_owned = true;
         errdefer if (driver_owned) driver.deinit(self.allocator);
         const target_ref = TargetRef.fromTarget(Target);
@@ -12615,10 +12622,11 @@ fn fingerprintRunHandle(handle: RunHandle) u64 {
     return hasher.final();
 }
 
-fn fingerprintRunspaceConfig(config: Runspace.Config) u64 {
+fn fingerprintRunspaceConfig(config: Runspace.Config, runspace_instance_id: u64) u64 {
     var hasher = std.hash.Wyhash.init(0);
     hashBytes(&hasher, "world.runspace.config.fingerprint");
     hashU64(&hasher, world_run_handle_fingerprint_version);
+    hashU64(&hasher, runspace_instance_id);
     hashU64(&hasher, @intFromEnum(config.policy));
     hashOptionalU64(&hasher, config.max_runs);
     hashOptionalU64(&hasher, config.max_pending_ports);
