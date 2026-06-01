@@ -7959,6 +7959,42 @@ test "admitted run start enforces admitted transcript image" {
     try std.testing.expect(!transcript_target_mismatch_result.report.accepted);
     try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, transcript_target_mismatch_result.report.blockers[0]);
 
+    var agent_transcript = world.Transcript.init(std.testing.allocator);
+    defer agent_transcript.deinit();
+    try agent_transcript.append(.{
+        .kind = .run_started,
+        .world_surface_fingerprint = fixtures.Agent.Target.WorldSurface.surface_fingerprint,
+        .target_certificate_fingerprint = fixtures.Agent.Target.Certificate.certificate_fingerprint,
+    });
+    try agent_transcript.append(.{
+        .kind = .run_completed,
+        .world_surface_fingerprint = fixtures.Agent.Target.WorldSurface.surface_fingerprint,
+        .target_certificate_fingerprint = fixtures.Agent.Target.Certificate.certificate_fingerprint,
+        .status = .responded,
+    });
+    var agent_image = try agent_transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer agent_image.deinit(std.testing.allocator);
+    const inspect_mismatch_package = world.Admission.TransferPackage.init(.{
+        .kind = .inspect_only,
+        .module_ref = module_ref,
+        .transcript_image = agent_image,
+        .requested_mode = .inspect_only,
+    });
+    var inspect_mismatch_policy = world.Admission.AdmissionPolicy.inspect_modules;
+    inspect_mismatch_policy.reject_transcript_mismatch = false;
+    const rejected_inspect_mismatch = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.inspect_modules,
+    }).admitForTarget(fixtures.Ports.Target, PortsReplayEnv, inspect_mismatch_package, .{});
+    try std.testing.expect(!rejected_inspect_mismatch.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.TranscriptTargetMismatch, rejected_inspect_mismatch.report.blockers[0]);
+    const allowed_inspect_mismatch = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = inspect_mismatch_policy,
+    }).admitForTarget(fixtures.Ports.Target, PortsReplayEnv, inspect_mismatch_package, .{});
+    try std.testing.expect(allowed_inspect_mismatch.report.accepted);
+    try std.testing.expect(allowed_inspect_mismatch.admitted_run == null);
+
     var incomplete_transcript = world.Transcript.init(std.testing.allocator);
     defer incomplete_transcript.deinit();
     try incomplete_transcript.append(.{

@@ -2317,11 +2317,13 @@ pub const Admission = struct {
                     return rejectedResult(request, package, target_ref, module_ref, match, &.{.ModuleRequiresLocalTarget}, "full module requires local target for execution");
                 }
             }
-            if (package.transcript_image) |image| {
-                if (image.world_surface_fingerprint != target_ref.world_surface_fingerprint or
-                    image.target_certificate_fingerprint != target_ref.target_certificate_fingerprint)
-                {
-                    return rejectedResult(request, package, target_ref, module_ref, match, &.{.TranscriptTargetMismatch}, "transcript image does not match target");
+            if (policy.reject_transcript_mismatch) {
+                if (package.transcript_image) |image| {
+                    if (image.world_surface_fingerprint != target_ref.world_surface_fingerprint or
+                        image.target_certificate_fingerprint != target_ref.target_certificate_fingerprint)
+                    {
+                        return rejectedResult(request, package, target_ref, module_ref, match, &.{.TranscriptTargetMismatch}, "transcript image does not match target");
+                    }
                 }
             }
             if (mode == .inspect_only or mode == .local_target_match_only) {
