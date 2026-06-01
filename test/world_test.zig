@@ -6953,7 +6953,20 @@ test "replay-only admission policy rejects resume modes" {
     try std.testing.expect(!verify_policy.allowsMode(.resume_parked));
     try std.testing.expect(!verify_policy.allowsMode(.branch_resume));
     try std.testing.expect(!verify_policy.allowsMode(.completed_replay));
+    try std.testing.expect(!verify_policy.allowsMode(.continue_fresh));
     try std.testing.expect(verify_policy.allowsMode(.verify_only));
+
+    const fresh_package = world.Admission.TransferPackage.init(.{
+        .kind = .target_reference_only,
+        .target_ref = target_ref,
+        .requested_mode = .continue_fresh,
+    });
+    const verify_fresh_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = verify_policy,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, fresh_package, .{});
+    try std.testing.expect(!verify_fresh_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.AdmissionModeNotAllowed, verify_fresh_result.report.blockers[0]);
 
     const pending_request = world.Frame.Request.init(.{
         .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,

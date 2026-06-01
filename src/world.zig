@@ -218,7 +218,7 @@ pub const world_target_registry_fingerprint_version: u32 = 1;
 pub const world_target_registry_entry_fingerprint_version: u32 = 1;
 pub const world_target_match_fingerprint_version: u32 = 1;
 pub const world_export_summary_fingerprint_version: u32 = 1;
-pub const world_admission_policy_fingerprint_version: u32 = 1;
+pub const world_admission_policy_fingerprint_version: u32 = 2;
 pub const world_admission_request_fingerprint_version: u32 = 1;
 pub const world_admission_report_fingerprint_version: u32 = 1;
 pub const world_admission_receipt_format_version: u32 = 1;
@@ -1719,6 +1719,7 @@ pub const Admission = struct {
         require_local_target_for_execution: bool = true,
         require_environment_preflight: bool = true,
         require_supervision_permit: bool = true,
+        allow_continue_fresh: bool = true,
         allow_replay_without_environment: bool = false,
         allow_verify_without_fresh_environment: bool = false,
         allow_parked_resume: bool = true,
@@ -1742,6 +1743,7 @@ pub const Admission = struct {
             require_local_target_for_execution: bool = true,
             require_environment_preflight: bool = true,
             require_supervision_permit: bool = true,
+            allow_continue_fresh: bool = true,
             allow_replay_without_environment: bool = false,
             allow_verify_without_fresh_environment: bool = false,
             allow_parked_resume: bool = true,
@@ -1764,6 +1766,7 @@ pub const Admission = struct {
                 .require_local_target_for_execution = args.require_local_target_for_execution,
                 .require_environment_preflight = args.require_environment_preflight,
                 .require_supervision_permit = args.require_supervision_permit,
+                .allow_continue_fresh = args.allow_continue_fresh,
                 .allow_replay_without_environment = args.allow_replay_without_environment,
                 .allow_verify_without_fresh_environment = args.allow_verify_without_fresh_environment,
                 .allow_parked_resume = args.allow_parked_resume,
@@ -1789,7 +1792,7 @@ pub const Admission = struct {
                 .replay_only => self.allow_completed_replay or self.allow_replay_without_environment,
                 .verify_only => self.allow_verify_without_fresh_environment or self.require_environment_preflight,
                 .resume_parked => self.allow_parked_resume,
-                .continue_fresh => self.require_environment_preflight,
+                .continue_fresh => self.allow_continue_fresh and self.require_environment_preflight,
                 .branch_resume => self.allow_branch_resume,
                 .completed_replay => self.allow_completed_replay,
                 .local_target_match_only => true,
@@ -1815,6 +1818,7 @@ pub const Admission = struct {
         pub const verify_receiver = init(.{
             .require_supervision_permit = false,
             .allow_verify_without_fresh_environment = true,
+            .allow_continue_fresh = false,
             .allow_parked_resume = false,
             .allow_branch_resume = false,
             .allow_completed_replay = false,
@@ -10804,6 +10808,7 @@ fn fingerprintAdmissionPolicy(policy: Admission.AdmissionPolicy) u64 {
     hashBool(&hasher, policy.require_local_target_for_execution);
     hashBool(&hasher, policy.require_environment_preflight);
     hashBool(&hasher, policy.require_supervision_permit);
+    hashBool(&hasher, policy.allow_continue_fresh);
     hashBool(&hasher, policy.allow_replay_without_environment);
     hashBool(&hasher, policy.allow_verify_without_fresh_environment);
     hashBool(&hasher, policy.allow_parked_resume);
