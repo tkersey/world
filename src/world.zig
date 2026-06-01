@@ -111,13 +111,19 @@ pub const EventKind = enum {
     supervision_denied,
     run_interrupted,
     receipt_recorded,
+    admission_requested,
+    admission_accepted,
+    admission_rejected,
+    module_matched_target,
 };
 
 test "EventKind keeps legacy transcript ordinals behind v2 image format" {
-    try std.testing.expectEqual(@as(u32, 2), world_transcript_image_format_version);
+    try std.testing.expectEqual(@as(u32, 3), world_transcript_image_format_version);
     try std.testing.expectEqual(@as(u8, 15), @intFromEnum(EventKind.run_completed));
     try std.testing.expectEqual(@as(u8, 16), @intFromEnum(EventKind.run_failed));
-    try std.testing.expect(@intFromEnum(EventKind.permit_issued) > @intFromEnum(EventKind.run_failed));
+    try std.testing.expectEqual(@as(u8, 17), @intFromEnum(EventKind.permit_issued));
+    try std.testing.expectEqual(@as(u8, 18), @intFromEnum(EventKind.supervision_check));
+    try std.testing.expect(@intFromEnum(EventKind.admission_requested) > @intFromEnum(EventKind.receipt_recorded));
 }
 
 test "TranscriptImage rejects legacy v1 event stream after supervision event vocabulary bump" {
@@ -166,7 +172,7 @@ pub const world_frame_response_format_version: u32 = 1;
 pub const world_frame_response_fingerprint_version: u32 = 1;
 pub const world_frame_value_image_format_version: u32 = 1;
 pub const world_frame_value_image_fingerprint_version: u32 = 1;
-pub const world_transcript_image_format_version: u32 = 2;
+pub const world_transcript_image_format_version: u32 = 3;
 pub const world_transcript_image_fingerprint_version: u32 = 1;
 pub const world_timeline_event_format_version: u32 = 1;
 pub const world_timeline_event_fingerprint_version: u32 = 1;
@@ -176,7 +182,7 @@ pub const world_timeline_branch_format_version: u32 = 1;
 pub const world_timeline_branch_fingerprint_version: u32 = 1;
 pub const world_audit_image_format_version: u32 = 1;
 pub const world_audit_image_fingerprint_version: u32 = 1;
-pub const world_target_ref_format_version: u32 = 1;
+pub const world_target_ref_format_version: u32 = 2;
 pub const world_target_ref_fingerprint_version: u32 = 1;
 pub const world_import_requirement_fingerprint_version: u32 = 1;
 pub const world_import_set_fingerprint_version: u32 = 1;
@@ -190,7 +196,7 @@ pub const world_environment_certificate_format_version: u32 = 1;
 pub const world_environment_certificate_fingerprint_version: u32 = 1;
 pub const world_adapter_descriptor_fingerprint_version: u32 = 1;
 pub const world_run_state_fingerprint_version: u32 = 1;
-pub const world_run_image_format_version: u32 = 2;
+pub const world_run_image_format_version: u32 = 3;
 pub const world_run_image_fingerprint_version: u32 = 1;
 pub const world_run_permit_format_version: u32 = 1;
 pub const world_run_permit_fingerprint_version: u32 = 1;
@@ -202,9 +208,26 @@ pub const world_usage_ledger_fingerprint_version: u32 = 1;
 pub const world_supervision_check_fingerprint_version: u32 = 1;
 pub const world_run_receipt_format_version: u32 = 1;
 pub const world_run_receipt_fingerprint_version: u32 = 1;
+pub const world_transfer_package_format_version: u32 = 1;
+pub const world_transfer_package_fingerprint_version: u32 = 1;
+pub const world_package_manifest_format_version: u32 = 1;
+pub const world_package_manifest_fingerprint_version: u32 = 1;
+pub const world_module_ref_format_version: u32 = 1;
+pub const world_module_ref_fingerprint_version: u32 = 1;
+pub const world_target_registry_fingerprint_version: u32 = 1;
+pub const world_target_registry_entry_fingerprint_version: u32 = 1;
+pub const world_target_match_fingerprint_version: u32 = 1;
+pub const world_export_summary_fingerprint_version: u32 = 1;
+pub const world_admission_policy_fingerprint_version: u32 = 2;
+pub const world_admission_request_fingerprint_version: u32 = 1;
+pub const world_admission_report_fingerprint_version: u32 = 1;
+pub const world_admission_receipt_format_version: u32 = 1;
+pub const world_admission_receipt_fingerprint_version: u32 = 1;
+pub const world_admitted_run_fingerprint_version: u32 = 1;
 pub const world_max_decoded_byte_field_len: usize = 16 * 1024 * 1024;
 const frame_response_deferred_fingerprint_flag: u32 = 1 << 0;
-const world_min_transcript_event_image_encoded_len: usize = 8 + 1 + 8 + 8 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1;
+const world_min_transcript_event_image_encoded_len_v2: usize = 8 + 1 + 8 + 8 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1;
+const world_min_transcript_event_image_encoded_len: usize = world_min_transcript_event_image_encoded_len_v2 + 1 + 1 + 1 + 1 + 1;
 
 pub const ValuePolicy = struct {
     require_portable_values: bool = false,
@@ -840,6 +863,1695 @@ pub const UsageLedger = Supervision.UsageLedger;
 pub const SupervisionCheck = Supervision.SupervisionCheck;
 pub const RunReceipt = Supervision.RunReceipt;
 
+pub const Admission = struct {
+    pub const PackageKind = enum {
+        target_reference_only,
+        module_reference,
+        full_module,
+        run_reference,
+        parked_run,
+        completed_run,
+        replay_run,
+        branch_run,
+        inspect_only,
+    };
+
+    pub const AdmissionMode = enum {
+        inspect_only,
+        replay_only,
+        verify_only,
+        resume_parked,
+        continue_fresh,
+        branch_resume,
+        completed_replay,
+        local_target_match_only,
+    };
+
+    pub const BoundaryModuleKind = enum {
+        reference_only,
+        full_module,
+        partial_module,
+    };
+
+    pub const MatchMode = enum {
+        exact,
+        reference_only,
+        module_full_to_local_target,
+        mismatch,
+    };
+
+    pub const MatchMismatch = enum {
+        WorldSurface,
+        TargetCertificate,
+        ProgramPlanHash,
+        BoundaryModule,
+        WorldPortTable,
+        WorldValueTable,
+        WorldDispatchTable,
+        NormalForm,
+        ImportSet,
+        ExportSet,
+    };
+
+    pub const AdmissionBlocker = enum {
+        PackageInvalid,
+        PackageUnsupportedKind,
+        TargetRefMissing,
+        TargetNotRegistered,
+        TargetMismatch,
+        ModuleInvalid,
+        ModuleRequiresLocalTarget,
+        ModuleLoadedExecutionUnsupported,
+        ImportSetUnavailable,
+        EnvironmentMissing,
+        EnvironmentRejected,
+        PermitMissing,
+        PermitRejected,
+        RunImageInvalid,
+        RunImageTargetMismatch,
+        TranscriptImageInvalid,
+        TranscriptTargetMismatch,
+        CheckpointMismatch,
+        BranchMismatch,
+        PriorReceiptMismatch,
+        AdmissionModeNotAllowed,
+        PackageLimitExceeded,
+    };
+
+    pub const ModuleRef = struct {
+        format_version: u32 = world_module_ref_format_version,
+        fingerprint_version: u32 = world_module_ref_fingerprint_version,
+        module_ref_fingerprint: u64,
+        boundary_module_fingerprint: u64,
+        module_kind: BoundaryModuleKind,
+        target_ref_fingerprint: u64,
+        world_surface_fingerprint: u64,
+        target_certificate_fingerprint: u64,
+        residual_program_plan_hash: ?u64 = null,
+        import_surface_fingerprint: ?u64 = null,
+        export_surface_fingerprint: ?u64 = null,
+        module_graph_fingerprint: ?u64 = null,
+        normal_form_kind: NormalFormKind = .unknown,
+        world_port_count: usize = 0,
+        world_port_table_fingerprint: ?u64 = null,
+        world_value_table_fingerprint: ?u64 = null,
+        world_dispatch_table_fingerprint: ?u64 = null,
+        label: ?[]const u8 = null,
+        metadata: []const u8 = "",
+
+        pub fn init(args: struct {
+            boundary_module_fingerprint: u64,
+            module_kind: BoundaryModuleKind,
+            target_ref_fingerprint: u64,
+            world_surface_fingerprint: u64,
+            target_certificate_fingerprint: u64,
+            residual_program_plan_hash: ?u64 = null,
+            import_surface_fingerprint: ?u64 = null,
+            export_surface_fingerprint: ?u64 = null,
+            module_graph_fingerprint: ?u64 = null,
+            normal_form_kind: NormalFormKind = .unknown,
+            world_port_count: usize = 0,
+            world_port_table_fingerprint: ?u64 = null,
+            world_value_table_fingerprint: ?u64 = null,
+            world_dispatch_table_fingerprint: ?u64 = null,
+            label: ?[]const u8 = null,
+            metadata: []const u8 = "",
+        }) Admission.ModuleRef {
+            var result = Admission.ModuleRef{
+                .module_ref_fingerprint = 0,
+                .boundary_module_fingerprint = args.boundary_module_fingerprint,
+                .module_kind = args.module_kind,
+                .target_ref_fingerprint = args.target_ref_fingerprint,
+                .world_surface_fingerprint = args.world_surface_fingerprint,
+                .target_certificate_fingerprint = args.target_certificate_fingerprint,
+                .residual_program_plan_hash = args.residual_program_plan_hash,
+                .import_surface_fingerprint = args.import_surface_fingerprint,
+                .export_surface_fingerprint = args.export_surface_fingerprint,
+                .module_graph_fingerprint = args.module_graph_fingerprint,
+                .normal_form_kind = args.normal_form_kind,
+                .world_port_count = args.world_port_count,
+                .world_port_table_fingerprint = args.world_port_table_fingerprint,
+                .world_value_table_fingerprint = args.world_value_table_fingerprint,
+                .world_dispatch_table_fingerprint = args.world_dispatch_table_fingerprint,
+                .label = args.label,
+                .metadata = args.metadata,
+            };
+            result.module_ref_fingerprint = fingerprintModuleRef(result);
+            return result;
+        }
+
+        pub fn fromTarget(comptime Target: type) Admission.ModuleRef {
+            const target_ref = TargetRef.fromTarget(Target);
+            return init(.{
+                .boundary_module_fingerprint = target_ref.boundary_module_fingerprint orelse target_ref.target_ref_fingerprint,
+                .module_kind = .reference_only,
+                .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+                .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+                .target_certificate_fingerprint = target_ref.target_certificate_fingerprint,
+                .residual_program_plan_hash = target_ref.residual_program_plan_hash,
+                .import_surface_fingerprint = if (@hasDecl(Target, "Module")) Target.Module.manifest.import_surface_fingerprint else null,
+                .export_surface_fingerprint = if (@hasDecl(Target, "Module")) Target.Module.manifest.export_surface_fingerprint else null,
+                .normal_form_kind = target_ref.normal_form_kind,
+                .world_port_count = Target.WorldPortTable.entries.len,
+                .world_port_table_fingerprint = target_ref.world_port_table_fingerprint,
+                .world_value_table_fingerprint = target_ref.world_value_table_fingerprint,
+                .world_dispatch_table_fingerprint = target_ref.world_dispatch_table_fingerprint,
+                .label = target_ref.target_label,
+            });
+        }
+    };
+
+    pub fn moduleImageFingerprintForBytes(bytes: []const u8) u64 {
+        return moduleImageFingerprint(bytes);
+    }
+
+    pub const PackageManifest = struct {
+        format_version: u32 = world_package_manifest_format_version,
+        fingerprint_version: u32 = world_package_manifest_fingerprint_version,
+        manifest_fingerprint: u64,
+        package_fingerprint: u64,
+        package_kind: PackageKind,
+        target_ref_fingerprint: ?u64 = null,
+        module_ref_fingerprint: ?u64 = null,
+        module_image_fingerprint: ?u64 = null,
+        run_image_fingerprint: ?u64 = null,
+        transcript_image_fingerprint: ?u64 = null,
+        checkpoint_count: usize = 0,
+        branch_count: usize = 0,
+        prior_receipt_count: usize = 0,
+        requested_mode: Admission.AdmissionMode,
+        summary_metadata: []const u8 = "",
+
+        pub fn init(args: struct {
+            package_fingerprint: u64,
+            package_kind: PackageKind,
+            target_ref_fingerprint: ?u64 = null,
+            module_ref_fingerprint: ?u64 = null,
+            module_image_fingerprint: ?u64 = null,
+            run_image_fingerprint: ?u64 = null,
+            transcript_image_fingerprint: ?u64 = null,
+            checkpoint_count: usize = 0,
+            branch_count: usize = 0,
+            prior_receipt_count: usize = 0,
+            requested_mode: Admission.AdmissionMode,
+            summary_metadata: []const u8 = "",
+        }) Admission.PackageManifest {
+            var result = Admission.PackageManifest{
+                .manifest_fingerprint = 0,
+                .package_fingerprint = args.package_fingerprint,
+                .package_kind = args.package_kind,
+                .target_ref_fingerprint = args.target_ref_fingerprint,
+                .module_ref_fingerprint = args.module_ref_fingerprint,
+                .module_image_fingerprint = args.module_image_fingerprint,
+                .run_image_fingerprint = args.run_image_fingerprint,
+                .transcript_image_fingerprint = args.transcript_image_fingerprint,
+                .checkpoint_count = args.checkpoint_count,
+                .branch_count = args.branch_count,
+                .prior_receipt_count = args.prior_receipt_count,
+                .requested_mode = args.requested_mode,
+                .summary_metadata = args.summary_metadata,
+            };
+            result.manifest_fingerprint = fingerprintPackageManifest(result);
+            return result;
+        }
+    };
+
+    pub const TransferPackage = struct {
+        format_version: u32 = world_transfer_package_format_version,
+        fingerprint_version: u32 = world_transfer_package_fingerprint_version,
+        package_fingerprint: u64,
+        manifest: Admission.PackageManifest,
+        kind: PackageKind,
+        target_ref: ?TargetRef = null,
+        module_ref: ?Admission.ModuleRef = null,
+        module_image_bytes: ?[]const u8 = null,
+        run_image: ?RunImage = null,
+        transcript_image: ?TranscriptImage = null,
+        checkpoint_refs: []const u64 = &.{},
+        branch_refs: []const u64 = &.{},
+        prior_run_permit_refs: []const u64 = &.{},
+        prior_run_receipt_refs: []const u64 = &.{},
+        requested_mode: Admission.AdmissionMode,
+        requested_supervision_hint_fingerprint: ?u64 = null,
+        metadata: []const u8 = "",
+        owns_target_ref_bytes: bool = false,
+        owns_module_ref_bytes: bool = false,
+        owns_module_image_bytes: bool = false,
+        owns_run_image: bool = false,
+        owns_transcript_image: bool = false,
+        owns_checkpoint_refs: bool = false,
+        owns_branch_refs: bool = false,
+        owns_prior_run_permit_refs: bool = false,
+        owns_prior_run_receipt_refs: bool = false,
+        owns_metadata: bool = false,
+
+        pub const ValidateOptions = struct {
+            max_package_bytes: usize = world_max_decoded_byte_field_len,
+            max_module_bytes: usize = world_max_decoded_byte_field_len,
+            max_transcript_bytes: usize = world_max_decoded_byte_field_len,
+            max_branches: usize = 4096,
+            max_checkpoints: usize = 4096,
+            require_target_ref: bool = false,
+            require_run_image: bool = false,
+            allow_full_module: bool = true,
+            allow_reference_only: bool = true,
+            allow_inspect_only: bool = true,
+            reject_unknown_extensions: bool = true,
+        };
+
+        pub fn init(args: struct {
+            kind: PackageKind,
+            target_ref: ?TargetRef = null,
+            module_ref: ?Admission.ModuleRef = null,
+            module_image_bytes: ?[]const u8 = null,
+            run_image: ?RunImage = null,
+            transcript_image: ?TranscriptImage = null,
+            checkpoint_refs: []const u64 = &.{},
+            branch_refs: []const u64 = &.{},
+            prior_run_permit_refs: []const u64 = &.{},
+            prior_run_receipt_refs: []const u64 = &.{},
+            requested_mode: Admission.AdmissionMode,
+            requested_supervision_hint_fingerprint: ?u64 = null,
+            metadata: []const u8 = "",
+        }) Admission.TransferPackage {
+            var result = Admission.TransferPackage{
+                .package_fingerprint = 0,
+                .manifest = undefined,
+                .kind = args.kind,
+                .target_ref = args.target_ref,
+                .module_ref = args.module_ref,
+                .module_image_bytes = args.module_image_bytes,
+                .run_image = args.run_image,
+                .transcript_image = args.transcript_image,
+                .checkpoint_refs = args.checkpoint_refs,
+                .branch_refs = args.branch_refs,
+                .prior_run_permit_refs = args.prior_run_permit_refs,
+                .prior_run_receipt_refs = args.prior_run_receipt_refs,
+                .requested_mode = args.requested_mode,
+                .requested_supervision_hint_fingerprint = args.requested_supervision_hint_fingerprint,
+                .metadata = args.metadata,
+            };
+            result.package_fingerprint = fingerprintTransferPackageContent(result);
+            result.manifest = manifestForTransferPackage(result);
+            return result;
+        }
+
+        pub fn deinit(self: *Admission.TransferPackage, allocator: std.mem.Allocator) void {
+            if (self.owns_target_ref_bytes) {
+                if (self.target_ref) |target_ref| {
+                    if (target_ref.target_label) |label| allocator.free(@constCast(label));
+                    allocator.free(@constCast(target_ref.metadata));
+                }
+            }
+            if (self.owns_module_ref_bytes) {
+                if (self.module_ref) |module_ref| {
+                    if (module_ref.label) |label| allocator.free(@constCast(label));
+                    allocator.free(@constCast(module_ref.metadata));
+                }
+            }
+            if (self.owns_module_image_bytes) if (self.module_image_bytes) |bytes| allocator.free(@constCast(bytes));
+            if (self.owns_run_image) if (self.run_image) |*image| image.deinit(allocator);
+            if (self.owns_transcript_image) if (self.transcript_image) |*image| image.deinit(allocator);
+            if (self.owns_checkpoint_refs) allocator.free(self.checkpoint_refs);
+            if (self.owns_branch_refs) allocator.free(self.branch_refs);
+            if (self.owns_prior_run_permit_refs) allocator.free(self.prior_run_permit_refs);
+            if (self.owns_prior_run_receipt_refs) allocator.free(self.prior_run_receipt_refs);
+            if (self.owns_metadata and self.manifest.summary_metadata.ptr != self.metadata.ptr) allocator.free(@constCast(self.manifest.summary_metadata));
+            if (self.owns_metadata) allocator.free(@constCast(self.metadata));
+            self.* = undefined;
+        }
+
+        pub fn encode(self: Admission.TransferPackage, allocator: std.mem.Allocator) ![]const u8 {
+            var out: std.ArrayList(u8) = .empty;
+            errdefer out.deinit(allocator);
+            try writeU32(&out, allocator, self.format_version);
+            try writeU32(&out, allocator, self.fingerprint_version);
+            try writeU64(&out, allocator, self.package_fingerprint);
+            try encodePackageManifest(&out, allocator, self.manifest);
+            try writeU8(&out, allocator, @intFromEnum(self.kind));
+            try writeU8(&out, allocator, @intFromEnum(self.requested_mode));
+            try writeOptionalTargetRef(&out, allocator, self.target_ref);
+            try writeOptionalModuleRef(&out, allocator, self.module_ref);
+            try writeOptionalBytes(&out, allocator, self.module_image_bytes);
+            try writeOptionalRunImage(&out, allocator, self.run_image);
+            try writeOptionalTranscriptImage(&out, allocator, self.transcript_image);
+            try writeU64Slice(&out, allocator, self.checkpoint_refs);
+            try writeU64Slice(&out, allocator, self.branch_refs);
+            try writeU64Slice(&out, allocator, self.prior_run_permit_refs);
+            try writeU64Slice(&out, allocator, self.prior_run_receipt_refs);
+            try writeOptionalU64(&out, allocator, self.requested_supervision_hint_fingerprint);
+            try writeBytes(&out, allocator, self.metadata);
+            return out.toOwnedSlice(allocator);
+        }
+
+        pub fn decode(allocator: std.mem.Allocator, bytes: []const u8) !Admission.TransferPackage {
+            if (bytes.len > world_max_decoded_byte_field_len) return error.InvalidFrameEncoding;
+            var cursor: usize = 0;
+            const format_version = try readU32(bytes, &cursor);
+            if (format_version != world_transfer_package_format_version) return error.InvalidFrameEncoding;
+            const fingerprint_version = try readU32(bytes, &cursor);
+            if (fingerprint_version != world_transfer_package_fingerprint_version) return error.InvalidFrameEncoding;
+            const package_fingerprint = try readU64(bytes, &cursor);
+            const manifest = try decodePackageManifest(allocator, bytes, &cursor);
+            errdefer allocator.free(@constCast(manifest.summary_metadata));
+            const kind = try enumFromByte(PackageKind, try readU8(bytes, &cursor));
+            const requested_mode = try enumFromByte(Admission.AdmissionMode, try readU8(bytes, &cursor));
+            const target_ref = try readOptionalTargetRef(allocator, bytes, &cursor);
+            errdefer if (target_ref) |ref| {
+                if (ref.target_label) |label| allocator.free(@constCast(label));
+                allocator.free(@constCast(ref.metadata));
+            };
+            const module_ref = try readOptionalModuleRef(allocator, bytes, &cursor);
+            errdefer if (module_ref) |ref| {
+                if (ref.label) |label| allocator.free(@constCast(label));
+                allocator.free(@constCast(ref.metadata));
+            };
+            const module_image_bytes = try readOptionalBytesOwned(allocator, bytes, &cursor);
+            errdefer if (module_image_bytes) |owned| allocator.free(@constCast(owned));
+            var run_image = try readOptionalRunImage(allocator, bytes, &cursor);
+            errdefer if (run_image) |*image| image.deinit(allocator);
+            var transcript_image = try readOptionalTranscriptImage(allocator, bytes, &cursor);
+            errdefer if (transcript_image) |*image| image.deinit(allocator);
+            const checkpoint_refs = try readU64SliceOwned(allocator, bytes, &cursor, (ValidateOptions{}).max_checkpoints);
+            errdefer allocator.free(checkpoint_refs);
+            const branch_refs = try readU64SliceOwned(allocator, bytes, &cursor, (ValidateOptions{}).max_branches);
+            errdefer allocator.free(branch_refs);
+            const prior_run_permit_refs = try readU64SliceOwned(allocator, bytes, &cursor, 4096);
+            errdefer allocator.free(prior_run_permit_refs);
+            const prior_run_receipt_refs = try readU64SliceOwned(allocator, bytes, &cursor, 4096);
+            errdefer allocator.free(prior_run_receipt_refs);
+            const requested_supervision_hint_fingerprint = try readOptionalU64(bytes, &cursor);
+            const metadata = try readBytesOwned(allocator, bytes, &cursor);
+            errdefer allocator.free(metadata);
+            if (cursor != bytes.len) return error.InvalidFrameEncoding;
+            var result = Admission.TransferPackage{
+                .format_version = format_version,
+                .fingerprint_version = fingerprint_version,
+                .package_fingerprint = package_fingerprint,
+                .manifest = manifest,
+                .kind = kind,
+                .target_ref = target_ref,
+                .module_ref = module_ref,
+                .module_image_bytes = module_image_bytes,
+                .run_image = run_image,
+                .transcript_image = transcript_image,
+                .checkpoint_refs = checkpoint_refs,
+                .branch_refs = branch_refs,
+                .prior_run_permit_refs = prior_run_permit_refs,
+                .prior_run_receipt_refs = prior_run_receipt_refs,
+                .requested_mode = requested_mode,
+                .requested_supervision_hint_fingerprint = requested_supervision_hint_fingerprint,
+                .metadata = metadata,
+                .owns_target_ref_bytes = target_ref != null,
+                .owns_module_ref_bytes = module_ref != null,
+                .owns_module_image_bytes = module_image_bytes != null,
+                .owns_run_image = run_image != null,
+                .owns_transcript_image = transcript_image != null,
+                .owns_checkpoint_refs = true,
+                .owns_branch_refs = true,
+                .owns_prior_run_permit_refs = true,
+                .owns_prior_run_receipt_refs = true,
+                .owns_metadata = true,
+            };
+            try result.validate(.{ .max_package_bytes = bytes.len });
+            run_image = null;
+            transcript_image = null;
+            return result;
+        }
+
+        pub fn validate(self: Admission.TransferPackage, options: ValidateOptions) !void {
+            _ = options.reject_unknown_extensions;
+            if (self.format_version != world_transfer_package_format_version) return error.InvalidFrameEncoding;
+            if (self.fingerprint_version != world_transfer_package_fingerprint_version) return error.InvalidFrameEncoding;
+            if (self.metadata.len > options.max_package_bytes) return error.InvalidFrameEncoding;
+            if (options.require_target_ref and self.target_ref == null and self.run_image == null) return error.InvalidFrameEncoding;
+            if (options.require_run_image and self.run_image == null) return error.InvalidFrameEncoding;
+            if (!options.allow_inspect_only and self.kind == .inspect_only) return error.InvalidFrameEncoding;
+            if (self.kind == .target_reference_only and self.target_ref == null and self.run_image == null) return error.InvalidFrameEncoding;
+            if (!options.allow_reference_only and self.kind == .target_reference_only) return error.InvalidFrameEncoding;
+            if (self.target_ref) |target_ref| {
+                if (target_ref.target_label) |label| if (label.len > options.max_package_bytes) return error.InvalidFrameEncoding;
+                if (target_ref.metadata.len > options.max_package_bytes) return error.InvalidFrameEncoding;
+            }
+            switch (self.kind) {
+                .target_reference_only => {},
+                .inspect_only => if (self.target_ref == null and self.module_ref == null and self.module_image_bytes == null and self.run_image == null and self.transcript_image == null) return error.InvalidFrameEncoding,
+                .module_reference => if (self.module_ref == null) return error.InvalidFrameEncoding,
+                .full_module => if (self.module_image_bytes == null) return error.InvalidFrameEncoding,
+                .replay_run => if (self.run_image == null and self.transcript_image == null) return error.InvalidFrameEncoding,
+                .run_reference, .parked_run, .completed_run, .branch_run => if (self.run_image == null) return error.InvalidFrameEncoding,
+            }
+            if (self.run_image) |image| {
+                if (!transferPackageKindMatchesRunImage(self.kind, image.kind, self.requested_mode)) return error.InvalidFrameEncoding;
+            }
+            if (self.module_ref) |module_ref| {
+                if (module_ref.format_version != world_module_ref_format_version) return error.InvalidFrameEncoding;
+                if (module_ref.fingerprint_version != world_module_ref_fingerprint_version) return error.InvalidFrameEncoding;
+                if (module_ref.module_ref_fingerprint != fingerprintModuleRef(module_ref)) return error.InvalidFrameEncoding;
+                if (!options.allow_reference_only and module_ref.module_kind == .reference_only) return error.InvalidFrameEncoding;
+                if (!options.allow_full_module and module_ref.module_kind == .full_module) return error.InvalidFrameEncoding;
+                if (module_ref.module_kind == .full_module and self.module_image_bytes == null) return error.InvalidFrameEncoding;
+                if (module_ref.metadata.len > options.max_package_bytes) return error.InvalidFrameEncoding;
+                if (module_ref.label) |label| if (label.len > options.max_package_bytes) return error.InvalidFrameEncoding;
+            }
+            if (self.kind == .full_module and self.module_image_bytes == null) return error.InvalidFrameEncoding;
+            if (self.module_image_bytes) |bytes| {
+                const module_image_matches_run = if (self.run_image) |image|
+                    if (image.module_image_fingerprint) |fingerprint| fingerprint == moduleImageFingerprint(bytes) else false
+                else
+                    false;
+                if (self.kind != .full_module and !module_image_matches_run) return error.InvalidFrameEncoding;
+                if (!options.allow_full_module) return error.InvalidFrameEncoding;
+                if (bytes.len > options.max_module_bytes) return error.InvalidFrameEncoding;
+                if (bytes.len > options.max_package_bytes) return error.InvalidFrameEncoding;
+            }
+            if (self.checkpoint_refs.len > options.max_checkpoints) return error.InvalidFrameEncoding;
+            if (self.branch_refs.len > options.max_branches) return error.InvalidFrameEncoding;
+            if (self.transcript_image) |image| {
+                try validateTranscriptImageFingerprint(image);
+                if (transcriptImageEncodedByteSize(image) > options.max_transcript_bytes) return error.InvalidFrameEncoding;
+                if (transcriptImageEncodedByteSize(image) > options.max_package_bytes) return error.InvalidFrameEncoding;
+            }
+            if (self.run_image) |image| {
+                try image.validate(.{
+                    .max_image_bytes = options.max_package_bytes,
+                    .max_branches = options.max_branches,
+                    .max_checkpoints = options.max_checkpoints,
+                    .allow_reference_target = options.allow_reference_only,
+                });
+                if (image.transcript_image) |embedded| {
+                    try validateTranscriptImageFingerprint(embedded);
+                    if (transcriptImageEncodedByteSize(embedded) > options.max_transcript_bytes) return error.InvalidFrameEncoding;
+                    if (transcriptImageEncodedByteSize(embedded) > options.max_package_bytes) return error.InvalidFrameEncoding;
+                }
+            }
+            if (transferPackageEncodedByteSize(self) > options.max_package_bytes) return error.InvalidFrameEncoding;
+            if (self.target_ref) |target_ref| {
+                try validateTargetRef(target_ref);
+                if (self.module_ref) |module_ref| {
+                    if (module_ref.module_kind != .full_module and module_ref.target_ref_fingerprint != target_ref.target_ref_fingerprint) return error.HandoffTargetMismatch;
+                    if (module_ref.world_surface_fingerprint != target_ref.world_surface_fingerprint) return error.HandoffTargetMismatch;
+                    if (module_ref.target_certificate_fingerprint != target_ref.target_certificate_fingerprint) return error.HandoffTargetMismatch;
+                    if (module_ref.residual_program_plan_hash != target_ref.residual_program_plan_hash) return error.HandoffTargetMismatch;
+                }
+            }
+            if (self.run_image) |image| {
+                if (self.target_ref) |target_ref| {
+                    if (image.target_ref.target_ref_fingerprint != target_ref.target_ref_fingerprint) return error.HandoffTargetMismatch;
+                }
+                if (runImageHasModuleWitness(image) and self.module_ref == null and self.module_image_bytes == null) return error.InvalidFrameEncoding;
+                if (self.module_ref) |module_ref| {
+                    if (runImageHasModuleWitness(image) and image.module_ref_fingerprint == null) return error.InvalidFrameEncoding;
+                    if (image.module_ref_fingerprint) |run_module_ref_fingerprint| {
+                        if (run_module_ref_fingerprint != module_ref.module_ref_fingerprint) return error.HandoffTargetMismatch;
+                    }
+                    if (image.boundary_module_fingerprint) |run_boundary_module_fingerprint| {
+                        if (run_boundary_module_fingerprint != module_ref.boundary_module_fingerprint) return error.HandoffTargetMismatch;
+                    }
+                    if (image.module_image_fingerprint) |run_module_image_fingerprint| {
+                        const module_image_bytes = self.module_image_bytes orelse return error.InvalidFrameEncoding;
+                        if (run_module_image_fingerprint != moduleImageFingerprint(module_image_bytes)) return error.HandoffTargetMismatch;
+                    }
+                    if (module_ref.module_kind == .full_module) {
+                        if (image.target_ref.world_surface_fingerprint != module_ref.world_surface_fingerprint) return error.HandoffTargetMismatch;
+                        if (image.target_ref.target_certificate_fingerprint != module_ref.target_certificate_fingerprint) return error.HandoffTargetMismatch;
+                        if (image.target_ref.residual_program_plan_hash != module_ref.residual_program_plan_hash) return error.HandoffTargetMismatch;
+                    } else if (image.target_ref.target_ref_fingerprint != module_ref.target_ref_fingerprint) return error.HandoffTargetMismatch;
+                }
+            }
+            if (self.transcript_image) |image| {
+                if (self.target_ref) |target_ref| {
+                    if (image.world_surface_fingerprint != target_ref.world_surface_fingerprint) return error.TranscriptImageSurfaceMismatch;
+                    if (image.target_certificate_fingerprint != target_ref.target_certificate_fingerprint) return error.TargetCertificateMismatch;
+                }
+                if (self.run_image) |run_image| {
+                    if (run_image.current_state.transcript_image_fingerprint) |state_fingerprint| {
+                        if (state_fingerprint != image.transcript_image_fingerprint) return error.InvalidFrameEncoding;
+                    } else {
+                        return error.InvalidFrameEncoding;
+                    }
+                    if (run_image.transcript_image) |embedded| {
+                        if (embedded.transcript_image_fingerprint != image.transcript_image_fingerprint) return error.InvalidFrameEncoding;
+                    }
+                    if (image.world_surface_fingerprint != run_image.target_ref.world_surface_fingerprint) return error.TranscriptImageSurfaceMismatch;
+                    if (image.target_certificate_fingerprint != run_image.target_ref.target_certificate_fingerprint) return error.TargetCertificateMismatch;
+                }
+            }
+            if (self.package_fingerprint != fingerprintTransferPackageContent(self)) return error.InvalidFrameEncoding;
+            const manifest = manifestForTransferPackage(self);
+            if (!packageManifestEquals(self.manifest, manifest)) return error.InvalidFrameEncoding;
+        }
+    };
+
+    pub const TargetRegistry = struct {
+        registry_fingerprint: u64,
+        entries: []const Entry = &.{},
+
+        pub const Entry = struct {
+            entry_fingerprint: u64,
+            target_ref: TargetRef,
+            world_surface_fingerprint: u64,
+            target_certificate_fingerprint: u64,
+            program_plan_hash: ?u64 = null,
+            import_surface_fingerprint: ?u64 = null,
+            export_surface_fingerprint: ?u64 = null,
+            import_set_fingerprint: u64,
+            world_port_count: usize = 0,
+            world_port_table_fingerprint: ?u64 = null,
+            world_value_table_fingerprint: ?u64 = null,
+            world_dispatch_table_fingerprint: ?u64 = null,
+            normal_form_kind: NormalFormKind = .unknown,
+            label: ?[]const u8 = null,
+            metadata: []const u8 = "",
+
+            pub fn fromTarget(comptime Target: type) Entry {
+                const target_ref = TargetRef.fromTarget(Target);
+                const import_set = ImportSet.fromTarget(Target);
+                var result = Entry{
+                    .entry_fingerprint = 0,
+                    .target_ref = target_ref,
+                    .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+                    .target_certificate_fingerprint = target_ref.target_certificate_fingerprint,
+                    .program_plan_hash = target_ref.residual_program_plan_hash,
+                    .import_surface_fingerprint = if (@hasDecl(Target, "Module")) Target.Module.manifest.import_surface_fingerprint else null,
+                    .export_surface_fingerprint = if (@hasDecl(Target, "Module")) Target.Module.manifest.export_surface_fingerprint else null,
+                    .import_set_fingerprint = import_set.import_set_fingerprint,
+                    .world_port_count = import_set.world_port_count,
+                    .world_port_table_fingerprint = target_ref.world_port_table_fingerprint,
+                    .world_value_table_fingerprint = target_ref.world_value_table_fingerprint,
+                    .world_dispatch_table_fingerprint = target_ref.world_dispatch_table_fingerprint,
+                    .normal_form_kind = target_ref.normal_form_kind,
+                    .label = target_ref.target_label,
+                };
+                result.entry_fingerprint = fingerprintTargetRegistryEntry(result);
+                return result;
+            }
+        };
+
+        pub fn init(entries: []const Entry) Admission.TargetRegistry {
+            var result = Admission.TargetRegistry{
+                .registry_fingerprint = 0,
+                .entries = entries,
+            };
+            result.registry_fingerprint = fingerprintTargetRegistry(result);
+            return result;
+        }
+
+        pub fn initChecked(entries: []const Entry) !Admission.TargetRegistry {
+            const registry = init(entries);
+            try registry.validate();
+            return registry;
+        }
+
+        pub fn validate(self: Admission.TargetRegistry) !void {
+            for (self.entries) |entry| {
+                try validateTargetRegistryEntry(entry);
+                if (entry.entry_fingerprint != fingerprintTargetRegistryEntry(entry)) return error.TargetRegistryConflict;
+            }
+            if (self.registry_fingerprint != fingerprintTargetRegistry(self)) return error.TargetRegistryConflict;
+            for (self.entries, 0..) |entry, index| {
+                for (self.entries[index + 1 ..]) |other| {
+                    if (entry.target_ref.target_ref_fingerprint == other.target_ref.target_ref_fingerprint and
+                        entry.entry_fingerprint != other.entry_fingerprint)
+                    {
+                        return error.TargetRegistryConflict;
+                    }
+                }
+            }
+        }
+
+        pub fn register(comptime Target: type) Entry {
+            return Entry.fromTarget(Target);
+        }
+
+        pub fn find(self: Admission.TargetRegistry, target_ref: TargetRef) ?Entry {
+            for (self.entries) |entry| {
+                if (entry.target_ref.target_ref_fingerprint == target_ref.target_ref_fingerprint) return entry;
+            }
+            return null;
+        }
+
+        pub fn matchModule(self: Admission.TargetRegistry, module_ref: Admission.ModuleRef) ?Entry {
+            for (self.entries) |entry| {
+                const candidate = entry.target_ref.target_ref_fingerprint == module_ref.target_ref_fingerprint or
+                    (entry.world_surface_fingerprint == module_ref.world_surface_fingerprint and
+                        entry.target_certificate_fingerprint == module_ref.target_certificate_fingerprint and
+                        entry.program_plan_hash == module_ref.residual_program_plan_hash);
+                if (!candidate) continue;
+                const match_result = Admission.TargetMatch.matchEntry(null, module_ref, entry);
+                if (match_result.matched) return entry;
+            }
+            return null;
+        }
+
+        fn matchModuleTarget(self: Admission.TargetRegistry, target_ref: ?TargetRef, module_ref: Admission.ModuleRef) ?Admission.TargetMatch {
+            var fallback: ?Admission.TargetMatch = null;
+            for (self.entries) |entry| {
+                const candidate = entry.target_ref.target_ref_fingerprint == module_ref.target_ref_fingerprint or
+                    (entry.world_surface_fingerprint == module_ref.world_surface_fingerprint and
+                        entry.target_certificate_fingerprint == module_ref.target_certificate_fingerprint and
+                        entry.program_plan_hash == module_ref.residual_program_plan_hash);
+                if (!candidate) continue;
+                const match_result = Admission.TargetMatch.matchEntry(target_ref, module_ref, entry);
+                if (match_result.matched) return match_result;
+                if (fallback == null) fallback = match_result;
+            }
+            return fallback;
+        }
+
+        pub fn requireMatch(self: Admission.TargetRegistry, target_ref: TargetRef) !Entry {
+            return self.find(target_ref) orelse error.HandoffTargetMismatch;
+        }
+
+        pub fn match(self: Admission.TargetRegistry, target_ref: ?TargetRef, module_ref: ?Admission.ModuleRef) Admission.TargetMatch {
+            if (module_ref) |module| {
+                if (self.matchModuleTarget(target_ref, module)) |match_result| return match_result;
+                return Admission.TargetMatch.missing(target_ref, module);
+            }
+            if (target_ref) |target| {
+                if (self.find(target)) |entry| return Admission.TargetMatch.matchEntry(target, null, entry);
+                return Admission.TargetMatch.missing(target, null);
+            }
+            return Admission.TargetMatch.missing(null, null);
+        }
+    };
+
+    pub const TargetMatch = struct {
+        match_fingerprint: u64,
+        transferred_target_ref_fingerprint: ?u64 = null,
+        local_target_ref_fingerprint: ?u64 = null,
+        matched: bool = false,
+        match_mode: MatchMode = .mismatch,
+        mismatches: []const MatchMismatch = &.{},
+        diagnostics: []const u8 = "",
+
+        pub fn matchTarget(ref: TargetRef, comptime Target: type) Admission.TargetMatch {
+            return matchEntry(ref, null, Admission.TargetRegistry.Entry.fromTarget(Target));
+        }
+
+        pub fn matchModule(module_ref: Admission.ModuleRef, comptime Target: type) Admission.TargetMatch {
+            return matchEntry(null, module_ref, Admission.TargetRegistry.Entry.fromTarget(Target));
+        }
+
+        fn matchEntry(target_ref: ?TargetRef, module_ref: ?Admission.ModuleRef, entry: Admission.TargetRegistry.Entry) Admission.TargetMatch {
+            var first_mismatch: ?MatchMismatch = null;
+            if (target_ref) |target| {
+                if (target.world_surface_fingerprint != entry.world_surface_fingerprint and first_mismatch == null) first_mismatch = .WorldSurface;
+                if (target.target_certificate_fingerprint != entry.target_certificate_fingerprint and first_mismatch == null) first_mismatch = .TargetCertificate;
+                if (target.residual_program_plan_hash != entry.program_plan_hash and first_mismatch == null) first_mismatch = .ProgramPlanHash;
+                if (target.normal_form_kind != entry.normal_form_kind and first_mismatch == null) first_mismatch = .NormalForm;
+                if (!providedFingerprintMatches(target.world_port_table_fingerprint, entry.world_port_table_fingerprint) and first_mismatch == null) first_mismatch = .WorldPortTable;
+                if (!providedFingerprintMatches(target.world_value_table_fingerprint, entry.world_value_table_fingerprint) and first_mismatch == null) first_mismatch = .WorldValueTable;
+                if (!providedFingerprintMatches(target.world_dispatch_table_fingerprint, entry.world_dispatch_table_fingerprint) and first_mismatch == null) first_mismatch = .WorldDispatchTable;
+            }
+            if (module_ref) |module| {
+                if (module.module_kind != .full_module and module.target_ref_fingerprint != entry.target_ref.target_ref_fingerprint and first_mismatch == null) first_mismatch = .ProgramPlanHash;
+                if (module.world_surface_fingerprint != entry.world_surface_fingerprint and first_mismatch == null) first_mismatch = .WorldSurface;
+                if (module.target_certificate_fingerprint != entry.target_certificate_fingerprint and first_mismatch == null) first_mismatch = .TargetCertificate;
+                if (module.residual_program_plan_hash != entry.program_plan_hash and first_mismatch == null) first_mismatch = .ProgramPlanHash;
+                if (module.module_kind != .full_module and module.boundary_module_fingerprint != (entry.target_ref.boundary_module_fingerprint orelse entry.target_ref.target_ref_fingerprint) and first_mismatch == null) first_mismatch = .BoundaryModule;
+                if (module.normal_form_kind != .unknown and module.normal_form_kind != entry.normal_form_kind and first_mismatch == null) first_mismatch = .NormalForm;
+                if (module.world_port_count != 0 and module.world_port_count != entry.world_port_count and first_mismatch == null) first_mismatch = .WorldPortTable;
+                if (!providedFingerprintMatches(module.import_surface_fingerprint, entry.import_surface_fingerprint) and first_mismatch == null) first_mismatch = .ImportSet;
+                if (!providedFingerprintMatches(module.export_surface_fingerprint, entry.export_surface_fingerprint) and first_mismatch == null) first_mismatch = .ExportSet;
+                if (!providedFingerprintMatches(module.world_port_table_fingerprint, entry.world_port_table_fingerprint) and first_mismatch == null) first_mismatch = .WorldPortTable;
+                if (!providedFingerprintMatches(module.world_value_table_fingerprint, entry.world_value_table_fingerprint) and first_mismatch == null) first_mismatch = .WorldValueTable;
+                if (!providedFingerprintMatches(module.world_dispatch_table_fingerprint, entry.world_dispatch_table_fingerprint) and first_mismatch == null) first_mismatch = .WorldDispatchTable;
+            }
+            const supported_module_kind = if (module_ref) |module| module.module_kind != .partial_module else true;
+            const matched = first_mismatch == null and supported_module_kind;
+            var result = Admission.TargetMatch{
+                .match_fingerprint = 0,
+                .transferred_target_ref_fingerprint = if (target_ref) |target| target.target_ref_fingerprint else if (module_ref) |module| module.target_ref_fingerprint else null,
+                .local_target_ref_fingerprint = entry.target_ref.target_ref_fingerprint,
+                .matched = matched,
+                .match_mode = if (!matched) .mismatch else if (module_ref) |module| switch (module.module_kind) {
+                    .reference_only => .reference_only,
+                    .full_module => .module_full_to_local_target,
+                    .partial_module => .mismatch,
+                } else .exact,
+                .mismatches = mismatchSlice(first_mismatch),
+                .diagnostics = if (matched) "matched" else "target/module identity mismatch",
+            };
+            result.match_fingerprint = fingerprintTargetMatch(result);
+            return result;
+        }
+
+        fn missing(target_ref: ?TargetRef, module_ref: ?Admission.ModuleRef) Admission.TargetMatch {
+            var result = Admission.TargetMatch{
+                .match_fingerprint = 0,
+                .transferred_target_ref_fingerprint = if (target_ref) |target| target.target_ref_fingerprint else if (module_ref) |module| module.target_ref_fingerprint else null,
+                .matched = false,
+                .match_mode = .mismatch,
+                .diagnostics = "target not registered",
+            };
+            result.match_fingerprint = fingerprintTargetMatch(result);
+            return result;
+        }
+    };
+
+    pub const ExportSummary = struct {
+        export_summary_fingerprint: u64,
+        target_ref_fingerprint: u64,
+        module_ref_fingerprint: ?u64 = null,
+        main_export_present: bool = true,
+        result_value_ref_fingerprint: ?u64 = null,
+        argument_value_ref_count: usize = 0,
+        normal_form_kind: NormalFormKind = .unknown,
+        target_label: ?[]const u8 = null,
+        loaded_execution_supported: bool = false,
+        loaded_execution_unsupported_reason: ?[]const u8 = "Boundary LoadedModule.Session is fail-closed",
+
+        pub fn init(args: struct {
+            target_ref_fingerprint: u64,
+            module_ref_fingerprint: ?u64 = null,
+            main_export_present: bool = true,
+            result_value_ref_fingerprint: ?u64 = null,
+            argument_value_ref_count: usize = 0,
+            normal_form_kind: NormalFormKind = .unknown,
+            target_label: ?[]const u8 = null,
+            loaded_execution_supported: bool = false,
+            loaded_execution_unsupported_reason: ?[]const u8 = "Boundary LoadedModule.Session is fail-closed",
+        }) Admission.ExportSummary {
+            var result = Admission.ExportSummary{
+                .export_summary_fingerprint = 0,
+                .target_ref_fingerprint = args.target_ref_fingerprint,
+                .module_ref_fingerprint = args.module_ref_fingerprint,
+                .main_export_present = args.main_export_present,
+                .result_value_ref_fingerprint = args.result_value_ref_fingerprint,
+                .argument_value_ref_count = args.argument_value_ref_count,
+                .normal_form_kind = args.normal_form_kind,
+                .target_label = args.target_label,
+                .loaded_execution_supported = args.loaded_execution_supported,
+                .loaded_execution_unsupported_reason = args.loaded_execution_unsupported_reason,
+            };
+            result.export_summary_fingerprint = fingerprintExportSummary(result);
+            return result;
+        }
+    };
+
+    pub const ModuleGateway = struct {
+        pub fn decodeBoundaryModule(comptime Target: type, allocator: std.mem.Allocator, bytes: []const u8) !Target.Module.LoadedModule {
+            return Target.Module.decode(allocator, bytes);
+        }
+
+        pub fn refFromTarget(comptime Target: type) Admission.ModuleRef {
+            return Admission.ModuleRef.fromTarget(Target);
+        }
+
+        pub fn refFromBoundaryModule(module: anytype) Admission.ModuleRef {
+            const manifest = module.manifest();
+            const main_export = module.mainExport();
+            return Admission.ModuleRef.init(.{
+                .boundary_module_fingerprint = manifest.module_fingerprint,
+                .module_kind = boundaryModuleKindFromName(@tagName(manifest.module_kind)),
+                .target_ref_fingerprint = fingerprintTargetRef(targetRefFromModuleManifest(manifest)),
+                .world_surface_fingerprint = manifest.world_surface_fingerprint,
+                .target_certificate_fingerprint = manifest.target_certificate_fingerprint,
+                .residual_program_plan_hash = manifest.program_plan_hash,
+                .import_surface_fingerprint = manifest.import_surface_fingerprint,
+                .export_surface_fingerprint = manifest.export_surface_fingerprint,
+                .normal_form_kind = normalFormKindFromName(@tagName(main_export.normal_form)),
+                .world_port_count = manifest.world_port_count,
+                .label = manifest.target_label,
+            });
+        }
+
+        pub fn importSetFromTarget(comptime Target: type) ImportSet {
+            return ImportSet.fromTarget(Target);
+        }
+
+        pub fn importSetFromBoundaryModule(module: anytype) ImportSet {
+            const module_ref = refFromBoundaryModule(module);
+            const imports = module.imports();
+            var result = ImportSet{
+                .import_set_fingerprint = 0,
+                .target_ref_fingerprint = module_ref.target_ref_fingerprint,
+                .required_count = module.requiredImports().len,
+                .optional_count = module.optionalImports().len,
+                .world_port_count = imports.len,
+                .value_table_entry_count = imports.len * 2,
+            };
+            result.import_set_fingerprint = fingerprintImportSet(result);
+            return result;
+        }
+
+        pub fn exportSummaryFromTarget(comptime Target: type) Admission.ExportSummary {
+            const target_ref = TargetRef.fromTarget(Target);
+            return Admission.ExportSummary.init(.{
+                .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+                .module_ref_fingerprint = Admission.ModuleRef.fromTarget(Target).module_ref_fingerprint,
+                .normal_form_kind = target_ref.normal_form_kind,
+                .target_label = target_ref.target_label,
+            });
+        }
+
+        pub fn exportSummaryFromBoundaryModule(module: anytype) Admission.ExportSummary {
+            const module_ref = refFromBoundaryModule(module);
+            return Admission.ExportSummary.init(.{
+                .target_ref_fingerprint = module_ref.target_ref_fingerprint,
+                .module_ref_fingerprint = module_ref.module_ref_fingerprint,
+                .main_export_present = true,
+                .argument_value_ref_count = module.argumentValueRefs().len,
+                .normal_form_kind = module_ref.normal_form_kind,
+                .target_label = module_ref.label,
+                .loaded_execution_supported = false,
+                .loaded_execution_unsupported_reason = "Boundary LoadedModule.Session is fail-closed",
+            });
+        }
+
+        pub fn matchLocalTarget(registry: Admission.TargetRegistry, module_ref: Admission.ModuleRef) Admission.TargetMatch {
+            return registry.match(null, module_ref);
+        }
+    };
+
+    pub const AdmissionPolicy = struct {
+        allow_reference_targets: bool = true,
+        allow_full_modules: bool = false,
+        allow_inspect_only_full_modules: bool = false,
+        require_local_target_for_execution: bool = true,
+        require_environment_preflight: bool = true,
+        require_supervision_permit: bool = true,
+        allow_continue_fresh: bool = true,
+        allow_replay_without_environment: bool = false,
+        allow_verify_without_fresh_environment: bool = false,
+        allow_parked_resume: bool = true,
+        allow_branch_resume: bool = true,
+        allow_completed_replay: bool = true,
+        reject_target_mismatch: bool = true,
+        reject_module_mismatch: bool = true,
+        reject_transcript_mismatch: bool = true,
+        reject_prior_receipt_mismatch: bool = false,
+        max_package_bytes: usize = world_max_decoded_byte_field_len,
+        max_module_bytes: usize = world_max_decoded_byte_field_len,
+        max_transcript_bytes: usize = world_max_decoded_byte_field_len,
+        max_branches: usize = 4096,
+        max_checkpoints: usize = 4096,
+        policy_fingerprint: u64 = 0,
+
+        pub fn init(args: struct {
+            allow_reference_targets: bool = true,
+            allow_full_modules: bool = false,
+            allow_inspect_only_full_modules: bool = false,
+            require_local_target_for_execution: bool = true,
+            require_environment_preflight: bool = true,
+            require_supervision_permit: bool = true,
+            allow_continue_fresh: bool = true,
+            allow_replay_without_environment: bool = false,
+            allow_verify_without_fresh_environment: bool = false,
+            allow_parked_resume: bool = true,
+            allow_branch_resume: bool = true,
+            allow_completed_replay: bool = true,
+            reject_target_mismatch: bool = true,
+            reject_module_mismatch: bool = true,
+            reject_transcript_mismatch: bool = true,
+            reject_prior_receipt_mismatch: bool = false,
+            max_package_bytes: usize = world_max_decoded_byte_field_len,
+            max_module_bytes: usize = world_max_decoded_byte_field_len,
+            max_transcript_bytes: usize = world_max_decoded_byte_field_len,
+            max_branches: usize = 4096,
+            max_checkpoints: usize = 4096,
+        }) Admission.AdmissionPolicy {
+            var result = Admission.AdmissionPolicy{
+                .allow_reference_targets = args.allow_reference_targets,
+                .allow_full_modules = args.allow_full_modules,
+                .allow_inspect_only_full_modules = args.allow_inspect_only_full_modules,
+                .require_local_target_for_execution = args.require_local_target_for_execution,
+                .require_environment_preflight = args.require_environment_preflight,
+                .require_supervision_permit = args.require_supervision_permit,
+                .allow_continue_fresh = args.allow_continue_fresh,
+                .allow_replay_without_environment = args.allow_replay_without_environment,
+                .allow_verify_without_fresh_environment = args.allow_verify_without_fresh_environment,
+                .allow_parked_resume = args.allow_parked_resume,
+                .allow_branch_resume = args.allow_branch_resume,
+                .allow_completed_replay = args.allow_completed_replay,
+                .reject_target_mismatch = args.reject_target_mismatch,
+                .reject_module_mismatch = args.reject_module_mismatch,
+                .reject_transcript_mismatch = args.reject_transcript_mismatch,
+                .reject_prior_receipt_mismatch = args.reject_prior_receipt_mismatch,
+                .max_package_bytes = args.max_package_bytes,
+                .max_module_bytes = args.max_module_bytes,
+                .max_transcript_bytes = args.max_transcript_bytes,
+                .max_branches = args.max_branches,
+                .max_checkpoints = args.max_checkpoints,
+            };
+            result.policy_fingerprint = fingerprintAdmissionPolicy(result);
+            return result;
+        }
+
+        pub fn allowsMode(self: Admission.AdmissionPolicy, mode: Admission.AdmissionMode) bool {
+            return switch (mode) {
+                .inspect_only => self.allow_inspect_only_full_modules or self.allow_reference_targets,
+                .replay_only => self.allow_completed_replay or self.allow_replay_without_environment,
+                .verify_only => self.allow_verify_without_fresh_environment or self.require_environment_preflight,
+                .resume_parked => self.allow_parked_resume,
+                .continue_fresh => self.allow_continue_fresh and self.require_environment_preflight,
+                .branch_resume => self.allow_branch_resume,
+                .completed_replay => self.allow_completed_replay,
+                .local_target_match_only => true,
+            };
+        }
+
+        pub fn withFingerprint(self: Admission.AdmissionPolicy) Admission.AdmissionPolicy {
+            var result = self;
+            result.policy_fingerprint = 0;
+            result.policy_fingerprint = fingerprintAdmissionPolicy(result);
+            return result;
+        }
+
+        pub const strict_local_execution = init(.{});
+        pub const inspect_modules = init(.{
+            .allow_full_modules = true,
+            .allow_inspect_only_full_modules = true,
+            .require_local_target_for_execution = false,
+            .require_environment_preflight = false,
+            .require_supervision_permit = false,
+            .allow_continue_fresh = false,
+            .allow_parked_resume = false,
+            .allow_branch_resume = false,
+            .allow_completed_replay = false,
+        });
+        pub const replay_only = init(.{
+            .require_environment_preflight = false,
+            .require_supervision_permit = false,
+            .allow_replay_without_environment = true,
+            .allow_parked_resume = false,
+            .allow_branch_resume = false,
+        });
+        pub const handoff_receiver = init(.{});
+        pub const verify_receiver = init(.{
+            .require_supervision_permit = false,
+            .allow_verify_without_fresh_environment = true,
+            .allow_continue_fresh = false,
+            .allow_parked_resume = false,
+            .allow_branch_resume = false,
+            .allow_completed_replay = false,
+        });
+        pub const test_fixture = init(.{
+            .allow_full_modules = true,
+            .allow_inspect_only_full_modules = true,
+            .require_supervision_permit = false,
+            .allow_replay_without_environment = true,
+            .allow_verify_without_fresh_environment = true,
+        });
+    };
+
+    pub const AdmissionRequest = struct {
+        request_fingerprint: u64,
+        package_fingerprint: u64,
+        mode: Admission.AdmissionMode,
+        policy_fingerprint: u64,
+        target_registry_fingerprint: ?u64 = null,
+        environment_certificate_fingerprint: ?u64 = null,
+        run_permit_fingerprint: ?u64 = null,
+        requested_branch_id: ?u64 = null,
+        requested_checkpoint_ref: ?u64 = null,
+        metadata: []const u8 = "",
+
+        pub fn init(args: struct {
+            package_fingerprint: u64,
+            mode: Admission.AdmissionMode,
+            policy_fingerprint: u64,
+            target_registry_fingerprint: ?u64 = null,
+            environment_certificate_fingerprint: ?u64 = null,
+            run_permit_fingerprint: ?u64 = null,
+            requested_branch_id: ?u64 = null,
+            requested_checkpoint_ref: ?u64 = null,
+            metadata: []const u8 = "",
+        }) Admission.AdmissionRequest {
+            var result = Admission.AdmissionRequest{
+                .request_fingerprint = 0,
+                .package_fingerprint = args.package_fingerprint,
+                .mode = args.mode,
+                .policy_fingerprint = args.policy_fingerprint,
+                .target_registry_fingerprint = args.target_registry_fingerprint,
+                .environment_certificate_fingerprint = args.environment_certificate_fingerprint,
+                .run_permit_fingerprint = args.run_permit_fingerprint,
+                .requested_branch_id = args.requested_branch_id,
+                .requested_checkpoint_ref = args.requested_checkpoint_ref,
+                .metadata = args.metadata,
+            };
+            result.request_fingerprint = fingerprintAdmissionRequest(result);
+            return result;
+        }
+    };
+
+    pub const AdmissionReport = struct {
+        report_fingerprint: u64,
+        accepted: bool,
+        mode: Admission.AdmissionMode,
+        package_fingerprint: u64,
+        manifest_fingerprint: u64,
+        target_ref_fingerprint: ?u64 = null,
+        module_ref_fingerprint: ?u64 = null,
+        target_match_fingerprint: ?u64 = null,
+        import_set_fingerprint: ?u64 = null,
+        environment_acceptance_report_fingerprint: ?u64 = null,
+        run_permit_fingerprint: ?u64 = null,
+        handoff_preflight_report_fingerprint: ?u64 = null,
+        blockers: []const AdmissionBlocker = &.{},
+        warnings: []const AdmissionBlocker = &.{},
+        summary: []const u8 = "",
+
+        pub fn accept(args: struct {
+            request: Admission.AdmissionRequest,
+            package_fingerprint: u64,
+            manifest_fingerprint: u64,
+            target_ref_fingerprint: ?u64 = null,
+            module_ref_fingerprint: ?u64 = null,
+            target_match_fingerprint: ?u64 = null,
+            import_set_fingerprint: ?u64 = null,
+            environment_acceptance_report_fingerprint: ?u64 = null,
+            run_permit_fingerprint: ?u64 = null,
+            handoff_preflight_report_fingerprint: ?u64 = null,
+            warnings: []const AdmissionBlocker = &.{},
+            summary: []const u8 = "admission accepted",
+        }) Admission.AdmissionReport {
+            var result = Admission.AdmissionReport{
+                .report_fingerprint = 0,
+                .accepted = true,
+                .mode = args.request.mode,
+                .package_fingerprint = args.package_fingerprint,
+                .manifest_fingerprint = args.manifest_fingerprint,
+                .target_ref_fingerprint = args.target_ref_fingerprint,
+                .module_ref_fingerprint = args.module_ref_fingerprint,
+                .target_match_fingerprint = args.target_match_fingerprint,
+                .import_set_fingerprint = args.import_set_fingerprint,
+                .environment_acceptance_report_fingerprint = args.environment_acceptance_report_fingerprint,
+                .run_permit_fingerprint = args.run_permit_fingerprint,
+                .handoff_preflight_report_fingerprint = args.handoff_preflight_report_fingerprint,
+                .warnings = args.warnings,
+                .summary = args.summary,
+            };
+            result.report_fingerprint = fingerprintAdmissionReport(result);
+            return result;
+        }
+
+        pub fn rejected(args: struct {
+            request: Admission.AdmissionRequest,
+            package_fingerprint: u64,
+            manifest_fingerprint: u64,
+            target_ref_fingerprint: ?u64 = null,
+            module_ref_fingerprint: ?u64 = null,
+            target_match_fingerprint: ?u64 = null,
+            import_set_fingerprint: ?u64 = null,
+            environment_acceptance_report_fingerprint: ?u64 = null,
+            run_permit_fingerprint: ?u64 = null,
+            handoff_preflight_report_fingerprint: ?u64 = null,
+            blockers: []const AdmissionBlocker,
+            warnings: []const AdmissionBlocker = &.{},
+            summary: []const u8 = "admission rejected",
+        }) Admission.AdmissionReport {
+            var result = Admission.AdmissionReport{
+                .report_fingerprint = 0,
+                .accepted = false,
+                .mode = args.request.mode,
+                .package_fingerprint = args.package_fingerprint,
+                .manifest_fingerprint = args.manifest_fingerprint,
+                .target_ref_fingerprint = args.target_ref_fingerprint,
+                .module_ref_fingerprint = args.module_ref_fingerprint,
+                .target_match_fingerprint = args.target_match_fingerprint,
+                .import_set_fingerprint = args.import_set_fingerprint,
+                .environment_acceptance_report_fingerprint = args.environment_acceptance_report_fingerprint,
+                .run_permit_fingerprint = args.run_permit_fingerprint,
+                .handoff_preflight_report_fingerprint = args.handoff_preflight_report_fingerprint,
+                .blockers = args.blockers,
+                .warnings = args.warnings,
+                .summary = args.summary,
+            };
+            result.report_fingerprint = fingerprintAdmissionReport(result);
+            return result;
+        }
+    };
+
+    pub const AdmissionReceipt = struct {
+        format_version: u32 = world_admission_receipt_format_version,
+        fingerprint_version: u32 = world_admission_receipt_fingerprint_version,
+        receipt_fingerprint: u64,
+        admission_request_fingerprint: u64,
+        admission_report_fingerprint: u64,
+        package_fingerprint: u64,
+        target_ref_fingerprint: u64,
+        module_ref_fingerprint: ?u64 = null,
+        local_target_ref_fingerprint: ?u64 = null,
+        target_match_fingerprint: ?u64 = null,
+        environment_certificate_fingerprint: ?u64 = null,
+        run_permit_fingerprint: ?u64 = null,
+        admitted_run_fingerprint: ?u64 = null,
+        accepted_mode: Admission.AdmissionMode,
+        warnings: []const AdmissionBlocker = &.{},
+        metadata: []const u8 = "",
+
+        pub fn init(args: struct {
+            request: Admission.AdmissionRequest,
+            report: Admission.AdmissionReport,
+            target_ref_fingerprint: u64,
+            module_ref_fingerprint: ?u64 = null,
+            local_target_ref_fingerprint: ?u64 = null,
+            target_match_fingerprint: ?u64 = null,
+            environment_certificate_fingerprint: ?u64 = null,
+            run_permit_fingerprint: ?u64 = null,
+            admitted_run_fingerprint: ?u64 = null,
+            warnings: []const AdmissionBlocker = &.{},
+            metadata: []const u8 = "",
+        }) Admission.AdmissionReceipt {
+            var result = Admission.AdmissionReceipt{
+                .receipt_fingerprint = 0,
+                .admission_request_fingerprint = args.request.request_fingerprint,
+                .admission_report_fingerprint = args.report.report_fingerprint,
+                .package_fingerprint = args.report.package_fingerprint,
+                .target_ref_fingerprint = args.target_ref_fingerprint,
+                .module_ref_fingerprint = args.module_ref_fingerprint,
+                .local_target_ref_fingerprint = args.local_target_ref_fingerprint,
+                .target_match_fingerprint = args.target_match_fingerprint,
+                .environment_certificate_fingerprint = args.environment_certificate_fingerprint,
+                .run_permit_fingerprint = args.run_permit_fingerprint,
+                .admitted_run_fingerprint = args.admitted_run_fingerprint,
+                .accepted_mode = args.request.mode,
+                .warnings = args.warnings,
+                .metadata = args.metadata,
+            };
+            result.receipt_fingerprint = fingerprintAdmissionReceipt(result);
+            return result;
+        }
+    };
+
+    pub const AdmittedRun = struct {
+        admitted_run_fingerprint: u64,
+        admission_receipt_fingerprint: u64,
+        target_ref: TargetRef,
+        environment_certificate_fingerprint: ?u64 = null,
+        run_permit: ?RunPermit = null,
+        run_image: ?RunImage = null,
+        owns_run_image: bool = false,
+        transcript_image: ?TranscriptImage = null,
+        owns_transcript_image: bool = false,
+        selected_branch_id: ?u64 = null,
+        selected_checkpoint_ref: ?u64 = null,
+        mode: Admission.AdmissionMode,
+
+        pub fn init(args: struct {
+            admission_receipt_fingerprint: u64,
+            target_ref: TargetRef,
+            environment_certificate_fingerprint: ?u64 = null,
+            run_permit: ?RunPermit = null,
+            run_image: ?RunImage = null,
+            owns_run_image: bool = false,
+            transcript_image: ?TranscriptImage = null,
+            owns_transcript_image: bool = false,
+            selected_branch_id: ?u64 = null,
+            selected_checkpoint_ref: ?u64 = null,
+            mode: Admission.AdmissionMode,
+        }) Admission.AdmittedRun {
+            var result = Admission.AdmittedRun{
+                .admitted_run_fingerprint = 0,
+                .admission_receipt_fingerprint = args.admission_receipt_fingerprint,
+                .target_ref = args.target_ref,
+                .environment_certificate_fingerprint = args.environment_certificate_fingerprint,
+                .run_permit = args.run_permit,
+                .run_image = args.run_image,
+                .owns_run_image = args.owns_run_image,
+                .transcript_image = args.transcript_image,
+                .owns_transcript_image = args.owns_transcript_image,
+                .selected_branch_id = args.selected_branch_id,
+                .selected_checkpoint_ref = args.selected_checkpoint_ref,
+                .mode = args.mode,
+            };
+            result.admitted_run_fingerprint = fingerprintAdmittedRun(result);
+            return result;
+        }
+
+        pub fn deinit(self: *Admission.AdmittedRun, allocator: std.mem.Allocator) void {
+            if (self.owns_run_image) if (self.run_image) |*image| image.deinit(allocator);
+            if (self.owns_transcript_image) if (self.transcript_image) |*image| image.deinit(allocator);
+            self.* = undefined;
+        }
+
+        pub fn start(self: *Admission.AdmittedRun, comptime Target: type, comptime Env: type, runtime: anytype, args: anytype, options: anytype) !Machine(Target, Env.machine_config).Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)) {
+            if (!self.target_ref.matchesTarget(Target)) return Error.HandoffTargetMismatch;
+            const Options = @TypeOf(options);
+            const requested_mode: Mode = if (comptime @hasField(Options, "mode")) @field(options, "mode") else .fresh;
+            if (requested_mode != admissionModeToRunMode(self.mode)) return Error.HandoffDenied;
+            if (self.mode == .resume_parked or self.mode == .branch_resume) return Error.HandoffDenied;
+            const stored_transcript_image: ?*TranscriptImage = if (self.transcript_image) |*image|
+                image
+            else if (self.run_image) |*image|
+                if (image.transcript_image) |*transcript_image| transcript_image else null
+            else
+                null;
+            const supplied_transcript_image: ?*TranscriptImage = if (comptime @hasField(Options, "transcript_image"))
+                @field(options, "transcript_image")
+            else
+                null;
+            const transcript_sink_available = comptime @hasField(Options, "transcript") and Env.policy_decl.allow_native_adapters;
+            const transcript_available = if (requested_mode == .fresh)
+                transcript_sink_available
+            else
+                supplied_transcript_image != null or stored_transcript_image != null or transcript_sink_available;
+            if (self.environment_certificate_fingerprint) |fingerprint| {
+                if (Env.certificate(requested_mode, transcript_available).certificate_fingerprint != fingerprint) return Error.HandoffDenied;
+            }
+            const expected_transcript_fingerprint: ?u64 = if (self.mode == .continue_fresh)
+                null
+            else if (self.transcript_image) |image|
+                image.transcript_image_fingerprint
+            else if (self.run_image) |image|
+                image.current_state.transcript_image_fingerprint
+            else
+                null;
+            if (expected_transcript_fingerprint) |fingerprint| {
+                const candidate = supplied_transcript_image orelse stored_transcript_image orelse return Error.HandoffDenied;
+                validateTranscriptImageFingerprint(candidate.*) catch return Error.HandoffDenied;
+                if (candidate.transcript_image_fingerprint != fingerprint) return Error.HandoffDenied;
+            }
+            const use_stored_transcript = modeConsumesTranscript(requested_mode) and
+                supplied_transcript_image == null and
+                stored_transcript_image != null;
+            if (use_stored_transcript) {
+                const image = stored_transcript_image.?;
+                image.resetReplay();
+                image.validateReplayRun(
+                    Target.WorldSurface.surface_fingerprint,
+                    Target.Certificate.certificate_fingerprint,
+                ) catch return Error.HandoffDenied;
+            }
+            if (self.run_permit) |permit| {
+                if (comptime !@hasField(Options, "permit")) return Error.SupervisionDenied;
+                if (@field(options, "permit").permit_fingerprint != permit.permit_fingerprint) return Error.SupervisionDenied;
+                const scoped_permit = scopePermitToAdmission(permit, self.admission_receipt_fingerprint);
+                if (use_stored_transcript) return Machine(Target, Env.machine_config).startWithAdmittedTranscriptPermit(runtime, args, options, scoped_permit, stored_transcript_image.?);
+                return Machine(Target, Env.machine_config).startWithPermit(runtime, args, options, scoped_permit);
+            }
+            if (use_stored_transcript) return Machine(Target, Env.machine_config).startWithAdmittedTranscript(runtime, args, options, stored_transcript_image.?);
+            return Machine(Target, Env.machine_config).start(runtime, args, options);
+        }
+
+        pub fn @"resume"(self: *Admission.AdmittedRun, allocator: std.mem.Allocator, comptime Target: type, comptime Env: type, runtime: anytype, args: anytype, options: anytype) !Machine(Target, Env.machine_config).Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)) {
+            if (self.mode != .resume_parked and self.mode != .branch_resume) return Error.HandoffDenied;
+            const Options = @TypeOf(options);
+            const requested_mode: Mode = if (comptime @hasField(Options, "mode")) @field(options, "mode") else .fresh;
+            if (requested_mode != .fresh) return Error.HandoffDenied;
+            if (self.run_permit) |permit| {
+                if (comptime !@hasField(Options, "permit")) return Error.SupervisionDenied;
+                if (@field(options, "permit").permit_fingerprint != permit.permit_fingerprint) return Error.SupervisionDenied;
+            }
+            var image = self.run_image orelse return error.HandoffPendingFrameMismatch;
+            if (image.transcript_image == null) {
+                image.transcript_image = self.transcript_image;
+                refreshRunImageFingerprint(&image);
+            }
+            const transcript_sink_available = comptime @hasField(Options, "transcript") and Env.policy_decl.allow_native_adapters;
+            if (self.environment_certificate_fingerprint) |fingerprint| {
+                if (Env.certificate(.fresh, image.transcript_image != null or transcript_sink_available).certificate_fingerprint != fingerprint) return Error.HandoffDenied;
+            }
+            const encoded = try image.encode(allocator);
+            defer allocator.free(encoded);
+            var handoff = try Handoff.fromRunImage(allocator, encoded);
+            defer handoff.deinit();
+            if (self.run_permit) |permit| {
+                const scoped_permit = scopePermitToAdmission(permit, self.admission_receipt_fingerprint);
+                return handoff.resumeWithPermit(Target, Env, runtime, args, options, .accept_fresh, scoped_permit);
+            }
+            return handoff.@"resume"(Target, Env, runtime, args, options, .accept_fresh);
+        }
+    };
+
+    pub const AdmissionResult = struct {
+        request: Admission.AdmissionRequest,
+        report: Admission.AdmissionReport,
+        receipt: ?Admission.AdmissionReceipt = null,
+        admitted_run: ?Admission.AdmittedRun = null,
+        target_match: ?Admission.TargetMatch = null,
+
+        pub fn deinit(self: *Admission.AdmissionResult, allocator: std.mem.Allocator) void {
+            if (self.admitted_run) |*admitted| admitted.deinit(allocator);
+            self.* = undefined;
+        }
+    };
+
+    pub const Admitter = struct {
+        registry: Admission.TargetRegistry,
+        policy: Admission.AdmissionPolicy = .strict_local_execution,
+
+        pub fn init(args: struct {
+            registry: Admission.TargetRegistry,
+            policy: Admission.AdmissionPolicy = .strict_local_execution,
+        }) Admitter {
+            return .{ .registry = args.registry, .policy = args.policy };
+        }
+
+        pub fn admitForTarget(self: Admitter, comptime Target: type, comptime Env: type, package: Admission.TransferPackage, args: struct {
+            mode: ?Admission.AdmissionMode = null,
+            permit: ?RunPermit = null,
+            requested_branch_id: ?u64 = null,
+            requested_checkpoint_ref: ?u64 = null,
+            fresh_transcript_sink_available: bool = false,
+            metadata: []const u8 = "",
+            allocator: std.mem.Allocator = std.heap.page_allocator,
+        }) AdmissionResult {
+            const mode = args.mode orelse package.requested_mode;
+            const policy = self.policy.withFingerprint();
+            const package_transcript_available = package.transcript_image != null or
+                (package.run_image != null and package.run_image.?.transcript_image != null);
+            const fresh_transcript_sink_available = args.fresh_transcript_sink_available and Env.policy_decl.allow_native_adapters;
+            const transcript_available = switch (mode) {
+                .continue_fresh => fresh_transcript_sink_available,
+                .resume_parked, .branch_resume => package_transcript_available or fresh_transcript_sink_available,
+                else => package_transcript_available,
+            };
+            const environment_certificate_fingerprint: ?u64 = if (mode == .inspect_only)
+                null
+            else
+                Env.certificate(admissionModeToRunMode(mode), transcript_available).certificate_fingerprint;
+            const request = Admission.AdmissionRequest.init(.{
+                .package_fingerprint = package.package_fingerprint,
+                .mode = mode,
+                .policy_fingerprint = policy.policy_fingerprint,
+                .target_registry_fingerprint = self.registry.registry_fingerprint,
+                .environment_certificate_fingerprint = environment_certificate_fingerprint,
+                .run_permit_fingerprint = if (args.permit) |permit| permit.permit_fingerprint else null,
+                .requested_branch_id = args.requested_branch_id,
+                .requested_checkpoint_ref = args.requested_checkpoint_ref,
+                .metadata = args.metadata,
+            });
+            if (package.kind == .target_reference_only and package.target_ref == null and package.run_image == null) {
+                return rejectedResult(request, package, null, null, null, &.{.TargetRefMissing}, "target reference package is missing target ref");
+            }
+            if (package.transcript_image != null and package.target_ref == null and package.run_image == null and package.module_ref == null) {
+                return rejectedResult(request, package, null, null, null, &.{.TargetRefMissing}, "transcript package is missing target binding");
+            }
+            const module_reference_only = package.target_ref == null and package.run_image == null and package.module_image_bytes == null and package.module_ref != null;
+            const target_ref = package.target_ref orelse if (package.run_image) |image| image.target_ref else TargetRef.fromTarget(Target);
+            var module_ref = package.module_ref;
+            if (!effectiveAdmissionModeMatchesPackage(package.requested_mode, mode)) {
+                return rejectedResult(request, package, target_ref, module_ref, null, &.{.PackageInvalid}, "admission mode does not match package requested mode");
+            }
+            package.validate(.{
+                .max_package_bytes = policy.max_package_bytes,
+                .max_module_bytes = policy.max_module_bytes,
+                .max_transcript_bytes = policy.max_transcript_bytes,
+                .max_branches = policy.max_branches,
+                .max_checkpoints = policy.max_checkpoints,
+                .require_target_ref = false,
+                .require_run_image = admissionModeNeedsRunImage(mode),
+                .allow_full_module = policy.allow_full_modules or (mode == .inspect_only and policy.allow_inspect_only_full_modules),
+                .allow_reference_only = policy.allow_reference_targets,
+                .allow_inspect_only = policy.allow_reference_targets or policy.allow_inspect_only_full_modules,
+            }) catch {
+                return rejectedResult(request, package, target_ref, module_ref, null, &.{.PackageInvalid}, "package validation failed");
+            };
+            if (package.run_image) |image| {
+                if (!runImageFitsAdmissionMode(image, mode)) {
+                    if (mode != .inspect_only and mode != .local_target_match_only) {
+                        return rejectedResult(request, package, target_ref, module_ref, null, &.{.RunImageInvalid}, "run image does not match requested admission mode");
+                    }
+                }
+            }
+            if ((mode == .replay_only or mode == .verify_only) and package.run_image == null and package.transcript_image == null) {
+                return rejectedResult(request, package, target_ref, module_ref, null, &.{.RunImageInvalid}, "replay or verify admission requires run or transcript evidence");
+            }
+            if (package.module_image_bytes) |module_bytes| {
+                if (comptime !@hasDecl(Target, "Module")) {
+                    return rejectedResult(request, package, target_ref, module_ref, null, &.{.ModuleLoadedExecutionUnsupported}, "target has no Boundary module validator");
+                }
+                _ = Target.Module.validate(module_bytes, .{}) catch {
+                    return rejectedResult(request, package, target_ref, module_ref, null, &.{.ModuleInvalid}, "full module bytes failed validation");
+                };
+                var loaded_module = Admission.ModuleGateway.decodeBoundaryModule(Target, args.allocator, module_bytes) catch {
+                    return rejectedResult(request, package, target_ref, module_ref, null, &.{.ModuleInvalid}, "full module bytes failed decoding");
+                };
+                defer loaded_module.deinit();
+                const loaded_module_ref = Admission.ModuleGateway.refFromBoundaryModule(loaded_module);
+                if (package.run_image) |image| {
+                    if (image.module_ref_fingerprint) |fingerprint| {
+                        if (fingerprint != loaded_module_ref.module_ref_fingerprint) {
+                            return rejectedResult(request, package, target_ref, module_ref, null, &.{.ModuleInvalid}, "run image module ref does not match module bytes");
+                        }
+                    }
+                    if (image.boundary_module_fingerprint) |fingerprint| {
+                        if (fingerprint != loaded_module_ref.boundary_module_fingerprint) {
+                            return rejectedResult(request, package, target_ref, module_ref, null, &.{.ModuleInvalid}, "run image boundary module does not match module bytes");
+                        }
+                    }
+                    if (image.module_image_fingerprint) |fingerprint| {
+                        if (fingerprint != moduleImageFingerprint(module_bytes)) {
+                            return rejectedResult(request, package, target_ref, module_ref, null, &.{.ModuleInvalid}, "run image module image does not match module bytes");
+                        }
+                    }
+                }
+                if (module_ref) |supplied| {
+                    if (supplied.module_ref_fingerprint != loaded_module_ref.module_ref_fingerprint) {
+                        return rejectedResult(request, package, target_ref, module_ref, null, &.{.ModuleInvalid}, "module ref does not match module bytes");
+                    }
+                } else {
+                    module_ref = loaded_module_ref;
+                }
+                if (target_ref.world_surface_fingerprint != loaded_module_ref.world_surface_fingerprint or
+                    target_ref.target_certificate_fingerprint != loaded_module_ref.target_certificate_fingerprint or
+                    target_ref.residual_program_plan_hash != loaded_module_ref.residual_program_plan_hash)
+                {
+                    return rejectedResult(request, package, target_ref, module_ref, null, &.{.ModuleInvalid}, "target ref does not match module bytes");
+                }
+            }
+            self.registry.validate() catch {
+                return rejectedResult(request, package, target_ref, module_ref, null, &.{.TargetMismatch}, "target registry contains conflicting entries");
+            };
+            if (mode == .inspect_only and !policy.allow_reference_targets and module_ref == null and package.module_image_bytes == null) {
+                return rejectedResult(request, package, target_ref, module_ref, null, &.{.PackageInvalid}, "inspect-only admission requires module evidence");
+            }
+            if (!policy.allowsMode(mode)) {
+                return rejectedResult(request, package, target_ref, module_ref, null, &.{.AdmissionModeNotAllowed}, "admission mode is not allowed by policy");
+            }
+            const match = self.registry.match(target_ref, module_ref);
+            if (module_reference_only and !match.matched) return rejectedResult(request, package, target_ref, module_ref, match, &.{.TargetNotRegistered}, "module reference did not match a local target");
+            if (policy.require_local_target_for_execution or mode != .inspect_only) {
+                if (!match.matched and module_ref != null and policy.reject_module_mismatch) return rejectedResult(request, package, target_ref, module_ref, match, &.{.ModuleInvalid}, "module mismatch");
+                if (!match.matched) return rejectedResult(request, package, target_ref, module_ref, match, &.{.TargetNotRegistered}, "target not registered");
+                if (policy.reject_target_mismatch and match.match_mode == .mismatch) return rejectedResult(request, package, target_ref, module_ref, match, &.{.TargetMismatch}, "target mismatch");
+            }
+            if (policy.reject_prior_receipt_mismatch) {
+                if (package.run_image) |image| {
+                    if (image.prior_run_permit_fingerprint) |fingerprint| {
+                        if (!containsU64(package.prior_run_permit_refs, fingerprint)) return rejectedResult(request, package, target_ref, module_ref, match, &.{.PriorReceiptMismatch}, "run image prior permit is not listed in package prior permits");
+                    }
+                    if (image.prior_run_receipt_fingerprint) |fingerprint| {
+                        if (!containsU64(package.prior_run_receipt_refs, fingerprint)) return rejectedResult(request, package, target_ref, module_ref, match, &.{.PriorReceiptMismatch}, "run image prior receipt is not listed in package prior receipts");
+                    }
+                }
+            }
+            if (args.requested_branch_id) |branch_id| {
+                if (!packageContainsBranch(package, branch_id)) return rejectedResult(request, package, target_ref, module_ref, match, &.{.BranchMismatch}, "requested branch is not present in transfer package");
+                if (package.run_image == null or package.run_image.?.current_state.branch_id != branch_id) return rejectedResult(request, package, target_ref, module_ref, match, &.{.BranchMismatch}, "requested branch does not match current run state");
+            } else if (mode == .branch_resume) {
+                return rejectedResult(request, package, target_ref, module_ref, match, &.{.BranchMismatch}, "branch resume requires a selected branch");
+            }
+            if (args.requested_checkpoint_ref) |checkpoint_ref| {
+                if (!packageContainsCheckpoint(package, checkpoint_ref)) return rejectedResult(request, package, target_ref, module_ref, match, &.{.CheckpointMismatch}, "requested checkpoint is not present in transfer package");
+                if (package.run_image == null or package.run_image.?.current_state.checkpoint_fingerprint != checkpoint_ref) return rejectedResult(request, package, target_ref, module_ref, match, &.{.CheckpointMismatch}, "requested checkpoint does not match current run state");
+            }
+            const local_target_ref = TargetRef.fromTarget(Target);
+            if (match.matched and match.local_target_ref_fingerprint != local_target_ref.target_ref_fingerprint) {
+                return rejectedResult(request, package, target_ref, module_ref, match, &.{.TargetMismatch}, "registry match does not name requested local target");
+            }
+            if (module_ref) |module| {
+                if (module.module_kind == .full_module and mode != .inspect_only and policy.require_local_target_for_execution and !match.matched) {
+                    return rejectedResult(request, package, target_ref, module_ref, match, &.{.ModuleRequiresLocalTarget}, "full module requires local target for execution");
+                }
+            }
+            if (policy.reject_transcript_mismatch) {
+                if (package.transcript_image) |image| {
+                    if (image.world_surface_fingerprint != target_ref.world_surface_fingerprint or
+                        image.target_certificate_fingerprint != target_ref.target_certificate_fingerprint)
+                    {
+                        return rejectedResult(request, package, target_ref, module_ref, match, &.{.TranscriptTargetMismatch}, "transcript image does not match target");
+                    }
+                }
+            }
+            if (mode == .inspect_only or mode == .local_target_match_only) {
+                const report = Admission.AdmissionReport.accept(.{
+                    .request = request,
+                    .package_fingerprint = package.package_fingerprint,
+                    .manifest_fingerprint = package.manifest.manifest_fingerprint,
+                    .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+                    .module_ref_fingerprint = if (module_ref) |module| module.module_ref_fingerprint else null,
+                    .target_match_fingerprint = match.match_fingerprint,
+                    .summary = if (mode == .inspect_only) "inspect-only admission accepted" else "local target match accepted",
+                });
+                const receipt = Admission.AdmissionReceipt.init(.{
+                    .request = request,
+                    .report = report,
+                    .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+                    .module_ref_fingerprint = if (module_ref) |module| module.module_ref_fingerprint else null,
+                    .local_target_ref_fingerprint = match.local_target_ref_fingerprint,
+                    .target_match_fingerprint = match.match_fingerprint,
+                });
+                return .{ .request = request, .report = report, .receipt = receipt, .target_match = match };
+            }
+            const cert = Env.certificate(admissionModeToRunMode(mode), transcript_available);
+            if (policy.require_environment_preflight) {
+                const env_report = Env.acceptanceReport(admissionModeToRunMode(mode), transcript_available);
+                if (!env_report.accepted) {
+                    const report = Admission.AdmissionReport.rejected(.{
+                        .request = request,
+                        .package_fingerprint = package.package_fingerprint,
+                        .manifest_fingerprint = package.manifest.manifest_fingerprint,
+                        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+                        .module_ref_fingerprint = if (module_ref) |module| module.module_ref_fingerprint else null,
+                        .target_match_fingerprint = match.match_fingerprint,
+                        .import_set_fingerprint = ImportSet.fromTarget(Target).import_set_fingerprint,
+                        .environment_acceptance_report_fingerprint = env_report.report_fingerprint,
+                        .blockers = &.{.EnvironmentRejected},
+                        .summary = "environment preflight rejected admission",
+                    });
+                    return .{ .request = request, .report = report, .target_match = match };
+                }
+            }
+            if (policy.require_supervision_permit and args.permit == null) {
+                return rejectedResult(request, package, target_ref, module_ref, match, &.{.PermitMissing}, "receiver permit is required");
+            }
+            if (args.permit) |permit| {
+                if (permit.target_ref_fingerprint != local_target_ref.target_ref_fingerprint) {
+                    return rejectedResult(request, package, target_ref, module_ref, match, &.{.PermitRejected}, "permit target mismatch");
+                }
+                if (permit.admission_receipt_fingerprint != null) {
+                    return rejectedResult(request, package, target_ref, module_ref, match, &.{.PermitRejected}, "permit admission scope mismatch");
+                }
+                if (permit.module_ref_fingerprint) |permit_module_ref| {
+                    if (module_ref == null or module_ref.?.module_ref_fingerprint != permit_module_ref) {
+                        return rejectedResult(request, package, target_ref, module_ref, match, &.{.PermitRejected}, "permit module mismatch");
+                    }
+                }
+                const permit_report = Env.acceptanceReportWithPermit(admissionModeToRunMode(mode), transcript_available, permit);
+                if (!permit_report.accepted) {
+                    return rejectedResult(request, package, target_ref, module_ref, match, &.{.PermitRejected}, "permit preflight rejected admission");
+                }
+            }
+            if ((mode == .replay_only or mode == .verify_only) and package.run_image == null) {
+                var transcript_image = package.transcript_image.?;
+                validateTranscriptImageForEnvironment(Env, &transcript_image) catch {
+                    return rejectedResult(request, package, target_ref, module_ref, match, &.{.TranscriptImageInvalid}, "transcript image failed environment preflight");
+                };
+                transcript_image.validateReplayRun(target_ref.world_surface_fingerprint, target_ref.target_certificate_fingerprint) catch {
+                    return rejectedResult(request, package, target_ref, module_ref, match, &.{.TranscriptImageInvalid}, "transcript image failed replay preflight");
+                };
+                if (args.permit) |permit| {
+                    var handoff_run_image = RunImage.fromTranscriptImage(Target, transcript_image, .replay_only_run);
+                    attachPackageModuleWitnessToRunImage(&handoff_run_image, package, module_ref);
+                    var transcript_handoff = Handoff{ .allocator = args.allocator, .run_image = handoff_run_image };
+                    const handoff_report = transcript_handoff.preflightWithPermit(Target, Env, admissionModeToHandoffMode(mode).?, permit);
+                    if (!handoff_report.accepted) {
+                        return rejectedResult(request, package, target_ref, module_ref, match, &.{.PermitRejected}, "permit preflight rejected transcript-only admission");
+                    }
+                }
+            }
+            var handoff_preflight_report_fingerprint: ?u64 = null;
+            if (admissionModeToHandoffMode(mode)) |handoff_mode| {
+                if (package.run_image) |run_image| {
+                    var handoff_run_image = run_image;
+                    attachPackageModuleWitnessToRunImage(&handoff_run_image, package, module_ref);
+                    if (handoff_run_image.transcript_image == null) {
+                        handoff_run_image.transcript_image = package.transcript_image;
+                        refreshRunImageFingerprint(&handoff_run_image);
+                    }
+                    var handoff = Handoff{ .allocator = args.allocator, .run_image = handoff_run_image };
+                    const handoff_report = if (args.permit) |permit|
+                        handoff.preflightWithPermitFreshTranscriptSink(Target, Env, handoff_mode, permit, fresh_transcript_sink_available)
+                    else
+                        handoff.preflightWithFreshTranscriptSink(Target, Env, handoff_mode, fresh_transcript_sink_available);
+                    if (!handoff_report.accepted) {
+                        return rejectedResult(request, package, target_ref, module_ref, match, handoffPreflightBlockers(args.permit != null), "handoff preflight rejected admission");
+                    }
+                    handoff_preflight_report_fingerprint = handoff_report.report_fingerprint;
+                } else if (mode != .replay_only and mode != .verify_only) {
+                    return rejectedResult(request, package, target_ref, module_ref, match, &.{.RunImageInvalid}, "run image is required for handoff admission");
+                }
+            }
+            const report = Admission.AdmissionReport.accept(.{
+                .request = request,
+                .package_fingerprint = package.package_fingerprint,
+                .manifest_fingerprint = package.manifest.manifest_fingerprint,
+                .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+                .module_ref_fingerprint = if (module_ref) |module| module.module_ref_fingerprint else null,
+                .target_match_fingerprint = match.match_fingerprint,
+                .import_set_fingerprint = ImportSet.fromTarget(Target).import_set_fingerprint,
+                .environment_acceptance_report_fingerprint = Env.acceptanceReport(admissionModeToRunMode(mode), transcript_available).report_fingerprint,
+                .run_permit_fingerprint = if (args.permit) |permit| permit.permit_fingerprint else null,
+                .handoff_preflight_report_fingerprint = handoff_preflight_report_fingerprint,
+                .summary = "admission accepted for local execution",
+            });
+            var receipt = Admission.AdmissionReceipt.init(.{
+                .request = request,
+                .report = report,
+                .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+                .module_ref_fingerprint = if (module_ref) |module| module.module_ref_fingerprint else null,
+                .local_target_ref_fingerprint = local_target_ref.target_ref_fingerprint,
+                .target_match_fingerprint = match.match_fingerprint,
+                .environment_certificate_fingerprint = cert.certificate_fingerprint,
+                .run_permit_fingerprint = if (args.permit) |permit| permit.permit_fingerprint else null,
+            });
+            var admitted_run_image: ?RunImage = null;
+            var admitted_owns_run_image = false;
+            if (package.run_image) |image| {
+                if (package.owns_run_image) {
+                    admitted_run_image = cloneRunImage(args.allocator, image) catch {
+                        return rejectedResult(request, package, target_ref, module_ref, match, &.{.PackageInvalid}, "admitted run image ownership failed");
+                    };
+                    admitted_owns_run_image = true;
+                } else {
+                    admitted_run_image = image;
+                }
+                if (admitted_run_image) |*admitted_image| {
+                    attachPackageModuleWitnessToRunImage(admitted_image, package, module_ref);
+                }
+            }
+            var admitted_transcript_image: ?TranscriptImage = null;
+            var admitted_owns_transcript_image = false;
+            if (package.transcript_image) |image| {
+                if (package.owns_transcript_image) {
+                    admitted_transcript_image = cloneTranscriptImage(args.allocator, image) catch {
+                        if (admitted_owns_run_image) if (admitted_run_image) |*owned| owned.deinit(args.allocator);
+                        return rejectedResult(request, package, target_ref, module_ref, match, &.{.PackageInvalid}, "admitted transcript image ownership failed");
+                    };
+                    admitted_owns_transcript_image = true;
+                } else {
+                    admitted_transcript_image = image;
+                }
+            }
+            var admitted = Admission.AdmittedRun.init(.{
+                .admission_receipt_fingerprint = receipt.receipt_fingerprint,
+                .target_ref = local_target_ref,
+                .environment_certificate_fingerprint = cert.certificate_fingerprint,
+                .run_permit = args.permit,
+                .run_image = admitted_run_image,
+                .owns_run_image = admitted_owns_run_image,
+                .transcript_image = admitted_transcript_image,
+                .owns_transcript_image = admitted_owns_transcript_image,
+                .selected_branch_id = args.requested_branch_id,
+                .selected_checkpoint_ref = args.requested_checkpoint_ref,
+                .mode = mode,
+            });
+            receipt.admitted_run_fingerprint = admitted.admitted_run_fingerprint;
+            receipt.receipt_fingerprint = fingerprintAdmissionReceipt(receipt);
+            admitted.admission_receipt_fingerprint = receipt.receipt_fingerprint;
+            return .{ .request = request, .report = report, .receipt = receipt, .admitted_run = admitted, .target_match = match };
+        }
+
+        fn rejectedResult(request: Admission.AdmissionRequest, package: Admission.TransferPackage, target_ref: ?TargetRef, module_ref: ?Admission.ModuleRef, match: ?Admission.TargetMatch, blockers: []const AdmissionBlocker, summary: []const u8) AdmissionResult {
+            const report = Admission.AdmissionReport.rejected(.{
+                .request = request,
+                .package_fingerprint = package.package_fingerprint,
+                .manifest_fingerprint = package.manifest.manifest_fingerprint,
+                .target_ref_fingerprint = if (target_ref) |target| target.target_ref_fingerprint else null,
+                .module_ref_fingerprint = if (module_ref) |module| module.module_ref_fingerprint else null,
+                .target_match_fingerprint = if (match) |target_match| target_match.match_fingerprint else null,
+                .blockers = blockers,
+                .summary = summary,
+            });
+            return .{ .request = request, .report = report, .target_match = match };
+        }
+    };
+};
+
 pub const Supervision = struct {
     pub const ResponseClass = enum {
         responded,
@@ -1407,6 +3119,8 @@ pub const Supervision = struct {
         binding_plan_fingerprint: u64,
         mode: Mode,
         transcript_image_available: bool = false,
+        admission_receipt_fingerprint: ?u64 = null,
+        module_ref_fingerprint: ?u64 = null,
         supervision_policy_fingerprint: u64,
         budget_fingerprint: u64,
         cost_model_fingerprint: u64,
@@ -1427,6 +3141,8 @@ pub const Supervision = struct {
             binding_plan_fingerprint: u64,
             mode: Mode,
             transcript_image_available: bool = false,
+            admission_receipt_fingerprint: ?u64 = null,
+            module_ref_fingerprint: ?u64 = null,
             policy: Supervision.SupervisionPolicy = Supervision.SupervisionPolicy.strict_fresh,
             budget: Supervision.Budget = Supervision.Budget.unlimited,
             cost_model: Supervision.CostModel = Supervision.CostModel.default,
@@ -1448,6 +3164,8 @@ pub const Supervision = struct {
                 .binding_plan_fingerprint = args.binding_plan_fingerprint,
                 .mode = args.mode,
                 .transcript_image_available = args.transcript_image_available,
+                .admission_receipt_fingerprint = args.admission_receipt_fingerprint,
+                .module_ref_fingerprint = args.module_ref_fingerprint,
                 .supervision_policy_fingerprint = policy.policy_fingerprint,
                 .budget_fingerprint = budget.budget_fingerprint,
                 .cost_model_fingerprint = cost_model.cost_model_fingerprint,
@@ -1483,6 +3201,8 @@ pub const Supervision = struct {
         const cost_model: Supervision.CostModel = if (@hasField(Args, "cost_model")) args.cost_model else Supervision.CostModel.default;
         const branch_policy: PermitBranchPolicy = if (@hasField(Args, "branch_policy")) args.branch_policy else .inherit;
         const handoff_policy: PermitHandoffPolicy = if (@hasField(Args, "handoff_policy")) args.handoff_policy else .require_new_permit;
+        const admission_receipt_fingerprint: ?u64 = if (@hasField(Args, "admission_receipt_fingerprint")) args.admission_receipt_fingerprint else null;
+        const module_ref_fingerprint: ?u64 = if (@hasField(Args, "module_ref_fingerprint")) args.module_ref_fingerprint else null;
         const metadata: []const u8 = if (@hasField(Args, "metadata")) args.metadata else "";
         const label: []const u8 = if (@hasField(Args, "label")) args.label else "";
         const port_rules: []const Supervision.PortRule = if (@hasField(Args, "port_rules")) args.port_rules else &.{};
@@ -1494,6 +3214,8 @@ pub const Supervision = struct {
             .binding_plan_fingerprint = cert.binding_plan_fingerprint,
             .mode = mode,
             .transcript_image_available = transcript_available,
+            .admission_receipt_fingerprint = admission_receipt_fingerprint,
+            .module_ref_fingerprint = module_ref_fingerprint,
             .policy = policy,
             .budget = budget,
             .cost_model = cost_model,
@@ -1653,6 +3375,8 @@ pub const Supervision = struct {
         target_ref_fingerprint: u64,
         run_image_fingerprint: ?u64 = null,
         transcript_image_fingerprint: ?u64 = null,
+        admission_receipt_fingerprint: ?u64 = null,
+        module_ref_fingerprint: ?u64 = null,
         usage_ledger_fingerprint: u64,
         final_run_state_fingerprint: u64,
         final_status: FinalStatus,
@@ -1682,6 +3406,8 @@ pub const Supervision = struct {
             target_ref_fingerprint: u64,
             run_image_fingerprint: ?u64 = null,
             transcript_image_fingerprint: ?u64 = null,
+            admission_receipt_fingerprint: ?u64 = null,
+            module_ref_fingerprint: ?u64 = null,
             usage_ledger_fingerprint: u64,
             final_run_state_fingerprint: u64,
             final_status: FinalStatus,
@@ -1696,6 +3422,8 @@ pub const Supervision = struct {
                 .target_ref_fingerprint = args.target_ref_fingerprint,
                 .run_image_fingerprint = args.run_image_fingerprint,
                 .transcript_image_fingerprint = args.transcript_image_fingerprint,
+                .admission_receipt_fingerprint = args.admission_receipt_fingerprint,
+                .module_ref_fingerprint = args.module_ref_fingerprint,
                 .usage_ledger_fingerprint = args.usage_ledger_fingerprint,
                 .final_run_state_fingerprint = args.final_run_state_fingerprint,
                 .final_status = args.final_status,
@@ -2107,6 +3835,8 @@ pub const Supervision = struct {
                 .target_ref_fingerprint = self.permit.target_ref_fingerprint,
                 .run_image_fingerprint = run_image_fingerprint,
                 .transcript_image_fingerprint = transcript_image_fingerprint,
+                .admission_receipt_fingerprint = self.permit.admission_receipt_fingerprint,
+                .module_ref_fingerprint = self.permit.module_ref_fingerprint,
                 .usage_ledger_fingerprint = self.ledger.ledger_fingerprint,
                 .final_run_state_fingerprint = final_run_state_fingerprint,
                 .final_status = final_status,
@@ -3220,6 +4950,11 @@ pub const Transcript = struct {
         response_fingerprint: ?u64 = null,
         response_kind: ?ResponseKind = null,
         replay_key: ?u64 = null,
+        admission_request_fingerprint: ?u64 = null,
+        admission_report_fingerprint: ?u64 = null,
+        admission_receipt_fingerprint: ?u64 = null,
+        module_ref_fingerprint: ?u64 = null,
+        target_match_fingerprint: ?u64 = null,
         world_surface_replay_scope_fingerprint: ?u64 = null,
         payload_value_table_id: ?u32 = null,
         expected_response_value_table_id: ?u32 = null,
@@ -3405,6 +5140,10 @@ pub const Transcript = struct {
                 .branch_started,
                 .branch_joined,
                 .permit_issued,
+                .admission_requested,
+                .admission_accepted,
+                .admission_rejected,
+                .module_matched_target,
                 .supervision_check,
                 .budget_exceeded,
                 .supervision_denied,
@@ -3438,6 +5177,10 @@ pub const Transcript = struct {
                 .branch_started => result.branch_started += 1,
                 .branch_joined => result.branch_joined += 1,
                 .permit_issued => result.permit_issued += 1,
+                .admission_requested => result.admission_requested += 1,
+                .admission_accepted => result.admission_accepted += 1,
+                .admission_rejected => result.admission_rejected += 1,
+                .module_matched_target => result.module_matched_target += 1,
                 .supervision_check => result.supervision_check += 1,
                 .budget_exceeded => result.budget_exceeded += 1,
                 .supervision_denied => result.supervision_denied += 1,
@@ -3471,6 +5214,11 @@ pub const Transcript = struct {
                 .response_fingerprint = event.response_fingerprint,
                 .response_kind = event.response_kind,
                 .replay_key = event.replay_key,
+                .admission_request_fingerprint = event.admission_request_fingerprint,
+                .admission_report_fingerprint = event.admission_report_fingerprint,
+                .admission_receipt_fingerprint = event.admission_receipt_fingerprint,
+                .module_ref_fingerprint = event.module_ref_fingerprint,
+                .target_match_fingerprint = event.target_match_fingerprint,
                 .world_surface_replay_scope_fingerprint = if (event.request_frame) |frame| frame.world_surface_replay_scope_fingerprint else null,
                 .payload_value_table_id = if (event.request_frame) |frame| frame.payload_value_table_id else null,
                 .expected_response_value_table_id = if (event.request_frame) |frame| frame.expected_response_value_table_id else null,
@@ -3503,6 +5251,10 @@ pub const Transcript = struct {
         branch_started: usize = 0,
         branch_joined: usize = 0,
         permit_issued: usize = 0,
+        admission_requested: usize = 0,
+        admission_accepted: usize = 0,
+        admission_rejected: usize = 0,
+        module_matched_target: usize = 0,
         supervision_check: usize = 0,
         budget_exceeded: usize = 0,
         supervision_denied: usize = 0,
@@ -3533,6 +5285,9 @@ pub const Timeline = struct {
         supervision_check_fingerprint: ?u64 = null,
         usage_ledger_fingerprint: ?u64 = null,
         run_receipt_fingerprint: ?u64 = null,
+        admission_receipt_fingerprint: ?u64 = null,
+        module_ref_fingerprint: ?u64 = null,
+        target_match_fingerprint: ?u64 = null,
         blocker_tag: ?Supervision.Blocker = null,
         turn_index: usize = 0,
         status: ?ResponseStatus = null,
@@ -3550,6 +5305,9 @@ pub const Timeline = struct {
             supervision_check_fingerprint: ?u64 = null,
             usage_ledger_fingerprint: ?u64 = null,
             run_receipt_fingerprint: ?u64 = null,
+            admission_receipt_fingerprint: ?u64 = null,
+            module_ref_fingerprint: ?u64 = null,
+            target_match_fingerprint: ?u64 = null,
             blocker_tag: ?Supervision.Blocker = null,
             turn_index: usize = 0,
             status: ?ResponseStatus = null,
@@ -3568,6 +5326,9 @@ pub const Timeline = struct {
                 .supervision_check_fingerprint = args.supervision_check_fingerprint,
                 .usage_ledger_fingerprint = args.usage_ledger_fingerprint,
                 .run_receipt_fingerprint = args.run_receipt_fingerprint,
+                .admission_receipt_fingerprint = args.admission_receipt_fingerprint,
+                .module_ref_fingerprint = args.module_ref_fingerprint,
+                .target_match_fingerprint = args.target_match_fingerprint,
                 .blocker_tag = args.blocker_tag,
                 .turn_index = args.turn_index,
                 .status = args.status,
@@ -3707,6 +5468,11 @@ pub const TranscriptImage = struct {
         response_fingerprint: ?u64 = null,
         response_kind: ?ResponseKind = null,
         replay_key: ?u64 = null,
+        admission_request_fingerprint: ?u64 = null,
+        admission_report_fingerprint: ?u64 = null,
+        admission_receipt_fingerprint: ?u64 = null,
+        module_ref_fingerprint: ?u64 = null,
+        target_match_fingerprint: ?u64 = null,
         turn_index: ?usize = null,
         residual_site_index: ?usize = null,
         residual_site_fingerprint: ?u64 = null,
@@ -3834,6 +5600,10 @@ pub const TranscriptImage = struct {
                 .branch_started,
                 .branch_joined,
                 .permit_issued,
+                .admission_requested,
+                .admission_accepted,
+                .admission_rejected,
+                .module_matched_target,
                 .supervision_check,
                 .budget_exceeded,
                 .supervision_denied,
@@ -3967,14 +5737,14 @@ pub const TranscriptImage = struct {
         try writeU8(&out, allocator, @intFromEnum(self.final_status));
         try writeU64(&out, allocator, self.response_count);
         try writeU64(&out, allocator, self.events.len);
-        for (self.events) |event| try encodeTranscriptEventImage(&out, allocator, event);
+        for (self.events) |event| try encodeTranscriptEventImage(&out, allocator, event, self.format_version);
         return out.toOwnedSlice(allocator);
     }
 
     pub fn decode(allocator: std.mem.Allocator, bytes: []const u8) !@This() {
         var cursor: usize = 0;
         const format_version = try readU32(bytes, &cursor);
-        if (format_version != world_transcript_image_format_version) return error.InvalidFrameEncoding;
+        if (format_version != 2 and format_version != world_transcript_image_format_version) return error.InvalidFrameEncoding;
         const fingerprint_version = try readU32(bytes, &cursor);
         if (fingerprint_version != world_transcript_image_fingerprint_version) return error.InvalidFrameEncoding;
         const transcript_image_fingerprint = try readU64(bytes, &cursor);
@@ -3983,13 +5753,14 @@ pub const TranscriptImage = struct {
         const final_status = try enumFromByte(FinalStatus, try readU8(bytes, &cursor));
         const response_count = try readU64AsUsize(bytes, &cursor);
         const event_count = try readU64AsUsize(bytes, &cursor);
-        if (event_count > (bytes.len - cursor) / world_min_transcript_event_image_encoded_len) return error.InvalidFrameEncoding;
+        const min_event_len = if (format_version == 2) world_min_transcript_event_image_encoded_len_v2 else world_min_transcript_event_image_encoded_len;
+        if (event_count > (bytes.len - cursor) / min_event_len) return error.InvalidFrameEncoding;
         const events = try allocator.alloc(EventImage, event_count);
         errdefer allocator.free(events);
         var initialized: usize = 0;
         errdefer for (events[0..initialized]) |*event| event.deinit(allocator);
         for (events) |*event| {
-            event.* = try decodeTranscriptEventImage(allocator, bytes, &cursor);
+            event.* = try decodeTranscriptEventImage(allocator, bytes, &cursor, format_version);
             initialized += 1;
         }
         if (cursor != bytes.len) return error.InvalidFrameEncoding;
@@ -4004,6 +5775,7 @@ pub const TranscriptImage = struct {
         if (decoded_response_count != response_count) return error.InvalidFrameEncoding;
         if (finalStatusFromEvents(events) != final_status) return error.InvalidFrameEncoding;
         const image = @This(){
+            .format_version = format_version,
             .transcript_image_fingerprint = transcript_image_fingerprint,
             .world_surface_fingerprint = world_surface_fingerprint,
             .target_certificate_fingerprint = target_certificate_fingerprint,
@@ -4173,6 +5945,9 @@ pub const RunImage = struct {
     audit_image_fingerprint: ?u64 = null,
     prior_run_permit_fingerprint: ?u64 = null,
     prior_run_receipt_fingerprint: ?u64 = null,
+    module_ref_fingerprint: ?u64 = null,
+    boundary_module_fingerprint: ?u64 = null,
+    module_image_fingerprint: ?u64 = null,
     metadata: []const u8 = "",
     owns_metadata: bool = false,
 
@@ -4210,6 +5985,9 @@ pub const RunImage = struct {
         audit_image_fingerprint: ?u64 = null,
         prior_run_permit_fingerprint: ?u64 = null,
         prior_run_receipt_fingerprint: ?u64 = null,
+        module_ref_fingerprint: ?u64 = null,
+        boundary_module_fingerprint: ?u64 = null,
+        module_image_fingerprint: ?u64 = null,
         metadata: []const u8 = "",
     }) @This() {
         var result = @This(){
@@ -4228,9 +6006,43 @@ pub const RunImage = struct {
             .audit_image_fingerprint = args.audit_image_fingerprint,
             .prior_run_permit_fingerprint = args.prior_run_permit_fingerprint,
             .prior_run_receipt_fingerprint = args.prior_run_receipt_fingerprint,
+            .module_ref_fingerprint = args.module_ref_fingerprint,
+            .boundary_module_fingerprint = args.boundary_module_fingerprint,
+            .module_image_fingerprint = args.module_image_fingerprint,
             .metadata = args.metadata,
         };
-        result.run_image_fingerprint = fingerprintRunImage(result);
+        if (result.hasModuleWitness()) {
+            result.format_version = world_run_image_format_version;
+        }
+        if (result.format_version >= 3) {
+            result.run_image_fingerprint = fingerprintRunImageV3(result);
+        } else {
+            result.run_image_fingerprint = fingerprintRunImage(result);
+        }
+        return result;
+    }
+
+    fn hasModuleWitness(self: @This()) bool {
+        return self.module_ref_fingerprint != null or
+            self.boundary_module_fingerprint != null or
+            self.module_image_fingerprint != null;
+    }
+
+    pub fn withModuleRef(self: @This(), module_ref: Admission.ModuleRef, module_image_fingerprint: ?u64) @This() {
+        var result = self;
+        result.owns_target_ref_bytes = false;
+        result.owns_transcript_image = false;
+        result.owns_checkpoints = false;
+        result.owns_branches = false;
+        result.owns_branch_labels = false;
+        result.owns_pending_request_frame = false;
+        result.owns_final_result_image = false;
+        result.owns_metadata = false;
+        result.format_version = world_run_image_format_version;
+        result.module_ref_fingerprint = module_ref.module_ref_fingerprint;
+        result.boundary_module_fingerprint = module_ref.boundary_module_fingerprint;
+        result.module_image_fingerprint = module_image_fingerprint;
+        result.run_image_fingerprint = fingerprintRunImageV3(result);
         return result;
     }
 
@@ -4279,6 +6091,9 @@ pub const RunImage = struct {
     }
 
     pub fn validate(self: @This(), options: ValidateOptions) !void {
+        if (!isSupportedRunImageFormatVersion(self.format_version)) return error.InvalidFrameEncoding;
+        if (self.fingerprint_version != world_run_image_fingerprint_version) return error.InvalidFrameEncoding;
+        try validateTargetRef(self.target_ref);
         if (!options.allow_reference_target and self.kind == .reference_target_run) return error.InvalidFrameEncoding;
         if (options.require_known_target and self.kind == .reference_target_run) return error.InvalidFrameEncoding;
         if (self.metadata.len > options.max_image_bytes) return error.InvalidFrameEncoding;
@@ -4286,6 +6101,9 @@ pub const RunImage = struct {
             if (label.len > options.max_image_bytes) return error.InvalidFrameEncoding;
         }
         if (self.target_ref.metadata.len > options.max_image_bytes) return error.InvalidFrameEncoding;
+        if (self.module_ref_fingerprint != null and self.format_version < 3) return error.InvalidFrameEncoding;
+        if (self.boundary_module_fingerprint != null and self.format_version < 3) return error.InvalidFrameEncoding;
+        if (self.module_image_fingerprint != null and self.format_version < 3) return error.InvalidFrameEncoding;
         if (self.checkpoints.len > options.max_checkpoints) return error.InvalidFrameEncoding;
         if (self.branches.len > options.max_branches) return error.InvalidFrameEncoding;
         const value_policy = valuePolicyForRunImageValidation(options);
@@ -4358,7 +6176,7 @@ pub const RunImage = struct {
             if (self.current_state.final_value_image_fingerprint != image.value_image_fingerprint) return error.InvalidFrameEncoding;
         }
         if (fingerprintRunState(self.current_state) != self.current_state.run_state_fingerprint) return error.InvalidFrameEncoding;
-        const expected_run_image_fingerprint = if (self.format_version == 1) fingerprintRunImageV1(self) else fingerprintRunImage(self);
+        const expected_run_image_fingerprint = if (self.format_version == 1) fingerprintRunImageV1(self) else if (self.format_version >= 3) fingerprintRunImageV3(self) else fingerprintRunImage(self);
         if (expected_run_image_fingerprint != self.run_image_fingerprint) return error.InvalidFrameEncoding;
     }
 
@@ -4401,6 +6219,11 @@ pub const RunImage = struct {
             try writeOptionalU64(&out, allocator, self.prior_run_permit_fingerprint);
             try writeOptionalU64(&out, allocator, self.prior_run_receipt_fingerprint);
         }
+        if (self.format_version >= 3) {
+            try writeOptionalU64(&out, allocator, self.module_ref_fingerprint);
+            try writeOptionalU64(&out, allocator, self.boundary_module_fingerprint);
+            try writeOptionalU64(&out, allocator, self.module_image_fingerprint);
+        }
         try writeBytes(&out, allocator, self.metadata);
         return out.toOwnedSlice(allocator);
     }
@@ -4409,7 +6232,7 @@ pub const RunImage = struct {
         if (bytes.len > world_max_decoded_byte_field_len) return error.InvalidFrameEncoding;
         var cursor: usize = 0;
         const format_version = try readU32(bytes, &cursor);
-        if (format_version != 1 and format_version != world_run_image_format_version) return error.InvalidFrameEncoding;
+        if (!isSupportedRunImageFormatVersion(format_version)) return error.InvalidFrameEncoding;
         const fingerprint_version = try readU32(bytes, &cursor);
         if (fingerprint_version != world_run_image_fingerprint_version) return error.InvalidFrameEncoding;
         const run_image_fingerprint = try readU64(bytes, &cursor);
@@ -4465,6 +6288,9 @@ pub const RunImage = struct {
         const audit_image_fingerprint = try readOptionalU64(bytes, &cursor);
         const prior_run_permit_fingerprint = if (format_version >= 2) try readOptionalU64(bytes, &cursor) else null;
         const prior_run_receipt_fingerprint = if (format_version >= 2) try readOptionalU64(bytes, &cursor) else null;
+        const module_ref_fingerprint = if (format_version >= 3) try readOptionalU64(bytes, &cursor) else null;
+        const boundary_module_fingerprint = if (format_version >= 3) try readOptionalU64(bytes, &cursor) else null;
+        const module_image_fingerprint = if (format_version >= 3) try readOptionalU64(bytes, &cursor) else null;
         const metadata = try readBytesOwned(allocator, bytes, &cursor);
         errdefer allocator.free(metadata);
         if (cursor != bytes.len) return error.InvalidFrameEncoding;
@@ -4492,6 +6318,9 @@ pub const RunImage = struct {
             .audit_image_fingerprint = audit_image_fingerprint,
             .prior_run_permit_fingerprint = prior_run_permit_fingerprint,
             .prior_run_receipt_fingerprint = prior_run_receipt_fingerprint,
+            .module_ref_fingerprint = module_ref_fingerprint,
+            .boundary_module_fingerprint = boundary_module_fingerprint,
+            .module_image_fingerprint = module_image_fingerprint,
             .metadata = metadata,
             .owns_metadata = true,
         };
@@ -4502,6 +6331,20 @@ pub const RunImage = struct {
         return result;
     }
 };
+
+fn isSupportedRunImageFormatVersion(format_version: u32) bool {
+    return format_version == 1 or format_version == 2 or format_version == world_run_image_format_version;
+}
+
+fn isSupportedTargetRefFormatVersion(format_version: u32) bool {
+    return format_version == 1 or format_version == world_target_ref_format_version;
+}
+
+fn validateTargetRef(target_ref: TargetRef) !void {
+    if (!isSupportedTargetRefFormatVersion(target_ref.format_version)) return error.InvalidFrameEncoding;
+    if (target_ref.fingerprint_version != world_target_ref_fingerprint_version) return error.InvalidFrameEncoding;
+    if (target_ref.target_ref_fingerprint != fingerprintTargetRef(target_ref)) return error.InvalidFrameEncoding;
+}
 
 test "RunImage decoder accepts v1 layout without prior receipt refs" {
     const allocator = std.testing.allocator;
@@ -4550,6 +6393,7 @@ test "RunImage decoder accepts v1 layout without prior receipt refs" {
     var decoded = try RunImage.decode(allocator, out.items);
     defer decoded.deinit(allocator);
     try std.testing.expectEqual(@as(u32, 1), decoded.format_version);
+    try std.testing.expectEqual(@as(u32, 1), decoded.target_ref.format_version);
     try std.testing.expectEqual(@as(?u64, null), decoded.prior_run_permit_fingerprint);
     try std.testing.expectEqual(@as(?u64, null), decoded.prior_run_receipt_fingerprint);
     try std.testing.expectEqualStrings("legacy", decoded.metadata);
@@ -4560,7 +6404,56 @@ test "RunImage decoder accepts v1 layout without prior receipt refs" {
     var redecode = try RunImage.decode(allocator, reencoded);
     defer redecode.deinit(allocator);
     try std.testing.expectEqual(@as(u32, 1), redecode.format_version);
+    try std.testing.expectEqual(@as(u32, 1), redecode.target_ref.format_version);
     try std.testing.expectEqualStrings("legacy", redecode.metadata);
+}
+
+test "TargetRef decoder accepts v1 boundary module slot layouts" {
+    const allocator = std.testing.allocator;
+    var legacy_ref = TargetRef{
+        .format_version = 1,
+        .target_ref_fingerprint = 0,
+        .world_surface_fingerprint = 11,
+        .target_certificate_fingerprint = 22,
+        .metadata = "legacy-target",
+    };
+    legacy_ref.target_ref_fingerprint = fingerprintTargetRef(legacy_ref);
+    var legacy_out: std.ArrayList(u8) = .empty;
+    defer legacy_out.deinit(allocator);
+    try writeU32(&legacy_out, allocator, legacy_ref.format_version);
+    try writeU32(&legacy_out, allocator, legacy_ref.fingerprint_version);
+    try writeU64(&legacy_out, allocator, legacy_ref.target_ref_fingerprint);
+    try writeOptionalBytes(&legacy_out, allocator, legacy_ref.target_label);
+    try writeU64(&legacy_out, allocator, legacy_ref.world_surface_fingerprint);
+    try writeOptionalU64(&legacy_out, allocator, legacy_ref.world_surface_replay_scope_fingerprint);
+    try writeU64(&legacy_out, allocator, legacy_ref.target_certificate_fingerprint);
+    try writeOptionalU64(&legacy_out, allocator, legacy_ref.residual_program_plan_hash);
+    try writeU8(&legacy_out, allocator, @intFromEnum(legacy_ref.normal_form_kind));
+    try writeOptionalU64(&legacy_out, allocator, legacy_ref.world_port_table_fingerprint);
+    try writeOptionalU64(&legacy_out, allocator, legacy_ref.world_value_table_fingerprint);
+    try writeOptionalU64(&legacy_out, allocator, legacy_ref.world_dispatch_table_fingerprint);
+    try writeOptionalU64(&legacy_out, allocator, legacy_ref.surface_profile_fingerprint);
+    try writeOptionalU64(&legacy_out, allocator, legacy_ref.boundary_module_fingerprint);
+    try writeBytes(&legacy_out, allocator, legacy_ref.metadata);
+    var legacy_cursor: usize = 0;
+    const decoded_legacy = try decodeTargetRef(allocator, legacy_out.items, &legacy_cursor);
+    defer allocator.free(@constCast(decoded_legacy.metadata));
+    try std.testing.expectEqual(legacy_out.items.len, legacy_cursor);
+    try std.testing.expectEqual(legacy_ref.target_ref_fingerprint, decoded_legacy.target_ref_fingerprint);
+    try std.testing.expectEqual(@as(?u64, null), decoded_legacy.boundary_module_fingerprint);
+
+    var boundary_ref = legacy_ref;
+    boundary_ref.boundary_module_fingerprint = 33;
+    boundary_ref.target_ref_fingerprint = fingerprintTargetRef(boundary_ref);
+    var boundary_out: std.ArrayList(u8) = .empty;
+    defer boundary_out.deinit(allocator);
+    try encodeTargetRef(&boundary_out, allocator, boundary_ref);
+    var boundary_cursor: usize = 0;
+    const decoded_boundary = try decodeTargetRef(allocator, boundary_out.items, &boundary_cursor);
+    defer allocator.free(@constCast(decoded_boundary.metadata));
+    try std.testing.expectEqual(boundary_out.items.len, boundary_cursor);
+    try std.testing.expectEqual(boundary_ref.target_ref_fingerprint, decoded_boundary.target_ref_fingerprint);
+    try std.testing.expectEqual(boundary_ref.boundary_module_fingerprint, decoded_boundary.boundary_module_fingerprint);
 }
 
 fn validateRunImageKindState(image: RunImage) !void {
@@ -4602,14 +6495,22 @@ pub const Handoff = struct {
         self.* = undefined;
     }
 
+    fn transcriptAvailableForFreshHandoff(self: *@This(), mode: HandoffMode, fresh_transcript_sink_available: bool) bool {
+        return self.run_image.transcript_image != null or (mode == .accept_fresh and fresh_transcript_sink_available);
+    }
+
     pub fn preflight(self: *@This(), comptime Target: type, comptime Env: type, mode: HandoffMode) AcceptanceReport {
+        return self.preflightWithFreshTranscriptSink(Target, Env, mode, false);
+    }
+
+    fn preflightWithFreshTranscriptSink(self: *@This(), comptime Target: type, comptime Env: type, mode: HandoffMode, fresh_transcript_sink_available: bool) AcceptanceReport {
         if (!self.run_image.target_ref.matchesTarget(Target)) {
             return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.HandoffTargetMismatch});
         }
         if (self.run_image.import_set_fingerprint != Env.import_set.import_set_fingerprint) {
             return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.HandoffTargetMismatch});
         }
-        const has_transcript = self.run_image.transcript_image != null;
+        const has_transcript = self.transcriptAvailableForFreshHandoff(mode, fresh_transcript_sink_available);
         const report = Env.acceptanceReport(modeToRunMode(mode), has_transcript);
         if (!report.accepted) return report;
         if (mode == .accept_fresh and
@@ -4664,7 +6565,12 @@ pub const Handoff = struct {
     }
 
     pub fn preflightWithPermit(self: *@This(), comptime Target: type, comptime Env: type, mode: HandoffMode, permit: RunPermit) AcceptanceReport {
+        return self.preflightWithPermitFreshTranscriptSink(Target, Env, mode, permit, false);
+    }
+
+    fn preflightWithPermitFreshTranscriptSink(self: *@This(), comptime Target: type, comptime Env: type, mode: HandoffMode, permit: RunPermit, fresh_transcript_sink_available: bool) AcceptanceReport {
         const accepting = mode != .inspect_only;
+        const has_transcript = self.transcriptAvailableForFreshHandoff(mode, fresh_transcript_sink_available);
         if (permit.mode != modeToRunMode(mode)) {
             return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.SupervisionPolicyMismatch});
         }
@@ -4674,7 +6580,15 @@ pub const Handoff = struct {
         if (permit.target_ref_fingerprint != TargetRef.fromTarget(Target).target_ref_fingerprint) {
             return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.HandoffTargetMismatch});
         }
-        const cert = Env.certificate(modeToRunMode(mode), self.run_image.transcript_image != null);
+        if (permit.module_ref_fingerprint) |permit_module_ref_fingerprint| {
+            const run_module_ref_fingerprint = self.run_image.module_ref_fingerprint orelse {
+                return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.SupervisionPolicyMismatch});
+            };
+            if (run_module_ref_fingerprint != permit_module_ref_fingerprint) {
+                return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.SupervisionPolicyMismatch});
+            }
+        }
+        const cert = Env.certificate(modeToRunMode(mode), has_transcript);
         if (permit.world_surface_fingerprint != Target.WorldSurface.surface_fingerprint) {
             return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.SupervisionPolicyMismatch});
         }
@@ -4700,9 +6614,9 @@ pub const Handoff = struct {
                 }
             }
         }
-        const supervision_report = Env.acceptanceReportWithPermit(modeToRunMode(mode), self.run_image.transcript_image != null, permit);
+        const supervision_report = Env.acceptanceReportWithPermit(modeToRunMode(mode), has_transcript, permit);
         if (!supervision_report.accepted) return supervision_report;
-        const report = self.preflight(Target, Env, mode);
+        const report = self.preflightWithFreshTranscriptSink(Target, Env, mode, fresh_transcript_sink_available);
         if (!report.accepted) return report;
         if (!accepting) return report;
         var supervisor = Supervision.Supervisor.init(self.allocator, permit, Target.WorldPortTable.entries.len) catch {
@@ -4896,10 +6810,11 @@ pub const Handoff = struct {
         const Options = @TypeOf(options);
         const options_permit: ?RunPermit = if (comptime @hasField(Options, "permit")) @field(options, "permit") else null;
         const effective_permit = permit_override orelse options_permit;
+        const fresh_transcript_sink_available = comptime @hasField(Options, "transcript") and Env.policy_decl.allow_native_adapters;
         const report = if (effective_permit) |permit|
-            self.preflightWithPermit(Target, Env, mode, permit)
+            self.preflightWithPermitFreshTranscriptSink(Target, Env, mode, permit, fresh_transcript_sink_available)
         else
-            self.preflight(Target, Env, mode);
+            self.preflightWithFreshTranscriptSink(Target, Env, mode, fresh_transcript_sink_available);
         if (!report.accepted) return acceptanceError(report);
         if (self.run_image.current_state.status != .parked_on_port) return error.HandoffPendingFrameMismatch;
         const pending_frame = self.run_image.pending_request_frame orelse return error.HandoffPendingFrameMismatch;
@@ -5141,12 +7056,24 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
             return Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)).start(runtime, args, options);
         }
 
+        fn startWithPermit(runtime: anytype, args: anytype, options: anytype, permit: RunPermit) !Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)) {
+            return Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)).startWithTranscriptAvailablePermit(runtime, args, options, false, permit, null);
+        }
+
         fn startWithHandoffTranscript(runtime: anytype, args: anytype, options: anytype) !Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)) {
             return Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)).startWithTranscriptAvailable(runtime, args, options, true);
         }
 
         fn startWithHandoffTranscriptPermit(runtime: anytype, args: anytype, options: anytype, permit: RunPermit) !Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)) {
-            return Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)).startWithTranscriptAvailablePermit(runtime, args, options, true, permit);
+            return Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)).startWithTranscriptAvailablePermit(runtime, args, options, true, permit, null);
+        }
+
+        fn startWithAdmittedTranscript(runtime: anytype, args: anytype, options: anytype, transcript_image: *TranscriptImage) !Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)) {
+            return Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)).startWithTranscriptAvailablePermit(runtime, args, options, false, null, transcript_image);
+        }
+
+        fn startWithAdmittedTranscriptPermit(runtime: anytype, args: anytype, options: anytype, permit: RunPermit, transcript_image: *TranscriptImage) !Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)) {
+            return Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)).startWithTranscriptAvailablePermit(runtime, args, options, false, permit, transcript_image);
         }
 
         pub fn run(runtime: anytype, args: anytype, options: anytype) !Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)).Result {
@@ -5195,6 +7122,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 done_value_present: bool = false,
                 frame_step_request: bool = false,
                 handoff_pending_frame_fingerprint: ?u64 = null,
+                admitted_transcript_image: ?*TranscriptImage = null,
                 pending_adapter_call_accounted: bool = false,
                 retained_values: std.ArrayList(StoredValue) = .empty,
                 supervisor: ?Supervision.Supervisor = null,
@@ -5231,6 +7159,8 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             .target_ref_fingerprint = TargetRef.fromTarget(Target).target_ref_fingerprint,
                             .transcript_image_fingerprint = if (comptime @hasField(Options, "transcript_image"))
                                 @field(self.options, "transcript_image").transcript_image_fingerprint
+                            else if (self.admitted_transcript_image) |image|
+                                image.transcript_image_fingerprint
                             else
                                 null,
                             .turn_index = self.audit.port_request_count,
@@ -5367,14 +7297,14 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 }
 
                 fn start(runtime: RuntimePtr, args: anytype, options: Options) !Self {
-                    return startWithTranscriptAvailablePermit(runtime, args, options, false, null);
+                    return startWithTranscriptAvailablePermit(runtime, args, options, false, null, null);
                 }
 
                 fn startWithTranscriptAvailable(runtime: RuntimePtr, args: anytype, options: Options, comptime handoff_transcript_available: bool) !Self {
-                    return startWithTranscriptAvailablePermit(runtime, args, options, handoff_transcript_available, null);
+                    return startWithTranscriptAvailablePermit(runtime, args, options, handoff_transcript_available, null, null);
                 }
 
-                fn startWithTranscriptAvailablePermit(runtime: RuntimePtr, args: anytype, options: Options, comptime handoff_transcript_available: bool, permit_override: ?RunPermit) !Self {
+                fn startWithTranscriptAvailablePermit(runtime: RuntimePtr, args: anytype, options: Options, comptime handoff_transcript_available: bool, permit_override: ?RunPermit, admitted_transcript_image: ?*TranscriptImage) !Self {
                     const allocator = @field(options, "allocator");
                     const mode_value: Mode = if (@hasField(Options, "mode")) @field(options, "mode") else .fresh;
                     const effective = if (mode_value == .audit and @hasField(Options, "audit_source"))
@@ -5390,19 +7320,21 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     try validateRuntimeSurfaceOptions(Target, options);
                     if (modeConsumesTranscript(effective) and
                         !@hasField(Options, "transcript") and
-                        !@hasField(Options, "transcript_image"))
+                        !@hasField(Options, "transcript_image") and
+                        admitted_transcript_image == null)
                     {
                         return Error.ReplayMissing;
                     }
                     if (modeConsumesTranscript(effective) and
-                        @hasField(Options, "transcript_image") and
+                        (@hasField(Options, "transcript_image") or admitted_transcript_image != null) and
                         ConfigPorts.len == 0 and
                         Target.WorldPortTable.entries.len != 0)
                     {
                         return Error.MissingHandler;
                     }
                     if (comptime @hasField(@TypeOf(Config), "environment")) {
-                        const transcript_available = comptime handoff_transcript_available or
+                        const transcript_available = handoff_transcript_available or
+                            admitted_transcript_image != null or
                             @hasField(Options, "transcript_image") or
                             (@hasField(Options, "transcript") and Config.environment.policy_decl.allow_native_adapters);
                         const report = Config.environment.acceptanceReport(effective, transcript_available);
@@ -5410,6 +7342,9 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         if (modeConsumesTranscript(effective)) {
                             if (comptime @hasField(Options, "transcript_image")) {
                                 try validateTranscriptImageForEnvironment(Config.environment, @field(options, "transcript_image"));
+                            }
+                            if (admitted_transcript_image) |image| {
+                                try validateTranscriptImageForEnvironment(Config.environment, image);
                             }
                             if (comptime @hasField(Options, "transcript")) {
                                 try validateTranscriptForEnvironment(Config.environment, @field(options, "transcript"));
@@ -5425,16 +7360,18 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     else
                         null;
                     if (maybe_permit) |permit| {
+                        if (permit_override == null and (permit.module_ref_fingerprint != null or permit.admission_receipt_fingerprint != null)) return Error.SupervisionDenied;
                         if (permit.target_ref_fingerprint != TargetRef.fromTarget(Target).target_ref_fingerprint) return Error.SupervisionDenied;
                         if (permit.world_surface_fingerprint != Target.WorldSurface.surface_fingerprint) return Error.SupervisionDenied;
                         if (permit.target_certificate_fingerprint != Target.Certificate.certificate_fingerprint) return Error.SupervisionDenied;
                         if (permit.mode != mode_value) return Error.SupervisionDenied;
                         if (comptime @hasField(@TypeOf(Config), "environment")) {
-                            const transcript_available = comptime handoff_transcript_available or
+                            const transcript_available = handoff_transcript_available or
+                                admitted_transcript_image != null or
                                 @hasField(Options, "transcript_image") or
                                 (@hasField(Options, "transcript") and Config.environment.policy_decl.allow_native_adapters);
                             const supervision_transcript_available = if (permit.policy.require_transcript_image_for_replay and modeConsumesTranscript(effective))
-                                @hasField(Options, "transcript_image")
+                                @hasField(Options, "transcript_image") or admitted_transcript_image != null
                             else
                                 transcript_available;
                             if (permit.policy.require_transcript_image_for_replay and modeConsumesTranscript(effective) and !supervision_transcript_available) return Error.TranscriptImageRequired;
@@ -5457,8 +7394,17 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             Target.Certificate.certificate_fingerprint,
                         );
                     }
+                    if (admitted_transcript_image) |image| {
+                        if (modeConsumesTranscript(effective)) {
+                            image.resetReplay();
+                            try image.validateReplayRun(
+                                Target.WorldSurface.surface_fingerprint,
+                                Target.Certificate.certificate_fingerprint,
+                            );
+                        }
+                    }
                     if (@hasField(Options, "transcript")) {
-                        if (modeConsumesTranscript(effective) and !@hasField(Options, "transcript_image")) {
+                        if (modeConsumesTranscript(effective) and !@hasField(Options, "transcript_image") and admitted_transcript_image == null) {
                             @field(options, "transcript").resetReplay();
                             try @field(options, "transcript").validateReplayRun(
                                 Target.WorldSurface.surface_fingerprint,
@@ -5491,6 +7437,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         },
                         .per_port_counts = per_port_counts,
                         .supervisor = supervisor,
+                        .admitted_transcript_image = admitted_transcript_image,
                     };
                     supervisor = null;
                     return result;
@@ -5532,7 +7479,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             defer result.deinit();
                             self.done_value = try cloneRunValue(self.allocator, result.value);
                             self.done_value_present = true;
-                            if (modeConsumesTranscript(self.effective_mode) and @hasField(Options, "transcript") and !@hasField(Options, "transcript_image")) {
+                            if (modeConsumesTranscript(self.effective_mode) and @hasField(Options, "transcript") and !@hasField(Options, "transcript_image") and self.admitted_transcript_image == null) {
                                 @field(self.options, "transcript").assertReplayComplete() catch |err| {
                                     self.audit.replay_mismatch_count += 1;
                                     try self.markRunFailed();
@@ -5545,6 +7492,15 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                                     try self.markRunFailed();
                                     return err;
                                 };
+                            }
+                            if (modeConsumesTranscript(self.effective_mode)) {
+                                if (self.admitted_transcript_image) |image| {
+                                    image.assertReplayComplete() catch |err| {
+                                        self.audit.replay_mismatch_count += 1;
+                                        try self.markRunFailed();
+                                        return err;
+                                    };
+                                }
                             }
                             self.recordRunEvent(.run_completed, null, self.effective_mode == .fresh) catch |err| {
                                 return self.handleSupervisionStepError(err);
@@ -6021,43 +7977,10 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     trace: anytype,
                 ) !Decl.Response {
                     if (comptime @hasField(Options, "transcript_image")) {
-                        const image = @field(self.options, "transcript_image");
-                        const frame = image.nextResponse(replay_key, Target.Certificate.certificate_fingerprint, .@"resume") catch |err| {
-                            self.audit.replay_mismatch_count += 1;
-                            return err;
-                        };
-                        if (frame.response_value_table_id != valueIdForRuntime(Target, Decl.world_port_id, .@"resume")) return error.FrameValueTableMismatch;
-                        try validateResponseFrameImage(frame.*);
-                        const value = try frame.decodeValue(self.allocator, Decl.Response);
-                        var value_owned = true;
-                        errdefer if (value_owned) deinitOwnedValue(self.allocator, value);
-                        const response_trace = try typed_request.responseTrace(.@"resume", value);
-                        if (response_trace.fingerprint != frame.response_fingerprint) {
-                            self.audit.replay_mismatch_count += 1;
-                            return error.VerifyResponseFingerprintMismatch;
-                        }
-                        if (self.supervisor) |*supervisor| {
-                            const encoded_response = try frame.encode(self.allocator);
-                            defer self.allocator.free(encoded_response);
-                            supervisor.afterAdapterResponse(.{
-                                .world_port_id = Decl.world_port_id,
-                                .status = .responded,
-                                .response_bytes = encoded_response.len,
-                                .value_image_bytes = if (frame.response_image) |value_image| value_image.bytes.len else 0,
-                            }) catch |err| {
-                                try self.handleSupervisionError(err);
-                                return Error.HandlerPending;
-                            };
-                        }
-                        try self.recordPortEvent(.frame_replayed, Decl.world_port_id, trace, response_trace.fingerprint, .@"resume", null, null, frame.*);
-                        self.audit.replayed_response_count += 1;
-                        var run_value = try StoredValue.initOwned(self.allocator, value);
-                        value_owned = false;
-                        var run_value_owned = true;
-                        errdefer if (run_value_owned) run_value.deinit(self.allocator);
-                        try self.retained_values.append(self.allocator, run_value);
-                        run_value_owned = false;
-                        return self.retained_values.items[self.retained_values.items.len - 1].borrow(Decl.Response);
+                        return self.callReplayImage(Decl, typed_request, replay_key, trace, @field(self.options, "transcript_image"));
+                    }
+                    if (self.admitted_transcript_image) |image| {
+                        return self.callReplayImage(Decl, typed_request, replay_key, trace, image);
                     }
                     if (!@hasField(Options, "transcript")) return Error.ReplayMissing;
                     const transcript = @field(self.options, "transcript");
@@ -6106,6 +8029,52 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     return self.retained_values.items[self.retained_values.items.len - 1].borrow(Decl.Response);
                 }
 
+                fn callReplayImage(
+                    self: *Self,
+                    comptime Decl: type,
+                    typed_request: anytype,
+                    replay_key: ReplayKeySeed,
+                    trace: anytype,
+                    image: *TranscriptImage,
+                ) !Decl.Response {
+                    const frame = image.nextResponse(replay_key, Target.Certificate.certificate_fingerprint, .@"resume") catch |err| {
+                        self.audit.replay_mismatch_count += 1;
+                        return err;
+                    };
+                    if (frame.response_value_table_id != valueIdForRuntime(Target, Decl.world_port_id, .@"resume")) return error.FrameValueTableMismatch;
+                    try validateResponseFrameImage(frame.*);
+                    const value = try frame.decodeValue(self.allocator, Decl.Response);
+                    var value_owned = true;
+                    errdefer if (value_owned) deinitOwnedValue(self.allocator, value);
+                    const response_trace = try typed_request.responseTrace(.@"resume", value);
+                    if (response_trace.fingerprint != frame.response_fingerprint) {
+                        self.audit.replay_mismatch_count += 1;
+                        return error.VerifyResponseFingerprintMismatch;
+                    }
+                    if (self.supervisor) |*supervisor| {
+                        const encoded_response = try frame.encode(self.allocator);
+                        defer self.allocator.free(encoded_response);
+                        supervisor.afterAdapterResponse(.{
+                            .world_port_id = Decl.world_port_id,
+                            .status = .responded,
+                            .response_bytes = encoded_response.len,
+                            .value_image_bytes = if (frame.response_image) |value_image| value_image.bytes.len else 0,
+                        }) catch |err| {
+                            try self.handleSupervisionError(err);
+                            return Error.HandlerPending;
+                        };
+                    }
+                    try self.recordPortEvent(.frame_replayed, Decl.world_port_id, trace, response_trace.fingerprint, .@"resume", null, null, frame.*);
+                    self.audit.replayed_response_count += 1;
+                    var run_value = try StoredValue.initOwned(self.allocator, value);
+                    value_owned = false;
+                    var run_value_owned = true;
+                    errdefer if (run_value_owned) run_value.deinit(self.allocator);
+                    try self.retained_values.append(self.allocator, run_value);
+                    run_value_owned = false;
+                    return self.retained_values.items[self.retained_values.items.len - 1].borrow(Decl.Response);
+                }
+
                 fn callVerify(
                     self: *Self,
                     comptime Decl: type,
@@ -6122,31 +8091,33 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     var expected_value_policy = ValuePolicy.portable;
                     var expected_response_frame: ?Frame.Response = null;
                     if (comptime @hasField(Options, "transcript_image")) {
-                        const image = @field(self.options, "transcript_image");
-                        const frame = image.nextResponse(replay_key, Target.Certificate.certificate_fingerprint, .@"resume") catch |err| {
-                            self.audit.replay_mismatch_count += 1;
-                            return err;
-                        };
-                        try validateResponseFrameImage(frame.*);
-                        expected_response_frame = frame.*;
-                        expected_response_fingerprint = frame.response_fingerprint;
-                        if (frame.response_value_table_id != valueIdForRuntime(Target, Decl.world_port_id, .@"resume")) return error.FrameValueTableMismatch;
-                        if (frame.response_image) |response_image| {
-                            expected_value_image_fingerprint = response_image.value_image_fingerprint;
-                            expected_value_table_id = response_image.value_table_id;
-                            expected_boundary_value_fingerprint = response_image.boundary_value_fingerprint;
-                            expected_codec_schema_descriptor_fingerprint = response_image.codec_schema_descriptor_fingerprint;
-                            if (response_image.diagnostic_type_label != null) expected_value_policy = ValuePolicy.native_compatible;
-                        } else {
-                            expected_value_image_fingerprint = frame.response_value_fingerprint;
-                        }
-                        const replay_value = try frame.decodeValue(self.allocator, Decl.Response);
-                        defer deinitOwnedValue(self.allocator, replay_value);
-                        const replay_trace = try typed_request.responseTrace(.@"resume", replay_value);
-                        if (replay_trace.fingerprint != expected_response_fingerprint) {
-                            self.audit.replay_mismatch_count += 1;
-                            return error.VerifyDivergence;
-                        }
+                        try self.loadVerifyExpectationsFromImage(
+                            Decl,
+                            typed_request,
+                            replay_key,
+                            @field(self.options, "transcript_image"),
+                            &expected_response_fingerprint,
+                            &expected_value_image_fingerprint,
+                            &expected_value_table_id,
+                            &expected_boundary_value_fingerprint,
+                            &expected_codec_schema_descriptor_fingerprint,
+                            &expected_value_policy,
+                            &expected_response_frame,
+                        );
+                    } else if (self.admitted_transcript_image) |image| {
+                        try self.loadVerifyExpectationsFromImage(
+                            Decl,
+                            typed_request,
+                            replay_key,
+                            image,
+                            &expected_response_fingerprint,
+                            &expected_value_image_fingerprint,
+                            &expected_value_table_id,
+                            &expected_boundary_value_fingerprint,
+                            &expected_codec_schema_descriptor_fingerprint,
+                            &expected_value_policy,
+                            &expected_response_frame,
+                        );
                     } else {
                         if (!@hasField(Options, "transcript")) return Error.ReplayMissing;
                         const transcript = @field(self.options, "transcript");
@@ -6247,6 +8218,46 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     }
                     self.audit.fresh_response_count += 1;
                     return try self.retainResponse(Decl.Response, fresh);
+                }
+
+                fn loadVerifyExpectationsFromImage(
+                    self: *Self,
+                    comptime Decl: type,
+                    typed_request: anytype,
+                    replay_key: ReplayKeySeed,
+                    image: *TranscriptImage,
+                    expected_response_fingerprint: *u64,
+                    expected_value_image_fingerprint: *?u64,
+                    expected_value_table_id: *?u32,
+                    expected_boundary_value_fingerprint: *?u64,
+                    expected_codec_schema_descriptor_fingerprint: *?u64,
+                    expected_value_policy: *ValuePolicy,
+                    expected_response_frame: *?Frame.Response,
+                ) !void {
+                    const frame = image.nextResponse(replay_key, Target.Certificate.certificate_fingerprint, .@"resume") catch |err| {
+                        self.audit.replay_mismatch_count += 1;
+                        return err;
+                    };
+                    try validateResponseFrameImage(frame.*);
+                    expected_response_frame.* = frame.*;
+                    expected_response_fingerprint.* = frame.response_fingerprint;
+                    if (frame.response_value_table_id != valueIdForRuntime(Target, Decl.world_port_id, .@"resume")) return error.FrameValueTableMismatch;
+                    if (frame.response_image) |response_image| {
+                        expected_value_image_fingerprint.* = response_image.value_image_fingerprint;
+                        expected_value_table_id.* = response_image.value_table_id;
+                        expected_boundary_value_fingerprint.* = response_image.boundary_value_fingerprint;
+                        expected_codec_schema_descriptor_fingerprint.* = response_image.codec_schema_descriptor_fingerprint;
+                        if (response_image.diagnostic_type_label != null) expected_value_policy.* = ValuePolicy.native_compatible;
+                    } else {
+                        expected_value_image_fingerprint.* = frame.response_value_fingerprint;
+                    }
+                    const replay_value = try frame.decodeValue(self.allocator, Decl.Response);
+                    defer deinitOwnedValue(self.allocator, replay_value);
+                    const replay_trace = try typed_request.responseTrace(.@"resume", replay_value);
+                    if (replay_trace.fingerprint != expected_response_fingerprint.*) {
+                        self.audit.replay_mismatch_count += 1;
+                        return error.VerifyDivergence;
+                    }
                 }
 
                 fn retainResponse(self: *Self, comptime Response: type, value: Response) !Response {
@@ -6892,6 +8903,38 @@ fn eventKindAllowsResponseFrame(kind: EventKind) bool {
     };
 }
 
+fn eventKindRequiresAdmissionWitness(kind: EventKind) bool {
+    return switch (kind) {
+        .admission_requested,
+        .admission_accepted,
+        .admission_rejected,
+        .module_matched_target,
+        => true,
+        else => false,
+    };
+}
+
+fn validateAdmissionEventWitness(event: TranscriptImage.EventImage) !void {
+    switch (event.kind) {
+        .admission_requested => {
+            if (event.admission_request_fingerprint == null) return error.InvalidFrameEncoding;
+        },
+        .admission_accepted => {
+            if (event.admission_request_fingerprint == null) return error.InvalidFrameEncoding;
+            if (event.admission_report_fingerprint == null) return error.InvalidFrameEncoding;
+            if (event.admission_receipt_fingerprint == null) return error.InvalidFrameEncoding;
+        },
+        .admission_rejected => {
+            if (event.admission_request_fingerprint == null) return error.InvalidFrameEncoding;
+            if (event.admission_report_fingerprint == null) return error.InvalidFrameEncoding;
+        },
+        .module_matched_target => {
+            if (event.target_match_fingerprint == null) return error.InvalidFrameEncoding;
+        },
+        else => {},
+    }
+}
+
 fn validateResponseFrameImage(frame: Frame.Response) !void {
     if (frame.format_version != world_frame_response_format_version) return error.InvalidFrameEncoding;
     if (frame.fingerprint_version != world_frame_response_fingerprint_version) return error.InvalidFrameEncoding;
@@ -7221,6 +9264,11 @@ fn eventImageFromTranscriptEvent(allocator: std.mem.Allocator, event: Transcript
         .response_fingerprint = event.response_fingerprint,
         .response_kind = event.response_kind,
         .replay_key = event.replay_key,
+        .admission_request_fingerprint = event.admission_request_fingerprint,
+        .admission_report_fingerprint = event.admission_report_fingerprint,
+        .admission_receipt_fingerprint = event.admission_receipt_fingerprint,
+        .module_ref_fingerprint = event.module_ref_fingerprint,
+        .target_match_fingerprint = event.target_match_fingerprint,
         .turn_index = event.turn_index,
         .residual_site_index = event.residual_site_index,
         .residual_site_fingerprint = event.residual_site_fingerprint,
@@ -7230,6 +9278,7 @@ fn eventImageFromTranscriptEvent(allocator: std.mem.Allocator, event: Transcript
         .response_frame = response_frame,
     };
     try validateTranscriptEventFrameBindings(image);
+    try validateAdmissionEventWitness(image);
     image.event_fingerprint = fingerprintTranscriptEventImage(image);
     return image;
 }
@@ -7247,7 +9296,7 @@ fn finalStatusFromEvents(events: []const TranscriptImage.EventImage) TranscriptI
     return status;
 }
 
-fn encodeTranscriptEventImage(out: *std.ArrayList(u8), allocator: std.mem.Allocator, event: TranscriptImage.EventImage) !void {
+fn encodeTranscriptEventImage(out: *std.ArrayList(u8), allocator: std.mem.Allocator, event: TranscriptImage.EventImage, format_version: u32) !void {
     try writeU64(out, allocator, event.event_fingerprint);
     try writeU8(out, allocator, @intFromEnum(event.kind));
     try writeU64(out, allocator, event.world_surface_fingerprint);
@@ -7262,6 +9311,13 @@ fn encodeTranscriptEventImage(out: *std.ArrayList(u8), allocator: std.mem.Alloca
         try writeBool(out, allocator, false);
     }
     try writeOptionalU64(out, allocator, event.replay_key);
+    if (format_version >= 3) {
+        try writeOptionalU64(out, allocator, event.admission_request_fingerprint);
+        try writeOptionalU64(out, allocator, event.admission_report_fingerprint);
+        try writeOptionalU64(out, allocator, event.admission_receipt_fingerprint);
+        try writeOptionalU64(out, allocator, event.module_ref_fingerprint);
+        try writeOptionalU64(out, allocator, event.target_match_fingerprint);
+    }
     try writeOptionalU64(out, allocator, event.turn_index);
     try writeOptionalU64(out, allocator, event.residual_site_index);
     try writeOptionalU64(out, allocator, event.residual_site_fingerprint);
@@ -7290,7 +9346,7 @@ fn encodeTranscriptEventImage(out: *std.ArrayList(u8), allocator: std.mem.Alloca
     }
 }
 
-fn decodeTranscriptEventImage(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) !TranscriptImage.EventImage {
+fn decodeTranscriptEventImage(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, format_version: u32) !TranscriptImage.EventImage {
     var event = TranscriptImage.EventImage{
         .event_fingerprint = try readU64(bytes, cursor),
         .kind = try enumFromByte(EventKind, try readU8(bytes, cursor)),
@@ -7301,6 +9357,11 @@ fn decodeTranscriptEventImage(allocator: std.mem.Allocator, bytes: []const u8, c
         .response_fingerprint = try readOptionalU64(bytes, cursor),
         .response_kind = if (try readBool(bytes, cursor)) try enumFromByte(ResponseKind, try readU8(bytes, cursor)) else null,
         .replay_key = try readOptionalU64(bytes, cursor),
+        .admission_request_fingerprint = if (format_version >= 3) try readOptionalU64(bytes, cursor) else null,
+        .admission_report_fingerprint = if (format_version >= 3) try readOptionalU64(bytes, cursor) else null,
+        .admission_receipt_fingerprint = if (format_version >= 3) try readOptionalU64(bytes, cursor) else null,
+        .module_ref_fingerprint = if (format_version >= 3) try readOptionalU64(bytes, cursor) else null,
+        .target_match_fingerprint = if (format_version >= 3) try readOptionalU64(bytes, cursor) else null,
         .turn_index = try readOptionalUsize(bytes, cursor),
         .residual_site_index = try readOptionalUsize(bytes, cursor),
         .residual_site_fingerprint = try readOptionalU64(bytes, cursor),
@@ -7310,6 +9371,8 @@ fn decodeTranscriptEventImage(allocator: std.mem.Allocator, bytes: []const u8, c
         .response_frame = null,
     };
     errdefer event.deinit(allocator);
+    if (format_version < 3 and eventKindRequiresAdmissionWitness(event.kind)) return error.InvalidFrameEncoding;
+    if (format_version >= 3) try validateAdmissionEventWitness(event);
     if (try readBool(bytes, cursor)) {
         const encoded = try readBytesOwned(allocator, bytes, cursor);
         defer allocator.free(encoded);
@@ -7321,8 +9384,728 @@ fn decodeTranscriptEventImage(allocator: std.mem.Allocator, bytes: []const u8, c
         event.response_frame = try Frame.Response.decode(allocator, encoded);
     }
     try validateTranscriptEventFrameBindings(event);
-    if (fingerprintTranscriptEventImage(event) != event.event_fingerprint) return error.InvalidFrameEncoding;
+    if (fingerprintTranscriptEventImageForFormat(format_version, event) != event.event_fingerprint) return error.InvalidFrameEncoding;
     return event;
+}
+
+fn admissionModeToRunMode(mode: Admission.AdmissionMode) Mode {
+    return switch (mode) {
+        .inspect_only, .local_target_match_only => .audit,
+        .replay_only, .completed_replay => .replay,
+        .verify_only => .verify,
+        .resume_parked, .continue_fresh, .branch_resume => .fresh,
+    };
+}
+
+fn admissionModeNeedsRunImage(mode: Admission.AdmissionMode) bool {
+    return switch (mode) {
+        .inspect_only, .local_target_match_only, .continue_fresh, .replay_only, .verify_only => false,
+        .resume_parked, .branch_resume, .completed_replay => true,
+    };
+}
+
+fn effectiveAdmissionModeMatchesPackage(requested: Admission.AdmissionMode, effective: Admission.AdmissionMode) bool {
+    if (requested == effective) return true;
+    return requested == .replay_only and effective == .verify_only;
+}
+
+fn validateTargetRegistryEntry(entry: Admission.TargetRegistry.Entry) !void {
+    if (entry.target_ref.target_ref_fingerprint != fingerprintTargetRef(entry.target_ref)) return error.TargetRegistryConflict;
+    if (entry.world_surface_fingerprint != entry.target_ref.world_surface_fingerprint) return error.TargetRegistryConflict;
+    if (entry.target_certificate_fingerprint != entry.target_ref.target_certificate_fingerprint) return error.TargetRegistryConflict;
+    if (entry.program_plan_hash != entry.target_ref.residual_program_plan_hash) return error.TargetRegistryConflict;
+    if (entry.world_port_table_fingerprint != entry.target_ref.world_port_table_fingerprint) return error.TargetRegistryConflict;
+    if (entry.world_value_table_fingerprint != entry.target_ref.world_value_table_fingerprint) return error.TargetRegistryConflict;
+    if (entry.world_dispatch_table_fingerprint != entry.target_ref.world_dispatch_table_fingerprint) return error.TargetRegistryConflict;
+    if (entry.normal_form_kind != entry.target_ref.normal_form_kind) return error.TargetRegistryConflict;
+}
+
+fn runImageHasModuleWitness(image: RunImage) bool {
+    return image.module_ref_fingerprint != null or
+        image.boundary_module_fingerprint != null or
+        image.module_image_fingerprint != null;
+}
+
+fn transferPackageKindMatchesRunImage(kind: Admission.PackageKind, image_kind: RunImage.Kind, requested_mode: Admission.AdmissionMode) bool {
+    return switch (kind) {
+        .run_reference => image_kind == .reference_target_run or image_kind == .full_target_run,
+        .parked_run => image_kind == .parked_run,
+        .completed_run => image_kind == .completed_run or image_kind == .branched_run,
+        .replay_run => image_kind == .replay_only_run or image_kind == .branched_run,
+        .branch_run => image_kind == .parked_run,
+        .target_reference_only => image_kind == .reference_target_run,
+        .inspect_only => requested_mode == .inspect_only,
+        .module_reference, .full_module => false,
+    };
+}
+
+fn refreshRunImageFingerprint(image: *RunImage) void {
+    image.run_image_fingerprint = if (image.format_version == 1)
+        fingerprintRunImageV1(image.*)
+    else if (image.format_version >= 3)
+        fingerprintRunImageV3(image.*)
+    else
+        fingerprintRunImage(image.*);
+}
+
+fn attachPackageModuleWitnessToRunImage(image: *RunImage, package: Admission.TransferPackage, module_ref: ?Admission.ModuleRef) void {
+    if (image.module_ref_fingerprint != null) return;
+    const module = module_ref orelse return;
+    image.format_version = world_run_image_format_version;
+    image.module_ref_fingerprint = module.module_ref_fingerprint;
+    image.boundary_module_fingerprint = module.boundary_module_fingerprint;
+    if (image.module_image_fingerprint == null) {
+        image.module_image_fingerprint = if (package.module_image_bytes) |bytes| moduleImageFingerprint(bytes) else null;
+    }
+    refreshRunImageFingerprint(image);
+}
+
+fn admissionModeToHandoffMode(mode: Admission.AdmissionMode) ?HandoffMode {
+    return switch (mode) {
+        .resume_parked, .branch_resume => .accept_fresh,
+        .replay_only, .completed_replay => .accept_replay,
+        .verify_only => .accept_verify,
+        else => null,
+    };
+}
+
+fn boundaryModuleKindFromName(name: []const u8) Admission.BoundaryModuleKind {
+    if (std.mem.eql(u8, name, "reference_only")) return .reference_only;
+    if (std.mem.eql(u8, name, "full_module")) return .full_module;
+    return .partial_module;
+}
+
+fn normalFormKindFromName(name: []const u8) NormalFormKind {
+    if (std.mem.eql(u8, name, "strict_closed")) return .strict_closed;
+    if (std.mem.eql(u8, name, "world_ports_only")) return .world_ports_only;
+    if (std.mem.eql(u8, name, "boundary_normal_form")) return .boundary_normal_form;
+    return .unknown;
+}
+
+fn targetRefFromModuleManifest(manifest: anytype) TargetRef {
+    var target_ref = TargetRef{
+        .target_ref_fingerprint = 0,
+        .target_label = manifest.target_label,
+        .world_surface_fingerprint = manifest.world_surface_fingerprint,
+        .target_certificate_fingerprint = manifest.target_certificate_fingerprint,
+        .residual_program_plan_hash = manifest.program_plan_hash,
+        .normal_form_kind = normalFormKindFromName(@tagName(manifest.normal_form)),
+        .boundary_module_fingerprint = manifest.module_fingerprint,
+    };
+    target_ref.target_ref_fingerprint = fingerprintTargetRef(target_ref);
+    return target_ref;
+}
+
+fn moduleImageFingerprint(bytes: []const u8) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.module_image.bytes.fingerprint");
+    hashU64(&hasher, bytes.len);
+    hashBytes(&hasher, bytes);
+    return hasher.final();
+}
+
+fn manifestForTransferPackage(package: Admission.TransferPackage) Admission.PackageManifest {
+    return Admission.PackageManifest.init(.{
+        .package_fingerprint = package.package_fingerprint,
+        .package_kind = package.kind,
+        .target_ref_fingerprint = if (package.target_ref) |target_ref| target_ref.target_ref_fingerprint else if (package.run_image) |run_image| run_image.target_ref.target_ref_fingerprint else null,
+        .module_ref_fingerprint = if (package.module_ref) |module_ref| module_ref.module_ref_fingerprint else null,
+        .module_image_fingerprint = if (package.module_image_bytes) |bytes| moduleImageFingerprint(bytes) else null,
+        .run_image_fingerprint = if (package.run_image) |run_image| run_image.run_image_fingerprint else null,
+        .transcript_image_fingerprint = if (package.transcript_image) |transcript| transcript.transcript_image_fingerprint else if (package.run_image) |run_image| if (run_image.transcript_image) |transcript| transcript.transcript_image_fingerprint else null else null,
+        .checkpoint_count = package.checkpoint_refs.len + if (package.run_image) |run_image| run_image.checkpoints.len else 0,
+        .branch_count = package.branch_refs.len + if (package.run_image) |run_image| run_image.branches.len else 0,
+        .prior_receipt_count = package.prior_run_receipt_refs.len + package.prior_run_permit_refs.len,
+        .requested_mode = package.requested_mode,
+        .summary_metadata = package.metadata,
+    });
+}
+
+fn packageManifestEquals(actual: Admission.PackageManifest, expected: Admission.PackageManifest) bool {
+    return actual.format_version == expected.format_version and
+        actual.fingerprint_version == expected.fingerprint_version and
+        actual.manifest_fingerprint == expected.manifest_fingerprint and
+        actual.package_fingerprint == expected.package_fingerprint and
+        actual.package_kind == expected.package_kind and
+        actual.target_ref_fingerprint == expected.target_ref_fingerprint and
+        actual.module_ref_fingerprint == expected.module_ref_fingerprint and
+        actual.module_image_fingerprint == expected.module_image_fingerprint and
+        actual.run_image_fingerprint == expected.run_image_fingerprint and
+        actual.transcript_image_fingerprint == expected.transcript_image_fingerprint and
+        actual.checkpoint_count == expected.checkpoint_count and
+        actual.branch_count == expected.branch_count and
+        actual.prior_receipt_count == expected.prior_receipt_count and
+        actual.requested_mode == expected.requested_mode and
+        std.mem.eql(u8, actual.summary_metadata, expected.summary_metadata);
+}
+
+fn cloneRunImage(allocator: std.mem.Allocator, image: RunImage) !RunImage {
+    const encoded = try image.encode(allocator);
+    defer allocator.free(encoded);
+    return try RunImage.decode(allocator, encoded);
+}
+
+fn cloneTranscriptImage(allocator: std.mem.Allocator, image: TranscriptImage) !TranscriptImage {
+    const encoded = try image.encode(allocator);
+    defer allocator.free(encoded);
+    return try TranscriptImage.decode(allocator, encoded);
+}
+
+fn mismatchSlice(mismatch: ?Admission.MatchMismatch) []const Admission.MatchMismatch {
+    return switch (mismatch orelse return &.{}) {
+        .WorldSurface => &.{.WorldSurface},
+        .TargetCertificate => &.{.TargetCertificate},
+        .ProgramPlanHash => &.{.ProgramPlanHash},
+        .BoundaryModule => &.{.BoundaryModule},
+        .WorldPortTable => &.{.WorldPortTable},
+        .WorldValueTable => &.{.WorldValueTable},
+        .WorldDispatchTable => &.{.WorldDispatchTable},
+        .NormalForm => &.{.NormalForm},
+        .ImportSet => &.{.ImportSet},
+        .ExportSet => &.{.ExportSet},
+    };
+}
+
+fn providedFingerprintMatches(provided: ?u64, expected: ?u64) bool {
+    const actual = provided orelse return true;
+    return expected != null and expected.? == actual;
+}
+
+fn runImageFitsAdmissionMode(image: RunImage, mode: Admission.AdmissionMode) bool {
+    return switch (mode) {
+        .inspect_only, .local_target_match_only, .continue_fresh => false,
+        .resume_parked => image.kind == .parked_run and image.current_state.status == .parked_on_port,
+        .branch_resume => image.kind == .parked_run and image.current_state.status == .parked_on_port and image.branches.len != 0,
+        .completed_replay => (image.kind == .completed_run or image.kind == .branched_run) and image.current_state.status == .completed,
+        .replay_only, .verify_only => switch (image.kind) {
+            .completed_run => image.current_state.status == .completed,
+            .replay_only_run => image.current_state.status == .completed or image.current_state.status == .failed,
+            .branched_run => image.current_state.status == .completed,
+            else => false,
+        },
+    };
+}
+
+fn addSatEncodedSize(a: usize, b: usize) usize {
+    return std.math.add(usize, a, b) catch std.math.maxInt(usize);
+}
+
+fn transcriptImageEncodedByteSize(image: TranscriptImage) usize {
+    var size: usize = 4 + 4 + 8 + 8 + 8 + 1 + 8 + 8;
+    for (image.events) |event| size = addSatEncodedSize(size, transcriptEventImageEncodedByteSizeForFormat(image.format_version, event));
+    return size;
+}
+
+fn transferPackageEncodedByteSize(package: Admission.TransferPackage) usize {
+    var size: usize = 4 + 4 + 8;
+    size = addSatEncodedSize(size, packageManifestEncodedByteSize(package.manifest));
+    size = addSatEncodedSize(size, 1 + 1);
+    size = addSatEncodedSize(size, optionalTargetRefEncodedByteSize(package.target_ref));
+    size = addSatEncodedSize(size, optionalModuleRefEncodedByteSize(package.module_ref));
+    size = addSatEncodedSize(size, optionalBytesEncodedByteSize(package.module_image_bytes));
+    size = addSatEncodedSize(size, optionalRunImageEncodedByteSize(package.run_image));
+    size = addSatEncodedSize(size, optionalTranscriptImageEncodedByteSize(package.transcript_image));
+    size = addSatEncodedSize(size, u64SliceEncodedByteSize(package.checkpoint_refs));
+    size = addSatEncodedSize(size, u64SliceEncodedByteSize(package.branch_refs));
+    size = addSatEncodedSize(size, u64SliceEncodedByteSize(package.prior_run_permit_refs));
+    size = addSatEncodedSize(size, u64SliceEncodedByteSize(package.prior_run_receipt_refs));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(package.requested_supervision_hint_fingerprint));
+    size = addSatEncodedSize(size, bytesEncodedByteSize(package.metadata));
+    return size;
+}
+
+fn packageManifestEncodedByteSize(manifest: Admission.PackageManifest) usize {
+    var size: usize = 4 + 4 + 8 + 8 + 1;
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(manifest.target_ref_fingerprint));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(manifest.module_ref_fingerprint));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(manifest.module_image_fingerprint));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(manifest.run_image_fingerprint));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(manifest.transcript_image_fingerprint));
+    size = addSatEncodedSize(size, 8 + 8 + 8 + 1);
+    size = addSatEncodedSize(size, bytesEncodedByteSize(manifest.summary_metadata));
+    return size;
+}
+
+fn optionalTargetRefEncodedByteSize(target_ref: ?TargetRef) usize {
+    return 1 + if (target_ref) |present| targetRefEncodedByteSize(present) else 0;
+}
+
+fn targetRefEncodedByteSize(target_ref: TargetRef) usize {
+    var size: usize = 4 + 4 + 8;
+    size = addSatEncodedSize(size, optionalBytesEncodedByteSize(target_ref.target_label));
+    size = addSatEncodedSize(size, 8);
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(target_ref.world_surface_replay_scope_fingerprint));
+    size = addSatEncodedSize(size, 8);
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(target_ref.residual_program_plan_hash));
+    size = addSatEncodedSize(size, 1);
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(target_ref.world_port_table_fingerprint));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(target_ref.world_value_table_fingerprint));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(target_ref.world_dispatch_table_fingerprint));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(target_ref.surface_profile_fingerprint));
+    if (targetRefEncodesBoundaryModule(target_ref)) size = addSatEncodedSize(size, optionalU64EncodedByteSize(target_ref.boundary_module_fingerprint));
+    size = addSatEncodedSize(size, bytesEncodedByteSize(target_ref.metadata));
+    return size;
+}
+
+fn optionalModuleRefEncodedByteSize(module_ref: ?Admission.ModuleRef) usize {
+    return 1 + if (module_ref) |present| moduleRefEncodedByteSize(present) else 0;
+}
+
+fn moduleRefEncodedByteSize(module_ref: Admission.ModuleRef) usize {
+    var size: usize = 4 + 4 + 8 + 8 + 1 + 8 + 8 + 8;
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(module_ref.residual_program_plan_hash));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(module_ref.import_surface_fingerprint));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(module_ref.export_surface_fingerprint));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(module_ref.module_graph_fingerprint));
+    size = addSatEncodedSize(size, 1 + 8);
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(module_ref.world_port_table_fingerprint));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(module_ref.world_value_table_fingerprint));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(module_ref.world_dispatch_table_fingerprint));
+    size = addSatEncodedSize(size, optionalBytesEncodedByteSize(module_ref.label));
+    size = addSatEncodedSize(size, bytesEncodedByteSize(module_ref.metadata));
+    return size;
+}
+
+fn optionalRunImageEncodedByteSize(image: ?RunImage) usize {
+    return 1 + if (image) |present| bytesFieldEncodedByteSize(runImageEncodedByteSize(present)) else 0;
+}
+
+fn runImageEncodedByteSize(image: RunImage) usize {
+    var size: usize = 4 + 4 + 8 + 1;
+    size = addSatEncodedSize(size, targetRefEncodedByteSize(image.target_ref));
+    size = addSatEncodedSize(size, 8);
+    size = addSatEncodedSize(size, runStateEncodedByteSize(image.current_state));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(if (image.transcript_image) |transcript| transcript.transcript_image_fingerprint else null));
+    size = addSatEncodedSize(size, optionalTranscriptImagePayloadEncodedByteSize(image.transcript_image));
+    size = addSatEncodedSize(size, 8);
+    for (image.checkpoints) |checkpoint| size = addSatEncodedSize(size, checkpointEncodedByteSize(checkpoint));
+    size = addSatEncodedSize(size, 8);
+    for (image.branches) |branch| size = addSatEncodedSize(size, branchEncodedByteSize(branch));
+    size = addSatEncodedSize(size, optionalRequestFramePayloadEncodedByteSize(image.pending_request_frame));
+    size = addSatEncodedSize(size, optionalValueImageEncodedByteSize(image.final_result_image));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(image.environment_certificate_fingerprint));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(image.acceptance_report_fingerprint));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(image.audit_image_fingerprint));
+    if (image.format_version >= 2) {
+        size = addSatEncodedSize(size, optionalU64EncodedByteSize(image.prior_run_permit_fingerprint));
+        size = addSatEncodedSize(size, optionalU64EncodedByteSize(image.prior_run_receipt_fingerprint));
+    }
+    if (image.format_version >= 3) {
+        size = addSatEncodedSize(size, optionalU64EncodedByteSize(image.module_ref_fingerprint));
+        size = addSatEncodedSize(size, optionalU64EncodedByteSize(image.boundary_module_fingerprint));
+        size = addSatEncodedSize(size, optionalU64EncodedByteSize(image.module_image_fingerprint));
+    }
+    size = addSatEncodedSize(size, bytesEncodedByteSize(image.metadata));
+    return size;
+}
+
+fn optionalTranscriptImageEncodedByteSize(image: ?TranscriptImage) usize {
+    return 1 + if (image) |present| bytesFieldEncodedByteSize(transcriptImageEncodedByteSize(present)) else 0;
+}
+
+fn optionalTranscriptImagePayloadEncodedByteSize(image: ?TranscriptImage) usize {
+    return 1 + if (image) |present| bytesFieldEncodedByteSize(transcriptImageEncodedByteSize(present)) else 0;
+}
+
+fn u64SliceEncodedByteSize(values: []const u64) usize {
+    var size: usize = 8;
+    for (values) |_| size = addSatEncodedSize(size, 8);
+    return size;
+}
+
+fn runStateEncodedByteSize(state: RunState) usize {
+    var size: usize = 8 + 8;
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(state.transcript_image_fingerprint));
+    size = addSatEncodedSize(size, 8);
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(state.checkpoint_fingerprint));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(state.pending_request_fingerprint));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(state.final_response_fingerprint));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(state.final_value_image_fingerprint));
+    size = addSatEncodedSize(size, 8 + 1);
+    return size;
+}
+
+fn checkpointEncodedByteSize(checkpoint: Timeline.Checkpoint) usize {
+    var size: usize = 4 + 4 + 8 + 8 + 8 + 8 + 8;
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(checkpoint.current_request_fingerprint));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(checkpoint.last_response_fingerprint));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(checkpoint.capsule_image_fingerprint));
+    size = addSatEncodedSize(size, 8 + 8 + 1);
+    return size;
+}
+
+fn branchEncodedByteSize(branch: Timeline.Branch) usize {
+    var size: usize = 4 + 4 + 8;
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(branch.parent_branch_id));
+    size = addSatEncodedSize(size, 8);
+    size = addSatEncodedSize(size, bytesEncodedByteSize(branch.branch_label));
+    size = addSatEncodedSize(size, 8);
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(branch.final_event_index));
+    size = addSatEncodedSize(size, 1 + 8 + 8 + 8);
+    return size;
+}
+
+fn optionalRequestFramePayloadEncodedByteSize(frame: ?Frame.Request) usize {
+    return 1 + if (frame) |present| bytesFieldEncodedByteSize(requestFrameEncodedByteSize(present)) else 0;
+}
+
+fn validateTranscriptImageFingerprint(image: TranscriptImage) !void {
+    if (image.format_version != 2 and image.format_version != world_transcript_image_format_version) return error.InvalidFrameEncoding;
+    if (image.fingerprint_version != world_transcript_image_fingerprint_version) return error.InvalidFrameEncoding;
+    if (image.final_status != finalStatusFromEvents(image.events)) return error.InvalidFrameEncoding;
+    var response_count: usize = 0;
+    for (image.events) |event| {
+        if (image.format_version < 3 and eventKindRequiresAdmissionWitness(event.kind)) return error.InvalidFrameEncoding;
+        if (image.format_version >= 3) try validateAdmissionEventWitness(event);
+        if (event.world_surface_fingerprint != image.world_surface_fingerprint) return error.InvalidFrameEncoding;
+        if (event.target_certificate_fingerprint != image.target_certificate_fingerprint) return error.InvalidFrameEncoding;
+        try validateTranscriptEventFrameBindings(event);
+        if (fingerprintTranscriptEventImageForFormat(image.format_version, event) != event.event_fingerprint) return error.InvalidFrameEncoding;
+        if (event.response_frame != null) response_count += 1;
+    }
+    if (image.response_count != response_count) return error.InvalidFrameEncoding;
+    if (fingerprintTranscriptImage(image) != image.transcript_image_fingerprint) return error.InvalidFrameEncoding;
+}
+
+fn transcriptEventImageEncodedByteSizeForFormat(format_version: u32, event: TranscriptImage.EventImage) usize {
+    var size: usize = 8 + 1 + 8 + 8;
+    size = addSatEncodedSize(size, optionalU32EncodedByteSize(event.world_port_id));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(event.request_fingerprint));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(event.response_fingerprint));
+    size = addSatEncodedSize(size, optionalEnumByteEncodedByteSize(event.response_kind));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(event.replay_key));
+    if (format_version >= 3) {
+        size = addSatEncodedSize(size, optionalU64EncodedByteSize(event.admission_request_fingerprint));
+        size = addSatEncodedSize(size, optionalU64EncodedByteSize(event.admission_report_fingerprint));
+        size = addSatEncodedSize(size, optionalU64EncodedByteSize(event.admission_receipt_fingerprint));
+        size = addSatEncodedSize(size, optionalU64EncodedByteSize(event.module_ref_fingerprint));
+        size = addSatEncodedSize(size, optionalU64EncodedByteSize(event.target_match_fingerprint));
+    }
+    size = addSatEncodedSize(size, optionalUsizeEncodedByteSize(event.turn_index));
+    size = addSatEncodedSize(size, optionalUsizeEncodedByteSize(event.residual_site_index));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(event.residual_site_fingerprint));
+    size = addSatEncodedSize(size, optionalEnumByteEncodedByteSize(event.status));
+    size = addSatEncodedSize(size, 1);
+    size = addSatEncodedSize(size, optionalRequestFrameEncodedByteSize(event.request_frame));
+    size = addSatEncodedSize(size, optionalResponseFrameEncodedByteSize(event.response_frame));
+    return size;
+}
+
+fn transcriptEventImageEncodedByteSize(event: TranscriptImage.EventImage) usize {
+    return transcriptEventImageEncodedByteSizeForFormat(world_transcript_image_format_version, event);
+}
+
+fn optionalU32EncodedByteSize(value: ?u32) usize {
+    return 1 + if (value == null) @as(usize, 0) else 4;
+}
+
+fn optionalU64EncodedByteSize(value: ?u64) usize {
+    return 1 + if (value == null) @as(usize, 0) else 8;
+}
+
+fn optionalUsizeEncodedByteSize(value: ?usize) usize {
+    return 1 + if (value == null) @as(usize, 0) else 8;
+}
+
+fn optionalEnumByteEncodedByteSize(value: anytype) usize {
+    return 1 + if (value == null) @as(usize, 0) else 1;
+}
+
+fn bytesEncodedByteSize(bytes: []const u8) usize {
+    return bytesFieldEncodedByteSize(bytes.len);
+}
+
+fn bytesFieldEncodedByteSize(len: usize) usize {
+    return 8 + len;
+}
+
+fn optionalBytesEncodedByteSize(bytes: ?[]const u8) usize {
+    return 1 + if (bytes) |present| bytesEncodedByteSize(present) else 0;
+}
+
+fn optionalValueImageEncodedByteSize(image: ?Frame.ValueImage) usize {
+    return 1 + if (image) |present| bytesFieldEncodedByteSize(valueImageEncodedByteSize(present)) else 0;
+}
+
+fn valueImageEncodedByteSize(image: Frame.ValueImage) usize {
+    var size: usize = 4 + 4 + 8;
+    size = addSatEncodedSize(size, optionalU32EncodedByteSize(image.value_table_id));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(image.boundary_value_fingerprint));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(image.codec_schema_descriptor_fingerprint));
+    size = addSatEncodedSize(size, 1);
+    size = addSatEncodedSize(size, bytesEncodedByteSize(image.bytes));
+    size = addSatEncodedSize(size, optionalBytesEncodedByteSize(image.diagnostic_type_label));
+    return size;
+}
+
+fn optionalRequestFrameEncodedByteSize(frame: ?Frame.Request) usize {
+    return 1 + if (frame) |present| bytesFieldEncodedByteSize(requestFrameEncodedByteSize(present)) else 0;
+}
+
+fn optionalResponseFrameEncodedByteSize(frame: ?Frame.Response) usize {
+    return 1 + if (frame) |present| bytesFieldEncodedByteSize(responseFrameEncodedByteSize(present)) else 0;
+}
+
+fn requestFrameEncodedByteSize(frame: Frame.Request) usize {
+    var size: usize = 4 + 4 + 8 + 8;
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(frame.world_surface_replay_scope_fingerprint));
+    size = addSatEncodedSize(size, 8 + 4 + 8 + 8 + 8 + 8);
+    size = addSatEncodedSize(size, optionalU32EncodedByteSize(frame.payload_value_table_id));
+    size = addSatEncodedSize(size, optionalU32EncodedByteSize(frame.expected_response_value_table_id));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(frame.payload_value_fingerprint));
+    size = addSatEncodedSize(size, optionalValueImageEncodedByteSize(frame.payload_image));
+    size = addSatEncodedSize(size, 8 + 8 + 4 + 8);
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(frame.source_effect_shape_fingerprint));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(frame.world_port_ref_fingerprint));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(frame.trace_ref_fingerprint));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(frame.evidence_ref_fingerprint));
+    size = addSatEncodedSize(size, 4);
+    return size;
+}
+
+fn responseFrameEncodedByteSize(frame: Frame.Response) usize {
+    var size: usize = 4 + 4 + 8 + 8 + 8 + 4 + 8 + 1;
+    size = addSatEncodedSize(size, optionalU32EncodedByteSize(frame.response_value_table_id));
+    size = addSatEncodedSize(size, 8);
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(frame.response_value_fingerprint));
+    size = addSatEncodedSize(size, optionalValueImageEncodedByteSize(frame.response_image));
+    size = addSatEncodedSize(size, 8 + 1);
+    size = addSatEncodedSize(size, optionalBytesEncodedByteSize(frame.error_tag));
+    size = addSatEncodedSize(size, optionalBytesEncodedByteSize(frame.reason));
+    size = addSatEncodedSize(size, 4);
+    return size;
+}
+
+fn containsU64(values: []const u64, needle: u64) bool {
+    for (values) |value| {
+        if (value == needle) return true;
+    }
+    return false;
+}
+
+fn packageContainsBranch(package: Admission.TransferPackage, branch_id: u64) bool {
+    if (containsU64(package.branch_refs, branch_id)) return true;
+    if (package.run_image) |image| {
+        for (image.branches) |branch| {
+            if (branch.branch_id == branch_id) return true;
+        }
+    }
+    return false;
+}
+
+fn packageContainsCheckpoint(package: Admission.TransferPackage, checkpoint_ref: u64) bool {
+    if (containsU64(package.checkpoint_refs, checkpoint_ref)) return true;
+    if (package.run_image) |image| {
+        for (image.checkpoints) |checkpoint| {
+            if (checkpoint.checkpoint_fingerprint == checkpoint_ref) return true;
+        }
+    }
+    return false;
+}
+
+fn handoffPreflightBlockers(has_permit: bool) []const Admission.AdmissionBlocker {
+    return if (has_permit) &.{.PermitRejected} else &.{.EnvironmentRejected};
+}
+
+fn scopePermitToAdmission(permit: RunPermit, admission_receipt_fingerprint: u64) RunPermit {
+    var scoped = permit;
+    scoped.permit_fingerprint = 0;
+    scoped.admission_receipt_fingerprint = admission_receipt_fingerprint;
+    scoped.permit_fingerprint = fingerprintRunPermit(scoped);
+    return scoped;
+}
+
+fn writeOptionalTargetRef(out: *std.ArrayList(u8), allocator: std.mem.Allocator, value: ?TargetRef) !void {
+    if (value) |target_ref| {
+        try writeBool(out, allocator, true);
+        try encodeTargetRef(out, allocator, target_ref);
+    } else {
+        try writeBool(out, allocator, false);
+    }
+}
+
+fn readOptionalTargetRef(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) !?TargetRef {
+    if (!try readBool(bytes, cursor)) return null;
+    return try decodeTargetRef(allocator, bytes, cursor);
+}
+
+fn encodeModuleRef(out: *std.ArrayList(u8), allocator: std.mem.Allocator, module_ref: Admission.ModuleRef) !void {
+    try writeU32(out, allocator, module_ref.format_version);
+    try writeU32(out, allocator, module_ref.fingerprint_version);
+    try writeU64(out, allocator, module_ref.module_ref_fingerprint);
+    try writeU64(out, allocator, module_ref.boundary_module_fingerprint);
+    try writeU8(out, allocator, @intFromEnum(module_ref.module_kind));
+    try writeU64(out, allocator, module_ref.target_ref_fingerprint);
+    try writeU64(out, allocator, module_ref.world_surface_fingerprint);
+    try writeU64(out, allocator, module_ref.target_certificate_fingerprint);
+    try writeOptionalU64(out, allocator, module_ref.residual_program_plan_hash);
+    try writeOptionalU64(out, allocator, module_ref.import_surface_fingerprint);
+    try writeOptionalU64(out, allocator, module_ref.export_surface_fingerprint);
+    try writeOptionalU64(out, allocator, module_ref.module_graph_fingerprint);
+    try writeU8(out, allocator, @intFromEnum(module_ref.normal_form_kind));
+    try writeU64(out, allocator, module_ref.world_port_count);
+    try writeOptionalU64(out, allocator, module_ref.world_port_table_fingerprint);
+    try writeOptionalU64(out, allocator, module_ref.world_value_table_fingerprint);
+    try writeOptionalU64(out, allocator, module_ref.world_dispatch_table_fingerprint);
+    try writeOptionalBytes(out, allocator, module_ref.label);
+    try writeBytes(out, allocator, module_ref.metadata);
+}
+
+fn decodeModuleRef(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) !Admission.ModuleRef {
+    const format_version = try readU32(bytes, cursor);
+    if (format_version != world_module_ref_format_version) return error.InvalidFrameEncoding;
+    const fingerprint_version = try readU32(bytes, cursor);
+    if (fingerprint_version != world_module_ref_fingerprint_version) return error.InvalidFrameEncoding;
+    const module_ref_fingerprint = try readU64(bytes, cursor);
+    const boundary_module_fingerprint = try readU64(bytes, cursor);
+    const module_kind = try enumFromByte(Admission.BoundaryModuleKind, try readU8(bytes, cursor));
+    const target_ref_fingerprint = try readU64(bytes, cursor);
+    const world_surface_fingerprint = try readU64(bytes, cursor);
+    const target_certificate_fingerprint = try readU64(bytes, cursor);
+    const residual_program_plan_hash = try readOptionalU64(bytes, cursor);
+    const import_surface_fingerprint = try readOptionalU64(bytes, cursor);
+    const export_surface_fingerprint = try readOptionalU64(bytes, cursor);
+    const module_graph_fingerprint = try readOptionalU64(bytes, cursor);
+    const normal_form_kind = try enumFromByte(NormalFormKind, try readU8(bytes, cursor));
+    const world_port_count = try readU64AsUsize(bytes, cursor);
+    const world_port_table_fingerprint = try readOptionalU64(bytes, cursor);
+    const world_value_table_fingerprint = try readOptionalU64(bytes, cursor);
+    const world_dispatch_table_fingerprint = try readOptionalU64(bytes, cursor);
+    const label = try readOptionalBytesOwned(allocator, bytes, cursor);
+    errdefer if (label) |owned| allocator.free(@constCast(owned));
+    const metadata = try readBytesOwned(allocator, bytes, cursor);
+    errdefer allocator.free(@constCast(metadata));
+    const result = Admission.ModuleRef{
+        .format_version = format_version,
+        .fingerprint_version = fingerprint_version,
+        .module_ref_fingerprint = module_ref_fingerprint,
+        .boundary_module_fingerprint = boundary_module_fingerprint,
+        .module_kind = module_kind,
+        .target_ref_fingerprint = target_ref_fingerprint,
+        .world_surface_fingerprint = world_surface_fingerprint,
+        .target_certificate_fingerprint = target_certificate_fingerprint,
+        .residual_program_plan_hash = residual_program_plan_hash,
+        .import_surface_fingerprint = import_surface_fingerprint,
+        .export_surface_fingerprint = export_surface_fingerprint,
+        .module_graph_fingerprint = module_graph_fingerprint,
+        .normal_form_kind = normal_form_kind,
+        .world_port_count = world_port_count,
+        .world_port_table_fingerprint = world_port_table_fingerprint,
+        .world_value_table_fingerprint = world_value_table_fingerprint,
+        .world_dispatch_table_fingerprint = world_dispatch_table_fingerprint,
+        .label = label,
+        .metadata = metadata,
+    };
+    if (result.module_ref_fingerprint != fingerprintModuleRef(result)) return error.InvalidFrameEncoding;
+    return result;
+}
+
+fn writeOptionalModuleRef(out: *std.ArrayList(u8), allocator: std.mem.Allocator, value: ?Admission.ModuleRef) !void {
+    if (value) |module_ref| {
+        try writeBool(out, allocator, true);
+        try encodeModuleRef(out, allocator, module_ref);
+    } else {
+        try writeBool(out, allocator, false);
+    }
+}
+
+fn readOptionalModuleRef(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) !?Admission.ModuleRef {
+    if (!try readBool(bytes, cursor)) return null;
+    return try decodeModuleRef(allocator, bytes, cursor);
+}
+
+fn encodePackageManifest(out: *std.ArrayList(u8), allocator: std.mem.Allocator, manifest: Admission.PackageManifest) !void {
+    try writeU32(out, allocator, manifest.format_version);
+    try writeU32(out, allocator, manifest.fingerprint_version);
+    try writeU64(out, allocator, manifest.manifest_fingerprint);
+    try writeU64(out, allocator, manifest.package_fingerprint);
+    try writeU8(out, allocator, @intFromEnum(manifest.package_kind));
+    try writeOptionalU64(out, allocator, manifest.target_ref_fingerprint);
+    try writeOptionalU64(out, allocator, manifest.module_ref_fingerprint);
+    try writeOptionalU64(out, allocator, manifest.module_image_fingerprint);
+    try writeOptionalU64(out, allocator, manifest.run_image_fingerprint);
+    try writeOptionalU64(out, allocator, manifest.transcript_image_fingerprint);
+    try writeU64(out, allocator, manifest.checkpoint_count);
+    try writeU64(out, allocator, manifest.branch_count);
+    try writeU64(out, allocator, manifest.prior_receipt_count);
+    try writeU8(out, allocator, @intFromEnum(manifest.requested_mode));
+    try writeBytes(out, allocator, manifest.summary_metadata);
+}
+
+fn decodePackageManifest(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) !Admission.PackageManifest {
+    const result = Admission.PackageManifest{
+        .format_version = try readU32(bytes, cursor),
+        .fingerprint_version = try readU32(bytes, cursor),
+        .manifest_fingerprint = try readU64(bytes, cursor),
+        .package_fingerprint = try readU64(bytes, cursor),
+        .package_kind = try enumFromByte(Admission.PackageKind, try readU8(bytes, cursor)),
+        .target_ref_fingerprint = try readOptionalU64(bytes, cursor),
+        .module_ref_fingerprint = try readOptionalU64(bytes, cursor),
+        .module_image_fingerprint = try readOptionalU64(bytes, cursor),
+        .run_image_fingerprint = try readOptionalU64(bytes, cursor),
+        .transcript_image_fingerprint = try readOptionalU64(bytes, cursor),
+        .checkpoint_count = try readU64AsUsize(bytes, cursor),
+        .branch_count = try readU64AsUsize(bytes, cursor),
+        .prior_receipt_count = try readU64AsUsize(bytes, cursor),
+        .requested_mode = try enumFromByte(Admission.AdmissionMode, try readU8(bytes, cursor)),
+        .summary_metadata = try readBytesOwned(allocator, bytes, cursor),
+    };
+    errdefer allocator.free(@constCast(result.summary_metadata));
+    if (result.format_version != world_package_manifest_format_version) return error.InvalidFrameEncoding;
+    if (result.fingerprint_version != world_package_manifest_fingerprint_version) return error.InvalidFrameEncoding;
+    if (result.manifest_fingerprint != fingerprintPackageManifest(result)) return error.InvalidFrameEncoding;
+    return result;
+}
+
+fn writeOptionalRunImage(out: *std.ArrayList(u8), allocator: std.mem.Allocator, value: ?RunImage) !void {
+    if (value) |image| {
+        try writeBool(out, allocator, true);
+        const encoded = try image.encode(allocator);
+        defer allocator.free(encoded);
+        try writeBytes(out, allocator, encoded);
+    } else {
+        try writeBool(out, allocator, false);
+    }
+}
+
+fn readOptionalRunImage(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) !?RunImage {
+    if (!try readBool(bytes, cursor)) return null;
+    const encoded = try readBytesOwned(allocator, bytes, cursor);
+    defer allocator.free(encoded);
+    return try RunImage.decode(allocator, encoded);
+}
+
+fn writeOptionalTranscriptImage(out: *std.ArrayList(u8), allocator: std.mem.Allocator, value: ?TranscriptImage) !void {
+    if (value) |image| {
+        try writeBool(out, allocator, true);
+        const encoded = try image.encode(allocator);
+        defer allocator.free(encoded);
+        try writeBytes(out, allocator, encoded);
+    } else {
+        try writeBool(out, allocator, false);
+    }
+}
+
+fn readOptionalTranscriptImage(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) !?TranscriptImage {
+    if (!try readBool(bytes, cursor)) return null;
+    const encoded = try readBytesOwned(allocator, bytes, cursor);
+    defer allocator.free(encoded);
+    return try TranscriptImage.decode(allocator, encoded);
+}
+
+fn writeU64Slice(out: *std.ArrayList(u8), allocator: std.mem.Allocator, values: []const u64) !void {
+    try writeU64(out, allocator, values.len);
+    for (values) |value| try writeU64(out, allocator, value);
+}
+
+fn readU64SliceOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, max_count: usize) ![]u64 {
+    const count = try readU64AsUsize(bytes, cursor);
+    if (count > max_count) return error.InvalidFrameEncoding;
+    if (count > (bytes.len - cursor.*) / 8) return error.InvalidFrameEncoding;
+    const values = try allocator.alloc(u64, count);
+    errdefer allocator.free(values);
+    for (values) |*value| value.* = try readU64(bytes, cursor);
+    return values;
 }
 
 fn targetLabel(comptime Target: type) ?[]const u8 {
@@ -7542,13 +10325,29 @@ fn encodeTargetRef(out: *std.ArrayList(u8), allocator: std.mem.Allocator, target
     try writeOptionalU64(out, allocator, target_ref.world_value_table_fingerprint);
     try writeOptionalU64(out, allocator, target_ref.world_dispatch_table_fingerprint);
     try writeOptionalU64(out, allocator, target_ref.surface_profile_fingerprint);
-    try writeOptionalU64(out, allocator, target_ref.boundary_module_fingerprint);
+    if (targetRefEncodesBoundaryModule(target_ref)) try writeOptionalU64(out, allocator, target_ref.boundary_module_fingerprint);
     try writeBytes(out, allocator, target_ref.metadata);
 }
 
+const DecodedTargetRefHead = struct {
+    format_version: u32,
+    fingerprint_version: u32,
+    target_ref_fingerprint: u64,
+    target_label: ?[]const u8,
+    world_surface_fingerprint: u64,
+    world_surface_replay_scope_fingerprint: ?u64,
+    target_certificate_fingerprint: u64,
+    residual_program_plan_hash: ?u64,
+    normal_form_kind: NormalFormKind,
+    world_port_table_fingerprint: ?u64,
+    world_value_table_fingerprint: ?u64,
+    world_dispatch_table_fingerprint: ?u64,
+    surface_profile_fingerprint: ?u64,
+};
+
 fn decodeTargetRef(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) !TargetRef {
     const format_version = try readU32(bytes, cursor);
-    if (format_version != world_target_ref_format_version) return error.InvalidFrameEncoding;
+    if (format_version != 1 and format_version != world_target_ref_format_version) return error.InvalidFrameEncoding;
     const fingerprint_version = try readU32(bytes, cursor);
     if (fingerprint_version != world_target_ref_fingerprint_version) return error.InvalidFrameEncoding;
     const target_ref_fingerprint = try readU64(bytes, cursor);
@@ -7563,12 +10362,9 @@ fn decodeTargetRef(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usi
     const world_value_table_fingerprint = try readOptionalU64(bytes, cursor);
     const world_dispatch_table_fingerprint = try readOptionalU64(bytes, cursor);
     const surface_profile_fingerprint = try readOptionalU64(bytes, cursor);
-    const boundary_module_fingerprint = try readOptionalU64(bytes, cursor);
-    const metadata = try readBytesOwned(allocator, bytes, cursor);
-    errdefer allocator.free(metadata);
-    // TargetRef labels/metadata are intentionally leaked into the owning RunImage lifetime;
-    // RunImage does not currently expose a separate TargetRef deinit path.
-    const result = TargetRef{
+    const head = DecodedTargetRefHead{
+        .format_version = format_version,
+        .fingerprint_version = fingerprint_version,
         .target_ref_fingerprint = target_ref_fingerprint,
         .target_label = target_label,
         .world_surface_fingerprint = world_surface_fingerprint,
@@ -7580,10 +10376,32 @@ fn decodeTargetRef(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usi
         .world_value_table_fingerprint = world_value_table_fingerprint,
         .world_dispatch_table_fingerprint = world_dispatch_table_fingerprint,
         .surface_profile_fingerprint = surface_profile_fingerprint,
+    };
+    return try decodeTargetRefTail(allocator, bytes, cursor, head, true);
+}
+
+fn decodeTargetRefTail(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, head: DecodedTargetRefHead, include_boundary_module: bool) !TargetRef {
+    const boundary_module_fingerprint = if (include_boundary_module) try readOptionalU64(bytes, cursor) else null;
+    const metadata = try readBytesOwned(allocator, bytes, cursor);
+    errdefer allocator.free(metadata);
+    const result = TargetRef{
+        .format_version = head.format_version,
+        .fingerprint_version = head.fingerprint_version,
+        .target_ref_fingerprint = head.target_ref_fingerprint,
+        .target_label = head.target_label,
+        .world_surface_fingerprint = head.world_surface_fingerprint,
+        .world_surface_replay_scope_fingerprint = head.world_surface_replay_scope_fingerprint,
+        .target_certificate_fingerprint = head.target_certificate_fingerprint,
+        .residual_program_plan_hash = head.residual_program_plan_hash,
+        .normal_form_kind = head.normal_form_kind,
+        .world_port_table_fingerprint = head.world_port_table_fingerprint,
+        .world_value_table_fingerprint = head.world_value_table_fingerprint,
+        .world_dispatch_table_fingerprint = head.world_dispatch_table_fingerprint,
+        .surface_profile_fingerprint = head.surface_profile_fingerprint,
         .boundary_module_fingerprint = boundary_module_fingerprint,
         .metadata = metadata,
     };
-    if (fingerprintTargetRef(result) != target_ref_fingerprint) return error.InvalidFrameEncoding;
+    if (fingerprintTargetRef(result) != head.target_ref_fingerprint) return error.InvalidFrameEncoding;
     return result;
 }
 
@@ -7695,7 +10513,35 @@ fn decodeBranch(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize)
     return branch;
 }
 
+fn targetRefEncodesBoundaryModule(target_ref: TargetRef) bool {
+    return target_ref.format_version >= 1;
+}
+
 fn fingerprintTargetRef(target_ref: TargetRef) u64 {
+    if (!targetRefEncodesBoundaryModule(target_ref)) return fingerprintTargetRefWithoutBoundaryModule(target_ref);
+    return fingerprintTargetRefWithBoundaryModule(target_ref);
+}
+
+fn fingerprintTargetRefWithoutBoundaryModule(target_ref: TargetRef) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.target_ref.fingerprint");
+    hashU64(&hasher, world_target_ref_fingerprint_version);
+    hashOptionalBytes(&hasher, target_ref.target_label);
+    hashU64(&hasher, target_ref.world_surface_fingerprint);
+    hashOptionalU64(&hasher, target_ref.world_surface_replay_scope_fingerprint);
+    hashU64(&hasher, target_ref.target_certificate_fingerprint);
+    hashOptionalU64(&hasher, target_ref.residual_program_plan_hash);
+    hashU64(&hasher, @intFromEnum(target_ref.normal_form_kind));
+    hashOptionalU64(&hasher, target_ref.world_port_table_fingerprint);
+    hashOptionalU64(&hasher, target_ref.world_value_table_fingerprint);
+    hashOptionalU64(&hasher, target_ref.world_dispatch_table_fingerprint);
+    hashOptionalU64(&hasher, target_ref.surface_profile_fingerprint);
+    hashU64(&hasher, target_ref.metadata.len);
+    hashBytes(&hasher, target_ref.metadata);
+    return hasher.final();
+}
+
+fn fingerprintTargetRefWithBoundaryModule(target_ref: TargetRef) u64 {
     var hasher = std.hash.Wyhash.init(0);
     hashBytes(&hasher, "world.target_ref.fingerprint");
     hashU64(&hasher, world_target_ref_fingerprint_version);
@@ -8083,6 +10929,14 @@ fn fingerprintRunPermit(permit: RunPermit) u64 {
     hashU64(&hasher, permit.binding_plan_fingerprint);
     hashU64(&hasher, @intFromEnum(permit.mode));
     hashBool(&hasher, permit.transcript_image_available);
+    if (permit.admission_receipt_fingerprint) |fingerprint| {
+        hashBytes(&hasher, "admission_receipt_fingerprint");
+        hashU64(&hasher, fingerprint);
+    }
+    if (permit.module_ref_fingerprint) |fingerprint| {
+        hashBytes(&hasher, "module_ref_fingerprint");
+        hashU64(&hasher, fingerprint);
+    }
     hashU64(&hasher, permit.supervision_policy_fingerprint);
     hashU64(&hasher, permit.budget_fingerprint);
     hashU64(&hasher, permit.cost_model_fingerprint);
@@ -8185,6 +11039,14 @@ fn fingerprintRunReceipt(receipt: RunReceipt) u64 {
     hashU64(&hasher, receipt.target_ref_fingerprint);
     hashOptionalU64(&hasher, receipt.run_image_fingerprint);
     hashOptionalU64(&hasher, receipt.transcript_image_fingerprint);
+    if (receipt.admission_receipt_fingerprint) |fingerprint| {
+        hashBytes(&hasher, "admission_receipt_fingerprint");
+        hashU64(&hasher, fingerprint);
+    }
+    if (receipt.module_ref_fingerprint) |fingerprint| {
+        hashBytes(&hasher, "module_ref_fingerprint");
+        hashU64(&hasher, fingerprint);
+    }
     hashU64(&hasher, receipt.usage_ledger_fingerprint);
     hashU64(&hasher, receipt.final_run_state_fingerprint);
     hashU64(&hasher, @intFromEnum(receipt.final_status));
@@ -8236,7 +11098,15 @@ fn fingerprintRunImageV1(image: RunImage) u64 {
     return fingerprintRunImageVersioned(image, false);
 }
 
+fn fingerprintRunImageV3(image: RunImage) u64 {
+    return fingerprintRunImageVersionedWithModule(image, true, true);
+}
+
 fn fingerprintRunImageVersioned(image: RunImage, comptime include_prior_receipts: bool) u64 {
+    return fingerprintRunImageVersionedWithModule(image, include_prior_receipts, false);
+}
+
+fn fingerprintRunImageVersionedWithModule(image: RunImage, comptime include_prior_receipts: bool, comptime include_module_refs: bool) u64 {
     var hasher = std.hash.Wyhash.init(0);
     hashBytes(&hasher, "world.run_image.fingerprint");
     hashU64(&hasher, world_run_image_fingerprint_version);
@@ -8258,8 +11128,250 @@ fn fingerprintRunImageVersioned(image: RunImage, comptime include_prior_receipts
         hashOptionalU64(&hasher, image.prior_run_permit_fingerprint);
         hashOptionalU64(&hasher, image.prior_run_receipt_fingerprint);
     }
+    if (include_module_refs) {
+        hashOptionalU64(&hasher, image.module_ref_fingerprint);
+        hashOptionalU64(&hasher, image.boundary_module_fingerprint);
+        hashOptionalU64(&hasher, image.module_image_fingerprint);
+    }
     hashU64(&hasher, image.metadata.len);
     hashBytes(&hasher, image.metadata);
+    return hasher.final();
+}
+
+fn fingerprintModuleRef(module_ref: Admission.ModuleRef) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.module_ref.fingerprint");
+    hashU64(&hasher, world_module_ref_fingerprint_version);
+    hashU64(&hasher, module_ref.boundary_module_fingerprint);
+    hashU64(&hasher, @intFromEnum(module_ref.module_kind));
+    hashU64(&hasher, module_ref.target_ref_fingerprint);
+    hashU64(&hasher, module_ref.world_surface_fingerprint);
+    hashU64(&hasher, module_ref.target_certificate_fingerprint);
+    hashOptionalU64(&hasher, module_ref.residual_program_plan_hash);
+    hashOptionalU64(&hasher, module_ref.import_surface_fingerprint);
+    hashOptionalU64(&hasher, module_ref.export_surface_fingerprint);
+    hashOptionalU64(&hasher, module_ref.module_graph_fingerprint);
+    hashU64(&hasher, @intFromEnum(module_ref.normal_form_kind));
+    hashU64(&hasher, module_ref.world_port_count);
+    hashOptionalU64(&hasher, module_ref.world_port_table_fingerprint);
+    hashOptionalU64(&hasher, module_ref.world_value_table_fingerprint);
+    hashOptionalU64(&hasher, module_ref.world_dispatch_table_fingerprint);
+    hashOptionalBytes(&hasher, module_ref.label);
+    hashU64(&hasher, module_ref.metadata.len);
+    hashBytes(&hasher, module_ref.metadata);
+    return hasher.final();
+}
+
+fn fingerprintPackageManifest(manifest: Admission.PackageManifest) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.package_manifest.fingerprint");
+    hashU64(&hasher, world_package_manifest_fingerprint_version);
+    hashU64(&hasher, manifest.package_fingerprint);
+    hashU64(&hasher, @intFromEnum(manifest.package_kind));
+    hashOptionalU64(&hasher, manifest.target_ref_fingerprint);
+    hashOptionalU64(&hasher, manifest.module_ref_fingerprint);
+    hashOptionalU64(&hasher, manifest.module_image_fingerprint);
+    hashOptionalU64(&hasher, manifest.run_image_fingerprint);
+    hashOptionalU64(&hasher, manifest.transcript_image_fingerprint);
+    hashU64(&hasher, manifest.checkpoint_count);
+    hashU64(&hasher, manifest.branch_count);
+    hashU64(&hasher, manifest.prior_receipt_count);
+    hashU64(&hasher, @intFromEnum(manifest.requested_mode));
+    hashU64(&hasher, manifest.summary_metadata.len);
+    hashBytes(&hasher, manifest.summary_metadata);
+    return hasher.final();
+}
+
+fn fingerprintTransferPackageContent(package: Admission.TransferPackage) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.transfer_package.fingerprint");
+    hashU64(&hasher, world_transfer_package_fingerprint_version);
+    hashU64(&hasher, @intFromEnum(package.kind));
+    hashU64(&hasher, @intFromEnum(package.requested_mode));
+    hashOptionalU64(&hasher, if (package.target_ref) |target_ref| target_ref.target_ref_fingerprint else null);
+    hashOptionalU64(&hasher, if (package.module_ref) |module_ref| module_ref.module_ref_fingerprint else null);
+    hashOptionalU64(&hasher, if (package.module_image_bytes) |bytes| moduleImageFingerprint(bytes) else null);
+    hashOptionalU64(&hasher, if (package.run_image) |image| image.run_image_fingerprint else null);
+    hashOptionalU64(&hasher, if (package.transcript_image) |image| image.transcript_image_fingerprint else null);
+    hashU64(&hasher, package.checkpoint_refs.len);
+    for (package.checkpoint_refs) |fingerprint| hashU64(&hasher, fingerprint);
+    hashU64(&hasher, package.branch_refs.len);
+    for (package.branch_refs) |fingerprint| hashU64(&hasher, fingerprint);
+    hashU64(&hasher, package.prior_run_permit_refs.len);
+    for (package.prior_run_permit_refs) |fingerprint| hashU64(&hasher, fingerprint);
+    hashU64(&hasher, package.prior_run_receipt_refs.len);
+    for (package.prior_run_receipt_refs) |fingerprint| hashU64(&hasher, fingerprint);
+    hashOptionalU64(&hasher, package.requested_supervision_hint_fingerprint);
+    hashU64(&hasher, package.metadata.len);
+    hashBytes(&hasher, package.metadata);
+    return hasher.final();
+}
+
+fn fingerprintTargetRegistryEntry(entry: Admission.TargetRegistry.Entry) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.target_registry.entry.fingerprint");
+    hashU64(&hasher, world_target_registry_entry_fingerprint_version);
+    hashU64(&hasher, entry.target_ref.target_ref_fingerprint);
+    hashU64(&hasher, entry.world_surface_fingerprint);
+    hashU64(&hasher, entry.target_certificate_fingerprint);
+    hashOptionalU64(&hasher, entry.program_plan_hash);
+    hashOptionalU64(&hasher, entry.import_surface_fingerprint);
+    hashOptionalU64(&hasher, entry.export_surface_fingerprint);
+    hashU64(&hasher, entry.import_set_fingerprint);
+    hashU64(&hasher, entry.world_port_count);
+    hashOptionalU64(&hasher, entry.world_port_table_fingerprint);
+    hashOptionalU64(&hasher, entry.world_value_table_fingerprint);
+    hashOptionalU64(&hasher, entry.world_dispatch_table_fingerprint);
+    hashU64(&hasher, @intFromEnum(entry.normal_form_kind));
+    hashOptionalBytes(&hasher, entry.label);
+    hashU64(&hasher, entry.metadata.len);
+    hashBytes(&hasher, entry.metadata);
+    return hasher.final();
+}
+
+fn fingerprintTargetRegistry(registry: Admission.TargetRegistry) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.target_registry.fingerprint");
+    hashU64(&hasher, world_target_registry_fingerprint_version);
+    hashU64(&hasher, registry.entries.len);
+    for (registry.entries) |entry| hashU64(&hasher, entry.entry_fingerprint);
+    return hasher.final();
+}
+
+fn fingerprintTargetMatch(match: Admission.TargetMatch) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.target_match.fingerprint");
+    hashU64(&hasher, world_target_match_fingerprint_version);
+    hashOptionalU64(&hasher, match.transferred_target_ref_fingerprint);
+    hashOptionalU64(&hasher, match.local_target_ref_fingerprint);
+    hashBool(&hasher, match.matched);
+    hashU64(&hasher, @intFromEnum(match.match_mode));
+    hashU64(&hasher, match.mismatches.len);
+    for (match.mismatches) |mismatch| hashU64(&hasher, @intFromEnum(mismatch));
+    hashU64(&hasher, match.diagnostics.len);
+    hashBytes(&hasher, match.diagnostics);
+    return hasher.final();
+}
+
+fn fingerprintExportSummary(summary: Admission.ExportSummary) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.export_summary.fingerprint");
+    hashU64(&hasher, world_export_summary_fingerprint_version);
+    hashU64(&hasher, summary.target_ref_fingerprint);
+    hashOptionalU64(&hasher, summary.module_ref_fingerprint);
+    hashBool(&hasher, summary.main_export_present);
+    hashOptionalU64(&hasher, summary.result_value_ref_fingerprint);
+    hashU64(&hasher, summary.argument_value_ref_count);
+    hashU64(&hasher, @intFromEnum(summary.normal_form_kind));
+    hashOptionalBytes(&hasher, summary.target_label);
+    hashBool(&hasher, summary.loaded_execution_supported);
+    hashOptionalBytes(&hasher, summary.loaded_execution_unsupported_reason);
+    return hasher.final();
+}
+
+fn fingerprintAdmissionPolicy(policy: Admission.AdmissionPolicy) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.admission_policy.fingerprint");
+    hashU64(&hasher, world_admission_policy_fingerprint_version);
+    hashBool(&hasher, policy.allow_reference_targets);
+    hashBool(&hasher, policy.allow_full_modules);
+    hashBool(&hasher, policy.allow_inspect_only_full_modules);
+    hashBool(&hasher, policy.require_local_target_for_execution);
+    hashBool(&hasher, policy.require_environment_preflight);
+    hashBool(&hasher, policy.require_supervision_permit);
+    hashBool(&hasher, policy.allow_continue_fresh);
+    hashBool(&hasher, policy.allow_replay_without_environment);
+    hashBool(&hasher, policy.allow_verify_without_fresh_environment);
+    hashBool(&hasher, policy.allow_parked_resume);
+    hashBool(&hasher, policy.allow_branch_resume);
+    hashBool(&hasher, policy.allow_completed_replay);
+    hashBool(&hasher, policy.reject_target_mismatch);
+    hashBool(&hasher, policy.reject_module_mismatch);
+    hashBool(&hasher, policy.reject_transcript_mismatch);
+    hashBool(&hasher, policy.reject_prior_receipt_mismatch);
+    hashU64(&hasher, policy.max_package_bytes);
+    hashU64(&hasher, policy.max_module_bytes);
+    hashU64(&hasher, policy.max_transcript_bytes);
+    hashU64(&hasher, policy.max_branches);
+    hashU64(&hasher, policy.max_checkpoints);
+    return hasher.final();
+}
+
+fn fingerprintAdmissionRequest(request: Admission.AdmissionRequest) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.admission_request.fingerprint");
+    hashU64(&hasher, world_admission_request_fingerprint_version);
+    hashU64(&hasher, request.package_fingerprint);
+    hashU64(&hasher, @intFromEnum(request.mode));
+    hashU64(&hasher, request.policy_fingerprint);
+    hashOptionalU64(&hasher, request.target_registry_fingerprint);
+    hashOptionalU64(&hasher, request.environment_certificate_fingerprint);
+    hashOptionalU64(&hasher, request.run_permit_fingerprint);
+    hashOptionalU64(&hasher, request.requested_branch_id);
+    hashOptionalU64(&hasher, request.requested_checkpoint_ref);
+    hashU64(&hasher, request.metadata.len);
+    hashBytes(&hasher, request.metadata);
+    return hasher.final();
+}
+
+fn fingerprintAdmissionReport(report: Admission.AdmissionReport) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.admission_report.fingerprint");
+    hashU64(&hasher, world_admission_report_fingerprint_version);
+    hashBool(&hasher, report.accepted);
+    hashU64(&hasher, @intFromEnum(report.mode));
+    hashU64(&hasher, report.package_fingerprint);
+    hashU64(&hasher, report.manifest_fingerprint);
+    hashOptionalU64(&hasher, report.target_ref_fingerprint);
+    hashOptionalU64(&hasher, report.module_ref_fingerprint);
+    hashOptionalU64(&hasher, report.target_match_fingerprint);
+    hashOptionalU64(&hasher, report.import_set_fingerprint);
+    hashOptionalU64(&hasher, report.environment_acceptance_report_fingerprint);
+    hashOptionalU64(&hasher, report.run_permit_fingerprint);
+    hashOptionalU64(&hasher, report.handoff_preflight_report_fingerprint);
+    hashU64(&hasher, report.blockers.len);
+    for (report.blockers) |blocker| hashU64(&hasher, @intFromEnum(blocker));
+    hashU64(&hasher, report.warnings.len);
+    for (report.warnings) |warning| hashU64(&hasher, @intFromEnum(warning));
+    hashU64(&hasher, report.summary.len);
+    hashBytes(&hasher, report.summary);
+    return hasher.final();
+}
+
+fn fingerprintAdmissionReceipt(receipt: Admission.AdmissionReceipt) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.admission_receipt.fingerprint");
+    hashU64(&hasher, world_admission_receipt_fingerprint_version);
+    hashU64(&hasher, receipt.admission_request_fingerprint);
+    hashU64(&hasher, receipt.admission_report_fingerprint);
+    hashU64(&hasher, receipt.package_fingerprint);
+    hashU64(&hasher, receipt.target_ref_fingerprint);
+    hashOptionalU64(&hasher, receipt.module_ref_fingerprint);
+    hashOptionalU64(&hasher, receipt.local_target_ref_fingerprint);
+    hashOptionalU64(&hasher, receipt.target_match_fingerprint);
+    hashOptionalU64(&hasher, receipt.environment_certificate_fingerprint);
+    hashOptionalU64(&hasher, receipt.run_permit_fingerprint);
+    hashOptionalU64(&hasher, receipt.admitted_run_fingerprint);
+    hashU64(&hasher, @intFromEnum(receipt.accepted_mode));
+    hashU64(&hasher, receipt.warnings.len);
+    for (receipt.warnings) |warning| hashU64(&hasher, @intFromEnum(warning));
+    hashU64(&hasher, receipt.metadata.len);
+    hashBytes(&hasher, receipt.metadata);
+    return hasher.final();
+}
+
+fn fingerprintAdmittedRun(run: Admission.AdmittedRun) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.admitted_run.fingerprint");
+    hashU64(&hasher, world_admitted_run_fingerprint_version);
+    hashU64(&hasher, run.target_ref.target_ref_fingerprint);
+    hashOptionalU64(&hasher, run.environment_certificate_fingerprint);
+    hashOptionalU64(&hasher, if (run.run_permit) |permit| permit.permit_fingerprint else null);
+    hashOptionalU64(&hasher, if (run.run_image) |image| image.run_image_fingerprint else null);
+    hashOptionalU64(&hasher, if (run.transcript_image) |image| image.transcript_image_fingerprint else null);
+    hashOptionalU64(&hasher, run.selected_branch_id);
+    hashOptionalU64(&hasher, run.selected_checkpoint_ref);
+    hashU64(&hasher, @intFromEnum(run.mode));
     return hasher.final();
 }
 
@@ -8285,6 +11397,10 @@ fn fingerprintValueImage(
 }
 
 fn fingerprintTranscriptEventImage(event: TranscriptImage.EventImage) u64 {
+    return fingerprintTranscriptEventImageForFormat(world_transcript_image_format_version, event);
+}
+
+fn fingerprintTranscriptEventImageForFormat(format_version: u32, event: TranscriptImage.EventImage) u64 {
     var hasher = std.hash.Wyhash.init(0);
     hashBytes(&hasher, "world.transcript.event_image.fingerprint");
     hashU64(&hasher, world_timeline_event_fingerprint_version);
@@ -8301,6 +11417,13 @@ fn fingerprintTranscriptEventImage(event: TranscriptImage.EventImage) u64 {
         hashBool(&hasher, false);
     }
     hashOptionalU64(&hasher, event.replay_key);
+    if (format_version >= 3) {
+        hashOptionalU64(&hasher, event.admission_request_fingerprint);
+        hashOptionalU64(&hasher, event.admission_report_fingerprint);
+        hashOptionalU64(&hasher, event.admission_receipt_fingerprint);
+        hashOptionalU64(&hasher, event.module_ref_fingerprint);
+        hashOptionalU64(&hasher, event.target_match_fingerprint);
+    }
     if (event.turn_index) |turn| {
         hashBool(&hasher, true);
         hashU64(&hasher, turn);
@@ -8365,6 +11488,18 @@ fn fingerprintTimelineEvent(event: Timeline.Event) u64 {
     hashOptionalU64(&hasher, event.supervision_check_fingerprint);
     hashOptionalU64(&hasher, event.usage_ledger_fingerprint);
     hashOptionalU64(&hasher, event.run_receipt_fingerprint);
+    if (event.admission_receipt_fingerprint) |fingerprint| {
+        hashBytes(&hasher, "admission_receipt_fingerprint");
+        hashU64(&hasher, fingerprint);
+    }
+    if (event.module_ref_fingerprint) |fingerprint| {
+        hashBytes(&hasher, "module_ref_fingerprint");
+        hashU64(&hasher, fingerprint);
+    }
+    if (event.target_match_fingerprint) |fingerprint| {
+        hashBytes(&hasher, "target_match_fingerprint");
+        hashU64(&hasher, fingerprint);
+    }
     if (event.blocker_tag) |blocker| {
         hashBool(&hasher, true);
         hashU64(&hasher, @intFromEnum(blocker));

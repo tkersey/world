@@ -403,6 +403,82 @@ fn hashTestU64(hasher: *std.hash.Wyhash, value: anytype) void {
     hasher.update(&buffer);
 }
 
+fn hashTestBool(hasher: *std.hash.Wyhash, value: bool) void {
+    hashTestU64(hasher, @as(u8, if (value) 1 else 0));
+}
+
+fn hashTestOptionalU64(hasher: *std.hash.Wyhash, value: ?u64) void {
+    if (value) |present| {
+        hashTestBool(hasher, true);
+        hashTestU64(hasher, present);
+    } else {
+        hashTestBool(hasher, false);
+    }
+}
+
+fn hashTestOptionalU32(hasher: *std.hash.Wyhash, value: ?u32) void {
+    if (value) |present| {
+        hashTestBool(hasher, true);
+        hashTestU64(hasher, present);
+    } else {
+        hashTestBool(hasher, false);
+    }
+}
+
+fn testTranscriptEventImageV2Fingerprint(event: world.TranscriptImage.EventImage) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashTestBytes(&hasher, "world.transcript.event_image.fingerprint");
+    hashTestU64(&hasher, world.world_timeline_event_fingerprint_version);
+    hashTestU64(&hasher, @intFromEnum(event.kind));
+    hashTestU64(&hasher, event.world_surface_fingerprint);
+    hashTestU64(&hasher, event.target_certificate_fingerprint);
+    hashTestOptionalU32(&hasher, event.world_port_id);
+    hashTestOptionalU64(&hasher, event.request_fingerprint);
+    hashTestOptionalU64(&hasher, event.response_fingerprint);
+    hashTestBool(&hasher, false);
+    hashTestOptionalU64(&hasher, event.replay_key);
+    hashTestBool(&hasher, false);
+    hashTestBool(&hasher, false);
+    hashTestOptionalU64(&hasher, event.residual_site_fingerprint);
+    hashTestBool(&hasher, false);
+    hashTestBool(&hasher, event.source_run);
+    hashTestBool(&hasher, false);
+    hashTestBool(&hasher, false);
+    return hasher.final();
+}
+
+fn testTranscriptEventImageFingerprint(event: world.TranscriptImage.EventImage) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashTestBytes(&hasher, "world.transcript.event_image.fingerprint");
+    hashTestU64(&hasher, world.world_timeline_event_fingerprint_version);
+    hashTestU64(&hasher, @intFromEnum(event.kind));
+    hashTestU64(&hasher, event.world_surface_fingerprint);
+    hashTestU64(&hasher, event.target_certificate_fingerprint);
+    hashTestOptionalU32(&hasher, event.world_port_id);
+    hashTestOptionalU64(&hasher, event.request_fingerprint);
+    hashTestOptionalU64(&hasher, event.response_fingerprint);
+    if (event.response_kind) |kind| {
+        hashTestBool(&hasher, true);
+        hashTestU64(&hasher, @intFromEnum(kind));
+    } else {
+        hashTestBool(&hasher, false);
+    }
+    hashTestOptionalU64(&hasher, event.replay_key);
+    hashTestOptionalU64(&hasher, event.admission_request_fingerprint);
+    hashTestOptionalU64(&hasher, event.admission_report_fingerprint);
+    hashTestOptionalU64(&hasher, event.admission_receipt_fingerprint);
+    hashTestOptionalU64(&hasher, event.module_ref_fingerprint);
+    hashTestOptionalU64(&hasher, event.target_match_fingerprint);
+    hashTestBool(&hasher, false);
+    hashTestBool(&hasher, false);
+    hashTestOptionalU64(&hasher, event.residual_site_fingerprint);
+    hashTestBool(&hasher, false);
+    hashTestBool(&hasher, event.source_run);
+    hashTestBool(&hasher, false);
+    hashTestBool(&hasher, false);
+    return hasher.final();
+}
+
 fn writeLittleU64(bytes: []u8, value: anytype) void {
     var buffer: [8]u8 = undefined;
     std.mem.writeInt(u64, &buffer, @intCast(value), .little);
@@ -1875,6 +1951,144 @@ test "transcript image encode decode round trip stable and image replay works wi
     defer decoded.deinit(std.testing.allocator);
     try std.testing.expectEqual(image.transcript_image_fingerprint, decoded.transcript_image_fingerprint);
     try std.testing.expectEqual(@as(usize, 1), decoded.response_count);
+    var forged_event_scope_image = decoded;
+    forged_event_scope_image.events[0].world_surface_fingerprint +%= 1;
+    const forged_event_scope_package = world.Admission.TransferPackage.init(.{
+        .kind = .replay_run,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target),
+        .transcript_image = forged_event_scope_image,
+        .requested_mode = .replay_only,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_event_scope_package.validate(.{}));
+    forged_event_scope_image.events[0].world_surface_fingerprint -%= 1;
+    var unsupported_format_image = decoded;
+    unsupported_format_image.format_version = world.world_transcript_image_format_version + 1;
+    const unsupported_transcript_package = world.Admission.TransferPackage.init(.{
+        .kind = .replay_run,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target),
+        .transcript_image = unsupported_format_image,
+        .requested_mode = .replay_only,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, unsupported_transcript_package.validate(.{}));
+    var admission_transcript = world.Transcript.init(std.testing.allocator);
+    defer admission_transcript.deinit();
+    try admission_transcript.append(.{
+        .kind = .admission_accepted,
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .admission_request_fingerprint = 0x456,
+        .admission_report_fingerprint = 0x789,
+        .admission_receipt_fingerprint = 0xabc,
+        .module_ref_fingerprint = 0xdef,
+        .target_match_fingerprint = 0x123,
+    });
+    var admission_image = try admission_transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer admission_image.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(?u64, 0x456), admission_image.events[0].admission_request_fingerprint);
+    try std.testing.expectEqual(@as(?u64, 0x789), admission_image.events[0].admission_report_fingerprint);
+    try std.testing.expectEqual(@as(?u64, 0xabc), admission_image.events[0].admission_receipt_fingerprint);
+    try std.testing.expectEqual(@as(?u64, 0xdef), admission_image.events[0].module_ref_fingerprint);
+    try std.testing.expectEqual(@as(?u64, 0x123), admission_image.events[0].target_match_fingerprint);
+    const admission_encoded = try admission_image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(admission_encoded);
+    var decoded_admission_image = try world.TranscriptImage.decode(std.testing.allocator, admission_encoded);
+    defer decoded_admission_image.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(?u64, 0x456), decoded_admission_image.events[0].admission_request_fingerprint);
+    try std.testing.expectEqual(@as(?u64, 0x789), decoded_admission_image.events[0].admission_report_fingerprint);
+    try std.testing.expectEqual(@as(?u64, 0xabc), decoded_admission_image.events[0].admission_receipt_fingerprint);
+    var restored_admission_transcript = try world.Transcript.fromImage(std.testing.allocator, decoded_admission_image);
+    defer restored_admission_transcript.deinit();
+    try std.testing.expectEqual(@as(?u64, 0x456), restored_admission_transcript.events.items[0].admission_request_fingerprint);
+    try std.testing.expectEqual(@as(?u64, 0x789), restored_admission_transcript.events.items[0].admission_report_fingerprint);
+    try std.testing.expectEqual(@as(?u64, 0xdef), restored_admission_transcript.events.items[0].module_ref_fingerprint);
+    var malformed_admission_transcript = world.Transcript.init(std.testing.allocator);
+    defer malformed_admission_transcript.deinit();
+    try malformed_admission_transcript.append(.{
+        .kind = .admission_accepted,
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .admission_request_fingerprint = 0x456,
+        .admission_report_fingerprint = 0x789,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, malformed_admission_transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable }));
+
+    var v2_events = try std.testing.allocator.alloc(world.TranscriptImage.EventImage, 1);
+    var v2_events_owned = true;
+    errdefer if (v2_events_owned) std.testing.allocator.free(v2_events);
+    v2_events[0] = .{
+        .event_fingerprint = 0,
+        .kind = .run_started,
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .source_run = true,
+    };
+    v2_events[0].event_fingerprint = testTranscriptEventImageV2Fingerprint(v2_events[0]);
+    var v2_image = world.TranscriptImage{
+        .format_version = 2,
+        .transcript_image_fingerprint = 0,
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .events = v2_events,
+        .final_status = .running,
+    };
+    v2_events_owned = false;
+    v2_image.transcript_image_fingerprint = testTranscriptImageFingerprint(v2_image);
+    const v2_encoded = try v2_image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(v2_encoded);
+    defer v2_image.deinit(std.testing.allocator);
+    var decoded_v2_image = try world.TranscriptImage.decode(std.testing.allocator, v2_encoded);
+    defer decoded_v2_image.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u32, 2), decoded_v2_image.format_version);
+    try std.testing.expectEqual(@as(?u64, null), decoded_v2_image.events[0].admission_receipt_fingerprint);
+    var forged_v2_events = try std.testing.allocator.alloc(world.TranscriptImage.EventImage, 1);
+    var forged_v2_events_owned = true;
+    errdefer if (forged_v2_events_owned) std.testing.allocator.free(forged_v2_events);
+    forged_v2_events[0] = .{
+        .event_fingerprint = 0,
+        .kind = .admission_requested,
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+    };
+    forged_v2_events[0].event_fingerprint = testTranscriptEventImageV2Fingerprint(forged_v2_events[0]);
+    var forged_v2_admission_image = world.TranscriptImage{
+        .format_version = 2,
+        .transcript_image_fingerprint = 0,
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .events = forged_v2_events,
+        .final_status = .running,
+    };
+    forged_v2_events_owned = false;
+    forged_v2_admission_image.transcript_image_fingerprint = testTranscriptImageFingerprint(forged_v2_admission_image);
+    const forged_v2_admission_encoded = try forged_v2_admission_image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(forged_v2_admission_encoded);
+    defer forged_v2_admission_image.deinit(std.testing.allocator);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.TranscriptImage.decode(std.testing.allocator, forged_v2_admission_encoded));
+    var forged_v3_events = try std.testing.allocator.alloc(world.TranscriptImage.EventImage, 1);
+    var forged_v3_events_owned = true;
+    errdefer if (forged_v3_events_owned) std.testing.allocator.free(forged_v3_events);
+    forged_v3_events[0] = .{
+        .event_fingerprint = 0,
+        .kind = .admission_accepted,
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .admission_request_fingerprint = 0x456,
+        .admission_report_fingerprint = 0x789,
+    };
+    forged_v3_events[0].event_fingerprint = testTranscriptEventImageFingerprint(forged_v3_events[0]);
+    var forged_v3_admission_image = world.TranscriptImage{
+        .transcript_image_fingerprint = 0,
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .events = forged_v3_events,
+        .final_status = .running,
+    };
+    forged_v3_events_owned = false;
+    forged_v3_admission_image.transcript_image_fingerprint = testTranscriptImageFingerprint(forged_v3_admission_image);
+    const forged_v3_admission_encoded = try forged_v3_admission_image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(forged_v3_admission_encoded);
+    defer forged_v3_admission_image.deinit(std.testing.allocator);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.TranscriptImage.decode(std.testing.allocator, forged_v3_admission_encoded));
     var forged_status_image = decoded;
     forged_status_image.final_status = .failed;
     forged_status_image.transcript_image_fingerprint = testTranscriptImageFingerprint(forged_status_image);
@@ -5825,6 +6039,8 @@ test "usage ledger supervision check and run receipt fingerprints are stable" {
         .mode = .fresh,
         .policy = world.SupervisionPolicy.strict_fresh,
         .budget = world.Budget.init(.{ .max_port_requests = 2, .max_total_cost_units = 100 }),
+        .admission_receipt_fingerprint = 0xabc,
+        .module_ref_fingerprint = 0xdef,
     });
     var supervisor = try world.Supervisor.init(std.testing.allocator, permit, fixtures.Ports.Target.WorldPortTable.entries.len);
     defer supervisor.deinit();
@@ -5847,7 +6063,41 @@ test "usage ledger supervision check and run receipt fingerprints are stable" {
     const receipt_b = supervisor.receipt(.completed, state.run_state_fingerprint, null, null);
     try std.testing.expectEqual(receipt_a.receipt_fingerprint, receipt_b.receipt_fingerprint);
     try std.testing.expectEqual(supervisor.ledger.ledger_fingerprint, receipt_a.usage_ledger_fingerprint);
+    try std.testing.expectEqual(@as(?u64, 0xabc), receipt_a.admission_receipt_fingerprint);
+    try std.testing.expectEqual(@as(?u64, 0xdef), receipt_a.module_ref_fingerprint);
     try std.testing.expectEqual(@as(usize, 1), receipt_a.total_port_requests);
+}
+
+test "direct machine start rejects scoped permits" {
+    const module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
+    const module_scoped_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .module_ref_fingerprint = module_ref.module_ref_fingerprint,
+        .policy = world.SupervisionPolicy.strict_fresh,
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var ctx: PortsCtx = .{};
+    try std.testing.expectError(error.SupervisionDenied, PortsMachineEnv.run(&runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+        .permit = module_scoped_permit,
+    }));
+
+    const admission_scoped_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .admission_receipt_fingerprint = 0xabc,
+        .policy = world.SupervisionPolicy.strict_fresh,
+    });
+    var admission_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer admission_runtime.deinit();
+    try std.testing.expectError(error.SupervisionDenied, PortsMachineEnv.run(&admission_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+        .permit = admission_scoped_permit,
+    }));
 }
 
 test "supervision cost overflow saturates into budget exceeded" {
@@ -5963,6 +6213,55 @@ test "supervised handoff receiver can issue stricter permit and inspect prior re
     });
     const report = handoff.preflightWithPermit(fixtures.Ports.Target, PortsEnv, .accept_fresh, receiver_permit);
     try std.testing.expect(report.accepted);
+    const module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
+    const module_image = image.withModuleRef(module_ref, null);
+    const module_encoded = try module_image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(module_encoded);
+    var module_handoff = try world.Handoff.fromRunImage(std.testing.allocator, module_encoded);
+    defer module_handoff.deinit();
+    var owned_decoded_image = try world.RunImage.decode(std.testing.allocator, encoded);
+    defer owned_decoded_image.deinit(std.testing.allocator);
+    var borrowed_module_image = owned_decoded_image.withModuleRef(module_ref, null);
+    defer borrowed_module_image.deinit(std.testing.allocator);
+    try std.testing.expect(!borrowed_module_image.owns_target_ref_bytes);
+    try std.testing.expect(!borrowed_module_image.owns_pending_request_frame);
+    const borrowed_module_encoded = try borrowed_module_image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(borrowed_module_encoded);
+    const module_scoped_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .module_ref_fingerprint = module_ref.module_ref_fingerprint,
+        .policy = world.SupervisionPolicy.handoff_receiver,
+        .budget = world.Budget.init(.{ .max_port_requests = 1 }),
+    });
+    const module_report = module_handoff.preflightWithPermit(fixtures.Ports.Target, PortsEnv, .accept_fresh, module_scoped_permit);
+    try std.testing.expect(module_report.accepted);
+    const registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Ports.Target)});
+    const package_level_module_witness = world.Admission.TransferPackage.init(.{
+        .kind = .parked_run,
+        .target_ref = target_ref,
+        .module_ref = module_ref,
+        .run_image = image,
+        .requested_mode = .resume_parked,
+    });
+    const package_level_module_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.init(.{
+            .require_supervision_permit = true,
+        }),
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, package_level_module_witness, .{
+        .allocator = std.testing.allocator,
+        .permit = module_scoped_permit,
+    });
+    try std.testing.expect(package_level_module_result.report.accepted);
+    try std.testing.expectEqual(module_ref.module_ref_fingerprint, package_level_module_result.admitted_run.?.run_image.?.module_ref_fingerprint.?);
+    const wrong_module_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .module_ref_fingerprint = module_ref.module_ref_fingerprint +% 1,
+        .policy = world.SupervisionPolicy.handoff_receiver,
+        .budget = world.Budget.init(.{ .max_port_requests = 1 }),
+    });
+    const wrong_module_report = module_handoff.preflightWithPermit(fixtures.Ports.Target, PortsEnv, .accept_fresh, wrong_module_permit);
+    try std.testing.expect(!wrong_module_report.accepted);
     const unwitnessed_image = world.RunImage.init(.{
         .kind = .parked_run,
         .target_ref = target_ref,
@@ -5976,6 +6275,8 @@ test "supervised handoff receiver can issue stricter permit and inspect prior re
     defer unwitnessed_handoff.deinit();
     const unwitnessed_report = unwitnessed_handoff.preflightWithPermit(fixtures.Ports.Target, PortsEnv, .accept_fresh, receiver_permit);
     try std.testing.expect(unwitnessed_report.accepted);
+    const unwitnessed_module_report = unwitnessed_handoff.preflightWithPermit(fixtures.Ports.Target, PortsEnv, .accept_fresh, module_scoped_permit);
+    try std.testing.expect(!unwitnessed_module_report.accepted);
     const reused_permit_image = world.RunImage.init(.{
         .kind = .parked_run,
         .target_ref = target_ref,
@@ -6288,4 +6589,2044 @@ test "supervised agent run completes under budget and over-budget agent is denie
     }));
     try std.testing.expectEqual(@as(usize, 0), denied_ctx.model_calls);
     try std.testing.expectEqual(@as(usize, 0), denied_ctx.tool_calls);
+}
+
+test "transfer package encode/decode roundtrip and manifest fingerprint are stable" {
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
+    const package = world.Admission.TransferPackage.init(.{
+        .kind = .module_reference,
+        .target_ref = target_ref,
+        .module_ref = module_ref,
+        .requested_mode = .local_target_match_only,
+        .metadata = "admission package fixture",
+    });
+    try package.validate(.{});
+    const encoded = try package.encode(std.testing.allocator);
+    defer std.testing.allocator.free(encoded);
+    var decoded = try world.Admission.TransferPackage.decode(std.testing.allocator, encoded);
+    defer decoded.deinit(std.testing.allocator);
+    try std.testing.expectEqual(package.package_fingerprint, decoded.package_fingerprint);
+    try std.testing.expectEqual(package.manifest.manifest_fingerprint, decoded.manifest.manifest_fingerprint);
+    try std.testing.expectEqual(module_ref.module_ref_fingerprint, decoded.module_ref.?.module_ref_fingerprint);
+    try std.testing.expectEqualStrings("admission package fixture", decoded.metadata);
+}
+
+test "transfer package rejects malformed and oversized packages" {
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const envelope_package = world.Admission.TransferPackage.init(.{
+        .kind = .target_reference_only,
+        .target_ref = target_ref,
+        .requested_mode = .local_target_match_only,
+    });
+    const envelope_encoded = try envelope_package.encode(std.testing.allocator);
+    defer std.testing.allocator.free(envelope_encoded);
+    try envelope_package.validate(.{ .max_package_bytes = envelope_encoded.len });
+    try std.testing.expectError(error.InvalidFrameEncoding, envelope_package.validate(.{ .max_package_bytes = envelope_encoded.len - 1 }));
+    const empty_module_reference = world.Admission.TransferPackage.init(.{
+        .kind = .module_reference,
+        .target_ref = target_ref,
+        .requested_mode = .local_target_match_only,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, empty_module_reference.validate(.{}));
+    var future_module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
+    future_module_ref.format_version = world.world_module_ref_format_version + 1;
+    const future_module_reference = world.Admission.TransferPackage.init(.{
+        .kind = .module_reference,
+        .target_ref = target_ref,
+        .module_ref = future_module_ref,
+        .requested_mode = .local_target_match_only,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, future_module_reference.validate(.{}));
+    const empty_inspect = world.Admission.TransferPackage.init(.{
+        .kind = .inspect_only,
+        .requested_mode = .inspect_only,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, empty_inspect.validate(.{ .allow_inspect_only = true }));
+    const stray_module_bytes = world.Admission.TransferPackage.init(.{
+        .kind = .module_reference,
+        .target_ref = target_ref,
+        .module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target),
+        .module_image_bytes = "not-a-full-module-package",
+        .requested_mode = .local_target_match_only,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, stray_module_bytes.validate(.{ .allow_full_module = true }));
+    const empty_replay = world.Admission.TransferPackage.init(.{
+        .kind = .replay_run,
+        .target_ref = target_ref,
+        .requested_mode = .replay_only,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, empty_replay.validate(.{}));
+    const completed_state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .completed,
+    });
+    const completed_image = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = completed_state,
+    });
+    var future_run_image = completed_image;
+    future_run_image.format_version = world.world_run_image_format_version + 100;
+    const future_run_image_package = world.Admission.TransferPackage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .run_image = future_run_image,
+        .requested_mode = .completed_replay,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, future_run_image_package.validate(.{}));
+    const mismatched_run_kind = world.Admission.TransferPackage.init(.{
+        .kind = .parked_run,
+        .target_ref = target_ref,
+        .run_image = completed_image,
+        .requested_mode = .resume_parked,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, mismatched_run_kind.validate(.{}));
+    var stale_run_target_ref = completed_image;
+    stale_run_target_ref.target_ref.world_surface_fingerprint +%= 1;
+    const stale_run_target_ref_package = world.Admission.TransferPackage.init(.{
+        .kind = .completed_run,
+        .run_image = stale_run_target_ref,
+        .requested_mode = .completed_replay,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, stale_run_target_ref_package.validate(.{}));
+    const misleading_reference_kind = world.Admission.TransferPackage.init(.{
+        .kind = .target_reference_only,
+        .target_ref = target_ref,
+        .run_image = completed_image,
+        .requested_mode = .completed_replay,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, misleading_reference_kind.validate(.{}));
+    const inspect_run_image_package = world.Admission.TransferPackage.init(.{
+        .kind = .inspect_only,
+        .target_ref = target_ref,
+        .run_image = completed_image,
+        .requested_mode = .inspect_only,
+    });
+    try inspect_run_image_package.validate(.{ .allow_inspect_only = true });
+    const inspect_run_image_encoded = try inspect_run_image_package.encode(std.testing.allocator);
+    defer std.testing.allocator.free(inspect_run_image_encoded);
+    try inspect_run_image_package.validate(.{
+        .allow_inspect_only = true,
+        .max_package_bytes = inspect_run_image_encoded.len,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, inspect_run_image_package.validate(.{
+        .allow_inspect_only = true,
+        .max_package_bytes = inspect_run_image_encoded.len - 1,
+    }));
+    const branched_image = world.RunImage.init(.{
+        .kind = .branched_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = completed_state,
+    });
+    const branched_replay_package = world.Admission.TransferPackage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .run_image = branched_image,
+        .requested_mode = .completed_replay,
+    });
+    try branched_replay_package.validate(.{});
+
+    const full_module_bytes = try fixtures.Ports.Target.Module.fullImage(std.testing.allocator);
+    defer std.testing.allocator.free(full_module_bytes);
+    const module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
+    var loaded_module = try world.Admission.ModuleGateway.decodeBoundaryModule(fixtures.Ports.Target, std.testing.allocator, full_module_bytes);
+    defer loaded_module.deinit();
+    const full_module_ref = world.Admission.ModuleGateway.refFromBoundaryModule(loaded_module);
+    const unwitnessed_full_module_ref_package = world.Admission.TransferPackage.init(.{
+        .kind = .module_reference,
+        .module_ref = full_module_ref,
+        .requested_mode = .inspect_only,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, unwitnessed_full_module_ref_package.validate(.{
+        .allow_full_module = true,
+        .allow_inspect_only = true,
+    }));
+    const run_with_module_image = completed_image.withModuleRef(
+        module_ref,
+        world.Admission.moduleImageFingerprintForBytes(full_module_bytes),
+    );
+    const run_module_image_package = world.Admission.TransferPackage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .module_ref = module_ref,
+        .module_image_bytes = full_module_bytes,
+        .run_image = run_with_module_image,
+        .requested_mode = .completed_replay,
+    });
+    try run_module_image_package.validate(.{ .allow_full_module = true });
+    const run_module_bytes_witness = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = completed_state,
+        .module_image_fingerprint = world.Admission.moduleImageFingerprintForBytes(full_module_bytes),
+    });
+    const run_module_bytes_witness_package = world.Admission.TransferPackage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .module_image_bytes = full_module_bytes,
+        .run_image = run_module_bytes_witness,
+        .requested_mode = .completed_replay,
+    });
+    try run_module_bytes_witness_package.validate(.{ .allow_full_module = true });
+    const mismatched_run_module_image_package = world.Admission.TransferPackage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .module_ref = module_ref,
+        .module_image_bytes = "not-the-bound-module-image",
+        .run_image = run_with_module_image,
+        .requested_mode = .completed_replay,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, mismatched_run_module_image_package.validate(.{ .allow_full_module = true }));
+
+    var package = world.Admission.TransferPackage.init(.{
+        .kind = .target_reference_only,
+        .target_ref = target_ref,
+        .requested_mode = .local_target_match_only,
+        .metadata = "tiny",
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, package.validate(.{ .max_package_bytes = 1 }));
+    var oversized_target_ref = target_ref;
+    oversized_target_ref.metadata = "target metadata exceeds the narrow package cap";
+    const target_metadata_package = world.Admission.TransferPackage.init(.{
+        .kind = .target_reference_only,
+        .target_ref = oversized_target_ref,
+        .requested_mode = .local_target_match_only,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, target_metadata_package.validate(.{ .max_package_bytes = 8 }));
+    const oversized_module_package = world.Admission.TransferPackage.init(.{
+        .kind = .full_module,
+        .target_ref = target_ref,
+        .module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target),
+        .module_image_bytes = "not-a-full-module-package",
+        .requested_mode = .inspect_only,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, oversized_module_package.validate(.{
+        .allow_full_module = true,
+        .allow_inspect_only = true,
+        .max_module_bytes = 8,
+    }));
+    var stale_manifest = package;
+    stale_manifest.manifest.package_kind = .full_module;
+    try std.testing.expectError(error.InvalidFrameEncoding, stale_manifest.validate(.{}));
+    var stale_manifest_version = package;
+    stale_manifest_version.manifest.format_version +%= 1;
+    try std.testing.expectError(error.InvalidFrameEncoding, stale_manifest_version.validate(.{}));
+    package.package_fingerprint +%= 1;
+    try std.testing.expectError(error.InvalidFrameEncoding, package.validate(.{}));
+}
+
+test "transfer package validates module fingerprints and transcript byte limits" {
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    var module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
+    module_ref.import_surface_fingerprint = if (module_ref.import_surface_fingerprint) |fingerprint| fingerprint +% 1 else 1;
+    const stale_module_package = world.Admission.TransferPackage.init(.{
+        .kind = .module_reference,
+        .target_ref = target_ref,
+        .module_ref = module_ref,
+        .requested_mode = .local_target_match_only,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, stale_module_package.validate(.{}));
+
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    try recordPortsTranscript(&transcript);
+    var image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer image.deinit(std.testing.allocator);
+    const encoded = try image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(encoded);
+    const transcript_package = world.Admission.TransferPackage.init(.{
+        .kind = .replay_run,
+        .target_ref = target_ref,
+        .transcript_image = image,
+        .requested_mode = .replay_only,
+    });
+    const transcript_package_encoded = try transcript_package.encode(std.testing.allocator);
+    defer std.testing.allocator.free(transcript_package_encoded);
+    try transcript_package.validate(.{ .max_transcript_bytes = encoded.len });
+    try transcript_package.validate(.{ .max_package_bytes = transcript_package_encoded.len });
+    try std.testing.expectError(error.InvalidFrameEncoding, transcript_package.validate(.{ .max_package_bytes = transcript_package_encoded.len - 1 }));
+    try std.testing.expectError(error.InvalidFrameEncoding, transcript_package.validate(.{ .max_transcript_bytes = image.events.len }));
+
+    const embedded_run_image = world.RunImage.fromTranscriptImage(fixtures.Ports.Target, image, .replay_only_run);
+    const embedded_package = world.Admission.TransferPackage.init(.{
+        .kind = .replay_run,
+        .target_ref = target_ref,
+        .run_image = embedded_run_image,
+        .requested_mode = .replay_only,
+    });
+    try embedded_package.validate(.{ .max_transcript_bytes = encoded.len });
+    try std.testing.expectError(error.InvalidFrameEncoding, embedded_package.validate(.{ .max_transcript_bytes = image.events.len }));
+}
+
+test "module ref binds target identity and RunImage module refs decode" {
+    const module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .completed,
+    });
+    const image = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = state,
+    }).withModuleRef(module_ref, null);
+    const encoded = try image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(encoded);
+    var decoded = try world.RunImage.decode(std.testing.allocator, encoded);
+    defer decoded.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u32, 3), decoded.format_version);
+    try std.testing.expectEqual(module_ref.module_ref_fingerprint, decoded.module_ref_fingerprint.?);
+    try std.testing.expectEqual(module_ref.boundary_module_fingerprint, decoded.boundary_module_fingerprint.?);
+
+    const direct_image = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = state,
+        .module_ref_fingerprint = module_ref.module_ref_fingerprint,
+        .boundary_module_fingerprint = module_ref.boundary_module_fingerprint,
+    });
+    const direct_encoded = try direct_image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(direct_encoded);
+    var direct_decoded = try world.RunImage.decode(std.testing.allocator, direct_encoded);
+    defer direct_decoded.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u32, 3), direct_decoded.format_version);
+    try std.testing.expectEqual(module_ref.module_ref_fingerprint, direct_decoded.module_ref_fingerprint.?);
+}
+
+test "target registry finds targets and matches module refs" {
+    const entry = world.Admission.TargetRegistry.register(fixtures.Ports.Target);
+    const registry = world.Admission.TargetRegistry.init(&.{entry});
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    try std.testing.expect(registry.find(target_ref) != null);
+    const module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
+    const match = registry.match(target_ref, module_ref);
+    try std.testing.expect(match.matched);
+    try std.testing.expectEqual(entry.target_ref.target_ref_fingerprint, match.local_target_ref_fingerprint.?);
+}
+
+test "target registry keeps scanning after coarse module mismatch" {
+    const coarse_entry = world.Admission.TargetRegistry.register(MissingDispatchTarget);
+    const exact_entry = world.Admission.TargetRegistry.register(fixtures.Ports.Target);
+    const registry = try world.Admission.TargetRegistry.initChecked(&.{ coarse_entry, exact_entry });
+    const module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
+    const match = registry.match(null, module_ref);
+    try std.testing.expect(match.matched);
+    try std.testing.expectEqual(exact_entry.target_ref.target_ref_fingerprint, match.local_target_ref_fingerprint.?);
+}
+
+test "target registry rejects module import and table witness mismatches" {
+    var module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
+
+    module_ref.import_surface_fingerprint = if (module_ref.import_surface_fingerprint) |fingerprint| fingerprint +% 1 else 1;
+    const import_mismatch = world.Admission.TargetMatch.matchModule(module_ref, fixtures.Ports.Target);
+    try std.testing.expect(!import_mismatch.matched);
+    try std.testing.expectEqual(world.Admission.MatchMismatch.ImportSet, import_mismatch.mismatches[0]);
+    const registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Ports.Target)});
+    try std.testing.expect(registry.matchModule(module_ref) == null);
+
+    module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
+    module_ref.world_value_table_fingerprint = if (module_ref.world_value_table_fingerprint) |fingerprint| fingerprint +% 1 else 1;
+    const table_mismatch = world.Admission.TargetMatch.matchModule(module_ref, fixtures.Ports.Target);
+    try std.testing.expect(!table_mismatch.matched);
+    try std.testing.expectEqual(world.Admission.MatchMismatch.WorldValueTable, table_mismatch.mismatches[0]);
+
+    module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
+    var stale_target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    stale_target_ref.world_dispatch_table_fingerprint = if (stale_target_ref.world_dispatch_table_fingerprint) |fingerprint| fingerprint +% 1 else 1;
+    const stale_target_match = registry.match(stale_target_ref, module_ref);
+    try std.testing.expect(!stale_target_match.matched);
+    try std.testing.expectEqual(world.Admission.MatchMismatch.WorldDispatchTable, stale_target_match.mismatches[0]);
+}
+
+test "target registry rejects duplicate conflicting target" {
+    const entry = world.Admission.TargetRegistry.register(fixtures.Ports.Target);
+    var stale_entry = entry;
+    stale_entry.import_set_fingerprint +%= 1;
+    const stale_entry_registry = world.Admission.TargetRegistry.init(&.{stale_entry});
+    try std.testing.expectError(error.TargetRegistryConflict, stale_entry_registry.validate());
+
+    var stale_registry = world.Admission.TargetRegistry.init(&.{entry});
+    stale_registry.registry_fingerprint +%= 1;
+    try std.testing.expectError(error.TargetRegistryConflict, stale_registry.validate());
+
+    var inconsistent_target_ref = entry;
+    inconsistent_target_ref.target_ref.world_surface_fingerprint +%= 1;
+    const inconsistent_target_ref_registry = world.Admission.TargetRegistry.init(&.{inconsistent_target_ref});
+    try std.testing.expectError(error.TargetRegistryConflict, inconsistent_target_ref_registry.validate());
+
+    var conflicting = entry;
+    conflicting.import_set_fingerprint +%= 1;
+    conflicting.entry_fingerprint +%= 1;
+    const registry = world.Admission.TargetRegistry.init(&.{ entry, conflicting });
+    try std.testing.expectError(error.TargetRegistryConflict, registry.validate());
+    try std.testing.expectError(error.TargetRegistryConflict, world.Admission.TargetRegistry.initChecked(&.{ entry, conflicting }));
+}
+
+test "target match diagnostics identify mismatched field" {
+    const module_ref = world.Admission.ModuleRef.init(.{
+        .boundary_module_fingerprint = 1,
+        .module_kind = .reference_only,
+        .target_ref_fingerprint = world.TargetRef.fromTarget(fixtures.Ports.Target).target_ref_fingerprint,
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint +% 1,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .residual_program_plan_hash = world.TargetRef.fromTarget(fixtures.Ports.Target).residual_program_plan_hash,
+        .normal_form_kind = world.TargetRef.fromTarget(fixtures.Ports.Target).normal_form_kind,
+        .world_port_count = fixtures.Ports.Target.WorldPortTable.entries.len,
+    });
+    const match = world.Admission.TargetMatch.matchModule(module_ref, fixtures.Ports.Target);
+    try std.testing.expect(!match.matched);
+    try std.testing.expectEqual(world.Admission.MatchMismatch.WorldSurface, match.mismatches[0]);
+
+    const base_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
+    const partial_ref = world.Admission.ModuleRef.init(.{
+        .boundary_module_fingerprint = base_ref.boundary_module_fingerprint,
+        .module_kind = .partial_module,
+        .target_ref_fingerprint = base_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = base_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = base_ref.target_certificate_fingerprint,
+        .residual_program_plan_hash = base_ref.residual_program_plan_hash,
+        .import_surface_fingerprint = base_ref.import_surface_fingerprint,
+        .export_surface_fingerprint = base_ref.export_surface_fingerprint,
+        .normal_form_kind = base_ref.normal_form_kind,
+        .world_port_count = base_ref.world_port_count,
+        .world_port_table_fingerprint = base_ref.world_port_table_fingerprint,
+        .world_value_table_fingerprint = base_ref.world_value_table_fingerprint,
+        .world_dispatch_table_fingerprint = base_ref.world_dispatch_table_fingerprint,
+    });
+    const partial_match = world.Admission.TargetMatch.matchModule(partial_ref, fixtures.Ports.Target);
+    try std.testing.expect(!partial_match.matched);
+
+    const stale_boundary_ref = world.Admission.ModuleRef.init(.{
+        .boundary_module_fingerprint = base_ref.boundary_module_fingerprint +% 1,
+        .module_kind = .reference_only,
+        .target_ref_fingerprint = base_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = base_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = base_ref.target_certificate_fingerprint,
+        .residual_program_plan_hash = base_ref.residual_program_plan_hash,
+        .import_surface_fingerprint = base_ref.import_surface_fingerprint,
+        .export_surface_fingerprint = base_ref.export_surface_fingerprint,
+        .normal_form_kind = base_ref.normal_form_kind,
+        .world_port_count = base_ref.world_port_count,
+        .world_port_table_fingerprint = base_ref.world_port_table_fingerprint,
+        .world_value_table_fingerprint = base_ref.world_value_table_fingerprint,
+        .world_dispatch_table_fingerprint = base_ref.world_dispatch_table_fingerprint,
+    });
+    const stale_boundary_match = world.Admission.TargetMatch.matchModule(stale_boundary_ref, fixtures.Ports.Target);
+    try std.testing.expect(!stale_boundary_match.matched);
+    try std.testing.expectEqual(world.Admission.MatchMismatch.BoundaryModule, stale_boundary_match.mismatches[0]);
+}
+
+test "module gateway validates full module inspect-only and reports unsupported loaded execution" {
+    const bytes = try fixtures.Ports.Target.Module.fullImage(std.testing.allocator);
+    defer std.testing.allocator.free(bytes);
+    var loaded = try world.Admission.ModuleGateway.decodeBoundaryModule(fixtures.Ports.Target, std.testing.allocator, bytes);
+    defer loaded.deinit();
+    const module_ref = world.Admission.ModuleGateway.refFromBoundaryModule(loaded);
+    const import_set = world.Admission.ModuleGateway.importSetFromBoundaryModule(loaded);
+    const summary = world.Admission.ModuleGateway.exportSummaryFromBoundaryModule(loaded);
+    const registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Ports.Target)});
+    const match = registry.match(null, module_ref);
+    try std.testing.expectEqual(loaded.manifest().module_fingerprint, module_ref.boundary_module_fingerprint);
+    try std.testing.expect(match.matched);
+    try std.testing.expectEqual(world.Admission.MatchMode.module_full_to_local_target, match.match_mode);
+    try std.testing.expectEqual(@as(usize, 1), import_set.required_count);
+    try std.testing.expect(!summary.loaded_execution_supported);
+}
+
+test "admission policy request report and receipt fingerprints are stable" {
+    const policy = world.Admission.AdmissionPolicy.handoff_receiver;
+    const request = world.Admission.AdmissionRequest.init(.{
+        .package_fingerprint = 11,
+        .mode = .resume_parked,
+        .policy_fingerprint = policy.policy_fingerprint,
+        .target_registry_fingerprint = 22,
+        .environment_certificate_fingerprint = 33,
+        .run_permit_fingerprint = 44,
+    });
+    const report = world.Admission.AdmissionReport.accept(.{
+        .request = request,
+        .package_fingerprint = 11,
+        .manifest_fingerprint = 55,
+        .target_ref_fingerprint = 66,
+        .run_permit_fingerprint = 44,
+    });
+    const receipt = world.Admission.AdmissionReceipt.init(.{
+        .request = request,
+        .report = report,
+        .target_ref_fingerprint = 66,
+        .environment_certificate_fingerprint = 33,
+        .run_permit_fingerprint = 44,
+    });
+    try std.testing.expect(report.accepted);
+    try std.testing.expectEqual(report.report_fingerprint, world.Admission.AdmissionReport.accept(.{
+        .request = request,
+        .package_fingerprint = 11,
+        .manifest_fingerprint = 55,
+        .target_ref_fingerprint = 66,
+        .run_permit_fingerprint = 44,
+    }).report_fingerprint);
+    try std.testing.expect(receipt.receipt_fingerprint != 0);
+}
+
+test "admitter accepts inspect-only full module and rejects missing permit for execution" {
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const entry = world.Admission.TargetRegistry.register(fixtures.Ports.Target);
+    const registry = world.Admission.TargetRegistry.init(&.{entry});
+    const full_module_bytes = try fixtures.Ports.Target.Module.fullImage(std.testing.allocator);
+    defer std.testing.allocator.free(full_module_bytes);
+    var loaded_module = try world.Admission.ModuleGateway.decodeBoundaryModule(fixtures.Ports.Target, std.testing.allocator, full_module_bytes);
+    defer loaded_module.deinit();
+    const module_ref = world.Admission.ModuleGateway.refFromBoundaryModule(loaded_module);
+    const reference_module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
+    const inspect_package = world.Admission.TransferPackage.init(.{
+        .kind = .full_module,
+        .module_ref = module_ref,
+        .module_image_bytes = full_module_bytes,
+        .requested_mode = .inspect_only,
+    });
+    const inspect_admitter = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.inspect_modules,
+    });
+    const inspect = inspect_admitter.admitForTarget(fixtures.Ports.Target, PortsEnv, inspect_package, .{});
+    try std.testing.expect(inspect.report.accepted);
+    try std.testing.expect(inspect.admitted_run == null);
+
+    const bytes_only_inspect_package = world.Admission.TransferPackage.init(.{
+        .kind = .full_module,
+        .module_image_bytes = full_module_bytes,
+        .requested_mode = .inspect_only,
+    });
+    const bytes_only_inspect = inspect_admitter.admitForTarget(fixtures.Ports.Target, PortsEnv, bytes_only_inspect_package, .{});
+    try std.testing.expect(bytes_only_inspect.report.accepted);
+    try std.testing.expectEqual(module_ref.module_ref_fingerprint, bytes_only_inspect.report.module_ref_fingerprint.?);
+
+    const module_reference_only = world.Admission.TransferPackage.init(.{
+        .kind = .module_reference,
+        .module_ref = reference_module_ref,
+        .requested_mode = .inspect_only,
+    });
+    const module_reference_only_result = inspect_admitter.admitForTarget(fixtures.Ports.Target, PortsEnv, module_reference_only, .{});
+    try std.testing.expect(module_reference_only_result.report.accepted);
+    try std.testing.expectEqual(reference_module_ref.module_ref_fingerprint, module_reference_only_result.report.module_ref_fingerprint.?);
+
+    const module_without_target = world.Admission.TransferPackage.init(.{
+        .kind = .module_reference,
+        .module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Agent.Target),
+        .requested_mode = .inspect_only,
+    });
+    const module_without_target_result = inspect_admitter.admitForTarget(fixtures.Ports.Target, PortsEnv, module_without_target, .{});
+    try std.testing.expect(!module_without_target_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.TargetNotRegistered, module_without_target_result.report.blockers[0]);
+    try std.testing.expectEqual(target_ref.target_ref_fingerprint, module_without_target_result.report.target_ref_fingerprint.?);
+
+    const stale_ref_package = world.Admission.TransferPackage.init(.{
+        .kind = .full_module,
+        .module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target),
+        .module_image_bytes = full_module_bytes,
+        .requested_mode = .inspect_only,
+    });
+    const stale_ref_result = inspect_admitter.admitForTarget(fixtures.Ports.Target, PortsEnv, stale_ref_package, .{});
+    try std.testing.expect(!stale_ref_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.ModuleInvalid, stale_ref_result.report.blockers[0]);
+
+    const inspect_only_full_module_policy = world.Admission.AdmissionPolicy.init(.{
+        .allow_reference_targets = true,
+        .allow_full_modules = false,
+        .allow_inspect_only_full_modules = true,
+        .require_supervision_permit = false,
+    });
+    const executable_full_module = world.Admission.TransferPackage.init(.{
+        .kind = .full_module,
+        .target_ref = target_ref,
+        .module_ref = module_ref,
+        .module_image_bytes = "fake-full-module-bytes",
+        .requested_mode = .continue_fresh,
+    });
+    const executable_full_module_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = inspect_only_full_module_policy,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, executable_full_module, .{});
+    try std.testing.expect(!executable_full_module_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, executable_full_module_result.report.blockers[0]);
+
+    const inspect_target_only = world.Admission.TransferPackage.init(.{
+        .kind = .inspect_only,
+        .target_ref = target_ref,
+        .requested_mode = .inspect_only,
+    });
+    const reference_inspect_result = inspect_admitter.admitForTarget(fixtures.Ports.Target, PortsEnv, inspect_target_only, .{});
+    try std.testing.expect(reference_inspect_result.report.accepted);
+    try std.testing.expect(reference_inspect_result.admitted_run == null);
+
+    const inspect_module_only_policy = world.Admission.AdmissionPolicy.init(.{
+        .allow_reference_targets = false,
+        .allow_inspect_only_full_modules = true,
+        .require_supervision_permit = false,
+    });
+    const inspect_target_only_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = inspect_module_only_policy,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, inspect_target_only, .{});
+    try std.testing.expect(!inspect_target_only_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, inspect_target_only_result.report.blockers[0]);
+
+    const missing_bytes_full_module = world.Admission.TransferPackage.init(.{
+        .kind = .full_module,
+        .target_ref = target_ref,
+        .module_ref = reference_module_ref,
+        .requested_mode = .inspect_only,
+    });
+    const missing_bytes_result = inspect_admitter.admitForTarget(fixtures.Ports.Target, PortsEnv, missing_bytes_full_module, .{});
+    try std.testing.expect(!missing_bytes_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, missing_bytes_result.report.blockers[0]);
+
+    const unwitnessed_full_module_reference = world.Admission.TransferPackage.init(.{
+        .kind = .module_reference,
+        .module_ref = module_ref,
+        .requested_mode = .inspect_only,
+    });
+    const unwitnessed_full_module_reference_result = inspect_admitter.admitForTarget(fixtures.Ports.Target, PortsEnv, unwitnessed_full_module_reference, .{});
+    try std.testing.expect(!unwitnessed_full_module_reference_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, unwitnessed_full_module_reference_result.report.blockers[0]);
+
+    const execute_package = world.Admission.TransferPackage.init(.{
+        .kind = .target_reference_only,
+        .target_ref = target_ref,
+        .module_ref = reference_module_ref,
+        .requested_mode = .continue_fresh,
+    });
+    const execution_admitter = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.handoff_receiver,
+    });
+    const rejected = execution_admitter.admitForTarget(fixtures.Ports.Target, PortsEnv, execute_package, .{});
+    try std.testing.expect(!rejected.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PermitMissing, rejected.report.blockers[0]);
+
+    const completed_state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .completed,
+    });
+    const completed_image = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = completed_state,
+    });
+    const inspect_run_package = world.Admission.TransferPackage.init(.{
+        .kind = .inspect_only,
+        .target_ref = target_ref,
+        .run_image = completed_image,
+        .requested_mode = .inspect_only,
+    });
+    const inspect_run_result = inspect_admitter.admitForTarget(fixtures.Ports.Target, PortsEnv, inspect_run_package, .{});
+    try std.testing.expect(inspect_run_result.report.accepted);
+    try std.testing.expect(inspect_run_result.admitted_run == null);
+
+    var inspect_transcript = world.Transcript.init(std.testing.allocator);
+    defer inspect_transcript.deinit();
+    try recordPortsTranscript(&inspect_transcript);
+    var inspect_transcript_image = try inspect_transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer inspect_transcript_image.deinit(std.testing.allocator);
+    const executable_module_bytes_witness = world.RunImage.fromTranscriptImage(fixtures.Ports.Target, inspect_transcript_image, .completed_run);
+    const executable_module_bytes_witness_package = world.Admission.TransferPackage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .module_image_bytes = full_module_bytes,
+        .run_image = world.RunImage.init(.{
+            .kind = executable_module_bytes_witness.kind,
+            .target_ref = executable_module_bytes_witness.target_ref,
+            .import_set_fingerprint = executable_module_bytes_witness.import_set_fingerprint,
+            .transcript_image = executable_module_bytes_witness.transcript_image,
+            .current_state = executable_module_bytes_witness.current_state,
+            .module_image_fingerprint = world.Admission.moduleImageFingerprintForBytes(full_module_bytes),
+        }),
+        .requested_mode = .completed_replay,
+    });
+    const executable_module_bytes_witness_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, PortsReplayEnv, executable_module_bytes_witness_package, .{});
+    try std.testing.expect(executable_module_bytes_witness_result.report.accepted);
+    try std.testing.expectEqual(module_ref.module_ref_fingerprint, executable_module_bytes_witness_result.report.module_ref_fingerprint.?);
+    const stale_run_module_witness_package = world.Admission.TransferPackage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .module_image_bytes = full_module_bytes,
+        .run_image = world.RunImage.init(.{
+            .kind = executable_module_bytes_witness.kind,
+            .target_ref = executable_module_bytes_witness.target_ref,
+            .import_set_fingerprint = executable_module_bytes_witness.import_set_fingerprint,
+            .transcript_image = executable_module_bytes_witness.transcript_image,
+            .current_state = executable_module_bytes_witness.current_state,
+        }).withModuleRef(
+            world.Admission.ModuleRef.fromTarget(fixtures.Agent.Target),
+            world.Admission.moduleImageFingerprintForBytes(full_module_bytes),
+        ),
+        .requested_mode = .completed_replay,
+    });
+    const stale_run_module_witness_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, PortsReplayEnv, stale_run_module_witness_package, .{});
+    try std.testing.expect(!stale_run_module_witness_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.ModuleInvalid, stale_run_module_witness_result.report.blockers[0]);
+
+    const unbound_transcript_inspect_package = world.Admission.TransferPackage.init(.{
+        .kind = .inspect_only,
+        .transcript_image = inspect_transcript_image,
+        .requested_mode = .inspect_only,
+    });
+    const unbound_transcript_result = inspect_admitter.admitForTarget(fixtures.Ports.Target, PortsEnv, unbound_transcript_inspect_package, .{});
+    try std.testing.expect(!unbound_transcript_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.TargetRefMissing, unbound_transcript_result.report.blockers[0]);
+
+    const malformed_run_module_bytes = "not-a-boundary-module-image";
+    const reference_run_module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
+    const malformed_run_with_module_bytes = completed_image.withModuleRef(
+        reference_run_module_ref,
+        world.Admission.moduleImageFingerprintForBytes(malformed_run_module_bytes),
+    );
+    const malformed_run_module_package = world.Admission.TransferPackage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .module_ref = reference_run_module_ref,
+        .module_image_bytes = malformed_run_module_bytes,
+        .run_image = malformed_run_with_module_bytes,
+        .requested_mode = .completed_replay,
+    });
+    const malformed_run_module_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, malformed_run_module_package, .{});
+    try std.testing.expect(!malformed_run_module_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.ModuleInvalid, malformed_run_module_result.report.blockers[0]);
+
+    const overridden_mode = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, inspect_run_package, .{ .mode = .completed_replay });
+    try std.testing.expect(!overridden_mode.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, overridden_mode.report.blockers[0]);
+    try std.testing.expect(overridden_mode.receipt == null);
+    try std.testing.expect(overridden_mode.admitted_run == null);
+}
+
+test "admission rejects bare target reference when reference targets are disabled" {
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Ports.Target)});
+    const state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .not_started,
+    });
+    const reference_run_image = world.RunImage.init(.{
+        .kind = .reference_target_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = state,
+    });
+    const reference_run_package = world.Admission.TransferPackage.init(.{
+        .kind = .inspect_only,
+        .run_image = reference_run_image,
+        .requested_mode = .inspect_only,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, reference_run_package.validate(.{ .allow_reference_only = false }));
+
+    var future_target_ref = target_ref;
+    future_target_ref.format_version = world.world_target_ref_format_version + 1;
+    const future_target_package = world.Admission.TransferPackage.init(.{
+        .kind = .target_reference_only,
+        .target_ref = future_target_ref,
+        .requested_mode = .local_target_match_only,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, future_target_package.validate(.{}));
+
+    var bad_fingerprint_version_ref = target_ref;
+    bad_fingerprint_version_ref.fingerprint_version += 1;
+    const bad_version_run_image = world.RunImage.init(.{
+        .kind = .reference_target_run,
+        .target_ref = bad_fingerprint_version_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = state,
+    });
+    const bad_version_run_package = world.Admission.TransferPackage.init(.{
+        .kind = .inspect_only,
+        .run_image = bad_version_run_image,
+        .requested_mode = .inspect_only,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, bad_version_run_package.validate(.{}));
+
+    const package = world.Admission.TransferPackage.init(.{
+        .kind = .target_reference_only,
+        .target_ref = target_ref,
+        .requested_mode = .continue_fresh,
+    });
+    const policy = world.Admission.AdmissionPolicy.init(.{
+        .allow_reference_targets = false,
+        .allow_full_modules = true,
+        .require_supervision_permit = false,
+    });
+    const result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = policy,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, package, .{});
+    try std.testing.expect(!result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, result.report.blockers[0]);
+
+    const missing_target = world.Admission.TransferPackage.init(.{
+        .kind = .target_reference_only,
+        .requested_mode = .local_target_match_only,
+    });
+    const missing_target_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, missing_target, .{});
+    try std.testing.expect(!missing_target_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.TargetRefMissing, missing_target_result.report.blockers[0]);
+}
+
+test "admission rejects prior receipt mismatch when policy requires it" {
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
+    const registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Ports.Target)});
+    const state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .completed,
+    });
+    const run_image = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = state,
+        .prior_run_receipt_fingerprint = 123,
+    }).withModuleRef(module_ref, null);
+    const package = world.Admission.TransferPackage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .module_ref = module_ref,
+        .run_image = run_image,
+        .requested_mode = .completed_replay,
+    });
+    const policy = world.Admission.AdmissionPolicy.init(.{
+        .allow_reference_targets = true,
+        .require_supervision_permit = false,
+        .allow_completed_replay = true,
+        .reject_prior_receipt_mismatch = true,
+    });
+    const admitted = world.Admission.Admitter.init(.{ .registry = registry, .policy = policy }).admitForTarget(fixtures.Ports.Target, PortsEnv, package, .{});
+    try std.testing.expect(!admitted.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PriorReceiptMismatch, admitted.report.blockers[0]);
+}
+
+test "admission target-match-only is non-executable and ignores permit requirement" {
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Ports.Target)});
+    const package = world.Admission.TransferPackage.init(.{
+        .kind = .target_reference_only,
+        .target_ref = target_ref,
+        .requested_mode = .local_target_match_only,
+    });
+    const result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.strict_local_execution,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, package, .{});
+    try std.testing.expect(result.report.accepted);
+    try std.testing.expect(result.receipt != null);
+    try std.testing.expect(result.admitted_run == null);
+
+    const state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .not_started,
+    });
+    const reference_run_image = world.RunImage.init(.{
+        .kind = .reference_target_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = state,
+    });
+    const run_reference_package = world.Admission.TransferPackage.init(.{
+        .kind = .run_reference,
+        .target_ref = target_ref,
+        .run_image = reference_run_image,
+        .requested_mode = .local_target_match_only,
+    });
+    const run_reference_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.strict_local_execution,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, run_reference_package, .{});
+    try std.testing.expect(run_reference_result.report.accepted);
+    try std.testing.expect(run_reference_result.receipt != null);
+    try std.testing.expect(run_reference_result.admitted_run == null);
+}
+
+test "replay-only admission policy rejects resume modes" {
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Ports.Target)});
+    const policy = world.Admission.AdmissionPolicy.replay_only;
+    try std.testing.expect(!policy.allowsMode(.resume_parked));
+    try std.testing.expect(!policy.allowsMode(.branch_resume));
+    try std.testing.expect(policy.allowsMode(.replay_only));
+    const verify_policy = world.Admission.AdmissionPolicy.verify_receiver;
+    try std.testing.expect(!verify_policy.allowsMode(.resume_parked));
+    try std.testing.expect(!verify_policy.allowsMode(.branch_resume));
+    try std.testing.expect(!verify_policy.allowsMode(.completed_replay));
+    try std.testing.expect(!verify_policy.allowsMode(.continue_fresh));
+    try std.testing.expect(verify_policy.allowsMode(.verify_only));
+    const inspect_policy = world.Admission.AdmissionPolicy.inspect_modules;
+    try std.testing.expect(!inspect_policy.allowsMode(.resume_parked));
+    try std.testing.expect(!inspect_policy.allowsMode(.branch_resume));
+    try std.testing.expect(!inspect_policy.allowsMode(.completed_replay));
+    try std.testing.expect(!inspect_policy.allowsMode(.continue_fresh));
+    try std.testing.expect(!inspect_policy.allowsMode(.replay_only));
+    try std.testing.expect(!inspect_policy.allowsMode(.verify_only));
+
+    const fresh_package = world.Admission.TransferPackage.init(.{
+        .kind = .target_reference_only,
+        .target_ref = target_ref,
+        .requested_mode = .continue_fresh,
+    });
+    const verify_fresh_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = verify_policy,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, fresh_package, .{});
+    try std.testing.expect(!verify_fresh_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.AdmissionModeNotAllowed, verify_fresh_result.report.blockers[0]);
+
+    var stale_policy = world.Admission.AdmissionPolicy.strict_local_execution;
+    stale_policy.allow_continue_fresh = false;
+    stale_policy.policy_fingerprint = 0;
+    const expected_policy = world.Admission.AdmissionPolicy.init(.{
+        .allow_continue_fresh = false,
+    });
+    const stale_policy_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = stale_policy,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, fresh_package, .{});
+    try std.testing.expect(!stale_policy_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.AdmissionModeNotAllowed, stale_policy_result.report.blockers[0]);
+    try std.testing.expectEqual(expected_policy.policy_fingerprint, stale_policy_result.request.policy_fingerprint);
+
+    const pending_request = world.Frame.Request.init(.{
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .world_surface_replay_scope_fingerprint = fixtures.Ports.Target.WorldSurface.replayScopeRef().fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .world_port_id = 0,
+        .residual_site_index = fixtures.Ports.ApprovalRequest.index,
+        .residual_site_fingerprint = fixtures.Ports.ApprovalRequest.fingerprint,
+        .request_fingerprint = 44,
+        .turn_index = 0,
+    });
+    const state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .pending_request_fingerprint = pending_request.frame_fingerprint,
+        .status = .parked_on_port,
+    });
+    const parked_image = world.RunImage.init(.{
+        .kind = .parked_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = state,
+        .pending_request_frame = pending_request,
+    });
+    const parked_package = world.Admission.TransferPackage.init(.{
+        .kind = .parked_run,
+        .target_ref = target_ref,
+        .run_image = parked_image,
+        .requested_mode = .resume_parked,
+    });
+    const parked_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = policy,
+    }).admitForTarget(fixtures.Ports.Target, PortsReplayEnv, parked_package, .{});
+    try std.testing.expect(!parked_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.AdmissionModeNotAllowed, parked_result.report.blockers[0]);
+    const verify_parked_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = verify_policy,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, parked_package, .{});
+    try std.testing.expect(!verify_parked_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.AdmissionModeNotAllowed, verify_parked_result.report.blockers[0]);
+    const inspect_parked_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = inspect_policy,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, parked_package, .{});
+    try std.testing.expect(!inspect_parked_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.AdmissionModeNotAllowed, inspect_parked_result.report.blockers[0]);
+}
+
+test "admission rejects run images that do not fit requested mode" {
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
+    const registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Ports.Target)});
+    const completed_state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .completed,
+    });
+    const completed_image = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = completed_state,
+    }).withModuleRef(module_ref, null);
+    const completed_as_parked = world.Admission.TransferPackage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .module_ref = module_ref,
+        .run_image = completed_image,
+        .requested_mode = .resume_parked,
+    });
+    const completed_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, completed_as_parked, .{});
+    try std.testing.expect(!completed_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.RunImageInvalid, completed_result.report.blockers[0]);
+
+    const pending_request = world.Frame.Request.init(.{
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .world_port_id = 0,
+        .residual_site_index = fixtures.Ports.ApprovalRequest.index,
+        .residual_site_fingerprint = fixtures.Ports.ApprovalRequest.fingerprint,
+        .request_fingerprint = 1,
+        .turn_index = 0,
+    });
+    const parked_state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .pending_request_fingerprint = pending_request.frame_fingerprint,
+        .status = .parked_on_port,
+    });
+    const parked_image = world.RunImage.init(.{
+        .kind = .parked_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = parked_state,
+        .pending_request_frame = pending_request,
+    }).withModuleRef(module_ref, null);
+    const parked_as_completed = world.Admission.TransferPackage.init(.{
+        .kind = .parked_run,
+        .target_ref = target_ref,
+        .module_ref = module_ref,
+        .run_image = parked_image,
+        .requested_mode = .completed_replay,
+    });
+    const parked_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, parked_as_completed, .{});
+    try std.testing.expect(!parked_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.RunImageInvalid, parked_result.report.blockers[0]);
+}
+
+test "admission rejects missing branch and checkpoint selections" {
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
+    const registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Ports.Target)});
+    const state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .completed,
+    });
+    const run_image = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = state,
+    }).withModuleRef(module_ref, null);
+    const package = world.Admission.TransferPackage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .module_ref = module_ref,
+        .run_image = run_image,
+        .requested_mode = .completed_replay,
+    });
+    const admitter = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    });
+    const missing_branch = admitter.admitForTarget(fixtures.Ports.Target, PortsReplayEnv, package, .{ .requested_branch_id = 42 });
+    try std.testing.expect(!missing_branch.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.BranchMismatch, missing_branch.report.blockers[0]);
+    const missing_checkpoint = admitter.admitForTarget(fixtures.Ports.Target, PortsReplayEnv, package, .{ .requested_checkpoint_ref = 42 });
+    try std.testing.expect(!missing_checkpoint.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.CheckpointMismatch, missing_checkpoint.report.blockers[0]);
+
+    const branch_checkpoint = world.Timeline.Checkpoint.init(.{
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = target_ref.target_certificate_fingerprint,
+        .event_index = 0,
+        .turn_index = 0,
+        .transcript_prefix_fingerprint = 44,
+        .branch_id = 7,
+        .status = .parked_on_port,
+    });
+    var branch_checkpoints = [_]world.Timeline.Checkpoint{branch_checkpoint};
+    var branches = [_]world.Timeline.Branch{.{
+        .branch_id = 7,
+        .checkpoint_fingerprint = branch_checkpoint.checkpoint_fingerprint,
+        .start_event_index = 0,
+    }};
+    const pending_request = world.Frame.Request.init(.{
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .world_surface_replay_scope_fingerprint = fixtures.Ports.Target.WorldSurface.replayScopeRef().fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .world_port_id = 0,
+        .residual_site_index = fixtures.Ports.ApprovalRequest.index,
+        .residual_site_fingerprint = fixtures.Ports.ApprovalRequest.fingerprint,
+        .request_fingerprint = 45,
+        .turn_index = 0,
+    });
+    const branch_state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .branch_id = 7,
+        .checkpoint_fingerprint = branch_checkpoint.checkpoint_fingerprint,
+        .pending_request_fingerprint = pending_request.frame_fingerprint,
+        .status = .parked_on_port,
+    });
+    const branch_image = world.RunImage.init(.{
+        .kind = .parked_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = branch_state,
+        .checkpoints = branch_checkpoints[0..],
+        .branches = branches[0..],
+        .pending_request_frame = pending_request,
+    }).withModuleRef(module_ref, null);
+    const branch_run_package = world.Admission.TransferPackage.init(.{
+        .kind = .branch_run,
+        .target_ref = target_ref,
+        .module_ref = module_ref,
+        .run_image = branch_image,
+        .requested_mode = .branch_resume,
+    });
+    const branch_run_missing_selection = admitter.admitForTarget(fixtures.Ports.Target, PortsReplayEnv, branch_run_package, .{});
+    try std.testing.expect(!branch_run_missing_selection.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.BranchMismatch, branch_run_missing_selection.report.blockers[0]);
+}
+
+test "admission rejects parked handoff that fails handoff preflight" {
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
+    const registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Ports.Target)});
+    var payload_image: ?world.Frame.ValueImage = try world.Frame.ValueImage.fromValue(
+        std.testing.allocator,
+        0,
+        null,
+        null,
+        @as([]const u8, "portable"),
+        world.ValuePolicy.portable,
+    );
+    errdefer if (payload_image) |*payload| payload.deinit(std.testing.allocator);
+    var request = world.Frame.Request.init(.{
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .world_surface_replay_scope_fingerprint = fixtures.Ports.Target.WorldSurface.replayScopeRef().fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .world_port_id = 99,
+        .residual_site_index = fixtures.Ports.ApprovalRequest.index,
+        .residual_site_fingerprint = fixtures.Ports.ApprovalRequest.fingerprint,
+        .request_fingerprint = 0xabc0_ffee,
+        .turn_index = 0,
+        .payload_value_table_id = 0,
+        .expected_response_value_table_id = 1,
+        .payload_image = payload_image,
+    });
+    payload_image = null;
+    defer request.deinit(std.testing.allocator);
+    const state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .pending_request_fingerprint = request.frame_fingerprint,
+        .turn_index = request.turn_index,
+        .status = .parked_on_port,
+    });
+    const run_image = world.RunImage.init(.{
+        .kind = .parked_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = state,
+        .pending_request_frame = request,
+    }).withModuleRef(module_ref, null);
+    const package = world.Admission.TransferPackage.init(.{
+        .kind = .parked_run,
+        .target_ref = target_ref,
+        .module_ref = module_ref,
+        .run_image = run_image,
+        .requested_mode = .resume_parked,
+    });
+    const result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, package, .{ .allocator = std.testing.allocator });
+    try std.testing.expect(!result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.EnvironmentRejected, result.report.blockers[0]);
+
+    const branch_package = world.Admission.TransferPackage.init(.{
+        .kind = .parked_run,
+        .target_ref = target_ref,
+        .module_ref = module_ref,
+        .run_image = run_image,
+        .requested_mode = .branch_resume,
+    });
+    const missing_branch = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, branch_package, .{ .allocator = std.testing.allocator });
+    try std.testing.expect(!missing_branch.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.RunImageInvalid, missing_branch.report.blockers[0]);
+}
+
+test "admitted run constructed for accepted local target" {
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Ports.Target)});
+    const package = world.Admission.TransferPackage.init(.{
+        .kind = .target_reference_only,
+        .target_ref = target_ref,
+        .requested_mode = .continue_fresh,
+    });
+    const result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, package, .{});
+    try std.testing.expect(result.report.accepted);
+    try std.testing.expect(result.admitted_run != null);
+    try std.testing.expect(result.receipt != null);
+    try std.testing.expectEqual(target_ref.target_ref_fingerprint, result.admitted_run.?.target_ref.target_ref_fingerprint);
+    try std.testing.expectEqual(result.receipt.?.receipt_fingerprint, result.admitted_run.?.admission_receipt_fingerprint);
+    try std.testing.expectEqual(result.receipt.?.admitted_run_fingerprint.?, result.admitted_run.?.admitted_run_fingerprint);
+}
+
+test "admission rejects permit mode mismatch before receipt" {
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
+    const registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Ports.Target)});
+    const package = world.Admission.TransferPackage.init(.{
+        .kind = .target_reference_only,
+        .target_ref = target_ref,
+        .requested_mode = .continue_fresh,
+    });
+    const wrong_mode_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .replay,
+        .transcript_image_available = true,
+        .policy = world.SupervisionPolicy.strict_replay,
+    });
+    const result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.strict_local_execution,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, package, .{ .permit = wrong_mode_permit });
+    try std.testing.expect(!result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PermitRejected, result.report.blockers[0]);
+
+    const stale_admission_scope_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+        .admission_receipt_fingerprint = 0xabc,
+    });
+    const stale_admission_scope_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.strict_local_execution,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, package, .{ .permit = stale_admission_scope_permit });
+    try std.testing.expect(!stale_admission_scope_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PermitRejected, stale_admission_scope_result.report.blockers[0]);
+
+    const module_package = world.Admission.TransferPackage.init(.{
+        .kind = .module_reference,
+        .target_ref = target_ref,
+        .module_ref = module_ref,
+        .requested_mode = .continue_fresh,
+    });
+    const wrong_module_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .module_ref_fingerprint = module_ref.module_ref_fingerprint +% 1,
+        .policy = world.SupervisionPolicy.strict_fresh,
+    });
+    const module_scoped_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.init(.{
+            .allow_reference_targets = true,
+            .require_supervision_permit = true,
+        }),
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, module_package, .{ .permit = wrong_module_permit });
+    try std.testing.expect(!module_scoped_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PermitRejected, module_scoped_result.report.blockers[0]);
+
+    const completed_state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .completed,
+    });
+    const run_image_with_module = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = completed_state,
+    }).withModuleRef(module_ref, null);
+    const missing_module_ref_package = world.Admission.TransferPackage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .run_image = run_image_with_module,
+        .requested_mode = .completed_replay,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, missing_module_ref_package.validate(.{}));
+    const module_scoped_permit = world.Supervision.issue(fixtures.Ports.Target, PortsReplayEnv, .{
+        .mode = .replay,
+        .transcript_image_available = true,
+        .module_ref_fingerprint = module_ref.module_ref_fingerprint,
+        .policy = world.SupervisionPolicy.handoff_receiver,
+    });
+    const missing_module_ref_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.init(.{
+            .require_environment_preflight = false,
+            .require_supervision_permit = true,
+        }),
+    }).admitForTarget(fixtures.Ports.Target, PortsReplayEnv, missing_module_ref_package, .{ .permit = module_scoped_permit });
+    try std.testing.expect(!missing_module_ref_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, missing_module_ref_result.report.blockers[0]);
+}
+
+test "admitted run start requires stored permit" {
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Ports.Target)});
+    const package = world.Admission.TransferPackage.init(.{
+        .kind = .target_reference_only,
+        .target_ref = target_ref,
+        .requested_mode = .continue_fresh,
+    });
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+    });
+    const result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.strict_local_execution,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, package, .{ .permit = permit });
+    try std.testing.expect(result.report.accepted);
+    var admitted = result.admitted_run orelse return error.ExpectedAdmittedRun;
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var ctx: PortsCtx = .{};
+    try std.testing.expectError(error.SupervisionDenied, admitted.start(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+    }));
+    var scoped_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer scoped_runtime.deinit();
+    var scoped_run = try admitted.start(fixtures.Ports.Target, PortsEnv, &scoped_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+        .permit = permit,
+    });
+    defer scoped_run.deinit();
+    if (scoped_run.supervisor) |*supervisor| {
+        try std.testing.expectEqual(result.receipt.?.receipt_fingerprint, supervisor.permit.admission_receipt_fingerprint.?);
+        try std.testing.expect(supervisor.permit.permit_fingerprint != permit.permit_fingerprint);
+        const run_state = world.RunState.init(.{
+            .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+            .status = .completed,
+        });
+        const run_receipt = supervisor.receipt(.completed, run_state.run_state_fingerprint, null, null);
+        try std.testing.expectEqual(result.receipt.?.receipt_fingerprint, run_receipt.admission_receipt_fingerprint.?);
+    } else {
+        return error.ExpectedSupervisor;
+    }
+}
+
+test "admitted run start enforces admitted target and mode without stored permit" {
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Ports.Target)});
+    const package = world.Admission.TransferPackage.init(.{
+        .kind = .target_reference_only,
+        .target_ref = target_ref,
+        .requested_mode = .continue_fresh,
+    });
+    const result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, package, .{});
+    var admitted = result.admitted_run orelse return error.ExpectedAdmittedRun;
+
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var ctx: PortsCtx = .{};
+    try std.testing.expectError(error.HandoffDenied, admitted.start(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.replay,
+        .ctx = &ctx,
+    }));
+
+    var agent_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer agent_runtime.deinit();
+    var agent_ctx: AgentCtx = .{ .allocator = std.testing.allocator, .scenario = .skeleton };
+    try std.testing.expectError(error.HandoffTargetMismatch, admitted.start(fixtures.Agent.Target, AgentEnv, &agent_runtime, AgentArgs{ @as(usize, 3), fixtures.Agent.initialObservation(.skeleton) }, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &agent_ctx,
+    }));
+
+    var replay_env_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer replay_env_runtime.deinit();
+    try std.testing.expectError(error.HandoffDenied, admitted.start(fixtures.Ports.Target, PortsReplayEnv, &replay_env_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+    }));
+
+    const TranscriptRequiredPortsEnv = world.Environment(fixtures.Ports.Target, .{
+        .bindings = .{PortsNativeBinding},
+        .policy = world.EnvironmentPolicy.init(.{ .allow_fresh_without_transcript = false }),
+    });
+    const sink_missing = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, TranscriptRequiredPortsEnv, package, .{});
+    try std.testing.expect(!sink_missing.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.EnvironmentRejected, sink_missing.report.blockers[0]);
+
+    var old_transcript = world.Transcript.init(std.testing.allocator);
+    defer old_transcript.deinit();
+    try recordPortsTranscript(&old_transcript);
+    var old_image = try old_transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer old_image.deinit(std.testing.allocator);
+    const package_with_old_transcript = world.Admission.TransferPackage.init(.{
+        .kind = .target_reference_only,
+        .target_ref = target_ref,
+        .transcript_image = old_image,
+        .requested_mode = .continue_fresh,
+    });
+    const old_transcript_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, TranscriptRequiredPortsEnv, package_with_old_transcript, .{});
+    try std.testing.expect(!old_transcript_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.EnvironmentRejected, old_transcript_result.report.blockers[0]);
+
+    const stale_evidence_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, package_with_old_transcript, .{});
+    try std.testing.expect(stale_evidence_result.report.accepted);
+    var stale_evidence_admitted = stale_evidence_result.admitted_run orelse return error.ExpectedAdmittedRun;
+    var stale_evidence_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer stale_evidence_runtime.deinit();
+    var stale_evidence_run = try stale_evidence_admitted.start(fixtures.Ports.Target, PortsEnv, &stale_evidence_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+    });
+    defer stale_evidence_run.deinit();
+
+    const sink_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, TranscriptRequiredPortsEnv, package, .{ .fresh_transcript_sink_available = true });
+    try std.testing.expect(sink_result.report.accepted);
+    var sink_admitted = sink_result.admitted_run orelse return error.ExpectedAdmittedRun;
+    var sink_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer sink_runtime.deinit();
+    var sink_transcript = world.Transcript.init(std.testing.allocator);
+    defer sink_transcript.deinit();
+    var sink_run = try sink_admitted.start(fixtures.Ports.Target, TranscriptRequiredPortsEnv, &sink_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+        .transcript = &sink_transcript,
+    });
+    defer sink_run.deinit();
+
+    var transcript_image_only_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer transcript_image_only_runtime.deinit();
+    try std.testing.expectError(error.HandoffDenied, sink_admitted.start(fixtures.Ports.Target, TranscriptRequiredPortsEnv, &transcript_image_only_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+        .transcript_image = &old_image,
+    }));
+}
+
+test "admission permits parked resume with fresh transcript sink" {
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
+    const registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Ports.Target)});
+    const TranscriptRequiredPortsEnv = world.Environment(fixtures.Ports.Target, .{
+        .bindings = .{PortsNativeBinding},
+        .policy = world.EnvironmentPolicy.init(.{ .allow_fresh_without_transcript = false }),
+    });
+    const pending_request = world.Frame.Request.init(.{
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .world_surface_replay_scope_fingerprint = fixtures.Ports.Target.WorldSurface.replayScopeRef().fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .world_port_id = 0,
+        .residual_site_index = fixtures.Ports.ApprovalRequest.index,
+        .residual_site_fingerprint = fixtures.Ports.ApprovalRequest.fingerprint,
+        .request_fingerprint = 0x51_51,
+        .turn_index = 0,
+    });
+    const state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .pending_request_fingerprint = pending_request.frame_fingerprint,
+        .status = .parked_on_port,
+    });
+    const parked_image = world.RunImage.init(.{
+        .kind = .parked_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = state,
+        .pending_request_frame = pending_request,
+    }).withModuleRef(module_ref, null);
+    const package = world.Admission.TransferPackage.init(.{
+        .kind = .parked_run,
+        .target_ref = target_ref,
+        .module_ref = module_ref,
+        .run_image = parked_image,
+        .requested_mode = .resume_parked,
+    });
+    const admitter = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    });
+    const sink_missing = admitter.admitForTarget(fixtures.Ports.Target, TranscriptRequiredPortsEnv, package, .{ .allocator = std.testing.allocator });
+    try std.testing.expect(!sink_missing.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.EnvironmentRejected, sink_missing.report.blockers[0]);
+
+    const sink_result = admitter.admitForTarget(fixtures.Ports.Target, TranscriptRequiredPortsEnv, package, .{
+        .allocator = std.testing.allocator,
+        .fresh_transcript_sink_available = true,
+    });
+    try std.testing.expect(sink_result.report.accepted);
+    var admitted = sink_result.admitted_run orelse return error.ExpectedAdmittedRun;
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var ctx: PortsCtx = .{};
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    try std.testing.expectError(error.HandoffPendingFrameMismatch, admitted.@"resume"(std.testing.allocator, fixtures.Ports.Target, TranscriptRequiredPortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+        .transcript = &transcript,
+    }));
+
+    var branch_checkpoints = [_]world.Timeline.Checkpoint{world.Timeline.Checkpoint.init(.{
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = target_ref.target_certificate_fingerprint,
+        .event_index = 0,
+        .turn_index = 0,
+        .transcript_prefix_fingerprint = 0x52_52,
+        .branch_id = 7,
+        .status = .parked_on_port,
+    })};
+    var branches = [_]world.Timeline.Branch{.{
+        .branch_id = 7,
+        .checkpoint_fingerprint = branch_checkpoints[0].checkpoint_fingerprint,
+        .start_event_index = 0,
+    }};
+    const branch_state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .branch_id = 7,
+        .checkpoint_fingerprint = branch_checkpoints[0].checkpoint_fingerprint,
+        .pending_request_fingerprint = pending_request.frame_fingerprint,
+        .status = .parked_on_port,
+    });
+    const branch_image = world.RunImage.init(.{
+        .kind = .parked_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = branch_state,
+        .checkpoints = branch_checkpoints[0..],
+        .branches = branches[0..],
+        .pending_request_frame = pending_request,
+    }).withModuleRef(module_ref, null);
+    const branch_package = world.Admission.TransferPackage.init(.{
+        .kind = .branch_run,
+        .target_ref = target_ref,
+        .module_ref = module_ref,
+        .run_image = branch_image,
+        .requested_mode = .branch_resume,
+    });
+    const branch_result = admitter.admitForTarget(fixtures.Ports.Target, TranscriptRequiredPortsEnv, branch_package, .{
+        .allocator = std.testing.allocator,
+        .fresh_transcript_sink_available = true,
+        .requested_branch_id = 7,
+    });
+    try std.testing.expect(branch_result.report.accepted);
+}
+
+test "admitted run start enforces admitted transcript image" {
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
+    const registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Ports.Target)});
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    try recordPortsTranscript(&transcript);
+    var image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer image.deinit(std.testing.allocator);
+    const run_image = world.RunImage.fromTranscriptImage(fixtures.Ports.Target, image, .replay_only_run).withModuleRef(module_ref, null);
+    const bare_state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .transcript_image_fingerprint = image.transcript_image_fingerprint,
+        .status = .completed,
+    });
+    const bare_run_image = world.RunImage.init(.{
+        .kind = .replay_only_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = bare_state,
+    }).withModuleRef(module_ref, null);
+    const unbound_state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .completed,
+    });
+    const unbound_run_image = world.RunImage.init(.{
+        .kind = .replay_only_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = unbound_state,
+    }).withModuleRef(module_ref, null);
+    const unbound_transcript_package = world.Admission.TransferPackage.init(.{
+        .kind = .replay_run,
+        .target_ref = target_ref,
+        .module_ref = module_ref,
+        .run_image = unbound_run_image,
+        .transcript_image = image,
+        .requested_mode = .replay_only,
+    });
+    const unbound_transcript_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.replay_only,
+    }).admitForTarget(fixtures.Ports.Target, PortsReplayEnv, unbound_transcript_package, .{});
+    try std.testing.expect(!unbound_transcript_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, unbound_transcript_result.report.blockers[0]);
+
+    var mismatched_standalone_image = image;
+    mismatched_standalone_image.transcript_image_fingerprint +%= 1;
+    const mismatched_package = world.Admission.TransferPackage.init(.{
+        .kind = .replay_run,
+        .target_ref = target_ref,
+        .module_ref = module_ref,
+        .run_image = bare_run_image,
+        .transcript_image = mismatched_standalone_image,
+        .requested_mode = .replay_only,
+    });
+    const mismatched_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.replay_only,
+    }).admitForTarget(fixtures.Ports.Target, PortsReplayEnv, mismatched_package, .{});
+    try std.testing.expect(!mismatched_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, mismatched_result.report.blockers[0]);
+
+    const missing_transcript_package = world.Admission.TransferPackage.init(.{
+        .kind = .replay_run,
+        .target_ref = target_ref,
+        .module_ref = module_ref,
+        .run_image = bare_run_image,
+        .requested_mode = .replay_only,
+    });
+    const missing_transcript_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.replay_only,
+    }).admitForTarget(fixtures.Ports.Target, PortsReplayEnv, missing_transcript_package, .{});
+    try std.testing.expect(!missing_transcript_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.EnvironmentRejected, missing_transcript_result.report.blockers[0]);
+
+    const no_replay_evidence_package = world.Admission.TransferPackage.init(.{
+        .kind = .target_reference_only,
+        .target_ref = target_ref,
+        .requested_mode = .replay_only,
+    });
+    const no_replay_evidence_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.replay_only,
+    }).admitForTarget(fixtures.Ports.Target, PortsReplayEnv, no_replay_evidence_package, .{});
+    try std.testing.expect(!no_replay_evidence_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.RunImageInvalid, no_replay_evidence_result.report.blockers[0]);
+
+    const transcript_target_mismatch_package = world.Admission.TransferPackage.init(.{
+        .kind = .replay_run,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Agent.Target),
+        .transcript_image = image,
+        .requested_mode = .replay_only,
+    });
+    const transcript_target_mismatch_result = world.Admission.Admitter.init(.{
+        .registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Agent.Target)}),
+        .policy = world.Admission.AdmissionPolicy.replay_only,
+    }).admitForTarget(fixtures.Agent.Target, AgentEnv, transcript_target_mismatch_package, .{});
+    try std.testing.expect(!transcript_target_mismatch_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, transcript_target_mismatch_result.report.blockers[0]);
+
+    var agent_transcript = world.Transcript.init(std.testing.allocator);
+    defer agent_transcript.deinit();
+    try agent_transcript.append(.{
+        .kind = .run_started,
+        .world_surface_fingerprint = fixtures.Agent.Target.WorldSurface.surface_fingerprint,
+        .target_certificate_fingerprint = fixtures.Agent.Target.Certificate.certificate_fingerprint,
+    });
+    try agent_transcript.append(.{
+        .kind = .run_completed,
+        .world_surface_fingerprint = fixtures.Agent.Target.WorldSurface.surface_fingerprint,
+        .target_certificate_fingerprint = fixtures.Agent.Target.Certificate.certificate_fingerprint,
+        .status = .responded,
+    });
+    var agent_image = try agent_transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer agent_image.deinit(std.testing.allocator);
+    const inspect_mismatch_package = world.Admission.TransferPackage.init(.{
+        .kind = .inspect_only,
+        .module_ref = module_ref,
+        .transcript_image = agent_image,
+        .requested_mode = .inspect_only,
+    });
+    var inspect_mismatch_policy = world.Admission.AdmissionPolicy.inspect_modules;
+    inspect_mismatch_policy.reject_transcript_mismatch = false;
+    const rejected_inspect_mismatch = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.inspect_modules,
+    }).admitForTarget(fixtures.Ports.Target, PortsReplayEnv, inspect_mismatch_package, .{});
+    try std.testing.expect(!rejected_inspect_mismatch.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.TranscriptTargetMismatch, rejected_inspect_mismatch.report.blockers[0]);
+    const allowed_inspect_mismatch = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = inspect_mismatch_policy,
+    }).admitForTarget(fixtures.Ports.Target, PortsReplayEnv, inspect_mismatch_package, .{});
+    try std.testing.expect(allowed_inspect_mismatch.report.accepted);
+    try std.testing.expect(allowed_inspect_mismatch.admitted_run == null);
+
+    var incomplete_transcript = world.Transcript.init(std.testing.allocator);
+    defer incomplete_transcript.deinit();
+    try incomplete_transcript.append(.{
+        .kind = .run_started,
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+    });
+    var incomplete_image = try incomplete_transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer incomplete_image.deinit(std.testing.allocator);
+    const incomplete_transcript_package = world.Admission.TransferPackage.init(.{
+        .kind = .replay_run,
+        .target_ref = target_ref,
+        .module_ref = module_ref,
+        .transcript_image = incomplete_image,
+        .requested_mode = .replay_only,
+    });
+    const incomplete_transcript_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.replay_only,
+    }).admitForTarget(fixtures.Ports.Target, PortsReplayEnv, incomplete_transcript_package, .{});
+    try std.testing.expect(!incomplete_transcript_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.TranscriptImageInvalid, incomplete_transcript_result.report.blockers[0]);
+
+    var invalid_env_transcript = world.Transcript.init(std.testing.allocator);
+    defer invalid_env_transcript.deinit();
+    try invalid_env_transcript.append(.{
+        .kind = .run_started,
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .source_run = true,
+    });
+    try invalid_env_transcript.append(.{
+        .kind = .frame_requested,
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .world_surface_replay_scope_fingerprint = fixtures.Ports.Target.WorldSurface.replayScopeRef().fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .world_port_id = 999,
+        .request_fingerprint = 0xdead_999,
+        .turn_index = 0,
+        .residual_site_index = fixtures.Ports.ApprovalRequest.index,
+        .residual_site_fingerprint = fixtures.Ports.ApprovalRequest.fingerprint,
+        .source_run = true,
+    });
+    try invalid_env_transcript.append(.{
+        .kind = .run_completed,
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .status = .responded,
+        .source_run = true,
+    });
+    var invalid_env_image = try invalid_env_transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer invalid_env_image.deinit(std.testing.allocator);
+    const invalid_env_package = world.Admission.TransferPackage.init(.{
+        .kind = .replay_run,
+        .target_ref = target_ref,
+        .module_ref = module_ref,
+        .transcript_image = invalid_env_image,
+        .requested_mode = .replay_only,
+    });
+    const invalid_env_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.replay_only,
+    }).admitForTarget(fixtures.Ports.Target, PortsReplayEnv, invalid_env_package, .{});
+    try std.testing.expect(!invalid_env_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.TranscriptImageInvalid, invalid_env_result.report.blockers[0]);
+
+    const transcript_only_package = world.Admission.TransferPackage.init(.{
+        .kind = .replay_run,
+        .target_ref = target_ref,
+        .module_ref = module_ref,
+        .transcript_image = image,
+        .requested_mode = .replay_only,
+    });
+    const transcript_handoff_policy = world.SupervisionPolicy.init(.{
+        .allow_replay_calls = true,
+        .allow_replay_adapters = true,
+        .allow_handoff_accept = true,
+        .require_portable_value_images = true,
+        .reject_native_only_values = true,
+        .require_environment_certificate = true,
+        .require_transcript_image_for_replay = true,
+    });
+    const transcript_handoff_deny_permit = world.Supervision.issue(fixtures.Ports.Target, PortsReplayEnv, .{
+        .mode = .replay,
+        .policy = transcript_handoff_policy,
+        .transcript_image_available = true,
+        .handoff_policy = .deny,
+    });
+    const transcript_handoff_deny_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.init(.{
+            .require_environment_preflight = false,
+            .require_supervision_permit = true,
+            .allow_replay_without_environment = true,
+            .allow_parked_resume = false,
+            .allow_branch_resume = false,
+        }),
+    }).admitForTarget(fixtures.Ports.Target, PortsReplayEnv, transcript_only_package, .{ .permit = transcript_handoff_deny_permit });
+    try std.testing.expect(!transcript_handoff_deny_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PermitRejected, transcript_handoff_deny_result.report.blockers[0]);
+
+    const transcript_only_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.replay_only,
+    }).admitForTarget(fixtures.Ports.Target, PortsReplayEnv, transcript_only_package, .{});
+    try std.testing.expect(transcript_only_result.report.accepted);
+    try std.testing.expect(transcript_only_result.report.handoff_preflight_report_fingerprint == null);
+    try std.testing.expect(transcript_only_result.admitted_run.?.run_image == null);
+    try std.testing.expectEqual(image.transcript_image_fingerprint, transcript_only_result.admitted_run.?.transcript_image.?.transcript_image_fingerprint);
+    var transcript_only_admitted = transcript_only_result.admitted_run orelse return error.ExpectedAdmittedRun;
+    var transcript_only_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer transcript_only_runtime.deinit();
+    var transcript_only_run = try transcript_only_admitted.start(fixtures.Ports.Target, PortsReplayEnv, &transcript_only_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.replay,
+    });
+    defer transcript_only_run.deinit();
+    while (true) {
+        switch (try transcript_only_run.next()) {
+            .done => |value| {
+                try std.testing.expectEqual(@as(i32, 7), value);
+                break;
+            },
+            .port_required => try transcript_only_run.dispatch(),
+            .parked => return error.ExpectedReplayCompletion,
+            .failed => return error.ExpectedReplayCompletion,
+        }
+    }
+    var replay_sink_transcript = world.Transcript.init(std.testing.allocator);
+    defer replay_sink_transcript.deinit();
+    var replay_sink_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer replay_sink_runtime.deinit();
+    var replay_sink_run = try transcript_only_admitted.start(fixtures.Ports.Target, PortsReplayEnv, &replay_sink_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.replay,
+        .transcript = &replay_sink_transcript,
+    });
+    defer replay_sink_run.deinit();
+    while (true) {
+        switch (try replay_sink_run.next()) {
+            .done => |value| {
+                try std.testing.expectEqual(@as(i32, 7), value);
+                break;
+            },
+            .port_required => try replay_sink_run.dispatch(),
+            .parked => return error.ExpectedReplayCompletion,
+            .failed => return error.ExpectedReplayCompletion,
+        }
+    }
+
+    const package = world.Admission.TransferPackage.init(.{
+        .kind = .replay_run,
+        .target_ref = target_ref,
+        .module_ref = module_ref,
+        .run_image = run_image,
+        .requested_mode = .replay_only,
+    });
+    const result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.replay_only,
+    }).admitForTarget(fixtures.Ports.Target, PortsReplayEnv, package, .{});
+    try std.testing.expect(result.report.accepted);
+    try std.testing.expect(result.report.handoff_preflight_report_fingerprint != null);
+    var admitted = result.admitted_run orelse return error.ExpectedAdmittedRun;
+
+    var wrong_image = image;
+    wrong_image.transcript_image_fingerprint +%= 1;
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    try std.testing.expectError(error.HandoffDenied, admitted.start(fixtures.Ports.Target, PortsReplayEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.replay,
+        .transcript_image = &wrong_image,
+    }));
+    const forged_encoded = try image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(forged_encoded);
+    var forged_image = try world.TranscriptImage.decode(std.testing.allocator, forged_encoded);
+    defer forged_image.deinit(std.testing.allocator);
+    forged_image.events[0].source_run = !forged_image.events[0].source_run;
+    try std.testing.expectEqual(image.transcript_image_fingerprint, forged_image.transcript_image_fingerprint);
+    var forged_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer forged_runtime.deinit();
+    try std.testing.expectError(error.HandoffDenied, admitted.start(fixtures.Ports.Target, PortsReplayEnv, &forged_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.replay,
+        .transcript_image = &forged_image,
+    }));
+}
+
+test "admitted run resume rejects non fresh options" {
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    var admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xabc,
+        .target_ref = target_ref,
+        .mode = .resume_parked,
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var ctx: PortsCtx = .{};
+    try std.testing.expectError(error.HandoffDenied, admitted.@"resume"(std.testing.allocator, fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.replay,
+        .ctx = &ctx,
+    }));
+
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+    });
+    var permit_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xdef,
+        .target_ref = target_ref,
+        .run_permit = permit,
+        .mode = .resume_parked,
+    });
+    var missing_permit_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer missing_permit_runtime.deinit();
+    try std.testing.expectError(error.SupervisionDenied, permit_admitted.@"resume"(std.testing.allocator, fixtures.Ports.Target, PortsEnv, &missing_permit_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+    }));
+
+    const wrong_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .admission_receipt_fingerprint = 0x123,
+        .policy = world.SupervisionPolicy.strict_fresh,
+    });
+    var wrong_permit_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer wrong_permit_runtime.deinit();
+    try std.testing.expectError(error.SupervisionDenied, permit_admitted.@"resume"(std.testing.allocator, fixtures.Ports.Target, PortsEnv, &wrong_permit_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+        .permit = wrong_permit,
+    }));
+}
+
+test "decoded admission owns admitted run images after package deinit" {
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
+    const registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Ports.Target)});
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    try recordPortsTranscript(&transcript);
+    var image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer image.deinit(std.testing.allocator);
+    const state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .transcript_image_fingerprint = image.transcript_image_fingerprint,
+        .status = .completed,
+    });
+    const run_image = world.RunImage.init(.{
+        .kind = .replay_only_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = state,
+    }).withModuleRef(module_ref, null);
+    const package = world.Admission.TransferPackage.init(.{
+        .kind = .replay_run,
+        .target_ref = target_ref,
+        .module_ref = module_ref,
+        .run_image = run_image,
+        .transcript_image = image,
+        .requested_mode = .replay_only,
+    });
+    const encoded = try package.encode(std.testing.allocator);
+    defer std.testing.allocator.free(encoded);
+    var decoded = try world.Admission.TransferPackage.decode(std.testing.allocator, encoded);
+    const decoded_run_events = decoded.run_image.?.transcript_image;
+    try std.testing.expect(decoded_run_events == null);
+    const decoded_transcript_events_ptr = decoded.transcript_image.?.events.ptr;
+
+    var result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.replay_only,
+    }).admitForTarget(fixtures.Ports.Target, PortsReplayEnv, decoded, .{ .allocator = std.testing.allocator });
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(result.report.accepted);
+    try std.testing.expect(result.admitted_run.?.owns_run_image);
+    try std.testing.expect(result.admitted_run.?.owns_transcript_image);
+    try std.testing.expect(result.admitted_run.?.transcript_image.?.events.ptr != decoded_transcript_events_ptr);
+
+    decoded.deinit(std.testing.allocator);
+    try std.testing.expectEqual(image.transcript_image_fingerprint, result.admitted_run.?.transcript_image.?.transcript_image_fingerprint);
+}
+
+test "module handoff admission rejects target mismatch" {
+    const ports_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const agent_ref = world.TargetRef.fromTarget(fixtures.Agent.Target);
+    const module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
+    const registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Ports.Target)});
+    const state = world.RunState.init(.{
+        .target_ref_fingerprint = ports_ref.target_ref_fingerprint,
+        .status = .completed,
+    });
+    const run_image = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = ports_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = state,
+    }).withModuleRef(module_ref, null);
+    const package = world.Admission.TransferPackage.init(.{
+        .kind = .completed_run,
+        .target_ref = agent_ref,
+        .module_ref = module_ref,
+        .run_image = run_image,
+        .requested_mode = .completed_replay,
+    });
+    const result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, package, .{});
+    try std.testing.expect(!result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, result.report.blockers[0]);
+}
+
+test "agent admission transfer admitted" {
+    const target_ref = world.TargetRef.fromTarget(fixtures.Agent.Target);
+    const module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Agent.Target);
+    const registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Agent.Target)});
+    const package = world.Admission.TransferPackage.init(.{
+        .kind = .module_reference,
+        .target_ref = target_ref,
+        .module_ref = module_ref,
+        .requested_mode = .continue_fresh,
+    });
+    const result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Agent.Target, AgentEnv, package, .{});
+    try std.testing.expect(result.report.accepted);
+    try std.testing.expect(result.admitted_run != null);
+    try std.testing.expectEqual(module_ref.module_ref_fingerprint, result.report.module_ref_fingerprint.?);
 }

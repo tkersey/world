@@ -1,23 +1,22 @@
 <proposed_plan>
-Iteration: 7
+Iteration: 8
 
-# World Supervision Kernel Implementation Plan
+# World Admission Kernel Implementation Plan
 
 ## Summary
-Build the World Supervision Kernel by adding deterministic supervision primitives to `src/world.zig`, wiring them through the existing Machine/Handoff/Environment/Timeline boundaries, and proving that supervised execution is bounded without changing unsupervised behavior. First wave is the core value model and fingerprint tests; done means all supervised examples, filtered supervision tests, existing examples, `zig build check`, and lint pass.
+Build the World Admission Kernel as the deterministic receiver-side layer between transferred portable run data and existing World execution. Admission validates a `TransferPackage`, derives a manifest, bridges Boundary module references/images through Boundary-owned APIs, matches local generated targets, preflights local environments and permits, emits deterministic reports/receipts, and returns an executable `AdmittedRun` only when local execution is permitted.
 
 ## Non-Goals/Out of Scope
-No storage backend, xitdb, network/transport, scheduler, async runtime, real model/tool/file/human integrations, provider lifecycle, service discovery, WASM ABI, Boundary module image implementation, Boundary closure/normalization, TreatyResolver or ProviderHarness hot path, signing/encryption, cryptographic security claims, agent framework, billing/money, or wall-clock time in deterministic fingerprints.
+No storage backend, xitdb, network/transport, scheduler, async runtime, real model/tool/file/human integrations, provider lifecycle, service discovery, WASM ABI, Boundary loaded execution, Boundary closure/normalization, TreatyResolver or ProviderHarness hot path, signing/encryption, cryptographic security claims, agent framework, package manager, or artifact registry.
 
 ## Implementation Brief
-1. step=core_model; owner=implementation; success_criteria=version constants, supervision structs, fingerprint helpers, and isolated fingerprint/exclusion tests compile and pass.
-2. step=policy_accounting; owner=implementation; success_criteria=policy presets, budgets, per-port budgets, cost model, port rules, ledger, and checks enforce deterministic limits.
-3. step=membrane; owner=implementation; success_criteria=single `Supervisor`/`PolicyMembrane` path denies before adapter calls, transcript appends, branch/checkpoint, and handoff side effects.
-4. step=machine_integration; owner=implementation; success_criteria=optional permit, strict permit enforcement, receipt availability, no-permit compatibility.
-5. step=timeline_environment_handoff; owner=implementation; success_criteria=supervision timeline events, Environment blockers, receiver-issued handoff permit APIs, prior receipt inspection.
-6. step=branch_checkpoint_handoff_budgets; owner=implementation; success_criteria=max counts/depth/cost/inherit/new-permit policies tested.
-7. step=examples_docs_build; owner=implementation; success_criteria=five new examples, run steps, README update, `docs/supervision.md`, check step coverage.
-8. step=proof_closeout; owner=implementation; success_criteria=run required proof commands, inspect diff, report any blockers with exact failing command.
+1. step=admission_package_foundation; owner=implementation; success_criteria=version constants, `TransferPackage`, `PackageManifest`, encode/decode/validate, deterministic fingerprints, validation limits, malformed/oversized rejection, and package/manifest tests pass.
+2. step=module_registry_gateway; owner=implementation; success_criteria=`ModuleRef`, `ModuleGateway`, `TargetRegistry`, `TargetMatch`, `ExportSummary`, module-derived import summaries, local target matching, inspect-only full module support, and registry/gateway/match tests pass.
+3. step=admission_decision_layer; owner=implementation; success_criteria=`AdmissionMode`, `AdmissionPolicy`, `AdmissionRequest`, `AdmissionReport`, `AdmissionReceipt`, deterministic blockers/warnings/fingerprints, and policy/report/receipt tests pass.
+4. step=execution_integration; owner=implementation; success_criteria=`Admitter` produces `AdmittedRun` only for accepted executable modes; RunImage, Handoff, Supervision, and Timeline carry optional module/admission links while old images/tests remain compatible.
+5. step=examples_docs_build; owner=implementation; success_criteria=five admission examples, build run steps, README update, `docs/admission.md`, and check-step wiring compile and demonstrate reference, full-module inspect, parked handoff, replay/verify, and agent transfer scenarios.
+6. step=fixed_point_review; owner=verification; success_criteria=no duplicate truth owner, no unretired scaffold, no unresolved material counterexample, and one-change challenge produces no further required code change.
+7. step=proof_closeout_and_ship; owner=verification; success_criteria=all requested format, diff, build, check, example, filtered test, full test, and lint commands pass; `$st` projection is clean; PR is opened or updated with proof.
 
-Iteration: 7
+Iteration: 8
 </proposed_plan>

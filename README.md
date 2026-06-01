@@ -43,6 +43,7 @@ The public root is intentionally small:
 - `world.RunState`
 - `world.RunImage`
 - `world.Handoff`
+- `world.Admission`
 - `world.AuditImage`
 - `world.AuditReport`
 - `world.Error`
@@ -178,6 +179,24 @@ Environment says what the host can provide. Supervision says what the host is wi
 
 Handoff receivers may issue a new local permit with tighter limits using `Handoff.preflightWithPermit` and `Handoff.resumeWithPermit`. `RunImage` can carry prior permit and receipt fingerprints for inspection; receivers do not have to trust them.
 
+## World Admission
+
+Admission is the receiver-side proof that a transferred run can be interpreted locally under local environment and permit.
+
+`world.Admission.TransferPackage` is the portable admission envelope. It can carry a target reference, Boundary module reference, full module bytes, run image, transcript image, checkpoint and branch refs, prior permit/receipt refs, requested mode, supervision hints, and metadata. It does not carry handlers, credentials, native function pointers, allocator/runtime/thread pointers, request tokens, storage, or transport.
+
+`world.Admission.PackageManifest` summarizes package contents and binds the package fingerprint to target/module/run/transcript/checkpoint/branch/prior-receipt summaries.
+
+`world.Admission.ModuleRef` bridges Boundary Certified Boundary Module identity into World without making World execute Boundary loaded modules. `world.Admission.ModuleGateway` validates and inspects module images through Boundary-owned `Target.Module` APIs, derives import/export summaries, and reports loaded execution as unsupported unless a local generated target matches.
+
+`world.Admission.TargetRegistry` is an in-memory registry of local generated targets the receiver knows how to execute. `world.Admission.TargetMatch` compares transferred target/module identity with local executable target identity across surface, certificate, program plan, normal form, and available table/import summaries.
+
+`world.Admission.AdmissionPolicy` constrains package kinds and modes. Presets include strict local execution, inspect modules, replay-only, handoff receiver, verify receiver, and test fixture. `AdmissionRequest`, `AdmissionReport`, and `AdmissionReceipt` record the requested operation, deterministic accepted/rejected decision, blockers, warnings, and accepted receipt. Receipts are not cryptographic.
+
+`world.Admission.Admitter` coordinates package validation, target matching, environment preflight, permit checks, report/receipt issuance, and construction of an `AdmittedRun` when the mode is executable. `AdmittedRun` wraps existing Machine/Handoff data; it does not duplicate Machine execution logic.
+
+Admission keeps storage, xitdb, network transport, scheduler, async runtime, real integrations, WASM ABI, Boundary loaded execution, Boundary closure/normalization, signing, encryption, package management, and artifact registry out of World.
+
 ## Audit Reports
 
 `world.AuditReport` includes the WorldSurface fingerprint, target certificate fingerprint, run mode, final status, request counts, fresh/replayed/rejected/failed counts, replay mismatches, missing handlers, and per-port counts.
@@ -201,6 +220,11 @@ zig build run-world-handoff-parked
 zig build run-world-handoff-replay
 zig build run-world-handoff-verify
 zig build run-world-agent-handoff
+zig build run-world-admission-reference
+zig build run-world-admission-full-module-inspect
+zig build run-world-admission-parked-handoff
+zig build run-world-admission-replay-verify
+zig build run-world-admission-agent-transfer
 zig build run-world-supervised-budget
 zig build run-world-supervised-agent
 zig build run-world-supervised-handoff
@@ -217,6 +241,16 @@ zig build run-world-supervised-replay-verify
 `world_agent_loop` demonstrates an agent-shaped residual surface with `model.decide` and `tool.call` ports. It is not an agent framework; it is a port dispatch and replay fixture.
 
 `world_frame_ports` steps to a `Frame.Request`, resumes from a `Frame.Response`, and records frame fingerprints.
+
+`world_admission_reference` admits a target-reference package against a local registry and runs the admitted target.
+
+`world_admission_full_module_inspect` admits full Boundary module bytes for inspect-only admission and reports fail-closed loaded execution.
+
+`world_admission_parked_handoff` admits a module-aware parked run with a receiver permit and resumes it through Handoff.
+
+`world_admission_replay_verify` admits completed replay/verify packages and shows verify divergence on changed handler behavior.
+
+`world_admission_agent_transfer` admits an agent-shaped transfer with model/tool imports, supervision, replay, and expected final output.
 
 `world_transcript_image_replay` records a fresh transcript image, decodes it, and replays without native handler calls.
 
