@@ -6747,6 +6747,21 @@ test "transfer package rejects malformed and oversized packages" {
         .requested_mode = .completed_replay,
     });
     try run_module_image_package.validate(.{ .allow_full_module = true });
+    const run_module_bytes_witness = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = completed_state,
+        .module_image_fingerprint = world.Admission.moduleImageFingerprintForBytes(full_module_bytes),
+    });
+    const run_module_bytes_witness_package = world.Admission.TransferPackage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .module_image_bytes = full_module_bytes,
+        .run_image = run_module_bytes_witness,
+        .requested_mode = .completed_replay,
+    });
+    try run_module_bytes_witness_package.validate(.{ .allow_full_module = true });
     const mismatched_run_module_image_package = world.Admission.TransferPackage.init(.{
         .kind = .completed_run,
         .target_ref = target_ref,
@@ -7210,6 +7225,28 @@ test "admitter accepts inspect-only full module and rejects missing permit for e
     try recordPortsTranscript(&inspect_transcript);
     var inspect_transcript_image = try inspect_transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
     defer inspect_transcript_image.deinit(std.testing.allocator);
+    const executable_module_bytes_witness = world.RunImage.fromTranscriptImage(fixtures.Ports.Target, inspect_transcript_image, .completed_run);
+    const executable_module_bytes_witness_package = world.Admission.TransferPackage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .module_image_bytes = full_module_bytes,
+        .run_image = world.RunImage.init(.{
+            .kind = executable_module_bytes_witness.kind,
+            .target_ref = executable_module_bytes_witness.target_ref,
+            .import_set_fingerprint = executable_module_bytes_witness.import_set_fingerprint,
+            .transcript_image = executable_module_bytes_witness.transcript_image,
+            .current_state = executable_module_bytes_witness.current_state,
+            .module_image_fingerprint = world.Admission.moduleImageFingerprintForBytes(full_module_bytes),
+        }),
+        .requested_mode = .completed_replay,
+    });
+    const executable_module_bytes_witness_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, PortsReplayEnv, executable_module_bytes_witness_package, .{});
+    try std.testing.expect(executable_module_bytes_witness_result.report.accepted);
+    try std.testing.expectEqual(module_ref.module_ref_fingerprint, executable_module_bytes_witness_result.report.module_ref_fingerprint.?);
+
     const unbound_transcript_inspect_package = world.Admission.TransferPackage.init(.{
         .kind = .inspect_only,
         .transcript_image = inspect_transcript_image,
@@ -7371,6 +7408,30 @@ test "admission target-match-only is non-executable and ignores permit requireme
     try std.testing.expect(result.report.accepted);
     try std.testing.expect(result.receipt != null);
     try std.testing.expect(result.admitted_run == null);
+
+    const state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .not_started,
+    });
+    const reference_run_image = world.RunImage.init(.{
+        .kind = .reference_target_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = state,
+    });
+    const run_reference_package = world.Admission.TransferPackage.init(.{
+        .kind = .run_reference,
+        .target_ref = target_ref,
+        .run_image = reference_run_image,
+        .requested_mode = .local_target_match_only,
+    });
+    const run_reference_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.strict_local_execution,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, run_reference_package, .{});
+    try std.testing.expect(run_reference_result.report.accepted);
+    try std.testing.expect(run_reference_result.receipt != null);
+    try std.testing.expect(run_reference_result.admitted_run == null);
 }
 
 test "replay-only admission policy rejects resume modes" {
@@ -8167,6 +8228,34 @@ test "admitted run start enforces admitted transcript image" {
         .transcript_image = image,
         .requested_mode = .replay_only,
     });
+    const transcript_handoff_policy = world.SupervisionPolicy.init(.{
+        .allow_replay_calls = true,
+        .allow_replay_adapters = true,
+        .allow_handoff_accept = true,
+        .require_portable_value_images = true,
+        .reject_native_only_values = true,
+        .require_environment_certificate = true,
+        .require_transcript_image_for_replay = true,
+    });
+    const transcript_handoff_deny_permit = world.Supervision.issue(fixtures.Ports.Target, PortsReplayEnv, .{
+        .mode = .replay,
+        .policy = transcript_handoff_policy,
+        .transcript_image_available = true,
+        .handoff_policy = .deny,
+    });
+    const transcript_handoff_deny_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.init(.{
+            .require_environment_preflight = false,
+            .require_supervision_permit = true,
+            .allow_replay_without_environment = true,
+            .allow_parked_resume = false,
+            .allow_branch_resume = false,
+        }),
+    }).admitForTarget(fixtures.Ports.Target, PortsReplayEnv, transcript_only_package, .{ .permit = transcript_handoff_deny_permit });
+    try std.testing.expect(!transcript_handoff_deny_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PermitRejected, transcript_handoff_deny_result.report.blockers[0]);
+
     const transcript_only_result = world.Admission.Admitter.init(.{
         .registry = registry,
         .policy = world.Admission.AdmissionPolicy.replay_only,

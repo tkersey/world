@@ -1359,7 +1359,7 @@ pub const Admission = struct {
                 if (self.target_ref) |target_ref| {
                     if (image.target_ref.target_ref_fingerprint != target_ref.target_ref_fingerprint) return error.HandoffTargetMismatch;
                 }
-                if (runImageHasModuleWitness(image) and self.module_ref == null) return error.InvalidFrameEncoding;
+                if (runImageHasModuleWitness(image) and self.module_ref == null and self.module_image_bytes == null) return error.InvalidFrameEncoding;
                 if (self.module_ref) |module_ref| {
                     if (runImageHasModuleWitness(image) and image.module_ref_fingerprint == null) return error.InvalidFrameEncoding;
                     if (image.module_ref_fingerprint) |run_module_ref_fingerprint| {
@@ -2260,7 +2260,7 @@ pub const Admission = struct {
             };
             if (package.run_image) |image| {
                 if (!runImageFitsAdmissionMode(image, mode)) {
-                    if (mode != .inspect_only) {
+                    if (mode != .inspect_only and mode != .local_target_match_only) {
                         return rejectedResult(request, package, target_ref, module_ref, null, &.{.RunImageInvalid}, "run image does not match requested admission mode");
                     }
                 }
@@ -2415,6 +2415,15 @@ pub const Admission = struct {
                 transcript_image.validateReplayRun(target_ref.world_surface_fingerprint, target_ref.target_certificate_fingerprint) catch {
                     return rejectedResult(request, package, target_ref, module_ref, match, &.{.TranscriptImageInvalid}, "transcript image failed replay preflight");
                 };
+                if (args.permit) |permit| {
+                    var handoff_run_image = RunImage.fromTranscriptImage(Target, transcript_image, .replay_only_run);
+                    attachPackageModuleWitnessToRunImage(&handoff_run_image, package, module_ref);
+                    var transcript_handoff = Handoff{ .allocator = args.allocator, .run_image = handoff_run_image };
+                    const handoff_report = transcript_handoff.preflightWithPermit(Target, Env, admissionModeToHandoffMode(mode).?, permit);
+                    if (!handoff_report.accepted) {
+                        return rejectedResult(request, package, target_ref, module_ref, match, &.{.PermitRejected}, "permit preflight rejected transcript-only admission");
+                    }
+                }
             }
             var handoff_preflight_report_fingerprint: ?u64 = null;
             if (admissionModeToHandoffMode(mode)) |handoff_mode| {
