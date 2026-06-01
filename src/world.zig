@@ -1371,7 +1371,11 @@ pub const Admission = struct {
                         const module_image_bytes = self.module_image_bytes orelse return error.InvalidFrameEncoding;
                         if (run_module_image_fingerprint != moduleImageFingerprint(module_image_bytes)) return error.HandoffTargetMismatch;
                     }
-                    if (image.target_ref.target_ref_fingerprint != module_ref.target_ref_fingerprint) return error.HandoffTargetMismatch;
+                    if (module_ref.module_kind == .full_module) {
+                        if (image.target_ref.world_surface_fingerprint != module_ref.world_surface_fingerprint) return error.HandoffTargetMismatch;
+                        if (image.target_ref.target_certificate_fingerprint != module_ref.target_certificate_fingerprint) return error.HandoffTargetMismatch;
+                        if (image.target_ref.residual_program_plan_hash != module_ref.residual_program_plan_hash) return error.HandoffTargetMismatch;
+                    } else if (image.target_ref.target_ref_fingerprint != module_ref.target_ref_fingerprint) return error.HandoffTargetMismatch;
                 }
             }
             if (self.transcript_image) |image| {
