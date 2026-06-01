@@ -1302,6 +1302,7 @@ pub const Admission = struct {
             }
             if (self.kind == .full_module and self.module_image_bytes == null) return error.InvalidFrameEncoding;
             if (self.module_image_bytes) |bytes| {
+                if (self.kind != .full_module) return error.InvalidFrameEncoding;
                 if (!options.allow_full_module) return error.InvalidFrameEncoding;
                 if (bytes.len > options.max_module_bytes) return error.InvalidFrameEncoding;
             }

@@ -6332,6 +6332,14 @@ test "transfer package rejects malformed and oversized packages" {
         .requested_mode = .local_target_match_only,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, empty_module_reference.validate(.{}));
+    const stray_module_bytes = world.Admission.TransferPackage.init(.{
+        .kind = .module_reference,
+        .target_ref = target_ref,
+        .module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target),
+        .module_image_bytes = "not-a-full-module-package",
+        .requested_mode = .local_target_match_only,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, stray_module_bytes.validate(.{ .allow_full_module = true }));
     const empty_replay = world.Admission.TransferPackage.init(.{
         .kind = .replay_run,
         .target_ref = target_ref,
