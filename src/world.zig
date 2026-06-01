@@ -196,7 +196,7 @@ pub const world_environment_certificate_format_version: u32 = 1;
 pub const world_environment_certificate_fingerprint_version: u32 = 1;
 pub const world_adapter_descriptor_fingerprint_version: u32 = 1;
 pub const world_run_state_fingerprint_version: u32 = 1;
-pub const world_run_image_format_version: u32 = 2;
+pub const world_run_image_format_version: u32 = 3;
 pub const world_run_image_fingerprint_version: u32 = 1;
 pub const world_run_permit_format_version: u32 = 1;
 pub const world_run_permit_fingerprint_version: u32 = 1;
@@ -5932,7 +5932,9 @@ pub const RunImage = struct {
             .metadata = args.metadata,
         };
         if (result.hasModuleWitness()) {
-            result.format_version = 3;
+            result.format_version = world_run_image_format_version;
+        }
+        if (result.format_version >= 3) {
             result.run_image_fingerprint = fingerprintRunImageV3(result);
         } else {
             result.run_image_fingerprint = fingerprintRunImage(result);
@@ -5956,7 +5958,7 @@ pub const RunImage = struct {
         result.owns_pending_request_frame = false;
         result.owns_final_result_image = false;
         result.owns_metadata = false;
-        result.format_version = 3;
+        result.format_version = world_run_image_format_version;
         result.module_ref_fingerprint = module_ref.module_ref_fingerprint;
         result.boundary_module_fingerprint = module_ref.boundary_module_fingerprint;
         result.module_image_fingerprint = module_image_fingerprint;
@@ -6009,7 +6011,7 @@ pub const RunImage = struct {
     }
 
     pub fn validate(self: @This(), options: ValidateOptions) !void {
-        if (self.format_version != 1 and self.format_version != world_run_image_format_version and self.format_version != 3) return error.InvalidFrameEncoding;
+        if (!isSupportedRunImageFormatVersion(self.format_version)) return error.InvalidFrameEncoding;
         if (self.fingerprint_version != world_run_image_fingerprint_version) return error.InvalidFrameEncoding;
         if (!options.allow_reference_target and self.kind == .reference_target_run) return error.InvalidFrameEncoding;
         if (options.require_known_target and self.kind == .reference_target_run) return error.InvalidFrameEncoding;
@@ -6149,7 +6151,7 @@ pub const RunImage = struct {
         if (bytes.len > world_max_decoded_byte_field_len) return error.InvalidFrameEncoding;
         var cursor: usize = 0;
         const format_version = try readU32(bytes, &cursor);
-        if (format_version != 1 and format_version != world_run_image_format_version and format_version != 3) return error.InvalidFrameEncoding;
+        if (!isSupportedRunImageFormatVersion(format_version)) return error.InvalidFrameEncoding;
         const fingerprint_version = try readU32(bytes, &cursor);
         if (fingerprint_version != world_run_image_fingerprint_version) return error.InvalidFrameEncoding;
         const run_image_fingerprint = try readU64(bytes, &cursor);
@@ -6248,6 +6250,10 @@ pub const RunImage = struct {
         return result;
     }
 };
+
+fn isSupportedRunImageFormatVersion(format_version: u32) bool {
+    return format_version == 1 or format_version == 2 or format_version == world_run_image_format_version;
+}
 
 test "RunImage decoder accepts v1 layout without prior receipt refs" {
     const allocator = std.testing.allocator;

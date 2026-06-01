@@ -251,7 +251,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-handoff-parked",
             .desc = "Run the parked World handoff example.",
             .expected_stdout =
-            \\run_image_fingerprint=3ec6280313289654
+            \\run_image_fingerprint=d03f9380631ddd21
             \\pending_request_fingerprint=a2e08a01b91af8f0
             \\environment_certificate_fingerprint=a94455d24d986578
             \\final_result=7
@@ -264,7 +264,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-handoff-replay",
             .desc = "Run the replay World handoff example.",
             .expected_stdout =
-            \\run_image_fingerprint=bb61d94231d03810
+            \\run_image_fingerprint=ae5a0442d14cd6f1
             \\replayed_response_count=1
             \\final_result=7
             \\
@@ -287,7 +287,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-agent-handoff",
             .desc = "Run the agent World handoff example.",
             .expected_stdout =
-            \\run_image_fingerprint=643fc8be19cf01de
+            \\run_image_fingerprint=6d489fbd15f5edb5
             \\checkpoint_fingerprint=1b669a36f42ec5a
             \\branch_id=1
             \\model_port_id=0
@@ -393,7 +393,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-supervised-handoff",
             .desc = "Run the supervised handoff World example.",
             .expected_stdout =
-            \\received_run_image_fingerprint=ac6d8395b707f76e
+            \\received_run_image_fingerprint=2b11457c148f707f
             \\receiver_permit_fingerprint=3375ddcdc320bbf9
             \\receiver_receipt_fingerprint=6f68ceb099281ec0
             \\final_result=7
