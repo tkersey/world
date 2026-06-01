@@ -6475,7 +6475,7 @@ test "target match diagnostics identify mismatched field" {
     const module_ref = world.Admission.ModuleRef.init(.{
         .boundary_module_fingerprint = 1,
         .module_kind = .reference_only,
-        .target_ref_fingerprint = 2,
+        .target_ref_fingerprint = world.TargetRef.fromTarget(fixtures.Ports.Target).target_ref_fingerprint,
         .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint +% 1,
         .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
         .residual_program_plan_hash = world.TargetRef.fromTarget(fixtures.Ports.Target).residual_program_plan_hash,

@@ -1498,6 +1498,7 @@ pub const Admission = struct {
                 if (target.normal_form_kind != entry.normal_form_kind and first_mismatch == null) first_mismatch = .NormalForm;
             }
             if (module_ref) |module| {
+                if (module.target_ref_fingerprint != entry.target_ref.target_ref_fingerprint and first_mismatch == null) first_mismatch = .ProgramPlanHash;
                 if (module.world_surface_fingerprint != entry.world_surface_fingerprint and first_mismatch == null) first_mismatch = .WorldSurface;
                 if (module.target_certificate_fingerprint != entry.target_certificate_fingerprint and first_mismatch == null) first_mismatch = .TargetCertificate;
                 if (module.residual_program_plan_hash != entry.program_plan_hash and first_mismatch == null) first_mismatch = .ProgramPlanHash;
@@ -1991,6 +1992,7 @@ pub const Admission = struct {
             const Options = @TypeOf(options);
             const requested_mode: Mode = if (comptime @hasField(Options, "mode")) @field(options, "mode") else .fresh;
             if (requested_mode != admissionModeToRunMode(self.mode)) return Error.HandoffDenied;
+            if (self.mode == .resume_parked or self.mode == .branch_resume) return Error.HandoffDenied;
             const transcript_available = comptime @hasField(Options, "transcript_image");
             if (self.environment_certificate_fingerprint) |fingerprint| {
                 if (Env.certificate(requested_mode, transcript_available).certificate_fingerprint != fingerprint) return Error.HandoffDenied;
