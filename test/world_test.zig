@@ -7232,6 +7232,7 @@ test "admission rejects permit mode mismatch before receipt" {
         .run_image = run_image_with_module,
         .requested_mode = .completed_replay,
     });
+    try std.testing.expectError(error.InvalidFrameEncoding, missing_module_ref_package.validate(.{}));
     const module_scoped_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
         .mode = .replay,
         .module_ref_fingerprint = module_ref.module_ref_fingerprint,
@@ -7245,7 +7246,7 @@ test "admission rejects permit mode mismatch before receipt" {
         }),
     }).admitForTarget(fixtures.Ports.Target, PortsEnv, missing_module_ref_package, .{ .permit = module_scoped_permit });
     try std.testing.expect(!missing_module_ref_result.report.accepted);
-    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PermitRejected, missing_module_ref_result.report.blockers[0]);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, missing_module_ref_result.report.blockers[0]);
 }
 
 test "admitted run start requires stored permit" {

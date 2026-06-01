@@ -1345,9 +1345,18 @@ pub const Admission = struct {
                 if (self.target_ref) |target_ref| {
                     if (image.target_ref.target_ref_fingerprint != target_ref.target_ref_fingerprint) return error.HandoffTargetMismatch;
                 }
+                if (runImageHasModuleWitness(image) and self.module_ref == null) return error.InvalidFrameEncoding;
                 if (self.module_ref) |module_ref| {
+                    if (runImageHasModuleWitness(image) and image.module_ref_fingerprint == null) return error.InvalidFrameEncoding;
                     if (image.module_ref_fingerprint) |run_module_ref_fingerprint| {
                         if (run_module_ref_fingerprint != module_ref.module_ref_fingerprint) return error.HandoffTargetMismatch;
+                    }
+                    if (image.boundary_module_fingerprint) |run_boundary_module_fingerprint| {
+                        if (run_boundary_module_fingerprint != module_ref.boundary_module_fingerprint) return error.HandoffTargetMismatch;
+                    }
+                    if (image.module_image_fingerprint) |run_module_image_fingerprint| {
+                        const module_image_bytes = self.module_image_bytes orelse return error.InvalidFrameEncoding;
+                        if (run_module_image_fingerprint != moduleImageFingerprint(module_image_bytes)) return error.HandoffTargetMismatch;
                     }
                     if (image.target_ref.target_ref_fingerprint != module_ref.target_ref_fingerprint) return error.HandoffTargetMismatch;
                 }
@@ -8999,6 +9008,12 @@ fn admissionModeNeedsRunImage(mode: Admission.AdmissionMode) bool {
 fn effectiveAdmissionModeMatchesPackage(requested: Admission.AdmissionMode, effective: Admission.AdmissionMode) bool {
     if (requested == effective) return true;
     return requested == .replay_only and effective == .verify_only;
+}
+
+fn runImageHasModuleWitness(image: RunImage) bool {
+    return image.module_ref_fingerprint != null or
+        image.boundary_module_fingerprint != null or
+        image.module_image_fingerprint != null;
 }
 
 fn transferPackageKindMatchesRunImage(kind: Admission.PackageKind, image_kind: RunImage.Kind, requested_mode: Admission.AdmissionMode) bool {
