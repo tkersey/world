@@ -6368,6 +6368,14 @@ test "transfer package rejects malformed and oversized packages" {
         .requested_mode = .resume_parked,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, mismatched_run_kind.validate(.{}));
+    var stale_run_target_ref = completed_image;
+    stale_run_target_ref.target_ref.world_surface_fingerprint +%= 1;
+    const stale_run_target_ref_package = world.Admission.TransferPackage.init(.{
+        .kind = .completed_run,
+        .run_image = stale_run_target_ref,
+        .requested_mode = .completed_replay,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, stale_run_target_ref_package.validate(.{}));
     const misleading_reference_kind = world.Admission.TransferPackage.init(.{
         .kind = .target_reference_only,
         .target_ref = target_ref,
@@ -6891,6 +6899,11 @@ test "replay-only admission policy rejects resume modes" {
     try std.testing.expect(!policy.allowsMode(.resume_parked));
     try std.testing.expect(!policy.allowsMode(.branch_resume));
     try std.testing.expect(policy.allowsMode(.replay_only));
+    const verify_policy = world.Admission.AdmissionPolicy.verify_receiver;
+    try std.testing.expect(!verify_policy.allowsMode(.resume_parked));
+    try std.testing.expect(!verify_policy.allowsMode(.branch_resume));
+    try std.testing.expect(!verify_policy.allowsMode(.completed_replay));
+    try std.testing.expect(verify_policy.allowsMode(.verify_only));
 
     const pending_request = world.Frame.Request.init(.{
         .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
@@ -6926,6 +6939,12 @@ test "replay-only admission policy rejects resume modes" {
     }).admitForTarget(fixtures.Ports.Target, PortsReplayEnv, parked_package, .{});
     try std.testing.expect(!parked_result.report.accepted);
     try std.testing.expectEqual(world.Admission.AdmissionBlocker.AdmissionModeNotAllowed, parked_result.report.blockers[0]);
+    const verify_parked_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = verify_policy,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, parked_package, .{});
+    try std.testing.expect(!verify_parked_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.AdmissionModeNotAllowed, verify_parked_result.report.blockers[0]);
 }
 
 test "admission rejects run images that do not fit requested mode" {
@@ -7321,6 +7340,35 @@ test "admitted run start enforces admitted target and mode without stored permit
         .mode = world.Mode.fresh,
         .ctx = &ctx,
     }));
+
+    const TranscriptRequiredPortsEnv = world.Environment(fixtures.Ports.Target, .{
+        .bindings = .{PortsNativeBinding},
+        .policy = world.EnvironmentPolicy.init(.{ .allow_fresh_without_transcript = false }),
+    });
+    const sink_missing = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, TranscriptRequiredPortsEnv, package, .{});
+    try std.testing.expect(!sink_missing.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.EnvironmentRejected, sink_missing.report.blockers[0]);
+
+    const sink_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, TranscriptRequiredPortsEnv, package, .{ .fresh_transcript_sink_available = true });
+    try std.testing.expect(sink_result.report.accepted);
+    var sink_admitted = sink_result.admitted_run orelse return error.ExpectedAdmittedRun;
+    var sink_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer sink_runtime.deinit();
+    var sink_transcript = world.Transcript.init(std.testing.allocator);
+    defer sink_transcript.deinit();
+    var sink_run = try sink_admitted.start(fixtures.Ports.Target, TranscriptRequiredPortsEnv, &sink_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+        .transcript = &sink_transcript,
+    });
+    defer sink_run.deinit();
 }
 
 test "admitted run start enforces admitted transcript image" {

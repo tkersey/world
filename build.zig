@@ -342,7 +342,7 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World admission replay/verify example.",
             .expected_stdout =
             \\replay_admission_receipt=18e12b477a8f8c1a
-            \\verify_admission_receipt=f713ac408924ab99
+            \\verify_admission_receipt=6e8d420deb7d71a5
             \\divergence_detected=true
             \\
             ,

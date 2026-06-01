@@ -1342,6 +1342,7 @@ pub const Admission = struct {
                 }
             }
             if (self.run_image) |image| {
+                if (image.target_ref.target_ref_fingerprint != fingerprintTargetRef(image.target_ref)) return error.InvalidFrameEncoding;
                 if (self.target_ref) |target_ref| {
                     if (image.target_ref.target_ref_fingerprint != target_ref.target_ref_fingerprint) return error.HandoffTargetMismatch;
                 }
@@ -1806,6 +1807,9 @@ pub const Admission = struct {
         pub const verify_receiver = init(.{
             .require_supervision_permit = false,
             .allow_verify_without_fresh_environment = true,
+            .allow_parked_resume = false,
+            .allow_branch_resume = false,
+            .allow_completed_replay = false,
         });
         pub const test_fixture = init(.{
             .allow_full_modules = true,
@@ -2053,7 +2057,8 @@ pub const Admission = struct {
             const requested_mode: Mode = if (comptime @hasField(Options, "mode")) @field(options, "mode") else .fresh;
             if (requested_mode != admissionModeToRunMode(self.mode)) return Error.HandoffDenied;
             if (self.mode == .resume_parked or self.mode == .branch_resume) return Error.HandoffDenied;
-            const transcript_available = comptime @hasField(Options, "transcript_image");
+            const transcript_available = comptime @hasField(Options, "transcript_image") or
+                (@hasField(Options, "transcript") and Env.policy_decl.allow_native_adapters);
             if (self.environment_certificate_fingerprint) |fingerprint| {
                 if (Env.certificate(requested_mode, transcript_available).certificate_fingerprint != fingerprint) return Error.HandoffDenied;
             }
@@ -2125,11 +2130,14 @@ pub const Admission = struct {
             permit: ?RunPermit = null,
             requested_branch_id: ?u64 = null,
             requested_checkpoint_ref: ?u64 = null,
+            fresh_transcript_sink_available: bool = false,
             metadata: []const u8 = "",
             allocator: std.mem.Allocator = std.heap.page_allocator,
         }) AdmissionResult {
             const mode = args.mode orelse package.requested_mode;
-            const transcript_available = package.transcript_image != null or (package.run_image != null and package.run_image.?.transcript_image != null);
+            const transcript_available = package.transcript_image != null or
+                (package.run_image != null and package.run_image.?.transcript_image != null) or
+                (mode == .continue_fresh and args.fresh_transcript_sink_available and Env.policy_decl.allow_native_adapters);
             const environment_certificate_fingerprint: ?u64 = if (mode == .inspect_only)
                 null
             else
