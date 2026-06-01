@@ -1281,6 +1281,7 @@ pub const Admission = struct {
             if (!options.allow_inspect_only and self.kind == .inspect_only) return error.InvalidFrameEncoding;
             if (!options.allow_reference_only and self.kind == .target_reference_only) return error.InvalidFrameEncoding;
             if (self.module_ref) |module_ref| {
+                if (module_ref.module_ref_fingerprint != fingerprintModuleRef(module_ref)) return error.InvalidFrameEncoding;
                 if (!options.allow_reference_only and module_ref.module_kind == .reference_only) return error.InvalidFrameEncoding;
                 if (!options.allow_full_module and module_ref.module_kind == .full_module) return error.InvalidFrameEncoding;
                 if (module_ref.metadata.len > options.max_package_bytes) return error.InvalidFrameEncoding;
@@ -1293,7 +1294,7 @@ pub const Admission = struct {
             if (self.checkpoint_refs.len > options.max_checkpoints) return error.InvalidFrameEncoding;
             if (self.branch_refs.len > options.max_branches) return error.InvalidFrameEncoding;
             if (self.transcript_image) |image| {
-                if (image.events.len > options.max_transcript_bytes) return error.InvalidFrameEncoding;
+                if (transcriptImageEncodedByteSize(image) > options.max_transcript_bytes) return error.InvalidFrameEncoding;
             }
             if (self.target_ref) |target_ref| {
                 if (target_ref.target_ref_fingerprint != fingerprintTargetRef(target_ref)) return error.InvalidFrameEncoding;
@@ -2044,6 +2045,11 @@ pub const Admission = struct {
             }) catch {
                 return rejectedResult(request, package, target_ref, module_ref, null, &.{.PackageInvalid}, "package validation failed");
             };
+            if (package.run_image) |image| {
+                if (!runImageFitsAdmissionMode(image, mode)) {
+                    return rejectedResult(request, package, target_ref, module_ref, null, &.{.RunImageInvalid}, "run image does not match requested admission mode");
+                }
+            }
             self.registry.validate() catch {
                 return rejectedResult(request, package, target_ref, module_ref, null, &.{.TargetMismatch}, "target registry contains conflicting entries");
             };
@@ -2075,7 +2081,7 @@ pub const Admission = struct {
                     return rejectedResult(request, package, target_ref, module_ref, match, &.{.ModuleRequiresLocalTarget}, "full module requires local target for execution");
                 }
             }
-            if (mode == .inspect_only) {
+            if (mode == .inspect_only or mode == .local_target_match_only) {
                 const report = Admission.AdmissionReport.accept(.{
                     .request = request,
                     .package_fingerprint = package.package_fingerprint,
@@ -2083,7 +2089,7 @@ pub const Admission = struct {
                     .target_ref_fingerprint = target_ref.target_ref_fingerprint,
                     .module_ref_fingerprint = if (module_ref) |module| module.module_ref_fingerprint else null,
                     .target_match_fingerprint = match.match_fingerprint,
-                    .summary = "inspect-only admission accepted",
+                    .summary = if (mode == .inspect_only) "inspect-only admission accepted" else "local target match accepted",
                 });
                 const receipt = Admission.AdmissionReceipt.init(.{
                     .request = request,
@@ -8836,6 +8842,127 @@ fn mismatchSlice(mismatch: ?Admission.MatchMismatch) []const Admission.MatchMism
 fn providedFingerprintMatches(provided: ?u64, expected: ?u64) bool {
     const actual = provided orelse return true;
     return expected != null and expected.? == actual;
+}
+
+fn runImageFitsAdmissionMode(image: RunImage, mode: Admission.AdmissionMode) bool {
+    return switch (mode) {
+        .inspect_only, .local_target_match_only, .continue_fresh => false,
+        .resume_parked, .branch_resume => image.kind == .parked_run and image.current_state.status == .parked_on_port,
+        .completed_replay => image.kind == .completed_run and image.current_state.status == .completed,
+        .replay_only, .verify_only => switch (image.kind) {
+            .completed_run => image.current_state.status == .completed,
+            .replay_only_run => image.current_state.status == .completed or image.current_state.status == .failed,
+            else => false,
+        },
+    };
+}
+
+fn addSatEncodedSize(a: usize, b: usize) usize {
+    return std.math.add(usize, a, b) catch std.math.maxInt(usize);
+}
+
+fn transcriptImageEncodedByteSize(image: TranscriptImage) usize {
+    var size: usize = 4 + 4 + 8 + 8 + 8 + 1 + 8 + 8;
+    for (image.events) |event| size = addSatEncodedSize(size, transcriptEventImageEncodedByteSize(event));
+    return size;
+}
+
+fn transcriptEventImageEncodedByteSize(event: TranscriptImage.EventImage) usize {
+    var size: usize = 8 + 1 + 8 + 8;
+    size = addSatEncodedSize(size, optionalU32EncodedByteSize(event.world_port_id));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(event.request_fingerprint));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(event.response_fingerprint));
+    size = addSatEncodedSize(size, optionalEnumByteEncodedByteSize(event.response_kind));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(event.replay_key));
+    size = addSatEncodedSize(size, optionalUsizeEncodedByteSize(event.turn_index));
+    size = addSatEncodedSize(size, optionalUsizeEncodedByteSize(event.residual_site_index));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(event.residual_site_fingerprint));
+    size = addSatEncodedSize(size, optionalEnumByteEncodedByteSize(event.status));
+    size = addSatEncodedSize(size, 1);
+    size = addSatEncodedSize(size, optionalRequestFrameEncodedByteSize(event.request_frame));
+    size = addSatEncodedSize(size, optionalResponseFrameEncodedByteSize(event.response_frame));
+    return size;
+}
+
+fn optionalU32EncodedByteSize(value: ?u32) usize {
+    return 1 + if (value == null) @as(usize, 0) else 4;
+}
+
+fn optionalU64EncodedByteSize(value: ?u64) usize {
+    return 1 + if (value == null) @as(usize, 0) else 8;
+}
+
+fn optionalUsizeEncodedByteSize(value: ?usize) usize {
+    return 1 + if (value == null) @as(usize, 0) else 8;
+}
+
+fn optionalEnumByteEncodedByteSize(value: anytype) usize {
+    return 1 + if (value == null) @as(usize, 0) else 1;
+}
+
+fn bytesEncodedByteSize(bytes: []const u8) usize {
+    return bytesFieldEncodedByteSize(bytes.len);
+}
+
+fn bytesFieldEncodedByteSize(len: usize) usize {
+    return 8 + len;
+}
+
+fn optionalBytesEncodedByteSize(bytes: ?[]const u8) usize {
+    return 1 + if (bytes) |present| bytesEncodedByteSize(present) else 0;
+}
+
+fn optionalValueImageEncodedByteSize(image: ?Frame.ValueImage) usize {
+    return 1 + if (image) |present| valueImageEncodedByteSize(present) else 0;
+}
+
+fn valueImageEncodedByteSize(image: Frame.ValueImage) usize {
+    var size: usize = 4 + 4 + 8;
+    size = addSatEncodedSize(size, optionalU32EncodedByteSize(image.value_table_id));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(image.boundary_value_fingerprint));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(image.codec_schema_descriptor_fingerprint));
+    size = addSatEncodedSize(size, 1);
+    size = addSatEncodedSize(size, bytesEncodedByteSize(image.bytes));
+    size = addSatEncodedSize(size, optionalBytesEncodedByteSize(image.diagnostic_type_label));
+    return size;
+}
+
+fn optionalRequestFrameEncodedByteSize(frame: ?Frame.Request) usize {
+    return 1 + if (frame) |present| bytesFieldEncodedByteSize(requestFrameEncodedByteSize(present)) else 0;
+}
+
+fn optionalResponseFrameEncodedByteSize(frame: ?Frame.Response) usize {
+    return 1 + if (frame) |present| bytesFieldEncodedByteSize(responseFrameEncodedByteSize(present)) else 0;
+}
+
+fn requestFrameEncodedByteSize(frame: Frame.Request) usize {
+    var size: usize = 4 + 4 + 8 + 8;
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(frame.world_surface_replay_scope_fingerprint));
+    size = addSatEncodedSize(size, 8 + 4 + 8 + 8 + 8 + 8);
+    size = addSatEncodedSize(size, optionalU32EncodedByteSize(frame.payload_value_table_id));
+    size = addSatEncodedSize(size, optionalU32EncodedByteSize(frame.expected_response_value_table_id));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(frame.payload_value_fingerprint));
+    size = addSatEncodedSize(size, optionalValueImageEncodedByteSize(frame.payload_image));
+    size = addSatEncodedSize(size, 8 + 8 + 4 + 8);
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(frame.source_effect_shape_fingerprint));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(frame.world_port_ref_fingerprint));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(frame.trace_ref_fingerprint));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(frame.evidence_ref_fingerprint));
+    size = addSatEncodedSize(size, 4);
+    return size;
+}
+
+fn responseFrameEncodedByteSize(frame: Frame.Response) usize {
+    var size: usize = 4 + 4 + 8 + 8 + 8 + 4 + 8 + 1;
+    size = addSatEncodedSize(size, optionalU32EncodedByteSize(frame.response_value_table_id));
+    size = addSatEncodedSize(size, 8);
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(frame.response_value_fingerprint));
+    size = addSatEncodedSize(size, optionalValueImageEncodedByteSize(frame.response_image));
+    size = addSatEncodedSize(size, 8 + 1);
+    size = addSatEncodedSize(size, optionalBytesEncodedByteSize(frame.error_tag));
+    size = addSatEncodedSize(size, optionalBytesEncodedByteSize(frame.reason));
+    size = addSatEncodedSize(size, 4);
+    return size;
 }
 
 fn containsU64(values: []const u64, needle: u64) bool {
