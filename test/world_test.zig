@@ -7127,6 +7127,23 @@ test "admitter accepts inspect-only full module and rejects missing permit for e
 test "admission rejects bare target reference when reference targets are disabled" {
     const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Ports.Target)});
+    const state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .not_started,
+    });
+    const reference_run_image = world.RunImage.init(.{
+        .kind = .reference_target_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = state,
+    });
+    const reference_run_package = world.Admission.TransferPackage.init(.{
+        .kind = .inspect_only,
+        .run_image = reference_run_image,
+        .requested_mode = .inspect_only,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, reference_run_package.validate(.{ .allow_reference_only = false }));
+
     const package = world.Admission.TransferPackage.init(.{
         .kind = .target_reference_only,
         .target_ref = target_ref,

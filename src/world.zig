@@ -1336,6 +1336,7 @@ pub const Admission = struct {
                     .max_image_bytes = options.max_package_bytes,
                     .max_branches = options.max_branches,
                     .max_checkpoints = options.max_checkpoints,
+                    .allow_reference_target = options.allow_reference_only,
                 });
                 if (image.transcript_image) |embedded| {
                     try validateTranscriptImageFingerprint(embedded);
