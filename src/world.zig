@@ -6309,7 +6309,7 @@ test "RunImage decoder accepts v1 layout without prior receipt refs" {
     try std.testing.expectEqualStrings("legacy", redecode.metadata);
 }
 
-test "TargetRef decoder accepts v1 layouts with and without boundary module" {
+test "TargetRef decoder accepts v1 boundary module slot layouts" {
     const allocator = std.testing.allocator;
     var legacy_ref = TargetRef{
         .format_version = 1,
@@ -6334,6 +6334,7 @@ test "TargetRef decoder accepts v1 layouts with and without boundary module" {
     try writeOptionalU64(&legacy_out, allocator, legacy_ref.world_value_table_fingerprint);
     try writeOptionalU64(&legacy_out, allocator, legacy_ref.world_dispatch_table_fingerprint);
     try writeOptionalU64(&legacy_out, allocator, legacy_ref.surface_profile_fingerprint);
+    try writeOptionalU64(&legacy_out, allocator, legacy_ref.boundary_module_fingerprint);
     try writeBytes(&legacy_out, allocator, legacy_ref.metadata);
     var legacy_cursor: usize = 0;
     const decoded_legacy = try decodeTargetRef(allocator, legacy_out.items, &legacy_cursor);
@@ -10253,7 +10254,7 @@ fn decodeBranch(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize)
 }
 
 fn targetRefEncodesBoundaryModule(target_ref: TargetRef) bool {
-    return target_ref.format_version >= 2 or target_ref.boundary_module_fingerprint != null;
+    return target_ref.format_version >= 1;
 }
 
 fn fingerprintTargetRef(target_ref: TargetRef) u64 {
