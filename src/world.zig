@@ -1310,6 +1310,7 @@ pub const Admission = struct {
                 if (module_ref.module_ref_fingerprint != fingerprintModuleRef(module_ref)) return error.InvalidFrameEncoding;
                 if (!options.allow_reference_only and module_ref.module_kind == .reference_only) return error.InvalidFrameEncoding;
                 if (!options.allow_full_module and module_ref.module_kind == .full_module) return error.InvalidFrameEncoding;
+                if (module_ref.module_kind == .full_module and self.module_image_bytes == null) return error.InvalidFrameEncoding;
                 if (module_ref.metadata.len > options.max_package_bytes) return error.InvalidFrameEncoding;
                 if (module_ref.label) |label| if (label.len > options.max_package_bytes) return error.InvalidFrameEncoding;
             }

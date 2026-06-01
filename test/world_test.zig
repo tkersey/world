@@ -6628,6 +6628,18 @@ test "transfer package rejects malformed and oversized packages" {
     const full_module_bytes = try fixtures.Ports.Target.Module.fullImage(std.testing.allocator);
     defer std.testing.allocator.free(full_module_bytes);
     const module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
+    var loaded_module = try world.Admission.ModuleGateway.decodeBoundaryModule(fixtures.Ports.Target, std.testing.allocator, full_module_bytes);
+    defer loaded_module.deinit();
+    const full_module_ref = world.Admission.ModuleGateway.refFromBoundaryModule(loaded_module);
+    const unwitnessed_full_module_ref_package = world.Admission.TransferPackage.init(.{
+        .kind = .module_reference,
+        .module_ref = full_module_ref,
+        .requested_mode = .inspect_only,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, unwitnessed_full_module_ref_package.validate(.{
+        .allow_full_module = true,
+        .allow_inspect_only = true,
+    }));
     const run_with_module_image = completed_image.withModuleRef(
         module_ref,
         world.Admission.moduleImageFingerprintForBytes(full_module_bytes),
@@ -7051,6 +7063,15 @@ test "admitter accepts inspect-only full module and rejects missing permit for e
     const missing_bytes_result = inspect_admitter.admitForTarget(fixtures.Ports.Target, PortsEnv, missing_bytes_full_module, .{});
     try std.testing.expect(!missing_bytes_result.report.accepted);
     try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, missing_bytes_result.report.blockers[0]);
+
+    const unwitnessed_full_module_reference = world.Admission.TransferPackage.init(.{
+        .kind = .module_reference,
+        .module_ref = module_ref,
+        .requested_mode = .inspect_only,
+    });
+    const unwitnessed_full_module_reference_result = inspect_admitter.admitForTarget(fixtures.Ports.Target, PortsEnv, unwitnessed_full_module_reference, .{});
+    try std.testing.expect(!unwitnessed_full_module_reference_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, unwitnessed_full_module_reference_result.report.blockers[0]);
 
     const execute_package = world.Admission.TransferPackage.init(.{
         .kind = .target_reference_only,
