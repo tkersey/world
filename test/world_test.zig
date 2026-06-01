@@ -6507,6 +6507,8 @@ test "target registry rejects module import and table witness mismatches" {
     const import_mismatch = world.Admission.TargetMatch.matchModule(module_ref, fixtures.Ports.Target);
     try std.testing.expect(!import_mismatch.matched);
     try std.testing.expectEqual(world.Admission.MatchMismatch.ImportSet, import_mismatch.mismatches[0]);
+    const registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Ports.Target)});
+    try std.testing.expect(registry.matchModule(module_ref) == null);
 
     module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
     module_ref.world_value_table_fingerprint = if (module_ref.world_value_table_fingerprint) |fingerprint| fingerprint +% 1 else 1;

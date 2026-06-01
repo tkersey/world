@@ -1466,7 +1466,6 @@ pub const Admission = struct {
         }
 
         pub fn matchModule(self: Admission.TargetRegistry, module_ref: Admission.ModuleRef) ?Entry {
-            var fallback: ?Entry = null;
             for (self.entries) |entry| {
                 const candidate = entry.target_ref.target_ref_fingerprint == module_ref.target_ref_fingerprint or
                     (entry.world_surface_fingerprint == module_ref.world_surface_fingerprint and
@@ -1475,9 +1474,8 @@ pub const Admission = struct {
                 if (!candidate) continue;
                 const match_result = Admission.TargetMatch.matchEntry(null, module_ref, entry);
                 if (match_result.matched) return entry;
-                if (fallback == null) fallback = entry;
             }
-            return fallback;
+            return null;
         }
 
         fn matchModuleTarget(self: Admission.TargetRegistry, target_ref: ?TargetRef, module_ref: Admission.ModuleRef) ?Admission.TargetMatch {
