@@ -1466,16 +1466,33 @@ pub const Admission = struct {
         }
 
         pub fn matchModule(self: Admission.TargetRegistry, module_ref: Admission.ModuleRef) ?Entry {
+            var fallback: ?Entry = null;
             for (self.entries) |entry| {
-                if (entry.target_ref.target_ref_fingerprint == module_ref.target_ref_fingerprint) return entry;
-                if (entry.world_surface_fingerprint == module_ref.world_surface_fingerprint and
-                    entry.target_certificate_fingerprint == module_ref.target_certificate_fingerprint and
-                    entry.program_plan_hash == module_ref.residual_program_plan_hash)
-                {
-                    return entry;
-                }
+                const candidate = entry.target_ref.target_ref_fingerprint == module_ref.target_ref_fingerprint or
+                    (entry.world_surface_fingerprint == module_ref.world_surface_fingerprint and
+                        entry.target_certificate_fingerprint == module_ref.target_certificate_fingerprint and
+                        entry.program_plan_hash == module_ref.residual_program_plan_hash);
+                if (!candidate) continue;
+                const match_result = Admission.TargetMatch.matchEntry(null, module_ref, entry);
+                if (match_result.matched) return entry;
+                if (fallback == null) fallback = entry;
             }
-            return null;
+            return fallback;
+        }
+
+        fn matchModuleTarget(self: Admission.TargetRegistry, target_ref: ?TargetRef, module_ref: Admission.ModuleRef) ?Admission.TargetMatch {
+            var fallback: ?Admission.TargetMatch = null;
+            for (self.entries) |entry| {
+                const candidate = entry.target_ref.target_ref_fingerprint == module_ref.target_ref_fingerprint or
+                    (entry.world_surface_fingerprint == module_ref.world_surface_fingerprint and
+                        entry.target_certificate_fingerprint == module_ref.target_certificate_fingerprint and
+                        entry.program_plan_hash == module_ref.residual_program_plan_hash);
+                if (!candidate) continue;
+                const match_result = Admission.TargetMatch.matchEntry(target_ref, module_ref, entry);
+                if (match_result.matched) return match_result;
+                if (fallback == null) fallback = match_result;
+            }
+            return fallback;
         }
 
         pub fn requireMatch(self: Admission.TargetRegistry, target_ref: TargetRef) !Entry {
@@ -1484,7 +1501,7 @@ pub const Admission = struct {
 
         pub fn match(self: Admission.TargetRegistry, target_ref: ?TargetRef, module_ref: ?Admission.ModuleRef) Admission.TargetMatch {
             if (module_ref) |module| {
-                if (self.matchModule(module)) |entry| return Admission.TargetMatch.matchEntry(target_ref, module, entry);
+                if (self.matchModuleTarget(target_ref, module)) |match_result| return match_result;
                 return Admission.TargetMatch.missing(target_ref, module);
             }
             if (target_ref) |target| {

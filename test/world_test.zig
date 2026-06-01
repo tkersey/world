@@ -6490,6 +6490,16 @@ test "target registry finds targets and matches module refs" {
     try std.testing.expectEqual(entry.target_ref.target_ref_fingerprint, match.local_target_ref_fingerprint.?);
 }
 
+test "target registry keeps scanning after coarse module mismatch" {
+    const coarse_entry = world.Admission.TargetRegistry.register(MissingDispatchTarget);
+    const exact_entry = world.Admission.TargetRegistry.register(fixtures.Ports.Target);
+    const registry = try world.Admission.TargetRegistry.initChecked(&.{ coarse_entry, exact_entry });
+    const module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
+    const match = registry.match(null, module_ref);
+    try std.testing.expect(match.matched);
+    try std.testing.expectEqual(exact_entry.target_ref.target_ref_fingerprint, match.local_target_ref_fingerprint.?);
+}
+
 test "target registry rejects module import and table witness mismatches" {
     var module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
 
