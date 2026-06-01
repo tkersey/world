@@ -6346,6 +6346,23 @@ test "transfer package rejects malformed and oversized packages" {
         .requested_mode = .replay_only,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, empty_replay.validate(.{}));
+    const completed_state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .completed,
+    });
+    const completed_image = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = completed_state,
+    });
+    const mismatched_run_kind = world.Admission.TransferPackage.init(.{
+        .kind = .parked_run,
+        .target_ref = target_ref,
+        .run_image = completed_image,
+        .requested_mode = .resume_parked,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, mismatched_run_kind.validate(.{}));
 
     var package = world.Admission.TransferPackage.init(.{
         .kind = .target_reference_only,
@@ -7192,6 +7209,49 @@ test "admitted run start enforces admitted transcript image" {
     }).admitForTarget(fixtures.Ports.Target, PortsReplayEnv, incomplete_transcript_package, .{});
     try std.testing.expect(!incomplete_transcript_result.report.accepted);
     try std.testing.expectEqual(world.Admission.AdmissionBlocker.TranscriptImageInvalid, incomplete_transcript_result.report.blockers[0]);
+
+    var invalid_env_transcript = world.Transcript.init(std.testing.allocator);
+    defer invalid_env_transcript.deinit();
+    try invalid_env_transcript.append(.{
+        .kind = .run_started,
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .source_run = true,
+    });
+    try invalid_env_transcript.append(.{
+        .kind = .frame_requested,
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .world_surface_replay_scope_fingerprint = fixtures.Ports.Target.WorldSurface.replayScopeRef().fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .world_port_id = 999,
+        .request_fingerprint = 0xdead_999,
+        .turn_index = 0,
+        .residual_site_index = fixtures.Ports.ApprovalRequest.index,
+        .residual_site_fingerprint = fixtures.Ports.ApprovalRequest.fingerprint,
+        .source_run = true,
+    });
+    try invalid_env_transcript.append(.{
+        .kind = .run_completed,
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .status = .responded,
+        .source_run = true,
+    });
+    var invalid_env_image = try invalid_env_transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer invalid_env_image.deinit(std.testing.allocator);
+    const invalid_env_package = world.Admission.TransferPackage.init(.{
+        .kind = .replay_run,
+        .target_ref = target_ref,
+        .module_ref = module_ref,
+        .transcript_image = invalid_env_image,
+        .requested_mode = .replay_only,
+    });
+    const invalid_env_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.replay_only,
+    }).admitForTarget(fixtures.Ports.Target, PortsReplayEnv, invalid_env_package, .{});
+    try std.testing.expect(!invalid_env_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.TranscriptImageInvalid, invalid_env_result.report.blockers[0]);
 
     const transcript_only_package = world.Admission.TransferPackage.init(.{
         .kind = .replay_run,

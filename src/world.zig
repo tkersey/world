@@ -1294,6 +1294,9 @@ pub const Admission = struct {
                 .replay_run => if (self.run_image == null and self.transcript_image == null) return error.InvalidFrameEncoding,
                 .run_reference, .parked_run, .completed_run, .branch_run => if (self.run_image == null) return error.InvalidFrameEncoding,
             }
+            if (self.run_image) |image| {
+                if (!transferPackageKindMatchesRunImage(self.kind, image.kind)) return error.InvalidFrameEncoding;
+            }
             if (self.module_ref) |module_ref| {
                 if (module_ref.module_ref_fingerprint != fingerprintModuleRef(module_ref)) return error.InvalidFrameEncoding;
                 if (!options.allow_reference_only and module_ref.module_kind == .reference_only) return error.InvalidFrameEncoding;
@@ -2270,6 +2273,9 @@ pub const Admission = struct {
             }
             if ((mode == .replay_only or mode == .verify_only) and package.run_image == null) {
                 var transcript_image = package.transcript_image.?;
+                validateTranscriptImageForEnvironment(Env, &transcript_image) catch {
+                    return rejectedResult(request, package, target_ref, module_ref, match, &.{.TranscriptImageInvalid}, "transcript image failed environment preflight");
+                };
                 transcript_image.validateReplayRun(target_ref.world_surface_fingerprint, target_ref.target_certificate_fingerprint) catch {
                     return rejectedResult(request, package, target_ref, module_ref, match, &.{.TranscriptImageInvalid}, "transcript image failed replay preflight");
                 };
@@ -8962,6 +8968,17 @@ fn admissionModeNeedsRunImage(mode: Admission.AdmissionMode) bool {
     return switch (mode) {
         .inspect_only, .local_target_match_only, .continue_fresh, .replay_only, .verify_only => false,
         .resume_parked, .branch_resume, .completed_replay => true,
+    };
+}
+
+fn transferPackageKindMatchesRunImage(kind: Admission.PackageKind, image_kind: RunImage.Kind) bool {
+    return switch (kind) {
+        .run_reference => image_kind == .reference_target_run or image_kind == .full_target_run,
+        .parked_run => image_kind == .parked_run,
+        .completed_run => image_kind == .completed_run,
+        .replay_run => image_kind == .replay_only_run,
+        .branch_run => image_kind == .branched_run,
+        .target_reference_only, .module_reference, .full_module, .inspect_only => true,
     };
 }
 
