@@ -7529,10 +7529,17 @@ pub const Runspace = struct {
             var owned = image;
             owned.deinit(self.allocator);
         }
+        const pending = if (slot.status == .parked_on_port)
+            if (slot.pending_mailbox_id) |mailbox_id| try self.mailbox.get(mailbox_id) else return error.StaleRunHandle
+        else
+            null;
+        const exported = if (pending) |pending_port| try self.mailbox.markExported(pending_port.mailbox_id) else null;
         try slot.transition(.@"export", null);
         _ = try self.appendEvent(.{
             .kind = .run_exported,
             .run_handle = slot.handle,
+            .pending_port_fingerprint = if (exported) |pending_port| pending_port.pending_port_fingerprint else null,
+            .request_frame_fingerprint = if (pending) |pending_port| pending_port.request_frame_fingerprint else null,
             .run_state_fingerprint = slot.current_state.run_state_fingerprint,
             .run_permit_fingerprint = slot.run_permit_fingerprint,
             .summary = "run exported",
@@ -7597,6 +7604,11 @@ pub const Runspace = struct {
         const index = try self.slotIndex(handle);
         const parent = self.slots.items[index];
         try self.validateSlotCheckpoint(parent, checkpoint_value);
+        const next_run_id_before = self.next_run_id;
+        var installed = false;
+        errdefer if (!installed) {
+            self.next_run_id = next_run_id_before;
+        };
         const branch_id = self.next_run_id;
         const branch_handle = try self.nextHandle(.{
             .target_ref_fingerprint = parent.target_ref.target_ref_fingerprint,
@@ -7624,6 +7636,7 @@ pub const Runspace = struct {
         });
         const summary_text = if (@hasField(@TypeOf(options), "summary")) @field(options, "summary") else "run branch created";
         try self.installSlot(slot, .run_branch_created, summary_text);
+        installed = true;
         return branch_handle;
     }
 

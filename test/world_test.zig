@@ -2815,6 +2815,32 @@ test "runspace export pending rejects stale mailbox without changing run state" 
     try std.testing.expectEqual(world.Runspace.PendingStatus.responded, (try runspace.mailbox.get(0)).status);
 }
 
+test "runspace export run consumes parked mailbox entry" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{
+        .max_pending_ports = 1,
+    });
+    defer runspace.deinit();
+
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    _ = try runspace.tick();
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+
+    var image = try runspace.exportRun(handle);
+    defer image.deinit(std.testing.allocator);
+    try std.testing.expectEqual(world.RunImage.Kind.parked_run, image.kind);
+    try std.testing.expectEqual(world.Runspace.RunStatus.exported, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(world.Runspace.PendingStatus.exported, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
+
+    const replacement = try runspace.installTarget(fixtures.Strict.Target, .{}, null, .{});
+    try std.testing.expectEqual(@as(u64, 1), replacement.local_run_id);
+}
+
 test "runspace export run event budget failure does not change slot state" {
     var runtime = boundary.Runtime.init(std.testing.allocator);
     defer runtime.deinit();
@@ -2965,6 +2991,19 @@ test "runspace branches list only selected parent lineage" {
     try std.testing.expectEqual(@as(usize, 1), second_branches.len);
     try std.testing.expectEqual(first_branch.handle_fingerprint, first_branches[0].handle_fingerprint);
     try std.testing.expectEqual(second_branch.handle_fingerprint, second_branches[0].handle_fingerprint);
+}
+
+test "runspace failed branch install preserves deterministic run ids" {
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+    const handle = try runspace.installTarget(fixtures.Strict.Target, .{}, null, .{});
+    const checkpoint = try runspace.checkpoint(handle);
+    runspace.config.max_events = runspace.events.items.len;
+
+    try std.testing.expectError(error.BudgetExceeded, runspace.branch(handle, checkpoint, .{}));
+    runspace.config.max_events = null;
+    const next = try runspace.installTarget(fixtures.Strict.Target, .{}, null, .{});
+    try std.testing.expectEqual(@as(u64, 1), next.local_run_id);
 }
 
 test "runspace verify run detects changed handler" {
