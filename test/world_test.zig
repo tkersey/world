@@ -2461,6 +2461,45 @@ test "runspace event budget failure does not enqueue or park request" {
     try std.testing.expectEqual(@as(usize, 1), runspace.report().event_count);
 }
 
+test "runspace response event budget failure does not consume mailbox" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{
+        .max_events = 4,
+    });
+    defer runspace.deinit();
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    _ = try runspace.tick();
+
+    try std.testing.expectError(error.BudgetExceeded, runspace.respondValue(0, @as(i32, 7)));
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try runspace.getSlotSummary(handle)).status);
+}
+
+test "runspace auto dispatch event budget failure happens before handler call" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var ctx: PortsCtx = .{};
+    var runspace = world.Runspace.init(std.testing.allocator, .{
+        .auto_dispatch = true,
+        .max_events = 5,
+    });
+    defer runspace.deinit();
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+    });
+
+    try std.testing.expectError(error.BudgetExceeded, runspace.tick());
+    try std.testing.expectEqual(@as(usize, 0), ctx.calls);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
+    try std.testing.expectEqual(world.Runspace.RunStatus.runnable, (try runspace.getSlotSummary(handle)).status);
+}
+
 test "runspace install admitted and replay records receipts summaries and events" {
     const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const admitted = world.Admission.AdmittedRun.init(.{
@@ -2597,6 +2636,25 @@ test "runspace export pending rejects stale mailbox without changing run state" 
     try std.testing.expectError(error.PendingPortConsumed, runspace.exportPending(0));
     try std.testing.expectEqual(world.Runspace.RunStatus.runnable, (try runspace.getSlotSummary(handle)).status);
     try std.testing.expectEqual(world.Runspace.PendingStatus.responded, (try runspace.mailbox.get(0)).status);
+}
+
+test "runspace export run event budget failure does not change slot state" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+    const handle = try runspace.installMachineRun(fixtures.Strict.Target, world.Environment(fixtures.Strict.Target, .{
+        .ports = &.{},
+    }), &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    _ = try runspace.tick();
+    try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try runspace.getSlotSummary(handle)).status);
+    runspace.config.max_events = runspace.events.items.len;
+
+    try std.testing.expectError(error.BudgetExceeded, runspace.exportRun(handle));
+    try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try runspace.getSlotSummary(handle)).status);
 }
 
 test "runspace supervised auto dispatch denial happens before handler call" {

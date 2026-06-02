@@ -7307,10 +7307,12 @@ pub const Runspace = struct {
     }
 
     pub fn respond(self: *@This(), mailbox_id: u64, response: Frame.Response) !Runspace.RunspaceEvent {
-        const pending = try self.mailbox.respond(mailbox_id, response);
+        const pending = try self.mailbox.get(mailbox_id);
+        try pending.validateResponse(response);
         const index = try self.slotIndex(pending.handle);
         var slot = &self.slots.items[index];
         if (slot.pending_mailbox_id != mailbox_id or slot.status != .parked_on_port) return error.StaleRunHandle;
+        try self.ensureEventCapacity(2);
         if (slot.driver) |driver| {
             driver.resumeFrame(response) catch |err| {
                 slot.transition(.fail, null) catch {};
@@ -7320,10 +7322,11 @@ pub const Runspace = struct {
             return error.InvalidRunspaceTransition;
         }
         try slot.transition(.resume_from_port, mailbox_id);
+        const responded = try self.mailbox.markResponded(mailbox_id);
         _ = try self.appendEvent(.{
             .kind = .port_responded,
             .run_handle = slot.handle,
-            .pending_port_fingerprint = pending.pending_port_fingerprint,
+            .pending_port_fingerprint = responded.pending_port_fingerprint,
             .response_frame_fingerprint = response.frame_fingerprint,
             .run_state_fingerprint = slot.current_state.run_state_fingerprint,
             .run_permit_fingerprint = slot.run_permit_fingerprint,
@@ -7332,7 +7335,7 @@ pub const Runspace = struct {
         return self.appendEvent(.{
             .kind = .run_resumed,
             .run_handle = slot.handle,
-            .pending_port_fingerprint = pending.pending_port_fingerprint,
+            .pending_port_fingerprint = responded.pending_port_fingerprint,
             .response_frame_fingerprint = response.frame_fingerprint,
             .run_state_fingerprint = slot.current_state.run_state_fingerprint,
             .run_permit_fingerprint = slot.run_permit_fingerprint,
@@ -7409,6 +7412,7 @@ pub const Runspace = struct {
     pub fn exportRun(self: *@This(), handle: RunHandle) !RunImage {
         const index = try self.slotIndex(handle);
         var slot = &self.slots.items[index];
+        try self.ensureEventCapacity(1);
         const image = try self.snapshotSlotImage(index);
         errdefer {
             var owned = image;
@@ -7749,7 +7753,7 @@ pub const Runspace = struct {
     fn stepAt(self: *@This(), index: usize) !Runspace.RunspaceEvent {
         var slot = &self.slots.items[index];
         if (slot.driver == null) return error.InvalidRunspaceTransition;
-        try self.ensureEventCapacity(3);
+        try self.ensureEventCapacity(if (self.config.auto_dispatch) 5 else 3);
         try slot.transition(.step, null);
         _ = try self.appendEvent(.{
             .kind = .run_stepped,
