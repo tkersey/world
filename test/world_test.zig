@@ -3177,6 +3177,12 @@ test "runspace manual response park-on-budget preserves pending mailbox" {
     try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
     try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_supervision, (try runspace.getSlotSummary(handle)).status);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+    var image = try runspace.exportPending(0);
+    defer image.deinit(std.testing.allocator);
+    try std.testing.expectEqual(world.RunImage.Kind.parked_run, image.kind);
+    try std.testing.expect(image.pending_request_frame != null);
+    try std.testing.expectEqual(world.Runspace.PendingStatus.exported, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.exported, (try runspace.getSlotSummary(handle)).status);
 }
 
 test "runspace pending manual response preserves parked slot and mailbox" {

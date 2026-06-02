@@ -3826,6 +3826,32 @@ pub const Supervision = struct {
             try self.commitCheck(.before_handoff_export, null, &next, null, null, "handoff export");
         }
 
+        pub fn beforeInterruptedHandoffExport(self: *@This()) !void {
+            if (!self.interrupted) return self.beforeHandoffExport();
+            if (!self.permit.policy.allow_handoff_export or self.permit.handoff_policy == .deny) return self.deny(.before_handoff_export, null, .handoff_denied, null, "handoff export denied");
+            var next = try self.ledger.clone(self.allocator);
+            defer next.deinit(self.allocator);
+            next.total_handoff_exports = addSatUsize(next.total_handoff_exports, 1);
+            next.total_cost_units = addSatU64(next.total_cost_units, self.permit.cost_model.handoff_export_cost);
+            if (self.permit.budget.max_handoff_exports) |max| {
+                if (next.total_handoff_exports > max) return self.exceed(.before_handoff_export, null, .handoff_exports, &next, null, "interrupted handoff export");
+            }
+            const usage_before = self.ledger.ledger_fingerprint;
+            self.ledger.deinit(self.allocator);
+            self.ledger = next;
+            next.per_port_usage = &.{};
+            self.ledger.refreshFingerprint();
+            self.last_check = Supervision.SupervisionCheck.init(.{
+                .run_permit_fingerprint = self.permit.permit_fingerprint,
+                .event_kind = .before_handoff_export,
+                .usage_before_fingerprint = usage_before,
+                .usage_after_fingerprint = self.ledger.ledger_fingerprint,
+                .allowed = true,
+                .budget_fingerprint = self.permit.budget_fingerprint,
+                .summary = "interrupted handoff export",
+            });
+        }
+
         pub fn encodeHandoffExport(self: *@This(), image: RunImage) ![]const u8 {
             try self.beforeHandoffExport();
             return image.encode(self.allocator);
@@ -6487,6 +6513,7 @@ pub const Runspace = struct {
             dispatch: *const fn (*anyopaque) anyerror!void,
             snapshotRunImage: *const fn (*anyopaque) anyerror!RunImage,
             beforeHandoffExport: *const fn (*anyopaque) anyerror!void,
+            beforeInterruptedHandoffExport: *const fn (*anyopaque) anyerror!void,
             beforeCheckpoint: *const fn (*anyopaque, usize) anyerror!void,
             beforeBranch: *const fn (*anyopaque, usize) anyerror!void,
             hasSupervisor: *const fn (*anyopaque) bool,
@@ -6524,6 +6551,10 @@ pub const Runspace = struct {
 
         fn beforeHandoffExport(self: @This()) !void {
             return self.vtable.beforeHandoffExport(self.ptr);
+        }
+
+        fn beforeInterruptedHandoffExport(self: @This()) !void {
+            return self.vtable.beforeInterruptedHandoffExport(self.ptr);
         }
 
         fn beforeCheckpoint(self: @This(), value_image_bytes: usize) !void {
@@ -6608,6 +6639,12 @@ pub const Runspace = struct {
                     if (@hasDecl(RunType, "beforeRunspaceHandoffExport")) return active.beforeRunspaceHandoffExport();
                 }
 
+                fn runBeforeInterruptedHandoffExport(ptr: *anyopaque) anyerror!void {
+                    const active: *RunType = @ptrCast(@alignCast(ptr));
+                    if (@hasDecl(RunType, "beforeRunspaceInterruptedHandoffExport")) return active.beforeRunspaceInterruptedHandoffExport();
+                    if (@hasDecl(RunType, "beforeRunspaceHandoffExport")) return active.beforeRunspaceHandoffExport();
+                }
+
                 fn runBeforeCheckpoint(ptr: *anyopaque, value_image_bytes: usize) anyerror!void {
                     const active: *RunType = @ptrCast(@alignCast(ptr));
                     if (@hasDecl(RunType, "beforeRunspaceCheckpoint")) return active.beforeRunspaceCheckpoint(value_image_bytes);
@@ -6647,6 +6684,7 @@ pub const Runspace = struct {
                     .dispatch = runDispatch,
                     .snapshotRunImage = runSnapshotRunImage,
                     .beforeHandoffExport = runBeforeHandoffExport,
+                    .beforeInterruptedHandoffExport = runBeforeInterruptedHandoffExport,
                     .beforeCheckpoint = runBeforeCheckpoint,
                     .beforeBranch = runBeforeBranch,
                     .hasSupervisor = runHasSupervisor,
@@ -8011,12 +8049,21 @@ pub const Runspace = struct {
 
     fn beforeSlotHandoffExport(self: *@This(), index: usize) !void {
         var slot = &self.slots.items[index];
+        const interrupted_export = slot.status == .parked_on_supervision;
         if (slot.driver) |driver| {
-            try driver.beforeHandoffExport();
+            if (interrupted_export and driver.supervisionInterrupted()) {
+                try driver.beforeInterruptedHandoffExport();
+            } else {
+                try driver.beforeHandoffExport();
+            }
             if (driver.hasSupervisor()) return;
         }
         if (slot.supervisor) |*supervisor| {
-            try supervisor.beforeHandoffExport();
+            if (interrupted_export and supervisor.interrupted) {
+                try supervisor.beforeInterruptedHandoffExport();
+            } else {
+                try supervisor.beforeHandoffExport();
+            }
             return;
         }
         if (self.config.require_supervision) return error.SupervisionDenied;
@@ -10061,6 +10108,10 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
 
                 pub fn beforeRunspaceHandoffExport(self: *Self) !void {
                     if (self.supervisor) |*supervisor| try supervisor.beforeHandoffExport();
+                }
+
+                pub fn beforeRunspaceInterruptedHandoffExport(self: *Self) !void {
+                    if (self.supervisor) |*supervisor| try supervisor.beforeInterruptedHandoffExport();
                 }
 
                 pub fn beforeRunspaceCheckpoint(self: *Self, value_image_bytes: usize) !void {
