@@ -7410,7 +7410,7 @@ pub const Runspace = struct {
         errdefer if (supervisor_owned) {
             if (supervisor) |*owned| owned.deinit();
         };
-        var installed_permit_fingerprint: ?u64 = null;
+        var installed_permit_fingerprint: ?u64 = if (installed_image) |image| image.prior_run_permit_fingerprint else null;
         if (admitted_run.run_permit) |permit| {
             try validateAdmittedRunPermit(admitted_run, permit);
             const scoped_permit = scopePermitToAdmission(permit, admitted_run.admission_receipt_fingerprint);

@@ -3782,6 +3782,31 @@ test "runspace enforces lifecycle supervision for direct and imported slots" {
     var admitted_export = try admitted.exportRun(admitted_handle);
     defer admitted_export.deinit(std.testing.allocator);
     try std.testing.expectEqual(scoped_admitted_permit.permit_fingerprint, admitted_export.prior_run_permit_fingerprint.?);
+
+    const prior_only_image = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Strict.Target),
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Strict.Target).import_set_fingerprint,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = world.TargetRef.fromTarget(fixtures.Strict.Target).target_ref_fingerprint,
+            .status = .completed,
+        }),
+        .prior_run_permit_fingerprint = branch_denied_permit.permit_fingerprint,
+    });
+    const prior_only_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_5aff,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Strict.Target),
+        .mode = .continue_fresh,
+        .run_image = prior_only_image,
+    });
+    var prior_only = world.Runspace.init(std.testing.allocator, .{
+        .require_admission = true,
+    });
+    defer prior_only.deinit();
+    const prior_only_handle = try prior_only.installAdmitted(prior_only_admitted);
+    var prior_only_export = try prior_only.exportRun(prior_only_handle);
+    defer prior_only_export.deinit(std.testing.allocator);
+    try std.testing.expectEqual(branch_denied_permit.permit_fingerprint, prior_only_export.prior_run_permit_fingerprint.?);
 }
 
 test "runspace handoff export captures parked pending request and completed transcript" {
