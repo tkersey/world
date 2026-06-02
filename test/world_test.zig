@@ -2474,6 +2474,31 @@ test "runspace install slot event allocation failure cleans up appended slot" {
     try std.testing.expectEqual(@as(usize, 0), report.event_count);
 }
 
+test "runspace machine install event allocation failure does not mutate transcript" {
+    var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{
+        .fail_index = 2,
+    });
+    var runtime = boundary.Runtime.init(failing_allocator.allocator());
+    defer runtime.deinit();
+    var transcript = world.Transcript.init(failing_allocator.allocator());
+    defer transcript.deinit();
+    var runspace = world.Runspace.init(failing_allocator.allocator(), .{});
+    defer runspace.deinit();
+
+    try std.testing.expectError(error.OutOfMemory, runspace.installMachineRun(fixtures.Strict.Target, world.Environment(fixtures.Strict.Target, .{
+        .ports = &.{},
+    }), &runtime, .{}, .{
+        .allocator = failing_allocator.allocator(),
+        .mode = world.Mode.fresh,
+        .transcript = &transcript,
+    }));
+    try std.testing.expect(failing_allocator.has_induced_failure);
+    try std.testing.expectEqual(@as(usize, 0), transcript.events.items.len);
+    const report = runspace.report();
+    try std.testing.expectEqual(@as(usize, 0), report.run_count);
+    try std.testing.expectEqual(@as(usize, 0), report.event_count);
+}
+
 test "runspace install rejects invalid image and failed direct installs preserve run ids" {
     var runtime = boundary.Runtime.init(std.testing.allocator);
     defer runtime.deinit();

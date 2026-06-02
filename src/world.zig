@@ -7604,7 +7604,10 @@ pub const Runspace = struct {
             .target_ref_fingerprint = target_ref.target_ref_fingerprint,
             .permit_fingerprint = if (maybe_permit) |permit| permit.permit_fingerprint else null,
         });
-        try self.ensureEventCapacity(1);
+        try self.prepareInstallSlot();
+        const event_summary = try self.prepareEventSummary("machine run installed");
+        var summary_owned = true;
+        errdefer if (summary_owned) self.allocator.free(event_summary);
         const run_ptr = try self.allocator.create(RunType);
         var run_ptr_owned = true;
         errdefer if (run_ptr_owned) self.allocator.destroy(run_ptr);
@@ -7629,9 +7632,16 @@ pub const Runspace = struct {
             .run_permit_fingerprint = if (maybe_permit) |permit| permit.permit_fingerprint else null,
             .driver = driver,
         });
-        try self.prepareInstallSlot();
         driver_owned = false;
-        try self.installPreparedSlot(slot, .run_installed, "machine run installed");
+        self.slots.appendAssumeCapacity(slot);
+        _ = self.appendPreparedEventAssumeCapacity(.{
+            .kind = .run_installed,
+            .run_handle = slot.handle,
+            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+            .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .summary = event_summary,
+        });
+        summary_owned = false;
         installed = true;
         return handle;
     }
