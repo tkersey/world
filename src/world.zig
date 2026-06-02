@@ -7638,6 +7638,12 @@ pub const Runspace = struct {
         const index = try self.slotIndex(pending.handle);
         var slot = &self.slots.items[index];
         if (slot.pending_mailbox_id != mailbox_id or slot.status != .parked_on_port) return error.StaleRunHandle;
+        switch (response.status) {
+            .responded => {},
+            .pending => unreachable,
+            .rejected => return self.finishTerminalResponse(mailbox_id, pending, slot, response, .rejected),
+            .failed => return self.finishTerminalResponse(mailbox_id, pending, slot, response, .failed),
+        }
         try self.ensureEventCapacity(2);
         if (slot.driver) |driver| {
             driver.resumeFrame(response) catch |err| {
@@ -7719,9 +7725,9 @@ pub const Runspace = struct {
         });
     }
 
-    fn routeTerminalPending(self: *@This(), mailbox_id: u64, pending: Runspace.PendingPort, slot: *Runspace.RunSlot, status: ResponseStatus, reason: []const u8) !Frame.Response {
-        var response = try terminalResponseForPending(pending, status, reason);
-        errdefer response.deinit(self.allocator);
+    fn routeTerminalResponse(self: *@This(), mailbox_id: u64, pending: Runspace.PendingPort, slot: *Runspace.RunSlot, response: Frame.Response, status: ResponseStatus) !void {
+        if (status != .rejected and status != .failed) return error.InvalidPendingPortTransition;
+        if (response.status != status) return error.InvalidPendingPortTransition;
         try pending.validateResponse(response);
         if (slot.driver) |driver| {
             try driver.beforeTerminalResponse(pending.world_port_id, status);
@@ -7753,6 +7759,71 @@ pub const Runspace = struct {
         } else if (self.config.require_supervision) {
             return error.SupervisionDenied;
         }
+    }
+
+    fn terminalPortEventKind(status: ResponseStatus) Runspace.EventKind {
+        return switch (status) {
+            .rejected => .port_rejected,
+            .failed => .port_failed,
+            else => unreachable,
+        };
+    }
+
+    fn terminalPortSummary(status: ResponseStatus) []const u8 {
+        return switch (status) {
+            .rejected => "port rejected",
+            .failed => "port failed",
+            else => unreachable,
+        };
+    }
+
+    fn terminalRunSummary(status: ResponseStatus) []const u8 {
+        return switch (status) {
+            .rejected => "run failed after port rejection",
+            .failed => "run failed after port failure",
+            else => unreachable,
+        };
+    }
+
+    fn consumeTerminalMailbox(self: *@This(), mailbox_id: u64, status: ResponseStatus, reason: []const u8) !Runspace.PendingPort {
+        return switch (status) {
+            .rejected => self.mailbox.cancel(mailbox_id, reason),
+            .failed => self.mailbox.fail(mailbox_id, reason),
+            else => unreachable,
+        };
+    }
+
+    fn finishTerminalResponse(self: *@This(), mailbox_id: u64, pending: Runspace.PendingPort, slot: *Runspace.RunSlot, response: Frame.Response, status: ResponseStatus) !Runspace.RunspaceEvent {
+        try self.ensureEventCapacity(2);
+        try self.routeTerminalResponse(mailbox_id, pending, slot, response, status);
+        const consumed = try self.consumeTerminalMailbox(mailbox_id, status, response.reason orelse "");
+        try slot.transition(.fail, null);
+        _ = try self.appendEvent(.{
+            .kind = terminalPortEventKind(status),
+            .run_handle = slot.handle,
+            .pending_port_fingerprint = consumed.pending_port_fingerprint,
+            .request_frame_fingerprint = consumed.request_frame_fingerprint,
+            .response_frame_fingerprint = response.frame_fingerprint,
+            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+            .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .summary = terminalPortSummary(status),
+        });
+        return self.appendEvent(.{
+            .kind = .run_failed,
+            .run_handle = slot.handle,
+            .pending_port_fingerprint = consumed.pending_port_fingerprint,
+            .request_frame_fingerprint = consumed.request_frame_fingerprint,
+            .response_frame_fingerprint = response.frame_fingerprint,
+            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+            .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .summary = terminalRunSummary(status),
+        });
+    }
+
+    fn routeTerminalPending(self: *@This(), mailbox_id: u64, pending: Runspace.PendingPort, slot: *Runspace.RunSlot, status: ResponseStatus, reason: []const u8) !Frame.Response {
+        var response = try terminalResponseForPending(pending, status, reason);
+        errdefer response.deinit(self.allocator);
+        try self.routeTerminalResponse(mailbox_id, pending, slot, response, status);
         return response;
     }
 
@@ -8210,7 +8281,15 @@ pub const Runspace = struct {
     fn snapshotSlotImage(self: *@This(), index: usize) !RunImage {
         const slot = &self.slots.items[index];
         if (slot.driver) |driver| return driver.snapshotRunImage();
-        if (slot.installed_run_image) |image| return cloneRunImage(self.allocator, image);
+        if (slot.installed_run_image) |installed_image| {
+            var image = try cloneRunImage(self.allocator, installed_image);
+            image.current_state = slot.current_state;
+            image.prior_run_permit_fingerprint = slot.run_permit_fingerprint;
+            image.prior_run_receipt_fingerprint = slot.run_receipt_fingerprint;
+            image.module_ref_fingerprint = slot.module_ref_fingerprint;
+            refreshRunImageFingerprint(&image);
+            return image;
+        }
         var pending_frame: ?Frame.Request = null;
         var owns_pending_frame = false;
         errdefer if (owns_pending_frame) {

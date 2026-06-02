@@ -3043,10 +3043,49 @@ test "runspace failed manual response consumes mailbox and fails slot" {
         .status = .failed,
     });
 
-    try std.testing.expectError(error.HandlerFailed, runspace.respond(0, failed_response));
+    const event = try runspace.respond(0, failed_response);
+    try std.testing.expectEqual(world.Runspace.EventKind.run_failed, event.kind);
     try std.testing.expectEqual(world.Runspace.PendingStatus.failed, (try runspace.mailbox.get(0)).status);
     try std.testing.expectEqual(world.Runspace.RunStatus.failed, (try runspace.getSlotSummary(handle)).status);
     try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
+}
+
+test "runspace raw terminal response checks supervision before consuming mailbox" {
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{
+        .require_supervision = true,
+    });
+    defer runspace.deinit();
+
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .permit = permit,
+    });
+    _ = try runspace.tick();
+    const pending = try runspace.mailbox.get(0);
+    const request = pending.request_frame.?;
+    const failed_response = world.Frame.Response.init(.{
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .target_certificate_fingerprint = request.target_certificate_fingerprint,
+        .world_port_id = request.world_port_id,
+        .request_fingerprint = request.request_fingerprint,
+        .response_kind = .@"resume",
+        .response_value_table_id = request.expected_response_value_table_id,
+        .response_fingerprint = 0x5a1e_5afe,
+        .replay_key = request.replay_key_seed.withResponse(0x5a1e_5afe).fingerprint(),
+        .status = .failed,
+    });
+
+    try std.testing.expectError(error.HandlerFailed, runspace.respond(0, failed_response));
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
 }
 
 test "runspace pending manual response preserves parked slot and mailbox" {
@@ -3356,7 +3395,7 @@ test "runspace enforces lifecycle supervision for direct and imported slots" {
             .target_ref_fingerprint = world.TargetRef.fromTarget(fixtures.Strict.Target).target_ref_fingerprint,
             .status = .completed,
         }),
-        .prior_run_permit_fingerprint = admitted_permit.permit_fingerprint,
+        .prior_run_permit_fingerprint = branch_denied_permit.permit_fingerprint,
     });
     const supervised_admitted = world.Admission.AdmittedRun.init(.{
         .admission_receipt_fingerprint = 0xadd1_5afe,
