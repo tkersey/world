@@ -2997,6 +2997,28 @@ test "runspace event budget failure does not enqueue or park request" {
     try std.testing.expectEqual(@as(usize, 1), runspace.report().event_count);
 }
 
+test "runspace step event allocation failure leaves run runnable" {
+    var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{
+        .fail_index = std.math.maxInt(usize),
+    });
+    var runtime = boundary.Runtime.init(failing_allocator.allocator());
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(failing_allocator.allocator(), .{});
+    defer runspace.deinit();
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = failing_allocator.allocator(),
+        .mode = world.Mode.fresh,
+    });
+    try runspace.events.ensureUnusedCapacity(failing_allocator.allocator(), 2);
+    failing_allocator.fail_index = failing_allocator.alloc_index;
+
+    try std.testing.expectError(error.OutOfMemory, runspace.tick());
+    try std.testing.expect(failing_allocator.has_induced_failure);
+    try std.testing.expectEqual(world.Runspace.RunStatus.runnable, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().event_count);
+}
+
 test "runspace response event budget failure does not consume mailbox" {
     var runtime = boundary.Runtime.init(std.testing.allocator);
     defer runtime.deinit();

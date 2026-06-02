@@ -8832,14 +8832,19 @@ pub const Runspace = struct {
         var slot = &self.slots.items[index];
         if (slot.driver == null) return error.InvalidRunspaceTransition;
         try self.ensureEventCapacity(2);
+        try self.events.ensureUnusedCapacity(self.allocator, 2);
+        const stepped_summary = try self.allocator.dupe(u8, "run stepped");
+        var stepped_summary_owned = true;
+        errdefer if (stepped_summary_owned) self.allocator.free(stepped_summary);
         try slot.transition(.step, null);
-        _ = try self.appendEvent(.{
+        _ = self.appendPreparedEventAssumeCapacity(.{
             .kind = .run_stepped,
             .run_handle = slot.handle,
             .run_state_fingerprint = slot.current_state.run_state_fingerprint,
             .run_permit_fingerprint = slot.run_permit_fingerprint,
-            .summary = "run stepped",
+            .summary = stepped_summary,
         });
+        stepped_summary_owned = false;
         const driver = slot.driver.?;
         const step_result = driver.nextFrame() catch |err| {
             if (err == error.HandlerPending and driver.supervisionInterrupted()) {
@@ -8905,7 +8910,7 @@ pub const Runspace = struct {
                     return self.failSteppedRunBeforePort(slot, err);
                 };
                 const mailbox_id = self.next_mailbox_id;
-                const pending = try self.mailbox.push(.{
+                const pending = self.mailbox.push(.{
                     .run_handle = slot.handle,
                     .mailbox_id = mailbox_id,
                     .request = owned_request,
@@ -8913,7 +8918,9 @@ pub const Runspace = struct {
                     .environment_certificate_fingerprint = null,
                     .run_permit_fingerprint = slot.run_permit_fingerprint,
                     .inserted_event_index = self.next_event_index,
-                });
+                }) catch |err| {
+                    return self.failSteppedRunBeforePort(slot, err);
+                };
                 self.next_mailbox_id += 1;
                 slot.status = .parked_on_port;
                 slot.pending_mailbox_id = mailbox_id;
