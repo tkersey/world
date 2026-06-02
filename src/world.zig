@@ -6617,7 +6617,7 @@ pub const Runspace = struct {
 
         const VTable = struct {
             nextFrame: *const fn (*anyopaque) anyerror!DriverStep,
-            resumeFrame: *const fn (*anyopaque, Frame.Response) anyerror!u64,
+            resumeFrame: *const fn (*anyopaque, Frame.Response) anyerror!ResponseEvidence,
             beforeResponse: *const fn (*anyopaque, u32, ResponseStatus, usize, usize) anyerror!void,
             beforeTerminalResponse: *const fn (*anyopaque, u32, ResponseStatus, usize, usize) anyerror!void,
             resumeTerminalFrame: *const fn (*anyopaque, Frame.Response) anyerror!void,
@@ -6641,7 +6641,7 @@ pub const Runspace = struct {
             return self.vtable.nextFrame(self.ptr);
         }
 
-        fn resumeFrame(self: @This(), response: Frame.Response) !u64 {
+        fn resumeFrame(self: @This(), response: Frame.Response) !ResponseEvidence {
             return self.vtable.resumeFrame(self.ptr, response);
         }
 
@@ -6739,11 +6739,15 @@ pub const Runspace = struct {
                     }
                 }
 
-                fn runResumeFrame(ptr: *anyopaque, response: Frame.Response) anyerror!u64 {
+                fn runResumeFrame(ptr: *anyopaque, response: Frame.Response) anyerror!ResponseEvidence {
                     const active: *RunType = @ptrCast(@alignCast(ptr));
                     if (@hasDecl(RunType, "runspaceResumeFrame")) return active.runspaceResumeFrame(response);
                     try active.resumeFrame(response);
-                    return response.frame_fingerprint;
+                    return .{
+                        .response_fingerprint = response.response_fingerprint,
+                        .response_frame_fingerprint = response.frame_fingerprint,
+                        .response_value_image_fingerprint = response.response_value_fingerprint,
+                    };
                 }
 
                 fn runBeforeResponse(ptr: *anyopaque, world_port_id: u32, status: ResponseStatus, response_bytes: usize, value_image_bytes: usize) anyerror!void {
@@ -8035,7 +8039,7 @@ pub const Runspace = struct {
         const failed_run_summary = try self.allocator.dupe(u8, "run failed after response");
         var failed_run_summary_owned = true;
         defer if (failed_run_summary_owned) self.allocator.free(failed_run_summary);
-        const effective_response_frame_fingerprint = if (slot.driver) |driver|
+        const response_evidence = if (slot.driver) |driver|
             driver.resumeFrame(response) catch |err| {
                 if (err == error.HandlerPending) {
                     if (driver.supervisionInterrupted()) {
@@ -8072,7 +8076,8 @@ pub const Runspace = struct {
         else
             return error.InvalidRunspaceTransition;
         if (response.status == .pending) return error.HandlerPending;
-        try slot.resumeFromPort(mailbox_id, effective_response_frame_fingerprint, response.response_value_fingerprint);
+        const effective_response_frame_fingerprint = response_evidence.response_frame_fingerprint orelse response_evidence.response_fingerprint;
+        try slot.resumeFromPort(mailbox_id, effective_response_frame_fingerprint, response_evidence.response_value_image_fingerprint);
         const responded = try self.mailbox.markResponded(mailbox_id);
         _ = self.appendPreparedEventAssumeCapacity(.{
             .kind = .port_responded,
@@ -10732,8 +10737,13 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     _ = try self.resumeFrameWithProvenance(response_frame, false);
                 }
 
-                pub fn runspaceResumeFrame(self: *Self, response_frame: Frame.Response) !u64 {
-                    return self.resumeFrameWithProvenance(response_frame, false);
+                pub fn runspaceResumeFrame(self: *Self, response_frame: Frame.Response) !Runspace.ResponseEvidence {
+                    const response_frame_fingerprint = try self.resumeFrameWithProvenance(response_frame, false);
+                    return self.last_response_evidence orelse .{
+                        .response_fingerprint = response_frame.response_fingerprint,
+                        .response_frame_fingerprint = response_frame_fingerprint,
+                        .response_value_image_fingerprint = response_frame.response_value_fingerprint,
+                    };
                 }
 
                 pub fn beforeRunspaceResponse(self: *Self, world_port_id: u32, status: ResponseStatus, response_bytes: usize, value_image_bytes: usize) !void {

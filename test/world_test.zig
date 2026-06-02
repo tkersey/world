@@ -3880,6 +3880,9 @@ test "runspace tick parks responds and completes machine run" {
     report = try runspace.tick();
     try std.testing.expectEqual(@as(usize, 1), report.completed_count);
     try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try runspace.getSlotSummary(handle)).status);
+    var exported = try runspace.exportRun(handle);
+    defer exported.deinit(std.testing.allocator);
+    try std.testing.expectEqual(transcript_response_frame.response_value_fingerprint.?, exported.current_state.final_value_image_fingerprint.?);
 }
 
 test "runspace manual default parks without environment dispatch" {
