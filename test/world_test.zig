@@ -637,6 +637,25 @@ test "runspace slot transition matrix rejects impossible lifecycle states" {
     slot.status = .parked_on_supervision;
     try slot.transition(.@"export", null);
     try std.testing.expectEqual(world.Runspace.RunStatus.exported, slot.status);
+
+    var lineage_slot = world.RunSlot.init(world.RunHandle.init(.{
+        .runspace_fingerprint = 0x51ace,
+        .local_run_id = 2,
+        .target_ref_fingerprint = 0x88,
+    }));
+    lineage_slot.status = .runnable;
+    lineage_slot.current_state = world.RunState.init(.{
+        .target_ref_fingerprint = lineage_slot.handle.target_ref_fingerprint,
+        .transcript_image_fingerprint = 0xabc,
+        .branch_id = 7,
+        .checkpoint_fingerprint = 0xdef,
+        .status = .not_started,
+    });
+    try lineage_slot.transition(.step, null);
+    try lineage_slot.transition(.complete, null);
+    try std.testing.expectEqual(@as(?u64, 0xabc), lineage_slot.current_state.transcript_image_fingerprint);
+    try std.testing.expectEqual(@as(u64, 7), lineage_slot.current_state.branch_id);
+    try std.testing.expectEqual(@as(?u64, 0xdef), lineage_slot.current_state.checkpoint_fingerprint);
 }
 
 test "runspace pending port validates response identity and consumes once" {
@@ -3196,6 +3215,9 @@ test "runspace install admitted and replay records receipts summaries and events
         .require_admission = true,
     });
     defer runspace.deinit();
+    var stale_admitted = admitted;
+    stale_admitted.mode = .completed_replay;
+    try std.testing.expectError(error.InvalidFrameEncoding, runspace.installAdmitted(stale_admitted));
     const admitted_handle = try runspace.installAdmitted(admitted);
     const admitted_summary = try runspace.getSlotSummary(admitted_handle);
     try std.testing.expectEqual(world.Runspace.RunStatus.admitted, admitted_summary.status);
@@ -3384,6 +3406,20 @@ test "runspace install admitted and replay records receipts summaries and events
     var supervised_replay_runspace = world.Runspace.init(std.testing.allocator, .{});
     defer supervised_replay_runspace.deinit();
     try std.testing.expectError(error.SupervisionDenied, supervised_replay_runspace.installReplay(fixtures.Strict.Target, image, environment_bound_replay_permit));
+    const admission_scoped_replay_permit = world.Supervision.issue(fixtures.Strict.Target, StrictReplayEnv, .{
+        .mode = .replay,
+        .policy = world.SupervisionPolicy.strict_replay,
+        .transcript_image_available = true,
+        .admission_receipt_fingerprint = 0xadd1_5c0e,
+    });
+    try std.testing.expectError(error.SupervisionDenied, supervised_replay_runspace.installReplay(fixtures.Strict.Target, image, admission_scoped_replay_permit));
+    const module_scoped_replay_permit = world.Supervision.issue(fixtures.Strict.Target, StrictReplayEnv, .{
+        .mode = .replay,
+        .policy = world.SupervisionPolicy.strict_replay,
+        .transcript_image_available = true,
+        .module_ref_fingerprint = world.Admission.ModuleRef.fromTarget(fixtures.Strict.Target).module_ref_fingerprint,
+    });
+    try std.testing.expectError(error.SupervisionDenied, supervised_replay_runspace.installReplay(fixtures.Strict.Target, image, module_scoped_replay_permit));
     const replay_without_environment_policy = world.SupervisionPolicy.init(.{
         .allow_replay_calls = true,
         .allow_replay_adapters = true,

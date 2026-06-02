@@ -6940,16 +6940,26 @@ pub const Runspace = struct {
             return self.handle;
         }
 
+        fn transitionState(self: @This(), status: RunState.Status, turn_index: usize, pending_request_fingerprint: ?u64) RunState {
+            return RunState.init(.{
+                .target_ref_fingerprint = self.handle.target_ref_fingerprint,
+                .transcript_image_fingerprint = self.current_state.transcript_image_fingerprint,
+                .branch_id = self.current_state.branch_id,
+                .checkpoint_fingerprint = self.current_state.checkpoint_fingerprint,
+                .pending_request_fingerprint = pending_request_fingerprint,
+                .final_response_fingerprint = self.current_state.final_response_fingerprint,
+                .final_value_image_fingerprint = self.current_state.final_value_image_fingerprint,
+                .turn_index = turn_index,
+                .status = status,
+            });
+        }
+
         pub fn transition(self: *@This(), transition_kind: Transition, mailbox_id: ?u64) !void {
             switch (transition_kind) {
                 .step => switch (self.status) {
                     .admitted, .runnable => {
                         self.status = .runnable;
-                        self.current_state = RunState.init(.{
-                            .target_ref_fingerprint = self.handle.target_ref_fingerprint,
-                            .turn_index = self.current_state.turn_index,
-                            .status = .running,
-                        });
+                        self.current_state = self.transitionState(.running, self.current_state.turn_index, null);
                     },
                     else => return error.InvalidRunspaceTransition,
                 },
@@ -6958,11 +6968,7 @@ pub const Runspace = struct {
                         const pending_mailbox_id = mailbox_id orelse return error.InvalidRunspaceTransition;
                         self.status = .parked_on_port;
                         self.pending_mailbox_id = pending_mailbox_id;
-                        self.current_state = RunState.init(.{
-                            .target_ref_fingerprint = self.handle.target_ref_fingerprint,
-                            .turn_index = self.current_state.turn_index,
-                            .status = .parked_on_port,
-                        });
+                        self.current_state = self.transitionState(.parked_on_port, self.current_state.turn_index, self.current_state.pending_request_fingerprint);
                     },
                     else => return error.InvalidRunspaceTransition,
                 },
@@ -6970,11 +6976,7 @@ pub const Runspace = struct {
                     .runnable, .running => {
                         self.status = .parked_on_supervision;
                         self.pending_mailbox_id = null;
-                        self.current_state = RunState.init(.{
-                            .target_ref_fingerprint = self.handle.target_ref_fingerprint,
-                            .turn_index = self.current_state.turn_index,
-                            .status = .parked_on_port,
-                        });
+                        self.current_state = self.transitionState(.parked_on_port, self.current_state.turn_index, self.current_state.pending_request_fingerprint);
                     },
                     else => return error.InvalidRunspaceTransition,
                 },
@@ -6985,22 +6987,14 @@ pub const Runspace = struct {
                         }
                         self.status = .runnable;
                         self.pending_mailbox_id = null;
-                        self.current_state = RunState.init(.{
-                            .target_ref_fingerprint = self.handle.target_ref_fingerprint,
-                            .turn_index = self.current_state.turn_index + 1,
-                            .status = .running,
-                        });
+                        self.current_state = self.transitionState(.running, self.current_state.turn_index + 1, null);
                     },
                     else => return error.InvalidRunspaceTransition,
                 },
                 .complete => switch (self.status) {
                     .runnable, .running => {
                         self.status = .completed;
-                        self.current_state = RunState.init(.{
-                            .target_ref_fingerprint = self.handle.target_ref_fingerprint,
-                            .turn_index = self.current_state.turn_index,
-                            .status = .completed,
-                        });
+                        self.current_state = self.transitionState(.completed, self.current_state.turn_index, null);
                     },
                     else => return error.InvalidRunspaceTransition,
                 },
@@ -7008,11 +7002,7 @@ pub const Runspace = struct {
                     .admitted, .runnable, .running, .parked_on_port, .parked_on_supervision => {
                         self.status = .failed;
                         self.pending_mailbox_id = null;
-                        self.current_state = RunState.init(.{
-                            .target_ref_fingerprint = self.handle.target_ref_fingerprint,
-                            .turn_index = self.current_state.turn_index,
-                            .status = .failed,
-                        });
+                        self.current_state = self.transitionState(.failed, self.current_state.turn_index, null);
                     },
                     else => return error.InvalidRunspaceTransition,
                 },
@@ -7465,6 +7455,7 @@ pub const Runspace = struct {
     }
 
     pub fn installAdmitted(self: *@This(), admitted_run: Admission.AdmittedRun) !RunHandle {
+        if (admitted_run.admitted_run_fingerprint != fingerprintAdmittedRun(admitted_run)) return error.InvalidFrameEncoding;
         if (self.config.require_supervision and admitted_run.run_permit == null) return error.SupervisionDenied;
         const target_ref = admitted_run.target_ref;
         if (admitted_run.run_image) |image| {
@@ -7802,6 +7793,7 @@ pub const Runspace = struct {
         if (permit.world_surface_fingerprint != Target.WorldSurface.surface_fingerprint) return error.SupervisionDenied;
         if (permit.target_certificate_fingerprint != Target.Certificate.certificate_fingerprint) return error.SupervisionDenied;
         if (permit.mode != .replay) return error.SupervisionDenied;
+        if (permit.admission_receipt_fingerprint != null or permit.module_ref_fingerprint != null) return error.SupervisionDenied;
         if (permit.policy.require_environment_certificate) return error.SupervisionDenied;
         if (permit.policy.require_transcript_image_for_replay and !permit.transcript_image_available) return error.TranscriptImageRequired;
         if (transcript_image.world_surface_fingerprint != permit.world_surface_fingerprint) return error.SupervisionDenied;
