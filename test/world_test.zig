@@ -4213,6 +4213,12 @@ test "runspace auto dispatch uses environment binding and consumes mailbox" {
     report = try runspace.tick();
     try std.testing.expectEqual(@as(usize, 1), report.completed_count);
     try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try runspace.getSlotSummary(handle)).status);
+    var image = try runspace.exportRun(handle);
+    defer image.deinit(std.testing.allocator);
+    try std.testing.expectEqual(world.RunImage.Kind.completed_run, image.kind);
+    try std.testing.expect(image.transcript_image == null);
+    try std.testing.expect(image.current_state.final_response_fingerprint != null);
+    try std.testing.expect(image.current_state.final_value_image_fingerprint != null);
 }
 
 test "runspace auto dispatch handler failure consumes mailbox and fails slot" {

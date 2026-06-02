@@ -10279,6 +10279,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 const ResponseAccounting = struct {
                     response_bytes: usize = 0,
                     value_image_bytes: usize = 0,
+                    value_image_fingerprint: ?u64 = null,
                 };
 
                 fn responseFrameAccounting(self: *Self, frame: Frame.Response) !ResponseAccounting {
@@ -10287,6 +10288,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     return .{
                         .response_bytes = encoded_response.len,
                         .value_image_bytes = if (frame.response_image) |image| image.bytes.len else 0,
+                        .value_image_fingerprint = frame.response_value_fingerprint,
                     };
                 }
 
@@ -10792,10 +10794,13 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         .parked_on_supervision
                     else
                         .running;
+                    const terminal_response_evidence = if (status == .completed or status == .failed) self.last_response_evidence else null;
                     var state = RunState.init(.{
                         .target_ref_fingerprint = target_ref.target_ref_fingerprint,
                         .transcript_image_fingerprint = if (transcript_image) |image| image.transcript_image_fingerprint else null,
                         .pending_request_fingerprint = if (pending_frame) |frame| frame.frame_fingerprint else null,
+                        .final_response_fingerprint = if (terminal_response_evidence) |evidence| evidence.response_frame_fingerprint orelse evidence.response_fingerprint else null,
+                        .final_value_image_fingerprint = if (terminal_response_evidence) |evidence| evidence.response_value_image_fingerprint else null,
                         .turn_index = if (pending_frame) |frame| frame.turn_index else self.audit.port_request_count,
                         .status = status,
                     });
@@ -11202,7 +11207,10 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         null,
                     );
                     stored = null;
-                    self.last_response_evidence = .{ .response_fingerprint = response_trace.fingerprint };
+                    self.last_response_evidence = .{
+                        .response_fingerprint = response_trace.fingerprint,
+                        .response_value_image_fingerprint = accounting.value_image_fingerprint,
+                    };
                     self.audit.fresh_response_count += 1;
                     return try self.retainResponse(Decl.Response, response);
                 }
