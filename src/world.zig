@@ -7716,7 +7716,7 @@ pub const Runspace = struct {
             if (supervisor) |*owned| owned.deinit();
         };
         if (permit) |run_permit| {
-            supervisor = try Supervision.Supervisor.init(self.allocator, run_permit, supervisorPortCountForPermit(run_permit));
+            supervisor = try Supervision.Supervisor.init(self.allocator, run_permit, Target.WorldPortTable.entries.len);
             supervisor_owned = true;
         }
         const next_run_id_before = self.next_run_id;

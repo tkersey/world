@@ -3281,6 +3281,17 @@ test "runspace install admitted and replay records receipts summaries and events
     defer supervised_replay_runspace.deinit();
     const supervised_replay_handle = try supervised_replay_runspace.installReplay(fixtures.Strict.Target, image, replay_export_denied_permit);
     try std.testing.expectError(error.HandoffDenied, supervised_replay_runspace.exportRun(supervised_replay_handle));
+    const out_of_range_replay_budgets = [_]world.Supervision.PerPortBudget{.{
+        .world_port_id = 0,
+        .max_replay_calls = 1,
+    }};
+    const out_of_range_replay_permit = world.Supervision.issue(fixtures.Strict.Target, StrictReplayEnv, .{
+        .mode = .replay,
+        .policy = world.SupervisionPolicy.strict_replay,
+        .budget = world.Budget.init(.{ .per_port_budgets = &out_of_range_replay_budgets }),
+        .transcript_image_available = true,
+    });
+    try std.testing.expectError(error.SupervisionDenied, supervised_replay_runspace.installReplay(fixtures.Strict.Target, image, out_of_range_replay_permit));
     const mismatched_admitted = world.Admission.AdmittedRun.init(.{
         .admission_receipt_fingerprint = 0xadd1_bad,
         .target_ref = target_ref,
