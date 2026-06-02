@@ -7259,6 +7259,20 @@ pub const Runspace = struct {
         self.* = undefined;
     }
 
+    fn supervisorPortCountForPermit(permit: RunPermit) usize {
+        var count: usize = 0;
+        for (permit.budget.per_port_budgets) |budget| {
+            count = @max(count, @as(usize, budget.world_port_id) + 1);
+        }
+        for (permit.cost_model.per_port_costs) |cost| {
+            count = @max(count, @as(usize, cost.world_port_id) + 1);
+        }
+        for (permit.port_rules) |rule| {
+            count = @max(count, @as(usize, rule.world_port_id) + 1);
+        }
+        return count;
+    }
+
     pub fn installAdmitted(self: *@This(), admitted_run: Admission.AdmittedRun) !RunHandle {
         if (self.config.require_supervision and admitted_run.run_permit == null) return error.SupervisionDenied;
         const target_ref = admitted_run.target_ref;
@@ -7302,6 +7316,15 @@ pub const Runspace = struct {
                 try attachTranscriptToInstalledRunImage(self.allocator, &installed_image.?, transcript_image);
             }
         }
+        var supervisor: ?Supervision.Supervisor = null;
+        var supervisor_owned = false;
+        errdefer if (supervisor_owned) {
+            if (supervisor) |*owned| owned.deinit();
+        };
+        if (admitted_run.run_permit) |permit| {
+            supervisor = try Supervision.Supervisor.init(self.allocator, permit, supervisorPortCountForPermit(permit));
+            supervisor_owned = true;
+        }
         const slot_current_state = if (installed_image) |image| image.current_state else current_state;
         const slot_branch_id: ?u64 = if (slot_current_state.branch_id == 0)
             admitted_run.selected_branch_id
@@ -7317,6 +7340,7 @@ pub const Runspace = struct {
             .pending_mailbox_id = null,
             .branch_id = slot_branch_id,
             .checkpoint_fingerprint = slot_current_state.checkpoint_fingerprint,
+            .supervisor = supervisor,
             .installed_run_image = installed_image,
             .owns_installed_run_image = installed_image != null,
         });
@@ -7329,6 +7353,7 @@ pub const Runspace = struct {
         errdefer if (!installed) self.rollbackRunspaceMutation(slot_count_before, event_count_before, mailbox_count_before, next_run_id_before, next_mailbox_id_before, next_event_index_before);
         try self.installSlot(slot, .run_admitted, "admitted run installed");
         installed_image_owned = false;
+        supervisor_owned = false;
         if (pending_frame) |frame| {
             try self.enqueueInstalledPending(self.slots.items.len - 1, frame);
         }
@@ -7784,16 +7809,16 @@ pub const Runspace = struct {
         const index = try self.slotIndex(handle);
         var slot = &self.slots.items[index];
         try self.ensureEventCapacity(1);
-        const image = try self.snapshotSlotImage(index);
-        errdefer {
-            var owned = image;
-            owned.deinit(self.allocator);
-        }
         const pending = if (slot.status == .parked_on_port)
             if (slot.pending_mailbox_id) |mailbox_id| try self.mailbox.get(mailbox_id) else return error.StaleRunHandle
         else
             null;
         try self.beforeSlotHandoffExport(index);
+        const image = try self.snapshotSlotImage(index);
+        errdefer {
+            var owned = image;
+            owned.deinit(self.allocator);
+        }
         const exported = if (pending) |pending_port| try self.mailbox.markExported(pending_port.mailbox_id) else null;
         try slot.transition(.@"export", null);
         _ = try self.appendEvent(.{
@@ -7815,9 +7840,9 @@ pub const Runspace = struct {
         var slot = &self.slots.items[index];
         if (slot.pending_mailbox_id != mailbox_id or slot.status != .parked_on_port) return error.StaleRunHandle;
         try self.ensureEventCapacity(1);
+        try self.beforeSlotHandoffExport(index);
         var image = try self.snapshotSlotImage(index);
         errdefer image.deinit(self.allocator);
-        try self.beforeSlotHandoffExport(index);
         const exported = try self.mailbox.markExported(mailbox_id);
         try slot.transition(.@"export", null);
         _ = try self.appendEvent(.{

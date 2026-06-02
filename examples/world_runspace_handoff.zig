@@ -57,7 +57,18 @@ pub fn main(init: std.process.Init) !void {
         .run_image = run_image,
         .requested_mode = .resume_parked,
     });
-    const permit = world.Supervision.issue(fixtures.Ports.Target, Env, .{ .mode = .fresh, .policy = world.SupervisionPolicy.handoff_receiver });
+    const handoff_policy = world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .allow_replay_calls = true,
+        .allow_verify_calls = true,
+        .allow_native_adapters = true,
+        .allow_replay_adapters = true,
+        .allow_handoff_export = true,
+        .allow_handoff_accept = true,
+        .require_environment_certificate = true,
+        .require_transcript_image_for_replay = true,
+    });
+    const permit = world.Supervision.issue(fixtures.Ports.Target, Env, .{ .mode = .fresh, .policy = handoff_policy });
     const entry = world.Admission.TargetRegistry.register(fixtures.Ports.Target);
     const admitter = world.Admission.Admitter.init(.{ .registry = world.Admission.TargetRegistry.init(&.{entry}), .policy = world.Admission.AdmissionPolicy.handoff_receiver });
     var admitted = admitter.admitForTarget(fixtures.Ports.Target, Env, package, .{ .permit = permit }).admitted_run orelse return error.AdmissionRejected;

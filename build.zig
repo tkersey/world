@@ -392,8 +392,8 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-runspace-handoff",
             .desc = "Run the handoff World runspace example.",
             .expected_stdout =
-            \\admission_receipt=32caaa5f6251bfbb
-            \\run_handle=a6dc8369ee5d317b
+            \\admission_receipt=1873d2b97f57c022
+            \\run_handle=c091dd4ff011f0a2
             \\final_result=7
             \\
             ,

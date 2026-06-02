@@ -3176,6 +3176,39 @@ test "runspace enforces lifecycle supervision for direct and imported slots" {
     const imported_handle = try imported.installRunImage(imported_image);
     try std.testing.expectError(error.SupervisionDenied, imported.exportRun(imported_handle));
     try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try imported.getSlotSummary(imported_handle)).status);
+
+    const admitted_permit = world.Supervision.issue(fixtures.Strict.Target, StrictEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.audit_only,
+    });
+    const admitted_image = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Strict.Target),
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Strict.Target).import_set_fingerprint,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = world.TargetRef.fromTarget(fixtures.Strict.Target).target_ref_fingerprint,
+            .status = .completed,
+        }),
+        .prior_run_permit_fingerprint = admitted_permit.permit_fingerprint,
+    });
+    const supervised_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_5afe,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Strict.Target),
+        .mode = .continue_fresh,
+        .run_image = admitted_image,
+        .run_permit = admitted_permit,
+    });
+    var admitted = world.Runspace.init(std.testing.allocator, .{
+        .require_admission = true,
+        .require_supervision = true,
+    });
+    defer admitted.deinit();
+    const admitted_handle = try admitted.installAdmitted(supervised_admitted);
+    const admitted_checkpoint = try admitted.checkpoint(admitted_handle);
+    _ = try admitted.branch(admitted_handle, admitted_checkpoint, .{});
+    var admitted_export = try admitted.exportRun(admitted_handle);
+    defer admitted_export.deinit(std.testing.allocator);
+    try std.testing.expectEqual(admitted_permit.permit_fingerprint, admitted_export.prior_run_permit_fingerprint.?);
 }
 
 test "runspace handoff export captures parked pending request and completed transcript" {
