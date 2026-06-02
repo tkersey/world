@@ -3768,6 +3768,13 @@ test "runspace install admitted and replay records receipts summaries and events
         .run_image = replay_export,
     });
     try std.testing.expectError(error.RunspaceInstallDenied, replay_denied.installAdmitted(replay_image_admitted));
+    const transcript_only_replay_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_5518,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Strict.Target),
+        .mode = .replay_only,
+        .transcript_image = image,
+    });
+    try std.testing.expectError(error.RunspaceInstallDenied, replay_denied.installAdmitted(transcript_only_replay_admitted));
     var replay_denied_runtime = boundary.Runtime.init(std.testing.allocator);
     defer replay_denied_runtime.deinit();
     try std.testing.expectError(error.RunspaceInstallDenied, replay_denied.installMachineRun(fixtures.Strict.Target, StrictReplayEnv, &replay_denied_runtime, .{}, .{
