@@ -2597,6 +2597,31 @@ test "runspace install rejects invalid image and failed direct installs preserve
     try std.testing.expectEqual(@as(u64, 0), machine_next.local_run_id);
 }
 
+test "runspace run image clone allocation failure preserves run ids" {
+    const image = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Strict.Target),
+        .import_set_fingerprint = 0,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = world.TargetRef.fromTarget(fixtures.Strict.Target).target_ref_fingerprint,
+            .status = .completed,
+        }),
+    });
+    var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{
+        .fail_index = std.math.maxInt(usize),
+    });
+    var runspace = world.Runspace.init(failing_allocator.allocator(), .{});
+    defer runspace.deinit();
+
+    failing_allocator.fail_index = failing_allocator.alloc_index;
+    try std.testing.expectError(error.OutOfMemory, runspace.installRunImage(image));
+    try std.testing.expect(failing_allocator.has_induced_failure);
+    failing_allocator.fail_index = std.math.maxInt(usize);
+
+    const next = try runspace.installTarget(fixtures.Strict.Target, .{}, null, .{});
+    try std.testing.expectEqual(@as(u64, 0), next.local_run_id);
+}
+
 test "runspace tick only requires mailbox capacity for emitted port requests" {
     var strict_runtime = boundary.Runtime.init(std.testing.allocator);
     defer strict_runtime.deinit();
@@ -4164,6 +4189,36 @@ test "runspace branch rejects checkpoint with stale self fingerprint" {
     forged.event_index = runspace.events.items.len;
 
     try std.testing.expectError(error.HandoffCheckpointMismatch, runspace.branch(handle, forged, .{}));
+}
+
+test "runspace branch child preserves supervised branch budget" {
+    const StrictEnv = world.Environment(fixtures.Strict.Target, .{
+        .ports = &.{},
+    });
+    const permit = world.Supervision.issue(fixtures.Strict.Target, StrictEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_branching = true,
+            .allow_checkpoints = true,
+            .require_environment_certificate = true,
+        }),
+        .budget = world.Budget.init(.{ .max_branches = 1 }),
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+    const handle = try runspace.installMachineRun(fixtures.Strict.Target, StrictEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .permit = permit,
+    });
+
+    const checkpoint_value = try runspace.checkpoint(handle);
+    const branch_handle = try runspace.branch(handle, checkpoint_value, .{});
+    const child_checkpoint = try runspace.checkpoint(branch_handle);
+    try std.testing.expectError(error.BudgetExceeded, runspace.branch(branch_handle, child_checkpoint, .{}));
 }
 
 test "runspace branches list only selected parent lineage" {

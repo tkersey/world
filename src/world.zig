@@ -3488,6 +3488,20 @@ pub const Supervision = struct {
             self.ledger.deinit(self.allocator);
         }
 
+        pub fn clone(self: @This(), allocator: std.mem.Allocator) !@This() {
+            const ledger = try self.ledger.clone(allocator);
+            return .{
+                .allocator = allocator,
+                .permit = self.permit,
+                .ledger = ledger,
+                .last_check = self.last_check,
+                .warning_count = self.warning_count,
+                .supervision_event_count = self.supervision_event_count,
+                .interrupted = self.interrupted,
+                .blocker = self.blocker,
+            };
+        }
+
         pub fn validatePermitForRun(permit: Supervision.RunPermit, port_count: usize) !void {
             if (!modeAllowedByPolicy(permit.policy, permit.mode)) return Error.SupervisionDenied;
             const policy = permit.policy.withFingerprint();
@@ -6535,6 +6549,7 @@ pub const Runspace = struct {
             beforeInterruptedHandoffExport: *const fn (*anyopaque) anyerror!void,
             beforeCheckpoint: *const fn (*anyopaque, usize) anyerror!void,
             beforeBranch: *const fn (*anyopaque, usize) anyerror!void,
+            cloneSupervisor: *const fn (*anyopaque, std.mem.Allocator) anyerror!?Supervision.Supervisor,
             hasSupervisor: *const fn (*anyopaque) bool,
             supervisionInterrupted: *const fn (*anyopaque) bool,
             deinit: *const fn (*anyopaque, std.mem.Allocator) void,
@@ -6582,6 +6597,10 @@ pub const Runspace = struct {
 
         fn beforeBranch(self: @This(), depth: usize) !void {
             return self.vtable.beforeBranch(self.ptr, depth);
+        }
+
+        fn cloneSupervisor(self: @This(), allocator: std.mem.Allocator) !?Supervision.Supervisor {
+            return self.vtable.cloneSupervisor(self.ptr, allocator);
         }
 
         fn hasSupervisor(self: @This()) bool {
@@ -6676,6 +6695,14 @@ pub const Runspace = struct {
                     if (@hasDecl(RunType, "beforeRunspaceBranch")) return active.beforeRunspaceBranch(depth);
                 }
 
+                fn runCloneSupervisor(ptr: *anyopaque, allocator: std.mem.Allocator) anyerror!?Supervision.Supervisor {
+                    const active: *RunType = @ptrCast(@alignCast(ptr));
+                    if (@hasField(RunType, "supervisor")) {
+                        if (active.supervisor) |supervisor| return try supervisor.clone(allocator);
+                    }
+                    return null;
+                }
+
                 fn runHasSupervisor(ptr: *anyopaque) bool {
                     const active: *RunType = @ptrCast(@alignCast(ptr));
                     if (@hasField(RunType, "supervisor")) return active.supervisor != null;
@@ -6708,6 +6735,7 @@ pub const Runspace = struct {
                     .beforeInterruptedHandoffExport = runBeforeInterruptedHandoffExport,
                     .beforeCheckpoint = runBeforeCheckpoint,
                     .beforeBranch = runBeforeBranch,
+                    .cloneSupervisor = runCloneSupervisor,
                     .hasSupervisor = runHasSupervisor,
                     .supervisionInterrupted = runSupervisionInterrupted,
                     .deinit = runDeinit,
@@ -7491,6 +7519,13 @@ pub const Runspace = struct {
         else
             null;
         const next_run_id_before = self.next_run_id;
+        const slot_count_before = self.slots.items.len;
+        const event_count_before = self.events.items.len;
+        const mailbox_count_before = self.mailbox.pending.items.len;
+        const next_mailbox_id_before = self.next_mailbox_id;
+        const next_event_index_before = self.next_event_index;
+        var installed = false;
+        errdefer if (!installed) self.rollbackRunspaceMutation(slot_count_before, event_count_before, mailbox_count_before, next_run_id_before, next_mailbox_id_before, next_event_index_before);
         const handle = try self.nextHandle(.{
             .target_ref_fingerprint = image.target_ref.target_ref_fingerprint,
             .permit_fingerprint = image.prior_run_permit_fingerprint,
@@ -7512,13 +7547,6 @@ pub const Runspace = struct {
             .installed_run_image = installed_image,
             .owns_installed_run_image = true,
         });
-        const slot_count_before = self.slots.items.len;
-        const event_count_before = self.events.items.len;
-        const mailbox_count_before = self.mailbox.pending.items.len;
-        const next_mailbox_id_before = self.next_mailbox_id;
-        const next_event_index_before = self.next_event_index;
-        var installed = false;
-        errdefer if (!installed) self.rollbackRunspaceMutation(slot_count_before, event_count_before, mailbox_count_before, next_run_id_before, next_mailbox_id_before, next_event_index_before);
         try self.prepareInstallSlot();
         installed_image_owned = false;
         try self.installPreparedSlot(slot, .run_installed, "run image installed");
@@ -8249,6 +8277,18 @@ pub const Runspace = struct {
         if (self.config.require_supervision) return error.SupervisionDenied;
     }
 
+    fn cloneSlotSupervisorForBranch(self: *@This(), slot: Runspace.RunSlot, depth: usize) !?Supervision.Supervisor {
+        var branch_supervisor: ?Supervision.Supervisor = if (slot.driver) |driver|
+            try driver.cloneSupervisor(self.allocator)
+        else if (slot.supervisor) |supervisor|
+            try supervisor.clone(self.allocator)
+        else
+            null;
+        errdefer if (branch_supervisor) |*supervisor| supervisor.deinit();
+        if (branch_supervisor) |*supervisor| try supervisor.beforeBranch(depth);
+        return branch_supervisor;
+    }
+
     pub fn checkpoint(self: *@This(), handle: RunHandle) !Timeline.Checkpoint {
         const index = try self.slotIndex(handle);
         const slot = &self.slots.items[index];
@@ -8285,6 +8325,11 @@ pub const Runspace = struct {
         const parent = self.slots.items[index];
         try self.validateSlotCheckpoint(parent, checkpoint_value);
         try self.ensureEventCapacity(1);
+        var branch_supervisor = try self.cloneSlotSupervisorForBranch(parent, 1);
+        var branch_supervisor_owned = branch_supervisor != null;
+        errdefer if (branch_supervisor_owned) {
+            if (branch_supervisor) |*supervisor| supervisor.deinit();
+        };
         const next_run_id_before = self.next_run_id;
         var installed = false;
         errdefer if (!installed) {
@@ -8314,6 +8359,7 @@ pub const Runspace = struct {
             .checkpoint_fingerprint = checkpoint_value.checkpoint_fingerprint,
             .target_match_fingerprint = parent.target_match_fingerprint,
             .module_ref_fingerprint = parent.module_ref_fingerprint,
+            .supervisor = branch_supervisor,
         });
         const summary_text = if (@hasField(@TypeOf(options), "summary")) @field(options, "summary") else "run branch created";
         try self.prepareInstallSlot();
@@ -8322,6 +8368,7 @@ pub const Runspace = struct {
         errdefer if (summary_owned) self.allocator.free(event_summary);
         try self.beforeSlotBranch(index, 1);
         self.slots.appendAssumeCapacity(slot);
+        branch_supervisor_owned = false;
         _ = self.appendPreparedEventAssumeCapacity(.{
             .kind = .run_branch_created,
             .run_handle = slot.handle,
