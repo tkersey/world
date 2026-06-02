@@ -12163,6 +12163,9 @@ test "admitted run start enforces admitted transcript image" {
     try std.testing.expect(transcript_only_result.admitted_run.?.run_image == null);
     try std.testing.expectEqual(image.transcript_image_fingerprint, transcript_only_result.admitted_run.?.transcript_image.?.transcript_image_fingerprint);
     var transcript_only_admitted = transcript_only_result.admitted_run orelse return error.ExpectedAdmittedRun;
+    var transcript_only_runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer transcript_only_runspace.deinit();
+    try std.testing.expectError(error.RunspaceInstallDenied, transcript_only_runspace.installAdmitted(transcript_only_admitted));
     var transcript_only_runtime = boundary.Runtime.init(std.testing.allocator);
     defer transcript_only_runtime.deinit();
     var transcript_only_run = try transcript_only_admitted.start(fixtures.Ports.Target, PortsReplayEnv, &transcript_only_runtime, .{}, .{

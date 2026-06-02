@@ -7572,6 +7572,7 @@ pub const Runspace = struct {
             if (!runImageFitsAdmissionMode(image, admitted_run.mode)) return error.InvalidFrameEncoding;
         }
         if (modeConsumesTranscript(admissionModeToRunMode(admitted_run.mode)) and !self.config.allow_replay_install) return error.RunspaceInstallDenied;
+        if (admitted_run.run_image == null and modeConsumesTranscript(admissionModeToRunMode(admitted_run.mode))) return error.RunspaceInstallDenied;
         if (admitted_run.run_image) |image| {
             if (!self.config.allow_handoff_install) return error.RunspaceInstallDenied;
             if (image.kind == .replay_only_run and !self.config.allow_replay_install) return error.RunspaceInstallDenied;
