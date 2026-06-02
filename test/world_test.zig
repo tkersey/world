@@ -614,6 +614,7 @@ test "runspace slot transition matrix rejects impossible lifecycle states" {
     try std.testing.expect(world.Runspace.canTransition(.admitted, .runnable));
     try std.testing.expect(!world.Runspace.canTransition(.admitted, .parked_on_port));
     try std.testing.expect(world.Runspace.canTransition(.runnable, .running));
+    try std.testing.expect(!world.Runspace.canTransition(.runnable, .exported));
     try std.testing.expect(world.Runspace.canTransition(.running, .parked_on_port));
     try std.testing.expect(!world.Runspace.canTransition(.parked_on_port, .completed));
     try std.testing.expect(world.Runspace.canTransition(.parked_on_port, .runnable));
@@ -2425,6 +2426,18 @@ test "runspace install rejects invalid image and failed direct installs preserve
     const image_next = try image_runspace.installTarget(fixtures.Strict.Target, .{}, null, .{});
     try std.testing.expectEqual(@as(u64, 0), image_next.local_run_id);
 
+    const parked_without_frame = world.RunImage.init(.{
+        .kind = .parked_run,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target),
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = world.TargetRef.fromTarget(fixtures.Ports.Target).target_ref_fingerprint,
+            .pending_request_fingerprint = 0x1234,
+            .status = .parked_on_port,
+        }),
+    });
+    try std.testing.expectError(error.HandoffPendingFrameMismatch, image_runspace.installRunImage(parked_without_frame));
+
     const non_resumable = world.RunImage.init(.{
         .kind = .full_target_run,
         .target_ref = world.TargetRef.fromTarget(fixtures.Strict.Target),
@@ -2899,6 +2912,8 @@ test "runspace export run consumes parked mailbox entry" {
     try std.testing.expectEqual(world.Runspace.RunStatus.exported, (try runspace.getSlotSummary(handle)).status);
     try std.testing.expectEqual(world.Runspace.PendingStatus.exported, (try runspace.mailbox.get(0)).status);
     try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
+    const checkpoint = try runspace.checkpoint(handle);
+    try std.testing.expectEqual(world.Timeline.Checkpoint.Status.parked_on_port, checkpoint.status);
 
     const replacement = try runspace.installTarget(fixtures.Strict.Target, .{}, null, .{});
     try std.testing.expectEqual(@as(u64, 1), replacement.local_run_id);

@@ -6561,7 +6561,7 @@ pub const Runspace = struct {
                 else => false,
             },
             .runnable => switch (to) {
-                .running, .parked_on_port, .parked_on_supervision, .completed, .failed, .exported => true,
+                .running, .parked_on_port, .parked_on_supervision, .completed, .failed => true,
                 else => false,
             },
             .running => switch (to) {
@@ -7159,6 +7159,13 @@ pub const Runspace = struct {
             .checkpoint_fingerprint = admitted_run.selected_checkpoint_ref,
             .status = .not_started,
         });
+        const pending_frame = if (admitted_run.run_image) |image|
+            if (image.current_state.status == .parked_on_port)
+                image.pending_request_frame orelse return error.HandoffPendingFrameMismatch
+            else
+                null
+        else
+            null;
         const next_run_id_before = self.next_run_id;
         const handle = try self.nextHandle(.{
             .target_ref_fingerprint = target_ref.target_ref_fingerprint,
@@ -7178,13 +7185,6 @@ pub const Runspace = struct {
                 try attachTranscriptToInstalledRunImage(self.allocator, &installed_image.?, transcript_image);
             }
         }
-        const pending_frame = if (installed_image) |image|
-            if (image.current_state.status == .parked_on_port)
-                image.pending_request_frame orelse return error.HandoffPendingFrameMismatch
-            else
-                null
-        else
-            null;
         const slot = Runspace.RunSlot.fromState(.{
             .handle = handle,
             .target_ref = target_ref,
@@ -7220,6 +7220,10 @@ pub const Runspace = struct {
         if (self.config.require_supervision and image.prior_run_permit_fingerprint == null) return error.SupervisionDenied;
         try image.validate(.{});
         const run_status = try statusFromInstallableRunImageState(image.current_state);
+        const pending_frame = if (image.current_state.status == .parked_on_port)
+            image.pending_request_frame orelse return error.HandoffPendingFrameMismatch
+        else
+            null;
         const next_run_id_before = self.next_run_id;
         const handle = try self.nextHandle(.{
             .target_ref_fingerprint = image.target_ref.target_ref_fingerprint,
@@ -7229,10 +7233,6 @@ pub const Runspace = struct {
         var installed_image = try cloneRunImage(self.allocator, image);
         var installed_image_owned = true;
         errdefer if (installed_image_owned) installed_image.deinit(self.allocator);
-        const pending_frame = if (image.current_state.status == .parked_on_port)
-            image.pending_request_frame orelse return error.HandoffPendingFrameMismatch
-        else
-            null;
         const slot = Runspace.RunSlot.fromState(.{
             .handle = handle,
             .target_ref = image.target_ref,
@@ -7673,7 +7673,13 @@ pub const Runspace = struct {
         return switch (slot.status) {
             .admitted, .runnable, .running => .running,
             .parked_on_port, .parked_on_supervision => .parked_on_port,
-            .completed, .exported => .completed,
+            .completed => .completed,
+            .exported => switch (slot.current_state.status) {
+                .not_started, .running => .running,
+                .parked_on_port => .parked_on_port,
+                .completed => .completed,
+                .failed => .failed,
+            },
             .failed, .rejected => .failed,
         };
     }
