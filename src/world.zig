@@ -8132,7 +8132,6 @@ pub const Runspace = struct {
             if (pending_port.request_frame == null) return error.HandoffPendingFrameMismatch;
             break :pending pending_port;
         } else null;
-        try self.beforeSlotHandoffExport(index);
         const image = try self.snapshotSlotImage(index);
         errdefer {
             var owned = image;
@@ -8141,6 +8140,7 @@ pub const Runspace = struct {
         const event_summary = try self.prepareEventSummary("run exported");
         var summary_owned = true;
         errdefer if (summary_owned) self.allocator.free(event_summary);
+        try self.beforeSlotHandoffExport(index);
         const exported = if (pending) |pending_port| try self.mailbox.markExported(pending_port.mailbox_id) else null;
         try slot.transition(.@"export", null);
         _ = self.appendPreparedEventAssumeCapacity(.{
@@ -8162,12 +8162,12 @@ pub const Runspace = struct {
         const index = try self.slotIndex(pending.handle);
         var slot = &self.slots.items[index];
         if (slot.pending_mailbox_id != mailbox_id or (slot.status != .parked_on_port and slot.status != .parked_on_supervision)) return error.StaleRunHandle;
-        try self.beforeSlotHandoffExport(index);
         var image = try self.snapshotSlotImage(index);
         errdefer image.deinit(self.allocator);
         const event_summary = try self.prepareEventSummary("pending run exported");
         var summary_owned = true;
         errdefer if (summary_owned) self.allocator.free(event_summary);
+        try self.beforeSlotHandoffExport(index);
         const exported = try self.mailbox.markExported(mailbox_id);
         try slot.transition(.@"export", null);
         _ = self.appendPreparedEventAssumeCapacity(.{

@@ -3635,10 +3635,25 @@ test "runspace export run event allocation failure does not change slot state" {
     var runspace = world.Runspace.init(failing_allocator.allocator(), .{});
     defer runspace.deinit();
     const target_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    const StrictEnv = world.Environment(fixtures.Strict.Target, .{
+        .ports = &.{},
+    });
+    const export_policy = world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .allow_handoff_export = true,
+        .require_environment_certificate = true,
+    });
+    const permit = world.Supervision.issue(fixtures.Strict.Target, StrictEnv, .{
+        .mode = .fresh,
+        .policy = export_policy,
+        .budget = world.Budget.init(.{ .max_handoff_exports = 1 }),
+    });
+    const supervisor = try world.Supervision.Supervisor.init(failing_allocator.allocator(), permit, 0);
     const handle = world.RunHandle.init(.{
         .runspace_fingerprint = runspace.runspace_fingerprint,
         .local_run_id = 0,
         .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .permit_fingerprint = permit.permit_fingerprint,
     });
     const state = world.RunState.init(.{
         .target_ref_fingerprint = target_ref.target_ref_fingerprint,
@@ -3649,6 +3664,8 @@ test "runspace export run event allocation failure does not change slot state" {
         .target_ref = target_ref,
         .current_state = state,
         .status = .completed,
+        .run_permit_fingerprint = permit.permit_fingerprint,
+        .supervisor = supervisor,
     }));
     try runspace.events.ensureUnusedCapacity(failing_allocator.allocator(), 1);
     failing_allocator.fail_index = failing_allocator.alloc_index;
@@ -3658,6 +3675,10 @@ test "runspace export run event allocation failure does not change slot state" {
     const summary = try runspace.getSlotSummary(handle);
     try std.testing.expectEqual(world.Runspace.RunStatus.completed, summary.status);
     try std.testing.expectEqual(@as(usize, 0), runspace.events.items.len);
+    failing_allocator.fail_index = std.math.maxInt(usize);
+    var image = try runspace.exportRun(handle);
+    defer image.deinit(failing_allocator.allocator());
+    try std.testing.expectEqual(world.Runspace.RunStatus.exported, (try runspace.getSlotSummary(handle)).status);
 }
 
 test "runspace supervised auto dispatch denial happens before handler call" {
