@@ -84,7 +84,7 @@ pub fn main(init: std.process.Init) !void {
     var receiver_ctx: Ctx = .{};
     var receiver = try admitted.@"resume"(allocator, fixtures.Ports.Target, Env, &receiver_runtime, .{}, .{ .allocator = allocator, .mode = world.Mode.fresh, .ctx = &receiver_ctx, .permit = permit });
     defer receiver.deinit();
-    _ = try receiver.dispatch();
+    try receiver.dispatch();
     const result = switch (try receiver.nextFrame()) {
         .done => |value| value,
         else => return error.ExpectedDone,

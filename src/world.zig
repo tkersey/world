@@ -2053,6 +2053,7 @@ pub const Admission = struct {
     pub const AdmittedRun = struct {
         admitted_run_fingerprint: u64,
         admission_receipt_fingerprint: u64,
+        admission_receipt: ?Admission.AdmissionReceipt = null,
         target_ref: TargetRef,
         module_ref_fingerprint: ?u64 = null,
         environment_certificate_fingerprint: ?u64 = null,
@@ -2067,6 +2068,7 @@ pub const Admission = struct {
 
         pub fn init(args: struct {
             admission_receipt_fingerprint: u64,
+            admission_receipt: ?Admission.AdmissionReceipt = null,
             target_ref: TargetRef,
             module_ref_fingerprint: ?u64 = null,
             environment_certificate_fingerprint: ?u64 = null,
@@ -2082,6 +2084,7 @@ pub const Admission = struct {
             var result = Admission.AdmittedRun{
                 .admitted_run_fingerprint = 0,
                 .admission_receipt_fingerprint = args.admission_receipt_fingerprint,
+                .admission_receipt = args.admission_receipt,
                 .target_ref = args.target_ref,
                 .module_ref_fingerprint = args.module_ref_fingerprint,
                 .environment_certificate_fingerprint = args.environment_certificate_fingerprint,
@@ -2551,6 +2554,7 @@ pub const Admission = struct {
             receipt.admitted_run_fingerprint = admitted.admitted_run_fingerprint;
             receipt.receipt_fingerprint = fingerprintAdmissionReceipt(receipt);
             admitted.admission_receipt_fingerprint = receipt.receipt_fingerprint;
+            admitted.admission_receipt = receipt;
             return .{ .request = request, .report = report, .receipt = receipt, .admitted_run = admitted, .target_match = match };
         }
 
@@ -6768,7 +6772,9 @@ pub const Runspace = struct {
 
                 fn runDispatch(ptr: *anyopaque) anyerror!?ResponseEvidence {
                     const active: *RunType = @ptrCast(@alignCast(ptr));
-                    return active.dispatch();
+                    if (@hasDecl(RunType, "runspaceDispatch")) return active.runspaceDispatch();
+                    try active.dispatch();
+                    return null;
                 }
 
                 fn runSnapshotRunImage(ptr: *anyopaque) anyerror!RunImage {
@@ -7562,8 +7568,22 @@ pub const Runspace = struct {
         if (admitted_run.transcript_image != null and !permit.transcript_image_available and modeConsumesTranscript(permit.mode)) return error.SupervisionDenied;
     }
 
+    fn validateAdmittedRunReceipt(admitted_run: Admission.AdmittedRun) !void {
+        const receipt = admitted_run.admission_receipt orelse return;
+        if (receipt.receipt_fingerprint != admitted_run.admission_receipt_fingerprint) return error.InvalidFrameEncoding;
+        if (fingerprintAdmissionReceipt(receipt) != receipt.receipt_fingerprint) return error.InvalidFrameEncoding;
+        const admitted_run_fingerprint = receipt.admitted_run_fingerprint orelse return error.InvalidFrameEncoding;
+        if (admitted_run_fingerprint != admitted_run.admitted_run_fingerprint) return error.InvalidFrameEncoding;
+        if (receipt.target_ref_fingerprint != admitted_run.target_ref.target_ref_fingerprint) return error.InvalidFrameEncoding;
+        if (receipt.module_ref_fingerprint != admitted_run.module_ref_fingerprint) return error.InvalidFrameEncoding;
+        if (receipt.environment_certificate_fingerprint != admitted_run.environment_certificate_fingerprint) return error.InvalidFrameEncoding;
+        if (receipt.run_permit_fingerprint != if (admitted_run.run_permit) |permit| permit.permit_fingerprint else null) return error.InvalidFrameEncoding;
+        if (receipt.accepted_mode != admitted_run.mode) return error.InvalidFrameEncoding;
+    }
+
     pub fn installAdmitted(self: *@This(), admitted_run: Admission.AdmittedRun) !RunHandle {
         if (admitted_run.admitted_run_fingerprint != fingerprintAdmittedRun(admitted_run)) return error.InvalidFrameEncoding;
+        try validateAdmittedRunReceipt(admitted_run);
         if (self.config.require_supervision and admitted_run.run_permit == null) return error.SupervisionDenied;
         const target_ref = admitted_run.target_ref;
         try validateTargetRef(target_ref);
@@ -10675,7 +10695,11 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     }
                 }
 
-                pub fn dispatch(self: *Self) !?Runspace.ResponseEvidence {
+                pub fn dispatch(self: *Self) !void {
+                    _ = try self.runspaceDispatch();
+                }
+
+                pub fn runspaceDispatch(self: *Self) !?Runspace.ResponseEvidence {
                     if (self.audit.final_status == .failed) return Error.HandlerFailed;
                     const request = self.pending_request orelse return Error.UnknownResidualSite;
                     const world_port_id = self.pending_port_id orelse return Error.UnknownWorldPort;

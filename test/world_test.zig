@@ -1000,7 +1000,7 @@ test "world runtime step API parks on port and resumes to done" {
         .port_required => {},
         else => return error.ExpectedPortRequired,
     }
-    _ = try run.dispatch();
+    try run.dispatch();
     const done = try run.next();
     switch (done) {
         .done => |value| try std.testing.expectEqual(@as(i32, 7), value),
@@ -7037,7 +7037,7 @@ test "world retains fresh handler responses before resuming boundary" {
         .port_required => {},
         else => return error.ExpectedPortRequired,
     }
-    _ = try run.dispatch();
+    try run.dispatch();
     @memcpy(ctx.final_storage[0.."final=mutated!".len], "final=mutated!");
 
     switch (try run.next()) {
@@ -8143,7 +8143,7 @@ test "parked handoff resumes selected pending request on receiver environment" {
     };
     defer receiver_request.deinit(std.testing.allocator);
     try std.testing.expectEqual(request.frame_fingerprint, receiver_request.frame_fingerprint);
-    _ = try receiver_run.dispatch();
+    try receiver_run.dispatch();
     const done = try receiver_run.nextFrame();
     try std.testing.expectEqual(@as(i32, 7), switch (done) {
         .done => |value| value,
@@ -8169,7 +8169,7 @@ test "parked handoff replays transcript prefix before selected pending request" 
         else => return error.ExpectedPortRequest,
     };
     defer model_request.deinit(std.testing.allocator);
-    _ = try run.dispatch();
+    try run.dispatch();
     var tool_request = switch (try run.nextFrame()) {
         .port_request => |frame| frame,
         else => return error.ExpectedPortRequest,
@@ -8364,7 +8364,7 @@ test "parked handoff replays transcript prefix before selected pending request" 
         .ctx = &fresh_limited_ctx,
     }, .accept_fresh, fresh_limited_permit);
     defer fresh_limited_run.deinit();
-    _ = try fresh_limited_run.dispatch();
+    try fresh_limited_run.dispatch();
     try std.testing.expectEqual(@as(usize, 0), fresh_limited_ctx.model_calls);
     try std.testing.expectEqual(@as(usize, 1), fresh_limited_ctx.tool_calls);
     try std.testing.expectEqual(@as(usize, 1), fresh_limited_run.supervisor.?.ledger.total_fresh_calls);
@@ -8391,13 +8391,13 @@ test "parked handoff replays transcript prefix before selected pending request" 
     };
     defer receiver_request.deinit(std.testing.allocator);
     try std.testing.expectEqual(tool_request.frame_fingerprint, receiver_request.frame_fingerprint);
-    _ = try receiver_run.dispatch();
+    try receiver_run.dispatch();
     var final_model_request = switch (try receiver_run.nextFrame()) {
         .port_request => |frame| frame,
         else => return error.ExpectedPortRequest,
     };
     defer final_model_request.deinit(std.testing.allocator);
-    _ = try receiver_run.dispatch();
+    try receiver_run.dispatch();
     const done = try receiver_run.nextFrame();
     try std.testing.expectEqualStrings("final=actuate skeleton complete", switch (done) {
         .done => |value| value,
@@ -9429,7 +9429,7 @@ test "park-on-budget preserves parked state when completion transcript exceeds b
         .port_required => {},
         else => return error.ExpectedPortRequired,
     }
-    _ = try run.dispatch();
+    try run.dispatch();
     switch (try run.next()) {
         .parked => {},
         else => return error.ExpectedParked,
@@ -11556,6 +11556,11 @@ test "admitted run constructed for accepted local target" {
         .metadata = result.receipt.?.metadata,
     });
     try std.testing.expect(forged_receipt.receipt_fingerprint != result.receipt.?.receipt_fingerprint);
+    var forged_admitted = result.admitted_run.?;
+    forged_admitted.admission_receipt_fingerprint = forged_receipt.receipt_fingerprint;
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+    try std.testing.expectError(error.InvalidFrameEncoding, runspace.installAdmitted(forged_admitted));
 }
 
 test "admission rejects permit mode mismatch before receipt" {

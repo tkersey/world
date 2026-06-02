@@ -72,7 +72,7 @@ pub fn main(init: std.process.Init) !void {
         .permit = receiver_permit,
     }, .accept_fresh, receiver_permit);
     defer receiver.deinit();
-    _ = try receiver.dispatch();
+    try receiver.dispatch();
     const final_result = switch (try receiver.nextFrame()) {
         .done => |value| value,
         else => return error.ExpectedDone,
