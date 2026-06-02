@@ -2831,7 +2831,12 @@ test "runspace terminal port decisions honor supervision before consuming mailbo
     defer parked_image.deinit(std.testing.allocator);
     const admitted_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
         .mode = .fresh,
-        .policy = world.SupervisionPolicy.strict_fresh,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_native_adapters = true,
+            .allow_handoff_accept = true,
+            .require_environment_certificate = true,
+        }),
     });
     const admitted = world.Admission.AdmittedRun.init(.{
         .admission_receipt_fingerprint = 0xadd1_7e12,
@@ -2855,6 +2860,7 @@ test "runspace terminal response byte budget parks without consuming mailbox" {
         .allow_native_adapters = true,
         .allow_failed_responses = true,
         .allow_handoff_export = true,
+        .allow_handoff_accept = true,
         .require_environment_certificate = true,
         .park_on_budget_exceeded = true,
     });
@@ -2890,6 +2896,7 @@ test "runspace supervision park event allocation failure preserves port state" {
         .allow_native_adapters = true,
         .allow_failed_responses = true,
         .allow_handoff_export = true,
+        .allow_handoff_accept = true,
         .require_environment_certificate = true,
         .park_on_budget_exceeded = true,
     });
@@ -2944,6 +2951,7 @@ test "runspace imported terminal response byte budget parks without consuming ma
         .allow_native_adapters = true,
         .allow_failed_responses = true,
         .allow_handoff_export = true,
+        .allow_handoff_accept = true,
         .require_environment_certificate = true,
         .park_on_budget_exceeded = true,
     });
@@ -3047,9 +3055,16 @@ test "runspace install admitted and replay records receipts summaries and events
     try std.testing.expectEqual(world.Runspace.EventKind.run_admitted, runspace.events.items[0].kind);
 
     const ports_cert = PortsEnv.certificate(.fresh, false);
+    const accept_policy = world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .allow_native_adapters = true,
+        .allow_checkpoints = true,
+        .allow_handoff_accept = true,
+        .require_environment_certificate = true,
+    });
     const valid_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
         .mode = .fresh,
-        .policy = world.SupervisionPolicy.strict_fresh,
+        .policy = accept_policy,
     });
     var supervised_runspace = world.Runspace.init(std.testing.allocator, .{
         .require_admission = true,
@@ -3066,10 +3081,23 @@ test "runspace install admitted and replay records receipts summaries and events
     const supervised_handle = try supervised_runspace.installAdmitted(supervised_admitted);
     const scoped_valid_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
         .mode = .fresh,
-        .policy = world.SupervisionPolicy.strict_fresh,
+        .policy = accept_policy,
         .admission_receipt_fingerprint = 0xadd1_5511,
     });
     try std.testing.expectEqual(scoped_valid_permit.permit_fingerprint, (try supervised_runspace.getSlotSummary(supervised_handle)).run_permit_fingerprint.?);
+    try std.testing.expectEqual(@as(usize, 1), supervised_runspace.slots.items[0].supervisor.?.ledger.total_handoff_accepts);
+    const accept_deny_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+    });
+    const accept_deny_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_550f,
+        .target_ref = target_ref,
+        .environment_certificate_fingerprint = ports_cert.certificate_fingerprint,
+        .run_permit = accept_deny_permit,
+        .mode = .continue_fresh,
+    });
+    try std.testing.expectError(error.HandoffDenied, supervised_runspace.installAdmitted(accept_deny_admitted));
 
     const StrictEnv = world.Environment(fixtures.Strict.Target, .{
         .bindings = .{},
@@ -3889,6 +3917,60 @@ test "runspace export run event allocation failure does not change slot state" {
     var image = try runspace.exportRun(handle);
     defer image.deinit(failing_allocator.allocator());
     try std.testing.expectEqual(world.Runspace.RunStatus.exported, (try runspace.getSlotSummary(handle)).status);
+}
+
+test "runspace export checks supervision before snapshotting installed image" {
+    var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    var runspace = world.Runspace.init(failing_allocator.allocator(), .{});
+    defer runspace.deinit();
+    var transcript = world.Transcript.init(failing_allocator.allocator());
+    defer transcript.deinit();
+    try recordPortsTranscript(&transcript);
+    var transcript_image = try transcript.toImage(failing_allocator.allocator(), .{ .value_policy = world.ValuePolicy.portable });
+    var installed_image = world.RunImage.fromTranscriptImage(fixtures.Ports.Target, transcript_image, .completed_run);
+    installed_image.owns_transcript_image = true;
+    transcript_image = undefined;
+    var installed_image_owned = true;
+    errdefer if (installed_image_owned) installed_image.deinit(failing_allocator.allocator());
+
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const deny_policy = world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .require_environment_certificate = true,
+    });
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = deny_policy,
+    });
+    const supervisor = try world.Supervision.Supervisor.init(failing_allocator.allocator(), permit, fixtures.Ports.Target.WorldPortTable.entries.len);
+    const handle = world.RunHandle.init(.{
+        .runspace_fingerprint = runspace.runspace_fingerprint,
+        .local_run_id = 0,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .permit_fingerprint = permit.permit_fingerprint,
+    });
+    const state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .transcript_image_fingerprint = installed_image.transcript_image.?.transcript_image_fingerprint,
+        .status = .completed,
+    });
+    try runspace.slots.append(failing_allocator.allocator(), world.Runspace.RunSlot.fromState(.{
+        .handle = handle,
+        .target_ref = target_ref,
+        .current_state = state,
+        .status = .completed,
+        .run_permit_fingerprint = permit.permit_fingerprint,
+        .supervisor = supervisor,
+        .installed_run_image = installed_image,
+        .owns_installed_run_image = true,
+    }));
+    installed_image_owned = false;
+    try runspace.events.ensureUnusedCapacity(failing_allocator.allocator(), 1);
+    failing_allocator.fail_index = failing_allocator.alloc_index + 1;
+
+    try std.testing.expectError(error.HandoffDenied, runspace.exportRun(handle));
+    try std.testing.expect(!failing_allocator.has_induced_failure);
+    try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try runspace.getSlotSummary(handle)).status);
 }
 
 test "runspace checkpoint and branch allocation failures do not spend supervision budgets" {

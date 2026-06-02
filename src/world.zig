@@ -7461,6 +7461,7 @@ pub const Runspace = struct {
             };
             supervisor = try Supervision.Supervisor.init(self.allocator, scoped_permit, port_count);
             supervisor_owned = true;
+            try supervisor.?.beforeHandoffAccept();
         }
         const slot_current_state = if (installed_image) |image| image.current_state else current_state;
         const slot_branch_id: ?u64 = if (slot_current_state.branch_id == 0)
@@ -8191,15 +8192,15 @@ pub const Runspace = struct {
             if (pending_port.request_frame == null) return error.HandoffPendingFrameMismatch;
             break :pending pending_port;
         } else null;
+        const event_summary = try self.prepareEventSummary("run exported");
+        var summary_owned = true;
+        errdefer if (summary_owned) self.allocator.free(event_summary);
+        try self.beforeSlotHandoffExport(index);
         const image = try self.snapshotSlotImage(index);
         errdefer {
             var owned = image;
             owned.deinit(self.allocator);
         }
-        const event_summary = try self.prepareEventSummary("run exported");
-        var summary_owned = true;
-        errdefer if (summary_owned) self.allocator.free(event_summary);
-        try self.beforeSlotHandoffExport(index);
         const exported = if (pending) |pending_port| try self.mailbox.markExported(pending_port.mailbox_id) else null;
         try slot.transition(.@"export", null);
         _ = self.appendPreparedEventAssumeCapacity(.{
@@ -8221,12 +8222,12 @@ pub const Runspace = struct {
         const index = try self.slotIndex(pending.handle);
         var slot = &self.slots.items[index];
         if (slot.pending_mailbox_id != mailbox_id or (slot.status != .parked_on_port and slot.status != .parked_on_supervision)) return error.StaleRunHandle;
-        var image = try self.snapshotSlotImage(index);
-        errdefer image.deinit(self.allocator);
         const event_summary = try self.prepareEventSummary("pending run exported");
         var summary_owned = true;
         errdefer if (summary_owned) self.allocator.free(event_summary);
         try self.beforeSlotHandoffExport(index);
+        var image = try self.snapshotSlotImage(index);
+        errdefer image.deinit(self.allocator);
         const exported = try self.mailbox.markExported(mailbox_id);
         try slot.transition(.@"export", null);
         _ = self.appendPreparedEventAssumeCapacity(.{
