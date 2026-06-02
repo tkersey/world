@@ -7501,6 +7501,7 @@ pub const Runspace = struct {
             installed_image_owned = true;
             if (admitted_run.transcript_image) |transcript_image| {
                 try attachTranscriptToInstalledRunImage(self.allocator, &installed_image.?, transcript_image);
+                try installed_image.?.validate(.{});
             }
         }
         var supervisor: ?Supervision.Supervisor = null;

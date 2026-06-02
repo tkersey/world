@@ -2603,6 +2603,47 @@ test "runspace install rejects invalid image and failed direct installs preserve
     const non_resumable_next = try image_runspace.installTarget(fixtures.Strict.Target, .{}, null, .{});
     try std.testing.expectEqual(@as(u64, 1), non_resumable_next.local_run_id);
 
+    const ports_target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const detached_completed_image = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = ports_target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = ports_target_ref.target_ref_fingerprint,
+            .status = .completed,
+        }),
+    });
+    try detached_completed_image.validate(.{});
+
+    var agent_transcript = world.Transcript.init(std.testing.allocator);
+    defer agent_transcript.deinit();
+    try agent_transcript.append(.{
+        .kind = .run_started,
+        .world_surface_fingerprint = fixtures.Agent.Target.WorldSurface.surface_fingerprint,
+        .target_certificate_fingerprint = fixtures.Agent.Target.Certificate.certificate_fingerprint,
+    });
+    try agent_transcript.append(.{
+        .kind = .run_completed,
+        .world_surface_fingerprint = fixtures.Agent.Target.WorldSurface.surface_fingerprint,
+        .target_certificate_fingerprint = fixtures.Agent.Target.Certificate.certificate_fingerprint,
+        .status = .responded,
+    });
+    var agent_transcript_image = try agent_transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer agent_transcript_image.deinit(std.testing.allocator);
+
+    var admitted_runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer admitted_runspace.deinit();
+    const invalid_attached_transcript = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0x5151,
+        .target_ref = ports_target_ref,
+        .run_image = detached_completed_image,
+        .transcript_image = agent_transcript_image,
+        .mode = .completed_replay,
+    });
+    try std.testing.expectError(error.TranscriptImageSurfaceMismatch, admitted_runspace.installAdmitted(invalid_attached_transcript));
+    const admitted_next = try admitted_runspace.installTarget(fixtures.Strict.Target, .{}, null, .{});
+    try std.testing.expectEqual(@as(u64, 0), admitted_next.local_run_id);
+
     var direct = world.Runspace.init(std.testing.allocator, .{ .max_events = 0 });
     defer direct.deinit();
     try std.testing.expectError(error.BudgetExceeded, direct.installTarget(fixtures.Strict.Target, .{}, null, .{}));
