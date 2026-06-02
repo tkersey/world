@@ -7787,6 +7787,19 @@ pub const Runspace = struct {
             .failed => return self.finishTerminalResponse(index, mailbox_id, pending, slot, response, .failed),
         }
         try self.ensureEventCapacity(2);
+        try self.events.ensureUnusedCapacity(self.allocator, 2);
+        const responded_summary = try self.allocator.dupe(u8, "port responded");
+        var responded_summary_owned = true;
+        defer if (responded_summary_owned) self.allocator.free(responded_summary);
+        const resumed_summary = try self.allocator.dupe(u8, "run resumed");
+        var resumed_summary_owned = true;
+        defer if (resumed_summary_owned) self.allocator.free(resumed_summary);
+        const failed_response_summary = try self.allocator.dupe(u8, "port response failed");
+        var failed_response_summary_owned = true;
+        defer if (failed_response_summary_owned) self.allocator.free(failed_response_summary);
+        const failed_run_summary = try self.allocator.dupe(u8, "run failed after response");
+        var failed_run_summary_owned = true;
+        defer if (failed_run_summary_owned) self.allocator.free(failed_run_summary);
         if (slot.driver) |driver| {
             driver.resumeFrame(response) catch |err| {
                 if (err == error.HandlerPending) {
@@ -7797,24 +7810,26 @@ pub const Runspace = struct {
                 }
                 const failed = try self.mailbox.fail(mailbox_id, "resume failed");
                 try slot.transition(.fail, null);
-                _ = try self.appendEvent(.{
+                _ = self.appendPreparedEventAssumeCapacity(.{
                     .kind = .port_failed,
                     .run_handle = slot.handle,
                     .pending_port_fingerprint = failed.pending_port_fingerprint,
                     .response_frame_fingerprint = response.frame_fingerprint,
                     .run_state_fingerprint = slot.current_state.run_state_fingerprint,
                     .run_permit_fingerprint = slot.run_permit_fingerprint,
-                    .summary = "port response failed",
+                    .summary = failed_response_summary,
                 });
-                _ = try self.appendEvent(.{
+                failed_response_summary_owned = false;
+                _ = self.appendPreparedEventAssumeCapacity(.{
                     .kind = .run_failed,
                     .run_handle = slot.handle,
                     .pending_port_fingerprint = failed.pending_port_fingerprint,
                     .response_frame_fingerprint = response.frame_fingerprint,
                     .run_state_fingerprint = slot.current_state.run_state_fingerprint,
                     .run_permit_fingerprint = slot.run_permit_fingerprint,
-                    .summary = "run failed after response",
+                    .summary = failed_run_summary,
                 });
+                failed_run_summary_owned = false;
                 return err;
             };
         } else {
@@ -7823,24 +7838,27 @@ pub const Runspace = struct {
         if (response.status == .pending) return error.HandlerPending;
         try slot.transition(.resume_from_port, mailbox_id);
         const responded = try self.mailbox.markResponded(mailbox_id);
-        _ = try self.appendEvent(.{
+        _ = self.appendPreparedEventAssumeCapacity(.{
             .kind = .port_responded,
             .run_handle = slot.handle,
             .pending_port_fingerprint = responded.pending_port_fingerprint,
             .response_frame_fingerprint = response.frame_fingerprint,
             .run_state_fingerprint = slot.current_state.run_state_fingerprint,
             .run_permit_fingerprint = slot.run_permit_fingerprint,
-            .summary = "port responded",
+            .summary = responded_summary,
         });
-        return self.appendEvent(.{
+        responded_summary_owned = false;
+        const event = self.appendPreparedEventAssumeCapacity(.{
             .kind = .run_resumed,
             .run_handle = slot.handle,
             .pending_port_fingerprint = responded.pending_port_fingerprint,
             .response_frame_fingerprint = response.frame_fingerprint,
             .run_state_fingerprint = slot.current_state.run_state_fingerprint,
             .run_permit_fingerprint = slot.run_permit_fingerprint,
-            .summary = "run resumed",
+            .summary = resumed_summary,
         });
+        resumed_summary_owned = false;
+        return event;
     }
 
     pub fn respondValue(self: *@This(), mailbox_id: u64, value: anytype) !Runspace.RunspaceEvent {
@@ -8455,6 +8473,40 @@ pub const Runspace = struct {
         });
         try self.events.append(self.allocator, event);
         summary_owned = false;
+        self.next_event_index += 1;
+        return event.borrowed();
+    }
+
+    fn appendPreparedEventAssumeCapacity(self: *@This(), args: struct {
+        kind: Runspace.EventKind,
+        run_handle: RunHandle,
+        pending_port_fingerprint: ?u64 = null,
+        request_frame_fingerprint: ?u64 = null,
+        response_frame_fingerprint: ?u64 = null,
+        checkpoint_fingerprint: ?u64 = null,
+        run_state_fingerprint: u64,
+        run_receipt_fingerprint: ?u64 = null,
+        admission_receipt_fingerprint: ?u64 = null,
+        run_permit_fingerprint: ?u64 = null,
+        summary: []u8,
+    }) Runspace.RunspaceEvent {
+        const event = Runspace.RunspaceEvent.init(.{
+            .kind = args.kind,
+            .runspace_fingerprint = self.runspace_fingerprint,
+            .event_index = self.next_event_index,
+            .run_handle = args.run_handle,
+            .pending_port_fingerprint = args.pending_port_fingerprint,
+            .request_frame_fingerprint = args.request_frame_fingerprint,
+            .response_frame_fingerprint = args.response_frame_fingerprint,
+            .checkpoint_fingerprint = args.checkpoint_fingerprint,
+            .run_state_fingerprint = args.run_state_fingerprint,
+            .run_receipt_fingerprint = args.run_receipt_fingerprint,
+            .admission_receipt_fingerprint = args.admission_receipt_fingerprint,
+            .run_permit_fingerprint = args.run_permit_fingerprint,
+            .summary = args.summary,
+            .owns_summary = true,
+        });
+        self.events.appendAssumeCapacity(event);
         self.next_event_index += 1;
         return event.borrowed();
     }
