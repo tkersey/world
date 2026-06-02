@@ -3338,7 +3338,6 @@ test "runspace install admitted and replay records receipts summaries and events
         .policy = accept_policy,
     });
     var supervised_runspace = world.Runspace.init(std.testing.allocator, .{
-        .require_admission = true,
         .require_supervision = true,
     });
     defer supervised_runspace.deinit();
@@ -3594,7 +3593,7 @@ test "runspace install admitted and replay records receipts summaries and events
         .mode = .continue_fresh,
         .run_image = replay_export,
     });
-    try std.testing.expectError(error.HandoffTargetMismatch, runspace.installAdmitted(mismatched_admitted));
+    try std.testing.expectError(error.InvalidFrameEncoding, runspace.installAdmitted(mismatched_admitted));
     try std.testing.expectError(error.ReplaySurfaceMismatch, replay_runspace.installReplay(fixtures.Ports.Target, image, null));
     const wrong_replay_permit = world.Supervision.issue(fixtures.Ports.Target, PortsReplayEnv, .{
         .mode = .replay,
@@ -3635,7 +3634,7 @@ test "runspace install admitted and replay records receipts summaries and events
         .run_image = bare_parked_image,
         .transcript_image = admitted_transcript,
     });
-    var parked_target = world.Runspace.init(std.testing.allocator, .{ .require_admission = true });
+    var parked_target = world.Runspace.init(std.testing.allocator, .{});
     defer parked_target.deinit();
     const parked_installed = try parked_target.installAdmitted(parked_admitted);
     const parked_summary = try parked_target.getSlotSummary(parked_installed);
@@ -3672,7 +3671,7 @@ test "runspace install admitted and replay records receipts summaries and events
         .run_image = detached_image,
         .transcript_image = admitted_transcript,
     });
-    var detached_target = world.Runspace.init(std.testing.allocator, .{ .require_admission = true });
+    var detached_target = world.Runspace.init(std.testing.allocator, .{});
     defer detached_target.deinit();
     const detached_installed = try detached_target.installAdmitted(detached_admitted);
     const detached_summary = try detached_target.getSlotSummary(detached_installed);
@@ -3703,7 +3702,7 @@ test "runspace install admitted and replay records receipts summaries and events
         .run_image = bare_completed_image,
         .transcript_image = completed_attach_image,
     });
-    var completed_attach_target = world.Runspace.init(std.testing.allocator, .{ .require_admission = true });
+    var completed_attach_target = world.Runspace.init(std.testing.allocator, .{});
     defer completed_attach_target.deinit();
     const completed_attach_handle = try completed_attach_target.installAdmitted(completed_attach_admitted);
     const completed_attach_summary = try completed_attach_target.getSlotSummary(completed_attach_handle);
@@ -3716,7 +3715,6 @@ test "runspace install admitted and replay records receipts summaries and events
     try std.testing.expectEqual(completed_attach_export.current_state.run_state_fingerprint, completed_attach_summary.run_state_fingerprint);
 
     var admitted_handoff_denied = world.Runspace.init(std.testing.allocator, .{
-        .require_admission = true,
         .allow_handoff_install = false,
     });
     defer admitted_handoff_denied.deinit();
@@ -3757,7 +3755,7 @@ test "runspace install admitted and replay records receipts summaries and events
         .mode = .continue_fresh,
         .run_image = branched_image,
     });
-    var branched_target = world.Runspace.init(std.testing.allocator, .{ .require_admission = true });
+    var branched_target = world.Runspace.init(std.testing.allocator, .{});
     defer branched_target.deinit();
     const branched_handle = try branched_target.installAdmitted(branched_admitted);
     const branched_summary = try branched_target.getSlotSummary(branched_handle);
@@ -3783,7 +3781,7 @@ test "runspace install admitted and replay records receipts summaries and events
         .run_image = selected_branch_image,
         .selected_branch_id = 44,
     });
-    var selected_branch_target = world.Runspace.init(std.testing.allocator, .{ .require_admission = true });
+    var selected_branch_target = world.Runspace.init(std.testing.allocator, .{});
     defer selected_branch_target.deinit();
     const selected_branch_handle = try selected_branch_target.installAdmitted(selected_branch_admitted);
     const selected_branch_checkpoint = try selected_branch_target.checkpoint(selected_branch_handle);
@@ -3798,7 +3796,7 @@ test "runspace install admitted and replay records receipts summaries and events
         .run_image = selected_branch_image,
         .selected_checkpoint_ref = branched_checkpoint.checkpoint_fingerprint,
     });
-    var selected_checkpoint_target = world.Runspace.init(std.testing.allocator, .{ .require_admission = true });
+    var selected_checkpoint_target = world.Runspace.init(std.testing.allocator, .{});
     defer selected_checkpoint_target.deinit();
     try std.testing.expectError(error.HandoffCheckpointMismatch, selected_checkpoint_target.installAdmitted(selected_checkpoint_mismatch_admitted));
 
@@ -4539,7 +4537,6 @@ test "runspace supervised export events carry receipt witnesses" {
         .run_permit = admitted_permit,
     });
     var admitted_runspace = world.Runspace.init(std.testing.allocator, .{
-        .require_admission = true,
         .require_supervision = true,
     });
     defer admitted_runspace.deinit();
@@ -5102,7 +5099,6 @@ test "runspace enforces lifecycle supervision for direct and imported slots" {
         .run_permit = admitted_permit,
     });
     var admitted = world.Runspace.init(std.testing.allocator, .{
-        .require_admission = true,
         .require_supervision = true,
     });
     defer admitted.deinit();
@@ -5129,9 +5125,7 @@ test "runspace enforces lifecycle supervision for direct and imported slots" {
         .mode = .continue_fresh,
         .run_image = prior_only_image,
     });
-    var prior_only = world.Runspace.init(std.testing.allocator, .{
-        .require_admission = true,
-    });
+    var prior_only = world.Runspace.init(std.testing.allocator, .{});
     defer prior_only.deinit();
     const prior_only_handle = try prior_only.installAdmitted(prior_only_admitted);
     var prior_only_export = try prior_only.exportRun(prior_only_handle);

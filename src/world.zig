@@ -7584,7 +7584,7 @@ pub const Runspace = struct {
 
     pub fn installAdmitted(self: *@This(), admitted_run: Admission.AdmittedRun) !RunHandle {
         if (admitted_run.admitted_run_fingerprint != fingerprintAdmittedRun(admitted_run)) return error.InvalidFrameEncoding;
-        if (self.config.require_admission and admitted_run.admission_receipt == null and admitted_run.run_image == null and admitted_run.run_permit == null) return error.InvalidFrameEncoding;
+        if (self.config.require_admission and admitted_run.admission_receipt == null) return error.InvalidFrameEncoding;
         try validateAdmittedRunReceipt(admitted_run);
         if (self.config.require_supervision and admitted_run.run_permit == null) return error.SupervisionDenied;
         const target_ref = admitted_run.target_ref;
