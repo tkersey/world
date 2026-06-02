@@ -3132,6 +3132,7 @@ test "runspace install admitted and replay records receipts summaries and events
     });
     defer replay_denied.deinit();
     try std.testing.expectError(error.RunspaceInstallDenied, replay_denied.installReplay(fixtures.Strict.Target, image, null));
+    try std.testing.expectError(error.RunspaceInstallDenied, replay_denied.installRunImage(replay_export));
     const replay_image_admitted = world.Admission.AdmittedRun.init(.{
         .admission_receipt_fingerprint = 0xadd1_5517,
         .target_ref = world.TargetRef.fromTarget(fixtures.Strict.Target),
@@ -3339,6 +3340,40 @@ test "runspace manual response park-on-budget preserves pending mailbox" {
     try std.testing.expect(image.pending_request_frame != null);
     try std.testing.expectEqual(world.Runspace.PendingStatus.exported, (try runspace.mailbox.get(0)).status);
     try std.testing.expectEqual(world.Runspace.RunStatus.exported, (try runspace.getSlotSummary(handle)).status);
+}
+
+test "runspace supervision park event budget failure preserves port parked state" {
+    const park_policy = world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .allow_native_adapters = true,
+        .allow_handoff_export = true,
+        .require_environment_certificate = true,
+        .park_on_budget_exceeded = true,
+    });
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = park_policy,
+        .budget = world.Budget.init(.{ .max_frame_response_bytes = 0 }),
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{
+        .require_supervision = true,
+    });
+    defer runspace.deinit();
+
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .permit = permit,
+    });
+    _ = try runspace.tick();
+    runspace.config.max_events = runspace.events.items.len;
+
+    try std.testing.expectError(error.BudgetExceeded, runspace.respondValue(0, @as(i32, 7)));
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
 }
 
 test "runspace pending manual response byte budget preserves pending mailbox" {

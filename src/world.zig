@@ -7468,6 +7468,7 @@ pub const Runspace = struct {
     pub fn installRunImage(self: *@This(), image: RunImage) !RunHandle {
         if (self.config.require_admission) return error.RunspaceAdmissionRequired;
         if (!self.config.allow_handoff_install) return error.RunspaceInstallDenied;
+        if (image.kind == .replay_only_run and !self.config.allow_replay_install) return error.RunspaceInstallDenied;
         if (self.config.require_supervision and image.prior_run_permit_fingerprint == null) return error.SupervisionDenied;
         try image.validate(.{});
         const run_status = try statusFromInstallableRunImageState(image.current_state);
@@ -8001,6 +8002,7 @@ pub const Runspace = struct {
     }
 
     fn parkPendingOnSupervision(self: *@This(), index: usize, pending: Runspace.PendingPort, mailbox_id: u64, event_summary: []const u8) !Runspace.RunspaceEvent {
+        try self.ensureEventCapacity(1);
         var slot = &self.slots.items[index];
         slot.status = .parked_on_supervision;
         slot.pending_mailbox_id = mailbox_id;
