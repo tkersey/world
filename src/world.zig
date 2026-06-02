@@ -8086,7 +8086,9 @@ pub const Runspace = struct {
     }
 
     fn parkPendingOnSupervision(self: *@This(), index: usize, pending: Runspace.PendingPort, mailbox_id: u64, event_summary: []const u8) !Runspace.RunspaceEvent {
-        try self.ensureEventCapacity(1);
+        const event_summary_bytes = try self.prepareEventSummary(event_summary);
+        var summary_owned = true;
+        errdefer if (summary_owned) self.allocator.free(event_summary_bytes);
         var slot = &self.slots.items[index];
         slot.status = .parked_on_supervision;
         slot.pending_mailbox_id = mailbox_id;
@@ -8096,15 +8098,17 @@ pub const Runspace = struct {
             .turn_index = pending.turn_index,
             .status = .parked_on_port,
         });
-        return self.appendEvent(.{
+        const event = self.appendPreparedEventAssumeCapacity(.{
             .kind = .run_parked_on_supervision,
             .run_handle = slot.handle,
             .pending_port_fingerprint = pending.pending_port_fingerprint,
             .request_frame_fingerprint = pending.request_frame_fingerprint,
             .run_state_fingerprint = slot.current_state.run_state_fingerprint,
             .run_permit_fingerprint = slot.run_permit_fingerprint,
-            .summary = event_summary,
+            .summary = event_summary_bytes,
         });
+        summary_owned = false;
+        return event;
     }
 
     pub fn reject(self: *@This(), mailbox_id: u64, reason: []const u8) !Runspace.RunspaceEvent {
@@ -8113,13 +8117,14 @@ pub const Runspace = struct {
         const index = try self.slotIndex(pending.handle);
         var slot = &self.slots.items[index];
         if (slot.pending_mailbox_id != mailbox_id or slot.status != .parked_on_port) return error.StaleRunHandle;
-        try self.ensureEventCapacity(2);
+        var event_pair = try self.prepareEventPair(2, "port rejected", "run failed after port rejection");
+        defer event_pair.deinit(self.allocator);
         var routed = try self.routeTerminalPending(index, mailbox_id, pending, slot, .rejected, reason);
         defer routed.response.deinit(self.allocator);
         if (routed.parked_event) |event| return event;
         const cancelled = try self.mailbox.cancel(mailbox_id, reason);
         try slot.transition(.fail, null);
-        _ = try self.appendEvent(.{
+        _ = self.appendPreparedEventAssumeCapacity(.{
             .kind = .port_rejected,
             .run_handle = slot.handle,
             .pending_port_fingerprint = cancelled.pending_port_fingerprint,
@@ -8127,9 +8132,9 @@ pub const Runspace = struct {
             .response_frame_fingerprint = routed.response.frame_fingerprint,
             .run_state_fingerprint = slot.current_state.run_state_fingerprint,
             .run_permit_fingerprint = slot.run_permit_fingerprint,
-            .summary = "port rejected",
+            .summary = event_pair.takeFirst(),
         });
-        return self.appendEvent(.{
+        return self.appendPreparedEventAssumeCapacity(.{
             .kind = .run_failed,
             .run_handle = slot.handle,
             .pending_port_fingerprint = cancelled.pending_port_fingerprint,
@@ -8137,7 +8142,7 @@ pub const Runspace = struct {
             .response_frame_fingerprint = routed.response.frame_fingerprint,
             .run_state_fingerprint = slot.current_state.run_state_fingerprint,
             .run_permit_fingerprint = slot.run_permit_fingerprint,
-            .summary = "run failed after port rejection",
+            .summary = event_pair.takeSecond(),
         });
     }
 
@@ -8147,13 +8152,14 @@ pub const Runspace = struct {
         const index = try self.slotIndex(pending.handle);
         var slot = &self.slots.items[index];
         if (slot.pending_mailbox_id != mailbox_id or slot.status != .parked_on_port) return error.StaleRunHandle;
-        try self.ensureEventCapacity(2);
+        var event_pair = try self.prepareEventPair(2, "port failed", "run failed after port failure");
+        defer event_pair.deinit(self.allocator);
         var routed = try self.routeTerminalPending(index, mailbox_id, pending, slot, .failed, reason);
         defer routed.response.deinit(self.allocator);
         if (routed.parked_event) |event| return event;
         const failed = try self.mailbox.fail(mailbox_id, reason);
         try slot.transition(.fail, null);
-        _ = try self.appendEvent(.{
+        _ = self.appendPreparedEventAssumeCapacity(.{
             .kind = .port_failed,
             .run_handle = slot.handle,
             .pending_port_fingerprint = failed.pending_port_fingerprint,
@@ -8161,9 +8167,9 @@ pub const Runspace = struct {
             .response_frame_fingerprint = routed.response.frame_fingerprint,
             .run_state_fingerprint = slot.current_state.run_state_fingerprint,
             .run_permit_fingerprint = slot.run_permit_fingerprint,
-            .summary = "port failed",
+            .summary = event_pair.takeFirst(),
         });
-        return self.appendEvent(.{
+        return self.appendPreparedEventAssumeCapacity(.{
             .kind = .run_failed,
             .run_handle = slot.handle,
             .pending_port_fingerprint = failed.pending_port_fingerprint,
@@ -8171,7 +8177,7 @@ pub const Runspace = struct {
             .response_frame_fingerprint = routed.response.frame_fingerprint,
             .run_state_fingerprint = slot.current_state.run_state_fingerprint,
             .run_permit_fingerprint = slot.run_permit_fingerprint,
-            .summary = "run failed after port failure",
+            .summary = event_pair.takeSecond(),
         });
     }
 
