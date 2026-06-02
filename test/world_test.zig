@@ -2129,8 +2129,12 @@ test "mailbox push get list respond and stale response rejection" {
         .target_ref_fingerprint = target_ref.target_ref_fingerprint,
         .inserted_event_index = 0,
     });
+    try std.testing.expect(!pending.owns_request_frame);
     try std.testing.expectEqual(@as(usize, 1), mailbox.listPending().len);
-    try std.testing.expectEqual(pending.pending_port_fingerprint, (try mailbox.get(1)).pending_port_fingerprint);
+    try std.testing.expect(mailbox.listPending()[0].owns_request_frame);
+    const fetched = try mailbox.get(1);
+    try std.testing.expect(!fetched.owns_request_frame);
+    try std.testing.expectEqual(pending.pending_port_fingerprint, fetched.pending_port_fingerprint);
 
     try std.testing.expectError(error.InvalidPendingPortTransition, mailbox.push(.{
         .run_handle = handle,
@@ -2149,6 +2153,7 @@ test "mailbox push get list respond and stale response rejection" {
     defer response.deinit(std.testing.allocator);
     const responded = try mailbox.respond(1, response);
     try std.testing.expectEqual(world.Runspace.PendingStatus.responded, responded.status);
+    try std.testing.expect(!responded.owns_request_frame);
     try std.testing.expectEqual(@as(usize, 0), mailbox.pendingCount());
     try std.testing.expectError(error.PendingPortConsumed, mailbox.respond(1, response));
 }
@@ -2395,6 +2400,28 @@ test "runspace parked image install rolls back when mailbox enqueue fails" {
     try std.testing.expectEqual(@as(u64, 0), next.local_run_id);
 }
 
+test "runspace tick preflights mailbox capacity before driver advances" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{
+        .max_pending_ports = 0,
+    });
+    defer runspace.deinit();
+
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    try std.testing.expectError(error.BudgetExceeded, runspace.tick());
+    try std.testing.expectEqual(world.Runspace.RunStatus.runnable, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
+
+    runspace.mailbox.max_pending_ports = 1;
+    _ = try runspace.tick();
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+}
+
 test "runspace failed machine install transfers driver ownership once" {
     var runtime = boundary.Runtime.init(std.testing.allocator);
     defer runtime.deinit();
@@ -2541,6 +2568,10 @@ test "runspace install admitted and replay records receipts summaries and events
     const replay_summary = try replay_runspace.getSlotSummary(replay_handle);
     try std.testing.expectEqual(world.Runspace.RunStatus.completed, replay_summary.status);
     try std.testing.expectEqual(world.Runspace.EventKind.run_installed, replay_runspace.events.items[0].kind);
+    var replay_export = try replay_runspace.exportRun(replay_handle);
+    defer replay_export.deinit(std.testing.allocator);
+    try std.testing.expect(replay_export.transcript_image != null);
+    try std.testing.expectEqual(world.ImportSet.fromTarget(fixtures.Strict.Target).import_set_fingerprint, replay_export.import_set_fingerprint);
     try std.testing.expectError(error.ReplaySurfaceMismatch, replay_runspace.installReplay(fixtures.Ports.Target, image, null));
 
     var replay_denied = world.Runspace.init(std.testing.allocator, .{
@@ -2776,6 +2807,15 @@ test "runspace handoff export captures parked pending request and completed tran
     try std.testing.expectEqual(world.RunImage.Kind.completed_run, completed_image.kind);
     try std.testing.expect(completed_image.transcript_image != null);
     try std.testing.expectEqual(world.TranscriptImage.FinalStatus.completed, completed_image.transcript_image.?.final_status);
+
+    var relay_runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer relay_runspace.deinit();
+    const relayed_handle = try relay_runspace.installRunImage(completed_image);
+    var relayed_image = try relay_runspace.exportRun(relayed_handle);
+    defer relayed_image.deinit(std.testing.allocator);
+    try std.testing.expectEqual(completed_image.import_set_fingerprint, relayed_image.import_set_fingerprint);
+    try std.testing.expect(relayed_image.transcript_image != null);
+    try std.testing.expectEqual(completed_image.transcript_image.?.transcript_image_fingerprint, relayed_image.transcript_image.?.transcript_image_fingerprint);
 }
 
 test "runspace checkpoint branch and replay install are deterministic" {

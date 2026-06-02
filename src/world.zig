@@ -6591,6 +6591,8 @@ pub const Runspace = struct {
         target_match_fingerprint: ?u64 = null,
         module_ref_fingerprint: ?u64 = null,
         driver: ?SlotDriver = null,
+        installed_run_image: ?RunImage = null,
+        owns_installed_run_image: bool = false,
 
         pub const Status = RunStatus;
         pub const Transition = enum {
@@ -6638,6 +6640,8 @@ pub const Runspace = struct {
             target_match_fingerprint: ?u64 = null,
             module_ref_fingerprint: ?u64 = null,
             driver: ?SlotDriver = null,
+            installed_run_image: ?RunImage = null,
+            owns_installed_run_image: bool = false,
         }) @This() {
             return .{
                 .handle = args.handle,
@@ -6654,7 +6658,20 @@ pub const Runspace = struct {
                 .target_match_fingerprint = args.target_match_fingerprint,
                 .module_ref_fingerprint = args.module_ref_fingerprint,
                 .driver = args.driver,
+                .installed_run_image = args.installed_run_image,
+                .owns_installed_run_image = args.owns_installed_run_image,
             };
+        }
+
+        pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+            if (self.driver) |driver| {
+                driver.deinit(allocator);
+                self.driver = null;
+            }
+            if (self.owns_installed_run_image) {
+                if (self.installed_run_image) |*image| image.deinit(allocator);
+            }
+            self.* = undefined;
         }
 
         pub fn toHandle(self: @This()) RunHandle {
@@ -6837,6 +6854,12 @@ pub const Runspace = struct {
             return result;
         }
 
+        pub fn borrowed(self: @This()) @This() {
+            var result = self;
+            result.owns_request_frame = false;
+            return result;
+        }
+
         pub fn transition(self: *@This(), status: PendingStatus) !void {
             if (self.status != .pending) return error.InvalidPendingPortTransition;
             if (status == .pending) return error.InvalidPendingPortTransition;
@@ -6900,22 +6923,26 @@ pub const Runspace = struct {
                 if (self.pendingCount() >= max) return error.BudgetExceeded;
             }
             try self.assertNoDuplicateRequestFingerprint(args.run_handle, args.request.request_fingerprint);
+            var request = try cloneRequestFrame(self.allocator, args.request);
+            var request_owned = true;
+            errdefer if (request_owned) request.deinit(self.allocator);
             const pending_port = Runspace.PendingPort.init(.{
                 .handle = args.run_handle,
                 .mailbox_id = args.mailbox_id,
-                .request = args.request,
+                .request = request,
                 .target_ref_fingerprint = args.target_ref_fingerprint,
                 .environment_certificate_fingerprint = args.environment_certificate_fingerprint,
                 .run_permit_fingerprint = args.run_permit_fingerprint,
                 .inserted_event_index = args.inserted_event_index,
             });
             try self.pending.append(self.allocator, pending_port);
-            return pending_port;
+            request_owned = false;
+            return self.pending.items[self.pending.items.len - 1].borrowed();
         }
 
         pub fn get(self: *const @This(), mailbox_id: u64) !Runspace.PendingPort {
             const index = try self.indexOf(mailbox_id);
-            return self.pending.items[index];
+            return self.pending.items[index].borrowed();
         }
 
         pub fn listPending(self: *const @This()) []const Runspace.PendingPort {
@@ -6928,7 +6955,7 @@ pub const Runspace = struct {
             try current.validateResponse(response);
             const responded = current.withStatus(.responded);
             self.pending.items[index] = responded;
-            return responded;
+            return self.pending.items[index].borrowed();
         }
 
         pub fn markResponded(self: *@This(), mailbox_id: u64) !Runspace.PendingPort {
@@ -6937,7 +6964,7 @@ pub const Runspace = struct {
             if (current.status != .pending) return error.PendingPortConsumed;
             const responded = current.withStatus(.responded);
             self.pending.items[index] = responded;
-            return responded;
+            return self.pending.items[index].borrowed();
         }
 
         pub fn cancel(self: *@This(), mailbox_id: u64, reason: []const u8) !Runspace.PendingPort {
@@ -6947,7 +6974,7 @@ pub const Runspace = struct {
             if (current.status != .pending) return error.PendingPortConsumed;
             const cancelled = current.withStatus(.cancelled);
             self.pending.items[index] = cancelled;
-            return cancelled;
+            return self.pending.items[index].borrowed();
         }
 
         pub fn markExported(self: *@This(), mailbox_id: u64) !Runspace.PendingPort {
@@ -6956,7 +6983,7 @@ pub const Runspace = struct {
             if (current.status != .pending) return error.PendingPortConsumed;
             const exported = current.withStatus(.exported);
             self.pending.items[index] = exported;
-            return exported;
+            return self.pending.items[index].borrowed();
         }
 
         pub fn fail(self: *@This(), mailbox_id: u64, reason: []const u8) !Runspace.PendingPort {
@@ -6966,7 +6993,7 @@ pub const Runspace = struct {
             if (current.status != .pending) return error.PendingPortConsumed;
             const failed = current.withStatus(.failed);
             self.pending.items[index] = failed;
-            return failed;
+            return self.pending.items[index].borrowed();
         }
 
         pub fn assertNoDuplicateRequestFingerprint(self: *const @This(), run_handle: RunHandle, request_fingerprint: u64) !void {
@@ -6986,6 +7013,12 @@ pub const Runspace = struct {
                 if (pending_port.status == .pending) count += 1;
             }
             return count;
+        }
+
+        pub fn ensurePendingCapacity(self: *const @This()) !void {
+            if (self.max_pending_ports) |max| {
+                if (self.pendingCount() >= max) return error.BudgetExceeded;
+            }
         }
 
         fn indexOf(self: *const @This(), mailbox_id: u64) !usize {
@@ -7073,10 +7106,7 @@ pub const Runspace = struct {
 
     pub fn deinit(self: *@This()) void {
         for (self.slots.items) |*slot| {
-            if (slot.driver) |driver| {
-                driver.deinit(self.allocator);
-                slot.driver = null;
-            }
+            slot.deinit(self.allocator);
         }
         self.slots.deinit(self.allocator);
         self.events.deinit(self.allocator);
@@ -7101,6 +7131,15 @@ pub const Runspace = struct {
             .permit_fingerprint = if (admitted_run.run_permit) |permit| permit.permit_fingerprint else null,
             .branch_id = admitted_run.selected_branch_id,
         });
+        var installed_image: ?RunImage = null;
+        var installed_image_owned = false;
+        errdefer if (installed_image_owned) {
+            if (installed_image) |*image| image.deinit(self.allocator);
+        };
+        if (admitted_run.run_image) |image| {
+            installed_image = try cloneRunImage(self.allocator, image);
+            installed_image_owned = true;
+        }
         const slot = Runspace.RunSlot.fromState(.{
             .handle = handle,
             .target_ref = target_ref,
@@ -7111,8 +7150,10 @@ pub const Runspace = struct {
             .pending_mailbox_id = null,
             .branch_id = admitted_run.selected_branch_id,
             .checkpoint_fingerprint = admitted_run.selected_checkpoint_ref,
+            .installed_run_image = installed_image,
+            .owns_installed_run_image = installed_image != null,
         });
-        const pending_frame = if (admitted_run.run_image) |image|
+        const pending_frame = if (installed_image) |image|
             if (image.current_state.status == .parked_on_port)
                 image.pending_request_frame orelse return error.HandoffPendingFrameMismatch
             else
@@ -7127,6 +7168,7 @@ pub const Runspace = struct {
         var installed = false;
         errdefer if (!installed) self.rollbackRunspaceMutation(slot_count_before, event_count_before, mailbox_count_before, next_run_id_before, next_mailbox_id_before, next_event_index_before);
         try self.installSlot(slot, .run_admitted, "admitted run installed");
+        installed_image_owned = false;
         if (pending_frame) |frame| {
             try self.enqueueInstalledPending(self.slots.items.len - 1, frame);
         }
@@ -7144,6 +7186,9 @@ pub const Runspace = struct {
             .permit_fingerprint = image.prior_run_permit_fingerprint,
             .branch_id = if (image.current_state.branch_id == 0) null else image.current_state.branch_id,
         });
+        var installed_image = try cloneRunImage(self.allocator, image);
+        var installed_image_owned = true;
+        errdefer if (installed_image_owned) installed_image.deinit(self.allocator);
         const slot = Runspace.RunSlot.fromState(.{
             .handle = handle,
             .target_ref = image.target_ref,
@@ -7154,6 +7199,8 @@ pub const Runspace = struct {
             .branch_id = if (image.current_state.branch_id == 0) null else image.current_state.branch_id,
             .checkpoint_fingerprint = image.current_state.checkpoint_fingerprint,
             .module_ref_fingerprint = image.module_ref_fingerprint,
+            .installed_run_image = installed_image,
+            .owns_installed_run_image = true,
         });
         const pending_frame = if (image.current_state.status == .parked_on_port)
             image.pending_request_frame orelse return error.HandoffPendingFrameMismatch
@@ -7167,6 +7214,7 @@ pub const Runspace = struct {
         var installed = false;
         errdefer if (!installed) self.rollbackRunspaceMutation(slot_count_before, event_count_before, mailbox_count_before, next_run_id_before, next_mailbox_id_before, next_event_index_before);
         try self.installSlot(slot, .run_installed, "run image installed");
+        installed_image_owned = false;
         if (pending_frame) |frame| {
             try self.enqueueInstalledPending(self.slots.items.len - 1, frame);
         }
@@ -7251,6 +7299,9 @@ pub const Runspace = struct {
         var image = RunImage.fromTranscriptImage(Target, transcript_image, .replay_only_run);
         image.prior_run_permit_fingerprint = if (permit) |run_permit| run_permit.permit_fingerprint else null;
         image.run_image_fingerprint = fingerprintRunImageV3(image);
+        var installed_image = try cloneRunImage(self.allocator, image);
+        var installed_image_owned = true;
+        errdefer if (installed_image_owned) installed_image.deinit(self.allocator);
         const handle = try self.nextHandle(.{
             .target_ref_fingerprint = image.target_ref.target_ref_fingerprint,
             .permit_fingerprint = image.prior_run_permit_fingerprint,
@@ -7264,8 +7315,11 @@ pub const Runspace = struct {
             .run_permit_fingerprint = image.prior_run_permit_fingerprint,
             .branch_id = if (image.current_state.branch_id == 0) null else image.current_state.branch_id,
             .checkpoint_fingerprint = image.current_state.checkpoint_fingerprint,
+            .installed_run_image = installed_image,
+            .owns_installed_run_image = true,
         });
         try self.installSlot(slot, .run_installed, "replay run installed");
+        installed_image_owned = false;
         return handle;
     }
 
@@ -7623,6 +7677,10 @@ pub const Runspace = struct {
             if (self.events.items.len >= max) return error.BudgetExceeded;
         }
         try self.slots.append(self.allocator, slot);
+        var slot_appended = true;
+        errdefer if (slot_appended) {
+            self.slots.shrinkRetainingCapacity(self.slots.items.len - 1);
+        };
         const event = Runspace.RunspaceEvent.init(.{
             .kind = event_kind,
             .runspace_fingerprint = self.runspace_fingerprint,
@@ -7634,6 +7692,7 @@ pub const Runspace = struct {
             .summary = summary_text,
         });
         try self.events.append(self.allocator, event);
+        slot_appended = false;
         self.next_event_index += 1;
     }
 
@@ -7686,12 +7745,7 @@ pub const Runspace = struct {
         next_mailbox_id: u64,
         next_event_index: u64,
     ) void {
-        for (self.slots.items[slot_count..]) |*slot| {
-            if (slot.driver) |driver| {
-                driver.deinit(self.allocator);
-                slot.driver = null;
-            }
-        }
+        for (self.slots.items[slot_count..]) |*slot| slot.deinit(self.allocator);
         for (self.mailbox.pending.items[mailbox_count..]) |*pending_port| pending_port.deinit(self.allocator);
         self.slots.shrinkRetainingCapacity(slot_count);
         self.events.shrinkRetainingCapacity(event_count);
@@ -7704,6 +7758,7 @@ pub const Runspace = struct {
     fn snapshotSlotImage(self: *@This(), index: usize) !RunImage {
         const slot = &self.slots.items[index];
         if (slot.driver) |driver| return driver.snapshotRunImage();
+        if (slot.installed_run_image) |image| return cloneRunImage(self.allocator, image);
         var pending_frame: ?Frame.Request = null;
         var owns_pending_frame = false;
         errdefer if (owns_pending_frame) {
@@ -7739,19 +7794,15 @@ pub const Runspace = struct {
     fn enqueueInstalledPending(self: *@This(), index: usize, request: Frame.Request) !void {
         var slot = &self.slots.items[index];
         const mailbox_id = self.next_mailbox_id;
-        var mailbox_request = try cloneRequestFrame(self.allocator, request);
-        var mailbox_request_owned = true;
-        errdefer if (mailbox_request_owned) mailbox_request.deinit(self.allocator);
         const pending = try self.mailbox.push(.{
             .run_handle = slot.handle,
             .mailbox_id = mailbox_id,
-            .request = mailbox_request,
+            .request = request,
             .target_ref_fingerprint = slot.target_ref.target_ref_fingerprint,
             .environment_certificate_fingerprint = null,
             .run_permit_fingerprint = slot.run_permit_fingerprint,
             .inserted_event_index = self.next_event_index,
         });
-        mailbox_request_owned = false;
         self.next_mailbox_id += 1;
         slot.status = .parked_on_port;
         slot.pending_mailbox_id = mailbox_id;
@@ -7785,6 +7836,7 @@ pub const Runspace = struct {
         var slot = &self.slots.items[index];
         if (slot.driver == null) return error.InvalidRunspaceTransition;
         try self.ensureEventCapacity(if (self.config.auto_dispatch) 5 else 3);
+        try self.mailbox.ensurePendingCapacity();
         try slot.transition(.step, null);
         _ = try self.appendEvent(.{
             .kind = .run_stepped,
@@ -7827,11 +7879,13 @@ pub const Runspace = struct {
                 });
             },
             .port_request => |request| {
+                var owned_request = request;
+                defer owned_request.deinit(self.allocator);
                 const mailbox_id = self.next_mailbox_id;
                 const pending = try self.mailbox.push(.{
                     .run_handle = slot.handle,
                     .mailbox_id = mailbox_id,
-                    .request = request,
+                    .request = owned_request,
                     .target_ref_fingerprint = slot.target_ref.target_ref_fingerprint,
                     .environment_certificate_fingerprint = null,
                     .run_permit_fingerprint = slot.run_permit_fingerprint,
@@ -7842,15 +7896,15 @@ pub const Runspace = struct {
                 slot.pending_mailbox_id = mailbox_id;
                 slot.current_state = RunState.init(.{
                     .target_ref_fingerprint = slot.target_ref.target_ref_fingerprint,
-                    .pending_request_fingerprint = request.frame_fingerprint,
-                    .turn_index = request.turn_index,
+                    .pending_request_fingerprint = owned_request.frame_fingerprint,
+                    .turn_index = owned_request.turn_index,
                     .status = .parked_on_port,
                 });
                 _ = try self.appendEvent(.{
                     .kind = .port_enqueued,
                     .run_handle = slot.handle,
                     .pending_port_fingerprint = pending.pending_port_fingerprint,
-                    .request_frame_fingerprint = request.frame_fingerprint,
+                    .request_frame_fingerprint = owned_request.frame_fingerprint,
                     .run_state_fingerprint = slot.current_state.run_state_fingerprint,
                     .run_permit_fingerprint = slot.run_permit_fingerprint,
                     .summary = "port enqueued",
@@ -7859,7 +7913,7 @@ pub const Runspace = struct {
                     .kind = .run_parked_on_port,
                     .run_handle = slot.handle,
                     .pending_port_fingerprint = pending.pending_port_fingerprint,
-                    .request_frame_fingerprint = request.frame_fingerprint,
+                    .request_frame_fingerprint = owned_request.frame_fingerprint,
                     .run_state_fingerprint = slot.current_state.run_state_fingerprint,
                     .run_permit_fingerprint = slot.run_permit_fingerprint,
                     .summary = "run parked on port",
@@ -9273,7 +9327,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         .target_ref_fingerprint = target_ref.target_ref_fingerprint,
                         .transcript_image_fingerprint = if (transcript_image) |image| image.transcript_image_fingerprint else null,
                         .pending_request_fingerprint = if (pending_frame) |frame| frame.frame_fingerprint else null,
-                        .turn_index = self.audit.port_request_count,
+                        .turn_index = if (pending_frame) |frame| frame.turn_index else self.audit.port_request_count,
                         .status = status,
                     });
                     var image = RunImage.init(.{
