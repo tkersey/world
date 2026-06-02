@@ -60,10 +60,10 @@ pub fn main(init: std.process.Init) !void {
             break;
         };
     }
-    const receipt_fingerprint = if (runspace.events.items.len != 0) runspace.events.items[runspace.events.items.len - 1].event_fingerprint else 0;
+    const event_fingerprint = if (runspace.events.items.len != 0) runspace.events.items[runspace.events.items.len - 1].event_fingerprint else 0;
 
     try stdout.print("run_permit={x}\n", .{permit.permit_fingerprint});
     try stdout.print("budget_exceeded={}\n", .{budget_exceeded});
-    try stdout.print("receipt_fingerprint={x}\n", .{receipt_fingerprint});
+    try stdout.print("event_fingerprint={x}\n", .{event_fingerprint});
     try stdout.flush();
 }
