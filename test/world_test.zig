@@ -3743,10 +3743,12 @@ test "runspace tick parks responds and completes machine run" {
     } else return error.ExpectedResponseFrame;
     try std.testing.expect(transcript_response_frame.frame_fingerprint != deferred_response.frame_fingerprint);
     try std.testing.expectEqual(transcript_response_frame.frame_fingerprint, response_event.response_frame_fingerprint.?);
+    try std.testing.expectEqual(request_frame.frame_fingerprint, response_event.request_frame_fingerprint.?);
     const port_responded_event = for (runspace.events.items) |event| {
         if (event.kind == .port_responded) break event;
     } else return error.ExpectedResponseFrame;
     try std.testing.expectEqual(transcript_response_frame.frame_fingerprint, port_responded_event.response_frame_fingerprint.?);
+    try std.testing.expectEqual(request_frame.frame_fingerprint, port_responded_event.request_frame_fingerprint.?);
     const resumed_checkpoint = try runspace.checkpoint(handle);
     try std.testing.expectEqual(transcript_response_frame.frame_fingerprint, resumed_checkpoint.last_response_fingerprint.?);
     try std.testing.expectEqual(@as(usize, 1), resumed_checkpoint.turn_index);
@@ -4253,6 +4255,60 @@ test "runspace export run event budget failure does not change slot state" {
 
     try std.testing.expectError(error.BudgetExceeded, runspace.exportRun(handle));
     try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try runspace.getSlotSummary(handle)).status);
+}
+
+test "runspace supervised export events carry receipt witnesses" {
+    const export_policy = world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .allow_native_adapters = true,
+        .allow_handoff_export = true,
+        .require_environment_certificate = true,
+    });
+
+    const StrictEnv = world.Environment(fixtures.Strict.Target, .{
+        .ports = &.{},
+    });
+    const completed_permit = world.Supervision.issue(fixtures.Strict.Target, StrictEnv, .{
+        .mode = .fresh,
+        .policy = export_policy,
+    });
+    var completed_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer completed_runtime.deinit();
+    var completed_runspace = world.Runspace.init(std.testing.allocator, .{ .require_supervision = true });
+    defer completed_runspace.deinit();
+    const completed_handle = try completed_runspace.installMachineRun(fixtures.Strict.Target, StrictEnv, &completed_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .permit = completed_permit,
+    });
+    _ = try completed_runspace.tick();
+    var completed_image = try completed_runspace.exportRun(completed_handle);
+    defer completed_image.deinit(std.testing.allocator);
+    const completed_receipt = completed_image.prior_run_receipt_fingerprint orelse return error.ExpectedRunReceipt;
+    const completed_export_event = completed_runspace.report().emitted_events[completed_runspace.report().emitted_events.len - 1];
+    try std.testing.expectEqual(world.Runspace.EventKind.run_exported, completed_export_event.kind);
+    try std.testing.expectEqual(completed_receipt, completed_export_event.run_receipt_fingerprint.?);
+
+    const parked_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = export_policy,
+    });
+    var parked_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer parked_runtime.deinit();
+    var parked_runspace = world.Runspace.init(std.testing.allocator, .{ .require_supervision = true });
+    defer parked_runspace.deinit();
+    _ = try parked_runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &parked_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .permit = parked_permit,
+    });
+    _ = try parked_runspace.tick();
+    var parked_image = try parked_runspace.exportPending(0);
+    defer parked_image.deinit(std.testing.allocator);
+    const parked_receipt = parked_image.prior_run_receipt_fingerprint orelse return error.ExpectedRunReceipt;
+    const parked_export_event = parked_runspace.report().emitted_events[parked_runspace.report().emitted_events.len - 1];
+    try std.testing.expectEqual(world.Runspace.EventKind.run_exported, parked_export_event.kind);
+    try std.testing.expectEqual(parked_receipt, parked_export_event.run_receipt_fingerprint.?);
 }
 
 test "runspace export run event allocation failure does not change slot state" {
