@@ -5874,10 +5874,10 @@ fn runStateEvidenceFromTranscriptImage(image: TranscriptImage) TranscriptRunStat
         if (event.response_frame) |response| {
             evidence.final_response_fingerprint = response.frame_fingerprint;
             evidence.final_value_image_fingerprint = response.response_value_fingerprint;
-            if (event.turn_index) |turn_index| evidence.turn_index = @max(evidence.turn_index, turn_index + 1);
+            if (event.turn_index) |turn_index| evidence.turn_index = @max(evidence.turn_index, turn_index +| 1);
         } else if (eventKindIsSourceResponse(event.kind)) {
             if (event.response_fingerprint) |fingerprint| evidence.final_response_fingerprint = fingerprint;
-            if (event.turn_index) |turn_index| evidence.turn_index = @max(evidence.turn_index, turn_index + 1);
+            if (event.turn_index) |turn_index| evidence.turn_index = @max(evidence.turn_index, turn_index +| 1);
         }
     }
     return evidence;

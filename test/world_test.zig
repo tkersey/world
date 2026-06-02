@@ -7848,6 +7848,24 @@ test "handoff preflight rejects target mismatch and accepts replay handoff with 
     try std.testing.expectEqual(world.AcceptanceBlocker.HandoffTargetMismatch, mismatch.blockers[0]);
 }
 
+test "run image transcript evidence saturates response turn advancement" {
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    try recordPortsTranscript(&transcript);
+    var image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer image.deinit(std.testing.allocator);
+
+    const response_event = for (image.events) |*event| {
+        if (event.response_frame != null or event.kind == .port_responded or event.kind == .frame_responded or event.kind == .port_replayed or event.kind == .frame_replayed) break event;
+    } else return error.ExpectedResponseEvent;
+    response_event.turn_index = std.math.maxInt(usize);
+    response_event.event_fingerprint = testTranscriptEventImageFingerprint(response_event.*);
+    image.transcript_image_fingerprint = testTranscriptImageFingerprint(image);
+
+    const run_image = world.RunImage.fromTranscriptImage(fixtures.Ports.Target, image, .completed_run);
+    try std.testing.expectEqual(std.math.maxInt(usize), run_image.current_state.turn_index);
+}
+
 test "parked handoff resumes selected pending request on receiver environment" {
     var runtime = boundary.Runtime.init(std.testing.allocator);
     defer runtime.deinit();
