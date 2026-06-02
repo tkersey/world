@@ -3395,6 +3395,37 @@ test "runspace install admitted and replay records receipts summaries and events
         .mode = .continue_fresh,
     });
     try std.testing.expectError(error.SupervisionDenied, supervised_runspace.installAdmitted(unwitnessed_module_admitted));
+    const fresh_module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
+    const module_scoped_fresh_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = accept_policy,
+        .module_ref_fingerprint = fresh_module_ref.module_ref_fingerprint,
+    });
+    const module_reference_package = world.Admission.TransferPackage.init(.{
+        .kind = .module_reference,
+        .target_ref = target_ref,
+        .module_ref = fresh_module_ref,
+        .requested_mode = .continue_fresh,
+    });
+    var module_reference_result = world.Admission.Admitter.init(.{
+        .registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Ports.Target)}),
+        .policy = world.Admission.AdmissionPolicy.init(.{
+            .allow_reference_targets = true,
+            .require_supervision_permit = true,
+        }),
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, module_reference_package, .{ .permit = module_scoped_fresh_permit });
+    defer module_reference_result.deinit(std.testing.allocator);
+    try std.testing.expect(module_reference_result.report.accepted);
+    const module_reference_admitted = module_reference_result.admitted_run orelse return error.ExpectedAdmittedRun;
+    try std.testing.expect(module_reference_admitted.run_image == null);
+    try std.testing.expectEqual(fresh_module_ref.module_ref_fingerprint, module_reference_admitted.module_ref_fingerprint.?);
+    var module_reference_runspace = world.Runspace.init(std.testing.allocator, .{
+        .require_admission = true,
+        .require_supervision = true,
+    });
+    defer module_reference_runspace.deinit();
+    const module_reference_handle = try module_reference_runspace.installAdmitted(module_reference_admitted);
+    try std.testing.expectEqual(fresh_module_ref.module_ref_fingerprint, (try module_reference_runspace.getSlotSummary(module_reference_handle)).module_ref_fingerprint.?);
 
     const replay_cert = PortsReplayEnv.certificate(.replay, true);
     const module_scoped_permit = world.Supervision.issue(fixtures.Ports.Target, PortsReplayEnv, .{

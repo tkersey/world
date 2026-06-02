@@ -229,7 +229,7 @@ pub const world_admission_request_fingerprint_version: u32 = 1;
 pub const world_admission_report_fingerprint_version: u32 = 1;
 pub const world_admission_receipt_format_version: u32 = 1;
 pub const world_admission_receipt_fingerprint_version: u32 = 2;
-pub const world_admitted_run_fingerprint_version: u32 = 2;
+pub const world_admitted_run_fingerprint_version: u32 = 3;
 pub const world_run_handle_format_version: u32 = 1;
 pub const world_run_handle_fingerprint_version: u32 = 1;
 pub const world_pending_port_format_version: u32 = 1;
@@ -2054,6 +2054,7 @@ pub const Admission = struct {
         admitted_run_fingerprint: u64,
         admission_receipt_fingerprint: u64,
         target_ref: TargetRef,
+        module_ref_fingerprint: ?u64 = null,
         environment_certificate_fingerprint: ?u64 = null,
         run_permit: ?RunPermit = null,
         run_image: ?RunImage = null,
@@ -2067,6 +2068,7 @@ pub const Admission = struct {
         pub fn init(args: struct {
             admission_receipt_fingerprint: u64,
             target_ref: TargetRef,
+            module_ref_fingerprint: ?u64 = null,
             environment_certificate_fingerprint: ?u64 = null,
             run_permit: ?RunPermit = null,
             run_image: ?RunImage = null,
@@ -2081,6 +2083,7 @@ pub const Admission = struct {
                 .admitted_run_fingerprint = 0,
                 .admission_receipt_fingerprint = args.admission_receipt_fingerprint,
                 .target_ref = args.target_ref,
+                .module_ref_fingerprint = args.module_ref_fingerprint,
                 .environment_certificate_fingerprint = args.environment_certificate_fingerprint,
                 .run_permit = args.run_permit,
                 .run_image = args.run_image,
@@ -2534,6 +2537,7 @@ pub const Admission = struct {
             var admitted = Admission.AdmittedRun.init(.{
                 .admission_receipt_fingerprint = receipt.receipt_fingerprint,
                 .target_ref = local_target_ref,
+                .module_ref_fingerprint = if (module_ref) |module| module.module_ref_fingerprint else null,
                 .environment_certificate_fingerprint = cert.certificate_fingerprint,
                 .run_permit = args.permit,
                 .run_image = admitted_run_image,
@@ -7540,7 +7544,7 @@ pub const Runspace = struct {
             if (receipt_fingerprint != admitted_run.admission_receipt_fingerprint) return error.SupervisionDenied;
         }
         if (permit.module_ref_fingerprint) |permit_module_ref| {
-            const admitted_module_ref = if (admitted_run.run_image) |image| image.module_ref_fingerprint else null;
+            const admitted_module_ref = admitted_run.module_ref_fingerprint orelse if (admitted_run.run_image) |image| image.module_ref_fingerprint else null;
             if (admitted_module_ref == null or admitted_module_ref.? != permit_module_ref) return error.SupervisionDenied;
         }
         if (admitted_run.environment_certificate_fingerprint) |certificate_fingerprint| {
@@ -7568,6 +7572,10 @@ pub const Runspace = struct {
             if (image.target_ref.world_surface_fingerprint != target_ref.world_surface_fingerprint) return error.HandoffTargetMismatch;
             if (image.target_ref.target_certificate_fingerprint != target_ref.target_certificate_fingerprint) return error.HandoffTargetMismatch;
             if (image.current_state.target_ref_fingerprint != target_ref.target_ref_fingerprint) return error.HandoffTargetMismatch;
+            if (admitted_run.module_ref_fingerprint) |module_ref_fingerprint| {
+                const image_module_ref = image.module_ref_fingerprint orelse return error.InvalidFrameEncoding;
+                if (image_module_ref != module_ref_fingerprint) return error.InvalidFrameEncoding;
+            }
         }
         const current_state = if (admitted_run.run_image) |image| image.current_state else RunState.init(.{
             .target_ref_fingerprint = target_ref.target_ref_fingerprint,
@@ -7639,7 +7647,7 @@ pub const Runspace = struct {
             .pending_mailbox_id = null,
             .branch_id = slot_branch_id,
             .checkpoint_fingerprint = slot_current_state.checkpoint_fingerprint,
-            .module_ref_fingerprint = if (installed_image) |image| image.module_ref_fingerprint else null,
+            .module_ref_fingerprint = admitted_run.module_ref_fingerprint orelse if (installed_image) |image| image.module_ref_fingerprint else null,
             .supervisor = supervisor,
             .installed_run_image = installed_image,
             .owns_installed_run_image = installed_image != null,
@@ -14694,6 +14702,7 @@ fn fingerprintAdmittedRun(run: Admission.AdmittedRun) u64 {
     hashU64(&hasher, world_admitted_run_fingerprint_version);
     hashU64(&hasher, run.admission_receipt_fingerprint);
     hashU64(&hasher, run.target_ref.target_ref_fingerprint);
+    hashOptionalU64(&hasher, run.module_ref_fingerprint);
     hashOptionalU64(&hasher, run.environment_certificate_fingerprint);
     hashOptionalU64(&hasher, if (run.run_permit) |permit| permit.permit_fingerprint else null);
     hashOptionalU64(&hasher, if (run.run_image) |image| image.run_image_fingerprint else null);
