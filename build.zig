@@ -419,7 +419,7 @@ pub fn build(b: *std.Build) void {
             .expected_stdout =
             \\run_permit=802923ff46eb3109
             \\budget_exceeded=true
-            \\receipt_fingerprint=5ce6017020f0c906
+            \\receipt_fingerprint=6a7d6336431f729c
             \\
             ,
         },

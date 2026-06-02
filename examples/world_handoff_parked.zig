@@ -73,7 +73,7 @@ pub fn main(init: std.process.Init) !void {
         .ctx = &receiver_ctx,
     }, .accept_fresh);
     defer receiver_run.deinit();
-    try receiver_run.dispatch();
+    _ = try receiver_run.dispatch();
     const done = switch (try receiver_run.nextFrame()) {
         .done => |value| value,
         else => return error.ExpectedDone,

@@ -6580,6 +6580,12 @@ pub const Runspace = struct {
         failed,
     };
 
+    const ResponseEvidence = struct {
+        response_fingerprint: u64,
+        response_frame_fingerprint: ?u64 = null,
+        response_value_image_fingerprint: ?u64 = null,
+    };
+
     const SlotDriver = struct {
         ptr: *anyopaque,
         vtable: *const VTable,
@@ -6590,7 +6596,7 @@ pub const Runspace = struct {
             beforeResponse: *const fn (*anyopaque, u32, ResponseStatus, usize, usize) anyerror!void,
             beforeTerminalResponse: *const fn (*anyopaque, u32, ResponseStatus) anyerror!void,
             resumeTerminalFrame: *const fn (*anyopaque, Frame.Response) anyerror!void,
-            dispatch: *const fn (*anyopaque) anyerror!void,
+            dispatch: *const fn (*anyopaque) anyerror!?ResponseEvidence,
             snapshotRunImage: *const fn (*anyopaque) anyerror!RunImage,
             beforeHandoffExport: *const fn (*anyopaque) anyerror!void,
             beforeInterruptedHandoffExport: *const fn (*anyopaque) anyerror!void,
@@ -6626,7 +6632,7 @@ pub const Runspace = struct {
             return self.vtable.resumeTerminalFrame(self.ptr, response);
         }
 
-        fn dispatch(self: @This()) !void {
+        fn dispatch(self: @This()) !?ResponseEvidence {
             return self.vtable.dispatch(self.ptr);
         }
 
@@ -6731,7 +6737,7 @@ pub const Runspace = struct {
                     return active.resumeFrame(response);
                 }
 
-                fn runDispatch(ptr: *anyopaque) anyerror!void {
+                fn runDispatch(ptr: *anyopaque) anyerror!?ResponseEvidence {
                     const active: *RunType = @ptrCast(@alignCast(ptr));
                     return active.dispatch();
                 }
@@ -7637,7 +7643,7 @@ pub const Runspace = struct {
         if (self.config.require_admission) return error.RunspaceAdmissionRequired;
         if (!self.config.allow_handoff_install) return error.RunspaceInstallDenied;
         if (image.kind == .replay_only_run and !self.config.allow_replay_install) return error.RunspaceInstallDenied;
-        if (self.config.require_supervision and image.prior_run_permit_fingerprint == null) return error.SupervisionDenied;
+        if (self.config.require_supervision) return error.SupervisionDenied;
         try image.validate(.{});
         const run_status = try statusFromInstallableRunImageState(image.current_state);
         const pending_frame = if (image.current_state.status == .parked_on_port)
@@ -9209,7 +9215,7 @@ pub const Runspace = struct {
     fn autoDispatchPending(self: *@This(), index: usize, pending: Runspace.PendingPort, mailbox_id: u64, events: *PreparedAutoDispatchEvents) !Runspace.RunspaceEvent {
         var slot = &self.slots.items[index];
         const driver = slot.driver orelse return error.InvalidRunspaceTransition;
-        driver.dispatch() catch |err| {
+        const response_evidence = driver.dispatch() catch |err| {
             if (err == error.HandlerPending and driver.supervisionInterrupted()) {
                 slot.status = .parked_on_supervision;
                 slot.pending_mailbox_id = mailbox_id;
@@ -9246,13 +9252,16 @@ pub const Runspace = struct {
             });
             return err;
         };
+        const evidence = response_evidence orelse return error.InvalidRunspaceTransition;
         const responded = try self.mailbox.markResponded(mailbox_id);
-        try slot.transition(.resume_from_port, mailbox_id);
+        try slot.resumeFromPort(mailbox_id, evidence.response_fingerprint, evidence.response_value_image_fingerprint);
+        const response_fingerprint = evidence.response_frame_fingerprint orelse evidence.response_fingerprint;
         _ = self.appendPreparedEventAssumeCapacity(.{
             .kind = .port_responded,
             .run_handle = slot.handle,
             .pending_port_fingerprint = responded.pending_port_fingerprint,
             .request_frame_fingerprint = pending.request_frame_fingerprint,
+            .response_frame_fingerprint = response_fingerprint,
             .run_state_fingerprint = slot.current_state.run_state_fingerprint,
             .run_permit_fingerprint = slot.run_permit_fingerprint,
             .summary = events.responded.takeFirst(),
@@ -9262,6 +9271,7 @@ pub const Runspace = struct {
             .run_handle = slot.handle,
             .pending_port_fingerprint = responded.pending_port_fingerprint,
             .request_frame_fingerprint = pending.request_frame_fingerprint,
+            .response_frame_fingerprint = response_fingerprint,
             .run_state_fingerprint = slot.current_state.run_state_fingerprint,
             .run_permit_fingerprint = slot.run_permit_fingerprint,
             .summary = events.responded.takeSecond(),
@@ -10057,7 +10067,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         run_state.done_value_present = false;
                         return .{ .value = value, .audit = audit, .receipt = receipt };
                     },
-                    .port_required => run_state.dispatch() catch |err| {
+                    .port_required => _ = run_state.dispatch() catch |err| {
                         if (run_state.audit.final_status == .parked) return Error.HandlerPending;
                         try run_state.markRunFailed();
                         return err;
@@ -10094,6 +10104,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 admitted_transcript_image: ?*TranscriptImage = null,
                 pending_adapter_call_accounted: bool = false,
                 retained_values: std.ArrayList(StoredValue) = .empty,
+                last_response_evidence: ?Runspace.ResponseEvidence = null,
                 supervisor: ?Supervision.Supervisor = null,
 
                 pub const Result = struct {
@@ -10536,12 +10547,16 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     }
                 }
 
-                pub fn dispatch(self: *Self) !void {
+                pub fn dispatch(self: *Self) !?Runspace.ResponseEvidence {
                     if (self.audit.final_status == .failed) return Error.HandlerFailed;
                     const request = self.pending_request orelse return Error.UnknownResidualSite;
                     const world_port_id = self.pending_port_id orelse return Error.UnknownWorldPort;
                     const trace = request.trace();
-                    if (Target.WorldPortTable.entries.len == 0) return self.markMissingHandler(world_port_id, trace);
+                    if (Target.WorldPortTable.entries.len == 0) {
+                        try self.markMissingHandler(world_port_id, trace);
+                        return null;
+                    }
+                    self.last_response_evidence = null;
                     switch (world_port_id) {
                         inline 0...Target.WorldPortTable.entries.len - 1 => |id| {
                             const Handler = comptime handlerForWorldPortId(Target, Config, @intCast(id));
@@ -10556,9 +10571,10 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                                 self.pending_request = null;
                                 self.pending_port_id = null;
                                 self.pending_adapter_call_accounted = false;
-                                return;
+                                return self.last_response_evidence;
                             }
-                            return self.markMissingHandler(world_port_id, trace);
+                            try self.markMissingHandler(world_port_id, trace);
+                            return null;
                         },
                         else => return Error.UnknownWorldPort,
                     }
@@ -11094,6 +11110,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         null,
                     );
                     stored = null;
+                    self.last_response_evidence = .{ .response_fingerprint = response_trace.fingerprint };
                     self.audit.fresh_response_count += 1;
                     return try self.retainResponse(Decl.Response, response);
                 }
@@ -11117,11 +11134,13 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         self.audit.replay_mismatch_count += 1;
                         return err;
                     };
+                    var replay_response_frame: ?Frame.Response = null;
                     const value = if (event.value) |stored|
                         try stored.as(self.allocator, Decl.Response)
                     else if (event.response_frame) |frame| value: {
                         if (frame.response_value_table_id != valueIdForRuntime(Target, Decl.world_port_id, .@"resume")) return error.FrameValueTableMismatch;
                         try validateResponseFrameImage(frame);
+                        replay_response_frame = frame;
                         break :value try frame.decodeValue(self.allocator, Decl.Response);
                     } else return Error.ReplayMissing;
                     var value_owned = true;
@@ -11132,7 +11151,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         return Error.ReplayResponseKindMismatch;
                     }
                     if (self.supervisor) |*supervisor| {
-                        const response_bytes = if (event.response_frame) |frame| bytes: {
+                        const response_bytes = if (replay_response_frame) |frame| bytes: {
                             const encoded_response = try frame.encode(self.allocator);
                             defer self.allocator.free(encoded_response);
                             break :bytes encoded_response.len;
@@ -11141,13 +11160,18 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             .world_port_id = Decl.world_port_id,
                             .status = .responded,
                             .response_bytes = response_bytes,
-                            .value_image_bytes = if (event.response_frame) |frame| if (frame.response_image) |image| image.bytes.len else 0 else 0,
+                            .value_image_bytes = if (replay_response_frame) |frame| if (frame.response_image) |image| image.bytes.len else 0 else 0,
                         }) catch |err| {
                             try self.handleSupervisionError(err);
                             return Error.HandlerPending;
                         };
                     }
-                    try self.recordPortEvent(.port_replayed, Decl.world_port_id, trace, response_trace.fingerprint, .@"resume", null, null, if (event.response_frame) |frame| frame else null);
+                    try self.recordPortEvent(.port_replayed, Decl.world_port_id, trace, response_trace.fingerprint, .@"resume", null, null, replay_response_frame);
+                    self.last_response_evidence = .{
+                        .response_fingerprint = response_trace.fingerprint,
+                        .response_frame_fingerprint = if (replay_response_frame) |frame| frame.frame_fingerprint else null,
+                        .response_value_image_fingerprint = if (replay_response_frame) |frame| frame.response_value_fingerprint else null,
+                    };
                     self.audit.replayed_response_count += 1;
                     var run_value = try StoredValue.initOwned(self.allocator, value);
                     value_owned = false;
@@ -11194,6 +11218,11 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         };
                     }
                     try self.recordPortEvent(.frame_replayed, Decl.world_port_id, trace, response_trace.fingerprint, .@"resume", null, null, frame.*);
+                    self.last_response_evidence = .{
+                        .response_fingerprint = response_trace.fingerprint,
+                        .response_frame_fingerprint = frame.frame_fingerprint,
+                        .response_value_image_fingerprint = frame.response_value_fingerprint,
+                    };
                     self.audit.replayed_response_count += 1;
                     var run_value = try StoredValue.initOwned(self.allocator, value);
                     value_owned = false;
@@ -11345,6 +11374,11 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     if (expected_response_frame) |frame| {
                         try self.recordPortEvent(.frame_verified, Decl.world_port_id, (self.pending_request orelse return Error.UnknownResidualSite).trace(), expected_response_fingerprint, .@"resume", null, null, frame);
                     }
+                    self.last_response_evidence = .{
+                        .response_fingerprint = expected_response_fingerprint,
+                        .response_frame_fingerprint = if (expected_response_frame) |frame| frame.frame_fingerprint else null,
+                        .response_value_image_fingerprint = expected_value_image_fingerprint,
+                    };
                     self.audit.fresh_response_count += 1;
                     return try self.retainResponse(Decl.Response, fresh);
                 }

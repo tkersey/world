@@ -1000,7 +1000,7 @@ test "world runtime step API parks on port and resumes to done" {
         .port_required => {},
         else => return error.ExpectedPortRequired,
     }
-    try run.dispatch();
+    _ = try run.dispatch();
     const done = try run.next();
     switch (done) {
         .done => |value| try std.testing.expectEqual(@as(i32, 7), value),
@@ -3401,6 +3401,17 @@ test "runspace install admitted and replay records receipts summaries and events
     defer replay_export.deinit(std.testing.allocator);
     try std.testing.expect(replay_export.transcript_image != null);
     try std.testing.expectEqual(world.ImportSet.fromTarget(fixtures.Strict.Target).import_set_fingerprint, replay_export.import_set_fingerprint);
+    const forged_supervised_image = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Strict.Target),
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Strict.Target).import_set_fingerprint,
+        .transcript_image = image,
+        .current_state = world.RunImage.fromTranscriptImage(fixtures.Strict.Target, image, .completed_run).current_state,
+        .prior_run_permit_fingerprint = 0x5150_5150,
+    });
+    var supervised_direct_image = world.Runspace.init(std.testing.allocator, .{ .require_supervision = true });
+    defer supervised_direct_image.deinit();
+    try std.testing.expectError(error.SupervisionDenied, supervised_direct_image.installRunImage(forged_supervised_image));
     const StrictReplayEnv = world.Environment(fixtures.Strict.Target, .{
         .bindings = .{},
         .policy = world.EnvironmentPolicy.strict_replay,
@@ -4147,6 +4158,13 @@ test "runspace export pending rejects stale mailbox without changing run state" 
     _ = try runspace.tick();
     try std.testing.expectEqual(world.Runspace.PendingStatus.responded, (try runspace.mailbox.get(0)).status);
     try std.testing.expectEqual(world.Runspace.RunStatus.runnable, (try runspace.getSlotSummary(handle)).status);
+    const checkpoint = try runspace.checkpoint(handle);
+    try std.testing.expect(checkpoint.last_response_fingerprint != null);
+    try std.testing.expectEqual(@as(usize, 1), checkpoint.turn_index);
+    const auto_port_responded = for (runspace.events.items) |event| {
+        if (event.kind == .port_responded) break event;
+    } else return error.ExpectedResponseFrame;
+    try std.testing.expect(auto_port_responded.response_frame_fingerprint != null);
 
     try std.testing.expectError(error.PendingPortConsumed, runspace.exportPending(0));
     try std.testing.expectEqual(world.Runspace.RunStatus.runnable, (try runspace.getSlotSummary(handle)).status);
@@ -4656,9 +4674,7 @@ test "runspace enforces lifecycle supervision for direct and imported slots" {
         .require_supervision = true,
     });
     defer imported.deinit();
-    const imported_handle = try imported.installRunImage(imported_image);
-    try std.testing.expectError(error.SupervisionDenied, imported.exportRun(imported_handle));
-    try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try imported.getSlotSummary(imported_handle)).status);
+    try std.testing.expectError(error.SupervisionDenied, imported.installRunImage(imported_image));
 
     const admitted_permit = world.Supervision.issue(fixtures.Strict.Target, StrictEnv, .{
         .mode = .fresh,
@@ -6630,7 +6646,7 @@ test "world retains fresh handler responses before resuming boundary" {
         .port_required => {},
         else => return error.ExpectedPortRequired,
     }
-    try run.dispatch();
+    _ = try run.dispatch();
     @memcpy(ctx.final_storage[0.."final=mutated!".len], "final=mutated!");
 
     switch (try run.next()) {
@@ -7691,7 +7707,7 @@ test "parked handoff resumes selected pending request on receiver environment" {
     };
     defer receiver_request.deinit(std.testing.allocator);
     try std.testing.expectEqual(request.frame_fingerprint, receiver_request.frame_fingerprint);
-    try receiver_run.dispatch();
+    _ = try receiver_run.dispatch();
     const done = try receiver_run.nextFrame();
     try std.testing.expectEqual(@as(i32, 7), switch (done) {
         .done => |value| value,
@@ -7717,7 +7733,7 @@ test "parked handoff replays transcript prefix before selected pending request" 
         else => return error.ExpectedPortRequest,
     };
     defer model_request.deinit(std.testing.allocator);
-    try run.dispatch();
+    _ = try run.dispatch();
     var tool_request = switch (try run.nextFrame()) {
         .port_request => |frame| frame,
         else => return error.ExpectedPortRequest,
@@ -7912,7 +7928,7 @@ test "parked handoff replays transcript prefix before selected pending request" 
         .ctx = &fresh_limited_ctx,
     }, .accept_fresh, fresh_limited_permit);
     defer fresh_limited_run.deinit();
-    try fresh_limited_run.dispatch();
+    _ = try fresh_limited_run.dispatch();
     try std.testing.expectEqual(@as(usize, 0), fresh_limited_ctx.model_calls);
     try std.testing.expectEqual(@as(usize, 1), fresh_limited_ctx.tool_calls);
     try std.testing.expectEqual(@as(usize, 1), fresh_limited_run.supervisor.?.ledger.total_fresh_calls);
@@ -7939,13 +7955,13 @@ test "parked handoff replays transcript prefix before selected pending request" 
     };
     defer receiver_request.deinit(std.testing.allocator);
     try std.testing.expectEqual(tool_request.frame_fingerprint, receiver_request.frame_fingerprint);
-    try receiver_run.dispatch();
+    _ = try receiver_run.dispatch();
     var final_model_request = switch (try receiver_run.nextFrame()) {
         .port_request => |frame| frame,
         else => return error.ExpectedPortRequest,
     };
     defer final_model_request.deinit(std.testing.allocator);
-    try receiver_run.dispatch();
+    _ = try receiver_run.dispatch();
     const done = try receiver_run.nextFrame();
     try std.testing.expectEqualStrings("final=actuate skeleton complete", switch (done) {
         .done => |value| value,
@@ -8977,7 +8993,7 @@ test "park-on-budget preserves parked state when completion transcript exceeds b
         .port_required => {},
         else => return error.ExpectedPortRequired,
     }
-    try run.dispatch();
+    _ = try run.dispatch();
     switch (try run.next()) {
         .parked => {},
         else => return error.ExpectedParked,
@@ -11701,7 +11717,7 @@ test "admitted run start enforces admitted transcript image" {
                 try std.testing.expectEqual(@as(i32, 7), value);
                 break;
             },
-            .port_required => try transcript_only_run.dispatch(),
+            .port_required => _ = try transcript_only_run.dispatch(),
             .parked => return error.ExpectedReplayCompletion,
             .failed => return error.ExpectedReplayCompletion,
         }
@@ -11722,7 +11738,7 @@ test "admitted run start enforces admitted transcript image" {
                 try std.testing.expectEqual(@as(i32, 7), value);
                 break;
             },
-            .port_required => try replay_sink_run.dispatch(),
+            .port_required => _ = try replay_sink_run.dispatch(),
             .parked => return error.ExpectedReplayCompletion,
             .failed => return error.ExpectedReplayCompletion,
         }
