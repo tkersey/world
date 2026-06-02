@@ -6481,6 +6481,7 @@ pub const Runspace = struct {
         const VTable = struct {
             nextFrame: *const fn (*anyopaque) anyerror!DriverStep,
             resumeFrame: *const fn (*anyopaque, Frame.Response) anyerror!void,
+            beforeResponse: *const fn (*anyopaque, u32, ResponseStatus) anyerror!void,
             beforeTerminalResponse: *const fn (*anyopaque, u32, ResponseStatus) anyerror!void,
             resumeTerminalFrame: *const fn (*anyopaque, Frame.Response) anyerror!void,
             dispatch: *const fn (*anyopaque) anyerror!void,
@@ -6499,6 +6500,10 @@ pub const Runspace = struct {
 
         fn resumeFrame(self: @This(), response: Frame.Response) !void {
             return self.vtable.resumeFrame(self.ptr, response);
+        }
+
+        fn beforeResponse(self: @This(), world_port_id: u32, status: ResponseStatus) !void {
+            return self.vtable.beforeResponse(self.ptr, world_port_id, status);
         }
 
         fn beforeTerminalResponse(self: @This(), world_port_id: u32, status: ResponseStatus) !void {
@@ -6572,6 +6577,11 @@ pub const Runspace = struct {
                     return active.resumeFrame(response);
                 }
 
+                fn runBeforeResponse(ptr: *anyopaque, world_port_id: u32, status: ResponseStatus) anyerror!void {
+                    const active: *RunType = @ptrCast(@alignCast(ptr));
+                    if (@hasDecl(RunType, "beforeRunspaceResponse")) return active.beforeRunspaceResponse(world_port_id, status);
+                }
+
                 fn runBeforeTerminalResponse(ptr: *anyopaque, world_port_id: u32, status: ResponseStatus) anyerror!void {
                     const active: *RunType = @ptrCast(@alignCast(ptr));
                     if (@hasDecl(RunType, "beforeRunspaceTerminalResponse")) return active.beforeRunspaceTerminalResponse(world_port_id, status);
@@ -6631,6 +6641,7 @@ pub const Runspace = struct {
                 const vtable = VTable{
                     .nextFrame = runNextFrame,
                     .resumeFrame = runResumeFrame,
+                    .beforeResponse = runBeforeResponse,
                     .beforeTerminalResponse = runBeforeTerminalResponse,
                     .resumeTerminalFrame = runResumeTerminalFrame,
                     .dispatch = runDispatch,
@@ -7634,19 +7645,39 @@ pub const Runspace = struct {
     pub fn respond(self: *@This(), mailbox_id: u64, response: Frame.Response) !Runspace.RunspaceEvent {
         const pending = try self.mailbox.get(mailbox_id);
         try pending.validateResponse(response);
-        if (response.status == .pending) return error.HandlerPending;
         const index = try self.slotIndex(pending.handle);
         var slot = &self.slots.items[index];
         if (slot.pending_mailbox_id != mailbox_id or slot.status != .parked_on_port) return error.StaleRunHandle;
         switch (response.status) {
             .responded => {},
-            .pending => unreachable,
+            .pending => {
+                if (slot.driver) |driver| {
+                    driver.beforeResponse(pending.world_port_id, .pending) catch |err| {
+                        if (err == error.HandlerPending and driver.supervisionInterrupted()) {
+                            return self.parkPendingOnSupervision(index, pending, mailbox_id, "manual pending response parked on supervision");
+                        }
+                        if (err == error.BudgetExceeded and driver.supervisionInterrupted()) {
+                            return self.parkPendingOnSupervision(index, pending, mailbox_id, "manual pending response parked on supervision");
+                        }
+                        return err;
+                    };
+                    return error.HandlerPending;
+                }
+                if (self.config.require_supervision) return error.SupervisionDenied;
+                return error.HandlerPending;
+            },
             .rejected => return self.finishTerminalResponse(mailbox_id, pending, slot, response, .rejected),
             .failed => return self.finishTerminalResponse(mailbox_id, pending, slot, response, .failed),
         }
         try self.ensureEventCapacity(2);
         if (slot.driver) |driver| {
             driver.resumeFrame(response) catch |err| {
+                if (err == error.HandlerPending) {
+                    if (driver.supervisionInterrupted()) {
+                        return self.parkPendingOnSupervision(index, pending, mailbox_id, "manual response parked on supervision");
+                    }
+                    return err;
+                }
                 const failed = try self.mailbox.fail(mailbox_id, "resume failed");
                 try slot.transition(.fail, null);
                 _ = try self.appendEvent(.{
@@ -7672,6 +7703,7 @@ pub const Runspace = struct {
         } else {
             return error.InvalidRunspaceTransition;
         }
+        if (response.status == .pending) return error.HandlerPending;
         try slot.transition(.resume_from_port, mailbox_id);
         const responded = try self.mailbox.markResponded(mailbox_id);
         _ = try self.appendEvent(.{
@@ -7825,6 +7857,27 @@ pub const Runspace = struct {
         errdefer response.deinit(self.allocator);
         try self.routeTerminalResponse(mailbox_id, pending, slot, response, status);
         return response;
+    }
+
+    fn parkPendingOnSupervision(self: *@This(), index: usize, pending: Runspace.PendingPort, mailbox_id: u64, event_summary: []const u8) !Runspace.RunspaceEvent {
+        var slot = &self.slots.items[index];
+        slot.status = .parked_on_supervision;
+        slot.pending_mailbox_id = mailbox_id;
+        slot.current_state = RunState.init(.{
+            .target_ref_fingerprint = slot.target_ref.target_ref_fingerprint,
+            .pending_request_fingerprint = pending.request_frame_fingerprint,
+            .turn_index = pending.turn_index,
+            .status = .parked_on_port,
+        });
+        return self.appendEvent(.{
+            .kind = .run_parked_on_supervision,
+            .run_handle = slot.handle,
+            .pending_port_fingerprint = pending.pending_port_fingerprint,
+            .request_frame_fingerprint = pending.request_frame_fingerprint,
+            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+            .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .summary = event_summary,
+        });
     }
 
     pub fn reject(self: *@This(), mailbox_id: u64, reason: []const u8) !Runspace.RunspaceEvent {
@@ -9871,6 +9924,15 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
 
                 pub fn resumeFrame(self: *Self, response_frame: Frame.Response) !void {
                     try self.resumeFrameWithProvenance(response_frame, false);
+                }
+
+                pub fn beforeRunspaceResponse(self: *Self, world_port_id: u32, status: ResponseStatus) !void {
+                    if (self.supervisor) |*supervisor| {
+                        try supervisor.afterAdapterResponse(.{
+                            .world_port_id = world_port_id,
+                            .status = status,
+                        });
+                    }
                 }
 
                 pub fn beforeRunspaceTerminalResponse(self: *Self, world_port_id: u32, status: ResponseStatus) !void {
