@@ -2430,6 +2430,34 @@ test "runspace supervised handoff install requires prior permit fingerprint" {
     try std.testing.expectError(error.SupervisionDenied, runspace.installRunImage(image));
 }
 
+test "runspace imported image slots use owned cloned target refs" {
+    const image = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Strict.Target),
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Strict.Target).import_set_fingerprint,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = world.TargetRef.fromTarget(fixtures.Strict.Target).target_ref_fingerprint,
+            .status = .completed,
+        }),
+    });
+    const encoded = try image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(encoded);
+    var decoded = try world.RunImage.decode(std.testing.allocator, encoded);
+    defer decoded.deinit(std.testing.allocator);
+    const caller_label = decoded.target_ref.target_label orelse return error.TestUnexpectedResult;
+
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+    _ = try runspace.installRunImage(decoded);
+
+    const slot = runspace.slots.items[0];
+    const slot_label = slot.target_ref.target_label orelse return error.TestUnexpectedResult;
+    const installed_image = slot.installed_run_image orelse return error.TestUnexpectedResult;
+    const owned_label = installed_image.target_ref.target_label orelse return error.TestUnexpectedResult;
+    try std.testing.expect(slot_label.ptr != caller_label.ptr);
+    try std.testing.expectEqual(owned_label.ptr, slot_label.ptr);
+}
+
 test "runspace parked image install rolls back when mailbox enqueue fails" {
     var runtime = boundary.Runtime.init(std.testing.allocator);
     defer runtime.deinit();
@@ -3276,13 +3304,27 @@ test "runspace install admitted and replay records receipts summaries and events
         .bindings = .{},
         .policy = world.EnvironmentPolicy.strict_replay,
     });
-    const replay_export_denied_permit = world.Supervision.issue(fixtures.Strict.Target, StrictReplayEnv, .{
+    const environment_bound_replay_permit = world.Supervision.issue(fixtures.Strict.Target, StrictReplayEnv, .{
         .mode = .replay,
         .policy = world.SupervisionPolicy.strict_replay,
         .transcript_image_available = true,
     });
     var supervised_replay_runspace = world.Runspace.init(std.testing.allocator, .{});
     defer supervised_replay_runspace.deinit();
+    try std.testing.expectError(error.SupervisionDenied, supervised_replay_runspace.installReplay(fixtures.Strict.Target, image, environment_bound_replay_permit));
+    const replay_without_environment_policy = world.SupervisionPolicy.init(.{
+        .allow_replay_calls = true,
+        .allow_replay_adapters = true,
+        .require_portable_value_images = true,
+        .reject_native_only_values = true,
+        .require_environment_certificate = false,
+        .require_transcript_image_for_replay = true,
+    });
+    const replay_export_denied_permit = world.Supervision.issue(fixtures.Strict.Target, StrictReplayEnv, .{
+        .mode = .replay,
+        .policy = replay_without_environment_policy,
+        .transcript_image_available = true,
+    });
     const supervised_replay_handle = try supervised_replay_runspace.installReplay(fixtures.Strict.Target, image, replay_export_denied_permit);
     try std.testing.expectError(error.HandoffDenied, supervised_replay_runspace.exportRun(supervised_replay_handle));
     const out_of_range_replay_budgets = [_]world.Supervision.PerPortBudget{.{
@@ -3291,7 +3333,7 @@ test "runspace install admitted and replay records receipts summaries and events
     }};
     const out_of_range_replay_permit = world.Supervision.issue(fixtures.Strict.Target, StrictReplayEnv, .{
         .mode = .replay,
-        .policy = world.SupervisionPolicy.strict_replay,
+        .policy = replay_without_environment_policy,
         .budget = world.Budget.init(.{ .per_port_budgets = &out_of_range_replay_budgets }),
         .transcript_image_available = true,
     });

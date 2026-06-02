@@ -7565,15 +7565,17 @@ pub const Runspace = struct {
         var installed_image = try cloneRunImage(self.allocator, image);
         var installed_image_owned = true;
         errdefer if (installed_image_owned) installed_image.deinit(self.allocator);
+        const installed_target_ref = installed_image.target_ref;
+        const installed_state = installed_image.current_state;
         const slot = Runspace.RunSlot.fromState(.{
             .handle = handle,
-            .target_ref = image.target_ref,
-            .current_state = image.current_state,
+            .target_ref = installed_target_ref,
+            .current_state = installed_state,
             .status = run_status,
             .run_permit_fingerprint = image.prior_run_permit_fingerprint,
             .run_receipt_fingerprint = image.prior_run_receipt_fingerprint,
-            .branch_id = if (image.current_state.branch_id == 0) null else image.current_state.branch_id,
-            .checkpoint_fingerprint = image.current_state.checkpoint_fingerprint,
+            .branch_id = if (installed_state.branch_id == 0) null else installed_state.branch_id,
+            .checkpoint_fingerprint = installed_state.checkpoint_fingerprint,
             .module_ref_fingerprint = image.module_ref_fingerprint,
             .installed_run_image = installed_image,
             .owns_installed_run_image = true,
@@ -7741,14 +7743,16 @@ pub const Runspace = struct {
             .permit_fingerprint = image.prior_run_permit_fingerprint,
             .branch_id = if (image.current_state.branch_id == 0) null else image.current_state.branch_id,
         });
+        const installed_target_ref = installed_image.target_ref;
+        const installed_state = installed_image.current_state;
         const slot = Runspace.RunSlot.fromState(.{
             .handle = handle,
-            .target_ref = image.target_ref,
-            .current_state = image.current_state,
-            .status = statusFromRunState(image.current_state),
+            .target_ref = installed_target_ref,
+            .current_state = installed_state,
+            .status = statusFromRunState(installed_state),
             .run_permit_fingerprint = image.prior_run_permit_fingerprint,
-            .branch_id = if (image.current_state.branch_id == 0) null else image.current_state.branch_id,
-            .checkpoint_fingerprint = image.current_state.checkpoint_fingerprint,
+            .branch_id = if (installed_state.branch_id == 0) null else installed_state.branch_id,
+            .checkpoint_fingerprint = installed_state.checkpoint_fingerprint,
             .supervisor = supervisor,
             .installed_run_image = installed_image,
             .owns_installed_run_image = true,
@@ -7766,6 +7770,7 @@ pub const Runspace = struct {
         if (permit.world_surface_fingerprint != Target.WorldSurface.surface_fingerprint) return error.SupervisionDenied;
         if (permit.target_certificate_fingerprint != Target.Certificate.certificate_fingerprint) return error.SupervisionDenied;
         if (permit.mode != .replay) return error.SupervisionDenied;
+        if (permit.policy.require_environment_certificate) return error.SupervisionDenied;
         if (permit.policy.require_transcript_image_for_replay and !permit.transcript_image_available) return error.TranscriptImageRequired;
         if (transcript_image.world_surface_fingerprint != permit.world_surface_fingerprint) return error.SupervisionDenied;
         if (transcript_image.target_certificate_fingerprint != permit.target_certificate_fingerprint) return error.SupervisionDenied;
