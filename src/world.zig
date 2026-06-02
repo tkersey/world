@@ -5875,9 +5875,27 @@ fn runStateEvidenceFromTranscriptImage(image: TranscriptImage) TranscriptRunStat
             evidence.final_response_fingerprint = response.frame_fingerprint;
             evidence.final_value_image_fingerprint = response.response_value_fingerprint;
             if (event.turn_index) |turn_index| evidence.turn_index = @max(evidence.turn_index, turn_index + 1);
+        } else if (eventKindIsSourceResponse(event.kind)) {
+            if (event.response_fingerprint) |fingerprint| evidence.final_response_fingerprint = fingerprint;
+            if (event.turn_index) |turn_index| evidence.turn_index = @max(evidence.turn_index, turn_index + 1);
         }
     }
     return evidence;
+}
+
+fn runStateWithTranscriptEvidence(state: RunState, image: TranscriptImage) RunState {
+    const evidence = runStateEvidenceFromTranscriptImage(image);
+    return RunState.init(.{
+        .target_ref_fingerprint = state.target_ref_fingerprint,
+        .transcript_image_fingerprint = image.transcript_image_fingerprint,
+        .branch_id = state.branch_id,
+        .checkpoint_fingerprint = state.checkpoint_fingerprint,
+        .pending_request_fingerprint = state.pending_request_fingerprint,
+        .final_response_fingerprint = evidence.final_response_fingerprint orelse state.final_response_fingerprint,
+        .final_value_image_fingerprint = evidence.final_value_image_fingerprint orelse state.final_value_image_fingerprint,
+        .turn_index = @max(state.turn_index, evidence.turn_index),
+        .status = state.status,
+    });
 }
 
 fn runStateWithBranch(state: RunState, branch_id: u64) RunState {
@@ -10703,13 +10721,16 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         .parked_on_port
                     else
                         .running;
-                    const state = RunState.init(.{
+                    var state = RunState.init(.{
                         .target_ref_fingerprint = target_ref.target_ref_fingerprint,
                         .transcript_image_fingerprint = if (transcript_image) |image| image.transcript_image_fingerprint else null,
                         .pending_request_fingerprint = if (pending_frame) |frame| frame.frame_fingerprint else null,
                         .turn_index = if (pending_frame) |frame| frame.turn_index else self.audit.port_request_count,
                         .status = status,
                     });
+                    if (transcript_image) |image| {
+                        state = runStateWithTranscriptEvidence(state, image);
+                    }
                     var image = RunImage.init(.{
                         .kind = switch (status) {
                             .parked_on_port => .parked_run,
@@ -12726,14 +12747,15 @@ fn attachTranscriptToInstalledRunImage(allocator: std.mem.Allocator, image: *Run
     }
     if (image.transcript_image) |embedded| {
         if (embedded.transcript_image_fingerprint != transcript_image.transcript_image_fingerprint) return error.HandoffTargetMismatch;
+        image.current_state = runStateWithTranscriptEvidence(image.current_state, transcript_image);
+        refreshRunImageFingerprint(image);
         return;
     }
     var cloned_transcript = try cloneTranscriptImage(allocator, transcript_image);
     errdefer cloned_transcript.deinit(allocator);
     image.transcript_image = cloned_transcript;
     image.owns_transcript_image = true;
-    image.current_state.transcript_image_fingerprint = transcript_image.transcript_image_fingerprint;
-    image.current_state.run_state_fingerprint = fingerprintRunState(image.current_state);
+    image.current_state = runStateWithTranscriptEvidence(image.current_state, transcript_image);
     refreshRunImageFingerprint(image);
 }
 

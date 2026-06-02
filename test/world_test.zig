@@ -3557,6 +3557,40 @@ test "runspace install admitted and replay records receipts summaries and events
     try std.testing.expectEqual(admitted_transcript.transcript_image_fingerprint, detached_export.current_state.transcript_image_fingerprint.?);
     try std.testing.expectEqual(detached_export.current_state.run_state_fingerprint, detached_summary.run_state_fingerprint);
 
+    var completed_attach_transcript = world.Transcript.init(std.testing.allocator);
+    defer completed_attach_transcript.deinit();
+    try recordPortsTranscript(&completed_attach_transcript);
+    var completed_attach_image = try completed_attach_transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer completed_attach_image.deinit(std.testing.allocator);
+    const bare_completed_state = world.RunState.init(.{
+        .target_ref_fingerprint = world.TargetRef.fromTarget(fixtures.Ports.Target).target_ref_fingerprint,
+        .status = .completed,
+    });
+    const bare_completed_image = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target),
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = bare_completed_state,
+    });
+    const completed_attach_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_9002,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target),
+        .mode = .continue_fresh,
+        .run_image = bare_completed_image,
+        .transcript_image = completed_attach_image,
+    });
+    var completed_attach_target = world.Runspace.init(std.testing.allocator, .{ .require_admission = true });
+    defer completed_attach_target.deinit();
+    const completed_attach_handle = try completed_attach_target.installAdmitted(completed_attach_admitted);
+    const completed_attach_summary = try completed_attach_target.getSlotSummary(completed_attach_handle);
+    var completed_attach_export = try completed_attach_target.exportRun(completed_attach_handle);
+    defer completed_attach_export.deinit(std.testing.allocator);
+    try std.testing.expectEqual(completed_attach_image.transcript_image_fingerprint, completed_attach_export.current_state.transcript_image_fingerprint.?);
+    try std.testing.expect(completed_attach_export.current_state.final_response_fingerprint != null);
+    try std.testing.expect(completed_attach_export.current_state.final_value_image_fingerprint != null);
+    try std.testing.expect(completed_attach_export.current_state.turn_index > bare_completed_state.turn_index);
+    try std.testing.expectEqual(completed_attach_export.current_state.run_state_fingerprint, completed_attach_summary.run_state_fingerprint);
+
     var admitted_handoff_denied = world.Runspace.init(std.testing.allocator, .{
         .require_admission = true,
         .allow_handoff_install = false,
@@ -4781,6 +4815,9 @@ test "runspace handoff export captures parked pending request and completed tran
     try std.testing.expectEqual(world.RunImage.Kind.completed_run, completed_image.kind);
     try std.testing.expect(completed_image.transcript_image != null);
     try std.testing.expectEqual(world.TranscriptImage.FinalStatus.completed, completed_image.transcript_image.?.final_status);
+    try std.testing.expect(completed_image.current_state.final_response_fingerprint != null);
+    try std.testing.expect(completed_image.current_state.final_value_image_fingerprint != null);
+    try std.testing.expect(completed_image.current_state.turn_index > 0);
 
     var relay_runspace = world.Runspace.init(std.testing.allocator, .{});
     defer relay_runspace.deinit();
@@ -4790,6 +4827,9 @@ test "runspace handoff export captures parked pending request and completed tran
     try std.testing.expectEqual(completed_image.import_set_fingerprint, relayed_image.import_set_fingerprint);
     try std.testing.expect(relayed_image.transcript_image != null);
     try std.testing.expectEqual(completed_image.transcript_image.?.transcript_image_fingerprint, relayed_image.transcript_image.?.transcript_image_fingerprint);
+    try std.testing.expectEqual(completed_image.current_state.final_response_fingerprint, relayed_image.current_state.final_response_fingerprint);
+    try std.testing.expectEqual(completed_image.current_state.final_value_image_fingerprint, relayed_image.current_state.final_value_image_fingerprint);
+    try std.testing.expectEqual(completed_image.current_state.turn_index, relayed_image.current_state.turn_index);
 }
 
 test "runspace checkpoint branch and replay install are deterministic" {
