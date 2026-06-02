@@ -7050,6 +7050,7 @@ pub const Runspace = struct {
         admission_receipt_fingerprint: ?u64 = null,
         run_permit_fingerprint: ?u64 = null,
         summary: []const u8 = "",
+        owns_summary: bool = false,
 
         pub fn init(args: struct {
             kind: Runspace.EventKind,
@@ -7065,6 +7066,7 @@ pub const Runspace = struct {
             admission_receipt_fingerprint: ?u64 = null,
             run_permit_fingerprint: ?u64 = null,
             summary: []const u8 = "",
+            owns_summary: bool = false,
         }) @This() {
             var result = @This(){
                 .event_fingerprint = 0,
@@ -7081,9 +7083,15 @@ pub const Runspace = struct {
                 .admission_receipt_fingerprint = args.admission_receipt_fingerprint,
                 .run_permit_fingerprint = args.run_permit_fingerprint,
                 .summary = args.summary,
+                .owns_summary = args.owns_summary,
             };
             result.event_fingerprint = fingerprintRunspaceEvent(result);
             return result;
+        }
+
+        pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+            if (self.owns_summary) allocator.free(@constCast(self.summary));
+            self.* = undefined;
         }
     };
 
@@ -7116,6 +7124,9 @@ pub const Runspace = struct {
     pub fn deinit(self: *@This()) void {
         for (self.slots.items) |*slot| {
             slot.deinit(self.allocator);
+        }
+        for (self.events.items) |*event| {
+            event.deinit(self.allocator);
         }
         self.slots.deinit(self.allocator);
         self.events.deinit(self.allocator);
@@ -7775,19 +7786,15 @@ pub const Runspace = struct {
         errdefer if (slot_appended) {
             self.slots.shrinkRetainingCapacity(self.slots.items.len - 1);
         };
-        const event = Runspace.RunspaceEvent.init(.{
+        _ = try self.appendEvent(.{
             .kind = event_kind,
-            .runspace_fingerprint = self.runspace_fingerprint,
-            .event_index = self.next_event_index,
             .run_handle = slot.handle,
             .run_state_fingerprint = slot.current_state.run_state_fingerprint,
             .admission_receipt_fingerprint = slot.admission_receipt_fingerprint,
             .run_permit_fingerprint = slot.run_permit_fingerprint,
             .summary = summary_text,
         });
-        try self.events.append(self.allocator, event);
         slot_appended = false;
-        self.next_event_index += 1;
     }
 
     fn appendEvent(self: *@This(), args: struct {
@@ -7806,6 +7813,9 @@ pub const Runspace = struct {
         if (self.config.max_events) |max| {
             if (self.events.items.len >= max) return error.BudgetExceeded;
         }
+        const summary_bytes = try self.allocator.dupe(u8, args.summary);
+        var summary_owned = true;
+        errdefer if (summary_owned) self.allocator.free(summary_bytes);
         const event = Runspace.RunspaceEvent.init(.{
             .kind = args.kind,
             .runspace_fingerprint = self.runspace_fingerprint,
@@ -7819,9 +7829,11 @@ pub const Runspace = struct {
             .run_receipt_fingerprint = args.run_receipt_fingerprint,
             .admission_receipt_fingerprint = args.admission_receipt_fingerprint,
             .run_permit_fingerprint = args.run_permit_fingerprint,
-            .summary = args.summary,
+            .summary = summary_bytes,
+            .owns_summary = true,
         });
         try self.events.append(self.allocator, event);
+        summary_owned = false;
         self.next_event_index += 1;
         return event;
     }
@@ -7842,6 +7854,7 @@ pub const Runspace = struct {
         next_event_index: u64,
     ) void {
         for (self.slots.items[slot_count..]) |*slot| slot.deinit(self.allocator);
+        for (self.events.items[event_count..]) |*event| event.deinit(self.allocator);
         for (self.mailbox.pending.items[mailbox_count..]) |*pending_port| pending_port.deinit(self.allocator);
         self.slots.shrinkRetainingCapacity(slot_count);
         self.events.shrinkRetainingCapacity(event_count);

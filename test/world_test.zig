@@ -3006,6 +3006,32 @@ test "runspace failed branch install preserves deterministic run ids" {
     try std.testing.expectEqual(@as(u64, 1), next.local_run_id);
 }
 
+test "runspace event log owns branch summary bytes" {
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+    const handle = try runspace.installTarget(fixtures.Strict.Target, .{}, null, .{});
+    const checkpoint = try runspace.checkpoint(handle);
+    var caller_summary = try std.testing.allocator.dupe(u8, "branch-owned");
+    defer std.testing.allocator.free(caller_summary);
+
+    _ = try runspace.branch(handle, checkpoint, .{ .summary = caller_summary });
+    const event = runspace.events.items[runspace.events.items.len - 1];
+    caller_summary[0] = 'X';
+
+    try std.testing.expectEqualStrings("branch-owned", event.summary);
+    try std.testing.expectEqual(event.event_fingerprint, world.RunspaceEvent.init(.{
+        .kind = event.kind,
+        .runspace_fingerprint = event.runspace_fingerprint,
+        .event_index = event.event_index,
+        .run_handle = event.run_handle,
+        .checkpoint_fingerprint = event.checkpoint_fingerprint,
+        .run_state_fingerprint = event.run_state_fingerprint,
+        .admission_receipt_fingerprint = event.admission_receipt_fingerprint,
+        .run_permit_fingerprint = event.run_permit_fingerprint,
+        .summary = event.summary,
+    }).event_fingerprint);
+}
+
 test "runspace verify run detects changed handler" {
     var transcript = world.Transcript.init(std.testing.allocator);
     defer transcript.deinit();
