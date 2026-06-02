@@ -6875,6 +6875,12 @@ pub const Runspace = struct {
             if (response.request_fingerprint != self.request_fingerprint) return error.FrameRequestFingerprintMismatch;
             if (response.response_kind != self.expected_response_kind) return error.VerifyResponseKindMismatch;
             if (response.status == .responded and response.response_value_table_id != self.expected_response_value_table_id) return error.FrameValueTableMismatch;
+            if (!response.responseFingerprintDeferred()) {
+                if (self.request_frame) |request| {
+                    const expected_replay_key = request.replay_key_seed.withResponse(response.response_fingerprint).fingerprint();
+                    if (response.replay_key != expected_replay_key) return error.ReplayMissing;
+                }
+            }
         }
 
         pub fn validate(self: @This()) !void {
@@ -7038,6 +7044,7 @@ pub const Runspace = struct {
         pending_port_fingerprint: ?u64 = null,
         request_frame_fingerprint: ?u64 = null,
         response_frame_fingerprint: ?u64 = null,
+        checkpoint_fingerprint: ?u64 = null,
         run_state_fingerprint: u64,
         run_receipt_fingerprint: ?u64 = null,
         admission_receipt_fingerprint: ?u64 = null,
@@ -7052,6 +7059,7 @@ pub const Runspace = struct {
             pending_port_fingerprint: ?u64 = null,
             request_frame_fingerprint: ?u64 = null,
             response_frame_fingerprint: ?u64 = null,
+            checkpoint_fingerprint: ?u64 = null,
             run_state_fingerprint: u64,
             run_receipt_fingerprint: ?u64 = null,
             admission_receipt_fingerprint: ?u64 = null,
@@ -7067,6 +7075,7 @@ pub const Runspace = struct {
                 .pending_port_fingerprint = args.pending_port_fingerprint,
                 .request_frame_fingerprint = args.request_frame_fingerprint,
                 .response_frame_fingerprint = args.response_frame_fingerprint,
+                .checkpoint_fingerprint = args.checkpoint_fingerprint,
                 .run_state_fingerprint = args.run_state_fingerprint,
                 .run_receipt_fingerprint = args.run_receipt_fingerprint,
                 .admission_receipt_fingerprint = args.admission_receipt_fingerprint,
@@ -7141,6 +7150,13 @@ pub const Runspace = struct {
             installed_image = try cloneRunImage(self.allocator, image);
             installed_image_owned = true;
         }
+        const pending_frame = if (installed_image) |image|
+            if (image.current_state.status == .parked_on_port)
+                image.pending_request_frame orelse return error.HandoffPendingFrameMismatch
+            else
+                null
+        else
+            null;
         const slot = Runspace.RunSlot.fromState(.{
             .handle = handle,
             .target_ref = target_ref,
@@ -7154,13 +7170,6 @@ pub const Runspace = struct {
             .installed_run_image = installed_image,
             .owns_installed_run_image = installed_image != null,
         });
-        const pending_frame = if (installed_image) |image|
-            if (image.current_state.status == .parked_on_port)
-                image.pending_request_frame orelse return error.HandoffPendingFrameMismatch
-            else
-                null
-        else
-            null;
         const slot_count_before = self.slots.items.len;
         const event_count_before = self.events.items.len;
         const mailbox_count_before = self.mailbox.pending.items.len;
@@ -7191,6 +7200,10 @@ pub const Runspace = struct {
         var installed_image = try cloneRunImage(self.allocator, image);
         var installed_image_owned = true;
         errdefer if (installed_image_owned) installed_image.deinit(self.allocator);
+        const pending_frame = if (image.current_state.status == .parked_on_port)
+            image.pending_request_frame orelse return error.HandoffPendingFrameMismatch
+        else
+            null;
         const slot = Runspace.RunSlot.fromState(.{
             .handle = handle,
             .target_ref = image.target_ref,
@@ -7204,10 +7217,6 @@ pub const Runspace = struct {
             .installed_run_image = installed_image,
             .owns_installed_run_image = true,
         });
-        const pending_frame = if (image.current_state.status == .parked_on_port)
-            image.pending_request_frame orelse return error.HandoffPendingFrameMismatch
-        else
-            null;
         const slot_count_before = self.slots.items.len;
         const event_count_before = self.events.items.len;
         const mailbox_count_before = self.mailbox.pending.items.len;
@@ -7561,12 +7570,7 @@ pub const Runspace = struct {
     pub fn checkpoint(self: *@This(), handle: RunHandle) !Timeline.Checkpoint {
         const index = try self.slotIndex(handle);
         const slot = &self.slots.items[index];
-        const checkpoint_status: Timeline.Checkpoint.Status = switch (slot.status) {
-            .admitted, .runnable, .running => .running,
-            .parked_on_port, .parked_on_supervision => .parked_on_port,
-            .completed, .exported => .completed,
-            .failed, .rejected => .failed,
-        };
+        const checkpoint_status = checkpointStatusForSlot(slot.*);
         const checkpoint_value = Timeline.Checkpoint.init(.{
             .world_surface_fingerprint = slot.target_ref.world_surface_fingerprint,
             .target_certificate_fingerprint = slot.target_ref.target_certificate_fingerprint,
@@ -7582,6 +7586,7 @@ pub const Runspace = struct {
             .kind = .checkpoint_created,
             .run_handle = slot.handle,
             .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+            .checkpoint_fingerprint = checkpoint_value.checkpoint_fingerprint,
             .run_permit_fingerprint = slot.run_permit_fingerprint,
             .summary = "checkpoint created",
         });
@@ -7591,8 +7596,7 @@ pub const Runspace = struct {
     pub fn branch(self: *@This(), handle: RunHandle, checkpoint_value: Timeline.Checkpoint, options: anytype) !RunHandle {
         const index = try self.slotIndex(handle);
         const parent = self.slots.items[index];
-        if (parent.target_ref.world_surface_fingerprint != checkpoint_value.world_surface_fingerprint) return error.HandoffCheckpointMismatch;
-        if (parent.target_ref.target_certificate_fingerprint != checkpoint_value.target_certificate_fingerprint) return error.HandoffCheckpointMismatch;
+        try self.validateSlotCheckpoint(parent, checkpoint_value);
         const branch_id = self.next_run_id;
         const branch_handle = try self.nextHandle(.{
             .target_ref_fingerprint = parent.target_ref.target_ref_fingerprint,
@@ -7621,6 +7625,45 @@ pub const Runspace = struct {
         const summary_text = if (@hasField(@TypeOf(options), "summary")) @field(options, "summary") else "run branch created";
         try self.installSlot(slot, .run_branch_created, summary_text);
         return branch_handle;
+    }
+
+    fn checkpointStatusForSlot(slot: Runspace.RunSlot) Timeline.Checkpoint.Status {
+        return switch (slot.status) {
+            .admitted, .runnable, .running => .running,
+            .parked_on_port, .parked_on_supervision => .parked_on_port,
+            .completed, .exported => .completed,
+            .failed, .rejected => .failed,
+        };
+    }
+
+    fn slotTranscriptPrefixFingerprint(slot: Runspace.RunSlot) u64 {
+        return slot.current_state.transcript_image_fingerprint orelse slot.current_state.run_state_fingerprint;
+    }
+
+    fn validateSlotCheckpoint(self: *const @This(), slot: Runspace.RunSlot, checkpoint_value: Timeline.Checkpoint) !void {
+        if (slot.target_ref.world_surface_fingerprint != checkpoint_value.world_surface_fingerprint) return error.HandoffCheckpointMismatch;
+        if (slot.target_ref.target_certificate_fingerprint != checkpoint_value.target_certificate_fingerprint) return error.HandoffCheckpointMismatch;
+        if (checkpoint_value.event_index > self.events.items.len) return error.HandoffCheckpointMismatch;
+        if (checkpoint_value.turn_index != slot.current_state.turn_index) return error.HandoffCheckpointMismatch;
+        if (checkpoint_value.current_request_fingerprint != slot.current_state.pending_request_fingerprint) return error.HandoffCheckpointMismatch;
+        if (checkpoint_value.last_response_fingerprint != slot.current_state.final_response_fingerprint) return error.HandoffCheckpointMismatch;
+        if (checkpoint_value.transcript_prefix_fingerprint != slotTranscriptPrefixFingerprint(slot)) return error.HandoffCheckpointMismatch;
+        if (checkpoint_value.branch_id != (slot.branch_id orelse 0)) return error.HandoffCheckpointMismatch;
+        if (checkpoint_value.status != checkpointStatusForSlot(slot)) return error.HandoffCheckpointMismatch;
+        if (!self.hasCheckpointWitness(slot.handle, checkpoint_value.checkpoint_fingerprint)) return error.HandoffCheckpointMismatch;
+    }
+
+    fn hasCheckpointWitness(self: *const @This(), handle: RunHandle, checkpoint_fingerprint: u64) bool {
+        for (self.events.items) |event| {
+            if (event.kind == .checkpoint_created and
+                event.run_handle.handle_fingerprint == handle.handle_fingerprint and
+                event.checkpoint_fingerprint != null and
+                event.checkpoint_fingerprint.? == checkpoint_fingerprint)
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     pub fn listBranches(self: *const @This(), handle: RunHandle, allocator: std.mem.Allocator) ![]RunHandle {
@@ -7677,7 +7720,7 @@ pub const Runspace = struct {
         branch_id: ?u64 = null,
     }) !RunHandle {
         if (self.config.max_runs) |max| {
-            if (self.slots.items.len >= max) return error.BudgetExceeded;
+            if (self.activeRunCountForCapacity() >= max) return error.BudgetExceeded;
         }
         const handle = RunHandle.init(.{
             .runspace_fingerprint = self.runspace_fingerprint,
@@ -7690,6 +7733,24 @@ pub const Runspace = struct {
         });
         self.next_run_id += 1;
         return handle;
+    }
+
+    fn activeRunCountForCapacity(self: *const @This()) usize {
+        var count: usize = 0;
+        for (self.slots.items) |slot| {
+            if (!self.slotCountsAgainstMaxRuns(slot)) continue;
+            count += 1;
+        }
+        return count;
+    }
+
+    fn slotCountsAgainstMaxRuns(self: *const @This(), slot: Runspace.RunSlot) bool {
+        if (self.config.preserve_completed_runs) return true;
+        return switch (slot.status) {
+            .completed => false,
+            .exported => slot.current_state.status != .completed,
+            else => true,
+        };
     }
 
     fn installSlot(self: *@This(), slot: Runspace.RunSlot, event_kind: Runspace.EventKind, summary_text: []const u8) !void {
@@ -7722,6 +7783,7 @@ pub const Runspace = struct {
         pending_port_fingerprint: ?u64 = null,
         request_frame_fingerprint: ?u64 = null,
         response_frame_fingerprint: ?u64 = null,
+        checkpoint_fingerprint: ?u64 = null,
         run_state_fingerprint: u64,
         run_receipt_fingerprint: ?u64 = null,
         admission_receipt_fingerprint: ?u64 = null,
@@ -7739,6 +7801,7 @@ pub const Runspace = struct {
             .pending_port_fingerprint = args.pending_port_fingerprint,
             .request_frame_fingerprint = args.request_frame_fingerprint,
             .response_frame_fingerprint = args.response_frame_fingerprint,
+            .checkpoint_fingerprint = args.checkpoint_fingerprint,
             .run_state_fingerprint = args.run_state_fingerprint,
             .run_receipt_fingerprint = args.run_receipt_fingerprint,
             .admission_receipt_fingerprint = args.admission_receipt_fingerprint,
@@ -7855,8 +7918,7 @@ pub const Runspace = struct {
     fn stepAt(self: *@This(), index: usize) !Runspace.RunspaceEvent {
         var slot = &self.slots.items[index];
         if (slot.driver == null) return error.InvalidRunspaceTransition;
-        try self.ensureEventCapacity(if (self.config.auto_dispatch) 5 else 3);
-        try self.mailbox.ensurePendingCapacity();
+        try self.ensureEventCapacity(2);
         try slot.transition(.step, null);
         _ = try self.appendEvent(.{
             .kind = .run_stepped,
@@ -7901,6 +7963,12 @@ pub const Runspace = struct {
             .port_request => |request| {
                 var owned_request = request;
                 defer owned_request.deinit(self.allocator);
+                self.ensureEventCapacity(if (self.config.auto_dispatch) 4 else 2) catch |err| {
+                    return self.failSteppedRunBeforePort(slot, err);
+                };
+                self.mailbox.ensurePendingCapacity() catch |err| {
+                    return self.failSteppedRunBeforePort(slot, err);
+                };
                 const mailbox_id = self.next_mailbox_id;
                 const pending = try self.mailbox.push(.{
                     .run_handle = slot.handle,
@@ -7942,6 +8010,18 @@ pub const Runspace = struct {
                 return parked_event;
             },
         }
+    }
+
+    fn failSteppedRunBeforePort(self: *@This(), slot: *Runspace.RunSlot, err: anyerror) !Runspace.RunspaceEvent {
+        slot.transition(.fail, null) catch {};
+        _ = self.appendEvent(.{
+            .kind = .run_failed,
+            .run_handle = slot.handle,
+            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+            .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .summary = "run failed before port enqueue",
+        }) catch {};
+        return err;
     }
 
     fn autoDispatchPending(self: *@This(), index: usize, pending: Runspace.PendingPort, mailbox_id: u64) !Runspace.RunspaceEvent {
@@ -12930,6 +13010,7 @@ fn fingerprintRunspaceEvent(event: RunspaceEvent) u64 {
     hashOptionalU64(&hasher, event.pending_port_fingerprint);
     hashOptionalU64(&hasher, event.request_frame_fingerprint);
     hashOptionalU64(&hasher, event.response_frame_fingerprint);
+    hashOptionalU64(&hasher, event.checkpoint_fingerprint);
     hashU64(&hasher, event.run_state_fingerprint);
     hashOptionalU64(&hasher, event.run_receipt_fingerprint);
     hashOptionalU64(&hasher, event.admission_receipt_fingerprint);

@@ -688,6 +688,10 @@ test "runspace pending port validates response identity and consumes once" {
     var wrong_kind = response_2;
     wrong_kind.response_kind = .return_now;
     try std.testing.expectError(error.VerifyResponseKindMismatch, (try mailbox.get(12)).validateResponse(wrong_kind));
+
+    var wrong_replay_key = response_2;
+    wrong_replay_key.replay_key += 1;
+    try std.testing.expectError(error.ReplayMissing, (try mailbox.get(12)).validateResponse(wrong_replay_key));
 }
 
 test "runspace event fingerprints include kind handle mailbox and status" {
@@ -2441,7 +2445,24 @@ test "runspace install rejects invalid image and failed direct installs preserve
     try std.testing.expectEqual(@as(u64, 0), machine_next.local_run_id);
 }
 
-test "runspace tick preflights mailbox capacity before driver advances" {
+test "runspace tick only requires mailbox capacity for emitted port requests" {
+    var strict_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer strict_runtime.deinit();
+    var strict_runspace = world.Runspace.init(std.testing.allocator, .{
+        .max_pending_ports = 0,
+    });
+    defer strict_runspace.deinit();
+
+    const strict_handle = try strict_runspace.installMachineRun(fixtures.Strict.Target, world.Environment(fixtures.Strict.Target, .{
+        .ports = &.{},
+    }), &strict_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    _ = try strict_runspace.tick();
+    try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try strict_runspace.getSlotSummary(strict_handle)).status);
+    try std.testing.expectEqual(@as(usize, 0), strict_runspace.report().pending_port_count);
+
     var runtime = boundary.Runtime.init(std.testing.allocator);
     defer runtime.deinit();
     var runspace = world.Runspace.init(std.testing.allocator, .{
@@ -2454,13 +2475,45 @@ test "runspace tick preflights mailbox capacity before driver advances" {
         .mode = world.Mode.fresh,
     });
     try std.testing.expectError(error.BudgetExceeded, runspace.tick());
-    try std.testing.expectEqual(world.Runspace.RunStatus.runnable, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.failed, (try runspace.getSlotSummary(handle)).status);
     try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
+}
 
-    runspace.mailbox.max_pending_ports = 1;
-    _ = try runspace.tick();
-    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try runspace.getSlotSummary(handle)).status);
-    try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+test "runspace max runs excludes completed runs when preservation is disabled" {
+    var preserved_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer preserved_runtime.deinit();
+    var preserved = world.Runspace.init(std.testing.allocator, .{
+        .max_runs = 1,
+        .preserve_completed_runs = true,
+    });
+    defer preserved.deinit();
+    const preserved_first = try preserved.installMachineRun(fixtures.Strict.Target, world.Environment(fixtures.Strict.Target, .{
+        .ports = &.{},
+    }), &preserved_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    _ = try preserved.tick();
+    try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try preserved.getSlotSummary(preserved_first)).status);
+    try std.testing.expectError(error.BudgetExceeded, preserved.installTarget(fixtures.Strict.Target, .{}, null, .{}));
+
+    var replace_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer replace_runtime.deinit();
+    var replaceable = world.Runspace.init(std.testing.allocator, .{
+        .max_runs = 1,
+        .preserve_completed_runs = false,
+    });
+    defer replaceable.deinit();
+    const first = try replaceable.installMachineRun(fixtures.Strict.Target, world.Environment(fixtures.Strict.Target, .{
+        .ports = &.{},
+    }), &replace_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    _ = try replaceable.tick();
+    try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try replaceable.getSlotSummary(first)).status);
+    const second = try replaceable.installTarget(fixtures.Strict.Target, .{}, null, .{});
+    try std.testing.expectEqual(@as(u64, 1), second.local_run_id);
 }
 
 test "runspace failed machine install transfers driver ownership once" {
@@ -2567,7 +2620,7 @@ test "runspace auto dispatch event budget failure happens before handler call" {
     try std.testing.expectError(error.BudgetExceeded, runspace.tick());
     try std.testing.expectEqual(@as(usize, 0), ctx.calls);
     try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
-    try std.testing.expectEqual(world.Runspace.RunStatus.runnable, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.failed, (try runspace.getSlotSummary(handle)).status);
 }
 
 test "runspace install admitted and replay records receipts summaries and events" {
@@ -2899,7 +2952,9 @@ test "runspace branches list only selected parent lineage" {
         .allocator = std.testing.allocator,
         .mode = world.Mode.fresh,
     });
-    const first_branch = try runspace.branch(first, try runspace.checkpoint(first), .{});
+    const first_checkpoint = try runspace.checkpoint(first);
+    try std.testing.expectError(error.HandoffCheckpointMismatch, runspace.branch(second, first_checkpoint, .{}));
+    const first_branch = try runspace.branch(first, first_checkpoint, .{});
     const second_branch = try runspace.branch(second, try runspace.checkpoint(second), .{});
 
     const first_branches = try runspace.listBranches(first, std.testing.allocator);
