@@ -4213,6 +4213,54 @@ test "runspace export pending rejects stale mailbox without changing run state" 
     try std.testing.expectEqual(world.Runspace.PendingStatus.responded, (try runspace.mailbox.get(0)).status);
 }
 
+test "runspace auto dispatch replay stores frame response witness in state" {
+    var seed_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer seed_runtime.deinit();
+    var seed_ctx: PortsCtx = .{};
+    var seed_transcript = world.Transcript.init(std.testing.allocator);
+    defer seed_transcript.deinit();
+    var seed_runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer seed_runspace.deinit();
+    _ = try seed_runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &seed_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &seed_ctx,
+        .transcript = &seed_transcript,
+    });
+    _ = try seed_runspace.tick();
+    _ = try seed_runspace.respondValue(0, @as(i32, 7));
+    _ = try seed_runspace.tick();
+    var transcript_image = try seed_transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer transcript_image.deinit(std.testing.allocator);
+    const expected_response_frame_fingerprint = for (transcript_image.events) |event| {
+        if (event.kind == .frame_responded) break event.response_frame.?.frame_fingerprint;
+    } else return error.ExpectedResponseFrame;
+
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{ .auto_dispatch = true });
+    defer runspace.deinit();
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsReplayEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.replay,
+        .transcript_image = &transcript_image,
+    });
+
+    _ = try runspace.tick();
+    try std.testing.expectEqual(world.Runspace.RunStatus.runnable, (try runspace.getSlotSummary(handle)).status);
+    const auto_port_responded = for (runspace.events.items) |event| {
+        if (event.kind == .port_responded) break event;
+    } else return error.ExpectedResponseFrame;
+    try std.testing.expectEqual(expected_response_frame_fingerprint, auto_port_responded.response_frame_fingerprint.?);
+    const checkpoint = try runspace.checkpoint(handle);
+    try std.testing.expectEqual(expected_response_frame_fingerprint, checkpoint.last_response_fingerprint.?);
+
+    _ = try runspace.tick();
+    var image = try runspace.exportRun(handle);
+    defer image.deinit(std.testing.allocator);
+    try std.testing.expectEqual(expected_response_frame_fingerprint, image.current_state.final_response_fingerprint.?);
+}
+
 test "runspace export run consumes parked mailbox entry" {
     var runtime = boundary.Runtime.init(std.testing.allocator);
     defer runtime.deinit();

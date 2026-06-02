@@ -9294,14 +9294,14 @@ pub const Runspace = struct {
         };
         const evidence = response_evidence orelse return error.InvalidRunspaceTransition;
         const responded = try self.mailbox.markResponded(mailbox_id);
-        try slot.resumeFromPort(mailbox_id, evidence.response_fingerprint, evidence.response_value_image_fingerprint);
-        const response_fingerprint = evidence.response_frame_fingerprint orelse evidence.response_fingerprint;
+        const effective_response_frame_fingerprint = evidence.response_frame_fingerprint orelse evidence.response_fingerprint;
+        try slot.resumeFromPort(mailbox_id, effective_response_frame_fingerprint, evidence.response_value_image_fingerprint);
         _ = self.appendPreparedEventAssumeCapacity(.{
             .kind = .port_responded,
             .run_handle = slot.handle,
             .pending_port_fingerprint = responded.pending_port_fingerprint,
             .request_frame_fingerprint = pending.request_frame_fingerprint,
-            .response_frame_fingerprint = response_fingerprint,
+            .response_frame_fingerprint = effective_response_frame_fingerprint,
             .run_state_fingerprint = slot.current_state.run_state_fingerprint,
             .run_permit_fingerprint = slot.run_permit_fingerprint,
             .summary = events.responded.takeFirst(),
@@ -9311,7 +9311,7 @@ pub const Runspace = struct {
             .run_handle = slot.handle,
             .pending_port_fingerprint = responded.pending_port_fingerprint,
             .request_frame_fingerprint = pending.request_frame_fingerprint,
-            .response_frame_fingerprint = response_fingerprint,
+            .response_frame_fingerprint = effective_response_frame_fingerprint,
             .run_state_fingerprint = slot.current_state.run_state_fingerprint,
             .run_permit_fingerprint = slot.run_permit_fingerprint,
             .summary = events.responded.takeSecond(),
