@@ -3011,6 +3011,48 @@ test "runspace install admitted and replay records receipts summaries and events
     });
     try std.testing.expectError(error.SupervisionDenied, supervised_runspace.installAdmitted(stale_receipt_admitted));
 
+    const unwitnessed_module_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+        .module_ref_fingerprint = 0xfeed_1000,
+    });
+    const unwitnessed_module_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_5517,
+        .target_ref = target_ref,
+        .environment_certificate_fingerprint = ports_cert.certificate_fingerprint,
+        .run_permit = unwitnessed_module_permit,
+        .mode = .continue_fresh,
+    });
+    try std.testing.expectError(error.SupervisionDenied, supervised_runspace.installAdmitted(unwitnessed_module_admitted));
+
+    const replay_cert = PortsReplayEnv.certificate(.replay, true);
+    const module_scoped_permit = world.Supervision.issue(fixtures.Ports.Target, PortsReplayEnv, .{
+        .mode = .replay,
+        .policy = world.SupervisionPolicy.strict_replay,
+        .transcript_image_available = true,
+        .module_ref_fingerprint = 0xfeed_2000,
+    });
+    const completed_state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .completed,
+    });
+    const mismatched_module_image = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = completed_state,
+        .module_ref_fingerprint = 0xfeed_2001,
+    });
+    const mismatched_module_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_5518,
+        .target_ref = target_ref,
+        .environment_certificate_fingerprint = replay_cert.certificate_fingerprint,
+        .run_permit = module_scoped_permit,
+        .run_image = mismatched_module_image,
+        .mode = .completed_replay,
+    });
+    try std.testing.expectError(error.SupervisionDenied, supervised_runspace.installAdmitted(mismatched_module_admitted));
+
     var transcript = world.Transcript.init(std.testing.allocator);
     defer transcript.deinit();
     try transcript.append(.{

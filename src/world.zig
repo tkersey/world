@@ -7365,6 +7365,10 @@ pub const Runspace = struct {
         if (permit.admission_receipt_fingerprint) |receipt_fingerprint| {
             if (receipt_fingerprint != admitted_run.admission_receipt_fingerprint) return error.SupervisionDenied;
         }
+        if (permit.module_ref_fingerprint) |permit_module_ref| {
+            const admitted_module_ref = if (admitted_run.run_image) |image| image.module_ref_fingerprint else null;
+            if (admitted_module_ref == null or admitted_module_ref.? != permit_module_ref) return error.SupervisionDenied;
+        }
         if (admitted_run.environment_certificate_fingerprint) |certificate_fingerprint| {
             if (permit.environment_certificate_fingerprint != certificate_fingerprint) return error.SupervisionDenied;
         } else if (permit.policy.require_environment_certificate) {
