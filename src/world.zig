@@ -228,8 +228,8 @@ pub const world_admission_policy_fingerprint_version: u32 = 2;
 pub const world_admission_request_fingerprint_version: u32 = 1;
 pub const world_admission_report_fingerprint_version: u32 = 1;
 pub const world_admission_receipt_format_version: u32 = 1;
-pub const world_admission_receipt_fingerprint_version: u32 = 1;
-pub const world_admitted_run_fingerprint_version: u32 = 1;
+pub const world_admission_receipt_fingerprint_version: u32 = 2;
+pub const world_admitted_run_fingerprint_version: u32 = 2;
 pub const world_run_handle_format_version: u32 = 1;
 pub const world_run_handle_fingerprint_version: u32 = 1;
 pub const world_pending_port_format_version: u32 = 1;
@@ -14667,7 +14667,6 @@ fn fingerprintAdmissionReceipt(receipt: Admission.AdmissionReceipt) u64 {
     hashOptionalU64(&hasher, receipt.target_match_fingerprint);
     hashOptionalU64(&hasher, receipt.environment_certificate_fingerprint);
     hashOptionalU64(&hasher, receipt.run_permit_fingerprint);
-    hashOptionalU64(&hasher, receipt.admitted_run_fingerprint);
     hashU64(&hasher, @intFromEnum(receipt.accepted_mode));
     hashU64(&hasher, receipt.warnings.len);
     for (receipt.warnings) |warning| hashU64(&hasher, @intFromEnum(warning));
@@ -14680,6 +14679,7 @@ fn fingerprintAdmittedRun(run: Admission.AdmittedRun) u64 {
     var hasher = std.hash.Wyhash.init(0);
     hashBytes(&hasher, "world.admitted_run.fingerprint");
     hashU64(&hasher, world_admitted_run_fingerprint_version);
+    hashU64(&hasher, run.admission_receipt_fingerprint);
     hashU64(&hasher, run.target_ref.target_ref_fingerprint);
     hashOptionalU64(&hasher, run.environment_certificate_fingerprint);
     hashOptionalU64(&hasher, if (run.run_permit) |permit| permit.permit_fingerprint else null);

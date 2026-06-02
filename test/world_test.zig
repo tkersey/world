@@ -3227,6 +3227,9 @@ test "runspace install admitted and replay records receipts summaries and events
     var stale_admitted = admitted;
     stale_admitted.mode = .completed_replay;
     try std.testing.expectError(error.InvalidFrameEncoding, runspace.installAdmitted(stale_admitted));
+    var tampered_receipt_admitted = admitted;
+    tampered_receipt_admitted.admission_receipt_fingerprint +%= 1;
+    try std.testing.expectError(error.InvalidFrameEncoding, runspace.installAdmitted(tampered_receipt_admitted));
     const admitted_handle = try runspace.installAdmitted(admitted);
     const admitted_summary = try runspace.getSlotSummary(admitted_handle);
     try std.testing.expectEqual(world.Runspace.RunStatus.admitted, admitted_summary.status);
@@ -10500,6 +10503,14 @@ test "admission policy request report and receipt fingerprints are stable" {
         .environment_certificate_fingerprint = 33,
         .run_permit_fingerprint = 44,
     });
+    const receipt_with_admitted_association = world.Admission.AdmissionReceipt.init(.{
+        .request = request,
+        .report = report,
+        .target_ref_fingerprint = 66,
+        .environment_certificate_fingerprint = 33,
+        .run_permit_fingerprint = 44,
+        .admitted_run_fingerprint = 77,
+    });
     try std.testing.expect(report.accepted);
     try std.testing.expectEqual(report.report_fingerprint, world.Admission.AdmissionReport.accept(.{
         .request = request,
@@ -10509,6 +10520,7 @@ test "admission policy request report and receipt fingerprints are stable" {
         .run_permit_fingerprint = 44,
     }).report_fingerprint);
     try std.testing.expect(receipt.receipt_fingerprint != 0);
+    try std.testing.expectEqual(receipt.receipt_fingerprint, receipt_with_admitted_association.receipt_fingerprint);
 }
 
 test "admitter accepts inspect-only full module and rejects missing permit for execution" {
