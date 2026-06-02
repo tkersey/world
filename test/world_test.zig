@@ -3557,6 +3557,40 @@ test "runspace failed manual response consumes mailbox and fails slot" {
     try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
 }
 
+test "runspace typed response validation failure preserves pending mailbox" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    _ = try runspace.tick();
+    const pending = try runspace.mailbox.get(0);
+    const request = pending.request_frame.?;
+    var wrong_fingerprint_response = try world.Frame.Response.fromValue(
+        std.testing.allocator,
+        request,
+        pending.expected_response_value_table_id,
+        0xdec1_5100,
+        pending.expected_response_kind,
+        @as(i32, 7),
+        .portable,
+    );
+    defer wrong_fingerprint_response.deinit(std.testing.allocator);
+
+    try std.testing.expectError(error.VerifyResponseFingerprintMismatch, runspace.respond(0, wrong_fingerprint_response));
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+
+    _ = try runspace.respondValue(0, @as(i32, 7));
+    try std.testing.expectEqual(world.Runspace.PendingStatus.responded, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.runnable, (try runspace.getSlotSummary(handle)).status);
+}
+
 test "runspace raw terminal response checks supervision before consuming mailbox" {
     const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
         .mode = .fresh,

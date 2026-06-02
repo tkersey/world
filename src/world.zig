@@ -7869,12 +7869,6 @@ pub const Runspace = struct {
         const resumed_summary = try self.allocator.dupe(u8, "run resumed");
         var resumed_summary_owned = true;
         defer if (resumed_summary_owned) self.allocator.free(resumed_summary);
-        const failed_response_summary = try self.allocator.dupe(u8, "port response failed");
-        var failed_response_summary_owned = true;
-        defer if (failed_response_summary_owned) self.allocator.free(failed_response_summary);
-        const failed_run_summary = try self.allocator.dupe(u8, "run failed after response");
-        var failed_run_summary_owned = true;
-        defer if (failed_run_summary_owned) self.allocator.free(failed_run_summary);
         const effective_response_frame_fingerprint = if (slot.driver) |driver|
             driver.resumeFrame(response) catch |err| {
                 if (err == error.HandlerPending) {
@@ -7883,28 +7877,6 @@ pub const Runspace = struct {
                     }
                     return err;
                 }
-                const failed = try self.mailbox.fail(mailbox_id, "resume failed");
-                try slot.transition(.fail, null);
-                _ = self.appendPreparedEventAssumeCapacity(.{
-                    .kind = .port_failed,
-                    .run_handle = slot.handle,
-                    .pending_port_fingerprint = failed.pending_port_fingerprint,
-                    .response_frame_fingerprint = response.frame_fingerprint,
-                    .run_state_fingerprint = slot.current_state.run_state_fingerprint,
-                    .run_permit_fingerprint = slot.run_permit_fingerprint,
-                    .summary = failed_response_summary,
-                });
-                failed_response_summary_owned = false;
-                _ = self.appendPreparedEventAssumeCapacity(.{
-                    .kind = .run_failed,
-                    .run_handle = slot.handle,
-                    .pending_port_fingerprint = failed.pending_port_fingerprint,
-                    .response_frame_fingerprint = response.frame_fingerprint,
-                    .run_state_fingerprint = slot.current_state.run_state_fingerprint,
-                    .run_permit_fingerprint = slot.run_permit_fingerprint,
-                    .summary = failed_run_summary,
-                });
-                failed_run_summary_owned = false;
                 return err;
             }
         else
