@@ -3681,6 +3681,66 @@ test "runspace export run event allocation failure does not change slot state" {
     try std.testing.expectEqual(world.Runspace.RunStatus.exported, (try runspace.getSlotSummary(handle)).status);
 }
 
+test "runspace checkpoint and branch allocation failures do not spend supervision budgets" {
+    var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    var runspace = world.Runspace.init(failing_allocator.allocator(), .{});
+    defer runspace.deinit();
+    const target_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    const StrictEnv = world.Environment(fixtures.Strict.Target, .{
+        .ports = &.{},
+    });
+    const lifecycle_policy = world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .allow_checkpoints = true,
+        .allow_branching = true,
+        .require_environment_certificate = true,
+    });
+    const permit = world.Supervision.issue(fixtures.Strict.Target, StrictEnv, .{
+        .mode = .fresh,
+        .policy = lifecycle_policy,
+        .budget = world.Budget.init(.{
+            .max_checkpoints = 1,
+            .max_branches = 1,
+        }),
+    });
+    const supervisor = try world.Supervision.Supervisor.init(failing_allocator.allocator(), permit, 0);
+    const handle = world.RunHandle.init(.{
+        .runspace_fingerprint = runspace.runspace_fingerprint,
+        .local_run_id = 0,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .permit_fingerprint = permit.permit_fingerprint,
+    });
+    const state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .completed,
+    });
+    try runspace.slots.append(failing_allocator.allocator(), world.Runspace.RunSlot.fromState(.{
+        .handle = handle,
+        .target_ref = target_ref,
+        .current_state = state,
+        .status = .completed,
+        .run_permit_fingerprint = permit.permit_fingerprint,
+        .supervisor = supervisor,
+    }));
+    runspace.next_run_id = 1;
+    try runspace.events.ensureUnusedCapacity(failing_allocator.allocator(), 1);
+    failing_allocator.fail_index = failing_allocator.alloc_index;
+
+    try std.testing.expectError(error.OutOfMemory, runspace.checkpoint(handle));
+    failing_allocator.fail_index = std.math.maxInt(usize);
+    const checkpoint = try runspace.checkpoint(handle);
+    try std.testing.expectEqual(@as(usize, 1), runspace.events.items.len);
+
+    try runspace.slots.ensureUnusedCapacity(failing_allocator.allocator(), 1);
+    try runspace.events.ensureUnusedCapacity(failing_allocator.allocator(), 1);
+    failing_allocator.fail_index = failing_allocator.alloc_index;
+    try std.testing.expectError(error.OutOfMemory, runspace.branch(handle, checkpoint, .{}));
+    try std.testing.expectEqual(@as(usize, 1), runspace.slots.items.len);
+    failing_allocator.fail_index = std.math.maxInt(usize);
+    const branch_handle = try runspace.branch(handle, checkpoint, .{});
+    try std.testing.expectEqual(@as(u64, 1), branch_handle.local_run_id);
+}
+
 test "runspace supervised auto dispatch denial happens before handler call" {
     const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
         .mode = .fresh,

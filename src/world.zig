@@ -8238,8 +8238,6 @@ pub const Runspace = struct {
     pub fn checkpoint(self: *@This(), handle: RunHandle) !Timeline.Checkpoint {
         const index = try self.slotIndex(handle);
         const slot = &self.slots.items[index];
-        try self.ensureEventCapacity(1);
-        try self.beforeSlotCheckpoint(index, 0);
         const checkpoint_status = checkpointStatusForSlot(slot.*);
         const checkpoint_value = Timeline.Checkpoint.init(.{
             .world_surface_fingerprint = slot.target_ref.world_surface_fingerprint,
@@ -8252,14 +8250,19 @@ pub const Runspace = struct {
             .branch_id = slot.branch_id orelse 0,
             .status = checkpoint_status,
         });
-        _ = try self.appendEvent(.{
+        const event_summary = try self.prepareEventSummary("checkpoint created");
+        var summary_owned = true;
+        errdefer if (summary_owned) self.allocator.free(event_summary);
+        try self.beforeSlotCheckpoint(index, 0);
+        _ = self.appendPreparedEventAssumeCapacity(.{
             .kind = .checkpoint_created,
             .run_handle = slot.handle,
             .run_state_fingerprint = slot.current_state.run_state_fingerprint,
             .checkpoint_fingerprint = checkpoint_value.checkpoint_fingerprint,
             .run_permit_fingerprint = slot.run_permit_fingerprint,
-            .summary = "checkpoint created",
+            .summary = event_summary,
         });
+        summary_owned = false;
         return checkpoint_value;
     }
 
@@ -8280,7 +8283,6 @@ pub const Runspace = struct {
             .permit_fingerprint = parent.run_permit_fingerprint,
             .branch_id = branch_id,
         });
-        try self.beforeSlotBranch(index, 1);
         var branch_state = parent.current_state;
         branch_state.branch_id = branch_id;
         branch_state.checkpoint_fingerprint = checkpoint_value.checkpoint_fingerprint;
@@ -8300,7 +8302,22 @@ pub const Runspace = struct {
             .module_ref_fingerprint = parent.module_ref_fingerprint,
         });
         const summary_text = if (@hasField(@TypeOf(options), "summary")) @field(options, "summary") else "run branch created";
-        try self.installSlot(slot, .run_branch_created, summary_text);
+        try self.prepareInstallSlot();
+        const event_summary = try self.prepareEventSummary(summary_text);
+        var summary_owned = true;
+        errdefer if (summary_owned) self.allocator.free(event_summary);
+        try self.beforeSlotBranch(index, 1);
+        self.slots.appendAssumeCapacity(slot);
+        _ = self.appendPreparedEventAssumeCapacity(.{
+            .kind = .run_branch_created,
+            .run_handle = slot.handle,
+            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+            .checkpoint_fingerprint = slot.checkpoint_fingerprint,
+            .admission_receipt_fingerprint = slot.admission_receipt_fingerprint,
+            .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .summary = event_summary,
+        });
+        summary_owned = false;
         installed = true;
         return branch_handle;
     }
