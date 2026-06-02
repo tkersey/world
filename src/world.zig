@@ -7174,6 +7174,9 @@ pub const Runspace = struct {
         if (admitted_run.run_image) |image| {
             installed_image = try cloneRunImage(self.allocator, image);
             installed_image_owned = true;
+            if (admitted_run.transcript_image) |transcript_image| {
+                try attachTranscriptToInstalledRunImage(self.allocator, &installed_image.?, transcript_image);
+            }
         }
         const pending_frame = if (installed_image) |image|
             if (image.current_state.status == .parked_on_port)
@@ -7186,7 +7189,7 @@ pub const Runspace = struct {
             .handle = handle,
             .target_ref = target_ref,
             .current_state = current_state,
-            .status = if (admitted_run.run_image == null) .admitted else statusFromRunState(current_state),
+            .status = if (admitted_run.run_image == null) .admitted else try statusFromInstallableRunImageState(current_state),
             .admission_receipt_fingerprint = admitted_run.admission_receipt_fingerprint,
             .run_permit_fingerprint = if (admitted_run.run_permit) |permit| permit.permit_fingerprint else null,
             .pending_mailbox_id = null,
@@ -7216,6 +7219,7 @@ pub const Runspace = struct {
         if (!self.config.allow_handoff_install) return error.RunspaceInstallDenied;
         if (self.config.require_supervision and image.prior_run_permit_fingerprint == null) return error.SupervisionDenied;
         try image.validate(.{});
+        const run_status = try statusFromInstallableRunImageState(image.current_state);
         const next_run_id_before = self.next_run_id;
         const handle = try self.nextHandle(.{
             .target_ref_fingerprint = image.target_ref.target_ref_fingerprint,
@@ -7233,7 +7237,7 @@ pub const Runspace = struct {
             .handle = handle,
             .target_ref = image.target_ref,
             .current_state = image.current_state,
-            .status = statusFromRunState(image.current_state),
+            .status = run_status,
             .run_permit_fingerprint = image.prior_run_permit_fingerprint,
             .run_receipt_fingerprint = image.prior_run_receipt_fingerprint,
             .branch_id = if (image.current_state.branch_id == 0) null else image.current_state.branch_id,
@@ -8126,6 +8130,15 @@ pub const Runspace = struct {
             .parked_on_port => .parked_on_port,
             .completed => .completed,
             .failed => .failed,
+        };
+    }
+
+    fn statusFromInstallableRunImageState(state: RunState) !RunStatus {
+        return switch (state.status) {
+            .parked_on_port => .parked_on_port,
+            .completed => .completed,
+            .failed => .failed,
+            .not_started, .running => error.InvalidRunspaceTransition,
         };
     }
 };
@@ -11441,6 +11454,23 @@ fn cloneTranscriptImage(allocator: std.mem.Allocator, image: TranscriptImage) !T
     const encoded = try image.encode(allocator);
     defer allocator.free(encoded);
     return try TranscriptImage.decode(allocator, encoded);
+}
+
+fn attachTranscriptToInstalledRunImage(allocator: std.mem.Allocator, image: *RunImage, transcript_image: TranscriptImage) !void {
+    if (image.current_state.transcript_image_fingerprint) |fingerprint| {
+        if (fingerprint != transcript_image.transcript_image_fingerprint) return error.HandoffTargetMismatch;
+    }
+    if (image.transcript_image) |embedded| {
+        if (embedded.transcript_image_fingerprint != transcript_image.transcript_image_fingerprint) return error.HandoffTargetMismatch;
+        return;
+    }
+    var cloned_transcript = try cloneTranscriptImage(allocator, transcript_image);
+    errdefer cloned_transcript.deinit(allocator);
+    image.transcript_image = cloned_transcript;
+    image.owns_transcript_image = true;
+    image.current_state.transcript_image_fingerprint = transcript_image.transcript_image_fingerprint;
+    image.current_state.run_state_fingerprint = fingerprintRunState(image.current_state);
+    image.run_image_fingerprint = fingerprintRunImageV3(image.*);
 }
 
 fn mismatchSlice(mismatch: ?Admission.MatchMismatch) []const Admission.MatchMismatch {

@@ -2425,6 +2425,19 @@ test "runspace install rejects invalid image and failed direct installs preserve
     const image_next = try image_runspace.installTarget(fixtures.Strict.Target, .{}, null, .{});
     try std.testing.expectEqual(@as(u64, 0), image_next.local_run_id);
 
+    const non_resumable = world.RunImage.init(.{
+        .kind = .full_target_run,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Strict.Target),
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Strict.Target).import_set_fingerprint,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = world.TargetRef.fromTarget(fixtures.Strict.Target).target_ref_fingerprint,
+            .status = .not_started,
+        }),
+    });
+    try std.testing.expectError(error.InvalidRunspaceTransition, image_runspace.installRunImage(non_resumable));
+    const non_resumable_next = try image_runspace.installTarget(fixtures.Strict.Target, .{}, null, .{});
+    try std.testing.expectEqual(@as(u64, 1), non_resumable_next.local_run_id);
+
     var direct = world.Runspace.init(std.testing.allocator, .{ .max_events = 0 });
     defer direct.deinit();
     try std.testing.expectError(error.BudgetExceeded, direct.installTarget(fixtures.Strict.Target, .{}, null, .{}));
@@ -2676,6 +2689,44 @@ test "runspace install admitted and replay records receipts summaries and events
     });
     try std.testing.expectError(error.HandoffTargetMismatch, runspace.installAdmitted(mismatched_admitted));
     try std.testing.expectError(error.ReplaySurfaceMismatch, replay_runspace.installReplay(fixtures.Ports.Target, image, null));
+
+    var parked_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer parked_runtime.deinit();
+    var parked_transcript = world.Transcript.init(std.testing.allocator);
+    defer parked_transcript.deinit();
+    var parked_source = world.Runspace.init(std.testing.allocator, .{});
+    defer parked_source.deinit();
+    const parked_handle = try parked_source.installMachineRun(fixtures.Ports.Target, PortsEnv, &parked_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .transcript = &parked_transcript,
+    });
+    _ = parked_handle;
+    _ = try parked_source.tick();
+    var parked_export = try parked_source.exportPending(0);
+    defer parked_export.deinit(std.testing.allocator);
+    const admitted_transcript = parked_export.transcript_image.?;
+    const bare_parked_image = world.RunImage.init(.{
+        .kind = .parked_run,
+        .target_ref = parked_export.target_ref,
+        .import_set_fingerprint = parked_export.import_set_fingerprint,
+        .current_state = parked_export.current_state,
+        .pending_request_frame = parked_export.pending_request_frame.?,
+    });
+    const parked_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_9000,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target),
+        .mode = .continue_fresh,
+        .run_image = bare_parked_image,
+        .transcript_image = admitted_transcript,
+    });
+    var parked_target = world.Runspace.init(std.testing.allocator, .{ .require_admission = true });
+    defer parked_target.deinit();
+    const parked_installed = try parked_target.installAdmitted(parked_admitted);
+    var reexported = try parked_target.exportRun(parked_installed);
+    defer reexported.deinit(std.testing.allocator);
+    try std.testing.expect(reexported.transcript_image != null);
+    try std.testing.expectEqual(admitted_transcript.transcript_image_fingerprint, reexported.transcript_image.?.transcript_image_fingerprint);
 
     var replay_denied = world.Runspace.init(std.testing.allocator, .{
         .allow_replay_install = false,
