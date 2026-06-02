@@ -6027,6 +6027,7 @@ pub const RunState = struct {
         parked_on_port,
         completed,
         failed,
+        parked_on_supervision,
     };
 
     pub fn init(args: struct {
@@ -6256,7 +6257,7 @@ pub const RunImage = struct {
             switch (image.final_status) {
                 .completed => if (self.current_state.status != .completed) return error.HandoffTargetMismatch,
                 .failed => if (self.current_state.status != .failed) return error.HandoffTargetMismatch,
-                .running => if (self.current_state.status != .running and self.current_state.status != .parked_on_port) return error.HandoffTargetMismatch,
+                .running => if (self.current_state.status != .running and self.current_state.status != .parked_on_port and self.current_state.status != .parked_on_supervision) return error.HandoffTargetMismatch,
             }
             try image.validateValuePolicy(value_policy);
         }
@@ -7063,7 +7064,7 @@ pub const Runspace = struct {
                     .runnable, .running => {
                         self.status = .parked_on_supervision;
                         self.pending_mailbox_id = null;
-                        self.current_state = self.transitionState(.parked_on_port, self.current_state.turn_index, self.current_state.pending_request_fingerprint);
+                        self.current_state = self.transitionState(.parked_on_supervision, self.current_state.turn_index, null);
                     },
                     else => return error.InvalidRunspaceTransition,
                 },
@@ -8355,8 +8356,13 @@ pub const Runspace = struct {
         const index = try self.slotIndex(handle);
         var slot = &self.slots.items[index];
         if (!Runspace.canTransition(slot.status, .exported)) return error.InvalidRunspaceTransition;
-        const pending = if (slot.status == .parked_on_port or slot.status == .parked_on_supervision) pending: {
+        const pending = if (slot.status == .parked_on_port) pending: {
             const mailbox_id = slot.pending_mailbox_id orelse return error.HandoffPendingFrameMismatch;
+            const pending_port = try self.mailbox.get(mailbox_id);
+            if (pending_port.request_frame == null) return error.HandoffPendingFrameMismatch;
+            break :pending pending_port;
+        } else if (slot.status == .parked_on_supervision) pending: {
+            const mailbox_id = slot.pending_mailbox_id orelse break :pending null;
             const pending_port = try self.mailbox.get(mailbox_id);
             if (pending_port.request_frame == null) return error.HandoffPendingFrameMismatch;
             break :pending pending_port;
@@ -8681,6 +8687,7 @@ pub const Runspace = struct {
                 .parked_on_port => .parked_on_port,
                 .completed => .completed,
                 .failed => .failed,
+                .parked_on_supervision => .parked_on_port,
             },
             .failed, .rejected => .failed,
         };
@@ -8692,6 +8699,7 @@ pub const Runspace = struct {
             .parked_on_port => .parked,
             .completed => .completed,
             .failed => .failed,
+            .parked_on_supervision => .interrupted,
         };
     }
 
@@ -8762,7 +8770,7 @@ pub const Runspace = struct {
                 .completed => result.completed_count += 1,
                 .exported => switch (slot.current_state.status) {
                     .completed => result.completed_count += 1,
-                    .parked_on_port => result.parked_count += 1,
+                    .parked_on_port, .parked_on_supervision => result.parked_count += 1,
                     .failed => result.failed_count += 1,
                     .not_started, .running => {},
                 },
@@ -9061,7 +9069,8 @@ pub const Runspace = struct {
         }
         var image = RunImage.init(.{
             .kind = switch (slot.status) {
-                .parked_on_port, .parked_on_supervision => .parked_run,
+                .parked_on_port => .parked_run,
+                .parked_on_supervision => if (slot.current_state.status == .parked_on_port) .parked_run else .full_target_run,
                 .completed, .exported => .completed_run,
                 .failed, .rejected => .replay_only_run,
                 .admitted, .runnable, .running => .full_target_run,
@@ -9358,6 +9367,7 @@ pub const Runspace = struct {
         return switch (state.status) {
             .not_started, .running => .runnable,
             .parked_on_port => .parked_on_port,
+            .parked_on_supervision => .parked_on_supervision,
             .completed => .completed,
             .failed => .failed,
         };
@@ -9366,6 +9376,7 @@ pub const Runspace = struct {
     fn statusFromInstallableRunImageState(state: RunState) !RunStatus {
         return switch (state.status) {
             .parked_on_port => .parked_on_port,
+            .parked_on_supervision => .parked_on_supervision,
             .completed => .completed,
             .failed => .failed,
             .not_started, .running => error.InvalidRunspaceTransition,
@@ -10777,6 +10788,8 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         .failed
                     else if (pending_frame != null)
                         .parked_on_port
+                    else if (self.audit.final_status == .parked)
+                        .parked_on_supervision
                     else
                         .running;
                     var state = RunState.init(.{
@@ -10794,7 +10807,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             .parked_on_port => .parked_run,
                             .completed => .completed_run,
                             .failed => .replay_only_run,
-                            .not_started, .running => .full_target_run,
+                            .not_started, .running, .parked_on_supervision => .full_target_run,
                         },
                         .target_ref = target_ref,
                         .import_set_fingerprint = ImportSet.fromTarget(Target).import_set_fingerprint,
@@ -10816,7 +10829,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                                 .completed => .completed,
                                 .failed => .failed,
                                 .parked_on_port => .parked,
-                                .not_started, .running => .interrupted,
+                                .not_started, .running, .parked_on_supervision => .interrupted,
                             };
                             break :blk supervisor.receipt(final_status, state.run_state_fingerprint, state.transcript_image_fingerprint, null).receipt_fingerprint;
                         } else null,

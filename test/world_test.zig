@@ -4768,6 +4768,7 @@ test "runspace park-on-budget preserves supervised parked slot" {
     const park_policy = world.SupervisionPolicy.init(.{
         .allow_fresh_calls = true,
         .allow_native_adapters = true,
+        .allow_handoff_export = true,
         .require_environment_certificate = true,
         .park_on_budget_exceeded = true,
     });
@@ -4798,8 +4799,15 @@ test "runspace park-on-budget preserves supervised parked slot" {
     try std.testing.expectEqual(@as(?u64, null), summary.pending_mailbox_id);
     try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().parked_count);
-    try std.testing.expectError(error.HandoffPendingFrameMismatch, runspace.exportRun(handle));
-    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_supervision, (try runspace.getSlotSummary(handle)).status);
+    var image = try runspace.exportRun(handle);
+    defer image.deinit(std.testing.allocator);
+    try std.testing.expectEqual(world.RunImage.Kind.full_target_run, image.kind);
+    try std.testing.expectEqual(world.RunState.Status.parked_on_supervision, image.current_state.status);
+    var receiver = world.Runspace.init(std.testing.allocator, .{});
+    defer receiver.deinit();
+    const installed_handle = try receiver.installRunImage(image);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_supervision, (try receiver.getSlotSummary(installed_handle)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.exported, (try runspace.getSlotSummary(handle)).status);
 }
 
 test "runspace pre-request supervision park event allocation failure leaves slot runnable" {
