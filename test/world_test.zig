@@ -4825,6 +4825,7 @@ test "runspace enforces lifecycle supervision for direct and imported slots" {
     try std.testing.expectEqual(@as(usize, 0), direct.slots.items[0].supervisor.?.ledger.total_handoff_exports);
     const checkpoint = try direct.checkpoint(direct_handle);
     try std.testing.expectError(error.BranchDenied, direct.branch(direct_handle, checkpoint, .{}));
+    try std.testing.expectEqual(@as(usize, 1), direct.report().blocker_count);
     try std.testing.expectEqual(@as(usize, 2), direct.events.items.len);
     const direct_next = try direct.installTarget(fixtures.Strict.Target, StrictEnv, branch_denied_permit, .{});
     try std.testing.expectEqual(@as(u64, 1), direct_next.local_run_id);
@@ -5047,6 +5048,7 @@ test "runspace branch child preserves supervised branch budget" {
     const branch_handle = try runspace.branch(handle, checkpoint_value, .{});
     const child_checkpoint = try runspace.checkpoint(branch_handle);
     try std.testing.expectError(error.BudgetExceeded, runspace.branch(branch_handle, child_checkpoint, .{}));
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().blocker_count);
 }
 
 test "runspace branch depth budget rejects grandchildren" {

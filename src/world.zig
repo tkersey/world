@@ -8592,7 +8592,15 @@ pub const Runspace = struct {
         try self.validateSlotCheckpoint(parent, checkpoint_value);
         try self.ensureEventCapacity(1);
         const branch_depth = try self.childBranchDepthForIndex(index);
-        var branch_supervisor = try self.cloneSlotSupervisorForBranch(parent, branch_depth);
+        var branch_supervisor = self.cloneSlotSupervisorForBranch(parent, branch_depth) catch |err| {
+            switch (err) {
+                error.BranchDenied, error.BudgetExceeded => {
+                    self.beforeSlotBranch(index, branch_depth) catch |live_err| return live_err;
+                },
+                else => {},
+            }
+            return err;
+        };
         var branch_supervisor_owned = branch_supervisor != null;
         errdefer if (branch_supervisor_owned) {
             if (branch_supervisor) |*supervisor| supervisor.deinit();
