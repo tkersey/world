@@ -2892,6 +2892,8 @@ test "runspace install admitted and replay records receipts summaries and events
         .import_set_fingerprint = parked_export.import_set_fingerprint,
         .current_state = parked_export.current_state,
         .pending_request_frame = parked_export.pending_request_frame.?,
+        .prior_run_receipt_fingerprint = 0x5eed_9000,
+        .module_ref_fingerprint = 0x9000_5eed,
     });
     const parked_admitted = world.Admission.AdmittedRun.init(.{
         .admission_receipt_fingerprint = 0xadd1_9000,
@@ -2909,6 +2911,8 @@ test "runspace install admitted and replay records receipts summaries and events
     defer reexported.deinit(std.testing.allocator);
     try std.testing.expect(reexported.transcript_image != null);
     try std.testing.expectEqual(admitted_transcript.transcript_image_fingerprint, reexported.transcript_image.?.transcript_image_fingerprint);
+    try std.testing.expectEqual(@as(?u64, 0x5eed_9000), reexported.prior_run_receipt_fingerprint);
+    try std.testing.expectEqual(@as(?u64, 0x9000_5eed), reexported.module_ref_fingerprint);
 
     const detached_state = world.RunState.init(.{
         .target_ref_fingerprint = world.TargetRef.fromTarget(fixtures.Ports.Target).target_ref_fingerprint,
@@ -8472,6 +8476,42 @@ test "supervised handoff export is charged before encoded bytes are returned" {
     defer std.testing.allocator.free(encoded);
     try std.testing.expect(encoded.len > 0);
     try std.testing.expectEqual(@as(usize, 1), allowed_run.supervisor.?.ledger.total_handoff_exports);
+}
+
+test "interrupted handoff export still enforces export-specific supervision budgets" {
+    const total_cost_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_native_adapters = true,
+            .allow_handoff_export = true,
+            .park_on_budget_exceeded = true,
+        }),
+        .budget = world.Budget.init(.{ .max_total_cost_units = 0 }),
+        .cost_model = world.CostModel.init(.{ .handoff_export_cost = 1 }),
+    });
+    var total_cost_supervisor = try world.Supervisor.init(std.testing.allocator, total_cost_permit, fixtures.Ports.Target.WorldPortTable.entries.len);
+    defer total_cost_supervisor.deinit();
+    total_cost_supervisor.interrupted = true;
+    try std.testing.expectError(error.BudgetExceeded, total_cost_supervisor.beforeInterruptedHandoffExport());
+    try std.testing.expectEqual(world.Supervision.BudgetExceededKind.total_cost_units, total_cost_supervisor.ledger.exceeded_budget.?);
+
+    const event_policy = world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .allow_native_adapters = true,
+        .allow_handoff_export = true,
+        .park_on_budget_exceeded = true,
+        .max_supervision_events = 0,
+    });
+    const event_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = event_policy,
+    });
+    var event_supervisor = try world.Supervisor.init(std.testing.allocator, event_permit, fixtures.Ports.Target.WorldPortTable.entries.len);
+    defer event_supervisor.deinit();
+    event_supervisor.interrupted = true;
+    try std.testing.expectError(error.BudgetExceeded, event_supervisor.beforeInterruptedHandoffExport());
+    try std.testing.expectEqual(world.Supervision.Blocker.max_supervision_events_exceeded, event_supervisor.last_check.?.blocker.?);
 }
 
 test "supervised branch and checkpoint budgets are enforced" {

@@ -3836,11 +3836,30 @@ pub const Supervision = struct {
             if (self.permit.budget.max_handoff_exports) |max| {
                 if (next.total_handoff_exports > max) return self.exceed(.before_handoff_export, null, .handoff_exports, &next, null, "interrupted handoff export");
             }
+            if (self.permit.budget.max_total_cost_units) |max| {
+                if (self.ledger.total_cost_units <= max and next.total_cost_units > max) return self.exceed(.before_handoff_export, null, .total_cost_units, &next, null, "interrupted handoff export");
+            }
             const usage_before = self.ledger.ledger_fingerprint;
+            const reservation = try self.reserveSupervisionEvent(.before_handoff_export, null, usage_before, null, "interrupted handoff export");
+            if (reservation == .audit_only_exceeded) next.exceeded_budget = .supervision_events;
             self.ledger.deinit(self.allocator);
             self.ledger = next;
             next.per_port_usage = &.{};
             self.ledger.refreshFingerprint();
+            if (reservation == .audit_only_exceeded) {
+                self.last_check = Supervision.SupervisionCheck.init(.{
+                    .run_permit_fingerprint = self.permit.permit_fingerprint,
+                    .event_kind = .before_handoff_export,
+                    .usage_before_fingerprint = usage_before,
+                    .usage_after_fingerprint = self.ledger.ledger_fingerprint,
+                    .allowed = true,
+                    .blocker = .max_supervision_events_exceeded,
+                    .budget_exceeded = .supervision_events,
+                    .budget_fingerprint = self.permit.budget_fingerprint,
+                    .summary = "interrupted handoff export",
+                });
+                return;
+            }
             self.last_check = Supervision.SupervisionCheck.init(.{
                 .run_permit_fingerprint = self.permit.permit_fingerprint,
                 .event_kind = .before_handoff_export,
@@ -7409,9 +7428,11 @@ pub const Runspace = struct {
             .status = if (admitted_run.run_image == null) .admitted else try statusFromInstallableRunImageState(slot_current_state),
             .admission_receipt_fingerprint = admitted_run.admission_receipt_fingerprint,
             .run_permit_fingerprint = if (admitted_run.run_permit) |permit| permit.permit_fingerprint else null,
+            .run_receipt_fingerprint = if (installed_image) |image| image.prior_run_receipt_fingerprint else null,
             .pending_mailbox_id = null,
             .branch_id = slot_branch_id,
             .checkpoint_fingerprint = slot_current_state.checkpoint_fingerprint,
+            .module_ref_fingerprint = if (installed_image) |image| image.module_ref_fingerprint else null,
             .supervisor = supervisor,
             .installed_run_image = installed_image,
             .owns_installed_run_image = installed_image != null,
