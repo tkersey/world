@@ -3789,6 +3789,16 @@ test "runspace install admitted and replay records receipts summaries and events
     var selected_branch_export = try selected_branch_target.exportRun(selected_branch_handle);
     defer selected_branch_export.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(u64, 44), selected_branch_export.current_state.branch_id);
+    var selected_missing_branch_target = world.Runspace.init(std.testing.allocator, .{});
+    defer selected_missing_branch_target.deinit();
+    const selected_missing_branch_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_b047,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target),
+        .mode = .continue_fresh,
+        .run_image = selected_branch_image,
+        .selected_branch_id = 99,
+    });
+    try std.testing.expectError(error.HandoffCheckpointMismatch, selected_missing_branch_target.installAdmitted(selected_missing_branch_admitted));
     const selected_checkpoint_mismatch_admitted = world.Admission.AdmittedRun.init(.{
         .admission_receipt_fingerprint = 0xadd1_b046,
         .target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target),
@@ -3799,6 +3809,27 @@ test "runspace install admitted and replay records receipts summaries and events
     var selected_checkpoint_target = world.Runspace.init(std.testing.allocator, .{});
     defer selected_checkpoint_target.deinit();
     try std.testing.expectError(error.HandoffCheckpointMismatch, selected_checkpoint_target.installAdmitted(selected_checkpoint_mismatch_admitted));
+    const unwitnessed_checkpoint_state = world.RunState.init(.{
+        .target_ref_fingerprint = world.TargetRef.fromTarget(fixtures.Ports.Target).target_ref_fingerprint,
+        .checkpoint_fingerprint = branched_checkpoint.checkpoint_fingerprint,
+        .status = .completed,
+    });
+    const unwitnessed_checkpoint_image = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = parked_export.target_ref,
+        .import_set_fingerprint = parked_export.import_set_fingerprint,
+        .current_state = unwitnessed_checkpoint_state,
+    });
+    const unwitnessed_checkpoint_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_b048,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target),
+        .mode = .continue_fresh,
+        .run_image = unwitnessed_checkpoint_image,
+        .selected_checkpoint_ref = branched_checkpoint.checkpoint_fingerprint,
+    });
+    var unwitnessed_checkpoint_target = world.Runspace.init(std.testing.allocator, .{});
+    defer unwitnessed_checkpoint_target.deinit();
+    try std.testing.expectError(error.HandoffCheckpointMismatch, unwitnessed_checkpoint_target.installAdmitted(unwitnessed_checkpoint_admitted));
 
     var replay_denied = world.Runspace.init(std.testing.allocator, .{
         .allow_replay_install = false,
@@ -3828,6 +3859,20 @@ test "runspace install admitted and replay records receipts summaries and events
         .transcript_image = &image,
     }));
     try std.testing.expectError(error.RunspaceInstallDenied, replay_denied.installVerifyRun(fixtures.Strict.Target, StrictReplayEnv, &replay_denied_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.verify,
+        .transcript_image = &image,
+    }));
+    var manual_replay_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer manual_replay_runtime.deinit();
+    var manual_replay_runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer manual_replay_runspace.deinit();
+    try std.testing.expectError(error.RunspaceInstallDenied, manual_replay_runspace.installMachineRun(fixtures.Strict.Target, StrictReplayEnv, &manual_replay_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.replay,
+        .transcript_image = &image,
+    }));
+    try std.testing.expectError(error.RunspaceInstallDenied, manual_replay_runspace.installVerifyRun(fixtures.Strict.Target, StrictReplayEnv, &manual_replay_runtime, .{}, .{
         .allocator = std.testing.allocator,
         .mode = world.Mode.verify,
         .transcript_image = &image,

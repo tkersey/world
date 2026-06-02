@@ -5922,8 +5922,23 @@ fn runStateWithBranch(state: RunState, branch_id: u64) RunState {
     });
 }
 
+fn runImageContainsBranch(image: RunImage, branch_id: u64) bool {
+    for (image.branches) |branch| {
+        if (branch.branch_id == branch_id) return true;
+    }
+    return false;
+}
+
+fn runImageContainsCheckpoint(image: RunImage, checkpoint_ref: u64) bool {
+    for (image.checkpoints) |checkpoint| {
+        if (checkpoint.checkpoint_fingerprint == checkpoint_ref) return true;
+    }
+    return false;
+}
+
 fn applySelectedBranchToRunImage(image: *RunImage, selected_branch_id: ?u64) !void {
     const branch_id = selected_branch_id orelse return;
+    if (!runImageContainsBranch(image.*, branch_id)) return error.HandoffCheckpointMismatch;
     if (image.current_state.branch_id != 0 and image.current_state.branch_id != branch_id) return error.HandoffCheckpointMismatch;
     if (image.current_state.branch_id == branch_id) return;
     image.current_state = runStateWithBranch(image.current_state, branch_id);
@@ -7610,7 +7625,10 @@ pub const Runspace = struct {
             if (admitted_run.selected_checkpoint_ref) |selected_checkpoint_ref| {
                 const image_checkpoint = image.current_state.checkpoint_fingerprint orelse return error.HandoffCheckpointMismatch;
                 if (image_checkpoint != selected_checkpoint_ref) return error.HandoffCheckpointMismatch;
+                if (!runImageContainsCheckpoint(image, selected_checkpoint_ref)) return error.HandoffCheckpointMismatch;
             }
+        } else if (admitted_run.selected_branch_id != null or admitted_run.selected_checkpoint_ref != null) {
+            return error.HandoffCheckpointMismatch;
         }
         const current_state = if (admitted_run.run_image) |image| image.current_state else RunState.init(.{
             .target_ref_fingerprint = target_ref.target_ref_fingerprint,
@@ -7824,6 +7842,7 @@ pub const Runspace = struct {
         const Options = @TypeOf(options);
         const requested_mode: Mode = if (comptime @hasField(Options, "mode")) @field(options, "mode") else .fresh;
         if (modeConsumesTranscript(requested_mode) and !self.config.allow_replay_install) return error.RunspaceInstallDenied;
+        if (modeConsumesTranscript(requested_mode) and !self.config.auto_dispatch) return error.RunspaceInstallDenied;
         const maybe_permit: ?RunPermit = if (comptime @hasField(Options, "permit")) @field(options, "permit") else null;
         if (self.config.require_supervision and maybe_permit == null) return error.SupervisionDenied;
         const MachineType = Machine(Target, Env.machine_config);
