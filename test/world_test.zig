@@ -3238,6 +3238,41 @@ test "runspace install admitted and replay records receipts summaries and events
         .mode = .continue_fresh,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, runspace.installAdmitted(invalid_target_admitted));
+    const resume_without_image = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_5520,
+        .target_ref = target_ref,
+        .mode = .resume_parked,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, runspace.installAdmitted(resume_without_image));
+    const branch_resume_without_image = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_5521,
+        .target_ref = target_ref,
+        .mode = .branch_resume,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, runspace.installAdmitted(branch_resume_without_image));
+    const completed_replay_without_image = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_5522,
+        .target_ref = target_ref,
+        .mode = .completed_replay,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, runspace.installAdmitted(completed_replay_without_image));
+    const completed_state_for_resume = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .completed,
+    });
+    const completed_image_for_resume = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = completed_state_for_resume,
+    });
+    const resume_with_completed_image = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_5523,
+        .target_ref = target_ref,
+        .run_image = completed_image_for_resume,
+        .mode = .resume_parked,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, runspace.installAdmitted(resume_with_completed_image));
     const admitted_handle = try runspace.installAdmitted(admitted);
     const admitted_summary = try runspace.getSlotSummary(admitted_handle);
     try std.testing.expectEqual(world.Runspace.RunStatus.admitted, admitted_summary.status);
