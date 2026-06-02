@@ -6483,6 +6483,10 @@ pub const Runspace = struct {
             resumeFrame: *const fn (*anyopaque, Frame.Response) anyerror!void,
             dispatch: *const fn (*anyopaque) anyerror!void,
             snapshotRunImage: *const fn (*anyopaque) anyerror!RunImage,
+            beforeHandoffExport: *const fn (*anyopaque) anyerror!void,
+            beforeCheckpoint: *const fn (*anyopaque, usize) anyerror!void,
+            beforeBranch: *const fn (*anyopaque, usize) anyerror!void,
+            hasSupervisor: *const fn (*anyopaque) bool,
             deinit: *const fn (*anyopaque, std.mem.Allocator) void,
         };
 
@@ -6500,6 +6504,22 @@ pub const Runspace = struct {
 
         fn snapshotRunImage(self: @This()) !RunImage {
             return self.vtable.snapshotRunImage(self.ptr);
+        }
+
+        fn beforeHandoffExport(self: @This()) !void {
+            return self.vtable.beforeHandoffExport(self.ptr);
+        }
+
+        fn beforeCheckpoint(self: @This(), value_image_bytes: usize) !void {
+            return self.vtable.beforeCheckpoint(self.ptr, value_image_bytes);
+        }
+
+        fn beforeBranch(self: @This(), depth: usize) !void {
+            return self.vtable.beforeBranch(self.ptr, depth);
+        }
+
+        fn hasSupervisor(self: @This()) bool {
+            return self.vtable.hasSupervisor(self.ptr);
         }
 
         fn deinit(self: @This(), allocator: std.mem.Allocator) void {
@@ -6547,6 +6567,27 @@ pub const Runspace = struct {
                     return active.snapshotRunImage();
                 }
 
+                fn runBeforeHandoffExport(ptr: *anyopaque) anyerror!void {
+                    const active: *RunType = @ptrCast(@alignCast(ptr));
+                    if (@hasDecl(RunType, "beforeRunspaceHandoffExport")) return active.beforeRunspaceHandoffExport();
+                }
+
+                fn runBeforeCheckpoint(ptr: *anyopaque, value_image_bytes: usize) anyerror!void {
+                    const active: *RunType = @ptrCast(@alignCast(ptr));
+                    if (@hasDecl(RunType, "beforeRunspaceCheckpoint")) return active.beforeRunspaceCheckpoint(value_image_bytes);
+                }
+
+                fn runBeforeBranch(ptr: *anyopaque, depth: usize) anyerror!void {
+                    const active: *RunType = @ptrCast(@alignCast(ptr));
+                    if (@hasDecl(RunType, "beforeRunspaceBranch")) return active.beforeRunspaceBranch(depth);
+                }
+
+                fn runHasSupervisor(ptr: *anyopaque) bool {
+                    const active: *RunType = @ptrCast(@alignCast(ptr));
+                    if (@hasField(RunType, "supervisor")) return active.supervisor != null;
+                    return false;
+                }
+
                 fn runDeinit(ptr: *anyopaque, allocator: std.mem.Allocator) void {
                     const active: *RunType = @ptrCast(@alignCast(ptr));
                     active.deinit();
@@ -6558,6 +6599,10 @@ pub const Runspace = struct {
                     .resumeFrame = runResumeFrame,
                     .dispatch = runDispatch,
                     .snapshotRunImage = runSnapshotRunImage,
+                    .beforeHandoffExport = runBeforeHandoffExport,
+                    .beforeCheckpoint = runBeforeCheckpoint,
+                    .beforeBranch = runBeforeBranch,
+                    .hasSupervisor = runHasSupervisor,
                     .deinit = runDeinit,
                 };
             };
@@ -6606,6 +6651,7 @@ pub const Runspace = struct {
         target_match_fingerprint: ?u64 = null,
         module_ref_fingerprint: ?u64 = null,
         driver: ?SlotDriver = null,
+        supervisor: ?Supervision.Supervisor = null,
         installed_run_image: ?RunImage = null,
         owns_installed_run_image: bool = false,
 
@@ -6655,6 +6701,7 @@ pub const Runspace = struct {
             target_match_fingerprint: ?u64 = null,
             module_ref_fingerprint: ?u64 = null,
             driver: ?SlotDriver = null,
+            supervisor: ?Supervision.Supervisor = null,
             installed_run_image: ?RunImage = null,
             owns_installed_run_image: bool = false,
         }) @This() {
@@ -6673,6 +6720,7 @@ pub const Runspace = struct {
                 .target_match_fingerprint = args.target_match_fingerprint,
                 .module_ref_fingerprint = args.module_ref_fingerprint,
                 .driver = args.driver,
+                .supervisor = args.supervisor,
                 .installed_run_image = args.installed_run_image,
                 .owns_installed_run_image = args.owns_installed_run_image,
             };
@@ -6682,6 +6730,10 @@ pub const Runspace = struct {
             if (self.driver) |driver| {
                 driver.deinit(allocator);
                 self.driver = null;
+            }
+            if (self.supervisor) |*supervisor| {
+                supervisor.deinit();
+                self.supervisor = null;
             }
             if (self.owns_installed_run_image) {
                 if (self.installed_run_image) |*image| image.deinit(allocator);
@@ -7297,14 +7349,25 @@ pub const Runspace = struct {
             .target_ref_fingerprint = target_ref.target_ref_fingerprint,
             .status = .not_started,
         });
+        var supervisor: ?Supervision.Supervisor = null;
+        var supervisor_owned = false;
+        errdefer if (supervisor_owned) {
+            if (supervisor) |*owned| owned.deinit();
+        };
+        if (permit) |run_permit| {
+            supervisor = try Supervision.Supervisor.init(self.allocator, run_permit, Target.WorldPortTable.entries.len);
+            supervisor_owned = true;
+        }
         const slot = Runspace.RunSlot.fromState(.{
             .handle = handle,
             .target_ref = target_ref,
             .current_state = state,
             .status = .admitted,
             .run_permit_fingerprint = if (permit) |run_permit| run_permit.permit_fingerprint else null,
+            .supervisor = supervisor,
         });
         try self.installSlot(slot, .run_installed, "direct target installed");
+        supervisor_owned = false;
         installed = true;
         return handle;
     }
@@ -7316,19 +7379,7 @@ pub const Runspace = struct {
         const maybe_permit: ?RunPermit = if (comptime @hasField(Options, "permit")) @field(options, "permit") else null;
         if (self.config.require_supervision and maybe_permit == null) return error.SupervisionDenied;
         const MachineType = Machine(Target, Env.machine_config);
-        var run = try MachineType.start(runtime, args, options);
-        var run_owned = true;
-        errdefer if (run_owned) run.deinit();
-        const RunType = @TypeOf(run);
-        const run_ptr = try self.allocator.create(RunType);
-        var run_ptr_owned = true;
-        errdefer if (run_ptr_owned) self.allocator.destroy(run_ptr);
-        run_ptr.* = run;
-        run_owned = false;
-        var driver = SlotDriver.forRun(RunType, run_ptr);
-        run_ptr_owned = false;
-        var driver_owned = true;
-        errdefer if (driver_owned) driver.deinit(self.allocator);
+        const RunType = MachineType.Run(@TypeOf(runtime), @TypeOf(args), Options);
         const target_ref = TargetRef.fromTarget(Target);
         const next_run_id_before = self.next_run_id;
         var installed = false;
@@ -7339,6 +7390,19 @@ pub const Runspace = struct {
             .target_ref_fingerprint = target_ref.target_ref_fingerprint,
             .permit_fingerprint = if (maybe_permit) |permit| permit.permit_fingerprint else null,
         });
+        try self.ensureEventCapacity(1);
+        const run_ptr = try self.allocator.create(RunType);
+        var run_ptr_owned = true;
+        errdefer if (run_ptr_owned) self.allocator.destroy(run_ptr);
+        var run = try MachineType.start(runtime, args, options);
+        var run_owned = true;
+        errdefer if (run_owned) run.deinit();
+        run_ptr.* = run;
+        run_owned = false;
+        var driver = SlotDriver.forRun(RunType, run_ptr);
+        run_ptr_owned = false;
+        var driver_owned = true;
+        errdefer if (driver_owned) driver.deinit(self.allocator);
         const state = RunState.init(.{
             .target_ref_fingerprint = target_ref.target_ref_fingerprint,
             .status = .not_started,
@@ -7577,6 +7641,7 @@ pub const Runspace = struct {
             if (slot.pending_mailbox_id) |mailbox_id| try self.mailbox.get(mailbox_id) else return error.StaleRunHandle
         else
             null;
+        try self.beforeSlotHandoffExport(index);
         const exported = if (pending) |pending_port| try self.mailbox.markExported(pending_port.mailbox_id) else null;
         try slot.transition(.@"export", null);
         _ = try self.appendEvent(.{
@@ -7600,6 +7665,7 @@ pub const Runspace = struct {
         try self.ensureEventCapacity(1);
         var image = try self.snapshotSlotImage(index);
         errdefer image.deinit(self.allocator);
+        try self.beforeSlotHandoffExport(index);
         const exported = try self.mailbox.markExported(mailbox_id);
         try slot.transition(.@"export", null);
         _ = try self.appendEvent(.{
@@ -7618,9 +7684,50 @@ pub const Runspace = struct {
         return self.exportRun(handle);
     }
 
+    fn beforeSlotHandoffExport(self: *@This(), index: usize) !void {
+        var slot = &self.slots.items[index];
+        if (slot.driver) |driver| {
+            try driver.beforeHandoffExport();
+            if (driver.hasSupervisor()) return;
+        }
+        if (slot.supervisor) |*supervisor| {
+            try supervisor.beforeHandoffExport();
+            return;
+        }
+        if (self.config.require_supervision) return error.SupervisionDenied;
+    }
+
+    fn beforeSlotCheckpoint(self: *@This(), index: usize, value_image_bytes: usize) !void {
+        var slot = &self.slots.items[index];
+        if (slot.driver) |driver| {
+            try driver.beforeCheckpoint(value_image_bytes);
+            if (driver.hasSupervisor()) return;
+        }
+        if (slot.supervisor) |*supervisor| {
+            try supervisor.beforeCheckpoint(value_image_bytes);
+            return;
+        }
+        if (self.config.require_supervision) return error.SupervisionDenied;
+    }
+
+    fn beforeSlotBranch(self: *@This(), index: usize, depth: usize) !void {
+        var slot = &self.slots.items[index];
+        if (slot.driver) |driver| {
+            try driver.beforeBranch(depth);
+            if (driver.hasSupervisor()) return;
+        }
+        if (slot.supervisor) |*supervisor| {
+            try supervisor.beforeBranch(depth);
+            return;
+        }
+        if (self.config.require_supervision) return error.SupervisionDenied;
+    }
+
     pub fn checkpoint(self: *@This(), handle: RunHandle) !Timeline.Checkpoint {
         const index = try self.slotIndex(handle);
         const slot = &self.slots.items[index];
+        try self.ensureEventCapacity(1);
+        try self.beforeSlotCheckpoint(index, 0);
         const checkpoint_status = checkpointStatusForSlot(slot.*);
         const checkpoint_value = Timeline.Checkpoint.init(.{
             .world_surface_fingerprint = slot.target_ref.world_surface_fingerprint,
@@ -7648,6 +7755,7 @@ pub const Runspace = struct {
         const index = try self.slotIndex(handle);
         const parent = self.slots.items[index];
         try self.validateSlotCheckpoint(parent, checkpoint_value);
+        try self.ensureEventCapacity(1);
         const next_run_id_before = self.next_run_id;
         var installed = false;
         errdefer if (!installed) {
@@ -7660,6 +7768,7 @@ pub const Runspace = struct {
             .permit_fingerprint = parent.run_permit_fingerprint,
             .branch_id = branch_id,
         });
+        try self.beforeSlotBranch(index, 1);
         var branch_state = parent.current_state;
         branch_state.branch_id = branch_id;
         branch_state.checkpoint_fingerprint = checkpoint_value.checkpoint_fingerprint;
@@ -9543,6 +9652,18 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     owns_transcript_image = false;
                     owns_pending_frame = false;
                     return image;
+                }
+
+                pub fn beforeRunspaceHandoffExport(self: *Self) !void {
+                    if (self.supervisor) |*supervisor| try supervisor.beforeHandoffExport();
+                }
+
+                pub fn beforeRunspaceCheckpoint(self: *Self, value_image_bytes: usize) !void {
+                    if (self.supervisor) |*supervisor| try supervisor.beforeCheckpoint(value_image_bytes);
+                }
+
+                pub fn beforeRunspaceBranch(self: *Self, depth: usize) !void {
+                    if (self.supervisor) |*supervisor| try supervisor.beforeBranch(depth);
                 }
 
                 fn resumeReplayedFrame(self: *Self, response_frame: Frame.Response) !void {

@@ -2461,6 +2461,8 @@ test "runspace install rejects invalid image and failed direct installs preserve
 
     var machine_runtime = boundary.Runtime.init(std.testing.allocator);
     defer machine_runtime.deinit();
+    var machine_transcript = world.Transcript.init(std.testing.allocator);
+    defer machine_transcript.deinit();
     var machine = world.Runspace.init(std.testing.allocator, .{ .max_events = 0 });
     defer machine.deinit();
     try std.testing.expectError(error.BudgetExceeded, machine.installMachineRun(fixtures.Strict.Target, world.Environment(fixtures.Strict.Target, .{
@@ -2468,7 +2470,9 @@ test "runspace install rejects invalid image and failed direct installs preserve
     }), &machine_runtime, .{}, .{
         .allocator = std.testing.allocator,
         .mode = world.Mode.fresh,
+        .transcript = &machine_transcript,
     }));
+    try std.testing.expectEqual(@as(usize, 0), machine_transcript.events.items.len);
     machine.config.max_events = 1;
     const machine_next = try machine.installTarget(fixtures.Strict.Target, .{}, null, .{});
     try std.testing.expectEqual(@as(u64, 0), machine_next.local_run_id);
@@ -2963,6 +2967,58 @@ test "runspace supervised auto dispatch denial happens before handler call" {
     try std.testing.expectError(error.BudgetExceeded, runspace.tick());
     try std.testing.expectEqual(@as(usize, 0), ctx.calls);
     try std.testing.expectEqual(world.Runspace.RunStatus.failed, (try runspace.getSlotSummary(handle)).status);
+}
+
+test "runspace enforces lifecycle supervision for direct and imported slots" {
+    const StrictEnv = world.Environment(fixtures.Strict.Target, .{
+        .ports = &.{},
+    });
+    const branch_denied_permit = world.Supervision.issue(fixtures.Strict.Target, StrictEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+    });
+    var direct = world.Runspace.init(std.testing.allocator, .{
+        .require_supervision = true,
+    });
+    defer direct.deinit();
+    const direct_handle = try direct.installTarget(fixtures.Strict.Target, .{}, branch_denied_permit, .{});
+    const checkpoint = try direct.checkpoint(direct_handle);
+    try std.testing.expectError(error.BranchDenied, direct.branch(direct_handle, checkpoint, .{}));
+    try std.testing.expectEqual(@as(usize, 2), direct.events.items.len);
+    const direct_next = try direct.installTarget(fixtures.Strict.Target, .{}, branch_denied_permit, .{});
+    try std.testing.expectEqual(@as(u64, 1), direct_next.local_run_id);
+
+    const checkpoint_budget_permit = world.Supervision.issue(fixtures.Strict.Target, StrictEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+        .budget = world.Budget.init(.{ .max_checkpoints = 0 }),
+    });
+    var checkpoint_denied = world.Runspace.init(std.testing.allocator, .{
+        .require_supervision = true,
+    });
+    defer checkpoint_denied.deinit();
+    const checkpoint_handle = try checkpoint_denied.installTarget(fixtures.Strict.Target, .{}, checkpoint_budget_permit, .{});
+    try std.testing.expectError(error.BudgetExceeded, checkpoint_denied.checkpoint(checkpoint_handle));
+    try std.testing.expectEqual(@as(usize, 1), checkpoint_denied.events.items.len);
+
+    var imported_image = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Strict.Target),
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Strict.Target).import_set_fingerprint,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = world.TargetRef.fromTarget(fixtures.Strict.Target).target_ref_fingerprint,
+            .status = .completed,
+        }),
+        .prior_run_permit_fingerprint = branch_denied_permit.permit_fingerprint,
+    });
+    defer imported_image.deinit(std.testing.allocator);
+    var imported = world.Runspace.init(std.testing.allocator, .{
+        .require_supervision = true,
+    });
+    defer imported.deinit();
+    const imported_handle = try imported.installRunImage(imported_image);
+    try std.testing.expectError(error.SupervisionDenied, imported.exportRun(imported_handle));
+    try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try imported.getSlotSummary(imported_handle)).status);
 }
 
 test "runspace handoff export captures parked pending request and completed transcript" {
