@@ -752,6 +752,26 @@ test "runspace event fingerprints include kind handle mailbox and status" {
     try std.testing.expect(event.event_fingerprint != changed_summary.event_fingerprint);
 }
 
+test "runspace public event returns are borrowed from log" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+
+    _ = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    var event = try runspace.stepOne();
+    defer event.deinit(std.testing.allocator);
+
+    try std.testing.expect(!event.owns_summary);
+    const report = runspace.report();
+    try std.testing.expect(report.emitted_events.len > 0);
+    try std.testing.expect(report.emitted_events[report.emitted_events.len - 1].owns_summary);
+    try std.testing.expectEqual(event.event_fingerprint, report.emitted_events[report.emitted_events.len - 1].event_fingerprint);
+}
+
 test "world machine accepts strict zero-port certified target" {
     const Machine = world.Machine(fixtures.Strict.Target, .{
         .ports = .{},

@@ -7229,6 +7229,12 @@ pub const Runspace = struct {
             if (self.owns_summary) allocator.free(@constCast(self.summary));
             self.* = undefined;
         }
+
+        pub fn borrowed(self: @This()) @This() {
+            var result = self;
+            result.owns_summary = false;
+            return result;
+        }
     };
 
     pub const RunspaceReport = struct {
@@ -8302,7 +8308,7 @@ pub const Runspace = struct {
         try self.events.append(self.allocator, event);
         summary_owned = false;
         self.next_event_index += 1;
-        return event;
+        return event.borrowed();
     }
 
     fn ensureEventCapacity(self: *const @This(), additional_events: usize) !void {
