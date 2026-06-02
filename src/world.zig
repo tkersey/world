@@ -6489,6 +6489,7 @@ pub const Runspace = struct {
             beforeCheckpoint: *const fn (*anyopaque, usize) anyerror!void,
             beforeBranch: *const fn (*anyopaque, usize) anyerror!void,
             hasSupervisor: *const fn (*anyopaque) bool,
+            supervisionInterrupted: *const fn (*anyopaque) bool,
             deinit: *const fn (*anyopaque, std.mem.Allocator) void,
         };
 
@@ -6530,6 +6531,10 @@ pub const Runspace = struct {
 
         fn hasSupervisor(self: @This()) bool {
             return self.vtable.hasSupervisor(self.ptr);
+        }
+
+        fn supervisionInterrupted(self: @This()) bool {
+            return self.vtable.supervisionInterrupted(self.ptr);
         }
 
         fn deinit(self: @This(), allocator: std.mem.Allocator) void {
@@ -6609,6 +6614,14 @@ pub const Runspace = struct {
                     return false;
                 }
 
+                fn runSupervisionInterrupted(ptr: *anyopaque) bool {
+                    const active: *RunType = @ptrCast(@alignCast(ptr));
+                    if (@hasField(RunType, "supervisor")) {
+                        if (active.supervisor) |*supervisor| return supervisor.interrupted;
+                    }
+                    return false;
+                }
+
                 fn runDeinit(ptr: *anyopaque, allocator: std.mem.Allocator) void {
                     const active: *RunType = @ptrCast(@alignCast(ptr));
                     active.deinit();
@@ -6626,6 +6639,7 @@ pub const Runspace = struct {
                     .beforeCheckpoint = runBeforeCheckpoint,
                     .beforeBranch = runBeforeBranch,
                     .hasSupervisor = runHasSupervisor,
+                    .supervisionInterrupted = runSupervisionInterrupted,
                     .deinit = runDeinit,
                 };
             };
@@ -6682,6 +6696,7 @@ pub const Runspace = struct {
         pub const Transition = enum {
             step,
             park_on_port,
+            park_on_supervision,
             resume_from_port,
             complete,
             fail,
@@ -6786,6 +6801,18 @@ pub const Runspace = struct {
                         const pending_mailbox_id = mailbox_id orelse return error.InvalidRunspaceTransition;
                         self.status = .parked_on_port;
                         self.pending_mailbox_id = pending_mailbox_id;
+                        self.current_state = RunState.init(.{
+                            .target_ref_fingerprint = self.handle.target_ref_fingerprint,
+                            .turn_index = self.current_state.turn_index,
+                            .status = .parked_on_port,
+                        });
+                    },
+                    else => return error.InvalidRunspaceTransition,
+                },
+                .park_on_supervision => switch (self.status) {
+                    .runnable, .running => {
+                        self.status = .parked_on_supervision;
+                        self.pending_mailbox_id = null;
                         self.current_state = RunState.init(.{
                             .target_ref_fingerprint = self.handle.target_ref_fingerprint,
                             .turn_index = self.current_state.turn_index,
@@ -8225,6 +8252,16 @@ pub const Runspace = struct {
         });
         const driver = slot.driver.?;
         const step_result = driver.nextFrame() catch |err| {
+            if (err == error.HandlerPending and driver.supervisionInterrupted()) {
+                try slot.transition(.park_on_supervision, null);
+                return self.appendEvent(.{
+                    .kind = .run_parked_on_supervision,
+                    .run_handle = slot.handle,
+                    .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+                    .run_permit_fingerprint = slot.run_permit_fingerprint,
+                    .summary = "run parked on supervision",
+                });
+            }
             slot.transition(.fail, null) catch {};
             _ = try self.appendEvent(.{
                 .kind = .run_failed,
