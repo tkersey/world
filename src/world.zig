@@ -6860,7 +6860,7 @@ pub const Runspace = struct {
                     else => return error.InvalidRunspaceTransition,
                 },
                 .@"export" => switch (self.status) {
-                    .parked_on_port, .completed => self.status = .exported,
+                    .parked_on_port, .parked_on_supervision, .completed => self.status = .exported,
                     else => return error.InvalidRunspaceTransition,
                 },
                 .reject => switch (self.status) {
@@ -7298,12 +7298,6 @@ pub const Runspace = struct {
         else
             null;
         const next_run_id_before = self.next_run_id;
-        const handle = try self.nextHandle(.{
-            .target_ref_fingerprint = target_ref.target_ref_fingerprint,
-            .admission_receipt_fingerprint = admitted_run.admission_receipt_fingerprint,
-            .permit_fingerprint = if (admitted_run.run_permit) |permit| permit.permit_fingerprint else null,
-            .branch_id = admitted_run.selected_branch_id,
-        });
         var installed_image: ?RunImage = null;
         var installed_image_owned = false;
         errdefer if (installed_image_owned) {
@@ -7330,6 +7324,12 @@ pub const Runspace = struct {
             admitted_run.selected_branch_id
         else
             slot_current_state.branch_id;
+        const handle = try self.nextHandle(.{
+            .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+            .admission_receipt_fingerprint = admitted_run.admission_receipt_fingerprint,
+            .permit_fingerprint = if (admitted_run.run_permit) |permit| permit.permit_fingerprint else null,
+            .branch_id = slot_branch_id,
+        });
         const slot = Runspace.RunSlot.fromState(.{
             .handle = handle,
             .target_ref = target_ref,
@@ -11853,7 +11853,7 @@ fn attachTranscriptToInstalledRunImage(allocator: std.mem.Allocator, image: *Run
     image.owns_transcript_image = true;
     image.current_state.transcript_image_fingerprint = transcript_image.transcript_image_fingerprint;
     image.current_state.run_state_fingerprint = fingerprintRunState(image.current_state);
-    image.run_image_fingerprint = fingerprintRunImageV3(image.*);
+    refreshRunImageFingerprint(image);
 }
 
 fn mismatchSlice(mismatch: ?Admission.MatchMismatch) []const Admission.MatchMismatch {

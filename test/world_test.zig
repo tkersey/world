@@ -618,11 +618,21 @@ test "runspace slot transition matrix rejects impossible lifecycle states" {
     try std.testing.expect(world.Runspace.canTransition(.running, .parked_on_port));
     try std.testing.expect(!world.Runspace.canTransition(.parked_on_port, .completed));
     try std.testing.expect(world.Runspace.canTransition(.parked_on_port, .runnable));
+    try std.testing.expect(world.Runspace.canTransition(.parked_on_supervision, .exported));
     try std.testing.expect(world.Runspace.canTransition(.completed, .exported));
     try std.testing.expect(!world.Runspace.canTransition(.completed, .runnable));
     try std.testing.expect(!world.Runspace.canTransition(.failed, .runnable));
     try std.testing.expect(!world.Runspace.canTransition(.exported, .runnable));
     try std.testing.expect(!world.Runspace.canTransition(.rejected, .runnable));
+
+    var slot = world.RunSlot.init(world.RunHandle.init(.{
+        .runspace_fingerprint = 0x51ace,
+        .local_run_id = 1,
+        .target_ref_fingerprint = 0x77,
+    }));
+    slot.status = .parked_on_supervision;
+    try slot.transition(.@"export", null);
+    try std.testing.expectEqual(world.Runspace.RunStatus.exported, slot.status);
 }
 
 test "runspace pending port validates response identity and consumes once" {
@@ -2832,6 +2842,49 @@ test "runspace install admitted and replay records receipts summaries and events
     defer detached_export.deinit(std.testing.allocator);
     try std.testing.expectEqual(admitted_transcript.transcript_image_fingerprint, detached_export.current_state.transcript_image_fingerprint.?);
     try std.testing.expectEqual(detached_export.current_state.run_state_fingerprint, detached_summary.run_state_fingerprint);
+
+    const branched_state = world.RunState.init(.{
+        .target_ref_fingerprint = world.TargetRef.fromTarget(fixtures.Ports.Target).target_ref_fingerprint,
+        .branch_id = 44,
+        .status = .completed,
+    });
+    const branched_checkpoint = world.Timeline.Checkpoint.init(.{
+        .world_surface_fingerprint = parked_export.target_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parked_export.target_ref.target_certificate_fingerprint,
+        .event_index = 0,
+        .turn_index = 0,
+        .transcript_prefix_fingerprint = 0,
+        .branch_id = 44,
+        .status = .completed,
+    });
+    const branched_branch = world.Timeline.Branch{
+        .branch_id = 44,
+        .checkpoint_fingerprint = branched_checkpoint.checkpoint_fingerprint,
+        .start_event_index = 0,
+        .final_event_index = 0,
+        .final_status = .completed,
+    };
+    const branched_image = world.RunImage.init(.{
+        .kind = .branched_run,
+        .target_ref = parked_export.target_ref,
+        .import_set_fingerprint = parked_export.import_set_fingerprint,
+        .current_state = branched_state,
+        .checkpoints = &.{branched_checkpoint},
+        .branches = @constCast(&[_]world.Timeline.Branch{branched_branch}),
+    });
+    const branched_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_b044,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target),
+        .mode = .continue_fresh,
+        .run_image = branched_image,
+    });
+    var branched_target = world.Runspace.init(std.testing.allocator, .{ .require_admission = true });
+    defer branched_target.deinit();
+    const branched_handle = try branched_target.installAdmitted(branched_admitted);
+    const branched_summary = try branched_target.getSlotSummary(branched_handle);
+    try std.testing.expectEqual(@as(?u64, 44), branched_handle.branch_id);
+    try std.testing.expectEqual(@as(?u64, 44), branched_summary.handle.branch_id);
+    try std.testing.expectEqual(@as(?u64, 44), branched_summary.branch_id);
 
     var replay_denied = world.Runspace.init(std.testing.allocator, .{
         .allow_replay_install = false,
