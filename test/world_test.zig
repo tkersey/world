@@ -3028,15 +3028,19 @@ test "runspace supervision park event allocation failure preserves port state" {
 test "runspace imported terminal response byte budget parks without consuming mailbox" {
     var source_runtime = boundary.Runtime.init(std.testing.allocator);
     defer source_runtime.deinit();
+    var source_transcript = world.Transcript.init(std.testing.allocator);
+    defer source_transcript.deinit();
     var source_runspace = world.Runspace.init(std.testing.allocator, .{});
     defer source_runspace.deinit();
     _ = try source_runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &source_runtime, .{}, .{
         .allocator = std.testing.allocator,
         .mode = world.Mode.fresh,
+        .transcript = &source_transcript,
     });
     _ = try source_runspace.tick();
     var parked_image = try source_runspace.exportPending(0);
     defer parked_image.deinit(std.testing.allocator);
+    const parked_transcript_fingerprint = parked_image.current_state.transcript_image_fingerprint orelse return error.ExpectedTranscriptImage;
 
     const park_policy = world.SupervisionPolicy.init(.{
         .allow_fresh_calls = true,
@@ -3069,6 +3073,9 @@ test "runspace imported terminal response byte budget parks without consuming ma
     try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
     try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_supervision, (try runspace.getSlotSummary(handle)).status);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+    var reexported = try runspace.exportPending(0);
+    defer reexported.deinit(std.testing.allocator);
+    try std.testing.expectEqual(parked_transcript_fingerprint, reexported.current_state.transcript_image_fingerprint.?);
 }
 
 test "runspace event budget failure does not enqueue or park request" {

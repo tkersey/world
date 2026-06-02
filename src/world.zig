@@ -8154,12 +8154,7 @@ pub const Runspace = struct {
         var slot = &self.slots.items[index];
         slot.status = .parked_on_supervision;
         slot.pending_mailbox_id = mailbox_id;
-        slot.current_state = RunState.init(.{
-            .target_ref_fingerprint = slot.target_ref.target_ref_fingerprint,
-            .pending_request_fingerprint = pending.request_frame_fingerprint,
-            .turn_index = pending.turn_index,
-            .status = .parked_on_port,
-        });
+        slot.current_state = slot.transitionState(.parked_on_port, pending.turn_index, pending.request_frame_fingerprint);
         const event = self.appendPreparedEventAssumeCapacity(.{
             .kind = .run_parked_on_supervision,
             .run_handle = slot.handle,
@@ -9100,12 +9095,7 @@ pub const Runspace = struct {
                 self.next_mailbox_id += 1;
                 slot.status = .parked_on_port;
                 slot.pending_mailbox_id = mailbox_id;
-                slot.current_state = RunState.init(.{
-                    .target_ref_fingerprint = slot.target_ref.target_ref_fingerprint,
-                    .pending_request_fingerprint = owned_request.frame_fingerprint,
-                    .turn_index = owned_request.turn_index,
-                    .status = .parked_on_port,
-                });
+                slot.current_state = slot.transitionState(.parked_on_port, owned_request.turn_index, owned_request.frame_fingerprint);
                 _ = self.appendPreparedEventAssumeCapacity(.{
                     .kind = .port_enqueued,
                     .run_handle = slot.handle,
@@ -9149,12 +9139,7 @@ pub const Runspace = struct {
             if (err == error.HandlerPending and driver.supervisionInterrupted()) {
                 slot.status = .parked_on_supervision;
                 slot.pending_mailbox_id = mailbox_id;
-                slot.current_state = RunState.init(.{
-                    .target_ref_fingerprint = slot.target_ref.target_ref_fingerprint,
-                    .pending_request_fingerprint = pending.request_frame_fingerprint,
-                    .turn_index = pending.turn_index,
-                    .status = .parked_on_port,
-                });
+                slot.current_state = slot.transitionState(.parked_on_port, pending.turn_index, pending.request_frame_fingerprint);
                 return self.appendPreparedEventAssumeCapacity(.{
                     .kind = .run_parked_on_supervision,
                     .run_handle = slot.handle,
