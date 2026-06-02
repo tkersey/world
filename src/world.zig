@@ -10749,6 +10749,8 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
 
                 pub fn beforeRunspaceTerminalResponse(self: *Self, world_port_id: u32, status: ResponseStatus, response_bytes: usize, value_image_bytes: usize) !void {
                     if (status != .rejected and status != .failed) return error.InvalidPendingPortTransition;
+                    _ = response_bytes;
+                    _ = value_image_bytes;
                     if (self.supervisor) |*supervisor| {
                         try supervisor.validateWorldPortId(world_port_id);
                         var allowed = Supervision.responseAllowedByPolicy(supervisor.permit.policy, status);
@@ -10759,17 +10761,12 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                                 else => unreachable,
                             };
                         }
-                        supervisor.afterAdapterResponse(.{
-                            .world_port_id = world_port_id,
-                            .status = status,
-                            .response_bytes = response_bytes,
-                            .value_image_bytes = value_image_bytes,
-                        }) catch |err| return err;
-                        if (!allowed) return switch (status) {
-                            .rejected => Error.HandlerRejected,
-                            .failed => Error.HandlerFailed,
-                            else => unreachable,
-                        };
+                        if (!allowed) {
+                            supervisor.afterAdapterResponse(.{
+                                .world_port_id = world_port_id,
+                                .status = status,
+                            }) catch |err| return err;
+                        }
                     }
                 }
 
