@@ -8546,6 +8546,40 @@ pub const Runspace = struct {
         return self.allocator.dupe(u8, summary_text);
     }
 
+    const PreparedEventPair = struct {
+        first: []u8,
+        second: []u8,
+        owns_first: bool = true,
+        owns_second: bool = true,
+
+        fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+            if (self.owns_first) allocator.free(self.first);
+            if (self.owns_second) allocator.free(self.second);
+        }
+
+        fn takeFirst(self: *@This()) []u8 {
+            self.owns_first = false;
+            return self.first;
+        }
+
+        fn takeSecond(self: *@This()) []u8 {
+            self.owns_second = false;
+            return self.second;
+        }
+    };
+
+    fn prepareEventPair(self: *@This(), additional_events: usize, first_summary: []const u8, second_summary: []const u8) !PreparedEventPair {
+        try self.ensureEventCapacity(additional_events);
+        try self.events.ensureUnusedCapacity(self.allocator, additional_events);
+        const first = try self.allocator.dupe(u8, first_summary);
+        errdefer self.allocator.free(first);
+        const second = try self.allocator.dupe(u8, second_summary);
+        return .{
+            .first = first,
+            .second = second,
+        };
+    }
+
     fn appendPreparedEventAssumeCapacity(self: *@This(), args: struct {
         kind: Runspace.EventKind,
         run_handle: RunHandle,
@@ -8652,6 +8686,12 @@ pub const Runspace = struct {
 
     fn enqueueInstalledPending(self: *@This(), index: usize, request: Frame.Request) !void {
         var slot = &self.slots.items[index];
+        var event_pair = try self.prepareEventPair(
+            2,
+            "installed port enqueued",
+            "installed run parked on port",
+        );
+        defer event_pair.deinit(self.allocator);
         const mailbox_id = self.next_mailbox_id;
         const pending = try self.mailbox.push(.{
             .run_handle = slot.handle,
@@ -8669,23 +8709,23 @@ pub const Runspace = struct {
         slot.current_state.turn_index = request.turn_index;
         slot.current_state.status = .parked_on_port;
         slot.current_state.run_state_fingerprint = fingerprintRunState(slot.current_state);
-        _ = try self.appendEvent(.{
+        _ = self.appendPreparedEventAssumeCapacity(.{
             .kind = .port_enqueued,
             .run_handle = slot.handle,
             .pending_port_fingerprint = pending.pending_port_fingerprint,
             .request_frame_fingerprint = request.frame_fingerprint,
             .run_state_fingerprint = slot.current_state.run_state_fingerprint,
             .run_permit_fingerprint = slot.run_permit_fingerprint,
-            .summary = "installed port enqueued",
+            .summary = event_pair.takeFirst(),
         });
-        _ = try self.appendEvent(.{
+        _ = self.appendPreparedEventAssumeCapacity(.{
             .kind = .run_parked_on_port,
             .run_handle = slot.handle,
             .pending_port_fingerprint = pending.pending_port_fingerprint,
             .request_frame_fingerprint = request.frame_fingerprint,
             .run_state_fingerprint = slot.current_state.run_state_fingerprint,
             .run_permit_fingerprint = slot.run_permit_fingerprint,
-            .summary = "installed run parked on port",
+            .summary = event_pair.takeSecond(),
         });
     }
 
@@ -8747,9 +8787,14 @@ pub const Runspace = struct {
             .port_request => |request| {
                 var owned_request = request;
                 defer owned_request.deinit(self.allocator);
-                self.ensureEventCapacity(if (self.config.auto_dispatch) 4 else 2) catch |err| {
+                var event_pair = self.prepareEventPair(
+                    if (self.config.auto_dispatch) 4 else 2,
+                    "port enqueued",
+                    "run parked on port",
+                ) catch |err| {
                     return self.failSteppedRunBeforePort(slot, err);
                 };
+                defer event_pair.deinit(self.allocator);
                 self.mailbox.ensurePendingCapacity() catch |err| {
                     return self.failSteppedRunBeforePort(slot, err);
                 };
@@ -8772,23 +8817,23 @@ pub const Runspace = struct {
                     .turn_index = owned_request.turn_index,
                     .status = .parked_on_port,
                 });
-                _ = try self.appendEvent(.{
+                _ = self.appendPreparedEventAssumeCapacity(.{
                     .kind = .port_enqueued,
                     .run_handle = slot.handle,
                     .pending_port_fingerprint = pending.pending_port_fingerprint,
                     .request_frame_fingerprint = owned_request.frame_fingerprint,
                     .run_state_fingerprint = slot.current_state.run_state_fingerprint,
                     .run_permit_fingerprint = slot.run_permit_fingerprint,
-                    .summary = "port enqueued",
+                    .summary = event_pair.takeFirst(),
                 });
-                const parked_event = try self.appendEvent(.{
+                const parked_event = self.appendPreparedEventAssumeCapacity(.{
                     .kind = .run_parked_on_port,
                     .run_handle = slot.handle,
                     .pending_port_fingerprint = pending.pending_port_fingerprint,
                     .request_frame_fingerprint = owned_request.frame_fingerprint,
                     .run_state_fingerprint = slot.current_state.run_state_fingerprint,
                     .run_permit_fingerprint = slot.run_permit_fingerprint,
-                    .summary = "run parked on port",
+                    .summary = event_pair.takeSecond(),
                 });
                 if (self.config.auto_dispatch) return self.autoDispatchPending(index, pending, mailbox_id);
                 return parked_event;
