@@ -3860,6 +3860,13 @@ test "runspace manual default parks without environment dispatch" {
     try std.testing.expectEqual(@as(usize, 1), report.pending_port_count);
     try std.testing.expectEqual(@as(usize, 0), ctx.calls);
     try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try runspace.getSlotSummary(handle)).status);
+    const response_event = try runspace.respondValue(0, @as(i32, 7));
+    _ = try runspace.tick();
+    var image = try runspace.exportRun(handle);
+    defer image.deinit(std.testing.allocator);
+    try std.testing.expectEqual(world.RunImage.Kind.completed_run, image.kind);
+    try std.testing.expectEqual(response_event.response_frame_fingerprint.?, image.current_state.final_response_fingerprint.?);
+    try std.testing.expect(image.current_state.final_value_image_fingerprint != null);
 }
 
 test "runspace failed manual response consumes mailbox and fails slot" {
@@ -4838,6 +4845,22 @@ test "runspace park-on-budget preserves supervised parked slot" {
     defer admitted_receiver.deinit();
     const admitted_installed = try admitted_receiver.installAdmitted(admission.admitted_run.?);
     try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_supervision, (try admitted_receiver.getSlotSummary(admitted_installed)).status);
+    var admitted_resume = admission.admitted_run.?;
+    var resume_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer resume_runtime.deinit();
+    var resume_ctx: PortsCtx = .{};
+    var resumed = try admitted_resume.@"resume"(std.testing.allocator, fixtures.Ports.Target, PortsEnv, &resume_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &resume_ctx,
+    });
+    defer resumed.deinit();
+    var resumed_request = switch (try resumed.nextFrame()) {
+        .port_request => |request| request,
+        else => return error.ExpectedFrameRequest,
+    };
+    defer resumed_request.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u32, 0), resumed_request.world_port_id);
 }
 
 test "runspace pre-request supervision park event allocation failure leaves slot runnable" {

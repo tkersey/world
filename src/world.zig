@@ -9884,9 +9884,34 @@ pub const Handoff = struct {
         else
             self.preflightWithFreshTranscriptSink(Target, Env, mode, fresh_transcript_sink_available);
         if (!report.accepted) return acceptanceError(report);
+        const MachineType = Machine(Target, Env.machine_config);
+        const interrupted_export = runImageIsInterruptedSupervisionExport(self.run_image);
+        if (interrupted_export) {
+            if (effective_permit) |permit| {
+                var accept_supervisor = try Supervision.Supervisor.init(@field(options, "allocator"), permit, Target.WorldPortTable.entries.len);
+                defer accept_supervisor.deinit();
+                try accept_supervisor.beforeHandoffAccept();
+            }
+            var run = if (permit_override) |permit|
+                if (self.run_image.transcript_image) |*image|
+                    try MachineType.startWithAdmittedTranscriptPermit(runtime, args, options, permit, image)
+                else
+                    try MachineType.startWithPermit(runtime, args, options, permit)
+            else if (self.run_image.transcript_image) |*image|
+                try MachineType.startWithAdmittedTranscript(runtime, args, options, image)
+            else
+                try MachineType.start(runtime, args, options);
+            errdefer run.deinit();
+            if (run.supervisor) |*supervisor| {
+                supervisor.beforeHandoffAccept() catch |err| {
+                    try run.handleSupervisionError(err);
+                    unreachable;
+                };
+            }
+            return run;
+        }
         if (self.run_image.current_state.status != .parked_on_port) return error.HandoffPendingFrameMismatch;
         const pending_frame = self.run_image.pending_request_frame orelse return error.HandoffPendingFrameMismatch;
-        const MachineType = Machine(Target, Env.machine_config);
         if (effective_permit) |permit| {
             var accept_supervisor = try Supervision.Supervisor.init(@field(options, "allocator"), permit, Target.WorldPortTable.entries.len);
             defer accept_supervisor.deinit();
@@ -11083,6 +11108,11 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         return err;
                     };
                     retained_committed = true;
+                    self.last_response_evidence = .{
+                        .response_fingerprint = response_trace.fingerprint,
+                        .response_frame_fingerprint = effective_response_frame.frame_fingerprint,
+                        .response_value_image_fingerprint = effective_response_frame.response_value_fingerprint,
+                    };
                     return effective_response_frame.frame_fingerprint;
                 }
 
@@ -12871,6 +12901,10 @@ fn providedFingerprintMatches(provided: ?u64, expected: ?u64) bool {
 fn runImageIsInterruptedSupervisionExport(image: RunImage) bool {
     return image.kind == .full_target_run and
         image.current_state.status == .parked_on_supervision and
+        image.current_state.turn_index == 0 and
+        image.current_state.pending_request_fingerprint == null and
+        image.current_state.final_response_fingerprint == null and
+        image.current_state.final_value_image_fingerprint == null and
         image.pending_request_frame == null;
 }
 
