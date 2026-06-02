@@ -6553,6 +6553,7 @@ pub const Runspace = struct {
             restoreSupervisor: *const fn (*anyopaque, std.mem.Allocator, ?Supervision.Supervisor) void,
             hasSupervisor: *const fn (*anyopaque) bool,
             supervisionInterrupted: *const fn (*anyopaque) bool,
+            failed: *const fn (*anyopaque) bool,
             deinit: *const fn (*anyopaque, std.mem.Allocator) void,
         };
 
@@ -6614,6 +6615,10 @@ pub const Runspace = struct {
 
         fn supervisionInterrupted(self: @This()) bool {
             return self.vtable.supervisionInterrupted(self.ptr);
+        }
+
+        fn failed(self: @This()) bool {
+            return self.vtable.failed(self.ptr);
         }
 
         fn deinit(self: @This(), allocator: std.mem.Allocator) void {
@@ -6734,6 +6739,12 @@ pub const Runspace = struct {
                     return false;
                 }
 
+                fn runFailed(ptr: *anyopaque) bool {
+                    const active: *RunType = @ptrCast(@alignCast(ptr));
+                    if (@hasField(RunType, "audit")) return active.audit.final_status == .failed;
+                    return false;
+                }
+
                 fn runDeinit(ptr: *anyopaque, allocator: std.mem.Allocator) void {
                     const active: *RunType = @ptrCast(@alignCast(ptr));
                     active.deinit();
@@ -6756,6 +6767,7 @@ pub const Runspace = struct {
                     .restoreSupervisor = runRestoreSupervisor,
                     .hasSupervisor = runHasSupervisor,
                     .supervisionInterrupted = runSupervisionInterrupted,
+                    .failed = runFailed,
                     .deinit = runDeinit,
                 };
             };
@@ -7869,6 +7881,12 @@ pub const Runspace = struct {
         const resumed_summary = try self.allocator.dupe(u8, "run resumed");
         var resumed_summary_owned = true;
         defer if (resumed_summary_owned) self.allocator.free(resumed_summary);
+        const failed_response_summary = try self.allocator.dupe(u8, "port response failed");
+        var failed_response_summary_owned = true;
+        defer if (failed_response_summary_owned) self.allocator.free(failed_response_summary);
+        const failed_run_summary = try self.allocator.dupe(u8, "run failed after response");
+        var failed_run_summary_owned = true;
+        defer if (failed_run_summary_owned) self.allocator.free(failed_run_summary);
         const effective_response_frame_fingerprint = if (slot.driver) |driver|
             driver.resumeFrame(response) catch |err| {
                 if (err == error.HandlerPending) {
@@ -7876,6 +7894,30 @@ pub const Runspace = struct {
                         return self.parkPendingOnSupervision(index, pending, mailbox_id, "manual response parked on supervision");
                     }
                     return err;
+                }
+                if (driver.failed()) {
+                    const failed = try self.mailbox.fail(mailbox_id, "resume failed");
+                    try slot.transition(.fail, null);
+                    _ = self.appendPreparedEventAssumeCapacity(.{
+                        .kind = .port_failed,
+                        .run_handle = slot.handle,
+                        .pending_port_fingerprint = failed.pending_port_fingerprint,
+                        .response_frame_fingerprint = response.frame_fingerprint,
+                        .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+                        .run_permit_fingerprint = slot.run_permit_fingerprint,
+                        .summary = failed_response_summary,
+                    });
+                    failed_response_summary_owned = false;
+                    _ = self.appendPreparedEventAssumeCapacity(.{
+                        .kind = .run_failed,
+                        .run_handle = slot.handle,
+                        .pending_port_fingerprint = failed.pending_port_fingerprint,
+                        .response_frame_fingerprint = response.frame_fingerprint,
+                        .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+                        .run_permit_fingerprint = slot.run_permit_fingerprint,
+                        .summary = failed_run_summary,
+                    });
+                    failed_run_summary_owned = false;
                 }
                 return err;
             }
@@ -8362,6 +8404,31 @@ pub const Runspace = struct {
         return branch_supervisor;
     }
 
+    fn slotIndexByHandleFingerprint(self: *const @This(), handle_fingerprint: u64) ?usize {
+        for (self.slots.items, 0..) |slot, index| {
+            if (slot.handle.handle_fingerprint == handle_fingerprint) return index;
+        }
+        return null;
+    }
+
+    fn branchDepthForIndex(self: *const @This(), index: usize) !usize {
+        var depth: usize = 0;
+        var current_index = index;
+        var guard: usize = 0;
+        while (self.slots.items[current_index].parent_run_handle_fingerprint) |parent_fingerprint| {
+            guard += 1;
+            if (guard > self.slots.items.len) return error.InvalidRunspaceTransition;
+            current_index = self.slotIndexByHandleFingerprint(parent_fingerprint) orelse return error.StaleRunHandle;
+            depth += 1;
+        }
+        return depth;
+    }
+
+    fn childBranchDepthForIndex(self: *const @This(), index: usize) !usize {
+        const depth = try self.branchDepthForIndex(index);
+        return if (depth == std.math.maxInt(usize)) depth else depth + 1;
+    }
+
     pub fn checkpoint(self: *@This(), handle: RunHandle) !Timeline.Checkpoint {
         const index = try self.slotIndex(handle);
         const slot = &self.slots.items[index];
@@ -8398,7 +8465,8 @@ pub const Runspace = struct {
         const parent = self.slots.items[index];
         try self.validateSlotCheckpoint(parent, checkpoint_value);
         try self.ensureEventCapacity(1);
-        var branch_supervisor = try self.cloneSlotSupervisorForBranch(parent, 1);
+        const branch_depth = try self.childBranchDepthForIndex(index);
+        var branch_supervisor = try self.cloneSlotSupervisorForBranch(parent, branch_depth);
         var branch_supervisor_owned = branch_supervisor != null;
         errdefer if (branch_supervisor_owned) {
             if (branch_supervisor) |*supervisor| supervisor.deinit();
@@ -8439,7 +8507,7 @@ pub const Runspace = struct {
         const event_summary = try self.prepareEventSummary(summary_text);
         var summary_owned = true;
         errdefer if (summary_owned) self.allocator.free(event_summary);
-        try self.beforeSlotBranch(index, 1);
+        try self.beforeSlotBranch(index, branch_depth);
         self.slots.appendAssumeCapacity(slot);
         branch_supervisor_owned = false;
         _ = self.appendPreparedEventAssumeCapacity(.{

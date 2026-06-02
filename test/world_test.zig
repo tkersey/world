@@ -302,6 +302,10 @@ const ResumeFailureTarget = struct {
 };
 const ResumeFailureRequest = ResumeFailureProgram.protocol.operationSite("approval", "request", 0);
 const ResumeFailureDecl = world.port(ResumeFailureTarget, ResumeFailureRequest, approve);
+const ResumeFailureBinding = world.bind(ResumeFailureDecl, world.NativeAdapter(approve));
+const ResumeFailureEnv = world.Environment(ResumeFailureTarget, .{
+    .bindings = .{ResumeFailureBinding},
+});
 const ResumeFailureMachine = world.Machine(ResumeFailureTarget, .{
     .ports = .{ResumeFailureDecl},
     .strict_handler_coverage = true,
@@ -3591,6 +3595,45 @@ test "runspace typed response validation failure preserves pending mailbox" {
     try std.testing.expectEqual(world.Runspace.RunStatus.runnable, (try runspace.getSlotSummary(handle)).status);
 }
 
+test "runspace terminal resume failure consumes pending mailbox and fails slot" {
+    var seed_transcript = world.Transcript.init(std.testing.allocator);
+    defer seed_transcript.deinit();
+    try recordPortsTranscript(&seed_transcript);
+    const response_fingerprint = (try firstRespondedEvent(&seed_transcript)).response_fingerprint.?;
+
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+
+    const handle = try runspace.installMachineRun(ResumeFailureTarget, ResumeFailureEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .transcript = &transcript,
+    });
+    _ = try runspace.tick();
+    const pending = try runspace.mailbox.get(0);
+    const request = pending.request_frame.?;
+    var response = try world.Frame.Response.fromValue(
+        std.testing.allocator,
+        request,
+        pending.expected_response_value_table_id,
+        response_fingerprint,
+        pending.expected_response_kind,
+        @as(i32, 7),
+        .portable,
+    );
+    defer response.deinit(std.testing.allocator);
+
+    try std.testing.expectError(error.TestResumeFailed, runspace.respond(0, response));
+    try std.testing.expectEqual(world.Runspace.PendingStatus.failed, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.failed, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().failed_count);
+}
+
 test "runspace raw terminal response checks supervision before consuming mailbox" {
     const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
         .mode = .fresh,
@@ -4547,6 +4590,36 @@ test "runspace branch child preserves supervised branch budget" {
             .require_environment_certificate = true,
         }),
         .budget = world.Budget.init(.{ .max_branches = 1 }),
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+    const handle = try runspace.installMachineRun(fixtures.Strict.Target, StrictEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .permit = permit,
+    });
+
+    const checkpoint_value = try runspace.checkpoint(handle);
+    const branch_handle = try runspace.branch(handle, checkpoint_value, .{});
+    const child_checkpoint = try runspace.checkpoint(branch_handle);
+    try std.testing.expectError(error.BudgetExceeded, runspace.branch(branch_handle, child_checkpoint, .{}));
+}
+
+test "runspace branch depth budget rejects grandchildren" {
+    const StrictEnv = world.Environment(fixtures.Strict.Target, .{
+        .ports = &.{},
+    });
+    const permit = world.Supervision.issue(fixtures.Strict.Target, StrictEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_branching = true,
+            .allow_checkpoints = true,
+            .require_environment_certificate = true,
+        }),
+        .budget = world.Budget.init(.{ .max_branches = 2, .max_branch_depth = 1 }),
     });
     var runtime = boundary.Runtime.init(std.testing.allocator);
     defer runtime.deinit();
