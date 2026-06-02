@@ -4861,6 +4861,29 @@ test "runspace park-on-budget preserves supervised parked slot" {
     };
     defer resumed_request.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(u32, 0), resumed_request.world_port_id);
+    const contextual_state = world.RunState.init(.{
+        .target_ref_fingerprint = image.target_ref.target_ref_fingerprint,
+        .branch_id = 7,
+        .status = .parked_on_supervision,
+    });
+    const contextual_image = world.RunImage.init(.{
+        .kind = .full_target_run,
+        .target_ref = image.target_ref,
+        .import_set_fingerprint = image.import_set_fingerprint,
+        .current_state = contextual_state,
+    });
+    const contextual_package = world.Admission.TransferPackage.init(.{
+        .kind = .run_reference,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target),
+        .run_image = contextual_image,
+        .requested_mode = .resume_parked,
+    });
+    const contextual_admission = world.Admission.Admitter.init(.{
+        .registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Ports.Target)}),
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, contextual_package, .{});
+    try std.testing.expect(!contextual_admission.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.RunImageInvalid, contextual_admission.report.blockers[0]);
 }
 
 test "runspace pre-request supervision park event allocation failure leaves slot runnable" {

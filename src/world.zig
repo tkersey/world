@@ -12900,7 +12900,12 @@ fn providedFingerprintMatches(provided: ?u64, expected: ?u64) bool {
 
 fn runImageIsInterruptedSupervisionExport(image: RunImage) bool {
     return image.kind == .full_target_run and
+        image.transcript_image == null and
+        image.checkpoints.len == 0 and
+        image.branches.len == 0 and
         image.current_state.status == .parked_on_supervision and
+        image.current_state.branch_id == 0 and
+        image.current_state.checkpoint_fingerprint == null and
         image.current_state.turn_index == 0 and
         image.current_state.pending_request_fingerprint == null and
         image.current_state.final_response_fingerprint == null and
