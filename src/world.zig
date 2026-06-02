@@ -7624,6 +7624,15 @@ pub const Runspace = struct {
         var installed_image = try cloneRunImage(self.allocator, image);
         var installed_image_owned = true;
         errdefer if (installed_image_owned) installed_image.deinit(self.allocator);
+        var supervisor: ?Supervision.Supervisor = null;
+        var supervisor_owned = false;
+        errdefer if (supervisor_owned) {
+            if (supervisor) |*owned| owned.deinit();
+        };
+        if (permit) |run_permit| {
+            supervisor = try Supervision.Supervisor.init(self.allocator, run_permit, supervisorPortCountForPermit(run_permit));
+            supervisor_owned = true;
+        }
         const next_run_id_before = self.next_run_id;
         var installed = false;
         errdefer if (!installed) {
@@ -7642,11 +7651,13 @@ pub const Runspace = struct {
             .run_permit_fingerprint = image.prior_run_permit_fingerprint,
             .branch_id = if (image.current_state.branch_id == 0) null else image.current_state.branch_id,
             .checkpoint_fingerprint = image.current_state.checkpoint_fingerprint,
+            .supervisor = supervisor,
             .installed_run_image = installed_image,
             .owns_installed_run_image = true,
         });
         try self.installSlot(slot, .run_installed, "replay run installed");
         installed_image_owned = false;
+        supervisor_owned = false;
         installed = true;
         return handle;
     }

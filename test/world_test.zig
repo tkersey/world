@@ -2855,6 +2855,19 @@ test "runspace install admitted and replay records receipts summaries and events
     defer replay_export.deinit(std.testing.allocator);
     try std.testing.expect(replay_export.transcript_image != null);
     try std.testing.expectEqual(world.ImportSet.fromTarget(fixtures.Strict.Target).import_set_fingerprint, replay_export.import_set_fingerprint);
+    const StrictReplayEnv = world.Environment(fixtures.Strict.Target, .{
+        .bindings = .{},
+        .policy = world.EnvironmentPolicy.strict_replay,
+    });
+    const replay_export_denied_permit = world.Supervision.issue(fixtures.Strict.Target, StrictReplayEnv, .{
+        .mode = .replay,
+        .policy = world.SupervisionPolicy.strict_replay,
+        .transcript_image_available = true,
+    });
+    var supervised_replay_runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer supervised_replay_runspace.deinit();
+    const supervised_replay_handle = try supervised_replay_runspace.installReplay(fixtures.Strict.Target, image, replay_export_denied_permit);
+    try std.testing.expectError(error.HandoffDenied, supervised_replay_runspace.exportRun(supervised_replay_handle));
     const mismatched_admitted = world.Admission.AdmittedRun.init(.{
         .admission_receipt_fingerprint = 0xadd1_bad,
         .target_ref = target_ref,
