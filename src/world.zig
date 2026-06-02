@@ -7444,6 +7444,7 @@ pub const Runspace = struct {
         if (self.config.require_supervision and permit == null) return error.SupervisionDenied;
         var replay_validation = transcript_image;
         try replay_validation.validateReplayRun(Target.WorldSurface.surface_fingerprint, Target.Certificate.certificate_fingerprint);
+        if (permit) |run_permit| try validateInstallReplayPermit(Target, replay_validation, run_permit);
         var image = RunImage.fromTranscriptImage(Target, transcript_image, .replay_only_run);
         image.prior_run_permit_fingerprint = if (permit) |run_permit| run_permit.permit_fingerprint else null;
         image.run_image_fingerprint = fingerprintRunImageV3(image);
@@ -7475,6 +7476,16 @@ pub const Runspace = struct {
         installed_image_owned = false;
         installed = true;
         return handle;
+    }
+
+    fn validateInstallReplayPermit(comptime Target: type, transcript_image: TranscriptImage, permit: RunPermit) !void {
+        if (permit.target_ref_fingerprint != TargetRef.fromTarget(Target).target_ref_fingerprint) return error.SupervisionDenied;
+        if (permit.world_surface_fingerprint != Target.WorldSurface.surface_fingerprint) return error.SupervisionDenied;
+        if (permit.target_certificate_fingerprint != Target.Certificate.certificate_fingerprint) return error.SupervisionDenied;
+        if (permit.mode != .replay) return error.SupervisionDenied;
+        if (permit.policy.require_transcript_image_for_replay and !permit.transcript_image_available) return error.TranscriptImageRequired;
+        if (transcript_image.world_surface_fingerprint != permit.world_surface_fingerprint) return error.SupervisionDenied;
+        if (transcript_image.target_certificate_fingerprint != permit.target_certificate_fingerprint) return error.SupervisionDenied;
     }
 
     pub fn installVerifyRun(self: *@This(), comptime Target: type, comptime Env: type, runtime: anytype, args: anytype, options: anytype) !RunHandle {
@@ -8080,12 +8091,10 @@ pub const Runspace = struct {
         self.next_mailbox_id += 1;
         slot.status = .parked_on_port;
         slot.pending_mailbox_id = mailbox_id;
-        slot.current_state = RunState.init(.{
-            .target_ref_fingerprint = slot.target_ref.target_ref_fingerprint,
-            .pending_request_fingerprint = request.frame_fingerprint,
-            .turn_index = request.turn_index,
-            .status = .parked_on_port,
-        });
+        slot.current_state.pending_request_fingerprint = request.frame_fingerprint;
+        slot.current_state.turn_index = request.turn_index;
+        slot.current_state.status = .parked_on_port;
+        slot.current_state.run_state_fingerprint = fingerprintRunState(slot.current_state);
         _ = try self.appendEvent(.{
             .kind = .port_enqueued,
             .run_handle = slot.handle,

@@ -2707,6 +2707,12 @@ test "runspace install admitted and replay records receipts summaries and events
     });
     try std.testing.expectError(error.HandoffTargetMismatch, runspace.installAdmitted(mismatched_admitted));
     try std.testing.expectError(error.ReplaySurfaceMismatch, replay_runspace.installReplay(fixtures.Ports.Target, image, null));
+    const wrong_replay_permit = world.Supervision.issue(fixtures.Ports.Target, PortsReplayEnv, .{
+        .mode = .replay,
+        .policy = world.SupervisionPolicy.strict_replay,
+        .transcript_image_available = true,
+    });
+    try std.testing.expectError(error.SupervisionDenied, replay_runspace.installReplay(fixtures.Strict.Target, image, wrong_replay_permit));
 
     var parked_runtime = boundary.Runtime.init(std.testing.allocator);
     defer parked_runtime.deinit();
@@ -2741,6 +2747,8 @@ test "runspace install admitted and replay records receipts summaries and events
     var parked_target = world.Runspace.init(std.testing.allocator, .{ .require_admission = true });
     defer parked_target.deinit();
     const parked_installed = try parked_target.installAdmitted(parked_admitted);
+    const parked_summary = try parked_target.getSlotSummary(parked_installed);
+    try std.testing.expectEqual(parked_export.current_state.run_state_fingerprint, parked_summary.run_state_fingerprint);
     var reexported = try parked_target.exportRun(parked_installed);
     defer reexported.deinit(std.testing.allocator);
     try std.testing.expect(reexported.transcript_image != null);
