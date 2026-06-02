@@ -2513,7 +2513,8 @@ test "runspace install admitted and replay records receipts summaries and events
     defer runspace.deinit();
     const admitted_handle = try runspace.installAdmitted(admitted);
     const admitted_summary = try runspace.getSlotSummary(admitted_handle);
-    try std.testing.expectEqual(world.Runspace.RunStatus.runnable, admitted_summary.status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.admitted, admitted_summary.status);
+    try std.testing.expectError(error.InvalidRunspaceTransition, runspace.step(admitted_handle));
     try std.testing.expectEqual(@as(?u64, 0xadd1_5510), admitted_summary.admission_receipt_fingerprint);
     try std.testing.expectEqual(world.Runspace.EventKind.run_admitted, runspace.events.items[0].kind);
 
@@ -2592,6 +2593,37 @@ test "runspace manual default parks without environment dispatch" {
     try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try runspace.getSlotSummary(handle)).status);
 }
 
+test "runspace failed manual response consumes mailbox and fails slot" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    _ = try runspace.tick();
+    const pending = try runspace.mailbox.get(0);
+    const request = pending.request_frame.?;
+    const failed_response = world.Frame.Response.init(.{
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .target_certificate_fingerprint = request.target_certificate_fingerprint,
+        .world_port_id = request.world_port_id,
+        .request_fingerprint = request.request_fingerprint,
+        .response_kind = .@"resume",
+        .response_value_table_id = request.expected_response_value_table_id,
+        .response_fingerprint = 0x5a1e,
+        .replay_key = request.replay_key_seed.withResponse(0x5a1e).fingerprint(),
+        .status = .failed,
+    });
+
+    try std.testing.expectError(error.HandlerFailed, runspace.respond(0, failed_response));
+    try std.testing.expectEqual(world.Runspace.PendingStatus.failed, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.failed, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
+}
+
 test "runspace auto dispatch uses environment binding and consumes mailbox" {
     var runtime = boundary.Runtime.init(std.testing.allocator);
     defer runtime.deinit();
@@ -2614,6 +2646,23 @@ test "runspace auto dispatch uses environment binding and consumes mailbox" {
     report = try runspace.tick();
     try std.testing.expectEqual(@as(usize, 1), report.completed_count);
     try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try runspace.getSlotSummary(handle)).status);
+}
+
+test "runspace auto dispatch handler failure consumes mailbox and fails slot" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{ .auto_dispatch = true });
+    defer runspace.deinit();
+
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+
+    try std.testing.expectError(error.MissingHandler, runspace.tick());
+    try std.testing.expectEqual(world.Runspace.PendingStatus.failed, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.failed, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
 }
 
 test "runspace export pending rejects stale mailbox without changing run state" {

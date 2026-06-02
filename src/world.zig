@@ -7099,7 +7099,7 @@ pub const Runspace = struct {
             .handle = handle,
             .target_ref = target_ref,
             .current_state = current_state,
-            .status = statusFromRunState(current_state),
+            .status = if (admitted_run.run_image == null) .admitted else statusFromRunState(current_state),
             .admission_receipt_fingerprint = admitted_run.admission_receipt_fingerprint,
             .run_permit_fingerprint = if (admitted_run.run_permit) |permit| permit.permit_fingerprint else null,
             .pending_mailbox_id = null,
@@ -7315,7 +7315,26 @@ pub const Runspace = struct {
         try self.ensureEventCapacity(2);
         if (slot.driver) |driver| {
             driver.resumeFrame(response) catch |err| {
-                slot.transition(.fail, null) catch {};
+                const failed = try self.mailbox.fail(mailbox_id, "resume failed");
+                try slot.transition(.fail, null);
+                _ = try self.appendEvent(.{
+                    .kind = .port_failed,
+                    .run_handle = slot.handle,
+                    .pending_port_fingerprint = failed.pending_port_fingerprint,
+                    .response_frame_fingerprint = response.frame_fingerprint,
+                    .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+                    .run_permit_fingerprint = slot.run_permit_fingerprint,
+                    .summary = "port response failed",
+                });
+                _ = try self.appendEvent(.{
+                    .kind = .run_failed,
+                    .run_handle = slot.handle,
+                    .pending_port_fingerprint = failed.pending_port_fingerprint,
+                    .response_frame_fingerprint = response.frame_fingerprint,
+                    .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+                    .run_permit_fingerprint = slot.run_permit_fingerprint,
+                    .summary = "run failed after response",
+                });
                 return err;
             };
         } else {
@@ -7438,12 +7457,12 @@ pub const Runspace = struct {
         try self.ensureEventCapacity(1);
         var image = try self.snapshotSlotImage(index);
         errdefer image.deinit(self.allocator);
-        _ = try self.mailbox.markExported(mailbox_id);
+        const exported = try self.mailbox.markExported(mailbox_id);
         try slot.transition(.@"export", null);
         _ = try self.appendEvent(.{
             .kind = .run_exported,
             .run_handle = slot.handle,
-            .pending_port_fingerprint = pending.pending_port_fingerprint,
+            .pending_port_fingerprint = exported.pending_port_fingerprint,
             .request_frame_fingerprint = pending.request_frame_fingerprint,
             .run_state_fingerprint = slot.current_state.run_state_fingerprint,
             .run_permit_fingerprint = slot.run_permit_fingerprint,
@@ -7843,11 +7862,21 @@ pub const Runspace = struct {
         var slot = &self.slots.items[index];
         const driver = slot.driver orelse return error.InvalidRunspaceTransition;
         driver.dispatch() catch |err| {
-            slot.transition(.fail, null) catch {};
+            const failed = try self.mailbox.fail(mailbox_id, "auto-dispatch failed");
+            try slot.transition(.fail, null);
+            _ = try self.appendEvent(.{
+                .kind = .port_failed,
+                .run_handle = slot.handle,
+                .pending_port_fingerprint = failed.pending_port_fingerprint,
+                .request_frame_fingerprint = pending.request_frame_fingerprint,
+                .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+                .run_permit_fingerprint = slot.run_permit_fingerprint,
+                .summary = "auto-dispatch port failed",
+            });
             _ = try self.appendEvent(.{
                 .kind = .run_failed,
                 .run_handle = slot.handle,
-                .pending_port_fingerprint = pending.pending_port_fingerprint,
+                .pending_port_fingerprint = failed.pending_port_fingerprint,
                 .request_frame_fingerprint = pending.request_frame_fingerprint,
                 .run_state_fingerprint = slot.current_state.run_state_fingerprint,
                 .run_permit_fingerprint = slot.run_permit_fingerprint,
