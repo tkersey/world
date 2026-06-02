@@ -618,6 +618,7 @@ test "runspace slot transition matrix rejects impossible lifecycle states" {
     try std.testing.expect(world.Runspace.canTransition(.running, .parked_on_port));
     try std.testing.expect(!world.Runspace.canTransition(.parked_on_port, .completed));
     try std.testing.expect(world.Runspace.canTransition(.parked_on_port, .runnable));
+    try std.testing.expect(world.Runspace.canTransition(.completed, .exported));
     try std.testing.expect(!world.Runspace.canTransition(.completed, .runnable));
     try std.testing.expect(!world.Runspace.canTransition(.failed, .runnable));
     try std.testing.expect(!world.Runspace.canTransition(.exported, .runnable));

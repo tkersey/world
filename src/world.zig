@@ -6512,10 +6512,24 @@ pub const Runspace = struct {
                     const active: *RunType = @ptrCast(@alignCast(ptr));
                     const frame_step = try active.nextFrame();
                     return switch (frame_step) {
-                        .done => .done,
+                        .done => |value| {
+                            discardRunspaceDoneValue(RunType, active, value);
+                            return .done;
+                        },
                         .port_request => |request| .{ .port_request = request },
                         .failed => .failed,
                     };
+                }
+
+                fn discardRunspaceDoneValue(comptime ActiveRunType: type, active: *ActiveRunType, value: anytype) void {
+                    if (@hasField(ActiveRunType, "done_value_present") and @hasField(ActiveRunType, "done_value") and @hasField(ActiveRunType, "allocator")) {
+                        if (active.done_value_present) {
+                            deinitRunValue(active.allocator, active.done_value);
+                            active.done_value_present = false;
+                            return;
+                        }
+                        deinitRunValue(active.allocator, value);
+                    }
                 }
 
                 fn runResumeFrame(ptr: *anyopaque, response: Frame.Response) anyerror!void {
@@ -6572,7 +6586,8 @@ pub const Runspace = struct {
                 .runnable, .failed, .exported => true,
                 else => false,
             },
-            .completed, .failed, .exported, .rejected => false,
+            .completed => to == .exported,
+            .failed, .exported, .rejected => false,
         };
     }
 
