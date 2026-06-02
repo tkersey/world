@@ -6949,7 +6949,7 @@ pub const Runspace = struct {
             return self.pending.items;
         }
 
-        pub fn respond(self: *@This(), mailbox_id: u64, response: Frame.Response) !Runspace.PendingPort {
+        fn respond(self: *@This(), mailbox_id: u64, response: Frame.Response) !Runspace.PendingPort {
             const index = try self.indexOf(mailbox_id);
             const current = self.pending.items[index];
             try current.validateResponse(response);
@@ -6958,7 +6958,7 @@ pub const Runspace = struct {
             return self.pending.items[index].borrowed();
         }
 
-        pub fn markResponded(self: *@This(), mailbox_id: u64) !Runspace.PendingPort {
+        fn markResponded(self: *@This(), mailbox_id: u64) !Runspace.PendingPort {
             const index = try self.indexOf(mailbox_id);
             const current = self.pending.items[index];
             if (current.status != .pending) return error.PendingPortConsumed;
@@ -6967,7 +6967,7 @@ pub const Runspace = struct {
             return self.pending.items[index].borrowed();
         }
 
-        pub fn cancel(self: *@This(), mailbox_id: u64, reason: []const u8) !Runspace.PendingPort {
+        fn cancel(self: *@This(), mailbox_id: u64, reason: []const u8) !Runspace.PendingPort {
             _ = reason;
             const index = try self.indexOf(mailbox_id);
             const current = self.pending.items[index];
@@ -6977,7 +6977,7 @@ pub const Runspace = struct {
             return self.pending.items[index].borrowed();
         }
 
-        pub fn markExported(self: *@This(), mailbox_id: u64) !Runspace.PendingPort {
+        fn markExported(self: *@This(), mailbox_id: u64) !Runspace.PendingPort {
             const index = try self.indexOf(mailbox_id);
             const current = self.pending.items[index];
             if (current.status != .pending) return error.PendingPortConsumed;
@@ -6986,7 +6986,7 @@ pub const Runspace = struct {
             return self.pending.items[index].borrowed();
         }
 
-        pub fn fail(self: *@This(), mailbox_id: u64, reason: []const u8) !Runspace.PendingPort {
+        fn fail(self: *@This(), mailbox_id: u64, reason: []const u8) !Runspace.PendingPort {
             _ = reason;
             const index = try self.indexOf(mailbox_id);
             const current = self.pending.items[index];
@@ -9320,9 +9320,11 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         transcript_image = try @field(self.options, "transcript").toImage(self.allocator, .{ .value_policy = ValuePolicy.portable });
                         owns_transcript_image = true;
                     } else if (comptime @hasField(Options, "transcript_image")) {
-                        transcript_image = @field(self.options, "transcript_image").*;
+                        transcript_image = try cloneTranscriptImage(self.allocator, @field(self.options, "transcript_image").*);
+                        owns_transcript_image = true;
                     } else if (self.admitted_transcript_image) |image| {
-                        transcript_image = image.*;
+                        transcript_image = try cloneTranscriptImage(self.allocator, image.*);
+                        owns_transcript_image = true;
                     }
 
                     var pending_frame: ?Frame.Request = null;

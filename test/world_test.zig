@@ -642,38 +642,52 @@ test "runspace pending port validates response identity and consumes once" {
     });
 
     const response = testRunspaceResponseFrame(request);
-    const responded = try mailbox.respond(11, response);
+    try pending.validateResponse(response);
+    const responded = pending.withStatus(.responded);
     try std.testing.expectEqual(world.Runspace.PendingStatus.responded, responded.status);
     try std.testing.expect(responded.pending_port_fingerprint != pending.pending_port_fingerprint);
-    try std.testing.expectError(error.PendingPortConsumed, mailbox.respond(11, response));
+    try std.testing.expectError(error.PendingPortConsumed, responded.validateResponse(response));
 
+    const request_2 = world.Frame.Request.init(.{
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .world_surface_replay_scope_fingerprint = request.world_surface_replay_scope_fingerprint,
+        .target_certificate_fingerprint = request.target_certificate_fingerprint,
+        .world_port_id = request.world_port_id,
+        .residual_site_index = request.residual_site_index,
+        .residual_site_fingerprint = request.residual_site_fingerprint,
+        .request_fingerprint = request.request_fingerprint + 1,
+        .turn_index = request.turn_index + 1,
+        .payload_value_table_id = request.payload_value_table_id,
+        .expected_response_value_table_id = request.expected_response_value_table_id,
+    });
     _ = try mailbox.push(.{
         .mailbox_id = 12,
         .run_handle = handle,
-        .request = request,
+        .request = request_2,
         .target_ref_fingerprint = target_ref.target_ref_fingerprint,
         .inserted_event_index = 2,
     });
 
-    var wrong_surface = response;
+    const response_2 = testRunspaceResponseFrame(request_2);
+    var wrong_surface = response_2;
     wrong_surface.world_surface_fingerprint += 1;
-    try std.testing.expectError(error.FrameSurfaceMismatch, mailbox.respond(12, wrong_surface));
+    try std.testing.expectError(error.FrameSurfaceMismatch, (try mailbox.get(12)).validateResponse(wrong_surface));
 
-    var wrong_port = response;
+    var wrong_port = response_2;
     wrong_port.world_port_id += 1;
-    try std.testing.expectError(error.FramePortMismatch, mailbox.respond(12, wrong_port));
+    try std.testing.expectError(error.FramePortMismatch, (try mailbox.get(12)).validateResponse(wrong_port));
 
-    var wrong_request = response;
+    var wrong_request = response_2;
     wrong_request.request_fingerprint += 1;
-    try std.testing.expectError(error.FrameRequestFingerprintMismatch, mailbox.respond(12, wrong_request));
+    try std.testing.expectError(error.FrameRequestFingerprintMismatch, (try mailbox.get(12)).validateResponse(wrong_request));
 
-    var wrong_value_table = response;
+    var wrong_value_table = response_2;
     wrong_value_table.response_value_table_id = 99;
-    try std.testing.expectError(error.FrameValueTableMismatch, mailbox.respond(12, wrong_value_table));
+    try std.testing.expectError(error.FrameValueTableMismatch, (try mailbox.get(12)).validateResponse(wrong_value_table));
 
-    var wrong_kind = response;
+    var wrong_kind = response_2;
     wrong_kind.response_kind = .return_now;
-    try std.testing.expectError(error.VerifyResponseKindMismatch, mailbox.respond(12, wrong_kind));
+    try std.testing.expectError(error.VerifyResponseKindMismatch, (try mailbox.get(12)).validateResponse(wrong_kind));
 }
 
 test "runspace event fingerprints include kind handle mailbox and status" {
@@ -2147,18 +2161,19 @@ test "mailbox push get list respond and stale response rejection" {
     var wrong_port = try world.Frame.Response.fromValue(std.testing.allocator, request, 1, 0xdec1_5100, .@"resume", @as(i32, 7), .portable);
     defer wrong_port.deinit(std.testing.allocator);
     wrong_port.world_port_id += 1;
-    try std.testing.expectError(error.FramePortMismatch, mailbox.respond(1, wrong_port));
+    try std.testing.expectError(error.FramePortMismatch, (try mailbox.get(1)).validateResponse(wrong_port));
 
     var response = try world.Frame.Response.fromValue(std.testing.allocator, request, 1, 0xdec1_5100, .@"resume", @as(i32, 7), .portable);
     defer response.deinit(std.testing.allocator);
-    const responded = try mailbox.respond(1, response);
+    try (try mailbox.get(1)).validateResponse(response);
+    const responded = (try mailbox.get(1)).withStatus(.responded);
     try std.testing.expectEqual(world.Runspace.PendingStatus.responded, responded.status);
     try std.testing.expect(!responded.owns_request_frame);
-    try std.testing.expectEqual(@as(usize, 0), mailbox.pendingCount());
-    try std.testing.expectError(error.PendingPortConsumed, mailbox.respond(1, response));
+    try std.testing.expectEqual(@as(usize, 1), mailbox.pendingCount());
+    try std.testing.expectError(error.PendingPortConsumed, responded.validateResponse(response));
 }
 
-test "mailbox cancel export fail stale id and pending capacity" {
+test "mailbox stale id and pending capacity" {
     const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const handle = world.RunHandle.init(.{
         .runspace_fingerprint = 0x5150,
@@ -2217,26 +2232,7 @@ test "mailbox cancel export fail stale id and pending capacity" {
     }));
     try std.testing.expectError(error.InvalidPendingPortTransition, mailbox.get(99));
 
-    const cancelled = try mailbox.cancel(10, "caller stopped");
-    try std.testing.expectEqual(world.Runspace.PendingStatus.cancelled, cancelled.status);
-    try std.testing.expectEqual(@as(usize, 1), mailbox.pendingCount());
-    try std.testing.expectError(error.PendingPortConsumed, mailbox.cancel(10, "again"));
-
-    const exported = try mailbox.markExported(11);
-    try std.testing.expectEqual(world.Runspace.PendingStatus.exported, exported.status);
-    try std.testing.expectEqual(@as(usize, 0), mailbox.pendingCount());
-    try std.testing.expectError(error.PendingPortConsumed, mailbox.markExported(11));
-
-    _ = try mailbox.push(.{
-        .run_handle = handle,
-        .mailbox_id = 12,
-        .request = request_c,
-        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
-        .inserted_event_index = 2,
-    });
-    const failed = try mailbox.fail(12, "host failure");
-    try std.testing.expectEqual(world.Runspace.PendingStatus.failed, failed.status);
-    try std.testing.expectError(error.PendingPortConsumed, mailbox.fail(12, "again"));
+    try std.testing.expectEqual(@as(usize, 2), mailbox.pendingCount());
 }
 
 test "runspace event fingerprint stable and report counts slots and pending ports" {
@@ -2936,6 +2932,38 @@ test "runspace verify run detects changed handler" {
     try std.testing.expectError(error.VerifyDivergence, runspace.tick());
     try std.testing.expectEqual(world.Runspace.RunStatus.failed, (try runspace.getSlotSummary(handle)).status);
     try std.testing.expectEqual(@as(usize, 1), ctx.calls);
+}
+
+test "runspace export owns transcript image supplied to machine options" {
+    var exported = blk: {
+        var transcript = world.Transcript.init(std.testing.allocator);
+        defer transcript.deinit();
+        try recordPortsTranscript(&transcript);
+        var image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+        defer image.deinit(std.testing.allocator);
+        var runtime = boundary.Runtime.init(std.testing.allocator);
+        defer runtime.deinit();
+        var runspace = world.Runspace.init(std.testing.allocator, .{ .auto_dispatch = true });
+        defer runspace.deinit();
+        const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+            .allocator = std.testing.allocator,
+            .mode = world.Mode.replay,
+            .transcript_image = &image,
+        });
+        _ = try runspace.tick();
+        _ = try runspace.tick();
+        try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try runspace.getSlotSummary(handle)).status);
+        break :blk try runspace.exportRun(handle);
+    };
+    defer exported.deinit(std.testing.allocator);
+
+    try std.testing.expect(exported.transcript_image != null);
+    const encoded = try exported.encode(std.testing.allocator);
+    defer std.testing.allocator.free(encoded);
+    var decoded = try world.RunImage.decode(std.testing.allocator, encoded);
+    defer decoded.deinit(std.testing.allocator);
+    try std.testing.expect(decoded.transcript_image != null);
+    try std.testing.expectEqual(exported.transcript_image.?.transcript_image_fingerprint, decoded.transcript_image.?.transcript_image_fingerprint);
 }
 
 test "runspace stepOne uses deterministic local run order and parked runs do not step again" {
