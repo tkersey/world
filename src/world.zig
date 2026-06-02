@@ -6586,6 +6586,7 @@ pub const Runspace = struct {
         run_receipt_fingerprint: ?u64 = null,
         pending_mailbox_id: ?u64 = null,
         branch_id: ?u64 = null,
+        parent_run_handle_fingerprint: ?u64 = null,
         checkpoint_fingerprint: ?u64 = null,
         target_match_fingerprint: ?u64 = null,
         module_ref_fingerprint: ?u64 = null,
@@ -6632,6 +6633,7 @@ pub const Runspace = struct {
             run_receipt_fingerprint: ?u64 = null,
             pending_mailbox_id: ?u64 = null,
             branch_id: ?u64 = null,
+            parent_run_handle_fingerprint: ?u64 = null,
             checkpoint_fingerprint: ?u64 = null,
             target_match_fingerprint: ?u64 = null,
             module_ref_fingerprint: ?u64 = null,
@@ -6647,6 +6649,7 @@ pub const Runspace = struct {
                 .run_receipt_fingerprint = args.run_receipt_fingerprint,
                 .pending_mailbox_id = args.pending_mailbox_id,
                 .branch_id = args.branch_id,
+                .parent_run_handle_fingerprint = args.parent_run_handle_fingerprint,
                 .checkpoint_fingerprint = args.checkpoint_fingerprint,
                 .target_match_fingerprint = args.target_match_fingerprint,
                 .module_ref_fingerprint = args.module_ref_fingerprint,
@@ -6744,6 +6747,7 @@ pub const Runspace = struct {
                 .run_receipt_fingerprint = self.run_receipt_fingerprint,
                 .pending_mailbox_id = self.pending_mailbox_id,
                 .branch_id = self.branch_id,
+                .parent_run_handle_fingerprint = self.parent_run_handle_fingerprint,
                 .checkpoint_fingerprint = self.checkpoint_fingerprint,
                 .target_match_fingerprint = self.target_match_fingerprint,
                 .module_ref_fingerprint = self.module_ref_fingerprint,
@@ -6761,6 +6765,7 @@ pub const Runspace = struct {
         run_receipt_fingerprint: ?u64 = null,
         pending_mailbox_id: ?u64 = null,
         branch_id: ?u64 = null,
+        parent_run_handle_fingerprint: ?u64 = null,
         checkpoint_fingerprint: ?u64 = null,
         target_match_fingerprint: ?u64 = null,
         module_ref_fingerprint: ?u64 = null,
@@ -7089,6 +7094,7 @@ pub const Runspace = struct {
             .checkpoint_fingerprint = admitted_run.selected_checkpoint_ref,
             .status = .not_started,
         });
+        const next_run_id_before = self.next_run_id;
         const handle = try self.nextHandle(.{
             .target_ref_fingerprint = target_ref.target_ref_fingerprint,
             .admission_receipt_fingerprint = admitted_run.admission_receipt_fingerprint,
@@ -7119,7 +7125,7 @@ pub const Runspace = struct {
         const next_mailbox_id_before = self.next_mailbox_id;
         const next_event_index_before = self.next_event_index;
         var installed = false;
-        errdefer if (!installed) self.rollbackRunspaceMutation(slot_count_before, event_count_before, mailbox_count_before, next_mailbox_id_before, next_event_index_before);
+        errdefer if (!installed) self.rollbackRunspaceMutation(slot_count_before, event_count_before, mailbox_count_before, next_run_id_before, next_mailbox_id_before, next_event_index_before);
         try self.installSlot(slot, .run_admitted, "admitted run installed");
         if (pending_frame) |frame| {
             try self.enqueueInstalledPending(self.slots.items.len - 1, frame);
@@ -7132,6 +7138,7 @@ pub const Runspace = struct {
         if (self.config.require_admission) return error.RunspaceAdmissionRequired;
         if (!self.config.allow_handoff_install) return error.RunspaceInstallDenied;
         if (self.config.require_supervision and image.prior_run_permit_fingerprint == null) return error.SupervisionDenied;
+        const next_run_id_before = self.next_run_id;
         const handle = try self.nextHandle(.{
             .target_ref_fingerprint = image.target_ref.target_ref_fingerprint,
             .permit_fingerprint = image.prior_run_permit_fingerprint,
@@ -7158,7 +7165,7 @@ pub const Runspace = struct {
         const next_mailbox_id_before = self.next_mailbox_id;
         const next_event_index_before = self.next_event_index;
         var installed = false;
-        errdefer if (!installed) self.rollbackRunspaceMutation(slot_count_before, event_count_before, mailbox_count_before, next_mailbox_id_before, next_event_index_before);
+        errdefer if (!installed) self.rollbackRunspaceMutation(slot_count_before, event_count_before, mailbox_count_before, next_run_id_before, next_mailbox_id_before, next_event_index_before);
         try self.installSlot(slot, .run_installed, "run image installed");
         if (pending_frame) |frame| {
             try self.enqueueInstalledPending(self.slots.items.len - 1, frame);
@@ -7239,6 +7246,8 @@ pub const Runspace = struct {
         if (self.config.require_admission) return error.RunspaceAdmissionRequired;
         if (!self.config.allow_replay_install) return error.RunspaceInstallDenied;
         if (self.config.require_supervision and permit == null) return error.SupervisionDenied;
+        var replay_validation = transcript_image;
+        try replay_validation.validateReplayRun(Target.WorldSurface.surface_fingerprint, Target.Certificate.certificate_fingerprint);
         var image = RunImage.fromTranscriptImage(Target, transcript_image, .replay_only_run);
         image.prior_run_permit_fingerprint = if (permit) |run_permit| run_permit.permit_fingerprint else null;
         image.run_image_fingerprint = fingerprintRunImageV3(image);
@@ -7525,11 +7534,12 @@ pub const Runspace = struct {
             .handle = branch_handle,
             .target_ref = parent.target_ref,
             .current_state = branch_state,
-            .status = parent.status,
+            .status = .admitted,
             .admission_receipt_fingerprint = parent.admission_receipt_fingerprint,
             .run_permit_fingerprint = parent.run_permit_fingerprint,
             .run_receipt_fingerprint = parent.run_receipt_fingerprint,
             .branch_id = branch_id,
+            .parent_run_handle_fingerprint = parent.handle.handle_fingerprint,
             .checkpoint_fingerprint = checkpoint_value.checkpoint_fingerprint,
             .target_match_fingerprint = parent.target_match_fingerprint,
             .module_ref_fingerprint = parent.module_ref_fingerprint,
@@ -7547,7 +7557,7 @@ pub const Runspace = struct {
         for (self.slots.items) |slot| {
             if (slot.handle.handle_fingerprint == parent.handle.handle_fingerprint) continue;
             if (slot.target_ref.target_ref_fingerprint != parent.target_ref.target_ref_fingerprint) continue;
-            if (slot.branch_id != null) try branches.append(allocator, slot.handle);
+            if (slot.parent_run_handle_fingerprint == parent.handle.handle_fingerprint and slot.branch_id != null) try branches.append(allocator, slot.handle);
         }
         return branches.toOwnedSlice(allocator);
     }
@@ -7672,6 +7682,7 @@ pub const Runspace = struct {
         slot_count: usize,
         event_count: usize,
         mailbox_count: usize,
+        next_run_id: u64,
         next_mailbox_id: u64,
         next_event_index: u64,
     ) void {
@@ -7685,6 +7696,7 @@ pub const Runspace = struct {
         self.slots.shrinkRetainingCapacity(slot_count);
         self.events.shrinkRetainingCapacity(event_count);
         self.mailbox.pending.shrinkRetainingCapacity(mailbox_count);
+        self.next_run_id = next_run_id;
         self.next_mailbox_id = next_mailbox_id;
         self.next_event_index = next_event_index;
     }

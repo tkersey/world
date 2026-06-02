@@ -2391,6 +2391,8 @@ test "runspace parked image install rolls back when mailbox enqueue fails" {
     try std.testing.expectEqual(@as(usize, 0), report.run_count);
     try std.testing.expectEqual(@as(usize, 0), report.event_count);
     try std.testing.expectEqual(@as(usize, 0), report.pending_port_count);
+    const next = try target.installTarget(fixtures.Strict.Target, .{}, null, .{});
+    try std.testing.expectEqual(@as(u64, 0), next.local_run_id);
 }
 
 test "runspace failed machine install transfers driver ownership once" {
@@ -2539,6 +2541,7 @@ test "runspace install admitted and replay records receipts summaries and events
     const replay_summary = try replay_runspace.getSlotSummary(replay_handle);
     try std.testing.expectEqual(world.Runspace.RunStatus.completed, replay_summary.status);
     try std.testing.expectEqual(world.Runspace.EventKind.run_installed, replay_runspace.events.items[0].kind);
+    try std.testing.expectError(error.ReplaySurfaceMismatch, replay_runspace.installReplay(fixtures.Ports.Target, image, null));
 
     var replay_denied = world.Runspace.init(std.testing.allocator, .{
         .allow_replay_install = false,
@@ -2783,6 +2786,8 @@ test "runspace checkpoint branch and replay install are deterministic" {
     const branch_handle = try runspace.branch(handle, checkpoint, .{});
     try std.testing.expect(branch_handle.handle_fingerprint != handle.handle_fingerprint);
     try std.testing.expect(branch_handle.branch_id != null);
+    try std.testing.expectEqual(world.Runspace.RunStatus.admitted, (try runspace.getSlotSummary(branch_handle)).status);
+    try std.testing.expectError(error.InvalidRunspaceTransition, runspace.step(branch_handle));
     const branches = try runspace.listBranches(handle, std.testing.allocator);
     defer std.testing.allocator.free(branches);
     try std.testing.expectEqual(@as(usize, 1), branches.len);
@@ -2795,6 +2800,35 @@ test "runspace checkpoint branch and replay install are deterministic" {
     defer image.deinit(std.testing.allocator);
     const replay_handle = try runspace.installReplay(fixtures.Ports.Target, image, null);
     try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try runspace.getSlotSummary(replay_handle)).status);
+}
+
+test "runspace branches list only selected parent lineage" {
+    var runtime_a = boundary.Runtime.init(std.testing.allocator);
+    defer runtime_a.deinit();
+    var runtime_b = boundary.Runtime.init(std.testing.allocator);
+    defer runtime_b.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+
+    const first = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime_a, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    const second = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime_b, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    const first_branch = try runspace.branch(first, try runspace.checkpoint(first), .{});
+    const second_branch = try runspace.branch(second, try runspace.checkpoint(second), .{});
+
+    const first_branches = try runspace.listBranches(first, std.testing.allocator);
+    defer std.testing.allocator.free(first_branches);
+    const second_branches = try runspace.listBranches(second, std.testing.allocator);
+    defer std.testing.allocator.free(second_branches);
+    try std.testing.expectEqual(@as(usize, 1), first_branches.len);
+    try std.testing.expectEqual(@as(usize, 1), second_branches.len);
+    try std.testing.expectEqual(first_branch.handle_fingerprint, first_branches[0].handle_fingerprint);
+    try std.testing.expectEqual(second_branch.handle_fingerprint, second_branches[0].handle_fingerprint);
 }
 
 test "runspace verify run detects changed handler" {
