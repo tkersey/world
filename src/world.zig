@@ -7330,8 +7330,6 @@ pub const Runspace = struct {
     }
 
     pub fn installTarget(self: *@This(), comptime Target: type, env: anytype, permit: ?RunPermit, args: anytype) !RunHandle {
-        _ = env;
-        _ = args;
         if (self.config.require_admission) return error.RunspaceAdmissionRequired;
         if (!self.config.allow_direct_target_install) return error.RunspaceInstallDenied;
         if (self.config.require_supervision and permit == null) return error.SupervisionDenied;
@@ -7355,6 +7353,7 @@ pub const Runspace = struct {
             if (supervisor) |*owned| owned.deinit();
         };
         if (permit) |run_permit| {
+            try validateInstallTargetPermit(Target, env, run_permit, args);
             supervisor = try Supervision.Supervisor.init(self.allocator, run_permit, Target.WorldPortTable.entries.len);
             supervisor_owned = true;
         }
@@ -7370,6 +7369,24 @@ pub const Runspace = struct {
         supervisor_owned = false;
         installed = true;
         return handle;
+    }
+
+    fn validateInstallTargetPermit(comptime Target: type, env: anytype, permit: RunPermit, args: anytype) !void {
+        const Args = @TypeOf(args);
+        const expected_mode: Mode = if (@hasField(Args, "mode")) @field(args, "mode") else .fresh;
+        if (permit.target_ref_fingerprint != TargetRef.fromTarget(Target).target_ref_fingerprint) return error.SupervisionDenied;
+        if (permit.world_surface_fingerprint != Target.WorldSurface.surface_fingerprint) return error.SupervisionDenied;
+        if (permit.target_certificate_fingerprint != Target.Certificate.certificate_fingerprint) return error.SupervisionDenied;
+        if (permit.mode != expected_mode) return error.SupervisionDenied;
+        const transcript_available: bool = if (@hasField(Args, "transcript_image_available")) @field(args, "transcript_image_available") else false;
+        const Env = if (@TypeOf(env) == type) env else @TypeOf(env);
+        if (@hasDecl(Env, "certificate")) {
+            const cert = Env.certificate(expected_mode, transcript_available);
+            if (permit.environment_certificate_fingerprint != cert.certificate_fingerprint) return error.SupervisionDenied;
+            if (permit.binding_plan_fingerprint != cert.binding_plan_fingerprint) return error.SupervisionDenied;
+        } else if (permit.policy.require_environment_certificate) {
+            return error.SupervisionDenied;
+        }
     }
 
     pub fn installMachineRun(self: *@This(), comptime Target: type, comptime Env: type, runtime: anytype, args: anytype, options: anytype) !RunHandle {

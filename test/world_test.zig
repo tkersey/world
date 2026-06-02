@@ -2981,11 +2981,15 @@ test "runspace enforces lifecycle supervision for direct and imported slots" {
         .require_supervision = true,
     });
     defer direct.deinit();
-    const direct_handle = try direct.installTarget(fixtures.Strict.Target, .{}, branch_denied_permit, .{});
+    try std.testing.expectError(error.SupervisionDenied, direct.installTarget(fixtures.Strict.Target, StrictEnv, world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+    }), .{}));
+    const direct_handle = try direct.installTarget(fixtures.Strict.Target, StrictEnv, branch_denied_permit, .{});
     const checkpoint = try direct.checkpoint(direct_handle);
     try std.testing.expectError(error.BranchDenied, direct.branch(direct_handle, checkpoint, .{}));
     try std.testing.expectEqual(@as(usize, 2), direct.events.items.len);
-    const direct_next = try direct.installTarget(fixtures.Strict.Target, .{}, branch_denied_permit, .{});
+    const direct_next = try direct.installTarget(fixtures.Strict.Target, StrictEnv, branch_denied_permit, .{});
     try std.testing.expectEqual(@as(u64, 1), direct_next.local_run_id);
 
     const checkpoint_budget_permit = world.Supervision.issue(fixtures.Strict.Target, StrictEnv, .{
@@ -2997,7 +3001,7 @@ test "runspace enforces lifecycle supervision for direct and imported slots" {
         .require_supervision = true,
     });
     defer checkpoint_denied.deinit();
-    const checkpoint_handle = try checkpoint_denied.installTarget(fixtures.Strict.Target, .{}, checkpoint_budget_permit, .{});
+    const checkpoint_handle = try checkpoint_denied.installTarget(fixtures.Strict.Target, StrictEnv, checkpoint_budget_permit, .{});
     try std.testing.expectError(error.BudgetExceeded, checkpoint_denied.checkpoint(checkpoint_handle));
     try std.testing.expectEqual(@as(usize, 1), checkpoint_denied.events.items.len);
 
