@@ -4295,6 +4295,41 @@ test "runspace supervised auto dispatch denial happens before handler call" {
     try std.testing.expectError(error.BudgetExceeded, runspace.tick());
     try std.testing.expectEqual(@as(usize, 0), ctx.calls);
     try std.testing.expectEqual(world.Runspace.RunStatus.failed, (try runspace.getSlotSummary(handle)).status);
+    const report = runspace.report();
+    try std.testing.expectEqual(@as(usize, 1), report.blocker_count);
+    try std.testing.expectEqual(@as(usize, 0), report.warning_count);
+}
+
+test "runspace report aggregates supervised audit-only warnings" {
+    const policy = world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .allow_native_adapters = true,
+        .require_environment_certificate = true,
+        .audit_only_on_budget_exceeded = true,
+    });
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = policy,
+        .budget = world.Budget.init(.{ .max_port_requests = 0 }),
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var ctx: PortsCtx = .{};
+    var runspace = world.Runspace.init(std.testing.allocator, .{
+        .require_supervision = true,
+    });
+    defer runspace.deinit();
+
+    _ = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+        .permit = permit,
+    });
+    const tick_report = try runspace.tick();
+    try std.testing.expectEqual(@as(usize, 3), tick_report.warning_count);
+    try std.testing.expectEqual(@as(usize, 0), tick_report.blocker_count);
+    try std.testing.expectEqual(@as(usize, 1), tick_report.pending_port_count);
 }
 
 test "runspace park-on-budget preserves supervised parked slot" {

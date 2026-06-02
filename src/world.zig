@@ -234,6 +234,7 @@ pub const world_run_handle_format_version: u32 = 1;
 pub const world_run_handle_fingerprint_version: u32 = 1;
 pub const world_pending_port_format_version: u32 = 1;
 pub const world_pending_port_fingerprint_version: u32 = 1;
+pub const world_runspace_config_fingerprint_version: u32 = 1;
 pub const world_runspace_event_fingerprint_version: u32 = 1;
 
 var next_runspace_instance_id = std.atomic.Value(u64).init(0);
@@ -6552,6 +6553,8 @@ pub const Runspace = struct {
             cloneSupervisor: *const fn (*anyopaque, std.mem.Allocator) anyerror!?Supervision.Supervisor,
             restoreSupervisor: *const fn (*anyopaque, std.mem.Allocator, ?Supervision.Supervisor) void,
             hasSupervisor: *const fn (*anyopaque) bool,
+            supervisorWarningCount: *const fn (*anyopaque) usize,
+            supervisorBlockerCount: *const fn (*anyopaque) usize,
             supervisionInterrupted: *const fn (*anyopaque) bool,
             failed: *const fn (*anyopaque) bool,
             deinit: *const fn (*anyopaque, std.mem.Allocator) void,
@@ -6611,6 +6614,14 @@ pub const Runspace = struct {
 
         fn hasSupervisor(self: @This()) bool {
             return self.vtable.hasSupervisor(self.ptr);
+        }
+
+        fn supervisorWarningCount(self: @This()) usize {
+            return self.vtable.supervisorWarningCount(self.ptr);
+        }
+
+        fn supervisorBlockerCount(self: @This()) usize {
+            return self.vtable.supervisorBlockerCount(self.ptr);
         }
 
         fn supervisionInterrupted(self: @This()) bool {
@@ -6731,6 +6742,22 @@ pub const Runspace = struct {
                     return false;
                 }
 
+                fn runSupervisorWarningCount(ptr: *anyopaque) usize {
+                    const active: *RunType = @ptrCast(@alignCast(ptr));
+                    if (@hasField(RunType, "supervisor")) {
+                        if (active.supervisor) |supervisor| return supervisor.warning_count;
+                    }
+                    return 0;
+                }
+
+                fn runSupervisorBlockerCount(ptr: *anyopaque) usize {
+                    const active: *RunType = @ptrCast(@alignCast(ptr));
+                    if (@hasField(RunType, "supervisor")) {
+                        if (active.supervisor) |supervisor| return if (supervisor.blocker == null) 0 else 1;
+                    }
+                    return 0;
+                }
+
                 fn runSupervisionInterrupted(ptr: *anyopaque) bool {
                     const active: *RunType = @ptrCast(@alignCast(ptr));
                     if (@hasField(RunType, "supervisor")) {
@@ -6766,6 +6793,8 @@ pub const Runspace = struct {
                     .cloneSupervisor = runCloneSupervisor,
                     .restoreSupervisor = runRestoreSupervisor,
                     .hasSupervisor = runHasSupervisor,
+                    .supervisorWarningCount = runSupervisorWarningCount,
+                    .supervisorBlockerCount = runSupervisorBlockerCount,
                     .supervisionInterrupted = runSupervisionInterrupted,
                     .failed = runFailed,
                     .deinit = runDeinit,
@@ -8617,6 +8646,14 @@ pub const Runspace = struct {
                 },
                 .failed, .rejected => result.failed_count += 1,
                 .admitted => {},
+            }
+            if (slot.supervisor) |supervisor| {
+                result.warning_count += supervisor.warning_count;
+                if (supervisor.blocker != null) result.blocker_count += 1;
+            }
+            if (slot.driver) |driver| {
+                result.warning_count += driver.supervisorWarningCount();
+                result.blocker_count += driver.supervisorBlockerCount();
             }
         }
         return result;
@@ -14171,7 +14208,7 @@ fn fingerprintRunHandle(handle: RunHandle) u64 {
 fn fingerprintRunspaceConfig(config: Runspace.Config, runspace_instance_id: u64) u64 {
     var hasher = std.hash.Wyhash.init(0);
     hashBytes(&hasher, "world.runspace.config.fingerprint");
-    hashU64(&hasher, world_run_handle_fingerprint_version);
+    hashU64(&hasher, world_runspace_config_fingerprint_version);
     hashU64(&hasher, runspace_instance_id);
     hashU64(&hasher, @intFromEnum(config.policy));
     hashOptionalU64(&hasher, config.max_runs);
