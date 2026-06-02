@@ -264,7 +264,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-handoff-replay",
             .desc = "Run the replay World handoff example.",
             .expected_stdout =
-            \\run_image_fingerprint=edfe08cd947151e5
+            \\run_image_fingerprint=d8ee6082faeb801c
             \\replayed_response_count=1
             \\final_result=7
             \\
@@ -341,8 +341,8 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-admission-replay-verify",
             .desc = "Run the World admission replay/verify example.",
             .expected_stdout =
-            \\replay_admission_receipt=28cf87b7eac7b791
-            \\verify_admission_receipt=b67cec857bfbcb99
+            \\replay_admission_receipt=a8213d0c91b6d12c
+            \\verify_admission_receipt=a69f0b77b67318d1
             \\divergence_detected=true
             \\
             ,
@@ -356,7 +356,7 @@ pub fn build(b: *std.Build) void {
             \\module_ref_fingerprint=8980705f83427fa6
             \\model_port_id=0
             \\tool_port_id=1
-            \\admission_receipt=36f01506c840535
+            \\admission_receipt=c778278d96f538a6
             \\final_result=final=actuate skeleton complete
             \\
             ,

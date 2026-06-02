@@ -3595,6 +3595,33 @@ test "runspace install admitted and replay records receipts summaries and events
     try std.testing.expectEqual(@as(?u64, 44), branched_handle.branch_id);
     try std.testing.expectEqual(@as(?u64, 44), branched_summary.handle.branch_id);
     try std.testing.expectEqual(@as(?u64, 44), branched_summary.branch_id);
+    const selected_state = world.RunState.init(.{
+        .target_ref_fingerprint = world.TargetRef.fromTarget(fixtures.Ports.Target).target_ref_fingerprint,
+        .status = .completed,
+    });
+    const selected_branch_image = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = parked_export.target_ref,
+        .import_set_fingerprint = parked_export.import_set_fingerprint,
+        .current_state = selected_state,
+        .checkpoints = &.{branched_checkpoint},
+        .branches = @constCast(&[_]world.Timeline.Branch{branched_branch}),
+    });
+    const selected_branch_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_b045,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target),
+        .mode = .continue_fresh,
+        .run_image = selected_branch_image,
+        .selected_branch_id = 44,
+    });
+    var selected_branch_target = world.Runspace.init(std.testing.allocator, .{ .require_admission = true });
+    defer selected_branch_target.deinit();
+    const selected_branch_handle = try selected_branch_target.installAdmitted(selected_branch_admitted);
+    const selected_branch_checkpoint = try selected_branch_target.checkpoint(selected_branch_handle);
+    try std.testing.expectEqual(@as(u64, 44), selected_branch_checkpoint.branch_id);
+    var selected_branch_export = try selected_branch_target.exportRun(selected_branch_handle);
+    defer selected_branch_export.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u64, 44), selected_branch_export.current_state.branch_id);
 
     var replay_denied = world.Runspace.init(std.testing.allocator, .{
         .allow_replay_install = false,
@@ -3673,6 +3700,9 @@ test "runspace tick parks responds and completes machine run" {
         if (event.kind == .port_responded) break event;
     } else return error.ExpectedResponseFrame;
     try std.testing.expectEqual(transcript_response_frame.frame_fingerprint, port_responded_event.response_frame_fingerprint.?);
+    const resumed_checkpoint = try runspace.checkpoint(handle);
+    try std.testing.expectEqual(transcript_response_frame.frame_fingerprint, resumed_checkpoint.last_response_fingerprint.?);
+    try std.testing.expectEqual(@as(usize, 1), resumed_checkpoint.turn_index);
 
     report = try runspace.tick();
     try std.testing.expectEqual(@as(usize, 1), report.completed_count);
@@ -4768,6 +4798,9 @@ test "runspace checkpoint branch and replay install are deterministic" {
     defer image.deinit(std.testing.allocator);
     const replay_handle = try runspace.installReplay(fixtures.Ports.Target, image, null);
     try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try runspace.getSlotSummary(replay_handle)).status);
+    const replay_checkpoint = try runspace.checkpoint(replay_handle);
+    try std.testing.expectEqual(image.response_count, replay_checkpoint.turn_index);
+    try std.testing.expect(replay_checkpoint.turn_index > 0);
 }
 
 test "runspace branch rejects checkpoint with stale self fingerprint" {

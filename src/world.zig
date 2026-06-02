@@ -5861,6 +5861,48 @@ pub const TranscriptImage = struct {
     }
 };
 
+const TranscriptRunStateEvidence = struct {
+    turn_index: usize = 0,
+    final_response_fingerprint: ?u64 = null,
+    final_value_image_fingerprint: ?u64 = null,
+};
+
+fn runStateEvidenceFromTranscriptImage(image: TranscriptImage) TranscriptRunStateEvidence {
+    var evidence: TranscriptRunStateEvidence = .{};
+    for (image.events) |event| {
+        if (event.turn_index) |turn_index| evidence.turn_index = @max(evidence.turn_index, turn_index);
+        if (event.response_frame) |response| {
+            evidence.final_response_fingerprint = response.frame_fingerprint;
+            evidence.final_value_image_fingerprint = response.response_value_fingerprint;
+            if (event.turn_index) |turn_index| evidence.turn_index = @max(evidence.turn_index, turn_index + 1);
+        }
+    }
+    return evidence;
+}
+
+fn runStateWithBranch(state: RunState, branch_id: u64) RunState {
+    return RunState.init(.{
+        .target_ref_fingerprint = state.target_ref_fingerprint,
+        .transcript_image_fingerprint = state.transcript_image_fingerprint,
+        .branch_id = branch_id,
+        .checkpoint_fingerprint = state.checkpoint_fingerprint,
+        .pending_request_fingerprint = state.pending_request_fingerprint,
+        .final_response_fingerprint = state.final_response_fingerprint,
+        .final_value_image_fingerprint = state.final_value_image_fingerprint,
+        .turn_index = state.turn_index,
+        .status = state.status,
+    });
+}
+
+fn applySelectedBranchToRunImage(image: *RunImage, selected_branch_id: ?u64) !void {
+    const branch_id = selected_branch_id orelse return;
+    if (image.current_state.branch_id != 0 and image.current_state.branch_id != branch_id) return error.HandoffCheckpointMismatch;
+    if (image.current_state.branch_id == branch_id) return;
+    image.current_state = runStateWithBranch(image.current_state, branch_id);
+    refreshRunImageFingerprint(image);
+    try image.validate(.{});
+}
+
 pub const AuditReport = struct {
     world_surface_fingerprint: u64,
     target_certificate_fingerprint: u64,
@@ -6122,9 +6164,13 @@ pub const RunImage = struct {
     pub fn fromTranscriptImage(comptime Target: type, image: TranscriptImage, kind: Kind) @This() {
         const target_ref = TargetRef.fromTarget(Target);
         const import_set = ImportSet.fromTarget(Target);
+        const transcript_state = runStateEvidenceFromTranscriptImage(image);
         const state = RunState.init(.{
             .target_ref_fingerprint = target_ref.target_ref_fingerprint,
             .transcript_image_fingerprint = image.transcript_image_fingerprint,
+            .final_response_fingerprint = transcript_state.final_response_fingerprint,
+            .final_value_image_fingerprint = transcript_state.final_value_image_fingerprint,
+            .turn_index = transcript_state.turn_index,
             .status = switch (image.final_status) {
                 .running => .running,
                 .completed => .completed,
@@ -6954,6 +7000,19 @@ pub const Runspace = struct {
             });
         }
 
+        fn resumeFromPortState(self: @This(), response_frame_fingerprint: u64, response_value_image_fingerprint: ?u64) RunState {
+            return RunState.init(.{
+                .target_ref_fingerprint = self.handle.target_ref_fingerprint,
+                .transcript_image_fingerprint = self.current_state.transcript_image_fingerprint,
+                .branch_id = self.current_state.branch_id,
+                .checkpoint_fingerprint = self.current_state.checkpoint_fingerprint,
+                .final_response_fingerprint = response_frame_fingerprint,
+                .final_value_image_fingerprint = response_value_image_fingerprint,
+                .turn_index = self.current_state.turn_index + 1,
+                .status = .running,
+            });
+        }
+
         pub fn transition(self: *@This(), transition_kind: Transition, mailbox_id: ?u64) !void {
             switch (transition_kind) {
                 .step => switch (self.status) {
@@ -7014,6 +7073,20 @@ pub const Runspace = struct {
                     .admitted => self.status = .rejected,
                     else => return error.InvalidRunspaceTransition,
                 },
+            }
+        }
+
+        pub fn resumeFromPort(self: *@This(), mailbox_id: ?u64, response_frame_fingerprint: u64, response_value_image_fingerprint: ?u64) !void {
+            switch (self.status) {
+                .parked_on_port => {
+                    if (mailbox_id) |expected| {
+                        if (self.pending_mailbox_id != expected) return error.StaleRunHandle;
+                    }
+                    self.status = .runnable;
+                    self.pending_mailbox_id = null;
+                    self.current_state = self.resumeFromPortState(response_frame_fingerprint, response_value_image_fingerprint);
+                },
+                else => return error.InvalidRunspaceTransition,
             }
         }
 
@@ -7494,6 +7567,7 @@ pub const Runspace = struct {
                 try attachTranscriptToInstalledRunImage(self.allocator, &installed_image.?, transcript_image);
                 try installed_image.?.validate(.{});
             }
+            try applySelectedBranchToRunImage(&installed_image.?, admitted_run.selected_branch_id);
         }
         var supervisor: ?Supervision.Supervisor = null;
         var supervisor_owned = false;
@@ -7953,7 +8027,7 @@ pub const Runspace = struct {
         else
             return error.InvalidRunspaceTransition;
         if (response.status == .pending) return error.HandlerPending;
-        try slot.transition(.resume_from_port, mailbox_id);
+        try slot.resumeFromPort(mailbox_id, effective_response_frame_fingerprint, response.response_value_fingerprint);
         const responded = try self.mailbox.markResponded(mailbox_id);
         _ = self.appendPreparedEventAssumeCapacity(.{
             .kind = .port_responded,
