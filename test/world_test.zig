@@ -3036,6 +3036,11 @@ test "runspace install admitted and replay records receipts summaries and events
     try std.testing.expectEqual(admitted_transcript.transcript_image_fingerprint, reexported.transcript_image.?.transcript_image_fingerprint);
     try std.testing.expectEqual(@as(?u64, 0x5eed_9000), reexported.prior_run_receipt_fingerprint);
     try std.testing.expectEqual(@as(?u64, 0x9000_5eed), reexported.module_ref_fingerprint);
+    const reexported_bytes = try reexported.encode(std.testing.allocator);
+    defer std.testing.allocator.free(reexported_bytes);
+    var decoded_reexported = try world.RunImage.decode(std.testing.allocator, reexported_bytes);
+    defer decoded_reexported.deinit(std.testing.allocator);
+    try std.testing.expectEqual(reexported.run_image_fingerprint, decoded_reexported.run_image_fingerprint);
 
     const detached_state = world.RunState.init(.{
         .target_ref_fingerprint = world.TargetRef.fromTarget(fixtures.Ports.Target).target_ref_fingerprint,
