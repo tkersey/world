@@ -7951,6 +7951,12 @@ pub const Runspace = struct {
         if (status != .rejected and status != .failed) return error.InvalidPendingPortTransition;
         if (response.status != status) return error.InvalidPendingPortTransition;
         try pending.validateResponse(response);
+        var failed_event_pair = try self.prepareEventPair(
+            2,
+            "terminal port response failed",
+            "run failed after terminal port response",
+        );
+        defer failed_event_pair.deinit(self.allocator);
         const accounting = try self.responseFrameAccounting(response);
         if (slot.driver) |driver| {
             try driver.beforeTerminalResponse(pending.world_port_id, status);
@@ -7960,7 +7966,7 @@ pub const Runspace = struct {
                 }
                 const failed = try self.mailbox.fail(mailbox_id, "terminal response failed");
                 try slot.transition(.fail, null);
-                _ = try self.appendEvent(.{
+                _ = self.appendPreparedEventAssumeCapacity(.{
                     .kind = .port_failed,
                     .run_handle = slot.handle,
                     .pending_port_fingerprint = failed.pending_port_fingerprint,
@@ -7968,9 +7974,9 @@ pub const Runspace = struct {
                     .response_frame_fingerprint = response.frame_fingerprint,
                     .run_state_fingerprint = slot.current_state.run_state_fingerprint,
                     .run_permit_fingerprint = slot.run_permit_fingerprint,
-                    .summary = "terminal port response failed",
+                    .summary = failed_event_pair.takeFirst(),
                 });
-                _ = try self.appendEvent(.{
+                _ = self.appendPreparedEventAssumeCapacity(.{
                     .kind = .run_failed,
                     .run_handle = slot.handle,
                     .pending_port_fingerprint = failed.pending_port_fingerprint,
@@ -7978,7 +7984,7 @@ pub const Runspace = struct {
                     .response_frame_fingerprint = response.frame_fingerprint,
                     .run_state_fingerprint = slot.current_state.run_state_fingerprint,
                     .run_permit_fingerprint = slot.run_permit_fingerprint,
-                    .summary = "run failed after terminal port response",
+                    .summary = failed_event_pair.takeSecond(),
                 });
                 return err;
             };
@@ -8033,11 +8039,16 @@ pub const Runspace = struct {
     }
 
     fn finishTerminalResponse(self: *@This(), index: usize, mailbox_id: u64, pending: Runspace.PendingPort, slot: *Runspace.RunSlot, response: Frame.Response, status: ResponseStatus) !Runspace.RunspaceEvent {
-        try self.ensureEventCapacity(2);
+        var event_pair = try self.prepareEventPair(
+            2,
+            terminalPortSummary(status),
+            terminalRunSummary(status),
+        );
+        defer event_pair.deinit(self.allocator);
         if (try self.routeTerminalResponse(index, mailbox_id, pending, slot, response, status)) |event| return event;
         const consumed = try self.consumeTerminalMailbox(mailbox_id, status, response.reason orelse "");
         try slot.transition(.fail, null);
-        _ = try self.appendEvent(.{
+        _ = self.appendPreparedEventAssumeCapacity(.{
             .kind = terminalPortEventKind(status),
             .run_handle = slot.handle,
             .pending_port_fingerprint = consumed.pending_port_fingerprint,
@@ -8045,9 +8056,9 @@ pub const Runspace = struct {
             .response_frame_fingerprint = response.frame_fingerprint,
             .run_state_fingerprint = slot.current_state.run_state_fingerprint,
             .run_permit_fingerprint = slot.run_permit_fingerprint,
-            .summary = terminalPortSummary(status),
+            .summary = event_pair.takeFirst(),
         });
-        return self.appendEvent(.{
+        return self.appendPreparedEventAssumeCapacity(.{
             .kind = .run_failed,
             .run_handle = slot.handle,
             .pending_port_fingerprint = consumed.pending_port_fingerprint,
@@ -8055,7 +8066,7 @@ pub const Runspace = struct {
             .response_frame_fingerprint = response.frame_fingerprint,
             .run_state_fingerprint = slot.current_state.run_state_fingerprint,
             .run_permit_fingerprint = slot.run_permit_fingerprint,
-            .summary = terminalRunSummary(status),
+            .summary = event_pair.takeSecond(),
         });
     }
 
