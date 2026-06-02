@@ -6619,7 +6619,7 @@ pub const Runspace = struct {
             nextFrame: *const fn (*anyopaque) anyerror!DriverStep,
             resumeFrame: *const fn (*anyopaque, Frame.Response) anyerror!u64,
             beforeResponse: *const fn (*anyopaque, u32, ResponseStatus, usize, usize) anyerror!void,
-            beforeTerminalResponse: *const fn (*anyopaque, u32, ResponseStatus) anyerror!void,
+            beforeTerminalResponse: *const fn (*anyopaque, u32, ResponseStatus, usize, usize) anyerror!void,
             resumeTerminalFrame: *const fn (*anyopaque, Frame.Response) anyerror!void,
             dispatch: *const fn (*anyopaque) anyerror!?ResponseEvidence,
             snapshotRunImage: *const fn (*anyopaque) anyerror!RunImage,
@@ -6649,8 +6649,8 @@ pub const Runspace = struct {
             return self.vtable.beforeResponse(self.ptr, world_port_id, status, response_bytes, value_image_bytes);
         }
 
-        fn beforeTerminalResponse(self: @This(), world_port_id: u32, status: ResponseStatus) !void {
-            return self.vtable.beforeTerminalResponse(self.ptr, world_port_id, status);
+        fn beforeTerminalResponse(self: @This(), world_port_id: u32, status: ResponseStatus, response_bytes: usize, value_image_bytes: usize) !void {
+            return self.vtable.beforeTerminalResponse(self.ptr, world_port_id, status, response_bytes, value_image_bytes);
         }
 
         fn resumeTerminalFrame(self: @This(), response: Frame.Response) !void {
@@ -6751,9 +6751,9 @@ pub const Runspace = struct {
                     if (@hasDecl(RunType, "beforeRunspaceResponse")) return active.beforeRunspaceResponse(world_port_id, status, response_bytes, value_image_bytes);
                 }
 
-                fn runBeforeTerminalResponse(ptr: *anyopaque, world_port_id: u32, status: ResponseStatus) anyerror!void {
+                fn runBeforeTerminalResponse(ptr: *anyopaque, world_port_id: u32, status: ResponseStatus, response_bytes: usize, value_image_bytes: usize) anyerror!void {
                     const active: *RunType = @ptrCast(@alignCast(ptr));
-                    if (@hasDecl(RunType, "beforeRunspaceTerminalResponse")) return active.beforeRunspaceTerminalResponse(world_port_id, status);
+                    if (@hasDecl(RunType, "beforeRunspaceTerminalResponse")) return active.beforeRunspaceTerminalResponse(world_port_id, status, response_bytes, value_image_bytes);
                 }
 
                 fn runResumeTerminalFrame(ptr: *anyopaque, response: Frame.Response) anyerror!void {
@@ -8141,7 +8141,12 @@ pub const Runspace = struct {
         defer failed_event_pair.deinit(self.allocator);
         const accounting = try self.responseFrameAccounting(response);
         if (slot.driver) |driver| {
-            try driver.beforeTerminalResponse(pending.world_port_id, status);
+            driver.beforeTerminalResponse(pending.world_port_id, status, accounting.response_bytes, accounting.value_image_bytes) catch |err| {
+                if ((err == error.HandlerPending or err == error.BudgetExceeded) and driver.supervisionInterrupted()) {
+                    return try self.parkPendingOnSupervision(index, pending, mailbox_id, "terminal response parked on supervision");
+                }
+                return err;
+            };
             driver.resumeTerminalFrame(response) catch |err| {
                 if ((err == error.HandlerPending or err == error.BudgetExceeded) and driver.supervisionInterrupted()) {
                     return try self.parkPendingOnSupervision(index, pending, mailbox_id, "terminal response parked on supervision");
@@ -10741,33 +10746,29 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     }
                 }
 
-                pub fn beforeRunspaceTerminalResponse(self: *Self, world_port_id: u32, status: ResponseStatus) !void {
+                pub fn beforeRunspaceTerminalResponse(self: *Self, world_port_id: u32, status: ResponseStatus, response_bytes: usize, value_image_bytes: usize) !void {
                     if (status != .rejected and status != .failed) return error.InvalidPendingPortTransition;
                     if (self.supervisor) |*supervisor| {
                         try supervisor.validateWorldPortId(world_port_id);
-                        if (!Supervision.responseAllowedByPolicy(supervisor.permit.policy, status)) {
-                            supervisor.afterAdapterResponse(.{
-                                .world_port_id = world_port_id,
-                                .status = status,
-                                .response_bytes = 0,
-                                .value_image_bytes = 0,
-                            }) catch |err| return err;
-                        }
+                        var allowed = Supervision.responseAllowedByPolicy(supervisor.permit.policy, status);
                         if (supervisor.permit.ruleFor(world_port_id)) |rule| {
-                            const allowed = switch (status) {
+                            allowed = allowed and switch (status) {
                                 .rejected => rule.allow_reject,
                                 .failed => rule.allow_fail,
                                 else => unreachable,
                             };
-                            if (!allowed) {
-                                supervisor.afterAdapterResponse(.{
-                                    .world_port_id = world_port_id,
-                                    .status = status,
-                                    .response_bytes = 0,
-                                    .value_image_bytes = 0,
-                                }) catch |err| return err;
-                            }
                         }
+                        supervisor.afterAdapterResponse(.{
+                            .world_port_id = world_port_id,
+                            .status = status,
+                            .response_bytes = response_bytes,
+                            .value_image_bytes = value_image_bytes,
+                        }) catch |err| return err;
+                        if (!allowed) return switch (status) {
+                            .rejected => Error.HandlerRejected,
+                            .failed => Error.HandlerFailed,
+                            else => unreachable,
+                        };
                     }
                 }
 
