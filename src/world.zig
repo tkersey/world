@@ -6526,7 +6526,7 @@ pub const Runspace = struct {
         const VTable = struct {
             nextFrame: *const fn (*anyopaque) anyerror!DriverStep,
             resumeFrame: *const fn (*anyopaque, Frame.Response) anyerror!void,
-            beforeResponse: *const fn (*anyopaque, u32, ResponseStatus) anyerror!void,
+            beforeResponse: *const fn (*anyopaque, u32, ResponseStatus, usize, usize) anyerror!void,
             beforeTerminalResponse: *const fn (*anyopaque, u32, ResponseStatus) anyerror!void,
             resumeTerminalFrame: *const fn (*anyopaque, Frame.Response) anyerror!void,
             dispatch: *const fn (*anyopaque) anyerror!void,
@@ -6548,8 +6548,8 @@ pub const Runspace = struct {
             return self.vtable.resumeFrame(self.ptr, response);
         }
 
-        fn beforeResponse(self: @This(), world_port_id: u32, status: ResponseStatus) !void {
-            return self.vtable.beforeResponse(self.ptr, world_port_id, status);
+        fn beforeResponse(self: @This(), world_port_id: u32, status: ResponseStatus, response_bytes: usize, value_image_bytes: usize) !void {
+            return self.vtable.beforeResponse(self.ptr, world_port_id, status, response_bytes, value_image_bytes);
         }
 
         fn beforeTerminalResponse(self: @This(), world_port_id: u32, status: ResponseStatus) !void {
@@ -6627,9 +6627,9 @@ pub const Runspace = struct {
                     return active.resumeFrame(response);
                 }
 
-                fn runBeforeResponse(ptr: *anyopaque, world_port_id: u32, status: ResponseStatus) anyerror!void {
+                fn runBeforeResponse(ptr: *anyopaque, world_port_id: u32, status: ResponseStatus, response_bytes: usize, value_image_bytes: usize) anyerror!void {
                     const active: *RunType = @ptrCast(@alignCast(ptr));
-                    if (@hasDecl(RunType, "beforeRunspaceResponse")) return active.beforeRunspaceResponse(world_port_id, status);
+                    if (@hasDecl(RunType, "beforeRunspaceResponse")) return active.beforeRunspaceResponse(world_port_id, status, response_bytes, value_image_bytes);
                 }
 
                 fn runBeforeTerminalResponse(ptr: *anyopaque, world_port_id: u32, status: ResponseStatus) anyerror!void {
@@ -7698,6 +7698,20 @@ pub const Runspace = struct {
         return self.report();
     }
 
+    const ResponseFrameAccounting = struct {
+        response_bytes: usize = 0,
+        value_image_bytes: usize = 0,
+    };
+
+    fn responseFrameAccounting(self: *@This(), response: Frame.Response) !ResponseFrameAccounting {
+        const encoded_response = try response.encode(self.allocator);
+        defer self.allocator.free(encoded_response);
+        return .{
+            .response_bytes = encoded_response.len,
+            .value_image_bytes = if (response.response_image) |image| image.bytes.len else 0,
+        };
+    }
+
     pub fn tick(self: *@This()) !Runspace.RunspaceReport {
         const initial_len = self.slots.items.len;
         var index: usize = 0;
@@ -7733,8 +7747,9 @@ pub const Runspace = struct {
         switch (response.status) {
             .responded => {},
             .pending => {
+                const accounting = try self.responseFrameAccounting(response);
                 if (slot.driver) |driver| {
-                    driver.beforeResponse(pending.world_port_id, .pending) catch |err| {
+                    driver.beforeResponse(pending.world_port_id, .pending, accounting.response_bytes, accounting.value_image_bytes) catch |err| {
                         if (err == error.HandlerPending and driver.supervisionInterrupted()) {
                             return self.parkPendingOnSupervision(index, pending, mailbox_id, "manual pending response parked on supervision");
                         }
@@ -7745,11 +7760,25 @@ pub const Runspace = struct {
                     };
                     return error.HandlerPending;
                 }
+                if (slot.supervisor) |*supervisor| {
+                    supervisor.afterAdapterResponse(.{
+                        .world_port_id = pending.world_port_id,
+                        .status = .pending,
+                        .response_bytes = accounting.response_bytes,
+                        .value_image_bytes = accounting.value_image_bytes,
+                    }) catch |err| {
+                        if ((err == error.HandlerPending or err == error.BudgetExceeded) and supervisor.interrupted) {
+                            return self.parkPendingOnSupervision(index, pending, mailbox_id, "manual pending response parked on supervision");
+                        }
+                        return err;
+                    };
+                    return error.HandlerPending;
+                }
                 if (self.config.require_supervision) return error.SupervisionDenied;
                 return error.HandlerPending;
             },
-            .rejected => return self.finishTerminalResponse(mailbox_id, pending, slot, response, .rejected),
-            .failed => return self.finishTerminalResponse(mailbox_id, pending, slot, response, .failed),
+            .rejected => return self.finishTerminalResponse(index, mailbox_id, pending, slot, response, .rejected),
+            .failed => return self.finishTerminalResponse(index, mailbox_id, pending, slot, response, .failed),
         }
         try self.ensureEventCapacity(2);
         if (slot.driver) |driver| {
@@ -7839,13 +7868,17 @@ pub const Runspace = struct {
         });
     }
 
-    fn routeTerminalResponse(self: *@This(), mailbox_id: u64, pending: Runspace.PendingPort, slot: *Runspace.RunSlot, response: Frame.Response, status: ResponseStatus) !void {
+    fn routeTerminalResponse(self: *@This(), index: usize, mailbox_id: u64, pending: Runspace.PendingPort, slot: *Runspace.RunSlot, response: Frame.Response, status: ResponseStatus) !?Runspace.RunspaceEvent {
         if (status != .rejected and status != .failed) return error.InvalidPendingPortTransition;
         if (response.status != status) return error.InvalidPendingPortTransition;
         try pending.validateResponse(response);
+        const accounting = try self.responseFrameAccounting(response);
         if (slot.driver) |driver| {
             try driver.beforeTerminalResponse(pending.world_port_id, status);
             driver.resumeTerminalFrame(response) catch |err| {
+                if ((err == error.HandlerPending or err == error.BudgetExceeded) and driver.supervisionInterrupted()) {
+                    return try self.parkPendingOnSupervision(index, pending, mailbox_id, "terminal response parked on supervision");
+                }
                 const failed = try self.mailbox.fail(mailbox_id, "terminal response failed");
                 try slot.transition(.fail, null);
                 _ = try self.appendEvent(.{
@@ -7871,13 +7904,21 @@ pub const Runspace = struct {
                 return err;
             };
         } else if (slot.supervisor) |*supervisor| {
-            try supervisor.afterAdapterResponse(.{
+            supervisor.afterAdapterResponse(.{
                 .world_port_id = pending.world_port_id,
                 .status = status,
-            });
+                .response_bytes = accounting.response_bytes,
+                .value_image_bytes = accounting.value_image_bytes,
+            }) catch |err| {
+                if ((err == error.HandlerPending or err == error.BudgetExceeded) and supervisor.interrupted) {
+                    return try self.parkPendingOnSupervision(index, pending, mailbox_id, "terminal response parked on supervision");
+                }
+                return err;
+            };
         } else if (self.config.require_supervision) {
             return error.SupervisionDenied;
         }
+        return null;
     }
 
     fn terminalPortEventKind(status: ResponseStatus) Runspace.EventKind {
@@ -7912,9 +7953,9 @@ pub const Runspace = struct {
         };
     }
 
-    fn finishTerminalResponse(self: *@This(), mailbox_id: u64, pending: Runspace.PendingPort, slot: *Runspace.RunSlot, response: Frame.Response, status: ResponseStatus) !Runspace.RunspaceEvent {
+    fn finishTerminalResponse(self: *@This(), index: usize, mailbox_id: u64, pending: Runspace.PendingPort, slot: *Runspace.RunSlot, response: Frame.Response, status: ResponseStatus) !Runspace.RunspaceEvent {
         try self.ensureEventCapacity(2);
-        try self.routeTerminalResponse(mailbox_id, pending, slot, response, status);
+        if (try self.routeTerminalResponse(index, mailbox_id, pending, slot, response, status)) |event| return event;
         const consumed = try self.consumeTerminalMailbox(mailbox_id, status, response.reason orelse "");
         try slot.transition(.fail, null);
         _ = try self.appendEvent(.{
@@ -7939,11 +7980,19 @@ pub const Runspace = struct {
         });
     }
 
-    fn routeTerminalPending(self: *@This(), mailbox_id: u64, pending: Runspace.PendingPort, slot: *Runspace.RunSlot, status: ResponseStatus, reason: []const u8) !Frame.Response {
+    const TerminalPendingRoute = struct {
+        response: Frame.Response,
+        parked_event: ?Runspace.RunspaceEvent = null,
+    };
+
+    fn routeTerminalPending(self: *@This(), index: usize, mailbox_id: u64, pending: Runspace.PendingPort, slot: *Runspace.RunSlot, status: ResponseStatus, reason: []const u8) !TerminalPendingRoute {
         var response = try terminalResponseForPending(pending, status, reason);
         errdefer response.deinit(self.allocator);
-        try self.routeTerminalResponse(mailbox_id, pending, slot, response, status);
-        return response;
+        const parked_event = try self.routeTerminalResponse(index, mailbox_id, pending, slot, response, status);
+        return .{
+            .response = response,
+            .parked_event = parked_event,
+        };
     }
 
     fn parkPendingOnSupervision(self: *@This(), index: usize, pending: Runspace.PendingPort, mailbox_id: u64, event_summary: []const u8) !Runspace.RunspaceEvent {
@@ -7974,8 +8023,9 @@ pub const Runspace = struct {
         var slot = &self.slots.items[index];
         if (slot.pending_mailbox_id != mailbox_id or slot.status != .parked_on_port) return error.StaleRunHandle;
         try self.ensureEventCapacity(2);
-        var response = try self.routeTerminalPending(mailbox_id, pending, slot, .rejected, reason);
-        defer response.deinit(self.allocator);
+        var routed = try self.routeTerminalPending(index, mailbox_id, pending, slot, .rejected, reason);
+        defer routed.response.deinit(self.allocator);
+        if (routed.parked_event) |event| return event;
         const cancelled = try self.mailbox.cancel(mailbox_id, reason);
         try slot.transition(.fail, null);
         _ = try self.appendEvent(.{
@@ -7983,7 +8033,7 @@ pub const Runspace = struct {
             .run_handle = slot.handle,
             .pending_port_fingerprint = cancelled.pending_port_fingerprint,
             .request_frame_fingerprint = cancelled.request_frame_fingerprint,
-            .response_frame_fingerprint = response.frame_fingerprint,
+            .response_frame_fingerprint = routed.response.frame_fingerprint,
             .run_state_fingerprint = slot.current_state.run_state_fingerprint,
             .run_permit_fingerprint = slot.run_permit_fingerprint,
             .summary = "port rejected",
@@ -7993,7 +8043,7 @@ pub const Runspace = struct {
             .run_handle = slot.handle,
             .pending_port_fingerprint = cancelled.pending_port_fingerprint,
             .request_frame_fingerprint = cancelled.request_frame_fingerprint,
-            .response_frame_fingerprint = response.frame_fingerprint,
+            .response_frame_fingerprint = routed.response.frame_fingerprint,
             .run_state_fingerprint = slot.current_state.run_state_fingerprint,
             .run_permit_fingerprint = slot.run_permit_fingerprint,
             .summary = "run failed after port rejection",
@@ -8007,8 +8057,9 @@ pub const Runspace = struct {
         var slot = &self.slots.items[index];
         if (slot.pending_mailbox_id != mailbox_id or slot.status != .parked_on_port) return error.StaleRunHandle;
         try self.ensureEventCapacity(2);
-        var response = try self.routeTerminalPending(mailbox_id, pending, slot, .failed, reason);
-        defer response.deinit(self.allocator);
+        var routed = try self.routeTerminalPending(index, mailbox_id, pending, slot, .failed, reason);
+        defer routed.response.deinit(self.allocator);
+        if (routed.parked_event) |event| return event;
         const failed = try self.mailbox.fail(mailbox_id, reason);
         try slot.transition(.fail, null);
         _ = try self.appendEvent(.{
@@ -8016,7 +8067,7 @@ pub const Runspace = struct {
             .run_handle = slot.handle,
             .pending_port_fingerprint = failed.pending_port_fingerprint,
             .request_frame_fingerprint = failed.request_frame_fingerprint,
-            .response_frame_fingerprint = response.frame_fingerprint,
+            .response_frame_fingerprint = routed.response.frame_fingerprint,
             .run_state_fingerprint = slot.current_state.run_state_fingerprint,
             .run_permit_fingerprint = slot.run_permit_fingerprint,
             .summary = "port failed",
@@ -8026,7 +8077,7 @@ pub const Runspace = struct {
             .run_handle = slot.handle,
             .pending_port_fingerprint = failed.pending_port_fingerprint,
             .request_frame_fingerprint = failed.request_frame_fingerprint,
-            .response_frame_fingerprint = response.frame_fingerprint,
+            .response_frame_fingerprint = routed.response.frame_fingerprint,
             .run_state_fingerprint = slot.current_state.run_state_fingerprint,
             .run_permit_fingerprint = slot.run_permit_fingerprint,
             .summary = "run failed after port failure",
@@ -10022,11 +10073,13 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     try self.resumeFrameWithProvenance(response_frame, false);
                 }
 
-                pub fn beforeRunspaceResponse(self: *Self, world_port_id: u32, status: ResponseStatus) !void {
+                pub fn beforeRunspaceResponse(self: *Self, world_port_id: u32, status: ResponseStatus, response_bytes: usize, value_image_bytes: usize) !void {
                     if (self.supervisor) |*supervisor| {
                         try supervisor.afterAdapterResponse(.{
                             .world_port_id = world_port_id,
                             .status = status,
+                            .response_bytes = response_bytes,
+                            .value_image_bytes = value_image_bytes,
                         });
                     }
                 }
