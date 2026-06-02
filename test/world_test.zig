@@ -3566,6 +3566,18 @@ test "runspace install admitted and replay records receipts summaries and events
         .run_image = replay_export,
     });
     try std.testing.expectError(error.RunspaceInstallDenied, replay_denied.installAdmitted(replay_image_admitted));
+    var replay_denied_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer replay_denied_runtime.deinit();
+    try std.testing.expectError(error.RunspaceInstallDenied, replay_denied.installMachineRun(fixtures.Strict.Target, StrictReplayEnv, &replay_denied_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.replay,
+        .transcript_image = &image,
+    }));
+    try std.testing.expectError(error.RunspaceInstallDenied, replay_denied.installVerifyRun(fixtures.Strict.Target, StrictReplayEnv, &replay_denied_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.verify,
+        .transcript_image = &image,
+    }));
 }
 
 test "runspace tick parks responds and completes machine run" {

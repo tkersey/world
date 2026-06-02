@@ -7685,6 +7685,8 @@ pub const Runspace = struct {
         if (self.config.require_admission) return error.RunspaceAdmissionRequired;
         if (!self.config.allow_direct_target_install) return error.RunspaceInstallDenied;
         const Options = @TypeOf(options);
+        const requested_mode: Mode = if (comptime @hasField(Options, "mode")) @field(options, "mode") else .fresh;
+        if (modeConsumesTranscript(requested_mode) and !self.config.allow_replay_install) return error.RunspaceInstallDenied;
         const maybe_permit: ?RunPermit = if (comptime @hasField(Options, "permit")) @field(options, "permit") else null;
         if (self.config.require_supervision and maybe_permit == null) return error.SupervisionDenied;
         const MachineType = Machine(Target, Env.machine_config);
