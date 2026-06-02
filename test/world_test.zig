@@ -3248,11 +3248,26 @@ test "runspace auto dispatch event budget failure happens before handler call" {
 
 test "runspace install admitted and replay records receipts summaries and events" {
     const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
-    const admitted = world.Admission.AdmittedRun.init(.{
-        .admission_receipt_fingerprint = 0xadd1_5510,
+    const registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Ports.Target)});
+    const package = world.Admission.TransferPackage.init(.{
+        .kind = .target_reference_only,
         .target_ref = target_ref,
-        .mode = .continue_fresh,
+        .requested_mode = .continue_fresh,
     });
+    const result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, package, .{});
+    try std.testing.expect(result.report.accepted);
+    const admitted = result.admitted_run orelse return error.ExpectedAdmittedRun;
+    const admitted_receipt_fingerprint = result.receipt.?.receipt_fingerprint;
+    var receiptless_admitted = admitted;
+    receiptless_admitted.admission_receipt = null;
+    var receiptless_runspace = world.Runspace.init(std.testing.allocator, .{
+        .require_admission = true,
+    });
+    defer receiptless_runspace.deinit();
+    try std.testing.expectError(error.InvalidFrameEncoding, receiptless_runspace.installAdmitted(receiptless_admitted));
     var runspace = world.Runspace.init(std.testing.allocator, .{
         .require_admission = true,
     });
@@ -3307,7 +3322,7 @@ test "runspace install admitted and replay records receipts summaries and events
     const admitted_summary = try runspace.getSlotSummary(admitted_handle);
     try std.testing.expectEqual(world.Runspace.RunStatus.admitted, admitted_summary.status);
     try std.testing.expectError(error.InvalidRunspaceTransition, runspace.step(admitted_handle));
-    try std.testing.expectEqual(@as(?u64, 0xadd1_5510), admitted_summary.admission_receipt_fingerprint);
+    try std.testing.expectEqual(@as(?u64, admitted_receipt_fingerprint), admitted_summary.admission_receipt_fingerprint);
     try std.testing.expectEqual(world.Runspace.EventKind.run_admitted, runspace.events.items[0].kind);
 
     const ports_cert = PortsEnv.certificate(.fresh, false);
@@ -11561,6 +11576,11 @@ test "admitted run constructed for accepted local target" {
     var runspace = world.Runspace.init(std.testing.allocator, .{});
     defer runspace.deinit();
     try std.testing.expectError(error.InvalidFrameEncoding, runspace.installAdmitted(forged_admitted));
+    var receiptless_admitted = result.admitted_run.?;
+    receiptless_admitted.admission_receipt = null;
+    var admission_gated_runspace = world.Runspace.init(std.testing.allocator, .{ .require_admission = true });
+    defer admission_gated_runspace.deinit();
+    try std.testing.expectError(error.InvalidFrameEncoding, admission_gated_runspace.installAdmitted(receiptless_admitted));
 }
 
 test "admission rejects permit mode mismatch before receipt" {

@@ -7574,7 +7574,8 @@ pub const Runspace = struct {
         if (fingerprintAdmissionReceipt(receipt) != receipt.receipt_fingerprint) return error.InvalidFrameEncoding;
         const admitted_run_fingerprint = receipt.admitted_run_fingerprint orelse return error.InvalidFrameEncoding;
         if (admitted_run_fingerprint != admitted_run.admitted_run_fingerprint) return error.InvalidFrameEncoding;
-        if (receipt.target_ref_fingerprint != admitted_run.target_ref.target_ref_fingerprint) return error.InvalidFrameEncoding;
+        const receipt_local_target_ref = receipt.local_target_ref_fingerprint orelse receipt.target_ref_fingerprint;
+        if (receipt_local_target_ref != admitted_run.target_ref.target_ref_fingerprint) return error.InvalidFrameEncoding;
         if (receipt.module_ref_fingerprint != admitted_run.module_ref_fingerprint) return error.InvalidFrameEncoding;
         if (receipt.environment_certificate_fingerprint != admitted_run.environment_certificate_fingerprint) return error.InvalidFrameEncoding;
         if (receipt.run_permit_fingerprint != if (admitted_run.run_permit) |permit| permit.permit_fingerprint else null) return error.InvalidFrameEncoding;
@@ -7583,6 +7584,7 @@ pub const Runspace = struct {
 
     pub fn installAdmitted(self: *@This(), admitted_run: Admission.AdmittedRun) !RunHandle {
         if (admitted_run.admitted_run_fingerprint != fingerprintAdmittedRun(admitted_run)) return error.InvalidFrameEncoding;
+        if (self.config.require_admission and admitted_run.admission_receipt == null and admitted_run.run_image == null and admitted_run.run_permit == null) return error.InvalidFrameEncoding;
         try validateAdmittedRunReceipt(admitted_run);
         if (self.config.require_supervision and admitted_run.run_permit == null) return error.SupervisionDenied;
         const target_ref = admitted_run.target_ref;
