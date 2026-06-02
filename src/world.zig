@@ -8665,6 +8665,15 @@ pub const Runspace = struct {
         };
     }
 
+    fn receiptFinalStatusForRunState(state: RunState) RunReceipt.FinalStatus {
+        return switch (state.status) {
+            .not_started, .running => .interrupted,
+            .parked_on_port => .parked,
+            .completed => .completed,
+            .failed => .failed,
+        };
+    }
+
     fn slotTranscriptPrefixFingerprint(slot: Runspace.RunSlot) u64 {
         return slot.current_state.transcript_image_fingerprint orelse slot.current_state.run_state_fingerprint;
     }
@@ -8999,11 +9008,20 @@ pub const Runspace = struct {
     fn snapshotSlotImage(self: *@This(), index: usize) !RunImage {
         const slot = &self.slots.items[index];
         if (slot.driver) |driver| return driver.snapshotRunImage();
+        const run_receipt_fingerprint = if (slot.supervisor) |*supervisor|
+            supervisor.receipt(
+                receiptFinalStatusForRunState(slot.current_state),
+                slot.current_state.run_state_fingerprint,
+                slot.current_state.transcript_image_fingerprint,
+                null,
+            ).receipt_fingerprint
+        else
+            slot.run_receipt_fingerprint;
         if (slot.installed_run_image) |installed_image| {
             var image = try cloneRunImage(self.allocator, installed_image);
             image.current_state = slot.current_state;
             image.prior_run_permit_fingerprint = slot.run_permit_fingerprint;
-            image.prior_run_receipt_fingerprint = slot.run_receipt_fingerprint;
+            image.prior_run_receipt_fingerprint = run_receipt_fingerprint;
             image.module_ref_fingerprint = slot.module_ref_fingerprint;
             refreshRunImageFingerprint(&image);
             return image;
@@ -9032,7 +9050,7 @@ pub const Runspace = struct {
             .current_state = slot.current_state,
             .pending_request_frame = pending_frame,
             .prior_run_permit_fingerprint = slot.run_permit_fingerprint,
-            .prior_run_receipt_fingerprint = slot.run_receipt_fingerprint,
+            .prior_run_receipt_fingerprint = run_receipt_fingerprint,
             .module_ref_fingerprint = slot.module_ref_fingerprint,
         });
         image.owns_pending_request_frame = owns_pending_frame;

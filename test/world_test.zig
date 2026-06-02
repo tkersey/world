@@ -4262,6 +4262,7 @@ test "runspace supervised export events carry receipt witnesses" {
         .allow_fresh_calls = true,
         .allow_native_adapters = true,
         .allow_handoff_export = true,
+        .allow_handoff_accept = true,
         .require_environment_certificate = true,
     });
 
@@ -4309,6 +4310,44 @@ test "runspace supervised export events carry receipt witnesses" {
     const parked_export_event = parked_runspace.report().emitted_events[parked_runspace.report().emitted_events.len - 1];
     try std.testing.expectEqual(world.Runspace.EventKind.run_exported, parked_export_event.kind);
     try std.testing.expectEqual(parked_receipt, parked_export_event.run_receipt_fingerprint.?);
+
+    const sender_receipt_fingerprint: u64 = 0x5eed_cafe;
+    const admitted_permit = world.Supervision.issue(fixtures.Strict.Target, StrictEnv, .{
+        .mode = .fresh,
+        .policy = export_policy,
+    });
+    const admitted_state = world.RunState.init(.{
+        .target_ref_fingerprint = world.TargetRef.fromTarget(fixtures.Strict.Target).target_ref_fingerprint,
+        .status = .completed,
+    });
+    const admitted_image = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Strict.Target),
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Strict.Target).import_set_fingerprint,
+        .current_state = admitted_state,
+        .prior_run_receipt_fingerprint = sender_receipt_fingerprint,
+    });
+    const admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_7ece,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Strict.Target),
+        .environment_certificate_fingerprint = StrictEnv.certificate(.fresh, false).certificate_fingerprint,
+        .mode = .continue_fresh,
+        .run_image = admitted_image,
+        .run_permit = admitted_permit,
+    });
+    var admitted_runspace = world.Runspace.init(std.testing.allocator, .{
+        .require_admission = true,
+        .require_supervision = true,
+    });
+    defer admitted_runspace.deinit();
+    const admitted_handle = try admitted_runspace.installAdmitted(admitted);
+    var admitted_export = try admitted_runspace.exportRun(admitted_handle);
+    defer admitted_export.deinit(std.testing.allocator);
+    const admitted_receipt = admitted_export.prior_run_receipt_fingerprint orelse return error.ExpectedRunReceipt;
+    const admitted_export_event = admitted_runspace.report().emitted_events[admitted_runspace.report().emitted_events.len - 1];
+    try std.testing.expectEqual(world.Runspace.EventKind.run_exported, admitted_export_event.kind);
+    try std.testing.expect(admitted_receipt != sender_receipt_fingerprint);
+    try std.testing.expectEqual(admitted_receipt, admitted_export_event.run_receipt_fingerprint.?);
 }
 
 test "runspace export run event allocation failure does not change slot state" {
