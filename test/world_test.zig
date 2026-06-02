@@ -2169,6 +2169,18 @@ test "mailbox push get list respond and stale response rejection" {
         .target_ref_fingerprint = target_ref.target_ref_fingerprint,
     });
     const request = testRequestFrame();
+    const duplicate_id_request = world.Frame.Request.init(.{
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .world_surface_replay_scope_fingerprint = request.world_surface_replay_scope_fingerprint,
+        .target_certificate_fingerprint = request.target_certificate_fingerprint,
+        .world_port_id = request.world_port_id,
+        .residual_site_index = request.residual_site_index,
+        .residual_site_fingerprint = request.residual_site_fingerprint,
+        .request_fingerprint = request.request_fingerprint + 1,
+        .turn_index = request.turn_index + 1,
+        .payload_value_table_id = request.payload_value_table_id,
+        .expected_response_value_table_id = request.expected_response_value_table_id,
+    });
     var mailbox = world.Mailbox.init(std.testing.allocator, 2);
     defer mailbox.deinit();
 
@@ -2190,10 +2202,18 @@ test "mailbox push get list respond and stale response rejection" {
 
     try std.testing.expectError(error.InvalidPendingPortTransition, mailbox.push(.{
         .run_handle = handle,
+        .mailbox_id = 1,
+        .request = duplicate_id_request,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .inserted_event_index = 1,
+    }));
+
+    try std.testing.expectError(error.InvalidPendingPortTransition, mailbox.push(.{
+        .run_handle = handle,
         .mailbox_id = 2,
         .request = request,
         .target_ref_fingerprint = target_ref.target_ref_fingerprint,
-        .inserted_event_index = 1,
+        .inserted_event_index = 2,
     }));
 
     var wrong_port = try world.Frame.Response.fromValue(std.testing.allocator, request, 1, 0xdec1_5100, .@"resume", @as(i32, 7), .portable);
@@ -2432,6 +2452,26 @@ test "runspace parked image install rolls back when mailbox enqueue fails" {
     try std.testing.expectEqual(@as(usize, 0), report.pending_port_count);
     const next = try target.installTarget(fixtures.Strict.Target, .{}, null, .{});
     try std.testing.expectEqual(@as(u64, 0), next.local_run_id);
+}
+
+test "runspace install slot event allocation failure cleans up appended slot" {
+    var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{
+        .fail_index = 2,
+    });
+    var runspace = world.Runspace.init(failing_allocator.allocator(), .{});
+    defer runspace.deinit();
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+    });
+
+    try std.testing.expectError(error.OutOfMemory, runspace.installTarget(fixtures.Ports.Target, PortsEnv, permit, .{
+        .mode = world.Mode.fresh,
+    }));
+    try std.testing.expect(failing_allocator.has_induced_failure);
+    const report = runspace.report();
+    try std.testing.expectEqual(@as(usize, 0), report.run_count);
+    try std.testing.expectEqual(@as(usize, 0), report.event_count);
 }
 
 test "runspace install rejects invalid image and failed direct installs preserve run ids" {

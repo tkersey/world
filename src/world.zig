@@ -7116,6 +7116,7 @@ pub const Runspace = struct {
             if (self.max_pending_ports) |max| {
                 if (self.pendingCount() >= max) return error.BudgetExceeded;
             }
+            try self.assertMailboxIdAvailable(args.mailbox_id);
             try self.assertNoDuplicateRequestFingerprint(args.run_handle, args.request.request_fingerprint);
             var request = try cloneRequestFrame(self.allocator, args.request);
             var request_owned = true;
@@ -7228,6 +7229,12 @@ pub const Runspace = struct {
                 if (pending_port.mailbox_id == mailbox_id) return index;
             }
             return error.InvalidPendingPortTransition;
+        }
+
+        fn assertMailboxIdAvailable(self: *const @This(), mailbox_id: u64) !void {
+            for (self.pending.items) |pending_port| {
+                if (pending_port.mailbox_id == mailbox_id) return error.InvalidPendingPortTransition;
+            }
         }
     };
 
@@ -7457,9 +7464,10 @@ pub const Runspace = struct {
         const next_event_index_before = self.next_event_index;
         var installed = false;
         errdefer if (!installed) self.rollbackRunspaceMutation(slot_count_before, event_count_before, mailbox_count_before, next_run_id_before, next_mailbox_id_before, next_event_index_before);
-        try self.installSlot(slot, .run_admitted, "admitted run installed");
+        try self.prepareInstallSlot();
         installed_image_owned = false;
         supervisor_owned = false;
+        try self.installPreparedSlot(slot, .run_admitted, "admitted run installed");
         if (pending_frame) |frame| {
             try self.enqueueInstalledPending(self.slots.items.len - 1, frame);
         }
@@ -7507,8 +7515,9 @@ pub const Runspace = struct {
         const next_event_index_before = self.next_event_index;
         var installed = false;
         errdefer if (!installed) self.rollbackRunspaceMutation(slot_count_before, event_count_before, mailbox_count_before, next_run_id_before, next_mailbox_id_before, next_event_index_before);
-        try self.installSlot(slot, .run_installed, "run image installed");
+        try self.prepareInstallSlot();
         installed_image_owned = false;
+        try self.installPreparedSlot(slot, .run_installed, "run image installed");
         if (pending_frame) |frame| {
             try self.enqueueInstalledPending(self.slots.items.len - 1, frame);
         }
@@ -7552,8 +7561,9 @@ pub const Runspace = struct {
             .run_permit_fingerprint = if (permit) |run_permit| run_permit.permit_fingerprint else null,
             .supervisor = supervisor,
         });
-        try self.installSlot(slot, .run_installed, "direct target installed");
+        try self.prepareInstallSlot();
         supervisor_owned = false;
+        try self.installPreparedSlot(slot, .run_installed, "direct target installed");
         installed = true;
         return handle;
     }
@@ -7619,8 +7629,9 @@ pub const Runspace = struct {
             .run_permit_fingerprint = if (maybe_permit) |permit| permit.permit_fingerprint else null,
             .driver = driver,
         });
-        try self.installSlot(slot, .run_installed, "machine run installed");
+        try self.prepareInstallSlot();
         driver_owned = false;
+        try self.installPreparedSlot(slot, .run_installed, "machine run installed");
         installed = true;
         return handle;
     }
@@ -7669,9 +7680,10 @@ pub const Runspace = struct {
             .installed_run_image = installed_image,
             .owns_installed_run_image = true,
         });
-        try self.installSlot(slot, .run_installed, "replay run installed");
+        try self.prepareInstallSlot();
         installed_image_owned = false;
         supervisor_owned = false;
+        try self.installPreparedSlot(slot, .run_installed, "replay run installed");
         installed = true;
         return handle;
     }
@@ -8417,13 +8429,24 @@ pub const Runspace = struct {
         };
     }
 
-    fn installSlot(self: *@This(), slot: Runspace.RunSlot, event_kind: Runspace.EventKind, summary_text: []const u8) !void {
+    fn prepareInstallSlot(self: *@This()) !void {
         if (self.config.max_events) |max| {
             if (self.events.items.len >= max) return error.BudgetExceeded;
         }
-        try self.slots.append(self.allocator, slot);
+        try self.slots.ensureUnusedCapacity(self.allocator, 1);
+    }
+
+    fn installSlot(self: *@This(), slot: Runspace.RunSlot, event_kind: Runspace.EventKind, summary_text: []const u8) !void {
+        try self.prepareInstallSlot();
+        try self.installPreparedSlot(slot, event_kind, summary_text);
+    }
+
+    fn installPreparedSlot(self: *@This(), slot: Runspace.RunSlot, event_kind: Runspace.EventKind, summary_text: []const u8) !void {
+        self.slots.appendAssumeCapacity(slot);
         var slot_appended = true;
         errdefer if (slot_appended) {
+            var appended_slot = &self.slots.items[self.slots.items.len - 1];
+            appended_slot.deinit(self.allocator);
             self.slots.shrinkRetainingCapacity(self.slots.items.len - 1);
         };
         _ = try self.appendEvent(.{
