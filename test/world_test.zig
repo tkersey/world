@@ -3019,6 +3019,29 @@ test "runspace step event allocation failure leaves run runnable" {
     try std.testing.expectEqual(@as(usize, 1), runspace.report().event_count);
 }
 
+test "runspace completion event allocation failure leaves run runnable" {
+    var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{
+        .fail_index = std.math.maxInt(usize),
+    });
+    var runtime = boundary.Runtime.init(failing_allocator.allocator());
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(failing_allocator.allocator(), .{});
+    defer runspace.deinit();
+    const handle = try runspace.installMachineRun(fixtures.Strict.Target, world.Environment(fixtures.Strict.Target, .{
+        .ports = &.{},
+    }), &runtime, .{}, .{
+        .allocator = failing_allocator.allocator(),
+        .mode = world.Mode.fresh,
+    });
+    try runspace.events.ensureUnusedCapacity(failing_allocator.allocator(), 2);
+    failing_allocator.fail_index = failing_allocator.alloc_index + 1;
+
+    try std.testing.expectError(error.OutOfMemory, runspace.tick());
+    try std.testing.expect(failing_allocator.has_induced_failure);
+    try std.testing.expectEqual(world.Runspace.RunStatus.runnable, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().event_count);
+}
+
 test "runspace response event budget failure does not consume mailbox" {
     var runtime = boundary.Runtime.init(std.testing.allocator);
     defer runtime.deinit();
@@ -3988,11 +4011,74 @@ test "runspace export checks supervision before snapshotting installed image" {
     }));
     installed_image_owned = false;
     try runspace.events.ensureUnusedCapacity(failing_allocator.allocator(), 1);
-    failing_allocator.fail_index = failing_allocator.alloc_index + 1;
+    failing_allocator.fail_index = failing_allocator.alloc_index + 2;
 
     try std.testing.expectError(error.HandoffDenied, runspace.exportRun(handle));
     try std.testing.expect(!failing_allocator.has_induced_failure);
     try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try runspace.getSlotSummary(handle)).status);
+}
+
+test "runspace export snapshot failure restores handoff budget" {
+    var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    var runspace = world.Runspace.init(failing_allocator.allocator(), .{});
+    defer runspace.deinit();
+    var transcript = world.Transcript.init(failing_allocator.allocator());
+    defer transcript.deinit();
+    try recordPortsTranscript(&transcript);
+    var transcript_image = try transcript.toImage(failing_allocator.allocator(), .{ .value_policy = world.ValuePolicy.portable });
+    var installed_image = world.RunImage.fromTranscriptImage(fixtures.Ports.Target, transcript_image, .completed_run);
+    installed_image.owns_transcript_image = true;
+    transcript_image = undefined;
+    var installed_image_owned = true;
+    errdefer if (installed_image_owned) installed_image.deinit(failing_allocator.allocator());
+
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const export_policy = world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .allow_handoff_export = true,
+        .require_environment_certificate = true,
+    });
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = export_policy,
+        .budget = world.Budget.init(.{ .max_handoff_exports = 1 }),
+    });
+    const supervisor = try world.Supervision.Supervisor.init(failing_allocator.allocator(), permit, fixtures.Ports.Target.WorldPortTable.entries.len);
+    const handle = world.RunHandle.init(.{
+        .runspace_fingerprint = runspace.runspace_fingerprint,
+        .local_run_id = 0,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .permit_fingerprint = permit.permit_fingerprint,
+    });
+    const state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .transcript_image_fingerprint = installed_image.transcript_image.?.transcript_image_fingerprint,
+        .status = .completed,
+    });
+    try runspace.slots.append(failing_allocator.allocator(), world.Runspace.RunSlot.fromState(.{
+        .handle = handle,
+        .target_ref = target_ref,
+        .current_state = state,
+        .status = .completed,
+        .run_permit_fingerprint = permit.permit_fingerprint,
+        .supervisor = supervisor,
+        .installed_run_image = installed_image,
+        .owns_installed_run_image = true,
+    }));
+    installed_image_owned = false;
+    try runspace.events.ensureUnusedCapacity(failing_allocator.allocator(), 1);
+    failing_allocator.fail_index = failing_allocator.alloc_index + 3;
+
+    try std.testing.expectError(error.OutOfMemory, runspace.exportRun(handle));
+    try std.testing.expect(failing_allocator.has_induced_failure);
+    try std.testing.expectEqual(@as(usize, 0), runspace.slots.items[0].supervisor.?.ledger.total_handoff_exports);
+    try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try runspace.getSlotSummary(handle)).status);
+
+    failing_allocator.fail_index = std.math.maxInt(usize);
+    var image = try runspace.exportRun(handle);
+    defer image.deinit(failing_allocator.allocator());
+    try std.testing.expectEqual(@as(usize, 1), runspace.slots.items[0].supervisor.?.ledger.total_handoff_exports);
+    try std.testing.expectEqual(world.Runspace.RunStatus.exported, (try runspace.getSlotSummary(handle)).status);
 }
 
 test "runspace checkpoint and branch allocation failures do not spend supervision budgets" {

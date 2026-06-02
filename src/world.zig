@@ -6550,6 +6550,7 @@ pub const Runspace = struct {
             beforeCheckpoint: *const fn (*anyopaque, usize) anyerror!void,
             beforeBranch: *const fn (*anyopaque, usize) anyerror!void,
             cloneSupervisor: *const fn (*anyopaque, std.mem.Allocator) anyerror!?Supervision.Supervisor,
+            restoreSupervisor: *const fn (*anyopaque, std.mem.Allocator, ?Supervision.Supervisor) void,
             hasSupervisor: *const fn (*anyopaque) bool,
             supervisionInterrupted: *const fn (*anyopaque) bool,
             deinit: *const fn (*anyopaque, std.mem.Allocator) void,
@@ -6601,6 +6602,10 @@ pub const Runspace = struct {
 
         fn cloneSupervisor(self: @This(), allocator: std.mem.Allocator) !?Supervision.Supervisor {
             return self.vtable.cloneSupervisor(self.ptr, allocator);
+        }
+
+        fn restoreSupervisor(self: @This(), allocator: std.mem.Allocator, supervisor: ?Supervision.Supervisor) void {
+            self.vtable.restoreSupervisor(self.ptr, allocator, supervisor);
         }
 
         fn hasSupervisor(self: @This()) bool {
@@ -6703,6 +6708,18 @@ pub const Runspace = struct {
                     return null;
                 }
 
+                fn runRestoreSupervisor(ptr: *anyopaque, allocator: std.mem.Allocator, supervisor: ?Supervision.Supervisor) void {
+                    const active: *RunType = @ptrCast(@alignCast(ptr));
+                    if (@hasField(RunType, "supervisor")) {
+                        if (active.supervisor) |*current| current.deinit();
+                        active.supervisor = supervisor;
+                    } else if (supervisor) |owned| {
+                        var mutable = owned;
+                        mutable.deinit();
+                    }
+                    _ = allocator;
+                }
+
                 fn runHasSupervisor(ptr: *anyopaque) bool {
                     const active: *RunType = @ptrCast(@alignCast(ptr));
                     if (@hasField(RunType, "supervisor")) return active.supervisor != null;
@@ -6736,6 +6753,7 @@ pub const Runspace = struct {
                     .beforeCheckpoint = runBeforeCheckpoint,
                     .beforeBranch = runBeforeBranch,
                     .cloneSupervisor = runCloneSupervisor,
+                    .restoreSupervisor = runRestoreSupervisor,
                     .hasSupervisor = runHasSupervisor,
                     .supervisionInterrupted = runSupervisionInterrupted,
                     .deinit = runDeinit,
@@ -8195,8 +8213,13 @@ pub const Runspace = struct {
         const event_summary = try self.prepareEventSummary("run exported");
         var summary_owned = true;
         errdefer if (summary_owned) self.allocator.free(event_summary);
+        var supervisor_snapshot = try self.snapshotSlotSupervisor(index);
+        defer supervisor_snapshot.deinit(self.allocator);
         try self.beforeSlotHandoffExport(index);
-        const image = try self.snapshotSlotImage(index);
+        const image = self.snapshotSlotImage(index) catch |err| {
+            supervisor_snapshot.restore(self, index);
+            return err;
+        };
         errdefer {
             var owned = image;
             owned.deinit(self.allocator);
@@ -8225,8 +8248,13 @@ pub const Runspace = struct {
         const event_summary = try self.prepareEventSummary("pending run exported");
         var summary_owned = true;
         errdefer if (summary_owned) self.allocator.free(event_summary);
+        var supervisor_snapshot = try self.snapshotSlotSupervisor(index);
+        defer supervisor_snapshot.deinit(self.allocator);
         try self.beforeSlotHandoffExport(index);
-        var image = try self.snapshotSlotImage(index);
+        var image = self.snapshotSlotImage(index) catch |err| {
+            supervisor_snapshot.restore(self, index);
+            return err;
+        };
         errdefer image.deinit(self.allocator);
         const exported = try self.mailbox.markExported(mailbox_id);
         try slot.transition(.@"export", null);
@@ -8245,6 +8273,61 @@ pub const Runspace = struct {
 
     pub fn exportHandoff(self: *@This(), handle: RunHandle) !RunImage {
         return self.exportRun(handle);
+    }
+
+    const SlotSupervisorSnapshot = struct {
+        supervisor: ?Supervision.Supervisor = null,
+        from_driver: bool = false,
+        owns_supervisor: bool = false,
+
+        fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+            _ = allocator;
+            if (self.owns_supervisor) {
+                if (self.supervisor) |*supervisor| supervisor.deinit();
+            }
+            self.supervisor = null;
+            self.owns_supervisor = false;
+        }
+
+        fn restore(self: *@This(), runspace: *Runspace, index: usize) void {
+            if (!self.owns_supervisor) return;
+            var slot = &runspace.slots.items[index];
+            if (self.from_driver) {
+                if (slot.driver) |driver| {
+                    driver.restoreSupervisor(runspace.allocator, self.supervisor);
+                    self.supervisor = null;
+                    self.owns_supervisor = false;
+                    return;
+                }
+            } else if (slot.supervisor != null) {
+                slot.supervisor.?.deinit();
+                slot.supervisor = self.supervisor;
+                self.supervisor = null;
+                self.owns_supervisor = false;
+                return;
+            }
+        }
+    };
+
+    fn snapshotSlotSupervisor(self: *@This(), index: usize) !SlotSupervisorSnapshot {
+        const slot = &self.slots.items[index];
+        if (slot.driver) |driver| {
+            if (try driver.cloneSupervisor(self.allocator)) |supervisor| {
+                return .{
+                    .supervisor = supervisor,
+                    .from_driver = true,
+                    .owns_supervisor = true,
+                };
+            }
+        }
+        if (slot.supervisor) |supervisor| {
+            return .{
+                .supervisor = try supervisor.clone(self.allocator),
+                .from_driver = false,
+                .owns_supervisor = true,
+            };
+        }
+        return .{};
     }
 
     fn beforeSlotHandoffExport(self: *@This(), index: usize) !void {
@@ -8836,6 +8919,9 @@ pub const Runspace = struct {
         const stepped_summary = try self.allocator.dupe(u8, "run stepped");
         var stepped_summary_owned = true;
         errdefer if (stepped_summary_owned) self.allocator.free(stepped_summary);
+        const completed_summary = try self.allocator.dupe(u8, "run completed");
+        var completed_summary_owned = true;
+        defer if (completed_summary_owned) self.allocator.free(completed_summary);
         try slot.transition(.step, null);
         _ = self.appendPreparedEventAssumeCapacity(.{
             .kind = .run_stepped,
@@ -8870,13 +8956,15 @@ pub const Runspace = struct {
         switch (step_result) {
             .done => {
                 try slot.transition(.complete, null);
-                return self.appendEvent(.{
+                const event = self.appendPreparedEventAssumeCapacity(.{
                     .kind = .run_completed,
                     .run_handle = slot.handle,
                     .run_state_fingerprint = slot.current_state.run_state_fingerprint,
                     .run_permit_fingerprint = slot.run_permit_fingerprint,
-                    .summary = "run completed",
+                    .summary = completed_summary,
                 });
+                completed_summary_owned = false;
+                return event;
             },
             .failed => {
                 try slot.transition(.fail, null);
