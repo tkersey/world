@@ -2307,12 +2307,13 @@ test "runspace install target enforces config gates and deterministic local hand
     try std.testing.expectError(error.BudgetExceeded, runspace.installTarget(fixtures.Strict.Target, .{}, null, .{}));
 
     const summary = try runspace.getSlotSummary(first);
-    try std.testing.expectEqual(world.Runspace.RunStatus.runnable, summary.status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.admitted, summary.status);
     try std.testing.expectEqual(first.handle_fingerprint, summary.handle.handle_fingerprint);
     const summaries = try runspace.listRunSummaries(std.testing.allocator);
     defer std.testing.allocator.free(summaries);
     try std.testing.expectEqual(@as(usize, 2), summaries.len);
-    try std.testing.expectEqual(@as(usize, 2), runspace.report().runnable_count);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().runnable_count);
+    try std.testing.expectError(error.InvalidRunspaceTransition, runspace.step(first));
 
     var admission_required = world.Runspace.init(std.testing.allocator, .{
         .require_admission = true,
@@ -2440,6 +2441,24 @@ test "runspace reject and fail consume pending ports through slot state" {
     try std.testing.expectEqual(world.Runspace.RunStatus.failed, fail_summary.status);
     try std.testing.expectEqual(null, fail_summary.pending_mailbox_id);
     try std.testing.expectEqual(@as(usize, 0), fail_runspace.report().pending_port_count);
+}
+
+test "runspace event budget failure does not enqueue or park request" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{
+        .max_events = 2,
+    });
+    defer runspace.deinit();
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+
+    try std.testing.expectError(error.BudgetExceeded, runspace.tick());
+    try std.testing.expectEqual(world.Runspace.RunStatus.runnable, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().event_count);
 }
 
 test "runspace install admitted and replay records receipts summaries and events" {
@@ -2624,6 +2643,8 @@ test "runspace handoff export captures parked pending request and completed tran
     try std.testing.expect(parked_image.pending_request_frame != null);
     try std.testing.expectEqual(world.Runspace.RunStatus.exported, (try parked_runspace.getSlotSummary(parked_handle)).status);
     try std.testing.expectEqual(world.Runspace.PendingStatus.exported, (try parked_runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(@as(usize, 1), parked_runspace.report().parked_count);
+    try std.testing.expectEqual(@as(usize, 0), parked_runspace.report().completed_count);
 
     var completed_runtime = boundary.Runtime.init(std.testing.allocator);
     defer completed_runtime.deinit();

@@ -7186,7 +7186,7 @@ pub const Runspace = struct {
             .handle = handle,
             .target_ref = target_ref,
             .current_state = state,
-            .status = .runnable,
+            .status = .admitted,
             .run_permit_fingerprint = if (permit) |run_permit| run_permit.permit_fingerprint else null,
         });
         try self.installSlot(slot, .run_installed, "direct target installed");
@@ -7285,7 +7285,7 @@ pub const Runspace = struct {
         var index: usize = 0;
         while (index < initial_len) : (index += 1) {
             switch (self.slots.items[index].status) {
-                .admitted, .runnable => _ = try self.stepAt(index),
+                .runnable => _ = try self.stepAt(index),
                 else => {},
             }
         }
@@ -7295,7 +7295,7 @@ pub const Runspace = struct {
     pub fn stepOne(self: *@This()) !Runspace.RunspaceEvent {
         for (self.slots.items, 0..) |slot, index| {
             switch (slot.status) {
-                .admitted, .runnable => return self.stepAt(index),
+                .runnable => return self.stepAt(index),
                 else => {},
             }
         }
@@ -7547,10 +7547,17 @@ pub const Runspace = struct {
         };
         for (self.slots.items) |slot| {
             switch (slot.status) {
-                .admitted, .runnable, .running => result.runnable_count += 1,
+                .runnable, .running => result.runnable_count += 1,
                 .parked_on_port, .parked_on_supervision => result.parked_count += 1,
-                .completed, .exported => result.completed_count += 1,
+                .completed => result.completed_count += 1,
+                .exported => switch (slot.current_state.status) {
+                    .completed => result.completed_count += 1,
+                    .parked_on_port => result.parked_count += 1,
+                    .failed => result.failed_count += 1,
+                    .not_started, .running => {},
+                },
                 .failed, .rejected => result.failed_count += 1,
+                .admitted => {},
             }
         }
         return result;
@@ -7742,6 +7749,7 @@ pub const Runspace = struct {
     fn stepAt(self: *@This(), index: usize) !Runspace.RunspaceEvent {
         var slot = &self.slots.items[index];
         if (slot.driver == null) return error.InvalidRunspaceTransition;
+        try self.ensureEventCapacity(3);
         try slot.transition(.step, null);
         _ = try self.appendEvent(.{
             .kind = .run_stepped,
