@@ -7592,6 +7592,7 @@ pub const Runspace = struct {
     pub fn respond(self: *@This(), mailbox_id: u64, response: Frame.Response) !Runspace.RunspaceEvent {
         const pending = try self.mailbox.get(mailbox_id);
         try pending.validateResponse(response);
+        if (response.status == .pending) return error.HandlerPending;
         const index = try self.slotIndex(pending.handle);
         var slot = &self.slots.items[index];
         if (slot.pending_mailbox_id != mailbox_id or slot.status != .parked_on_port) return error.StaleRunHandle;
