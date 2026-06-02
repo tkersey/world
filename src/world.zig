@@ -228,8 +228,8 @@ pub const world_admission_policy_fingerprint_version: u32 = 2;
 pub const world_admission_request_fingerprint_version: u32 = 1;
 pub const world_admission_report_fingerprint_version: u32 = 1;
 pub const world_admission_receipt_format_version: u32 = 1;
-pub const world_admission_receipt_fingerprint_version: u32 = 2;
-pub const world_admitted_run_fingerprint_version: u32 = 3;
+pub const world_admission_receipt_fingerprint_version: u32 = 3;
+pub const world_admitted_run_fingerprint_version: u32 = 4;
 pub const world_run_handle_format_version: u32 = 1;
 pub const world_run_handle_fingerprint_version: u32 = 1;
 pub const world_pending_port_format_version: u32 = 1;
@@ -5875,12 +5875,14 @@ fn runStateEvidenceFromTranscriptImage(image: TranscriptImage) TranscriptRunStat
     var evidence: TranscriptRunStateEvidence = .{};
     for (image.events) |event| {
         if (event.turn_index) |turn_index| evidence.turn_index = @max(evidence.turn_index, turn_index);
-        if (event.response_frame) |response| {
-            evidence.final_response_fingerprint = response.frame_fingerprint;
-            evidence.final_value_image_fingerprint = response.response_value_fingerprint;
-            if (event.turn_index) |turn_index| evidence.turn_index = @max(evidence.turn_index, turn_index +| 1);
-        } else if (eventKindIsSourceResponse(event.kind)) {
-            if (event.response_fingerprint) |fingerprint| evidence.final_response_fingerprint = fingerprint;
+        if (eventKindIsSourceResponse(event.kind)) {
+            if (event.response_frame) |response| {
+                if (response.status != .responded) continue;
+                evidence.final_response_fingerprint = response.frame_fingerprint;
+                evidence.final_value_image_fingerprint = response.response_value_fingerprint;
+            } else if (event.response_fingerprint) |fingerprint| {
+                evidence.final_response_fingerprint = fingerprint;
+            }
             if (event.turn_index) |turn_index| evidence.turn_index = @max(evidence.turn_index, turn_index +| 1);
         }
     }
@@ -7577,6 +7579,10 @@ pub const Runspace = struct {
                 const image_module_ref = image.module_ref_fingerprint orelse return error.InvalidFrameEncoding;
                 if (image_module_ref != module_ref_fingerprint) return error.InvalidFrameEncoding;
             }
+            if (admitted_run.selected_checkpoint_ref) |selected_checkpoint_ref| {
+                const image_checkpoint = image.current_state.checkpoint_fingerprint orelse return error.HandoffCheckpointMismatch;
+                if (image_checkpoint != selected_checkpoint_ref) return error.HandoffCheckpointMismatch;
+            }
         }
         const current_state = if (admitted_run.run_image) |image| image.current_state else RunState.init(.{
             .target_ref_fingerprint = target_ref.target_ref_fingerprint,
@@ -9136,8 +9142,8 @@ pub const Runspace = struct {
     fn stepAt(self: *@This(), index: usize) !Runspace.RunspaceEvent {
         var slot = &self.slots.items[index];
         if (slot.driver == null) return error.InvalidRunspaceTransition;
-        try self.ensureEventCapacity(2);
-        try self.events.ensureUnusedCapacity(self.allocator, 2);
+        try self.ensureEventCapacity(if (self.config.auto_dispatch) 5 else 3);
+        try self.events.ensureUnusedCapacity(self.allocator, if (self.config.auto_dispatch) 5 else 3);
         const stepped_summary = try self.allocator.dupe(u8, "run stepped");
         var stepped_summary_owned = true;
         errdefer if (stepped_summary_owned) self.allocator.free(stepped_summary);
@@ -9571,12 +9577,14 @@ pub const Handoff = struct {
         const has_transcript = self.transcriptAvailableForFreshHandoff(mode, fresh_transcript_sink_available);
         const report = Env.acceptanceReport(modeToRunMode(mode), has_transcript);
         if (!report.accepted) return report;
+        const interrupted_export = runImageIsInterruptedSupervisionExport(self.run_image);
         if (mode == .accept_fresh and
+            !interrupted_export and
             (self.run_image.current_state.status != .parked_on_port or self.run_image.pending_request_frame == null))
         {
             return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.HandoffPendingFrameMismatch});
         }
-        if (mode == .accept_fresh) {
+        if (mode == .accept_fresh and !interrupted_export) {
             const pending_frame = self.run_image.pending_request_frame.?;
             const pending_policy = valuePolicyForEnvironmentPort(Env, pending_frame.world_port_id, .request) catch |err| {
                 return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{environmentValidationBlocker(err)});
@@ -9685,8 +9693,10 @@ pub const Handoff = struct {
             return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{supervisionPreflightBlocker(err)});
         };
         switch (mode) {
-            .accept_fresh => self.preflightReplayPrefixWithSupervisor(Target, Env, &supervisor) catch |err| {
-                return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{supervisionPreflightBlocker(err)});
+            .accept_fresh => if (!runImageIsInterruptedSupervisionExport(self.run_image)) {
+                self.preflightReplayPrefixWithSupervisor(Target, Env, &supervisor) catch |err| {
+                    return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{supervisionPreflightBlocker(err)});
+                };
             },
             .accept_replay, .accept_verify => self.preflightReplayRunWithSupervisor(Target, Env, modeToRunMode(mode), &supervisor) catch |err| {
                 return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{supervisionPreflightBlocker(err)});
@@ -12858,10 +12868,17 @@ fn providedFingerprintMatches(provided: ?u64, expected: ?u64) bool {
     return expected != null and expected.? == actual;
 }
 
+fn runImageIsInterruptedSupervisionExport(image: RunImage) bool {
+    return image.kind == .full_target_run and
+        image.current_state.status == .parked_on_supervision and
+        image.pending_request_frame == null;
+}
+
 fn runImageFitsAdmissionMode(image: RunImage, mode: Admission.AdmissionMode) bool {
     return switch (mode) {
         .inspect_only, .local_target_match_only, .continue_fresh => false,
-        .resume_parked => image.kind == .parked_run and image.current_state.status == .parked_on_port,
+        .resume_parked => (image.kind == .parked_run and image.current_state.status == .parked_on_port) or
+            runImageIsInterruptedSupervisionExport(image),
         .branch_resume => image.kind == .parked_run and image.current_state.status == .parked_on_port and image.branches.len != 0,
         .completed_replay => (image.kind == .completed_run or image.kind == .branched_run) and image.current_state.status == .completed,
         .replay_only, .verify_only => switch (image.kind) {
@@ -14716,6 +14733,7 @@ fn fingerprintAdmissionReceipt(receipt: Admission.AdmissionReceipt) u64 {
     hashOptionalU64(&hasher, receipt.target_match_fingerprint);
     hashOptionalU64(&hasher, receipt.environment_certificate_fingerprint);
     hashOptionalU64(&hasher, receipt.run_permit_fingerprint);
+    hashOptionalU64(&hasher, receipt.admitted_run_fingerprint);
     hashU64(&hasher, @intFromEnum(receipt.accepted_mode));
     hashU64(&hasher, receipt.warnings.len);
     for (receipt.warnings) |warning| hashU64(&hasher, @intFromEnum(warning));
@@ -14728,7 +14746,6 @@ fn fingerprintAdmittedRun(run: Admission.AdmittedRun) u64 {
     var hasher = std.hash.Wyhash.init(0);
     hashBytes(&hasher, "world.admitted_run.fingerprint");
     hashU64(&hasher, world_admitted_run_fingerprint_version);
-    hashU64(&hasher, run.admission_receipt_fingerprint);
     hashU64(&hasher, run.target_ref.target_ref_fingerprint);
     hashOptionalU64(&hasher, run.module_ref_fingerprint);
     hashOptionalU64(&hasher, run.environment_certificate_fingerprint);

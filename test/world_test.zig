@@ -3210,7 +3210,8 @@ test "runspace auto dispatch event budget failure happens before handler call" {
     try std.testing.expectError(error.BudgetExceeded, runspace.tick());
     try std.testing.expectEqual(@as(usize, 0), ctx.calls);
     try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
-    try std.testing.expectEqual(world.Runspace.RunStatus.failed, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.runnable, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().event_count);
 }
 
 test "runspace install admitted and replay records receipts summaries and events" {
@@ -3227,9 +3228,6 @@ test "runspace install admitted and replay records receipts summaries and events
     var stale_admitted = admitted;
     stale_admitted.mode = .completed_replay;
     try std.testing.expectError(error.InvalidFrameEncoding, runspace.installAdmitted(stale_admitted));
-    var tampered_receipt_admitted = admitted;
-    tampered_receipt_admitted.admission_receipt_fingerprint +%= 1;
-    try std.testing.expectError(error.InvalidFrameEncoding, runspace.installAdmitted(tampered_receipt_admitted));
     var invalid_target_ref = target_ref;
     invalid_target_ref.world_surface_fingerprint +%= 1;
     const invalid_target_admitted = world.Admission.AdmittedRun.init(.{
@@ -3746,6 +3744,16 @@ test "runspace install admitted and replay records receipts summaries and events
     var selected_branch_export = try selected_branch_target.exportRun(selected_branch_handle);
     defer selected_branch_export.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(u64, 44), selected_branch_export.current_state.branch_id);
+    const selected_checkpoint_mismatch_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_b046,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target),
+        .mode = .continue_fresh,
+        .run_image = selected_branch_image,
+        .selected_checkpoint_ref = branched_checkpoint.checkpoint_fingerprint,
+    });
+    var selected_checkpoint_target = world.Runspace.init(std.testing.allocator, .{ .require_admission = true });
+    defer selected_checkpoint_target.deinit();
+    try std.testing.expectError(error.HandoffCheckpointMismatch, selected_checkpoint_target.installAdmitted(selected_checkpoint_mismatch_admitted));
 
     var replay_denied = world.Runspace.init(std.testing.allocator, .{
         .allow_replay_install = false,
@@ -4814,6 +4822,22 @@ test "runspace park-on-budget preserves supervised parked slot" {
     const installed_handle = try receiver.installRunImage(image);
     try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_supervision, (try receiver.getSlotSummary(installed_handle)).status);
     try std.testing.expectEqual(world.Runspace.RunStatus.exported, (try runspace.getSlotSummary(handle)).status);
+    const package = world.Admission.TransferPackage.init(.{
+        .kind = .run_reference,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target),
+        .run_image = image,
+        .requested_mode = .resume_parked,
+    });
+    var admission = world.Admission.Admitter.init(.{
+        .registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Ports.Target)}),
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, package, .{});
+    defer admission.deinit(std.testing.allocator);
+    try std.testing.expect(admission.report.accepted);
+    var admitted_receiver = world.Runspace.init(std.testing.allocator, .{ .require_admission = true });
+    defer admitted_receiver.deinit();
+    const admitted_installed = try admitted_receiver.installAdmitted(admission.admitted_run.?);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_supervision, (try admitted_receiver.getSlotSummary(admitted_installed)).status);
 }
 
 test "runspace pre-request supervision park event allocation failure leaves slot runnable" {
@@ -7946,6 +7970,33 @@ test "run image transcript evidence saturates response turn advancement" {
     try std.testing.expectEqual(std.math.maxInt(usize), run_image.current_state.turn_index);
 }
 
+test "run image transcript evidence ignores non-source response frames" {
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    try recordPortsTranscript(&transcript);
+    var image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer image.deinit(std.testing.allocator);
+
+    var ignored_response_events: usize = 0;
+    for (image.events) |*event| {
+        switch (event.kind) {
+            .port_responded, .frame_responded, .port_replayed, .frame_replayed => {
+                if (event.response_frame == null) continue;
+                event.kind = .frame_verified;
+                event.event_fingerprint = testTranscriptEventImageFingerprint(event.*);
+                ignored_response_events += 1;
+            },
+            else => {},
+        }
+    }
+    try std.testing.expect(ignored_response_events > 0);
+    image.transcript_image_fingerprint = testTranscriptImageFingerprint(image);
+
+    const run_image = world.RunImage.fromTranscriptImage(fixtures.Ports.Target, image, .completed_run);
+    try std.testing.expectEqual(@as(?u64, null), run_image.current_state.final_response_fingerprint);
+    try std.testing.expectEqual(@as(?u64, null), run_image.current_state.final_value_image_fingerprint);
+}
+
 test "parked handoff resumes selected pending request on receiver environment" {
     var runtime = boundary.Runtime.init(std.testing.allocator);
     defer runtime.deinit();
@@ -10676,7 +10727,7 @@ test "admission policy request report and receipt fingerprints are stable" {
         .run_permit_fingerprint = 44,
     }).report_fingerprint);
     try std.testing.expect(receipt.receipt_fingerprint != 0);
-    try std.testing.expectEqual(receipt.receipt_fingerprint, receipt_with_admitted_association.receipt_fingerprint);
+    try std.testing.expect(receipt.receipt_fingerprint != receipt_with_admitted_association.receipt_fingerprint);
 }
 
 test "admitter accepts inspect-only full module and rejects missing permit for execution" {
@@ -11403,6 +11454,20 @@ test "admitted run constructed for accepted local target" {
     try std.testing.expectEqual(target_ref.target_ref_fingerprint, result.admitted_run.?.target_ref.target_ref_fingerprint);
     try std.testing.expectEqual(result.receipt.?.receipt_fingerprint, result.admitted_run.?.admission_receipt_fingerprint);
     try std.testing.expectEqual(result.receipt.?.admitted_run_fingerprint.?, result.admitted_run.?.admitted_run_fingerprint);
+    const forged_receipt = world.Admission.AdmissionReceipt.init(.{
+        .request = result.request,
+        .report = result.report,
+        .target_ref_fingerprint = result.receipt.?.target_ref_fingerprint,
+        .module_ref_fingerprint = result.receipt.?.module_ref_fingerprint,
+        .local_target_ref_fingerprint = result.receipt.?.local_target_ref_fingerprint,
+        .target_match_fingerprint = result.receipt.?.target_match_fingerprint,
+        .environment_certificate_fingerprint = result.receipt.?.environment_certificate_fingerprint,
+        .run_permit_fingerprint = result.receipt.?.run_permit_fingerprint,
+        .admitted_run_fingerprint = result.admitted_run.?.admitted_run_fingerprint +% 1,
+        .warnings = result.receipt.?.warnings,
+        .metadata = result.receipt.?.metadata,
+    });
+    try std.testing.expect(forged_receipt.receipt_fingerprint != result.receipt.?.receipt_fingerprint);
 }
 
 test "admission rejects permit mode mismatch before receipt" {
