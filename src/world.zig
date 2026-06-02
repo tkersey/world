@@ -7066,6 +7066,7 @@ pub const Runspace = struct {
                     if (response.replay_key != expected_replay_key) return error.ReplayMissing;
                 }
             }
+            try validateResponseFrameImage(response);
         }
 
         pub fn validate(self: @This()) !void {
@@ -7407,7 +7408,12 @@ pub const Runspace = struct {
         };
         if (admitted_run.run_permit) |permit| {
             try validateAdmittedRunPermit(admitted_run, permit);
-            supervisor = try Supervision.Supervisor.init(self.allocator, permit, supervisorPortCountForPermit(permit));
+            const port_count = blk: {
+                var count = supervisorPortCountForPermit(permit);
+                if (pending_frame) |frame| count = @max(count, @as(usize, frame.world_port_id) + 1);
+                break :blk count;
+            };
+            supervisor = try Supervision.Supervisor.init(self.allocator, permit, port_count);
             supervisor_owned = true;
         }
         const slot_current_state = if (installed_image) |image| image.current_state else current_state;
@@ -7864,6 +7870,11 @@ pub const Runspace = struct {
                 });
                 return err;
             };
+        } else if (slot.supervisor) |*supervisor| {
+            try supervisor.afterAdapterResponse(.{
+                .world_port_id = pending.world_port_id,
+                .status = status,
+            });
         } else if (self.config.require_supervision) {
             return error.SupervisionDenied;
         }

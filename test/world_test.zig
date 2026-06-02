@@ -2677,6 +2677,36 @@ test "runspace terminal port decisions honor supervision before consuming mailbo
     try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, fail_summary.status);
     try std.testing.expectEqual(@as(?u64, 0), fail_summary.pending_mailbox_id);
     try std.testing.expectEqual(@as(usize, 1), fail_runspace.report().pending_port_count);
+
+    var source_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer source_runtime.deinit();
+    var source_runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer source_runspace.deinit();
+    _ = try source_runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &source_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    _ = try source_runspace.tick();
+    var parked_image = try source_runspace.exportPending(0);
+    defer parked_image.deinit(std.testing.allocator);
+    const admitted_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+    });
+    const admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_7e12,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target),
+        .environment_certificate_fingerprint = PortsEnv.certificate(.fresh, false).certificate_fingerprint,
+        .mode = .continue_fresh,
+        .run_image = parked_image,
+        .run_permit = admitted_permit,
+    });
+    var admitted_runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer admitted_runspace.deinit();
+    const admitted_handle = try admitted_runspace.installAdmitted(admitted);
+    try std.testing.expectError(error.HandlerFailed, admitted_runspace.fail(0, "strict policy denies imported fail"));
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try admitted_runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try admitted_runspace.getSlotSummary(admitted_handle)).status);
 }
 
 test "runspace event budget failure does not enqueue or park request" {
@@ -3119,6 +3149,10 @@ test "runspace raw terminal response checks supervision before consuming mailbox
         .status = .failed,
     });
 
+    var forged_response = failed_response;
+    forged_response.frame_fingerprint +%= 1;
+    try std.testing.expectError(error.InvalidFrameEncoding, runspace.respond(0, forged_response));
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
     try std.testing.expectError(error.HandlerFailed, runspace.respond(0, failed_response));
     try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
     try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try runspace.getSlotSummary(handle)).status);
