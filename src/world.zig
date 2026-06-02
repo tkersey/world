@@ -10648,11 +10648,12 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     if (self.supervisor) |*supervisor| {
                         try supervisor.validateWorldPortId(world_port_id);
                         if (!Supervision.responseAllowedByPolicy(supervisor.permit.policy, status)) {
-                            return switch (status) {
-                                .rejected => Error.HandlerRejected,
-                                .failed => Error.HandlerFailed,
-                                else => unreachable,
-                            };
+                            supervisor.afterAdapterResponse(.{
+                                .world_port_id = world_port_id,
+                                .status = status,
+                                .response_bytes = 0,
+                                .value_image_bytes = 0,
+                            }) catch |err| return err;
                         }
                         if (supervisor.permit.ruleFor(world_port_id)) |rule| {
                             const allowed = switch (status) {
@@ -10660,7 +10661,14 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                                 .failed => rule.allow_fail,
                                 else => unreachable,
                             };
-                            if (!allowed) return Error.SupervisionDenied;
+                            if (!allowed) {
+                                supervisor.afterAdapterResponse(.{
+                                    .world_port_id = world_port_id,
+                                    .status = status,
+                                    .response_bytes = 0,
+                                    .value_image_bytes = 0,
+                                }) catch |err| return err;
+                            }
                         }
                     }
                 }

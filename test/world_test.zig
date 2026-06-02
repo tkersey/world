@@ -2885,6 +2885,7 @@ test "runspace terminal port decisions honor supervision before consuming mailbo
     try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, reject_summary.status);
     try std.testing.expectEqual(@as(?u64, 0), reject_summary.pending_mailbox_id);
     try std.testing.expectEqual(@as(usize, 1), reject_runspace.report().pending_port_count);
+    try std.testing.expectEqual(@as(usize, 1), reject_runspace.report().blocker_count);
 
     const fail_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
         .mode = .fresh,
@@ -2909,6 +2910,7 @@ test "runspace terminal port decisions honor supervision before consuming mailbo
     try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, fail_summary.status);
     try std.testing.expectEqual(@as(?u64, 0), fail_summary.pending_mailbox_id);
     try std.testing.expectEqual(@as(usize, 1), fail_runspace.report().pending_port_count);
+    try std.testing.expectEqual(@as(usize, 1), fail_runspace.report().blocker_count);
 
     var source_runtime = boundary.Runtime.init(std.testing.allocator);
     defer source_runtime.deinit();
@@ -3918,6 +3920,7 @@ test "runspace raw terminal response checks supervision before consuming mailbox
     try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
     try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try runspace.getSlotSummary(handle)).status);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().blocker_count);
 }
 
 test "runspace pending manual response checks supervision before preserving mailbox" {
