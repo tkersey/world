@@ -7555,6 +7555,7 @@ pub const Runspace = struct {
         if (admitted_run.admitted_run_fingerprint != fingerprintAdmittedRun(admitted_run)) return error.InvalidFrameEncoding;
         if (self.config.require_supervision and admitted_run.run_permit == null) return error.SupervisionDenied;
         const target_ref = admitted_run.target_ref;
+        try validateTargetRef(target_ref);
         if (admitted_run.run_image) |image| {
             if (!self.config.allow_handoff_install) return error.RunspaceInstallDenied;
             if (image.kind == .replay_only_run and !self.config.allow_replay_install) return error.RunspaceInstallDenied;

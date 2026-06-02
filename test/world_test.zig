@@ -3230,6 +3230,14 @@ test "runspace install admitted and replay records receipts summaries and events
     var tampered_receipt_admitted = admitted;
     tampered_receipt_admitted.admission_receipt_fingerprint +%= 1;
     try std.testing.expectError(error.InvalidFrameEncoding, runspace.installAdmitted(tampered_receipt_admitted));
+    var invalid_target_ref = target_ref;
+    invalid_target_ref.world_surface_fingerprint +%= 1;
+    const invalid_target_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_5510,
+        .target_ref = invalid_target_ref,
+        .mode = .continue_fresh,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, runspace.installAdmitted(invalid_target_admitted));
     const admitted_handle = try runspace.installAdmitted(admitted);
     const admitted_summary = try runspace.getSlotSummary(admitted_handle);
     try std.testing.expectEqual(world.Runspace.RunStatus.admitted, admitted_summary.status);
