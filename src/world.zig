@@ -8356,6 +8356,7 @@ pub const Runspace = struct {
     }
 
     fn validateSlotCheckpoint(self: *const @This(), slot: Runspace.RunSlot, checkpoint_value: Timeline.Checkpoint) !void {
+        if (fingerprintCheckpoint(checkpoint_value) != checkpoint_value.checkpoint_fingerprint) return error.HandoffCheckpointMismatch;
         if (slot.target_ref.world_surface_fingerprint != checkpoint_value.world_surface_fingerprint) return error.HandoffCheckpointMismatch;
         if (slot.target_ref.target_certificate_fingerprint != checkpoint_value.target_certificate_fingerprint) return error.HandoffCheckpointMismatch;
         if (checkpoint_value.event_index > self.events.items.len) return error.HandoffCheckpointMismatch;
@@ -8580,6 +8581,39 @@ pub const Runspace = struct {
         };
     }
 
+    const PreparedAutoDispatchEvents = struct {
+        supervision: []u8,
+        failed: PreparedEventPair,
+        responded: PreparedEventPair,
+        owns_supervision: bool = true,
+
+        fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+            if (self.owns_supervision) allocator.free(self.supervision);
+            self.failed.deinit(allocator);
+            self.responded.deinit(allocator);
+        }
+
+        fn takeSupervision(self: *@This()) []u8 {
+            self.owns_supervision = false;
+            return self.supervision;
+        }
+    };
+
+    fn prepareAutoDispatchEvents(self: *@This()) !PreparedAutoDispatchEvents {
+        try self.ensureEventCapacity(4);
+        try self.events.ensureUnusedCapacity(self.allocator, 4);
+        const supervision = try self.allocator.dupe(u8, "auto-dispatch parked on supervision");
+        errdefer self.allocator.free(supervision);
+        var failed = try self.prepareEventPair(4, "auto-dispatch port failed", "auto-dispatch failed");
+        errdefer failed.deinit(self.allocator);
+        const responded = try self.prepareEventPair(4, "port auto-dispatched", "run resumed by auto-dispatch");
+        return .{
+            .supervision = supervision,
+            .failed = failed,
+            .responded = responded,
+        };
+    }
+
     fn appendPreparedEventAssumeCapacity(self: *@This(), args: struct {
         kind: Runspace.EventKind,
         run_handle: RunHandle,
@@ -8795,6 +8829,13 @@ pub const Runspace = struct {
                     return self.failSteppedRunBeforePort(slot, err);
                 };
                 defer event_pair.deinit(self.allocator);
+                var auto_events: ?PreparedAutoDispatchEvents = null;
+                defer if (auto_events) |*events| events.deinit(self.allocator);
+                if (self.config.auto_dispatch) {
+                    auto_events = self.prepareAutoDispatchEvents() catch |err| {
+                        return self.failSteppedRunBeforePort(slot, err);
+                    };
+                }
                 self.mailbox.ensurePendingCapacity() catch |err| {
                     return self.failSteppedRunBeforePort(slot, err);
                 };
@@ -8835,7 +8876,7 @@ pub const Runspace = struct {
                     .run_permit_fingerprint = slot.run_permit_fingerprint,
                     .summary = event_pair.takeSecond(),
                 });
-                if (self.config.auto_dispatch) return self.autoDispatchPending(index, pending, mailbox_id);
+                if (self.config.auto_dispatch) return self.autoDispatchPending(index, pending, mailbox_id, &auto_events.?);
                 return parked_event;
             },
         }
@@ -8853,7 +8894,7 @@ pub const Runspace = struct {
         return err;
     }
 
-    fn autoDispatchPending(self: *@This(), index: usize, pending: Runspace.PendingPort, mailbox_id: u64) !Runspace.RunspaceEvent {
+    fn autoDispatchPending(self: *@This(), index: usize, pending: Runspace.PendingPort, mailbox_id: u64, events: *PreparedAutoDispatchEvents) !Runspace.RunspaceEvent {
         var slot = &self.slots.items[index];
         const driver = slot.driver orelse return error.InvalidRunspaceTransition;
         driver.dispatch() catch |err| {
@@ -8866,57 +8907,57 @@ pub const Runspace = struct {
                     .turn_index = pending.turn_index,
                     .status = .parked_on_port,
                 });
-                return self.appendEvent(.{
+                return self.appendPreparedEventAssumeCapacity(.{
                     .kind = .run_parked_on_supervision,
                     .run_handle = slot.handle,
                     .pending_port_fingerprint = pending.pending_port_fingerprint,
                     .request_frame_fingerprint = pending.request_frame_fingerprint,
                     .run_state_fingerprint = slot.current_state.run_state_fingerprint,
                     .run_permit_fingerprint = slot.run_permit_fingerprint,
-                    .summary = "auto-dispatch parked on supervision",
+                    .summary = events.takeSupervision(),
                 });
             }
             const failed = try self.mailbox.fail(mailbox_id, "auto-dispatch failed");
             try slot.transition(.fail, null);
-            _ = try self.appendEvent(.{
+            _ = self.appendPreparedEventAssumeCapacity(.{
                 .kind = .port_failed,
                 .run_handle = slot.handle,
                 .pending_port_fingerprint = failed.pending_port_fingerprint,
                 .request_frame_fingerprint = pending.request_frame_fingerprint,
                 .run_state_fingerprint = slot.current_state.run_state_fingerprint,
                 .run_permit_fingerprint = slot.run_permit_fingerprint,
-                .summary = "auto-dispatch port failed",
+                .summary = events.failed.takeFirst(),
             });
-            _ = try self.appendEvent(.{
+            _ = self.appendPreparedEventAssumeCapacity(.{
                 .kind = .run_failed,
                 .run_handle = slot.handle,
                 .pending_port_fingerprint = failed.pending_port_fingerprint,
                 .request_frame_fingerprint = pending.request_frame_fingerprint,
                 .run_state_fingerprint = slot.current_state.run_state_fingerprint,
                 .run_permit_fingerprint = slot.run_permit_fingerprint,
-                .summary = "auto-dispatch failed",
+                .summary = events.failed.takeSecond(),
             });
             return err;
         };
         const responded = try self.mailbox.markResponded(mailbox_id);
         try slot.transition(.resume_from_port, mailbox_id);
-        _ = try self.appendEvent(.{
+        _ = self.appendPreparedEventAssumeCapacity(.{
             .kind = .port_responded,
             .run_handle = slot.handle,
             .pending_port_fingerprint = responded.pending_port_fingerprint,
             .request_frame_fingerprint = pending.request_frame_fingerprint,
             .run_state_fingerprint = slot.current_state.run_state_fingerprint,
             .run_permit_fingerprint = slot.run_permit_fingerprint,
-            .summary = "port auto-dispatched",
+            .summary = events.responded.takeFirst(),
         });
-        return self.appendEvent(.{
+        return self.appendPreparedEventAssumeCapacity(.{
             .kind = .run_resumed,
             .run_handle = slot.handle,
             .pending_port_fingerprint = responded.pending_port_fingerprint,
             .request_frame_fingerprint = pending.request_frame_fingerprint,
             .run_state_fingerprint = slot.current_state.run_state_fingerprint,
             .run_permit_fingerprint = slot.run_permit_fingerprint,
-            .summary = "run resumed by auto-dispatch",
+            .summary = events.responded.takeSecond(),
         });
     }
 

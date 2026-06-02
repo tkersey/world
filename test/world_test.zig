@@ -3652,6 +3652,32 @@ test "runspace auto dispatch handler failure consumes mailbox and fails slot" {
     try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
 }
 
+test "runspace auto dispatch event allocation failure happens before handler call" {
+    var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{
+        .fail_index = std.math.maxInt(usize),
+    });
+    var runtime = boundary.Runtime.init(failing_allocator.allocator());
+    defer runtime.deinit();
+    var ctx: PortsCtx = .{};
+    var runspace = world.Runspace.init(failing_allocator.allocator(), .{ .auto_dispatch = true });
+    defer runspace.deinit();
+
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = failing_allocator.allocator(),
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+    });
+    try runspace.events.ensureUnusedCapacity(failing_allocator.allocator(), 4);
+    try runspace.mailbox.pending.ensureUnusedCapacity(failing_allocator.allocator(), 1);
+    failing_allocator.fail_index = failing_allocator.alloc_index + 5;
+
+    try std.testing.expectError(error.OutOfMemory, runspace.tick());
+    try std.testing.expect(failing_allocator.has_induced_failure);
+    try std.testing.expectEqual(@as(usize, 0), ctx.calls);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
+    try std.testing.expect((try runspace.getSlotSummary(handle)).status != .parked_on_port);
+}
+
 test "runspace export pending rejects stale mailbox without changing run state" {
     var runtime = boundary.Runtime.init(std.testing.allocator);
     defer runtime.deinit();
@@ -4127,6 +4153,17 @@ test "runspace checkpoint branch and replay install are deterministic" {
     defer image.deinit(std.testing.allocator);
     const replay_handle = try runspace.installReplay(fixtures.Ports.Target, image, null);
     try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try runspace.getSlotSummary(replay_handle)).status);
+}
+
+test "runspace branch rejects checkpoint with stale self fingerprint" {
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+    const handle = try runspace.installTarget(fixtures.Strict.Target, .{}, null, .{});
+    const witnessed = try runspace.checkpoint(handle);
+    var forged = witnessed;
+    forged.event_index = runspace.events.items.len;
+
+    try std.testing.expectError(error.HandoffCheckpointMismatch, runspace.branch(handle, forged, .{}));
 }
 
 test "runspace branches list only selected parent lineage" {
