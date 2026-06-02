@@ -2148,8 +2148,10 @@ test "mailbox push get list respond and stale response rejection" {
         .inserted_event_index = 0,
     });
     try std.testing.expect(!pending.owns_request_frame);
-    try std.testing.expectEqual(@as(usize, 1), mailbox.listPending().len);
-    try std.testing.expect(mailbox.listPending()[0].owns_request_frame);
+    const pending_list = try mailbox.listPending(std.testing.allocator);
+    defer std.testing.allocator.free(pending_list);
+    try std.testing.expectEqual(@as(usize, 1), pending_list.len);
+    try std.testing.expect(!pending_list[0].owns_request_frame);
     const fetched = try mailbox.get(1);
     try std.testing.expect(!fetched.owns_request_frame);
     try std.testing.expectEqual(pending.pending_port_fingerprint, fetched.pending_port_fingerprint);
@@ -2666,6 +2668,13 @@ test "runspace install admitted and replay records receipts summaries and events
     defer replay_export.deinit(std.testing.allocator);
     try std.testing.expect(replay_export.transcript_image != null);
     try std.testing.expectEqual(world.ImportSet.fromTarget(fixtures.Strict.Target).import_set_fingerprint, replay_export.import_set_fingerprint);
+    const mismatched_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_bad,
+        .target_ref = target_ref,
+        .mode = .continue_fresh,
+        .run_image = replay_export,
+    });
+    try std.testing.expectError(error.HandoffTargetMismatch, runspace.installAdmitted(mismatched_admitted));
     try std.testing.expectError(error.ReplaySurfaceMismatch, replay_runspace.installReplay(fixtures.Ports.Target, image, null));
 
     var replay_denied = world.Runspace.init(std.testing.allocator, .{
@@ -2696,6 +2705,9 @@ test "runspace tick parks responds and completes machine run" {
     report = runspace.poll();
     try std.testing.expectEqual(@as(usize, 1), report.runnable_count);
     try std.testing.expectEqual(@as(usize, 0), report.pending_port_count);
+    const pending_after_response = try runspace.mailbox.listPending(std.testing.allocator);
+    defer std.testing.allocator.free(pending_after_response);
+    try std.testing.expectEqual(@as(usize, 0), pending_after_response.len);
 
     report = try runspace.tick();
     try std.testing.expectEqual(@as(usize, 1), report.completed_count);

@@ -52,8 +52,9 @@ pub fn main(init: std.process.Init) !void {
     var tool_pending: usize = 0;
     while (runspace.report().completed_count == 0) {
         _ = try runspace.tick();
-        for (runspace.mailbox.listPending()) |pending| {
-            if (pending.status != .pending) continue;
+        const pending_ports = try runspace.mailbox.listPending(allocator);
+        defer allocator.free(pending_ports);
+        for (pending_ports) |pending| {
             if (pending.world_port_id == DecidePort.world_port_id) {
                 model_pending += 1;
                 const value: fixtures.Agent.Action = if (model_pending == 1)

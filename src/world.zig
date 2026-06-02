@@ -6951,8 +6951,16 @@ pub const Runspace = struct {
             return self.pending.items[index].borrowed();
         }
 
-        pub fn listPending(self: *const @This()) []const Runspace.PendingPort {
-            return self.pending.items;
+        pub fn listPending(self: *const @This(), allocator: std.mem.Allocator) ![]Runspace.PendingPort {
+            const count = self.pendingCount();
+            const result = try allocator.alloc(Runspace.PendingPort, count);
+            var out_index: usize = 0;
+            for (self.pending.items) |pending_port| {
+                if (pending_port.status != .pending) continue;
+                result[out_index] = pending_port.borrowed();
+                out_index += 1;
+            }
+            return result;
         }
 
         fn respond(self: *@This(), mailbox_id: u64, response: Frame.Response) !Runspace.PendingPort {
@@ -7137,7 +7145,13 @@ pub const Runspace = struct {
     pub fn installAdmitted(self: *@This(), admitted_run: Admission.AdmittedRun) !RunHandle {
         if (self.config.require_supervision and admitted_run.run_permit == null) return error.SupervisionDenied;
         const target_ref = admitted_run.target_ref;
-        if (admitted_run.run_image) |image| try image.validate(.{});
+        if (admitted_run.run_image) |image| {
+            try image.validate(.{});
+            if (image.target_ref.target_ref_fingerprint != target_ref.target_ref_fingerprint) return error.HandoffTargetMismatch;
+            if (image.target_ref.world_surface_fingerprint != target_ref.world_surface_fingerprint) return error.HandoffTargetMismatch;
+            if (image.target_ref.target_certificate_fingerprint != target_ref.target_certificate_fingerprint) return error.HandoffTargetMismatch;
+            if (image.current_state.target_ref_fingerprint != target_ref.target_ref_fingerprint) return error.HandoffTargetMismatch;
+        }
         const current_state = if (admitted_run.run_image) |image| image.current_state else RunState.init(.{
             .target_ref_fingerprint = target_ref.target_ref_fingerprint,
             .transcript_image_fingerprint = if (admitted_run.transcript_image) |image| image.transcript_image_fingerprint else null,
