@@ -3115,6 +3115,37 @@ test "runspace completion event allocation failure leaves run runnable" {
     try std.testing.expectEqual(@as(usize, 1), runspace.report().event_count);
 }
 
+test "runspace failure event allocation failure leaves run runnable" {
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    try recordPortsTranscript(&transcript);
+    var image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer image.deinit(std.testing.allocator);
+
+    var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{
+        .fail_index = std.math.maxInt(usize),
+    });
+    var runtime = boundary.Runtime.init(failing_allocator.allocator());
+    defer runtime.deinit();
+    var ctx: PortsCtx = .{ .response = 99 };
+    var runspace = world.Runspace.init(failing_allocator.allocator(), .{ .auto_dispatch = true });
+    defer runspace.deinit();
+    const handle = try runspace.installVerifyRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = failing_allocator.allocator(),
+        .mode = world.Mode.verify,
+        .ctx = &ctx,
+        .transcript_image = &image,
+    });
+    try runspace.events.ensureUnusedCapacity(failing_allocator.allocator(), 2);
+    failing_allocator.fail_index = failing_allocator.alloc_index + 2;
+
+    try std.testing.expectError(error.OutOfMemory, runspace.tick());
+    try std.testing.expect(failing_allocator.has_induced_failure);
+    try std.testing.expectEqual(@as(usize, 0), ctx.calls);
+    try std.testing.expectEqual(world.Runspace.RunStatus.runnable, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().event_count);
+}
+
 test "runspace response event budget failure does not consume mailbox" {
     var runtime = boundary.Runtime.init(std.testing.allocator);
     defer runtime.deinit();

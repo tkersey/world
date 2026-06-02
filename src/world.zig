@@ -9005,6 +9005,9 @@ pub const Runspace = struct {
         const completed_summary = try self.allocator.dupe(u8, "run completed");
         var completed_summary_owned = true;
         defer if (completed_summary_owned) self.allocator.free(completed_summary);
+        const failed_summary = try self.allocator.dupe(u8, "run failed");
+        var failed_summary_owned = true;
+        defer if (failed_summary_owned) self.allocator.free(failed_summary);
         try slot.transition(.step, null);
         _ = self.appendPreparedEventAssumeCapacity(.{
             .kind = .run_stepped,
@@ -9031,9 +9034,6 @@ pub const Runspace = struct {
                 supervision_summary_owned = false;
                 return event;
             }
-            const failed_summary = try self.prepareEventSummary("run failed");
-            var failed_summary_owned = true;
-            errdefer if (failed_summary_owned) self.allocator.free(failed_summary);
             slot.transition(.fail, null) catch {};
             _ = self.appendPreparedEventAssumeCapacity(.{
                 .kind = .run_failed,
@@ -9059,9 +9059,6 @@ pub const Runspace = struct {
                 return event;
             },
             .failed => {
-                const failed_summary = try self.prepareEventSummary("run failed");
-                var failed_summary_owned = true;
-                errdefer if (failed_summary_owned) self.allocator.free(failed_summary);
                 try slot.transition(.fail, null);
                 const event = self.appendPreparedEventAssumeCapacity(.{
                     .kind = .run_failed,
