@@ -2881,7 +2881,13 @@ test "runspace install admitted and replay records receipts summaries and events
         .run_permit = valid_permit,
         .mode = .continue_fresh,
     });
-    _ = try supervised_runspace.installAdmitted(supervised_admitted);
+    const supervised_handle = try supervised_runspace.installAdmitted(supervised_admitted);
+    const scoped_valid_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+        .admission_receipt_fingerprint = 0xadd1_5511,
+    });
+    try std.testing.expectEqual(scoped_valid_permit.permit_fingerprint, (try supervised_runspace.getSlotSummary(supervised_handle)).run_permit_fingerprint.?);
 
     const StrictEnv = world.Environment(fixtures.Strict.Target, .{
         .bindings = .{},
@@ -3071,6 +3077,13 @@ test "runspace install admitted and replay records receipts summaries and events
     try std.testing.expectEqual(admitted_transcript.transcript_image_fingerprint, detached_export.current_state.transcript_image_fingerprint.?);
     try std.testing.expectEqual(detached_export.current_state.run_state_fingerprint, detached_summary.run_state_fingerprint);
 
+    var admitted_handoff_denied = world.Runspace.init(std.testing.allocator, .{
+        .require_admission = true,
+        .allow_handoff_install = false,
+    });
+    defer admitted_handoff_denied.deinit();
+    try std.testing.expectError(error.RunspaceInstallDenied, admitted_handoff_denied.installAdmitted(parked_admitted));
+
     const branched_state = world.RunState.init(.{
         .target_ref_fingerprint = world.TargetRef.fromTarget(fixtures.Ports.Target).target_ref_fingerprint,
         .branch_id = 44,
@@ -3119,6 +3132,13 @@ test "runspace install admitted and replay records receipts summaries and events
     });
     defer replay_denied.deinit();
     try std.testing.expectError(error.RunspaceInstallDenied, replay_denied.installReplay(fixtures.Strict.Target, image, null));
+    const replay_image_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_5517,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Strict.Target),
+        .mode = .continue_fresh,
+        .run_image = replay_export,
+    });
+    try std.testing.expectError(error.RunspaceInstallDenied, replay_denied.installAdmitted(replay_image_admitted));
 }
 
 test "runspace tick parks responds and completes machine run" {
@@ -3668,6 +3688,11 @@ test "runspace enforces lifecycle supervision for direct and imported slots" {
         .mode = .fresh,
         .policy = world.SupervisionPolicy.audit_only,
     });
+    const scoped_admitted_permit = world.Supervision.issue(fixtures.Strict.Target, StrictEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.audit_only,
+        .admission_receipt_fingerprint = 0xadd1_5afe,
+    });
     const admitted_image = world.RunImage.init(.{
         .kind = .completed_run,
         .target_ref = world.TargetRef.fromTarget(fixtures.Strict.Target),
@@ -3695,7 +3720,7 @@ test "runspace enforces lifecycle supervision for direct and imported slots" {
     _ = try admitted.branch(admitted_handle, admitted_checkpoint, .{});
     var admitted_export = try admitted.exportRun(admitted_handle);
     defer admitted_export.deinit(std.testing.allocator);
-    try std.testing.expectEqual(admitted_permit.permit_fingerprint, admitted_export.prior_run_permit_fingerprint.?);
+    try std.testing.expectEqual(scoped_admitted_permit.permit_fingerprint, admitted_export.prior_run_permit_fingerprint.?);
 }
 
 test "runspace handoff export captures parked pending request and completed transcript" {

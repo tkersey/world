@@ -7368,6 +7368,8 @@ pub const Runspace = struct {
         if (self.config.require_supervision and admitted_run.run_permit == null) return error.SupervisionDenied;
         const target_ref = admitted_run.target_ref;
         if (admitted_run.run_image) |image| {
+            if (!self.config.allow_handoff_install) return error.RunspaceInstallDenied;
+            if (image.kind == .replay_only_run and !self.config.allow_replay_install) return error.RunspaceInstallDenied;
             try image.validate(.{});
             if (image.target_ref.target_ref_fingerprint != target_ref.target_ref_fingerprint) return error.HandoffTargetMismatch;
             if (image.target_ref.world_surface_fingerprint != target_ref.world_surface_fingerprint) return error.HandoffTargetMismatch;
@@ -7406,14 +7408,17 @@ pub const Runspace = struct {
         errdefer if (supervisor_owned) {
             if (supervisor) |*owned| owned.deinit();
         };
+        var installed_permit_fingerprint: ?u64 = null;
         if (admitted_run.run_permit) |permit| {
             try validateAdmittedRunPermit(admitted_run, permit);
+            const scoped_permit = scopePermitToAdmission(permit, admitted_run.admission_receipt_fingerprint);
+            installed_permit_fingerprint = scoped_permit.permit_fingerprint;
             const port_count = blk: {
-                var count = supervisorPortCountForPermit(permit);
+                var count = supervisorPortCountForPermit(scoped_permit);
                 if (pending_frame) |frame| count = @max(count, @as(usize, frame.world_port_id) + 1);
                 break :blk count;
             };
-            supervisor = try Supervision.Supervisor.init(self.allocator, permit, port_count);
+            supervisor = try Supervision.Supervisor.init(self.allocator, scoped_permit, port_count);
             supervisor_owned = true;
         }
         const slot_current_state = if (installed_image) |image| image.current_state else current_state;
@@ -7424,7 +7429,7 @@ pub const Runspace = struct {
         const handle = try self.nextHandle(.{
             .target_ref_fingerprint = target_ref.target_ref_fingerprint,
             .admission_receipt_fingerprint = admitted_run.admission_receipt_fingerprint,
-            .permit_fingerprint = if (admitted_run.run_permit) |permit| permit.permit_fingerprint else null,
+            .permit_fingerprint = installed_permit_fingerprint,
             .branch_id = slot_branch_id,
         });
         const slot = Runspace.RunSlot.fromState(.{
@@ -7433,7 +7438,7 @@ pub const Runspace = struct {
             .current_state = slot_current_state,
             .status = if (admitted_run.run_image == null) .admitted else try statusFromInstallableRunImageState(slot_current_state),
             .admission_receipt_fingerprint = admitted_run.admission_receipt_fingerprint,
-            .run_permit_fingerprint = if (admitted_run.run_permit) |permit| permit.permit_fingerprint else null,
+            .run_permit_fingerprint = installed_permit_fingerprint,
             .run_receipt_fingerprint = if (installed_image) |image| image.prior_run_receipt_fingerprint else null,
             .pending_mailbox_id = null,
             .branch_id = slot_branch_id,
