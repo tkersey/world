@@ -7809,7 +7809,8 @@ pub const Runspace = struct {
         const index = try self.slotIndex(handle);
         var slot = &self.slots.items[index];
         try self.ensureEventCapacity(1);
-        const pending = if (slot.status == .parked_on_port)
+        if (!Runspace.canTransition(slot.status, .exported)) return error.InvalidRunspaceTransition;
+        const pending = if ((slot.status == .parked_on_port or slot.status == .parked_on_supervision) and slot.pending_mailbox_id != null)
             if (slot.pending_mailbox_id) |mailbox_id| try self.mailbox.get(mailbox_id) else return error.StaleRunHandle
         else
             null;
@@ -7838,7 +7839,7 @@ pub const Runspace = struct {
         if (pending.status != .pending) return error.PendingPortConsumed;
         const index = try self.slotIndex(pending.handle);
         var slot = &self.slots.items[index];
-        if (slot.pending_mailbox_id != mailbox_id or slot.status != .parked_on_port) return error.StaleRunHandle;
+        if (slot.pending_mailbox_id != mailbox_id or (slot.status != .parked_on_port and slot.status != .parked_on_supervision)) return error.StaleRunHandle;
         try self.ensureEventCapacity(1);
         try self.beforeSlotHandoffExport(index);
         var image = try self.snapshotSlotImage(index);
@@ -8387,6 +8388,25 @@ pub const Runspace = struct {
         var slot = &self.slots.items[index];
         const driver = slot.driver orelse return error.InvalidRunspaceTransition;
         driver.dispatch() catch |err| {
+            if (err == error.HandlerPending and driver.supervisionInterrupted()) {
+                slot.status = .parked_on_supervision;
+                slot.pending_mailbox_id = mailbox_id;
+                slot.current_state = RunState.init(.{
+                    .target_ref_fingerprint = slot.target_ref.target_ref_fingerprint,
+                    .pending_request_fingerprint = pending.request_frame_fingerprint,
+                    .turn_index = pending.turn_index,
+                    .status = .parked_on_port,
+                });
+                return self.appendEvent(.{
+                    .kind = .run_parked_on_supervision,
+                    .run_handle = slot.handle,
+                    .pending_port_fingerprint = pending.pending_port_fingerprint,
+                    .request_frame_fingerprint = pending.request_frame_fingerprint,
+                    .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+                    .run_permit_fingerprint = slot.run_permit_fingerprint,
+                    .summary = "auto-dispatch parked on supervision",
+                });
+            }
             const failed = try self.mailbox.fail(mailbox_id, "auto-dispatch failed");
             try slot.transition(.fail, null);
             _ = try self.appendEvent(.{

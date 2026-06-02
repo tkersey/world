@@ -3122,6 +3122,42 @@ test "runspace park-on-budget preserves supervised parked slot" {
     try std.testing.expectEqual(@as(usize, 1), runspace.report().parked_count);
 }
 
+test "runspace auto dispatch park-on-budget preserves pending mailbox" {
+    const park_policy = world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .allow_native_adapters = true,
+        .allow_handoff_export = true,
+        .require_environment_certificate = true,
+        .park_on_budget_exceeded = true,
+    });
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = park_policy,
+        .budget = world.Budget.init(.{ .max_frame_response_bytes = 0 }),
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var ctx: PortsCtx = .{};
+    var runspace = world.Runspace.init(std.testing.allocator, .{
+        .auto_dispatch = true,
+        .require_supervision = true,
+    });
+    defer runspace.deinit();
+
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+        .permit = permit,
+    });
+    const event = try runspace.step(handle);
+    try std.testing.expectEqual(world.Runspace.EventKind.run_parked_on_supervision, event.kind);
+    try std.testing.expectEqual(@as(usize, 1), ctx.calls);
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_supervision, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+}
+
 test "runspace enforces lifecycle supervision for direct and imported slots" {
     const StrictEnv = world.Environment(fixtures.Strict.Target, .{
         .ports = &.{},
@@ -3139,6 +3175,8 @@ test "runspace enforces lifecycle supervision for direct and imported slots" {
         .policy = world.SupervisionPolicy.strict_fresh,
     }), .{}));
     const direct_handle = try direct.installTarget(fixtures.Strict.Target, StrictEnv, branch_denied_permit, .{});
+    try std.testing.expectError(error.InvalidRunspaceTransition, direct.exportRun(direct_handle));
+    try std.testing.expectEqual(@as(usize, 0), direct.slots.items[0].supervisor.?.ledger.total_handoff_exports);
     const checkpoint = try direct.checkpoint(direct_handle);
     try std.testing.expectError(error.BranchDenied, direct.branch(direct_handle, checkpoint, .{}));
     try std.testing.expectEqual(@as(usize, 2), direct.events.items.len);
