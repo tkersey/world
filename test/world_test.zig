@@ -2400,6 +2400,51 @@ test "runspace parked image install rolls back when mailbox enqueue fails" {
     try std.testing.expectEqual(@as(u64, 0), next.local_run_id);
 }
 
+test "runspace install rejects invalid image and failed direct installs preserve run ids" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var source = world.Runspace.init(std.testing.allocator, .{});
+    defer source.deinit();
+    const source_handle = try source.installMachineRun(fixtures.Strict.Target, world.Environment(fixtures.Strict.Target, .{
+        .ports = &.{},
+    }), &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    _ = try source.tick();
+    var image = try source.exportRun(source_handle);
+    defer image.deinit(std.testing.allocator);
+
+    var invalid_image = image;
+    invalid_image.run_image_fingerprint += 1;
+    var image_runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer image_runspace.deinit();
+    try std.testing.expectError(error.InvalidFrameEncoding, image_runspace.installRunImage(invalid_image));
+    const image_next = try image_runspace.installTarget(fixtures.Strict.Target, .{}, null, .{});
+    try std.testing.expectEqual(@as(u64, 0), image_next.local_run_id);
+
+    var direct = world.Runspace.init(std.testing.allocator, .{ .max_events = 0 });
+    defer direct.deinit();
+    try std.testing.expectError(error.BudgetExceeded, direct.installTarget(fixtures.Strict.Target, .{}, null, .{}));
+    direct.config.max_events = 1;
+    const direct_next = try direct.installTarget(fixtures.Strict.Target, .{}, null, .{});
+    try std.testing.expectEqual(@as(u64, 0), direct_next.local_run_id);
+
+    var machine_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer machine_runtime.deinit();
+    var machine = world.Runspace.init(std.testing.allocator, .{ .max_events = 0 });
+    defer machine.deinit();
+    try std.testing.expectError(error.BudgetExceeded, machine.installMachineRun(fixtures.Strict.Target, world.Environment(fixtures.Strict.Target, .{
+        .ports = &.{},
+    }), &machine_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    }));
+    machine.config.max_events = 1;
+    const machine_next = try machine.installTarget(fixtures.Strict.Target, .{}, null, .{});
+    try std.testing.expectEqual(@as(u64, 0), machine_next.local_run_id);
+}
+
 test "runspace tick preflights mailbox capacity before driver advances" {
     var runtime = boundary.Runtime.init(std.testing.allocator);
     defer runtime.deinit();

@@ -7117,6 +7117,7 @@ pub const Runspace = struct {
     pub fn installAdmitted(self: *@This(), admitted_run: Admission.AdmittedRun) !RunHandle {
         if (self.config.require_supervision and admitted_run.run_permit == null) return error.SupervisionDenied;
         const target_ref = admitted_run.target_ref;
+        if (admitted_run.run_image) |image| try image.validate(.{});
         const current_state = if (admitted_run.run_image) |image| image.current_state else RunState.init(.{
             .target_ref_fingerprint = target_ref.target_ref_fingerprint,
             .transcript_image_fingerprint = if (admitted_run.transcript_image) |image| image.transcript_image_fingerprint else null,
@@ -7180,6 +7181,7 @@ pub const Runspace = struct {
         if (self.config.require_admission) return error.RunspaceAdmissionRequired;
         if (!self.config.allow_handoff_install) return error.RunspaceInstallDenied;
         if (self.config.require_supervision and image.prior_run_permit_fingerprint == null) return error.SupervisionDenied;
+        try image.validate(.{});
         const next_run_id_before = self.next_run_id;
         const handle = try self.nextHandle(.{
             .target_ref_fingerprint = image.target_ref.target_ref_fingerprint,
@@ -7229,6 +7231,11 @@ pub const Runspace = struct {
         if (!self.config.allow_direct_target_install) return error.RunspaceInstallDenied;
         if (self.config.require_supervision and permit == null) return error.SupervisionDenied;
         const target_ref = TargetRef.fromTarget(Target);
+        const next_run_id_before = self.next_run_id;
+        var installed = false;
+        errdefer if (!installed) {
+            self.next_run_id = next_run_id_before;
+        };
         const handle = try self.nextHandle(.{
             .target_ref_fingerprint = target_ref.target_ref_fingerprint,
             .permit_fingerprint = if (permit) |run_permit| run_permit.permit_fingerprint else null,
@@ -7245,6 +7252,7 @@ pub const Runspace = struct {
             .run_permit_fingerprint = if (permit) |run_permit| run_permit.permit_fingerprint else null,
         });
         try self.installSlot(slot, .run_installed, "direct target installed");
+        installed = true;
         return handle;
     }
 
@@ -7269,6 +7277,11 @@ pub const Runspace = struct {
         var driver_owned = true;
         errdefer if (driver_owned) driver.deinit(self.allocator);
         const target_ref = TargetRef.fromTarget(Target);
+        const next_run_id_before = self.next_run_id;
+        var installed = false;
+        errdefer if (!installed) {
+            self.next_run_id = next_run_id_before;
+        };
         const handle = try self.nextHandle(.{
             .target_ref_fingerprint = target_ref.target_ref_fingerprint,
             .permit_fingerprint = if (maybe_permit) |permit| permit.permit_fingerprint else null,
@@ -7287,6 +7300,7 @@ pub const Runspace = struct {
         });
         try self.installSlot(slot, .run_installed, "machine run installed");
         driver_owned = false;
+        installed = true;
         return handle;
     }
 
@@ -7302,6 +7316,11 @@ pub const Runspace = struct {
         var installed_image = try cloneRunImage(self.allocator, image);
         var installed_image_owned = true;
         errdefer if (installed_image_owned) installed_image.deinit(self.allocator);
+        const next_run_id_before = self.next_run_id;
+        var installed = false;
+        errdefer if (!installed) {
+            self.next_run_id = next_run_id_before;
+        };
         const handle = try self.nextHandle(.{
             .target_ref_fingerprint = image.target_ref.target_ref_fingerprint,
             .permit_fingerprint = image.prior_run_permit_fingerprint,
@@ -7320,6 +7339,7 @@ pub const Runspace = struct {
         });
         try self.installSlot(slot, .run_installed, "replay run installed");
         installed_image_owned = false;
+        installed = true;
         return handle;
     }
 
