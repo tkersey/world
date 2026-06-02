@@ -8125,29 +8125,34 @@ pub const Runspace = struct {
     pub fn exportRun(self: *@This(), handle: RunHandle) !RunImage {
         const index = try self.slotIndex(handle);
         var slot = &self.slots.items[index];
-        try self.ensureEventCapacity(1);
         if (!Runspace.canTransition(slot.status, .exported)) return error.InvalidRunspaceTransition;
-        const pending = if ((slot.status == .parked_on_port or slot.status == .parked_on_supervision) and slot.pending_mailbox_id != null)
-            if (slot.pending_mailbox_id) |mailbox_id| try self.mailbox.get(mailbox_id) else return error.StaleRunHandle
-        else
-            null;
+        const pending = if (slot.status == .parked_on_port or slot.status == .parked_on_supervision) pending: {
+            const mailbox_id = slot.pending_mailbox_id orelse return error.HandoffPendingFrameMismatch;
+            const pending_port = try self.mailbox.get(mailbox_id);
+            if (pending_port.request_frame == null) return error.HandoffPendingFrameMismatch;
+            break :pending pending_port;
+        } else null;
         try self.beforeSlotHandoffExport(index);
         const image = try self.snapshotSlotImage(index);
         errdefer {
             var owned = image;
             owned.deinit(self.allocator);
         }
+        const event_summary = try self.prepareEventSummary("run exported");
+        var summary_owned = true;
+        errdefer if (summary_owned) self.allocator.free(event_summary);
         const exported = if (pending) |pending_port| try self.mailbox.markExported(pending_port.mailbox_id) else null;
         try slot.transition(.@"export", null);
-        _ = try self.appendEvent(.{
+        _ = self.appendPreparedEventAssumeCapacity(.{
             .kind = .run_exported,
             .run_handle = slot.handle,
             .pending_port_fingerprint = if (exported) |pending_port| pending_port.pending_port_fingerprint else null,
             .request_frame_fingerprint = if (pending) |pending_port| pending_port.request_frame_fingerprint else null,
             .run_state_fingerprint = slot.current_state.run_state_fingerprint,
             .run_permit_fingerprint = slot.run_permit_fingerprint,
-            .summary = "run exported",
+            .summary = event_summary,
         });
+        summary_owned = false;
         return image;
     }
 
@@ -8157,21 +8162,24 @@ pub const Runspace = struct {
         const index = try self.slotIndex(pending.handle);
         var slot = &self.slots.items[index];
         if (slot.pending_mailbox_id != mailbox_id or (slot.status != .parked_on_port and slot.status != .parked_on_supervision)) return error.StaleRunHandle;
-        try self.ensureEventCapacity(1);
         try self.beforeSlotHandoffExport(index);
         var image = try self.snapshotSlotImage(index);
         errdefer image.deinit(self.allocator);
+        const event_summary = try self.prepareEventSummary("pending run exported");
+        var summary_owned = true;
+        errdefer if (summary_owned) self.allocator.free(event_summary);
         const exported = try self.mailbox.markExported(mailbox_id);
         try slot.transition(.@"export", null);
-        _ = try self.appendEvent(.{
+        _ = self.appendPreparedEventAssumeCapacity(.{
             .kind = .run_exported,
             .run_handle = slot.handle,
             .pending_port_fingerprint = exported.pending_port_fingerprint,
             .request_frame_fingerprint = pending.request_frame_fingerprint,
             .run_state_fingerprint = slot.current_state.run_state_fingerprint,
             .run_permit_fingerprint = slot.run_permit_fingerprint,
-            .summary = "pending run exported",
+            .summary = event_summary,
         });
+        summary_owned = false;
         return image;
     }
 
@@ -8499,6 +8507,12 @@ pub const Runspace = struct {
         summary_owned = false;
         self.next_event_index += 1;
         return event.borrowed();
+    }
+
+    fn prepareEventSummary(self: *@This(), summary_text: []const u8) ![]u8 {
+        try self.ensureEventCapacity(1);
+        try self.events.ensureUnusedCapacity(self.allocator, 1);
+        return self.allocator.dupe(u8, summary_text);
     }
 
     fn appendPreparedEventAssumeCapacity(self: *@This(), args: struct {

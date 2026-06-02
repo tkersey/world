@@ -3630,6 +3630,36 @@ test "runspace export run event budget failure does not change slot state" {
     try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try runspace.getSlotSummary(handle)).status);
 }
 
+test "runspace export run event allocation failure does not change slot state" {
+    var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    var runspace = world.Runspace.init(failing_allocator.allocator(), .{});
+    defer runspace.deinit();
+    const target_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    const handle = world.RunHandle.init(.{
+        .runspace_fingerprint = runspace.runspace_fingerprint,
+        .local_run_id = 0,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+    });
+    const state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .completed,
+    });
+    try runspace.slots.append(failing_allocator.allocator(), world.Runspace.RunSlot.fromState(.{
+        .handle = handle,
+        .target_ref = target_ref,
+        .current_state = state,
+        .status = .completed,
+    }));
+    try runspace.events.ensureUnusedCapacity(failing_allocator.allocator(), 1);
+    failing_allocator.fail_index = failing_allocator.alloc_index;
+
+    try std.testing.expectError(error.OutOfMemory, runspace.exportRun(handle));
+    try std.testing.expect(failing_allocator.has_induced_failure);
+    const summary = try runspace.getSlotSummary(handle);
+    try std.testing.expectEqual(world.Runspace.RunStatus.completed, summary.status);
+    try std.testing.expectEqual(@as(usize, 0), runspace.events.items.len);
+}
+
 test "runspace supervised auto dispatch denial happens before handler call" {
     const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
         .mode = .fresh,
@@ -3690,6 +3720,8 @@ test "runspace park-on-budget preserves supervised parked slot" {
     try std.testing.expectEqual(@as(?u64, null), summary.pending_mailbox_id);
     try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().parked_count);
+    try std.testing.expectError(error.HandoffPendingFrameMismatch, runspace.exportRun(handle));
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_supervision, (try runspace.getSlotSummary(handle)).status);
 }
 
 test "runspace auto dispatch park-on-budget preserves pending mailbox" {
