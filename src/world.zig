@@ -236,7 +236,7 @@ pub const world_pending_port_format_version: u32 = 1;
 pub const world_pending_port_fingerprint_version: u32 = 1;
 pub const world_runspace_event_fingerprint_version: u32 = 1;
 
-var next_runspace_instance_id: u64 = 0;
+var next_runspace_instance_id = std.atomic.Value(u64).init(0);
 pub const world_max_decoded_byte_field_len: usize = 16 * 1024 * 1024;
 const frame_response_deferred_fingerprint_flag: u32 = 1 << 0;
 const world_min_transcript_event_image_encoded_len_v2: usize = 8 + 1 + 8 + 8 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1;
@@ -7235,8 +7235,7 @@ pub const Runspace = struct {
     };
 
     pub fn init(allocator: std.mem.Allocator, config: Config) @This() {
-        const runspace_instance_id = next_runspace_instance_id;
-        next_runspace_instance_id += 1;
+        const runspace_instance_id = next_runspace_instance_id.fetchAdd(1, .monotonic);
         const runspace_fingerprint = fingerprintRunspaceConfig(config, runspace_instance_id);
         return .{
             .allocator = allocator,
@@ -7271,6 +7270,23 @@ pub const Runspace = struct {
             count = @max(count, @as(usize, rule.world_port_id) + 1);
         }
         return count;
+    }
+
+    fn validateAdmittedRunPermit(admitted_run: Admission.AdmittedRun, permit: RunPermit) !void {
+        const target_ref = admitted_run.target_ref;
+        if (permit.target_ref_fingerprint != target_ref.target_ref_fingerprint) return error.SupervisionDenied;
+        if (permit.world_surface_fingerprint != target_ref.world_surface_fingerprint) return error.SupervisionDenied;
+        if (permit.target_certificate_fingerprint != target_ref.target_certificate_fingerprint) return error.SupervisionDenied;
+        if (permit.mode != admissionModeToRunMode(admitted_run.mode)) return error.SupervisionDenied;
+        if (permit.admission_receipt_fingerprint) |receipt_fingerprint| {
+            if (receipt_fingerprint != admitted_run.admission_receipt_fingerprint) return error.SupervisionDenied;
+        }
+        if (admitted_run.environment_certificate_fingerprint) |certificate_fingerprint| {
+            if (permit.environment_certificate_fingerprint != certificate_fingerprint) return error.SupervisionDenied;
+        } else if (permit.policy.require_environment_certificate) {
+            return error.SupervisionDenied;
+        }
+        if (admitted_run.transcript_image != null and !permit.transcript_image_available and modeConsumesTranscript(permit.mode)) return error.SupervisionDenied;
     }
 
     pub fn installAdmitted(self: *@This(), admitted_run: Admission.AdmittedRun) !RunHandle {
@@ -7316,6 +7332,7 @@ pub const Runspace = struct {
             if (supervisor) |*owned| owned.deinit();
         };
         if (admitted_run.run_permit) |permit| {
+            try validateAdmittedRunPermit(admitted_run, permit);
             supervisor = try Supervision.Supervisor.init(self.allocator, permit, supervisorPortCountForPermit(permit));
             supervisor_owned = true;
         }

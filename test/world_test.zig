@@ -2734,6 +2734,82 @@ test "runspace install admitted and replay records receipts summaries and events
     try std.testing.expectEqual(@as(?u64, 0xadd1_5510), admitted_summary.admission_receipt_fingerprint);
     try std.testing.expectEqual(world.Runspace.EventKind.run_admitted, runspace.events.items[0].kind);
 
+    const ports_cert = PortsEnv.certificate(.fresh, false);
+    const valid_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+    });
+    var supervised_runspace = world.Runspace.init(std.testing.allocator, .{
+        .require_admission = true,
+        .require_supervision = true,
+    });
+    defer supervised_runspace.deinit();
+    const supervised_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_5511,
+        .target_ref = target_ref,
+        .environment_certificate_fingerprint = ports_cert.certificate_fingerprint,
+        .run_permit = valid_permit,
+        .mode = .continue_fresh,
+    });
+    _ = try supervised_runspace.installAdmitted(supervised_admitted);
+
+    const StrictEnv = world.Environment(fixtures.Strict.Target, .{
+        .bindings = .{},
+        .policy = world.EnvironmentPolicy.strict_fresh,
+    });
+    const wrong_target_permit = world.Supervision.issue(fixtures.Strict.Target, StrictEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+    });
+    const wrong_target_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_5512,
+        .target_ref = target_ref,
+        .environment_certificate_fingerprint = ports_cert.certificate_fingerprint,
+        .run_permit = wrong_target_permit,
+        .mode = .continue_fresh,
+    });
+    try std.testing.expectError(error.SupervisionDenied, supervised_runspace.installAdmitted(wrong_target_admitted));
+
+    const wrong_env_permit = world.Supervision.issue(fixtures.Ports.Target, PortsReplayEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+    });
+    const wrong_env_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_5513,
+        .target_ref = target_ref,
+        .environment_certificate_fingerprint = ports_cert.certificate_fingerprint,
+        .run_permit = wrong_env_permit,
+        .mode = .continue_fresh,
+    });
+    try std.testing.expectError(error.SupervisionDenied, supervised_runspace.installAdmitted(wrong_env_admitted));
+
+    const wrong_mode_permit = world.Supervision.issue(fixtures.Ports.Target, PortsReplayEnv, .{
+        .mode = .replay,
+        .policy = world.SupervisionPolicy.strict_replay,
+        .transcript_image_available = true,
+    });
+    const wrong_mode_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_5514,
+        .target_ref = target_ref,
+        .run_permit = wrong_mode_permit,
+        .mode = .continue_fresh,
+    });
+    try std.testing.expectError(error.SupervisionDenied, supervised_runspace.installAdmitted(wrong_mode_admitted));
+
+    const stale_receipt_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+        .admission_receipt_fingerprint = 0xadd1_5515,
+    });
+    const stale_receipt_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_5516,
+        .target_ref = target_ref,
+        .environment_certificate_fingerprint = ports_cert.certificate_fingerprint,
+        .run_permit = stale_receipt_permit,
+        .mode = .continue_fresh,
+    });
+    try std.testing.expectError(error.SupervisionDenied, supervised_runspace.installAdmitted(stale_receipt_admitted));
+
     var transcript = world.Transcript.init(std.testing.allocator);
     defer transcript.deinit();
     try transcript.append(.{
