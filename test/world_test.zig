@@ -4250,6 +4250,46 @@ test "runspace park-on-budget preserves supervised parked slot" {
     try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_supervision, (try runspace.getSlotSummary(handle)).status);
 }
 
+test "runspace pre-request supervision park event allocation failure leaves slot runnable" {
+    const park_policy = world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .allow_native_adapters = true,
+        .require_environment_certificate = true,
+        .park_on_budget_exceeded = true,
+    });
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = park_policy,
+        .budget = world.Budget.init(.{ .max_session_steps = 0 }),
+    });
+    var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{
+        .fail_index = std.math.maxInt(usize),
+    });
+    var runtime = boundary.Runtime.init(failing_allocator.allocator());
+    defer runtime.deinit();
+    var ctx: PortsCtx = .{};
+    var runspace = world.Runspace.init(failing_allocator.allocator(), .{
+        .require_supervision = true,
+    });
+    defer runspace.deinit();
+
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = failing_allocator.allocator(),
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+        .permit = permit,
+    });
+    try runspace.events.ensureUnusedCapacity(failing_allocator.allocator(), 2);
+    failing_allocator.fail_index = failing_allocator.alloc_index + 2;
+
+    try std.testing.expectError(error.OutOfMemory, runspace.step(handle));
+    try std.testing.expect(failing_allocator.has_induced_failure);
+    try std.testing.expectEqual(@as(usize, 0), ctx.calls);
+    try std.testing.expectEqual(world.Runspace.RunStatus.runnable, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().parked_count);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
+}
+
 test "runspace auto dispatch park-on-budget preserves pending mailbox" {
     const park_policy = world.SupervisionPolicy.init(.{
         .allow_fresh_calls = true,

@@ -8906,23 +8906,32 @@ pub const Runspace = struct {
         const driver = slot.driver.?;
         const step_result = driver.nextFrame() catch |err| {
             if (err == error.HandlerPending and driver.supervisionInterrupted()) {
+                const supervision_summary = try self.prepareEventSummary("run parked on supervision");
+                var supervision_summary_owned = true;
+                errdefer if (supervision_summary_owned) self.allocator.free(supervision_summary);
                 try slot.transition(.park_on_supervision, null);
-                return self.appendEvent(.{
+                const event = self.appendPreparedEventAssumeCapacity(.{
                     .kind = .run_parked_on_supervision,
                     .run_handle = slot.handle,
                     .run_state_fingerprint = slot.current_state.run_state_fingerprint,
                     .run_permit_fingerprint = slot.run_permit_fingerprint,
-                    .summary = "run parked on supervision",
+                    .summary = supervision_summary,
                 });
+                supervision_summary_owned = false;
+                return event;
             }
+            const failed_summary = try self.prepareEventSummary("run failed");
+            var failed_summary_owned = true;
+            errdefer if (failed_summary_owned) self.allocator.free(failed_summary);
             slot.transition(.fail, null) catch {};
-            _ = try self.appendEvent(.{
+            _ = self.appendPreparedEventAssumeCapacity(.{
                 .kind = .run_failed,
                 .run_handle = slot.handle,
                 .run_state_fingerprint = slot.current_state.run_state_fingerprint,
                 .run_permit_fingerprint = slot.run_permit_fingerprint,
-                .summary = "run failed",
+                .summary = failed_summary,
             });
+            failed_summary_owned = false;
             return err;
         };
         switch (step_result) {
@@ -8939,14 +8948,19 @@ pub const Runspace = struct {
                 return event;
             },
             .failed => {
+                const failed_summary = try self.prepareEventSummary("run failed");
+                var failed_summary_owned = true;
+                errdefer if (failed_summary_owned) self.allocator.free(failed_summary);
                 try slot.transition(.fail, null);
-                return self.appendEvent(.{
+                const event = self.appendPreparedEventAssumeCapacity(.{
                     .kind = .run_failed,
                     .run_handle = slot.handle,
                     .run_state_fingerprint = slot.current_state.run_state_fingerprint,
                     .run_permit_fingerprint = slot.run_permit_fingerprint,
-                    .summary = "run failed",
+                    .summary = failed_summary,
                 });
+                failed_summary_owned = false;
+                return event;
             },
             .port_request => |request| {
                 var owned_request = request;
