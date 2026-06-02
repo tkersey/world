@@ -6481,6 +6481,8 @@ pub const Runspace = struct {
         const VTable = struct {
             nextFrame: *const fn (*anyopaque) anyerror!DriverStep,
             resumeFrame: *const fn (*anyopaque, Frame.Response) anyerror!void,
+            beforeTerminalResponse: *const fn (*anyopaque, u32, ResponseStatus) anyerror!void,
+            resumeTerminalFrame: *const fn (*anyopaque, Frame.Response) anyerror!void,
             dispatch: *const fn (*anyopaque) anyerror!void,
             snapshotRunImage: *const fn (*anyopaque) anyerror!RunImage,
             beforeHandoffExport: *const fn (*anyopaque) anyerror!void,
@@ -6496,6 +6498,14 @@ pub const Runspace = struct {
 
         fn resumeFrame(self: @This(), response: Frame.Response) !void {
             return self.vtable.resumeFrame(self.ptr, response);
+        }
+
+        fn beforeTerminalResponse(self: @This(), world_port_id: u32, status: ResponseStatus) !void {
+            return self.vtable.beforeTerminalResponse(self.ptr, world_port_id, status);
+        }
+
+        fn resumeTerminalFrame(self: @This(), response: Frame.Response) !void {
+            return self.vtable.resumeTerminalFrame(self.ptr, response);
         }
 
         fn dispatch(self: @This()) !void {
@@ -6557,6 +6567,17 @@ pub const Runspace = struct {
                     return active.resumeFrame(response);
                 }
 
+                fn runBeforeTerminalResponse(ptr: *anyopaque, world_port_id: u32, status: ResponseStatus) anyerror!void {
+                    const active: *RunType = @ptrCast(@alignCast(ptr));
+                    if (@hasDecl(RunType, "beforeRunspaceTerminalResponse")) return active.beforeRunspaceTerminalResponse(world_port_id, status);
+                }
+
+                fn runResumeTerminalFrame(ptr: *anyopaque, response: Frame.Response) anyerror!void {
+                    const active: *RunType = @ptrCast(@alignCast(ptr));
+                    if (@hasDecl(RunType, "runspaceResumeTerminalFrame")) return active.runspaceResumeTerminalFrame(response);
+                    return active.resumeFrame(response);
+                }
+
                 fn runDispatch(ptr: *anyopaque) anyerror!void {
                     const active: *RunType = @ptrCast(@alignCast(ptr));
                     return active.dispatch();
@@ -6597,6 +6618,8 @@ pub const Runspace = struct {
                 const vtable = VTable{
                     .nextFrame = runNextFrame,
                     .resumeFrame = runResumeFrame,
+                    .beforeTerminalResponse = runBeforeTerminalResponse,
+                    .resumeTerminalFrame = runResumeTerminalFrame,
                     .dispatch = runDispatch,
                     .snapshotRunImage = runSnapshotRunImage,
                     .beforeHandoffExport = runBeforeHandoffExport,
@@ -7252,16 +7275,21 @@ pub const Runspace = struct {
                 try attachTranscriptToInstalledRunImage(self.allocator, &installed_image.?, transcript_image);
             }
         }
+        const slot_current_state = if (installed_image) |image| image.current_state else current_state;
+        const slot_branch_id: ?u64 = if (slot_current_state.branch_id == 0)
+            admitted_run.selected_branch_id
+        else
+            slot_current_state.branch_id;
         const slot = Runspace.RunSlot.fromState(.{
             .handle = handle,
             .target_ref = target_ref,
-            .current_state = current_state,
-            .status = if (admitted_run.run_image == null) .admitted else try statusFromInstallableRunImageState(current_state),
+            .current_state = slot_current_state,
+            .status = if (admitted_run.run_image == null) .admitted else try statusFromInstallableRunImageState(slot_current_state),
             .admission_receipt_fingerprint = admitted_run.admission_receipt_fingerprint,
             .run_permit_fingerprint = if (admitted_run.run_permit) |permit| permit.permit_fingerprint else null,
             .pending_mailbox_id = null,
-            .branch_id = admitted_run.selected_branch_id,
-            .checkpoint_fingerprint = admitted_run.selected_checkpoint_ref,
+            .branch_id = slot_branch_id,
+            .checkpoint_fingerprint = slot_current_state.checkpoint_fingerprint,
             .installed_run_image = installed_image,
             .owns_installed_run_image = installed_image != null,
         });
@@ -7598,6 +7626,66 @@ pub const Runspace = struct {
         return self.respond(mailbox_id, response);
     }
 
+    fn terminalResponseForPending(pending: Runspace.PendingPort, status: ResponseStatus, reason: []const u8) !Frame.Response {
+        if (status != .rejected and status != .failed) return error.InvalidPendingPortTransition;
+        const request = pending.request_frame orelse return error.InvalidPendingPortTransition;
+        const status_seed: u64 = switch (status) {
+            .rejected => 0x7275_6e73_7061_6365,
+            .failed => 0x6661_696c_706f_7274,
+            else => unreachable,
+        };
+        const response_fingerprint = pending.request_fingerprint ^ pending.request_frame_fingerprint ^ status_seed;
+        return Frame.Response.init(.{
+            .world_surface_fingerprint = request.world_surface_fingerprint,
+            .target_certificate_fingerprint = request.target_certificate_fingerprint,
+            .world_port_id = request.world_port_id,
+            .request_fingerprint = request.request_fingerprint,
+            .response_kind = pending.expected_response_kind,
+            .response_value_table_id = pending.expected_response_value_table_id,
+            .response_fingerprint = response_fingerprint,
+            .replay_key = request.replay_key_seed.withResponse(response_fingerprint).fingerprint(),
+            .status = status,
+            .reason = reason,
+        });
+    }
+
+    fn routeTerminalPending(self: *@This(), mailbox_id: u64, pending: Runspace.PendingPort, slot: *Runspace.RunSlot, status: ResponseStatus, reason: []const u8) !Frame.Response {
+        var response = try terminalResponseForPending(pending, status, reason);
+        errdefer response.deinit(self.allocator);
+        try pending.validateResponse(response);
+        if (slot.driver) |driver| {
+            try driver.beforeTerminalResponse(pending.world_port_id, status);
+            driver.resumeTerminalFrame(response) catch |err| {
+                const failed = try self.mailbox.fail(mailbox_id, "terminal response failed");
+                try slot.transition(.fail, null);
+                _ = try self.appendEvent(.{
+                    .kind = .port_failed,
+                    .run_handle = slot.handle,
+                    .pending_port_fingerprint = failed.pending_port_fingerprint,
+                    .request_frame_fingerprint = failed.request_frame_fingerprint,
+                    .response_frame_fingerprint = response.frame_fingerprint,
+                    .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+                    .run_permit_fingerprint = slot.run_permit_fingerprint,
+                    .summary = "terminal port response failed",
+                });
+                _ = try self.appendEvent(.{
+                    .kind = .run_failed,
+                    .run_handle = slot.handle,
+                    .pending_port_fingerprint = failed.pending_port_fingerprint,
+                    .request_frame_fingerprint = failed.request_frame_fingerprint,
+                    .response_frame_fingerprint = response.frame_fingerprint,
+                    .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+                    .run_permit_fingerprint = slot.run_permit_fingerprint,
+                    .summary = "run failed after terminal port response",
+                });
+                return err;
+            };
+        } else if (self.config.require_supervision) {
+            return error.SupervisionDenied;
+        }
+        return response;
+    }
+
     pub fn reject(self: *@This(), mailbox_id: u64, reason: []const u8) !Runspace.RunspaceEvent {
         const pending = try self.mailbox.get(mailbox_id);
         if (pending.status != .pending) return error.PendingPortConsumed;
@@ -7605,6 +7693,8 @@ pub const Runspace = struct {
         var slot = &self.slots.items[index];
         if (slot.pending_mailbox_id != mailbox_id or slot.status != .parked_on_port) return error.StaleRunHandle;
         try self.ensureEventCapacity(2);
+        var response = try self.routeTerminalPending(mailbox_id, pending, slot, .rejected, reason);
+        defer response.deinit(self.allocator);
         const cancelled = try self.mailbox.cancel(mailbox_id, reason);
         try slot.transition(.fail, null);
         _ = try self.appendEvent(.{
@@ -7612,6 +7702,7 @@ pub const Runspace = struct {
             .run_handle = slot.handle,
             .pending_port_fingerprint = cancelled.pending_port_fingerprint,
             .request_frame_fingerprint = cancelled.request_frame_fingerprint,
+            .response_frame_fingerprint = response.frame_fingerprint,
             .run_state_fingerprint = slot.current_state.run_state_fingerprint,
             .run_permit_fingerprint = slot.run_permit_fingerprint,
             .summary = "port rejected",
@@ -7621,6 +7712,7 @@ pub const Runspace = struct {
             .run_handle = slot.handle,
             .pending_port_fingerprint = cancelled.pending_port_fingerprint,
             .request_frame_fingerprint = cancelled.request_frame_fingerprint,
+            .response_frame_fingerprint = response.frame_fingerprint,
             .run_state_fingerprint = slot.current_state.run_state_fingerprint,
             .run_permit_fingerprint = slot.run_permit_fingerprint,
             .summary = "run failed after port rejection",
@@ -7634,6 +7726,8 @@ pub const Runspace = struct {
         var slot = &self.slots.items[index];
         if (slot.pending_mailbox_id != mailbox_id or slot.status != .parked_on_port) return error.StaleRunHandle;
         try self.ensureEventCapacity(2);
+        var response = try self.routeTerminalPending(mailbox_id, pending, slot, .failed, reason);
+        defer response.deinit(self.allocator);
         const failed = try self.mailbox.fail(mailbox_id, reason);
         try slot.transition(.fail, null);
         _ = try self.appendEvent(.{
@@ -7641,6 +7735,7 @@ pub const Runspace = struct {
             .run_handle = slot.handle,
             .pending_port_fingerprint = failed.pending_port_fingerprint,
             .request_frame_fingerprint = failed.request_frame_fingerprint,
+            .response_frame_fingerprint = response.frame_fingerprint,
             .run_state_fingerprint = slot.current_state.run_state_fingerprint,
             .run_permit_fingerprint = slot.run_permit_fingerprint,
             .summary = "port failed",
@@ -7650,6 +7745,7 @@ pub const Runspace = struct {
             .run_handle = slot.handle,
             .pending_port_fingerprint = failed.pending_port_fingerprint,
             .request_frame_fingerprint = failed.request_frame_fingerprint,
+            .response_frame_fingerprint = response.frame_fingerprint,
             .run_state_fingerprint = slot.current_state.run_state_fingerprint,
             .run_permit_fingerprint = slot.run_permit_fingerprint,
             .summary = "run failed after port failure",
@@ -9596,6 +9692,42 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
 
                 pub fn resumeFrame(self: *Self, response_frame: Frame.Response) !void {
                     try self.resumeFrameWithProvenance(response_frame, false);
+                }
+
+                pub fn beforeRunspaceTerminalResponse(self: *Self, world_port_id: u32, status: ResponseStatus) !void {
+                    if (status != .rejected and status != .failed) return error.InvalidPendingPortTransition;
+                    if (self.supervisor) |*supervisor| {
+                        try supervisor.validateWorldPortId(world_port_id);
+                        if (!Supervision.responseAllowedByPolicy(supervisor.permit.policy, status)) {
+                            return switch (status) {
+                                .rejected => Error.HandlerRejected,
+                                .failed => Error.HandlerFailed,
+                                else => unreachable,
+                            };
+                        }
+                        if (supervisor.permit.ruleFor(world_port_id)) |rule| {
+                            const allowed = switch (status) {
+                                .rejected => rule.allow_reject,
+                                .failed => rule.allow_fail,
+                                else => unreachable,
+                            };
+                            if (!allowed) return Error.SupervisionDenied;
+                        }
+                    }
+                }
+
+                pub fn runspaceResumeTerminalFrame(self: *Self, response_frame: Frame.Response) !void {
+                    return switch (response_frame.status) {
+                        .rejected => self.resumeFrameWithProvenance(response_frame, false) catch |err| switch (err) {
+                            Error.HandlerRejected => {},
+                            else => return err,
+                        },
+                        .failed => self.resumeFrameWithProvenance(response_frame, false) catch |err| switch (err) {
+                            Error.HandlerFailed => {},
+                            else => return err,
+                        },
+                        else => self.resumeFrameWithProvenance(response_frame, false),
+                    };
                 }
 
                 pub fn snapshotRunImage(self: *Self) !RunImage {

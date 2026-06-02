@@ -2599,6 +2599,56 @@ test "runspace reject and fail consume pending ports through slot state" {
     try std.testing.expectEqual(@as(usize, 0), fail_runspace.report().pending_port_count);
 }
 
+test "runspace terminal port decisions honor supervision before consuming mailbox" {
+    const reject_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+    });
+    var reject_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer reject_runtime.deinit();
+    var reject_runspace = world.Runspace.init(std.testing.allocator, .{
+        .require_supervision = true,
+    });
+    defer reject_runspace.deinit();
+    const reject_handle = try reject_runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &reject_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .permit = reject_permit,
+    });
+    _ = try reject_runspace.tick();
+
+    try std.testing.expectError(error.HandlerRejected, reject_runspace.reject(0, "strict policy denies reject"));
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try reject_runspace.mailbox.get(0)).status);
+    const reject_summary = try reject_runspace.getSlotSummary(reject_handle);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, reject_summary.status);
+    try std.testing.expectEqual(@as(?u64, 0), reject_summary.pending_mailbox_id);
+    try std.testing.expectEqual(@as(usize, 1), reject_runspace.report().pending_port_count);
+
+    const fail_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+    });
+    var fail_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer fail_runtime.deinit();
+    var fail_runspace = world.Runspace.init(std.testing.allocator, .{
+        .require_supervision = true,
+    });
+    defer fail_runspace.deinit();
+    const fail_handle = try fail_runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &fail_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .permit = fail_permit,
+    });
+    _ = try fail_runspace.tick();
+
+    try std.testing.expectError(error.HandlerFailed, fail_runspace.fail(0, "strict policy denies fail"));
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try fail_runspace.mailbox.get(0)).status);
+    const fail_summary = try fail_runspace.getSlotSummary(fail_handle);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, fail_summary.status);
+    try std.testing.expectEqual(@as(?u64, 0), fail_summary.pending_mailbox_id);
+    try std.testing.expectEqual(@as(usize, 1), fail_runspace.report().pending_port_count);
+}
+
 test "runspace event budget failure does not enqueue or park request" {
     var runtime = boundary.Runtime.init(std.testing.allocator);
     defer runtime.deinit();
@@ -2753,6 +2803,35 @@ test "runspace install admitted and replay records receipts summaries and events
     defer reexported.deinit(std.testing.allocator);
     try std.testing.expect(reexported.transcript_image != null);
     try std.testing.expectEqual(admitted_transcript.transcript_image_fingerprint, reexported.transcript_image.?.transcript_image_fingerprint);
+
+    const detached_state = world.RunState.init(.{
+        .target_ref_fingerprint = world.TargetRef.fromTarget(fixtures.Ports.Target).target_ref_fingerprint,
+        .pending_request_fingerprint = parked_export.pending_request_frame.?.frame_fingerprint,
+        .turn_index = parked_export.pending_request_frame.?.turn_index,
+        .status = .parked_on_port,
+    });
+    const detached_image = world.RunImage.init(.{
+        .kind = .parked_run,
+        .target_ref = parked_export.target_ref,
+        .import_set_fingerprint = parked_export.import_set_fingerprint,
+        .current_state = detached_state,
+        .pending_request_frame = parked_export.pending_request_frame.?,
+    });
+    const detached_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_9001,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target),
+        .mode = .continue_fresh,
+        .run_image = detached_image,
+        .transcript_image = admitted_transcript,
+    });
+    var detached_target = world.Runspace.init(std.testing.allocator, .{ .require_admission = true });
+    defer detached_target.deinit();
+    const detached_installed = try detached_target.installAdmitted(detached_admitted);
+    const detached_summary = try detached_target.getSlotSummary(detached_installed);
+    var detached_export = try detached_target.exportRun(detached_installed);
+    defer detached_export.deinit(std.testing.allocator);
+    try std.testing.expectEqual(admitted_transcript.transcript_image_fingerprint, detached_export.current_state.transcript_image_fingerprint.?);
+    try std.testing.expectEqual(detached_export.current_state.run_state_fingerprint, detached_summary.run_state_fingerprint);
 
     var replay_denied = world.Runspace.init(std.testing.allocator, .{
         .allow_replay_install = false,
