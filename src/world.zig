@@ -6713,6 +6713,7 @@ pub const Runspace = struct {
                 .fail => switch (self.status) {
                     .admitted, .runnable, .running, .parked_on_port, .parked_on_supervision => {
                         self.status = .failed;
+                        self.pending_mailbox_id = null;
                         self.current_state = RunState.init(.{
                             .target_ref_fingerprint = self.handle.target_ref_fingerprint,
                             .turn_index = self.current_state.turn_index,
@@ -7105,13 +7106,25 @@ pub const Runspace = struct {
             .branch_id = admitted_run.selected_branch_id,
             .checkpoint_fingerprint = admitted_run.selected_checkpoint_ref,
         });
+        const pending_frame = if (admitted_run.run_image) |image|
+            if (image.current_state.status == .parked_on_port)
+                image.pending_request_frame orelse return error.HandoffPendingFrameMismatch
+            else
+                null
+        else
+            null;
+        const slot_count_before = self.slots.items.len;
+        const event_count_before = self.events.items.len;
+        const mailbox_count_before = self.mailbox.pending.items.len;
+        const next_mailbox_id_before = self.next_mailbox_id;
+        const next_event_index_before = self.next_event_index;
+        var installed = false;
+        errdefer if (!installed) self.rollbackRunspaceMutation(slot_count_before, event_count_before, mailbox_count_before, next_mailbox_id_before, next_event_index_before);
         try self.installSlot(slot, .run_admitted, "admitted run installed");
-        if (admitted_run.run_image) |image| {
-            if (image.current_state.status == .parked_on_port) {
-                const pending_frame = image.pending_request_frame orelse return error.HandoffPendingFrameMismatch;
-                try self.enqueueInstalledPending(self.slots.items.len - 1, pending_frame);
-            }
+        if (pending_frame) |frame| {
+            try self.enqueueInstalledPending(self.slots.items.len - 1, frame);
         }
+        installed = true;
         return handle;
     }
 
@@ -7135,11 +7148,22 @@ pub const Runspace = struct {
             .checkpoint_fingerprint = image.current_state.checkpoint_fingerprint,
             .module_ref_fingerprint = image.module_ref_fingerprint,
         });
+        const pending_frame = if (image.current_state.status == .parked_on_port)
+            image.pending_request_frame orelse return error.HandoffPendingFrameMismatch
+        else
+            null;
+        const slot_count_before = self.slots.items.len;
+        const event_count_before = self.events.items.len;
+        const mailbox_count_before = self.mailbox.pending.items.len;
+        const next_mailbox_id_before = self.next_mailbox_id;
+        const next_event_index_before = self.next_event_index;
+        var installed = false;
+        errdefer if (!installed) self.rollbackRunspaceMutation(slot_count_before, event_count_before, mailbox_count_before, next_mailbox_id_before, next_event_index_before);
         try self.installSlot(slot, .run_installed, "run image installed");
-        if (image.current_state.status == .parked_on_port) {
-            const pending_frame = image.pending_request_frame orelse return error.HandoffPendingFrameMismatch;
-            try self.enqueueInstalledPending(self.slots.items.len - 1, pending_frame);
+        if (pending_frame) |frame| {
+            try self.enqueueInstalledPending(self.slots.items.len - 1, frame);
         }
+        installed = true;
         return handle;
     }
 
@@ -7324,6 +7348,64 @@ pub const Runspace = struct {
         return self.respond(mailbox_id, response);
     }
 
+    pub fn reject(self: *@This(), mailbox_id: u64, reason: []const u8) !Runspace.RunspaceEvent {
+        const pending = try self.mailbox.get(mailbox_id);
+        if (pending.status != .pending) return error.PendingPortConsumed;
+        const index = try self.slotIndex(pending.handle);
+        var slot = &self.slots.items[index];
+        if (slot.pending_mailbox_id != mailbox_id or slot.status != .parked_on_port) return error.StaleRunHandle;
+        try self.ensureEventCapacity(2);
+        const cancelled = try self.mailbox.cancel(mailbox_id, reason);
+        try slot.transition(.fail, null);
+        _ = try self.appendEvent(.{
+            .kind = .port_rejected,
+            .run_handle = slot.handle,
+            .pending_port_fingerprint = cancelled.pending_port_fingerprint,
+            .request_frame_fingerprint = cancelled.request_frame_fingerprint,
+            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+            .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .summary = "port rejected",
+        });
+        return self.appendEvent(.{
+            .kind = .run_failed,
+            .run_handle = slot.handle,
+            .pending_port_fingerprint = cancelled.pending_port_fingerprint,
+            .request_frame_fingerprint = cancelled.request_frame_fingerprint,
+            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+            .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .summary = "run failed after port rejection",
+        });
+    }
+
+    pub fn fail(self: *@This(), mailbox_id: u64, reason: []const u8) !Runspace.RunspaceEvent {
+        const pending = try self.mailbox.get(mailbox_id);
+        if (pending.status != .pending) return error.PendingPortConsumed;
+        const index = try self.slotIndex(pending.handle);
+        var slot = &self.slots.items[index];
+        if (slot.pending_mailbox_id != mailbox_id or slot.status != .parked_on_port) return error.StaleRunHandle;
+        try self.ensureEventCapacity(2);
+        const failed = try self.mailbox.fail(mailbox_id, reason);
+        try slot.transition(.fail, null);
+        _ = try self.appendEvent(.{
+            .kind = .port_failed,
+            .run_handle = slot.handle,
+            .pending_port_fingerprint = failed.pending_port_fingerprint,
+            .request_frame_fingerprint = failed.request_frame_fingerprint,
+            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+            .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .summary = "port failed",
+        });
+        return self.appendEvent(.{
+            .kind = .run_failed,
+            .run_handle = slot.handle,
+            .pending_port_fingerprint = failed.pending_port_fingerprint,
+            .request_frame_fingerprint = failed.request_frame_fingerprint,
+            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+            .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .summary = "run failed after port failure",
+        });
+    }
+
     pub fn exportRun(self: *@This(), handle: RunHandle) !RunImage {
         const index = try self.slotIndex(handle);
         var slot = &self.slots.items[index];
@@ -7345,9 +7427,24 @@ pub const Runspace = struct {
 
     pub fn exportPending(self: *@This(), mailbox_id: u64) !RunImage {
         const pending = try self.mailbox.get(mailbox_id);
-        var image = try self.exportRun(pending.handle);
+        if (pending.status != .pending) return error.PendingPortConsumed;
+        const index = try self.slotIndex(pending.handle);
+        var slot = &self.slots.items[index];
+        if (slot.pending_mailbox_id != mailbox_id or slot.status != .parked_on_port) return error.StaleRunHandle;
+        try self.ensureEventCapacity(1);
+        var image = try self.snapshotSlotImage(index);
         errdefer image.deinit(self.allocator);
         _ = try self.mailbox.markExported(mailbox_id);
+        try slot.transition(.@"export", null);
+        _ = try self.appendEvent(.{
+            .kind = .run_exported,
+            .run_handle = slot.handle,
+            .pending_port_fingerprint = pending.pending_port_fingerprint,
+            .request_frame_fingerprint = pending.request_frame_fingerprint,
+            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+            .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .summary = "pending run exported",
+        });
         return image;
     }
 
@@ -7532,6 +7629,34 @@ pub const Runspace = struct {
         try self.events.append(self.allocator, event);
         self.next_event_index += 1;
         return event;
+    }
+
+    fn ensureEventCapacity(self: *const @This(), additional_events: usize) !void {
+        if (self.config.max_events) |max| {
+            if (self.events.items.len + additional_events > max) return error.BudgetExceeded;
+        }
+    }
+
+    fn rollbackRunspaceMutation(
+        self: *@This(),
+        slot_count: usize,
+        event_count: usize,
+        mailbox_count: usize,
+        next_mailbox_id: u64,
+        next_event_index: u64,
+    ) void {
+        for (self.slots.items[slot_count..]) |*slot| {
+            if (slot.driver) |driver| {
+                driver.deinit(self.allocator);
+                slot.driver = null;
+            }
+        }
+        for (self.mailbox.pending.items[mailbox_count..]) |*pending_port| pending_port.deinit(self.allocator);
+        self.slots.shrinkRetainingCapacity(slot_count);
+        self.events.shrinkRetainingCapacity(event_count);
+        self.mailbox.pending.shrinkRetainingCapacity(mailbox_count);
+        self.next_mailbox_id = next_mailbox_id;
+        self.next_event_index = next_event_index;
     }
 
     fn snapshotSlotImage(self: *@This(), index: usize) !RunImage {

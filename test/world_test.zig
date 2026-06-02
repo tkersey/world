@@ -2366,6 +2366,32 @@ test "runspace supervised handoff install requires prior permit fingerprint" {
     try std.testing.expectError(error.SupervisionDenied, runspace.installRunImage(image));
 }
 
+test "runspace parked image install rolls back when mailbox enqueue fails" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var source = world.Runspace.init(std.testing.allocator, .{});
+    defer source.deinit();
+    const source_handle = try source.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    _ = try source.tick();
+    var image = try source.exportPending(0);
+    defer image.deinit(std.testing.allocator);
+    try std.testing.expectEqual(world.Runspace.RunStatus.exported, (try source.getSlotSummary(source_handle)).status);
+
+    var target = world.Runspace.init(std.testing.allocator, .{
+        .max_pending_ports = 0,
+    });
+    defer target.deinit();
+
+    try std.testing.expectError(error.BudgetExceeded, target.installRunImage(image));
+    const report = target.report();
+    try std.testing.expectEqual(@as(usize, 0), report.run_count);
+    try std.testing.expectEqual(@as(usize, 0), report.event_count);
+    try std.testing.expectEqual(@as(usize, 0), report.pending_port_count);
+}
+
 test "runspace failed machine install transfers driver ownership once" {
     var runtime = boundary.Runtime.init(std.testing.allocator);
     defer runtime.deinit();
@@ -2378,6 +2404,42 @@ test "runspace failed machine install transfers driver ownership once" {
         .allocator = std.testing.allocator,
         .mode = world.Mode.fresh,
     }));
+}
+
+test "runspace reject and fail consume pending ports through slot state" {
+    var reject_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer reject_runtime.deinit();
+    var reject_runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer reject_runspace.deinit();
+    const reject_handle = try reject_runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &reject_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    _ = try reject_runspace.tick();
+    const reject_event = try reject_runspace.reject(0, "fixture rejection");
+    try std.testing.expectEqual(world.Runspace.EventKind.run_failed, reject_event.kind);
+    try std.testing.expectEqual(world.Runspace.PendingStatus.cancelled, (try reject_runspace.mailbox.get(0)).status);
+    const reject_summary = try reject_runspace.getSlotSummary(reject_handle);
+    try std.testing.expectEqual(world.Runspace.RunStatus.failed, reject_summary.status);
+    try std.testing.expectEqual(null, reject_summary.pending_mailbox_id);
+    try std.testing.expectEqual(@as(usize, 0), reject_runspace.report().pending_port_count);
+
+    var fail_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer fail_runtime.deinit();
+    var fail_runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer fail_runspace.deinit();
+    const fail_handle = try fail_runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &fail_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    _ = try fail_runspace.tick();
+    const fail_event = try fail_runspace.fail(0, "fixture failure");
+    try std.testing.expectEqual(world.Runspace.EventKind.run_failed, fail_event.kind);
+    try std.testing.expectEqual(world.Runspace.PendingStatus.failed, (try fail_runspace.mailbox.get(0)).status);
+    const fail_summary = try fail_runspace.getSlotSummary(fail_handle);
+    try std.testing.expectEqual(world.Runspace.RunStatus.failed, fail_summary.status);
+    try std.testing.expectEqual(null, fail_summary.pending_mailbox_id);
+    try std.testing.expectEqual(@as(usize, 0), fail_runspace.report().pending_port_count);
 }
 
 test "runspace install admitted and replay records receipts summaries and events" {
@@ -2494,6 +2556,28 @@ test "runspace auto dispatch uses environment binding and consumes mailbox" {
     report = try runspace.tick();
     try std.testing.expectEqual(@as(usize, 1), report.completed_count);
     try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try runspace.getSlotSummary(handle)).status);
+}
+
+test "runspace export pending rejects stale mailbox without changing run state" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var ctx: PortsCtx = .{};
+    var runspace = world.Runspace.init(std.testing.allocator, .{ .auto_dispatch = true });
+    defer runspace.deinit();
+
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+    });
+
+    _ = try runspace.tick();
+    try std.testing.expectEqual(world.Runspace.PendingStatus.responded, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.runnable, (try runspace.getSlotSummary(handle)).status);
+
+    try std.testing.expectError(error.PendingPortConsumed, runspace.exportPending(0));
+    try std.testing.expectEqual(world.Runspace.RunStatus.runnable, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(world.Runspace.PendingStatus.responded, (try runspace.mailbox.get(0)).status);
 }
 
 test "runspace supervised auto dispatch denial happens before handler call" {
