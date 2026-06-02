@@ -6525,7 +6525,7 @@ pub const Runspace = struct {
 
         const VTable = struct {
             nextFrame: *const fn (*anyopaque) anyerror!DriverStep,
-            resumeFrame: *const fn (*anyopaque, Frame.Response) anyerror!void,
+            resumeFrame: *const fn (*anyopaque, Frame.Response) anyerror!u64,
             beforeResponse: *const fn (*anyopaque, u32, ResponseStatus, usize, usize) anyerror!void,
             beforeTerminalResponse: *const fn (*anyopaque, u32, ResponseStatus) anyerror!void,
             resumeTerminalFrame: *const fn (*anyopaque, Frame.Response) anyerror!void,
@@ -6544,7 +6544,7 @@ pub const Runspace = struct {
             return self.vtable.nextFrame(self.ptr);
         }
 
-        fn resumeFrame(self: @This(), response: Frame.Response) !void {
+        fn resumeFrame(self: @This(), response: Frame.Response) !u64 {
             return self.vtable.resumeFrame(self.ptr, response);
         }
 
@@ -6622,9 +6622,11 @@ pub const Runspace = struct {
                     }
                 }
 
-                fn runResumeFrame(ptr: *anyopaque, response: Frame.Response) anyerror!void {
+                fn runResumeFrame(ptr: *anyopaque, response: Frame.Response) anyerror!u64 {
                     const active: *RunType = @ptrCast(@alignCast(ptr));
-                    return active.resumeFrame(response);
+                    if (@hasDecl(RunType, "runspaceResumeFrame")) return active.runspaceResumeFrame(response);
+                    try active.resumeFrame(response);
+                    return response.frame_fingerprint;
                 }
 
                 fn runBeforeResponse(ptr: *anyopaque, world_port_id: u32, status: ResponseStatus, response_bytes: usize, value_image_bytes: usize) anyerror!void {
@@ -7800,7 +7802,7 @@ pub const Runspace = struct {
         const failed_run_summary = try self.allocator.dupe(u8, "run failed after response");
         var failed_run_summary_owned = true;
         defer if (failed_run_summary_owned) self.allocator.free(failed_run_summary);
-        if (slot.driver) |driver| {
+        const effective_response_frame_fingerprint = if (slot.driver) |driver|
             driver.resumeFrame(response) catch |err| {
                 if (err == error.HandlerPending) {
                     if (driver.supervisionInterrupted()) {
@@ -7831,10 +7833,9 @@ pub const Runspace = struct {
                 });
                 failed_run_summary_owned = false;
                 return err;
-            };
-        } else {
+            }
+        else
             return error.InvalidRunspaceTransition;
-        }
         if (response.status == .pending) return error.HandlerPending;
         try slot.transition(.resume_from_port, mailbox_id);
         const responded = try self.mailbox.markResponded(mailbox_id);
@@ -7842,7 +7843,7 @@ pub const Runspace = struct {
             .kind = .port_responded,
             .run_handle = slot.handle,
             .pending_port_fingerprint = responded.pending_port_fingerprint,
-            .response_frame_fingerprint = response.frame_fingerprint,
+            .response_frame_fingerprint = effective_response_frame_fingerprint,
             .run_state_fingerprint = slot.current_state.run_state_fingerprint,
             .run_permit_fingerprint = slot.run_permit_fingerprint,
             .summary = responded_summary,
@@ -7852,7 +7853,7 @@ pub const Runspace = struct {
             .kind = .run_resumed,
             .run_handle = slot.handle,
             .pending_port_fingerprint = responded.pending_port_fingerprint,
-            .response_frame_fingerprint = response.frame_fingerprint,
+            .response_frame_fingerprint = effective_response_frame_fingerprint,
             .run_state_fingerprint = slot.current_state.run_state_fingerprint,
             .run_permit_fingerprint = slot.run_permit_fingerprint,
             .summary = resumed_summary,
@@ -10129,7 +10130,11 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 }
 
                 pub fn resumeFrame(self: *Self, response_frame: Frame.Response) !void {
-                    try self.resumeFrameWithProvenance(response_frame, false);
+                    _ = try self.resumeFrameWithProvenance(response_frame, false);
+                }
+
+                pub fn runspaceResumeFrame(self: *Self, response_frame: Frame.Response) !u64 {
+                    return self.resumeFrameWithProvenance(response_frame, false);
                 }
 
                 pub fn beforeRunspaceResponse(self: *Self, world_port_id: u32, status: ResponseStatus, response_bytes: usize, value_image_bytes: usize) !void {
@@ -10166,17 +10171,23 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 }
 
                 pub fn runspaceResumeTerminalFrame(self: *Self, response_frame: Frame.Response) !void {
-                    return switch (response_frame.status) {
-                        .rejected => self.resumeFrameWithProvenance(response_frame, false) catch |err| switch (err) {
-                            Error.HandlerRejected => {},
-                            else => return err,
+                    switch (response_frame.status) {
+                        .rejected => {
+                            _ = self.resumeFrameWithProvenance(response_frame, false) catch |err| switch (err) {
+                                Error.HandlerRejected => {},
+                                else => return err,
+                            };
                         },
-                        .failed => self.resumeFrameWithProvenance(response_frame, false) catch |err| switch (err) {
-                            Error.HandlerFailed => {},
-                            else => return err,
+                        .failed => {
+                            _ = self.resumeFrameWithProvenance(response_frame, false) catch |err| switch (err) {
+                                Error.HandlerFailed => {},
+                                else => return err,
+                            };
                         },
-                        else => self.resumeFrameWithProvenance(response_frame, false),
-                    };
+                        else => {
+                            _ = try self.resumeFrameWithProvenance(response_frame, false);
+                        },
+                    }
                 }
 
                 pub fn snapshotRunImage(self: *Self) !RunImage {
@@ -10278,10 +10289,10 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 }
 
                 fn resumeReplayedFrame(self: *Self, response_frame: Frame.Response) !void {
-                    try self.resumeFrameWithProvenance(response_frame, true);
+                    _ = try self.resumeFrameWithProvenance(response_frame, true);
                 }
 
-                fn resumeFrameWithProvenance(self: *Self, response_frame: Frame.Response, comptime replayed: bool) !void {
+                fn resumeFrameWithProvenance(self: *Self, response_frame: Frame.Response, comptime replayed: bool) !u64 {
                     const request = self.pending_request orelse return error.UnknownResidualSite;
                     const world_port_id = self.pending_port_id orelse return error.UnknownWorldPort;
                     var frame = try self.pendingRequestFrame(false);
@@ -10335,18 +10346,22 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         try self.markRunFailed();
                         return error.HandlerFailed;
                     }
-                    if (Target.WorldPortTable.entries.len == 0) return self.markMissingHandler(world_port_id, request.trace());
+                    if (Target.WorldPortTable.entries.len == 0) {
+                        try self.markMissingHandler(world_port_id, request.trace());
+                        unreachable;
+                    }
                     switch (world_port_id) {
                         inline 0...Target.WorldPortTable.entries.len - 1 => |id| {
                             const Handler = comptime handlerForWorldPortId(Target, Config, @intCast(id));
                             if (Handler) |Decl| {
-                                try self.resumeFrameDecl(Decl, request, frame, response_frame, replayed);
+                                const effective_frame_fingerprint = try self.resumeFrameDecl(Decl, request, frame, response_frame, replayed);
                                 self.pending_request = null;
                                 self.pending_port_id = null;
                                 self.pending_adapter_call_accounted = false;
-                                return;
+                                return effective_frame_fingerprint;
                             }
-                            return self.markMissingHandler(world_port_id, request.trace());
+                            try self.markMissingHandler(world_port_id, request.trace());
+                            unreachable;
                         },
                         else => return error.UnknownWorldPort,
                     }
@@ -10418,7 +10433,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     return frame;
                 }
 
-                fn resumeFrameDecl(self: *Self, comptime Decl: type, request: Request, request_frame: Frame.Request, response_frame: Frame.Response, comptime replayed: bool) !void {
+                fn resumeFrameDecl(self: *Self, comptime Decl: type, request: Request, request_frame: Frame.Request, response_frame: Frame.Response, comptime replayed: bool) !u64 {
                     const typed_request = try request.as(Decl.SiteType);
                     if (response_frame.response_kind != .@"resume") return error.VerifyResponseKindMismatch;
                     const value = try response_frame.decodeValue(self.allocator, Decl.Response);
@@ -10484,6 +10499,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         return err;
                     };
                     retained_committed = true;
+                    return effective_response_frame.frame_fingerprint;
                 }
 
                 fn markMissingHandler(self: *Self, world_port_id: u32, trace: anytype) !void {

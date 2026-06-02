@@ -3145,12 +3145,15 @@ test "runspace install admitted and replay records receipts summaries and events
 test "runspace tick parks responds and completes machine run" {
     var runtime = boundary.Runtime.init(std.testing.allocator);
     defer runtime.deinit();
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
     var runspace = world.Runspace.init(std.testing.allocator, .{});
     defer runspace.deinit();
 
     const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
         .allocator = std.testing.allocator,
         .mode = world.Mode.fresh,
+        .transcript = &transcript,
     });
     var report = try runspace.tick();
     try std.testing.expectEqual(@as(usize, 1), report.parked_count);
@@ -3158,14 +3161,37 @@ test "runspace tick parks responds and completes machine run" {
     const pending = try runspace.mailbox.get(0);
     try std.testing.expectEqual(handle.handle_fingerprint, pending.handle.handle_fingerprint);
     try std.testing.expectEqual(PortsDecl.world_port_id, pending.world_port_id);
+    const request_frame = pending.request_frame orelse return error.ExpectedFrameRequest;
+    var deferred_response = try world.Frame.Response.fromPortableValue(
+        std.testing.allocator,
+        request_frame,
+        pending.expected_response_value_table_id,
+        pending.expected_response_kind,
+        @as(i32, 7),
+        .portable,
+    );
+    defer deferred_response.deinit(std.testing.allocator);
+    try std.testing.expect(deferred_response.responseFingerprintDeferred());
 
-    _ = try runspace.respondValue(0, @as(i32, 7));
+    const response_event = try runspace.respondValue(0, @as(i32, 7));
+    try std.testing.expectEqual(world.Runspace.EventKind.run_resumed, response_event.kind);
     report = runspace.poll();
     try std.testing.expectEqual(@as(usize, 1), report.runnable_count);
     try std.testing.expectEqual(@as(usize, 0), report.pending_port_count);
     const pending_after_response = try runspace.mailbox.listPending(std.testing.allocator);
     defer std.testing.allocator.free(pending_after_response);
     try std.testing.expectEqual(@as(usize, 0), pending_after_response.len);
+    var transcript_image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer transcript_image.deinit(std.testing.allocator);
+    const transcript_response_frame = for (transcript_image.events) |event| {
+        if (event.kind == .frame_responded) break event.response_frame.?;
+    } else return error.ExpectedResponseFrame;
+    try std.testing.expect(transcript_response_frame.frame_fingerprint != deferred_response.frame_fingerprint);
+    try std.testing.expectEqual(transcript_response_frame.frame_fingerprint, response_event.response_frame_fingerprint.?);
+    const port_responded_event = for (runspace.events.items) |event| {
+        if (event.kind == .port_responded) break event;
+    } else return error.ExpectedResponseFrame;
+    try std.testing.expectEqual(transcript_response_frame.frame_fingerprint, port_responded_event.response_frame_fingerprint.?);
 
     report = try runspace.tick();
     try std.testing.expectEqual(@as(usize, 1), report.completed_count);
