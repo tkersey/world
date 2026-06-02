@@ -9273,6 +9273,29 @@ pub const Runspace = struct {
         return err;
     }
 
+    fn failAutoDispatchPending(self: *@This(), slot: *Runspace.RunSlot, pending: Runspace.PendingPort, mailbox_id: u64, events: *PreparedAutoDispatchEvents) !void {
+        const failed = try self.mailbox.fail(mailbox_id, "auto-dispatch failed");
+        try slot.transition(.fail, null);
+        _ = self.appendPreparedEventAssumeCapacity(.{
+            .kind = .port_failed,
+            .run_handle = slot.handle,
+            .pending_port_fingerprint = failed.pending_port_fingerprint,
+            .request_frame_fingerprint = pending.request_frame_fingerprint,
+            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+            .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .summary = events.failed.takeFirst(),
+        });
+        _ = self.appendPreparedEventAssumeCapacity(.{
+            .kind = .run_failed,
+            .run_handle = slot.handle,
+            .pending_port_fingerprint = failed.pending_port_fingerprint,
+            .request_frame_fingerprint = pending.request_frame_fingerprint,
+            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+            .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .summary = events.failed.takeSecond(),
+        });
+    }
+
     fn autoDispatchPending(self: *@This(), index: usize, pending: Runspace.PendingPort, mailbox_id: u64, events: *PreparedAutoDispatchEvents) !Runspace.RunspaceEvent {
         var slot = &self.slots.items[index];
         const driver = slot.driver orelse return error.InvalidRunspaceTransition;
@@ -9291,29 +9314,13 @@ pub const Runspace = struct {
                     .summary = events.takeSupervision(),
                 });
             }
-            const failed = try self.mailbox.fail(mailbox_id, "auto-dispatch failed");
-            try slot.transition(.fail, null);
-            _ = self.appendPreparedEventAssumeCapacity(.{
-                .kind = .port_failed,
-                .run_handle = slot.handle,
-                .pending_port_fingerprint = failed.pending_port_fingerprint,
-                .request_frame_fingerprint = pending.request_frame_fingerprint,
-                .run_state_fingerprint = slot.current_state.run_state_fingerprint,
-                .run_permit_fingerprint = slot.run_permit_fingerprint,
-                .summary = events.failed.takeFirst(),
-            });
-            _ = self.appendPreparedEventAssumeCapacity(.{
-                .kind = .run_failed,
-                .run_handle = slot.handle,
-                .pending_port_fingerprint = failed.pending_port_fingerprint,
-                .request_frame_fingerprint = pending.request_frame_fingerprint,
-                .run_state_fingerprint = slot.current_state.run_state_fingerprint,
-                .run_permit_fingerprint = slot.run_permit_fingerprint,
-                .summary = events.failed.takeSecond(),
-            });
+            try self.failAutoDispatchPending(slot, pending, mailbox_id, events);
             return err;
         };
-        const evidence = response_evidence orelse return error.InvalidRunspaceTransition;
+        const evidence = response_evidence orelse {
+            try self.failAutoDispatchPending(slot, pending, mailbox_id, events);
+            return error.InvalidRunspaceTransition;
+        };
         const responded = try self.mailbox.markResponded(mailbox_id);
         const effective_response_frame_fingerprint = evidence.response_frame_fingerprint orelse evidence.response_fingerprint;
         try slot.resumeFromPort(mailbox_id, effective_response_frame_fingerprint, evidence.response_value_image_fingerprint);
