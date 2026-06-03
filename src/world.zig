@@ -9993,24 +9993,29 @@ pub const Guest = struct {
             self.* = undefined;
         }
 
-        pub fn resetSession(self: *@This()) void {
+        fn clearSessionArtifacts(self: *@This()) void {
             self.allocator.free(self.result_bytes);
             self.result_bytes = &.{};
             self.allocator.free(self.transcript_bytes);
             self.transcript_bytes = &.{};
             self.receipt_bytes = [_]u8{0} ** self.receipt_bytes.len;
             self.receipt_len_value = 0;
+            self.clearError();
+        }
+
+        pub fn resetSession(self: *@This()) void {
+            self.clearSessionArtifacts();
             const runspace_config = self.runspace.config;
             self.runspace.deinit();
             self.runspace = Runspace.init(self.allocator, runspace_config);
             self.handle = null;
             self.state = .initialized;
-            self.clearError();
         }
 
         pub fn initSession(self: *@This()) void {
             if (self.state == .done or self.state == .failed or self.installedRunIsTerminal()) {
-                self.resetSession();
+                self.clearSessionArtifacts();
+                self.state = .initialized;
                 return;
             }
             self.state = .initialized;

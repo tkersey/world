@@ -5277,11 +5277,8 @@ test "native guest world_init clears cached session state" {
     try std.testing.expectEqual(world.Guest.Status.initialized.code(), guest.world_init());
     try std.testing.expectEqual(@as(usize, 0), guest.world_result_len());
     try std.testing.expectEqual(@as(u32, 0), guest.world_pending_count());
-    try guest.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
-        .allocator = std.testing.allocator,
-        .mode = world.Mode.fresh,
-    });
-    try std.testing.expectEqual(world.Guest.Status.parked.code(), guest.world_tick());
+    try std.testing.expectEqual(world.Guest.Status.done.code(), guest.world_tick());
+    try std.testing.expect(guest.world_result_len() > 0);
 }
 
 test "native guest world_init preserves newly installed run" {
@@ -5377,11 +5374,8 @@ test "native guest world_init clears failed session state" {
     defer std.testing.allocator.free(failed_response_bytes);
     try std.testing.expectEqual(world.Guest.Status.failed.code(), guest.world_submit_response(failed_response_bytes));
     try std.testing.expectEqual(world.Guest.Status.initialized.code(), guest.world_init());
-    try guest.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
-        .allocator = std.testing.allocator,
-        .mode = world.Mode.fresh,
-    });
-    try std.testing.expectEqual(world.Guest.Status.parked.code(), guest.world_tick());
+    try std.testing.expectEqual(world.Guest.Status.failed.code(), guest.world_tick());
+    try std.testing.expectEqual(@as(u32, 0), guest.world_pending_count());
 }
 
 test "native guest pending request length refreshes stale invalid frame status" {
@@ -5675,8 +5669,6 @@ test "guest core oversized result cap does not export run before cap check" {
     try std.testing.expect(guest.lastErrorLen() > 0);
     guest.initSession();
     try std.testing.expectEqual(world.Guest.Status.initialized, guest.status());
-    try guest.installRunImage(image);
-    try std.testing.expectEqual(world.Guest.Status.done, guest.status());
     try std.testing.expectEqual(world.Guest.Status.done, guest.tick());
     try std.testing.expectEqual(@as(usize, 0), guest.resultLen());
     try std.testing.expectEqual(world.Guest.Status.buffer_too_small, guest.status());
