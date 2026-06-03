@@ -10535,7 +10535,7 @@ pub const Guest = struct {
             var code_section: []const u8 = &.{};
             var memory_count: u32 = 0;
             var abi_defined_function_index: ?u32 = null;
-            var last_non_custom_section_id: u8 = 0;
+            var last_non_custom_section_rank: u8 = 0;
             var cursor: usize = 8;
             while (cursor < bytes.len) {
                 const section_id = bytes[cursor];
@@ -10543,10 +10543,10 @@ pub const Guest = struct {
                 const section_len = try readWasmU32(bytes, &cursor);
                 if (cursor + section_len > bytes.len) return error.InvalidFrameEncoding;
                 const section_end = cursor + section_len;
-                if (section_id > 12) return error.InvalidFrameEncoding;
                 if (section_id != 0) {
-                    if (section_id <= last_non_custom_section_id) return error.InvalidFrameEncoding;
-                    last_non_custom_section_id = section_id;
+                    const section_rank = try wasmSectionOrderRank(section_id);
+                    if (section_rank <= last_non_custom_section_rank) return error.InvalidFrameEncoding;
+                    last_non_custom_section_rank = section_rank;
                     if (section_id == 8) return error.InvalidFrameEncoding;
                 }
                 switch (section_id) {
@@ -10570,6 +10570,24 @@ pub const Guest = struct {
                 inspection.abi_version = try inspectCodeSection(code_section, defined_index, defined_function_count);
             }
             return inspection;
+        }
+
+        fn wasmSectionOrderRank(section_id: u8) !u8 {
+            return switch (section_id) {
+                1 => 1,
+                2 => 2,
+                3 => 3,
+                4 => 4,
+                5 => 5,
+                6 => 6,
+                7 => 7,
+                8 => 8,
+                9 => 9,
+                12 => 10,
+                10 => 11,
+                11 => 12,
+                else => error.InvalidFrameEncoding,
+            };
         }
 
         fn inspectImportSection(section: []const u8, inspection: *Inspection) !u32 {

@@ -395,6 +395,13 @@ fn appendGuestWasmCodeSection(module: *std.ArrayList(u8), defined_function_count
     return appendGuestWasmCodeSectionWithAbiReturn(module, defined_function_count, abi_version, false);
 }
 
+fn appendGuestWasmDataCountSection(module: *std.ArrayList(u8), data_segment_count: u32) !void {
+    var data_count: std.ArrayList(u8) = .empty;
+    defer data_count.deinit(std.testing.allocator);
+    try appendWasmU32(&data_count, data_segment_count);
+    try appendWasmSection(module, 12, data_count.items);
+}
+
 fn appendGuestWasmShortCodeSection(module: *std.ArrayList(u8), abi_version: u32) !void {
     var code: std.ArrayList(u8) = .empty;
     defer code.deinit(std.testing.allocator);
@@ -453,6 +460,30 @@ fn syntheticExplicitReturnAbiGuestWasm(allocator: std.mem.Allocator) ![]u8 {
     try appendWasmU32(&exports, 0);
     try appendWasmSection(&module, 7, exports.items);
     try appendGuestWasmCodeSectionWithAbiReturn(&module, world.Guest.Abi.required_exports.len, world.Guest.Abi.version, true);
+    return module.toOwnedSlice(allocator);
+}
+
+fn syntheticDataCountGuestWasm(allocator: std.mem.Allocator) ![]u8 {
+    var module: std.ArrayList(u8) = .empty;
+    errdefer module.deinit(allocator);
+    try module.appendSlice(allocator, "\x00asm\x01\x00\x00\x00");
+    try appendGuestWasmTypeSection(&module);
+    try appendGuestWasmFunctionSection(&module, false);
+    try appendGuestWasmMemorySection(&module);
+    var exports: std.ArrayList(u8) = .empty;
+    defer exports.deinit(allocator);
+    try appendWasmU32(&exports, @intCast(world.Guest.Abi.required_exports.len + 1));
+    for (world.Guest.Abi.required_exports, 0..) |name, index| {
+        try appendWasmName(&exports, name);
+        try exports.append(allocator, 0);
+        try appendWasmU32(&exports, @intCast(index));
+    }
+    try appendWasmName(&exports, "memory");
+    try exports.append(allocator, 2);
+    try appendWasmU32(&exports, 0);
+    try appendWasmSection(&module, 7, exports.items);
+    try appendGuestWasmDataCountSection(&module, 0);
+    try appendGuestWasmCodeSection(&module, world.Guest.Abi.required_exports.len, world.Guest.Abi.version);
     return module.toOwnedSlice(allocator);
 }
 
@@ -801,6 +832,12 @@ test "wasm export inspector validates required exports and forbidden imports" {
     const explicit_return_inspection = try world.Guest.Wasm.inspect(explicit_return_abi);
     try std.testing.expectEqual(world.Guest.Abi.version, explicit_return_inspection.abi_version);
     try std.testing.expect(explicit_return_inspection.passed());
+
+    const data_count_guest = try syntheticDataCountGuestWasm(std.testing.allocator);
+    defer std.testing.allocator.free(data_count_guest);
+    const data_count_inspection = try world.Guest.Wasm.inspect(data_count_guest);
+    try std.testing.expectEqual(world.Guest.Abi.version, data_count_inspection.abi_version);
+    try std.testing.expect(data_count_inspection.passed());
 
     const forbidden = try syntheticForbiddenImportWasm(std.testing.allocator);
     defer std.testing.allocator.free(forbidden);
