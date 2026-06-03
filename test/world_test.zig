@@ -5068,11 +5068,10 @@ test "runspace interrupted supervision handoff accepts transcript-bearing export
         .policy = world.Admission.AdmissionPolicy.test_fixture,
     }).admitForTarget(fixtures.Ports.Target, PortsEnv, later_turn_package, .{});
     defer later_turn_admission.deinit(std.testing.allocator);
-    try std.testing.expect(later_turn_admission.report.accepted);
+    try std.testing.expect(!later_turn_admission.report.accepted);
     var later_turn_receiver = world.Runspace.init(std.testing.allocator, .{});
     defer later_turn_receiver.deinit();
-    const later_turn_handle = try later_turn_receiver.installRunImage(later_turn_image);
-    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_supervision, (try later_turn_receiver.getSlotSummary(later_turn_handle)).status);
+    try std.testing.expectError(error.ReplayMissing, later_turn_receiver.installRunImage(later_turn_image));
 
     const unwitnessed_later_turn_state = world.RunState.init(.{
         .target_ref_fingerprint = image.target_ref.target_ref_fingerprint,
@@ -5131,6 +5130,83 @@ test "runspace interrupted supervision handoff accepts transcript-bearing export
     };
     defer resumed_request.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(u32, 0), resumed_request.world_port_id);
+}
+
+test "interrupted supervision handoff replays transcript prefix before live request" {
+    const park_policy = world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .allow_native_adapters = true,
+        .allow_handoff_export = true,
+        .require_environment_certificate = true,
+        .park_on_budget_exceeded = true,
+    });
+    const permit = world.Supervision.issue(fixtures.Agent.Target, AgentEnv, .{
+        .mode = .fresh,
+        .policy = park_policy,
+        .budget = world.Budget.init(.{ .max_session_steps = 1 }),
+    });
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var ctx: AgentCtx = .{ .allocator = std.testing.allocator, .scenario = .skeleton };
+    var run = try AgentMachineEnv.start(&runtime, AgentArgs{ @as(usize, 3), fixtures.Agent.initialObservation(.skeleton) }, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+        .permit = permit,
+        .transcript = &transcript,
+    });
+    defer run.deinit();
+    var model_request = switch (try run.nextFrame()) {
+        .port_request => |request| request,
+        else => return error.ExpectedFrameRequest,
+    };
+    defer model_request.deinit(std.testing.allocator);
+    try run.dispatch();
+    try std.testing.expectError(error.HandlerPending, run.nextFrame());
+    try std.testing.expectEqual(@as(usize, 1), ctx.model_calls);
+    try std.testing.expectEqual(@as(usize, 0), ctx.tool_calls);
+
+    var image = try run.snapshotRunImage();
+    defer image.deinit(std.testing.allocator);
+    try std.testing.expect(image.transcript_image != null);
+    try std.testing.expectEqual(world.RunState.Status.parked_on_supervision, image.current_state.status);
+    try std.testing.expect(image.current_state.turn_index != 0);
+    try std.testing.expect(image.current_state.final_response_fingerprint != null);
+    try std.testing.expect(image.current_state.final_value_image_fingerprint != null);
+
+    var install_receiver = world.Runspace.init(std.testing.allocator, .{});
+    defer install_receiver.deinit();
+    const installed_handle = try install_receiver.installRunImage(image);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_supervision, (try install_receiver.getSlotSummary(installed_handle)).status);
+
+    const encoded = try image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(encoded);
+    var handoff = try world.Handoff.fromRunImage(std.testing.allocator, encoded);
+    defer handoff.deinit();
+    const report = handoff.preflight(fixtures.Agent.Target, AgentEnv, .accept_fresh);
+    try std.testing.expect(report.accepted);
+
+    var receiver_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer receiver_runtime.deinit();
+    var receiver_ctx: AgentCtx = .{ .allocator = std.testing.allocator, .scenario = .skeleton };
+    var receiver_run = try handoff.@"resume"(fixtures.Agent.Target, AgentEnv, &receiver_runtime, AgentArgs{ @as(usize, 3), fixtures.Agent.initialObservation(.skeleton) }, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &receiver_ctx,
+    }, .accept_fresh);
+    defer receiver_run.deinit();
+    var live_request = switch (try receiver_run.nextFrame()) {
+        .port_request => |request| request,
+        else => return error.ExpectedFrameRequest,
+    };
+    defer live_request.deinit(std.testing.allocator);
+    try std.testing.expectEqual(AgentToolDecl.world_port_id, live_request.world_port_id);
+    try std.testing.expectEqual(@as(usize, 0), receiver_ctx.model_calls);
+    try std.testing.expectEqual(@as(usize, 0), receiver_ctx.tool_calls);
+    try receiver_run.dispatch();
+    try std.testing.expectEqual(@as(usize, 1), receiver_ctx.tool_calls);
 }
 
 test "runspace pre-request supervision park event allocation failure leaves slot runnable" {

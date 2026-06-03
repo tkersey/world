@@ -5766,6 +5766,75 @@ pub const TranscriptImage = struct {
         self.replay_limit = pending_index;
     }
 
+    pub fn prepareReplayPrefixForInterruptedRun(
+        self: *@This(),
+        expected_world_surface_fingerprint: u64,
+        expected_target_certificate_fingerprint: u64,
+    ) !void {
+        if (self.world_surface_fingerprint != expected_world_surface_fingerprint) return error.ReplaySurfaceMismatch;
+        if (self.target_certificate_fingerprint != expected_target_certificate_fingerprint) return error.ReplayTargetCertificateMismatch;
+        var active_start: ?usize = null;
+        var active_is_source_run = false;
+        var active_pending_request = false;
+        var active_has_source_response = false;
+        for (self.events, 0..) |event, index| {
+            switch (event.kind) {
+                .run_started => {
+                    if (active_start != null) return error.ReplayMissing;
+                    if (event.world_surface_fingerprint != expected_world_surface_fingerprint) return error.ReplaySurfaceMismatch;
+                    if (event.target_certificate_fingerprint != expected_target_certificate_fingerprint) return error.ReplayTargetCertificateMismatch;
+                    active_start = index;
+                    active_is_source_run = event.source_run;
+                    active_pending_request = false;
+                    active_has_source_response = false;
+                },
+                .run_completed,
+                .run_failed,
+                => {
+                    if (active_start == null) continue;
+                    if (event.world_surface_fingerprint != expected_world_surface_fingerprint) return error.ReplaySurfaceMismatch;
+                    if (event.target_certificate_fingerprint != expected_target_certificate_fingerprint) return error.ReplayTargetCertificateMismatch;
+                    active_start = null;
+                    active_is_source_run = false;
+                    active_pending_request = false;
+                    active_has_source_response = false;
+                },
+                .port_requested,
+                .frame_requested,
+                => {
+                    _ = active_start orelse continue;
+                    if (!active_is_source_run) continue;
+                    _ = event.request_frame orelse return error.ReplayMissing;
+                    active_pending_request = true;
+                },
+                .port_responded,
+                .port_replayed,
+                .frame_responded,
+                .frame_replayed,
+                => {
+                    if (active_start != null and active_is_source_run) {
+                        _ = event.response_frame orelse return error.ReplayMissing;
+                        active_pending_request = false;
+                        active_has_source_response = true;
+                    }
+                },
+                .port_rejected,
+                .port_failed,
+                .frame_verified,
+                .frame_rejected,
+                .frame_failed,
+                => {
+                    if (active_start != null and active_is_source_run) active_pending_request = false;
+                },
+                else => {},
+            }
+        }
+        const start = active_start orelse return error.ReplayMissing;
+        if (!active_is_source_run or active_pending_request or !active_has_source_response) return error.ReplayMissing;
+        self.replay_cursor = start + 1;
+        self.replay_limit = self.events.len;
+    }
+
     pub fn validateValuePolicy(self: *const @This(), policy: ValuePolicy) !void {
         for (self.events) |event| {
             if (event.request_frame) |frame| try validateRequestFramePolicy(frame, policy);
@@ -7733,7 +7802,16 @@ pub const Runspace = struct {
         if (self.config.require_supervision) return error.SupervisionDenied;
         try image.validate(.{});
         const run_status = try statusFromInstallableRunImageState(image.current_state);
-        if (image.current_state.status == .parked_on_supervision and !runImageIsInterruptedSupervisionExport(image)) return error.InvalidFrameEncoding;
+        if (image.current_state.status == .parked_on_supervision) {
+            if (!runImageIsInterruptedSupervisionExport(image)) return error.InvalidFrameEncoding;
+            if (image.current_state.turn_index != 0) {
+                var transcript_image = image.transcript_image orelse return error.InvalidFrameEncoding;
+                try transcript_image.prepareReplayPrefixForInterruptedRun(
+                    transcript_image.world_surface_fingerprint,
+                    transcript_image.target_certificate_fingerprint,
+                );
+            }
+        }
         const pending_frame = if (image.current_state.status == .parked_on_port)
             image.pending_request_frame orelse return error.HandoffPendingFrameMismatch
         else
@@ -9643,6 +9721,23 @@ pub const Handoff = struct {
         const report = Env.acceptanceReport(modeToRunMode(mode), has_transcript);
         if (!report.accepted) return report;
         const interrupted_export = runImageIsInterruptedSupervisionExport(self.run_image);
+        if (mode == .accept_fresh and interrupted_export and self.run_image.current_state.turn_index != 0) {
+            const image = if (self.run_image.transcript_image) |*image|
+                image
+            else
+                return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.TranscriptImageRequired});
+            validateTranscriptImageForEnvironment(Env, image) catch |err| {
+                return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{environmentValidationBlocker(err)});
+            };
+            image.prepareReplayPrefixForInterruptedRun(
+                Target.WorldSurface.surface_fingerprint,
+                Target.Certificate.certificate_fingerprint,
+            ) catch {
+                image.resetReplay();
+                return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.ReplaySourceMissing});
+            };
+            image.resetReplay();
+        }
         if (mode == .accept_fresh and
             !interrupted_export and
             (self.run_image.current_state.status != .parked_on_port or self.run_image.pending_request_frame == null))
@@ -9758,7 +9853,11 @@ pub const Handoff = struct {
             return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{supervisionPreflightBlocker(err)});
         };
         switch (mode) {
-            .accept_fresh => if (!runImageIsInterruptedSupervisionExport(self.run_image)) {
+            .accept_fresh => if (runImageIsInterruptedSupervisionExport(self.run_image)) {
+                self.preflightInterruptedReplayPrefixWithSupervisor(Target, &supervisor) catch |err| {
+                    return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{supervisionPreflightBlocker(err)});
+                };
+            } else {
                 self.preflightReplayPrefixWithSupervisor(Target, Env, &supervisor) catch |err| {
                     return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{supervisionPreflightBlocker(err)});
                 };
@@ -9902,6 +10001,51 @@ pub const Handoff = struct {
         try supervisor.beforeSessionStep();
     }
 
+    fn preflightInterruptedReplayPrefixWithSupervisor(self: *@This(), comptime Target: type, supervisor: *Supervision.Supervisor) !void {
+        if (self.run_image.current_state.turn_index == 0) return;
+        const image = if (self.run_image.transcript_image) |*image| image else return error.TranscriptImageRequired;
+        try image.prepareReplayPrefixForInterruptedRun(
+            Target.WorldSurface.surface_fingerprint,
+            Target.Certificate.certificate_fingerprint,
+        );
+        defer image.resetReplay();
+        var index = image.replay_cursor;
+        const limit = image.replay_limit orelse image.events.len;
+        while (index < limit) : (index += 1) {
+            const event = image.events[index];
+            switch (event.kind) {
+                .port_requested,
+                .frame_requested,
+                => {
+                    const request_frame = event.request_frame orelse return error.ReplayMissing;
+                    try self.preflightRequestFrameWithSupervisor(supervisor, request_frame);
+                    try supervisor.beforeAdapterCall(.{
+                        .world_port_id = request_frame.world_port_id,
+                        .mode = .replay,
+                        .adapter_kind = .replay,
+                        .authority_kind = PortAuthority.replay_source.authority_kind,
+                        .value_policy = .portable,
+                    });
+                },
+                else => {},
+            }
+            if (eventKindIsSourceResponse(event.kind)) {
+                const response_frame = event.response_frame orelse return error.ReplayMissing;
+                const response_bytes = bytes: {
+                    const encoded = try response_frame.encode(self.allocator);
+                    defer self.allocator.free(encoded);
+                    break :bytes encoded.len;
+                };
+                try supervisor.afterAdapterResponse(.{
+                    .world_port_id = response_frame.world_port_id,
+                    .status = response_frame.status,
+                    .response_bytes = response_bytes,
+                    .value_image_bytes = if (response_frame.response_image) |image_value| image_value.bytes.len else 0,
+                });
+            }
+        }
+    }
+
     pub fn inspectPriorReceipts(self: *@This()) struct {
         prior_run_permit_fingerprint: ?u64,
         prior_run_receipt_fingerprint: ?u64,
@@ -9972,6 +10116,64 @@ pub const Handoff = struct {
                     try run.handleSupervisionError(err);
                     unreachable;
                 };
+            }
+            if (self.run_image.current_state.turn_index != 0) {
+                const image = if (self.run_image.transcript_image) |*image| image else return error.TranscriptImageRequired;
+                try image.prepareReplayPrefixForInterruptedRun(
+                    Target.WorldSurface.surface_fingerprint,
+                    Target.Certificate.certificate_fingerprint,
+                );
+                defer image.resetReplay();
+                run.handoff_pending_frame_fingerprint = self.run_image.current_state.run_state_fingerprint;
+                var resume_committed = false;
+                errdefer if (!resume_committed) run.markRunFailed() catch {};
+                replay_prefix: while (true) {
+                    const step = run.nextFrame() catch |err| {
+                        if (err == Error.HandlerPending) {
+                            image.assertReplayComplete() catch |replay_err| {
+                                run.audit.replay_mismatch_count += 1;
+                                return replay_err;
+                            };
+                            run.handoff_pending_frame_fingerprint = null;
+                            break :replay_prefix;
+                        }
+                        return err;
+                    };
+                    switch (step) {
+                        .port_request => |request_frame| {
+                            var request = request_frame;
+                            defer request.deinit(run.allocator);
+                            const response = image.nextResponse(request.replay_key_seed, Target.Certificate.certificate_fingerprint, .@"resume") catch |err| {
+                                if (err == error.ReplayMissing) {
+                                    image.assertReplayComplete() catch |replay_err| {
+                                        run.audit.replay_mismatch_count += 1;
+                                        return replay_err;
+                                    };
+                                    try run.accountPendingAdapterCall(request.world_port_id);
+                                    run.handoff_pending_frame_fingerprint = null;
+                                    break :replay_prefix;
+                                }
+                                run.audit.replay_mismatch_count += 1;
+                                return err;
+                            };
+                            if (run.supervisor) |*supervisor| {
+                                supervisor.beforeAdapterCall(.{
+                                    .world_port_id = request.world_port_id,
+                                    .mode = .replay,
+                                    .adapter_kind = .replay,
+                                    .authority_kind = PortAuthority.replay_source.authority_kind,
+                                    .value_policy = .portable,
+                                }) catch |err| {
+                                    try run.handleSupervisionError(err);
+                                    return Error.HandlerPending;
+                                };
+                            }
+                            try run.resumeReplayedFrame(response.*);
+                        },
+                        else => return error.HandoffPendingFrameMismatch,
+                    }
+                }
+                resume_committed = true;
             }
             return run;
         }
@@ -12966,16 +13168,17 @@ fn providedFingerprintMatches(provided: ?u64, expected: ?u64) bool {
 }
 
 fn runImageIsInterruptedSupervisionExport(image: RunImage) bool {
+    const has_transcript = image.transcript_image != null;
     return image.kind == .full_target_run and
         image.checkpoints.len == 0 and
         image.branches.len == 0 and
         image.current_state.status == .parked_on_supervision and
         image.current_state.branch_id == 0 and
         image.current_state.checkpoint_fingerprint == null and
-        (image.current_state.turn_index == 0 or image.transcript_image != null) and
+        (image.current_state.turn_index == 0 or has_transcript) and
         image.current_state.pending_request_fingerprint == null and
-        image.current_state.final_response_fingerprint == null and
-        image.current_state.final_value_image_fingerprint == null and
+        (image.current_state.final_response_fingerprint == null or has_transcript) and
+        (image.current_state.final_value_image_fingerprint == null or has_transcript) and
         image.pending_request_frame == null;
 }
 
