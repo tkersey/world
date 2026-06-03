@@ -9046,6 +9046,36 @@ test "runspace completed replay installs charge terminal supervision step" {
     var runspace = world.Runspace.init(std.testing.allocator, .{ .require_supervision = true });
     defer runspace.deinit();
     try std.testing.expectError(error.BudgetExceeded, runspace.installReplay(fixtures.Ports.Target, image, terminal_step_limited_permit));
+
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const transcriptless_state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .completed,
+    });
+    const transcriptless_image = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = transcriptless_state,
+        .environment_certificate_fingerprint = PortsReplayEnv.certificate(.replay, true).certificate_fingerprint,
+        .acceptance_report_fingerprint = PortsReplayEnv.acceptanceReport(.replay, true).report_fingerprint,
+    });
+    const admitted_transcript_permit = world.Supervision.issue(fixtures.Ports.Target, PortsReplayEnv, .{
+        .mode = .replay,
+        .policy = replay_install_policy,
+        .transcript_image_available = true,
+    });
+    const transcriptless_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_7ed1,
+        .target_ref = target_ref,
+        .environment_certificate_fingerprint = PortsReplayEnv.certificate(.replay, true).certificate_fingerprint,
+        .mode = .replay_only,
+        .run_image = transcriptless_image,
+        .run_permit = admitted_transcript_permit,
+    });
+    var admitted_runspace = world.Runspace.init(std.testing.allocator, .{ .require_supervision = true });
+    defer admitted_runspace.deinit();
+    try std.testing.expectError(error.SupervisionDenied, admitted_runspace.installAdmitted(transcriptless_admitted));
 }
 
 test "runspace admitted verify installs charge verification response" {

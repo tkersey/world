@@ -7658,10 +7658,11 @@ pub const Runspace = struct {
             runImageIsInterruptedSupervisionExport(image) and image.current_state.turn_index != 0
         else
             false;
-        if (transcript_available and !permit.transcript_image_available and
-            (modeConsumesTranscript(permit.mode) or replays_transcript_prefix))
-        {
-            return error.SupervisionDenied;
+        const consumes_admitted_transcript = modeConsumesTranscript(permit.mode) or replays_transcript_prefix;
+        if (consumes_admitted_transcript) {
+            if (permit.policy.require_transcript_image_for_replay and !transcript_available) return error.SupervisionDenied;
+            if (permit.policy.require_transcript_image_for_replay and !permit.transcript_image_available) return error.SupervisionDenied;
+            if (transcript_available and !permit.transcript_image_available) return error.SupervisionDenied;
         }
     }
 
