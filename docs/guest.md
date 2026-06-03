@@ -14,7 +14,7 @@ The guest boundary is World-owned. Boundary remains target-neutral and does not 
 
 State moves through initialized, running, parked, done, and failure/error statuses. Response routing is by decoded `Frame.Response` identity against the pending mailbox entry.
 
-## WASM ABI v0
+## WASM ABI v1
 
 `world.Guest.Abi` defines ABI version 1 and the stable export list:
 
@@ -43,7 +43,7 @@ Optional linear-memory helpers are `world_alloc` and `world_free`.
 
 ## Linear Memory Exchange
 
-The v0 memory exchange is bounded. Request, response, result, receipt, transcript, error, and pending-port caps live in `world.Guest.Buffer`.
+The v1 memory exchange is bounded. Request, response, result, receipt, transcript, error, and pending-port caps live in `world.Guest.Buffer`.
 
 Read methods return the required byte length when the caller buffer is too small. Response submission rejects oversized or malformed canonical frame bytes.
 
