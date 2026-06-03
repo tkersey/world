@@ -302,6 +302,10 @@ const ResumeFailureTarget = struct {
 };
 const ResumeFailureRequest = ResumeFailureProgram.protocol.operationSite("approval", "request", 0);
 const ResumeFailureDecl = world.port(ResumeFailureTarget, ResumeFailureRequest, approve);
+const ResumeFailureBinding = world.bind(ResumeFailureDecl, world.NativeAdapter(approve));
+const ResumeFailureEnv = world.Environment(ResumeFailureTarget, .{
+    .bindings = .{ResumeFailureBinding},
+});
 const ResumeFailureMachine = world.Machine(ResumeFailureTarget, .{
     .ports = .{ResumeFailureDecl},
     .strict_handler_coverage = true,
@@ -530,6 +534,334 @@ fn firstRunCompletedIndex(transcript: *world.Transcript) !usize {
         if (event.kind == .run_completed) return index;
     }
     return error.MissingRunCompletedEvent;
+}
+
+fn testRunspaceRequestFrame() world.Frame.Request {
+    return world.Frame.Request.init(.{
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .world_surface_replay_scope_fingerprint = fixtures.Ports.Target.WorldSurface.replayScopeRef().fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .world_port_id = 0,
+        .residual_site_index = fixtures.Ports.ApprovalRequest.index,
+        .residual_site_fingerprint = fixtures.Ports.ApprovalRequest.fingerprint,
+        .request_fingerprint = 0x1234_5678,
+        .turn_index = 3,
+        .payload_value_table_id = 0,
+        .expected_response_value_table_id = 1,
+    });
+}
+
+fn testRunspaceResponseFrame(request: world.Frame.Request) world.Frame.Response {
+    return world.Frame.Response.init(.{
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .target_certificate_fingerprint = request.target_certificate_fingerprint,
+        .world_port_id = request.world_port_id,
+        .request_fingerprint = request.request_fingerprint,
+        .response_kind = .@"resume",
+        .response_value_table_id = request.expected_response_value_table_id,
+        .response_fingerprint = 0x9876_5432,
+        .replay_key = request.replay_key_seed.withResponse(0x9876_5432).fingerprint(),
+    });
+}
+
+fn appendPortsSourceRun(transcript: *world.Transcript, turn_index: usize, request_fingerprint: u64, response_fingerprint: u64) !world.Frame.Response {
+    try transcript.append(.{
+        .kind = .run_started,
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .source_run = true,
+    });
+    const request = world.Frame.Request.init(.{
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .world_surface_replay_scope_fingerprint = fixtures.Ports.Target.WorldSurface.replayScopeRef().fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .world_port_id = 0,
+        .residual_site_index = fixtures.Ports.ApprovalRequest.index,
+        .residual_site_fingerprint = fixtures.Ports.ApprovalRequest.fingerprint,
+        .request_fingerprint = request_fingerprint,
+        .turn_index = turn_index,
+        .payload_value_table_id = 0,
+        .expected_response_value_table_id = 1,
+    });
+    try transcript.append(.{
+        .kind = .port_requested,
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .world_surface_replay_scope_fingerprint = fixtures.Ports.Target.WorldSurface.replayScopeRef().fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .world_port_id = request.world_port_id,
+        .request_fingerprint = request.request_fingerprint,
+        .turn_index = request.turn_index,
+        .residual_site_index = request.residual_site_index,
+        .residual_site_fingerprint = request.residual_site_fingerprint,
+        .request_frame = request,
+        .source_run = true,
+    });
+    const response = world.Frame.Response.init(.{
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .target_certificate_fingerprint = request.target_certificate_fingerprint,
+        .world_port_id = request.world_port_id,
+        .request_fingerprint = request.request_fingerprint,
+        .response_kind = .@"resume",
+        .response_value_table_id = request.expected_response_value_table_id,
+        .response_fingerprint = response_fingerprint,
+        .replay_key = request.replay_key_seed.withResponse(response_fingerprint).fingerprint(),
+    });
+    try transcript.append(.{
+        .kind = .port_responded,
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .world_surface_replay_scope_fingerprint = fixtures.Ports.Target.WorldSurface.replayScopeRef().fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .world_port_id = request.world_port_id,
+        .request_fingerprint = request.request_fingerprint,
+        .response_fingerprint = response.response_fingerprint,
+        .response_kind = response.response_kind,
+        .replay_key = response.replay_key,
+        .turn_index = request.turn_index,
+        .residual_site_index = request.residual_site_index,
+        .residual_site_fingerprint = request.residual_site_fingerprint,
+        .status = .responded,
+        .response_frame = response,
+        .source_run = true,
+    });
+    try transcript.append(.{
+        .kind = .run_completed,
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .status = .responded,
+        .source_run = true,
+    });
+    return response;
+}
+
+test "runspace handle identity binds runspace target and generation" {
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const handle = world.RunHandle.init(.{
+        .runspace_fingerprint = 0x51ace,
+        .local_run_id = 7,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .admission_receipt_fingerprint = 0xadd1_51,
+        .permit_fingerprint = 0x9e2117,
+        .branch_id = 2,
+        .generation = 4,
+    });
+
+    try handle.validateForRunspace(0x51ace);
+    try std.testing.expectError(error.StaleRunHandle, handle.validateForRunspace(0x51acf));
+
+    var forged = handle;
+    forged.generation += 1;
+    try std.testing.expectError(error.StaleRunHandle, forged.validateForRunspace(0x51ace));
+
+    const state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .running,
+    });
+    const slot = world.Runspace.RunSlot.fromState(.{
+        .handle = handle,
+        .target_ref = target_ref,
+        .current_state = state,
+        .status = .runnable,
+        .admission_receipt_fingerprint = handle.admission_receipt_fingerprint,
+        .run_permit_fingerprint = handle.permit_fingerprint,
+        .branch_id = handle.branch_id,
+    });
+    const summary = slot.summary();
+    try std.testing.expectEqual(handle.handle_fingerprint, summary.handle.handle_fingerprint);
+    try std.testing.expectEqual(target_ref.target_ref_fingerprint, summary.target_ref_fingerprint);
+    try std.testing.expectEqual(state.run_state_fingerprint, summary.run_state_fingerprint);
+    try std.testing.expect(summary.handle.generation != forged.generation);
+
+    const next_generation = world.RunHandle.init(.{
+        .runspace_fingerprint = handle.runspace_fingerprint,
+        .local_run_id = handle.local_run_id,
+        .target_ref_fingerprint = handle.target_ref_fingerprint,
+        .admission_receipt_fingerprint = handle.admission_receipt_fingerprint,
+        .permit_fingerprint = handle.permit_fingerprint,
+        .branch_id = handle.branch_id,
+        .generation = handle.generation + 1,
+    });
+    try std.testing.expect(handle.handle_fingerprint != next_generation.handle_fingerprint);
+}
+
+test "runspace slot transition matrix rejects impossible lifecycle states" {
+    try std.testing.expect(world.Runspace.canTransition(.admitted, .runnable));
+    try std.testing.expect(!world.Runspace.canTransition(.admitted, .parked_on_port));
+    try std.testing.expect(world.Runspace.canTransition(.runnable, .running));
+    try std.testing.expect(!world.Runspace.canTransition(.runnable, .exported));
+    try std.testing.expect(world.Runspace.canTransition(.running, .parked_on_port));
+    try std.testing.expect(!world.Runspace.canTransition(.parked_on_port, .completed));
+    try std.testing.expect(world.Runspace.canTransition(.parked_on_port, .runnable));
+    try std.testing.expect(world.Runspace.canTransition(.parked_on_supervision, .exported));
+    try std.testing.expect(world.Runspace.canTransition(.completed, .exported));
+    try std.testing.expect(!world.Runspace.canTransition(.completed, .runnable));
+    try std.testing.expect(!world.Runspace.canTransition(.failed, .runnable));
+    try std.testing.expect(!world.Runspace.canTransition(.exported, .runnable));
+    try std.testing.expect(!world.Runspace.canTransition(.rejected, .runnable));
+
+    var slot = world.RunSlot.init(world.RunHandle.init(.{
+        .runspace_fingerprint = 0x51ace,
+        .local_run_id = 1,
+        .target_ref_fingerprint = 0x77,
+    }));
+    slot.status = .parked_on_supervision;
+    try slot.transition(.@"export", null);
+    try std.testing.expectEqual(world.Runspace.RunStatus.exported, slot.status);
+
+    var lineage_slot = world.RunSlot.init(world.RunHandle.init(.{
+        .runspace_fingerprint = 0x51ace,
+        .local_run_id = 2,
+        .target_ref_fingerprint = 0x88,
+    }));
+    lineage_slot.status = .runnable;
+    lineage_slot.current_state = world.RunState.init(.{
+        .target_ref_fingerprint = lineage_slot.handle.target_ref_fingerprint,
+        .transcript_image_fingerprint = 0xabc,
+        .branch_id = 7,
+        .checkpoint_fingerprint = 0xdef,
+        .status = .not_started,
+    });
+    try lineage_slot.transition(.step, null);
+    try lineage_slot.transition(.complete, null);
+    try std.testing.expectEqual(@as(?u64, 0xabc), lineage_slot.current_state.transcript_image_fingerprint);
+    try std.testing.expectEqual(@as(u64, 7), lineage_slot.current_state.branch_id);
+    try std.testing.expectEqual(@as(?u64, 0xdef), lineage_slot.current_state.checkpoint_fingerprint);
+}
+
+test "runspace pending port validates response identity and consumes once" {
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const handle = world.RunHandle.init(.{
+        .runspace_fingerprint = 0x51ace,
+        .local_run_id = 3,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+    });
+    const request = testRunspaceRequestFrame();
+    var mailbox = world.Runspace.Mailbox.init(std.testing.allocator, 8);
+    defer mailbox.deinit();
+    const pending = try mailbox.push(.{
+        .mailbox_id = 11,
+        .run_handle = handle,
+        .request = request,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .inserted_event_index = 1,
+    });
+
+    const response = testRunspaceResponseFrame(request);
+    try pending.validateResponse(response);
+    const responded = pending.withStatus(.responded);
+    try std.testing.expectEqual(world.Runspace.PendingStatus.responded, responded.status);
+    try std.testing.expect(responded.pending_port_fingerprint != pending.pending_port_fingerprint);
+    try std.testing.expectError(error.PendingPortConsumed, responded.validateResponse(response));
+
+    const request_2 = world.Frame.Request.init(.{
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .world_surface_replay_scope_fingerprint = request.world_surface_replay_scope_fingerprint,
+        .target_certificate_fingerprint = request.target_certificate_fingerprint,
+        .world_port_id = request.world_port_id,
+        .residual_site_index = request.residual_site_index,
+        .residual_site_fingerprint = request.residual_site_fingerprint,
+        .request_fingerprint = request.request_fingerprint + 1,
+        .turn_index = request.turn_index + 1,
+        .payload_value_table_id = request.payload_value_table_id,
+        .expected_response_value_table_id = request.expected_response_value_table_id,
+    });
+    _ = try mailbox.push(.{
+        .mailbox_id = 12,
+        .run_handle = handle,
+        .request = request_2,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .inserted_event_index = 2,
+    });
+
+    const response_2 = testRunspaceResponseFrame(request_2);
+    var wrong_surface = response_2;
+    wrong_surface.world_surface_fingerprint += 1;
+    try std.testing.expectError(error.FrameSurfaceMismatch, (try mailbox.get(12)).validateResponse(wrong_surface));
+
+    var wrong_port = response_2;
+    wrong_port.world_port_id += 1;
+    try std.testing.expectError(error.FramePortMismatch, (try mailbox.get(12)).validateResponse(wrong_port));
+
+    var wrong_request = response_2;
+    wrong_request.request_fingerprint += 1;
+    try std.testing.expectError(error.FrameRequestFingerprintMismatch, (try mailbox.get(12)).validateResponse(wrong_request));
+
+    var wrong_value_table = response_2;
+    wrong_value_table.response_value_table_id = 99;
+    try std.testing.expectError(error.FrameValueTableMismatch, (try mailbox.get(12)).validateResponse(wrong_value_table));
+
+    var wrong_kind = response_2;
+    wrong_kind.response_kind = .return_now;
+    try std.testing.expectError(error.VerifyResponseKindMismatch, (try mailbox.get(12)).validateResponse(wrong_kind));
+
+    var wrong_replay_key = response_2;
+    wrong_replay_key.replay_key += 1;
+    try std.testing.expectError(error.ReplayMissing, (try mailbox.get(12)).validateResponse(wrong_replay_key));
+}
+
+test "runspace event fingerprints include kind handle mailbox and status" {
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const handle = world.RunHandle.init(.{
+        .runspace_fingerprint = 0x51ace,
+        .local_run_id = 5,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+    });
+    const state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .parked_on_port,
+    });
+    const event = world.RunspaceEvent.init(.{
+        .kind = .port_responded,
+        .runspace_fingerprint = handle.runspace_fingerprint,
+        .event_index = 3,
+        .run_handle = handle,
+        .pending_port_fingerprint = 0x2222,
+        .response_frame_fingerprint = 0x3333,
+        .run_state_fingerprint = state.run_state_fingerprint,
+        .summary = "responded",
+    });
+    const same = world.RunspaceEvent.init(.{
+        .kind = .port_responded,
+        .runspace_fingerprint = handle.runspace_fingerprint,
+        .event_index = 3,
+        .run_handle = handle,
+        .pending_port_fingerprint = 0x2222,
+        .response_frame_fingerprint = 0x3333,
+        .run_state_fingerprint = state.run_state_fingerprint,
+        .summary = "responded",
+    });
+    const changed_summary = world.RunspaceEvent.init(.{
+        .kind = .port_responded,
+        .runspace_fingerprint = handle.runspace_fingerprint,
+        .event_index = 3,
+        .run_handle = handle,
+        .pending_port_fingerprint = 0x2222,
+        .response_frame_fingerprint = 0x3333,
+        .run_state_fingerprint = state.run_state_fingerprint,
+        .summary = "failed",
+    });
+
+    try std.testing.expectEqual(event.event_fingerprint, same.event_fingerprint);
+    try std.testing.expect(event.event_fingerprint != changed_summary.event_fingerprint);
+}
+
+test "runspace public event returns are borrowed from log" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+
+    _ = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    var event = try runspace.stepOne();
+    defer event.deinit(std.testing.allocator);
+
+    try std.testing.expect(!event.owns_summary);
+    const report = runspace.report();
+    try std.testing.expect(report.emitted_events.len > 0);
+    try std.testing.expect(report.emitted_events[report.emitted_events.len - 1].owns_summary);
+    try std.testing.expectEqual(event.event_fingerprint, report.emitted_events[report.emitted_events.len - 1].event_fingerprint);
 }
 
 test "world machine accepts strict zero-port certified target" {
@@ -1798,6 +2130,4066 @@ test "response frame status rejected failed and canonical bytes" {
         .status = .failed,
     });
     try std.testing.expectEqual(world.ResponseStatus.failed, failed.status);
+}
+
+test "run handle fingerprint stable excludes runtime tokens and generation prevents stale confusion" {
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const handle = world.RunHandle.init(.{
+        .runspace_fingerprint = 0x5150,
+        .local_run_id = 2,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .admission_receipt_fingerprint = 0xa11ce,
+        .permit_fingerprint = 0x9e7e,
+    });
+    const again = world.RunHandle.init(.{
+        .runspace_fingerprint = 0x5150,
+        .local_run_id = 2,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .admission_receipt_fingerprint = 0xa11ce,
+        .permit_fingerprint = 0x9e7e,
+    });
+    try std.testing.expectEqual(handle.handle_fingerprint, again.handle_fingerprint);
+    try handle.validate();
+
+    const next_generation = world.RunHandle.init(.{
+        .runspace_fingerprint = 0x5150,
+        .local_run_id = 2,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .admission_receipt_fingerprint = 0xa11ce,
+        .permit_fingerprint = 0x9e7e,
+        .generation = 1,
+    });
+    try std.testing.expect(handle.handle_fingerprint != next_generation.handle_fingerprint);
+
+    var stale = handle;
+    stale.generation = 1;
+    try std.testing.expectError(error.StaleRunHandle, stale.validate());
+}
+
+test "run slot summary records runnable parked completed and failed states" {
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const handle = world.RunHandle.init(.{
+        .runspace_fingerprint = 0x5150,
+        .local_run_id = 1,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+    });
+    const runnable_state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .not_started,
+    });
+    var slot = world.RunSlot.fromState(.{
+        .handle = handle,
+        .target_ref = target_ref,
+        .current_state = runnable_state,
+        .status = .runnable,
+    });
+    try std.testing.expectEqual(world.Runspace.RunStatus.runnable, slot.summary().status);
+
+    const request = testRequestFrame();
+    slot.current_state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .pending_request_fingerprint = request.frame_fingerprint,
+        .turn_index = request.turn_index,
+        .status = .parked_on_port,
+    });
+    slot.status = .parked_on_port;
+    slot.pending_mailbox_id = 7;
+    var summary = slot.summary();
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, summary.status);
+    try std.testing.expectEqual(@as(?u64, 7), summary.pending_mailbox_id);
+
+    slot.current_state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .final_response_fingerprint = 0xdec1,
+        .status = .completed,
+    });
+    slot.status = .completed;
+    summary = slot.summary();
+    try std.testing.expectEqual(world.Runspace.RunStatus.completed, summary.status);
+
+    slot.current_state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .failed,
+    });
+    slot.status = .failed;
+    summary = slot.summary();
+    try std.testing.expectEqual(world.Runspace.RunStatus.failed, summary.status);
+}
+
+test "pending port fingerprint stable and binds run handle request and port" {
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const handle = world.RunHandle.init(.{
+        .runspace_fingerprint = 0x5150,
+        .local_run_id = 3,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+    });
+    const request = testRequestFrame();
+    const pending = world.PendingPort.init(.{
+        .handle = handle,
+        .mailbox_id = 9,
+        .request = request,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .environment_certificate_fingerprint = 0xecc,
+        .run_permit_fingerprint = 0x9e7e,
+        .inserted_event_index = 4,
+    });
+    const again = world.PendingPort.init(.{
+        .handle = handle,
+        .mailbox_id = 9,
+        .request = request,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .environment_certificate_fingerprint = 0xecc,
+        .run_permit_fingerprint = 0x9e7e,
+        .inserted_event_index = 4,
+    });
+    try std.testing.expectEqual(pending.pending_port_fingerprint, again.pending_port_fingerprint);
+    try std.testing.expectEqual(handle.handle_fingerprint, pending.handle.handle_fingerprint);
+    try std.testing.expectEqual(request.request_fingerprint, pending.request_fingerprint);
+    try std.testing.expectEqual(request.frame_fingerprint, pending.request_frame_fingerprint);
+    try std.testing.expectEqual(request.world_port_id, pending.world_port_id);
+    try pending.validate();
+
+    const responded = pending.withStatus(.responded);
+    try std.testing.expect(pending.pending_port_fingerprint != responded.pending_port_fingerprint);
+}
+
+test "mailbox push get list respond and stale response rejection" {
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const handle = world.RunHandle.init(.{
+        .runspace_fingerprint = 0x5150,
+        .local_run_id = 4,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+    });
+    const request = testRequestFrame();
+    const duplicate_id_request = world.Frame.Request.init(.{
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .world_surface_replay_scope_fingerprint = request.world_surface_replay_scope_fingerprint,
+        .target_certificate_fingerprint = request.target_certificate_fingerprint,
+        .world_port_id = request.world_port_id,
+        .residual_site_index = request.residual_site_index,
+        .residual_site_fingerprint = request.residual_site_fingerprint,
+        .request_fingerprint = request.request_fingerprint + 1,
+        .turn_index = request.turn_index + 1,
+        .payload_value_table_id = request.payload_value_table_id,
+        .expected_response_value_table_id = request.expected_response_value_table_id,
+    });
+    var mailbox = world.Mailbox.init(std.testing.allocator, 2);
+    defer mailbox.deinit();
+
+    const pending = try mailbox.push(.{
+        .run_handle = handle,
+        .mailbox_id = 1,
+        .request = request,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .inserted_event_index = 0,
+    });
+    try std.testing.expect(!pending.owns_request_frame);
+    const pending_list = try mailbox.listPending(std.testing.allocator);
+    defer std.testing.allocator.free(pending_list);
+    try std.testing.expectEqual(@as(usize, 1), pending_list.len);
+    try std.testing.expect(!pending_list[0].owns_request_frame);
+    const fetched = try mailbox.get(1);
+    try std.testing.expect(!fetched.owns_request_frame);
+    try std.testing.expectEqual(pending.pending_port_fingerprint, fetched.pending_port_fingerprint);
+
+    try std.testing.expectError(error.InvalidPendingPortTransition, mailbox.push(.{
+        .run_handle = handle,
+        .mailbox_id = 1,
+        .request = duplicate_id_request,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .inserted_event_index = 1,
+    }));
+
+    try std.testing.expectError(error.InvalidPendingPortTransition, mailbox.push(.{
+        .run_handle = handle,
+        .mailbox_id = 2,
+        .request = request,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .inserted_event_index = 2,
+    }));
+
+    var wrong_port = try world.Frame.Response.fromValue(std.testing.allocator, request, 1, 0xdec1_5100, .@"resume", @as(i32, 7), .portable);
+    defer wrong_port.deinit(std.testing.allocator);
+    wrong_port.world_port_id += 1;
+    try std.testing.expectError(error.FramePortMismatch, (try mailbox.get(1)).validateResponse(wrong_port));
+
+    var response = try world.Frame.Response.fromValue(std.testing.allocator, request, 1, 0xdec1_5100, .@"resume", @as(i32, 7), .portable);
+    defer response.deinit(std.testing.allocator);
+    try (try mailbox.get(1)).validateResponse(response);
+    const responded = (try mailbox.get(1)).withStatus(.responded);
+    try std.testing.expectEqual(world.Runspace.PendingStatus.responded, responded.status);
+    try std.testing.expect(!responded.owns_request_frame);
+    try std.testing.expectEqual(@as(usize, 1), mailbox.pendingCount());
+    try std.testing.expectError(error.PendingPortConsumed, responded.validateResponse(response));
+}
+
+test "mailbox stale id and pending capacity" {
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const handle = world.RunHandle.init(.{
+        .runspace_fingerprint = 0x5150,
+        .local_run_id = 5,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+    });
+    const request_a = testRequestFrame();
+    const request_b = world.Frame.Request.init(.{
+        .world_surface_fingerprint = request_a.world_surface_fingerprint,
+        .world_surface_replay_scope_fingerprint = request_a.world_surface_replay_scope_fingerprint,
+        .target_certificate_fingerprint = request_a.target_certificate_fingerprint,
+        .world_port_id = request_a.world_port_id,
+        .residual_site_index = request_a.residual_site_index,
+        .residual_site_fingerprint = request_a.residual_site_fingerprint,
+        .request_fingerprint = request_a.request_fingerprint + 1,
+        .turn_index = request_a.turn_index + 1,
+        .payload_value_table_id = request_a.payload_value_table_id,
+        .expected_response_value_table_id = request_a.expected_response_value_table_id,
+    });
+    const request_c = world.Frame.Request.init(.{
+        .world_surface_fingerprint = request_a.world_surface_fingerprint,
+        .world_surface_replay_scope_fingerprint = request_a.world_surface_replay_scope_fingerprint,
+        .target_certificate_fingerprint = request_a.target_certificate_fingerprint,
+        .world_port_id = request_a.world_port_id,
+        .residual_site_index = request_a.residual_site_index,
+        .residual_site_fingerprint = request_a.residual_site_fingerprint,
+        .request_fingerprint = request_a.request_fingerprint + 2,
+        .turn_index = request_a.turn_index + 2,
+        .payload_value_table_id = request_a.payload_value_table_id,
+        .expected_response_value_table_id = request_a.expected_response_value_table_id,
+    });
+    var mailbox = world.Mailbox.init(std.testing.allocator, 2);
+    defer mailbox.deinit();
+
+    _ = try mailbox.push(.{
+        .run_handle = handle,
+        .mailbox_id = 10,
+        .request = request_a,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .inserted_event_index = 0,
+    });
+    _ = try mailbox.push(.{
+        .run_handle = handle,
+        .mailbox_id = 11,
+        .request = request_b,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .inserted_event_index = 1,
+    });
+    try std.testing.expectEqual(@as(usize, 2), mailbox.pendingCount());
+    try std.testing.expectError(error.BudgetExceeded, mailbox.push(.{
+        .run_handle = handle,
+        .mailbox_id = 12,
+        .request = request_c,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .inserted_event_index = 2,
+    }));
+    try std.testing.expectError(error.InvalidPendingPortTransition, mailbox.get(99));
+
+    try std.testing.expectEqual(@as(usize, 2), mailbox.pendingCount());
+}
+
+test "runspace event fingerprint stable and report counts slots and pending ports" {
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    var runspace = world.Runspace.init(std.testing.allocator, .{
+        .max_pending_ports = 4,
+    });
+    defer runspace.deinit();
+
+    const handle = world.RunHandle.init(.{
+        .runspace_fingerprint = runspace.runspace_fingerprint,
+        .local_run_id = 0,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+    });
+    const state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .not_started,
+    });
+    try runspace.slots.append(std.testing.allocator, world.RunSlot.fromState(.{
+        .handle = handle,
+        .target_ref = target_ref,
+        .current_state = state,
+        .status = .runnable,
+    }));
+    const request = testRequestFrame();
+    const pending = try runspace.mailbox.push(.{
+        .run_handle = handle,
+        .mailbox_id = 0,
+        .request = request,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .inserted_event_index = 0,
+    });
+    try runspace.events.append(std.testing.allocator, world.RunspaceEvent.init(.{
+        .kind = .run_parked_on_port,
+        .runspace_fingerprint = runspace.runspace_fingerprint,
+        .event_index = 0,
+        .run_handle = handle,
+        .pending_port_fingerprint = pending.pending_port_fingerprint,
+        .request_frame_fingerprint = request.frame_fingerprint,
+        .run_state_fingerprint = state.run_state_fingerprint,
+        .summary = "parked",
+    }));
+    try std.testing.expectEqual(runspace.events.items[0].event_fingerprint, world.RunspaceEvent.init(.{
+        .kind = .run_parked_on_port,
+        .runspace_fingerprint = runspace.runspace_fingerprint,
+        .event_index = 0,
+        .run_handle = handle,
+        .pending_port_fingerprint = pending.pending_port_fingerprint,
+        .request_frame_fingerprint = request.frame_fingerprint,
+        .run_state_fingerprint = state.run_state_fingerprint,
+        .summary = "parked",
+    }).event_fingerprint);
+
+    const report = runspace.report();
+    try std.testing.expectEqual(@as(usize, 1), report.event_count);
+    try std.testing.expectEqual(@as(usize, 1), report.run_count);
+    try std.testing.expectEqual(@as(usize, 1), report.runnable_count);
+    try std.testing.expectEqual(@as(usize, 1), report.pending_port_count);
+    try std.testing.expectEqual(runspace.runspace_fingerprint, report.runspace_fingerprint);
+}
+
+test "runspace install target enforces config gates and deterministic local handles" {
+    var runspace = world.Runspace.init(std.testing.allocator, .{
+        .max_runs = 2,
+    });
+    defer runspace.deinit();
+
+    const first = try runspace.installTarget(fixtures.Strict.Target, .{}, null, .{});
+    const second = try runspace.installTarget(fixtures.Strict.Target, .{}, null, .{});
+    try std.testing.expectEqual(@as(u64, 0), first.local_run_id);
+    try std.testing.expectEqual(@as(u64, 1), second.local_run_id);
+    try std.testing.expect(first.handle_fingerprint != second.handle_fingerprint);
+    try std.testing.expectError(error.BudgetExceeded, runspace.installTarget(fixtures.Strict.Target, .{}, null, .{}));
+
+    const summary = try runspace.getSlotSummary(first);
+    try std.testing.expectEqual(world.Runspace.RunStatus.admitted, summary.status);
+    try std.testing.expectEqual(first.handle_fingerprint, summary.handle.handle_fingerprint);
+    const summaries = try runspace.listRunSummaries(std.testing.allocator);
+    defer std.testing.allocator.free(summaries);
+    try std.testing.expectEqual(@as(usize, 2), summaries.len);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().runnable_count);
+    try std.testing.expectError(error.InvalidRunspaceTransition, runspace.step(first));
+
+    var admission_required = world.Runspace.init(std.testing.allocator, .{
+        .require_admission = true,
+    });
+    defer admission_required.deinit();
+    try std.testing.expectError(error.RunspaceAdmissionRequired, admission_required.installTarget(fixtures.Strict.Target, .{}, null, .{}));
+
+    var supervision_required = world.Runspace.init(std.testing.allocator, .{
+        .require_supervision = true,
+    });
+    defer supervision_required.deinit();
+    try std.testing.expectError(error.SupervisionDenied, supervision_required.installTarget(fixtures.Strict.Target, .{}, null, .{}));
+
+    var direct_denied = world.Runspace.init(std.testing.allocator, .{
+        .allow_direct_target_install = false,
+    });
+    defer direct_denied.deinit();
+    try std.testing.expectError(error.RunspaceInstallDenied, direct_denied.installTarget(fixtures.Strict.Target, .{}, null, .{}));
+}
+
+test "runspace handles are scoped to each local arena instance" {
+    var first_runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer first_runspace.deinit();
+    var second_runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer second_runspace.deinit();
+
+    try std.testing.expect(first_runspace.runspace_fingerprint != second_runspace.runspace_fingerprint);
+    const first_handle = try first_runspace.installTarget(fixtures.Strict.Target, .{}, null, .{});
+    _ = try second_runspace.installTarget(fixtures.Strict.Target, .{}, null, .{});
+
+    try std.testing.expectError(error.StaleRunHandle, second_runspace.getSlotSummary(first_handle));
+}
+
+test "runspace supervised handoff install requires prior permit fingerprint" {
+    var image = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Strict.Target),
+        .import_set_fingerprint = 0,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = world.TargetRef.fromTarget(fixtures.Strict.Target).target_ref_fingerprint,
+            .status = .completed,
+        }),
+    });
+    defer image.deinit(std.testing.allocator);
+
+    var runspace = world.Runspace.init(std.testing.allocator, .{
+        .require_supervision = true,
+    });
+    defer runspace.deinit();
+
+    try std.testing.expectError(error.SupervisionDenied, runspace.installRunImage(image));
+}
+
+test "runspace imported image slots use owned cloned target refs" {
+    const image = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Strict.Target),
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Strict.Target).import_set_fingerprint,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = world.TargetRef.fromTarget(fixtures.Strict.Target).target_ref_fingerprint,
+            .status = .completed,
+        }),
+    });
+    const encoded = try image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(encoded);
+    var decoded = try world.RunImage.decode(std.testing.allocator, encoded);
+    defer decoded.deinit(std.testing.allocator);
+    const caller_label = decoded.target_ref.target_label orelse return error.TestUnexpectedResult;
+
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+    _ = try runspace.installRunImage(decoded);
+
+    const slot = runspace.slots.items[0];
+    const slot_label = slot.target_ref.target_label orelse return error.TestUnexpectedResult;
+    const installed_image = slot.installed_run_image orelse return error.TestUnexpectedResult;
+    const owned_label = installed_image.target_ref.target_label orelse return error.TestUnexpectedResult;
+    try std.testing.expect(slot_label.ptr != caller_label.ptr);
+    try std.testing.expectEqual(owned_label.ptr, slot_label.ptr);
+}
+
+test "runspace parked image install rolls back when mailbox enqueue fails" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var source = world.Runspace.init(std.testing.allocator, .{});
+    defer source.deinit();
+    const source_handle = try source.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    _ = try source.tick();
+    var image = try source.exportPending(0);
+    defer image.deinit(std.testing.allocator);
+    try std.testing.expectEqual(world.Runspace.RunStatus.exported, (try source.getSlotSummary(source_handle)).status);
+
+    var target = world.Runspace.init(std.testing.allocator, .{
+        .max_pending_ports = 0,
+    });
+    defer target.deinit();
+
+    try std.testing.expectError(error.BudgetExceeded, target.installRunImage(image));
+    const report = target.report();
+    try std.testing.expectEqual(@as(usize, 0), report.run_count);
+    try std.testing.expectEqual(@as(usize, 0), report.event_count);
+    try std.testing.expectEqual(@as(usize, 0), report.pending_port_count);
+    const next = try target.installTarget(fixtures.Strict.Target, .{}, null, .{});
+    try std.testing.expectEqual(@as(u64, 0), next.local_run_id);
+}
+
+test "runspace install slot event allocation failure cleans up appended slot" {
+    var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{
+        .fail_index = 2,
+    });
+    var runspace = world.Runspace.init(failing_allocator.allocator(), .{});
+    defer runspace.deinit();
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+    });
+
+    try std.testing.expectError(error.OutOfMemory, runspace.installTarget(fixtures.Ports.Target, PortsEnv, permit, .{
+        .mode = world.Mode.fresh,
+    }));
+    try std.testing.expect(failing_allocator.has_induced_failure);
+    const report = runspace.report();
+    try std.testing.expectEqual(@as(usize, 0), report.run_count);
+    try std.testing.expectEqual(@as(usize, 0), report.event_count);
+}
+
+test "runspace machine install event allocation failure does not mutate transcript" {
+    var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{
+        .fail_index = 2,
+    });
+    var runtime = boundary.Runtime.init(failing_allocator.allocator());
+    defer runtime.deinit();
+    var transcript = world.Transcript.init(failing_allocator.allocator());
+    defer transcript.deinit();
+    var runspace = world.Runspace.init(failing_allocator.allocator(), .{});
+    defer runspace.deinit();
+
+    try std.testing.expectError(error.OutOfMemory, runspace.installMachineRun(fixtures.Strict.Target, world.Environment(fixtures.Strict.Target, .{
+        .ports = &.{},
+    }), &runtime, .{}, .{
+        .allocator = failing_allocator.allocator(),
+        .mode = world.Mode.fresh,
+        .transcript = &transcript,
+    }));
+    try std.testing.expect(failing_allocator.has_induced_failure);
+    try std.testing.expectEqual(@as(usize, 0), transcript.events.items.len);
+    const report = runspace.report();
+    try std.testing.expectEqual(@as(usize, 0), report.run_count);
+    try std.testing.expectEqual(@as(usize, 0), report.event_count);
+}
+
+test "runspace port parking allocation failure does not leave pending mailbox" {
+    var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{
+        .fail_index = std.math.maxInt(usize),
+    });
+    var runtime = boundary.Runtime.init(failing_allocator.allocator());
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(failing_allocator.allocator(), .{});
+    defer runspace.deinit();
+
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = failing_allocator.allocator(),
+        .mode = world.Mode.fresh,
+    });
+    try runspace.events.ensureUnusedCapacity(failing_allocator.allocator(), 3);
+    try runspace.mailbox.pending.ensureUnusedCapacity(failing_allocator.allocator(), 1);
+    failing_allocator.fail_index = failing_allocator.alloc_index + 1;
+
+    try std.testing.expectError(error.OutOfMemory, runspace.tick());
+    try std.testing.expect(failing_allocator.has_induced_failure);
+    const report = runspace.report();
+    try std.testing.expectEqual(@as(usize, 0), report.pending_port_count);
+    try std.testing.expect((try runspace.getSlotSummary(handle)).status != .parked_on_port);
+}
+
+test "runspace install rejects invalid image and failed direct installs preserve run ids" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var source = world.Runspace.init(std.testing.allocator, .{});
+    defer source.deinit();
+    const source_handle = try source.installMachineRun(fixtures.Strict.Target, world.Environment(fixtures.Strict.Target, .{
+        .ports = &.{},
+    }), &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    _ = try source.tick();
+    var image = try source.exportRun(source_handle);
+    defer image.deinit(std.testing.allocator);
+
+    var invalid_image = image;
+    invalid_image.run_image_fingerprint += 1;
+    var image_runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer image_runspace.deinit();
+    try std.testing.expectError(error.InvalidFrameEncoding, image_runspace.installRunImage(invalid_image));
+    const image_next = try image_runspace.installTarget(fixtures.Strict.Target, .{}, null, .{});
+    try std.testing.expectEqual(@as(u64, 0), image_next.local_run_id);
+
+    const parked_without_frame = world.RunImage.init(.{
+        .kind = .parked_run,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target),
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = world.TargetRef.fromTarget(fixtures.Ports.Target).target_ref_fingerprint,
+            .pending_request_fingerprint = 0x1234,
+            .status = .parked_on_port,
+        }),
+    });
+    try std.testing.expectError(error.HandoffPendingFrameMismatch, image_runspace.installRunImage(parked_without_frame));
+
+    const non_resumable = world.RunImage.init(.{
+        .kind = .full_target_run,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Strict.Target),
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Strict.Target).import_set_fingerprint,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = world.TargetRef.fromTarget(fixtures.Strict.Target).target_ref_fingerprint,
+            .status = .not_started,
+        }),
+    });
+    try std.testing.expectError(error.InvalidRunspaceTransition, image_runspace.installRunImage(non_resumable));
+    const non_resumable_next = try image_runspace.installTarget(fixtures.Strict.Target, .{}, null, .{});
+    try std.testing.expectEqual(@as(u64, 1), non_resumable_next.local_run_id);
+
+    const ports_target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const detached_completed_image = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = ports_target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = ports_target_ref.target_ref_fingerprint,
+            .status = .completed,
+        }),
+    });
+    try detached_completed_image.validate(.{});
+
+    var agent_transcript = world.Transcript.init(std.testing.allocator);
+    defer agent_transcript.deinit();
+    try agent_transcript.append(.{
+        .kind = .run_started,
+        .world_surface_fingerprint = fixtures.Agent.Target.WorldSurface.surface_fingerprint,
+        .target_certificate_fingerprint = fixtures.Agent.Target.Certificate.certificate_fingerprint,
+    });
+    try agent_transcript.append(.{
+        .kind = .run_completed,
+        .world_surface_fingerprint = fixtures.Agent.Target.WorldSurface.surface_fingerprint,
+        .target_certificate_fingerprint = fixtures.Agent.Target.Certificate.certificate_fingerprint,
+        .status = .responded,
+    });
+    var agent_transcript_image = try agent_transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer agent_transcript_image.deinit(std.testing.allocator);
+
+    var admitted_runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer admitted_runspace.deinit();
+    const invalid_attached_transcript = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0x5151,
+        .target_ref = ports_target_ref,
+        .run_image = detached_completed_image,
+        .transcript_image = agent_transcript_image,
+        .mode = .completed_replay,
+    });
+    try std.testing.expectError(error.TranscriptImageSurfaceMismatch, admitted_runspace.installAdmitted(invalid_attached_transcript));
+    const admitted_next = try admitted_runspace.installTarget(fixtures.Strict.Target, .{}, null, .{});
+    try std.testing.expectEqual(@as(u64, 0), admitted_next.local_run_id);
+
+    var direct = world.Runspace.init(std.testing.allocator, .{ .max_events = 0 });
+    defer direct.deinit();
+    try std.testing.expectError(error.BudgetExceeded, direct.installTarget(fixtures.Strict.Target, .{}, null, .{}));
+    direct.config.max_events = 1;
+    const direct_next = try direct.installTarget(fixtures.Strict.Target, .{}, null, .{});
+    try std.testing.expectEqual(@as(u64, 0), direct_next.local_run_id);
+
+    var machine_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer machine_runtime.deinit();
+    var machine_transcript = world.Transcript.init(std.testing.allocator);
+    defer machine_transcript.deinit();
+    var machine = world.Runspace.init(std.testing.allocator, .{ .max_events = 0 });
+    defer machine.deinit();
+    try std.testing.expectError(error.BudgetExceeded, machine.installMachineRun(fixtures.Strict.Target, world.Environment(fixtures.Strict.Target, .{
+        .ports = &.{},
+    }), &machine_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .transcript = &machine_transcript,
+    }));
+    try std.testing.expectEqual(@as(usize, 0), machine_transcript.events.items.len);
+    machine.config.max_events = 1;
+    const machine_next = try machine.installTarget(fixtures.Strict.Target, .{}, null, .{});
+    try std.testing.expectEqual(@as(u64, 0), machine_next.local_run_id);
+}
+
+test "runspace run image clone allocation failure preserves run ids" {
+    const image = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Strict.Target),
+        .import_set_fingerprint = 0,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = world.TargetRef.fromTarget(fixtures.Strict.Target).target_ref_fingerprint,
+            .status = .completed,
+        }),
+    });
+    var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{
+        .fail_index = std.math.maxInt(usize),
+    });
+    var runspace = world.Runspace.init(failing_allocator.allocator(), .{});
+    defer runspace.deinit();
+
+    failing_allocator.fail_index = failing_allocator.alloc_index;
+    try std.testing.expectError(error.OutOfMemory, runspace.installRunImage(image));
+    try std.testing.expect(failing_allocator.has_induced_failure);
+    failing_allocator.fail_index = std.math.maxInt(usize);
+
+    const next = try runspace.installTarget(fixtures.Strict.Target, .{}, null, .{});
+    try std.testing.expectEqual(@as(u64, 0), next.local_run_id);
+}
+
+test "runspace tick only requires mailbox capacity for emitted port requests" {
+    var strict_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer strict_runtime.deinit();
+    var strict_runspace = world.Runspace.init(std.testing.allocator, .{
+        .max_pending_ports = 0,
+    });
+    defer strict_runspace.deinit();
+
+    const strict_handle = try strict_runspace.installMachineRun(fixtures.Strict.Target, world.Environment(fixtures.Strict.Target, .{
+        .ports = &.{},
+    }), &strict_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    _ = try strict_runspace.tick();
+    try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try strict_runspace.getSlotSummary(strict_handle)).status);
+    try std.testing.expectEqual(@as(usize, 0), strict_runspace.report().pending_port_count);
+
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{
+        .max_pending_ports = 0,
+    });
+    defer runspace.deinit();
+
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    try std.testing.expectError(error.BudgetExceeded, runspace.tick());
+    try std.testing.expectEqual(world.Runspace.RunStatus.failed, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
+}
+
+test "runspace max runs excludes completed runs when preservation is disabled" {
+    var preserved_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer preserved_runtime.deinit();
+    var preserved = world.Runspace.init(std.testing.allocator, .{
+        .max_runs = 1,
+        .preserve_completed_runs = true,
+    });
+    defer preserved.deinit();
+    const preserved_first = try preserved.installMachineRun(fixtures.Strict.Target, world.Environment(fixtures.Strict.Target, .{
+        .ports = &.{},
+    }), &preserved_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    _ = try preserved.tick();
+    try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try preserved.getSlotSummary(preserved_first)).status);
+    try std.testing.expectError(error.BudgetExceeded, preserved.installTarget(fixtures.Strict.Target, .{}, null, .{}));
+
+    var replace_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer replace_runtime.deinit();
+    var replaceable = world.Runspace.init(std.testing.allocator, .{
+        .max_runs = 1,
+        .preserve_completed_runs = false,
+    });
+    defer replaceable.deinit();
+    const first = try replaceable.installMachineRun(fixtures.Strict.Target, world.Environment(fixtures.Strict.Target, .{
+        .ports = &.{},
+    }), &replace_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    _ = try replaceable.tick();
+    try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try replaceable.getSlotSummary(first)).status);
+    const second = try replaceable.installTarget(fixtures.Strict.Target, .{}, null, .{});
+    try std.testing.expectEqual(@as(u64, 1), second.local_run_id);
+}
+
+test "runspace failed machine install transfers driver ownership once" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{
+        .max_runs = 0,
+    });
+    defer runspace.deinit();
+
+    try std.testing.expectError(error.BudgetExceeded, runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    }));
+}
+
+test "runspace reject and fail consume pending ports through slot state" {
+    var reject_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer reject_runtime.deinit();
+    var reject_runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer reject_runspace.deinit();
+    const reject_handle = try reject_runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &reject_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    _ = try reject_runspace.tick();
+    const reject_event = try reject_runspace.reject(0, "fixture rejection");
+    try std.testing.expectEqual(world.Runspace.EventKind.run_failed, reject_event.kind);
+    try std.testing.expectEqual(world.Runspace.PendingStatus.cancelled, (try reject_runspace.mailbox.get(0)).status);
+    const reject_summary = try reject_runspace.getSlotSummary(reject_handle);
+    try std.testing.expectEqual(world.Runspace.RunStatus.failed, reject_summary.status);
+    try std.testing.expectEqual(null, reject_summary.pending_mailbox_id);
+    try std.testing.expectEqual(@as(usize, 0), reject_runspace.report().pending_port_count);
+
+    var fail_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer fail_runtime.deinit();
+    var fail_runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer fail_runspace.deinit();
+    const fail_handle = try fail_runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &fail_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    _ = try fail_runspace.tick();
+    const fail_event = try fail_runspace.fail(0, "fixture failure");
+    try std.testing.expectEqual(world.Runspace.EventKind.run_failed, fail_event.kind);
+    try std.testing.expectEqual(world.Runspace.PendingStatus.failed, (try fail_runspace.mailbox.get(0)).status);
+    const fail_summary = try fail_runspace.getSlotSummary(fail_handle);
+    try std.testing.expectEqual(world.Runspace.RunStatus.failed, fail_summary.status);
+    try std.testing.expectEqual(null, fail_summary.pending_mailbox_id);
+    try std.testing.expectEqual(@as(usize, 0), fail_runspace.report().pending_port_count);
+}
+
+test "runspace terminal event allocation failure preserves pending mailbox" {
+    var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{
+        .fail_index = std.math.maxInt(usize),
+    });
+    var runtime = boundary.Runtime.init(failing_allocator.allocator());
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(failing_allocator.allocator(), .{});
+    defer runspace.deinit();
+
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = failing_allocator.allocator(),
+        .mode = world.Mode.fresh,
+    });
+    _ = try runspace.tick();
+    try runspace.events.ensureUnusedCapacity(failing_allocator.allocator(), 2);
+    failing_allocator.fail_index = failing_allocator.alloc_index;
+
+    try std.testing.expectError(error.OutOfMemory, runspace.reject(0, "allocation denied"));
+    try std.testing.expect(failing_allocator.has_induced_failure);
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
+    const summary = try runspace.getSlotSummary(handle);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, summary.status);
+    try std.testing.expectEqual(@as(?u64, 0), summary.pending_mailbox_id);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+}
+
+test "runspace terminal port decisions honor supervision before consuming mailbox" {
+    const reject_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+    });
+    var reject_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer reject_runtime.deinit();
+    var reject_runspace = world.Runspace.init(std.testing.allocator, .{
+        .require_supervision = true,
+    });
+    defer reject_runspace.deinit();
+    const reject_handle = try reject_runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &reject_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .permit = reject_permit,
+    });
+    _ = try reject_runspace.tick();
+
+    try std.testing.expectError(error.HandlerRejected, reject_runspace.reject(0, "strict policy denies reject"));
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try reject_runspace.mailbox.get(0)).status);
+    const reject_summary = try reject_runspace.getSlotSummary(reject_handle);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, reject_summary.status);
+    try std.testing.expectEqual(@as(?u64, 0), reject_summary.pending_mailbox_id);
+    try std.testing.expectEqual(@as(usize, 1), reject_runspace.report().pending_port_count);
+    try std.testing.expectEqual(@as(usize, 1), reject_runspace.report().blocker_count);
+
+    const fail_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+    });
+    var fail_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer fail_runtime.deinit();
+    var fail_runspace = world.Runspace.init(std.testing.allocator, .{
+        .require_supervision = true,
+    });
+    defer fail_runspace.deinit();
+    const fail_handle = try fail_runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &fail_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .permit = fail_permit,
+    });
+    _ = try fail_runspace.tick();
+
+    try std.testing.expectError(error.HandlerFailed, fail_runspace.fail(0, "strict policy denies fail"));
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try fail_runspace.mailbox.get(0)).status);
+    const fail_summary = try fail_runspace.getSlotSummary(fail_handle);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, fail_summary.status);
+    try std.testing.expectEqual(@as(?u64, 0), fail_summary.pending_mailbox_id);
+    try std.testing.expectEqual(@as(usize, 1), fail_runspace.report().pending_port_count);
+    try std.testing.expectEqual(@as(usize, 1), fail_runspace.report().blocker_count);
+
+    var source_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer source_runtime.deinit();
+    var source_runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer source_runspace.deinit();
+    _ = try source_runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &source_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    _ = try source_runspace.tick();
+    var parked_image = try source_runspace.exportPending(0);
+    defer parked_image.deinit(std.testing.allocator);
+    const admitted_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_native_adapters = true,
+            .allow_handoff_accept = true,
+            .require_environment_certificate = true,
+        }),
+    });
+    const admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_7e12,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target),
+        .environment_certificate_fingerprint = PortsEnv.certificate(.fresh, false).certificate_fingerprint,
+        .mode = .continue_fresh,
+        .run_image = parked_image,
+        .run_permit = admitted_permit,
+    });
+    var admitted_runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer admitted_runspace.deinit();
+    const admitted_handle = try admitted_runspace.installAdmitted(admitted);
+    try std.testing.expectError(error.HandlerFailed, admitted_runspace.fail(0, "strict policy denies imported fail"));
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try admitted_runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try admitted_runspace.getSlotSummary(admitted_handle)).status);
+}
+
+test "runspace terminal response byte budget parks without consuming mailbox" {
+    const park_policy = world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .allow_native_adapters = true,
+        .allow_failed_responses = true,
+        .allow_handoff_export = true,
+        .allow_handoff_accept = true,
+        .require_environment_certificate = true,
+        .park_on_budget_exceeded = true,
+    });
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = park_policy,
+        .budget = world.Budget.init(.{ .max_frame_response_bytes = 0 }),
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{
+        .require_supervision = true,
+    });
+    defer runspace.deinit();
+
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .permit = permit,
+    });
+    _ = try runspace.tick();
+
+    const event = try runspace.fail(0, "budgeted terminal failure");
+    try std.testing.expectEqual(world.Runspace.EventKind.run_parked_on_supervision, event.kind);
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_supervision, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+}
+
+test "runspace strict terminal response budget failure consumes mailbox and fails slot" {
+    const strict_policy = world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .allow_native_adapters = true,
+        .allow_failed_responses = true,
+        .require_environment_certificate = true,
+    });
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = strict_policy,
+        .budget = world.Budget.init(.{ .max_frame_response_bytes = 0 }),
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{
+        .require_supervision = true,
+    });
+    defer runspace.deinit();
+
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .permit = permit,
+    });
+    _ = try runspace.tick();
+
+    try std.testing.expectError(error.BudgetExceeded, runspace.fail(0, "strict terminal budget failure"));
+    try std.testing.expectEqual(world.Runspace.PendingStatus.failed, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.failed, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().blocker_count);
+}
+
+test "runspace terminal response accounting charges allowed failure once" {
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_native_adapters = true,
+            .allow_failed_responses = true,
+            .require_environment_certificate = true,
+        }),
+        .budget = world.Budget.init(.{ .max_failed_calls = 1 }),
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{
+        .require_supervision = true,
+    });
+    defer runspace.deinit();
+
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .permit = permit,
+    });
+    _ = try runspace.tick();
+
+    const event = try runspace.fail(0, "single accounted failure");
+    try std.testing.expectEqual(world.Runspace.EventKind.run_failed, event.kind);
+    try std.testing.expectEqual(world.Runspace.PendingStatus.failed, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.failed, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
+}
+
+test "runspace supervision park event allocation failure preserves port state" {
+    const park_policy = world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .allow_native_adapters = true,
+        .allow_failed_responses = true,
+        .allow_handoff_export = true,
+        .allow_handoff_accept = true,
+        .require_environment_certificate = true,
+        .park_on_budget_exceeded = true,
+    });
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = park_policy,
+        .budget = world.Budget.init(.{ .max_frame_response_bytes = 0 }),
+    });
+    var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{
+        .fail_index = std.math.maxInt(usize),
+    });
+    var runtime = boundary.Runtime.init(failing_allocator.allocator());
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(failing_allocator.allocator(), .{
+        .require_supervision = true,
+    });
+    defer runspace.deinit();
+
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = failing_allocator.allocator(),
+        .mode = world.Mode.fresh,
+        .permit = permit,
+    });
+    _ = try runspace.tick();
+    try runspace.events.ensureUnusedCapacity(failing_allocator.allocator(), 1);
+    failing_allocator.fail_index = failing_allocator.alloc_index;
+
+    try std.testing.expectError(error.OutOfMemory, runspace.fail(0, "budgeted terminal failure"));
+    try std.testing.expect(failing_allocator.has_induced_failure);
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
+    const summary = try runspace.getSlotSummary(handle);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, summary.status);
+    try std.testing.expectEqual(@as(?u64, 0), summary.pending_mailbox_id);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+}
+
+test "runspace imported terminal response byte budget parks without consuming mailbox" {
+    var source_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer source_runtime.deinit();
+    var source_transcript = world.Transcript.init(std.testing.allocator);
+    defer source_transcript.deinit();
+    var source_runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer source_runspace.deinit();
+    _ = try source_runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &source_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .transcript = &source_transcript,
+    });
+    _ = try source_runspace.tick();
+    var parked_image = try source_runspace.exportPending(0);
+    defer parked_image.deinit(std.testing.allocator);
+    const parked_transcript_fingerprint = parked_image.current_state.transcript_image_fingerprint orelse return error.ExpectedTranscriptImage;
+
+    const park_policy = world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .allow_native_adapters = true,
+        .allow_failed_responses = true,
+        .allow_handoff_export = true,
+        .allow_handoff_accept = true,
+        .require_environment_certificate = true,
+        .park_on_budget_exceeded = true,
+    });
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = park_policy,
+        .budget = world.Budget.init(.{ .max_frame_response_bytes = 0 }),
+    });
+    const admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_b7e5,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target),
+        .environment_certificate_fingerprint = PortsEnv.certificate(.fresh, false).certificate_fingerprint,
+        .mode = .continue_fresh,
+        .run_image = parked_image,
+        .run_permit = permit,
+    });
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+    const handle = try runspace.installAdmitted(admitted);
+
+    const event = try runspace.fail(0, "budgeted imported failure");
+    try std.testing.expectEqual(world.Runspace.EventKind.run_parked_on_supervision, event.kind);
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_supervision, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+    var reexported = try runspace.exportPending(0);
+    defer reexported.deinit(std.testing.allocator);
+    try std.testing.expectEqual(parked_transcript_fingerprint, reexported.current_state.transcript_image_fingerprint.?);
+}
+
+test "runspace event budget failure does not enqueue or park request" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{
+        .max_events = 2,
+    });
+    defer runspace.deinit();
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+
+    try std.testing.expectError(error.BudgetExceeded, runspace.tick());
+    try std.testing.expectEqual(world.Runspace.RunStatus.runnable, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().event_count);
+}
+
+test "runspace exact event budget allows zero-port completion" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{
+        .max_events = 3,
+    });
+    defer runspace.deinit();
+    const handle = try runspace.installMachineRun(fixtures.Strict.Target, world.Environment(fixtures.Strict.Target, .{
+        .ports = &.{},
+    }), &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+
+    _ = try runspace.tick();
+    const summary = try runspace.getSlotSummary(handle);
+    try std.testing.expectEqual(world.Runspace.RunStatus.completed, summary.status);
+    try std.testing.expectEqual(@as(usize, 3), runspace.report().event_count);
+}
+
+test "runspace exact terminal event budget allows port run completion after response" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+
+    _ = try runspace.tick();
+    _ = try runspace.respondValue(0, @as(i32, 7));
+    runspace.config.max_events = runspace.report().event_count + 2;
+
+    _ = try runspace.tick();
+    const summary = try runspace.getSlotSummary(handle);
+    try std.testing.expectEqual(world.Runspace.RunStatus.completed, summary.status);
+    try std.testing.expectEqual(runspace.config.max_events.?, runspace.report().event_count);
+}
+
+test "runspace step event allocation failure leaves run runnable" {
+    var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{
+        .fail_index = std.math.maxInt(usize),
+    });
+    var runtime = boundary.Runtime.init(failing_allocator.allocator());
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(failing_allocator.allocator(), .{});
+    defer runspace.deinit();
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = failing_allocator.allocator(),
+        .mode = world.Mode.fresh,
+    });
+    try runspace.events.ensureUnusedCapacity(failing_allocator.allocator(), 2);
+    failing_allocator.fail_index = failing_allocator.alloc_index;
+
+    try std.testing.expectError(error.OutOfMemory, runspace.tick());
+    try std.testing.expect(failing_allocator.has_induced_failure);
+    try std.testing.expectEqual(world.Runspace.RunStatus.runnable, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().event_count);
+}
+
+test "runspace completion event allocation failure leaves run runnable" {
+    var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{
+        .fail_index = std.math.maxInt(usize),
+    });
+    var runtime = boundary.Runtime.init(failing_allocator.allocator());
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(failing_allocator.allocator(), .{});
+    defer runspace.deinit();
+    const handle = try runspace.installMachineRun(fixtures.Strict.Target, world.Environment(fixtures.Strict.Target, .{
+        .ports = &.{},
+    }), &runtime, .{}, .{
+        .allocator = failing_allocator.allocator(),
+        .mode = world.Mode.fresh,
+    });
+    try runspace.events.ensureUnusedCapacity(failing_allocator.allocator(), 2);
+    failing_allocator.fail_index = failing_allocator.alloc_index + 1;
+
+    try std.testing.expectError(error.OutOfMemory, runspace.tick());
+    try std.testing.expect(failing_allocator.has_induced_failure);
+    try std.testing.expectEqual(world.Runspace.RunStatus.runnable, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().event_count);
+}
+
+test "runspace failure event allocation failure leaves run runnable" {
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    try recordPortsTranscript(&transcript);
+    var image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer image.deinit(std.testing.allocator);
+
+    var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{
+        .fail_index = std.math.maxInt(usize),
+    });
+    var runtime = boundary.Runtime.init(failing_allocator.allocator());
+    defer runtime.deinit();
+    var ctx: PortsCtx = .{ .response = 99 };
+    var runspace = world.Runspace.init(failing_allocator.allocator(), .{ .auto_dispatch = true });
+    defer runspace.deinit();
+    const handle = try runspace.installVerifyRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = failing_allocator.allocator(),
+        .mode = world.Mode.verify,
+        .ctx = &ctx,
+        .transcript_image = &image,
+    });
+    try runspace.events.ensureUnusedCapacity(failing_allocator.allocator(), 2);
+    failing_allocator.fail_index = failing_allocator.alloc_index + 2;
+
+    try std.testing.expectError(error.OutOfMemory, runspace.tick());
+    try std.testing.expect(failing_allocator.has_induced_failure);
+    try std.testing.expectEqual(@as(usize, 0), ctx.calls);
+    try std.testing.expectEqual(world.Runspace.RunStatus.runnable, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().event_count);
+}
+
+test "runspace response event budget failure does not consume mailbox" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{
+        .max_events = 4,
+    });
+    defer runspace.deinit();
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    _ = try runspace.tick();
+
+    try std.testing.expectError(error.BudgetExceeded, runspace.respondValue(0, @as(i32, 7)));
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try runspace.getSlotSummary(handle)).status);
+}
+
+test "runspace auto dispatch event budget failure happens before handler call" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var ctx: PortsCtx = .{};
+    var runspace = world.Runspace.init(std.testing.allocator, .{
+        .auto_dispatch = true,
+        .max_events = 5,
+    });
+    defer runspace.deinit();
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+    });
+
+    try std.testing.expectError(error.BudgetExceeded, runspace.tick());
+    try std.testing.expectEqual(@as(usize, 0), ctx.calls);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
+    try std.testing.expectEqual(world.Runspace.RunStatus.runnable, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().event_count);
+}
+
+test "runspace install admitted and replay records receipts summaries and events" {
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Ports.Target)});
+    const package = world.Admission.TransferPackage.init(.{
+        .kind = .target_reference_only,
+        .target_ref = target_ref,
+        .requested_mode = .continue_fresh,
+    });
+    const result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, package, .{});
+    try std.testing.expect(result.report.accepted);
+    const admitted = result.admitted_run orelse return error.ExpectedAdmittedRun;
+    const admitted_receipt_fingerprint = result.receipt.?.receipt_fingerprint;
+    var receiptless_admitted = admitted;
+    receiptless_admitted.admission_receipt = null;
+    var receiptless_runspace = world.Runspace.init(std.testing.allocator, .{
+        .require_admission = true,
+    });
+    defer receiptless_runspace.deinit();
+    try std.testing.expectError(error.InvalidFrameEncoding, receiptless_runspace.installAdmitted(receiptless_admitted));
+    var runspace = world.Runspace.init(std.testing.allocator, .{
+        .require_admission = true,
+    });
+    defer runspace.deinit();
+    var stale_admitted = admitted;
+    stale_admitted.mode = .completed_replay;
+    try std.testing.expectError(error.InvalidFrameEncoding, runspace.installAdmitted(stale_admitted));
+    var invalid_target_ref = target_ref;
+    invalid_target_ref.world_surface_fingerprint +%= 1;
+    const invalid_target_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_5510,
+        .target_ref = invalid_target_ref,
+        .mode = .continue_fresh,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, runspace.installAdmitted(invalid_target_admitted));
+    const resume_without_image = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_5520,
+        .target_ref = target_ref,
+        .mode = .resume_parked,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, runspace.installAdmitted(resume_without_image));
+    const branch_resume_without_image = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_5521,
+        .target_ref = target_ref,
+        .mode = .branch_resume,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, runspace.installAdmitted(branch_resume_without_image));
+    const completed_replay_without_image = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_5522,
+        .target_ref = target_ref,
+        .mode = .completed_replay,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, runspace.installAdmitted(completed_replay_without_image));
+    const completed_state_for_resume = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .completed,
+    });
+    const completed_image_for_resume = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = completed_state_for_resume,
+    });
+    const resume_with_completed_image = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_5523,
+        .target_ref = target_ref,
+        .run_image = completed_image_for_resume,
+        .mode = .resume_parked,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, runspace.installAdmitted(resume_with_completed_image));
+    const fresh_state_for_replay = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .not_started,
+    });
+    const fresh_image_for_replay = world.RunImage.init(.{
+        .kind = .full_target_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = fresh_state_for_replay,
+    });
+    const replay_with_fresh_image = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_5524,
+        .target_ref = target_ref,
+        .run_image = fresh_image_for_replay,
+        .mode = .replay_only,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, runspace.installAdmitted(replay_with_fresh_image));
+    const verify_with_fresh_image = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_5525,
+        .target_ref = target_ref,
+        .run_image = fresh_image_for_replay,
+        .mode = .verify_only,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, runspace.installAdmitted(verify_with_fresh_image));
+    const admitted_handle = try runspace.installAdmitted(admitted);
+    const admitted_summary = try runspace.getSlotSummary(admitted_handle);
+    try std.testing.expectEqual(world.Runspace.RunStatus.admitted, admitted_summary.status);
+    try std.testing.expectError(error.InvalidRunspaceTransition, runspace.step(admitted_handle));
+    try std.testing.expectEqual(@as(?u64, admitted_receipt_fingerprint), admitted_summary.admission_receipt_fingerprint);
+    try std.testing.expectEqual(world.Runspace.EventKind.run_admitted, runspace.events.items[0].kind);
+
+    const ports_cert = PortsEnv.certificate(.fresh, false);
+    const accept_policy = world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .allow_native_adapters = true,
+        .allow_checkpoints = true,
+        .allow_handoff_accept = true,
+        .require_environment_certificate = true,
+    });
+    const valid_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = accept_policy,
+    });
+    var supervised_runspace = world.Runspace.init(std.testing.allocator, .{
+        .require_supervision = true,
+    });
+    defer supervised_runspace.deinit();
+    const supervised_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_5511,
+        .target_ref = target_ref,
+        .environment_certificate_fingerprint = ports_cert.certificate_fingerprint,
+        .run_permit = valid_permit,
+        .mode = .continue_fresh,
+    });
+    const supervised_handle = try supervised_runspace.installAdmitted(supervised_admitted);
+    const scoped_valid_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = accept_policy,
+        .admission_receipt_fingerprint = 0xadd1_5511,
+    });
+    try std.testing.expectEqual(scoped_valid_permit.permit_fingerprint, (try supervised_runspace.getSlotSummary(supervised_handle)).run_permit_fingerprint.?);
+    try std.testing.expectEqual(@as(usize, 1), supervised_runspace.slots.items[0].supervisor.?.ledger.total_handoff_accepts);
+    const accept_deny_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+    });
+    const accept_deny_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_550f,
+        .target_ref = target_ref,
+        .environment_certificate_fingerprint = ports_cert.certificate_fingerprint,
+        .run_permit = accept_deny_permit,
+        .mode = .continue_fresh,
+    });
+    try std.testing.expectError(error.HandoffDenied, supervised_runspace.installAdmitted(accept_deny_admitted));
+
+    const StrictEnv = world.Environment(fixtures.Strict.Target, .{
+        .bindings = .{},
+        .policy = world.EnvironmentPolicy.strict_fresh,
+    });
+    const wrong_target_permit = world.Supervision.issue(fixtures.Strict.Target, StrictEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+    });
+    const wrong_target_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_5512,
+        .target_ref = target_ref,
+        .environment_certificate_fingerprint = ports_cert.certificate_fingerprint,
+        .run_permit = wrong_target_permit,
+        .mode = .continue_fresh,
+    });
+    try std.testing.expectError(error.SupervisionDenied, supervised_runspace.installAdmitted(wrong_target_admitted));
+
+    const wrong_env_permit = world.Supervision.issue(fixtures.Ports.Target, PortsReplayEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+    });
+    const wrong_env_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_5513,
+        .target_ref = target_ref,
+        .environment_certificate_fingerprint = ports_cert.certificate_fingerprint,
+        .run_permit = wrong_env_permit,
+        .mode = .continue_fresh,
+    });
+    try std.testing.expectError(error.SupervisionDenied, supervised_runspace.installAdmitted(wrong_env_admitted));
+
+    const wrong_mode_permit = world.Supervision.issue(fixtures.Ports.Target, PortsReplayEnv, .{
+        .mode = .replay,
+        .policy = world.SupervisionPolicy.strict_replay,
+        .transcript_image_available = true,
+    });
+    const wrong_mode_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_5514,
+        .target_ref = target_ref,
+        .run_permit = wrong_mode_permit,
+        .mode = .continue_fresh,
+    });
+    try std.testing.expectError(error.SupervisionDenied, supervised_runspace.installAdmitted(wrong_mode_admitted));
+
+    const stale_receipt_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+        .admission_receipt_fingerprint = 0xadd1_5515,
+    });
+    const stale_receipt_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_5516,
+        .target_ref = target_ref,
+        .environment_certificate_fingerprint = ports_cert.certificate_fingerprint,
+        .run_permit = stale_receipt_permit,
+        .mode = .continue_fresh,
+    });
+    try std.testing.expectError(error.SupervisionDenied, supervised_runspace.installAdmitted(stale_receipt_admitted));
+
+    const unwitnessed_module_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+        .module_ref_fingerprint = 0xfeed_1000,
+    });
+    const unwitnessed_module_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_5517,
+        .target_ref = target_ref,
+        .environment_certificate_fingerprint = ports_cert.certificate_fingerprint,
+        .run_permit = unwitnessed_module_permit,
+        .mode = .continue_fresh,
+    });
+    try std.testing.expectError(error.SupervisionDenied, supervised_runspace.installAdmitted(unwitnessed_module_admitted));
+    const fresh_module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
+    const module_scoped_fresh_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = accept_policy,
+        .module_ref_fingerprint = fresh_module_ref.module_ref_fingerprint,
+    });
+    const module_reference_package = world.Admission.TransferPackage.init(.{
+        .kind = .module_reference,
+        .target_ref = target_ref,
+        .module_ref = fresh_module_ref,
+        .requested_mode = .continue_fresh,
+    });
+    var module_reference_result = world.Admission.Admitter.init(.{
+        .registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Ports.Target)}),
+        .policy = world.Admission.AdmissionPolicy.init(.{
+            .allow_reference_targets = true,
+            .require_supervision_permit = true,
+        }),
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, module_reference_package, .{ .permit = module_scoped_fresh_permit });
+    defer module_reference_result.deinit(std.testing.allocator);
+    try std.testing.expect(module_reference_result.report.accepted);
+    const module_reference_admitted = module_reference_result.admitted_run orelse return error.ExpectedAdmittedRun;
+    try std.testing.expect(module_reference_admitted.run_image == null);
+    try std.testing.expectEqual(fresh_module_ref.module_ref_fingerprint, module_reference_admitted.module_ref_fingerprint.?);
+    var module_reference_runspace = world.Runspace.init(std.testing.allocator, .{
+        .require_admission = true,
+        .require_supervision = true,
+    });
+    defer module_reference_runspace.deinit();
+    const module_reference_handle = try module_reference_runspace.installAdmitted(module_reference_admitted);
+    try std.testing.expectEqual(fresh_module_ref.module_ref_fingerprint, (try module_reference_runspace.getSlotSummary(module_reference_handle)).module_ref_fingerprint.?);
+
+    const replay_cert = PortsReplayEnv.certificate(.replay, true);
+    const module_scoped_permit = world.Supervision.issue(fixtures.Ports.Target, PortsReplayEnv, .{
+        .mode = .replay,
+        .policy = world.SupervisionPolicy.strict_replay,
+        .transcript_image_available = true,
+        .module_ref_fingerprint = 0xfeed_2000,
+    });
+    const completed_state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .completed,
+    });
+    const mismatched_module_image = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = completed_state,
+        .module_ref_fingerprint = 0xfeed_2001,
+    });
+    const mismatched_module_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_5518,
+        .target_ref = target_ref,
+        .environment_certificate_fingerprint = replay_cert.certificate_fingerprint,
+        .run_permit = module_scoped_permit,
+        .run_image = mismatched_module_image,
+        .mode = .completed_replay,
+    });
+    try std.testing.expectError(error.SupervisionDenied, supervised_runspace.installAdmitted(mismatched_module_admitted));
+
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    try transcript.append(.{
+        .kind = .run_started,
+        .world_surface_fingerprint = fixtures.Strict.Target.WorldSurface.surface_fingerprint,
+        .target_certificate_fingerprint = fixtures.Strict.Target.Certificate.certificate_fingerprint,
+    });
+    try transcript.append(.{
+        .kind = .run_completed,
+        .world_surface_fingerprint = fixtures.Strict.Target.WorldSurface.surface_fingerprint,
+        .target_certificate_fingerprint = fixtures.Strict.Target.Certificate.certificate_fingerprint,
+    });
+    var image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer image.deinit(std.testing.allocator);
+
+    var replay_runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer replay_runspace.deinit();
+    const replay_handle = try replay_runspace.installReplay(fixtures.Strict.Target, image, null);
+    const replay_summary = try replay_runspace.getSlotSummary(replay_handle);
+    try std.testing.expectEqual(world.Runspace.RunStatus.completed, replay_summary.status);
+    try std.testing.expectEqual(world.Runspace.EventKind.run_installed, replay_runspace.events.items[0].kind);
+    var replay_export = try replay_runspace.exportRun(replay_handle);
+    defer replay_export.deinit(std.testing.allocator);
+    try std.testing.expect(replay_export.transcript_image != null);
+    try std.testing.expectEqual(world.ImportSet.fromTarget(fixtures.Strict.Target).import_set_fingerprint, replay_export.import_set_fingerprint);
+    const forged_supervised_image = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Strict.Target),
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Strict.Target).import_set_fingerprint,
+        .transcript_image = image,
+        .current_state = world.RunImage.fromTranscriptImage(fixtures.Strict.Target, image, .completed_run).current_state,
+        .prior_run_permit_fingerprint = 0x5150_5150,
+    });
+    var supervised_direct_image = world.Runspace.init(std.testing.allocator, .{ .require_supervision = true });
+    defer supervised_direct_image.deinit();
+    try std.testing.expectError(error.SupervisionDenied, supervised_direct_image.installRunImage(forged_supervised_image));
+    const StrictReplayEnv = world.Environment(fixtures.Strict.Target, .{
+        .bindings = .{},
+        .policy = world.EnvironmentPolicy.strict_replay,
+    });
+    const environment_bound_replay_permit = world.Supervision.issue(fixtures.Strict.Target, StrictReplayEnv, .{
+        .mode = .replay,
+        .policy = world.SupervisionPolicy.strict_replay,
+        .transcript_image_available = true,
+    });
+    var supervised_replay_runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer supervised_replay_runspace.deinit();
+    try std.testing.expectError(error.SupervisionDenied, supervised_replay_runspace.installReplay(fixtures.Strict.Target, image, environment_bound_replay_permit));
+    const admission_scoped_replay_permit = world.Supervision.issue(fixtures.Strict.Target, StrictReplayEnv, .{
+        .mode = .replay,
+        .policy = world.SupervisionPolicy.strict_replay,
+        .transcript_image_available = true,
+        .admission_receipt_fingerprint = 0xadd1_5c0e,
+    });
+    try std.testing.expectError(error.SupervisionDenied, supervised_replay_runspace.installReplay(fixtures.Strict.Target, image, admission_scoped_replay_permit));
+    const module_scoped_replay_permit = world.Supervision.issue(fixtures.Strict.Target, StrictReplayEnv, .{
+        .mode = .replay,
+        .policy = world.SupervisionPolicy.strict_replay,
+        .transcript_image_available = true,
+        .module_ref_fingerprint = world.Admission.ModuleRef.fromTarget(fixtures.Strict.Target).module_ref_fingerprint,
+    });
+    try std.testing.expectError(error.SupervisionDenied, supervised_replay_runspace.installReplay(fixtures.Strict.Target, image, module_scoped_replay_permit));
+    const embedded_transcript_unavailable_permit = world.Supervision.issue(fixtures.Strict.Target, StrictReplayEnv, .{
+        .mode = .replay,
+        .policy = world.SupervisionPolicy.strict_replay,
+    });
+    const embedded_transcript_unavailable_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_5c0f,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Strict.Target),
+        .mode = .replay_only,
+        .run_image = replay_export,
+        .run_permit = embedded_transcript_unavailable_permit,
+    });
+    try std.testing.expectError(error.SupervisionDenied, supervised_replay_runspace.installAdmitted(embedded_transcript_unavailable_admitted));
+    const transcript_unattested_replay_policy = world.SupervisionPolicy.init(.{
+        .allow_replay_calls = true,
+        .allow_replay_adapters = true,
+        .require_environment_certificate = false,
+        .require_transcript_image_for_replay = false,
+    });
+    const transcript_unattested_replay_permit = world.Supervision.issue(fixtures.Strict.Target, StrictReplayEnv, .{
+        .mode = .replay,
+        .policy = transcript_unattested_replay_policy,
+    });
+    try std.testing.expectError(error.SupervisionDenied, supervised_replay_runspace.installReplay(fixtures.Strict.Target, image, transcript_unattested_replay_permit));
+    const replay_without_environment_policy = world.SupervisionPolicy.init(.{
+        .allow_replay_calls = true,
+        .allow_replay_adapters = true,
+        .allow_handoff_accept = true,
+        .require_portable_value_images = true,
+        .reject_native_only_values = true,
+        .require_environment_certificate = false,
+        .require_transcript_image_for_replay = true,
+    });
+    const replay_export_denied_permit = world.Supervision.issue(fixtures.Strict.Target, StrictReplayEnv, .{
+        .mode = .replay,
+        .policy = replay_without_environment_policy,
+        .transcript_image_available = true,
+    });
+    const supervised_replay_handle = try supervised_replay_runspace.installReplay(fixtures.Strict.Target, image, replay_export_denied_permit);
+    try std.testing.expectError(error.HandoffDenied, supervised_replay_runspace.exportRun(supervised_replay_handle));
+    var replay_accounting_transcript = world.Transcript.init(std.testing.allocator);
+    defer replay_accounting_transcript.deinit();
+    try recordPortsTranscript(&replay_accounting_transcript);
+    var replay_accounting_image = try replay_accounting_transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer replay_accounting_image.deinit(std.testing.allocator);
+    var replay_accounting_export = world.RunImage.fromTranscriptImage(fixtures.Ports.Target, replay_accounting_image, .replay_only_run);
+    defer replay_accounting_export.deinit(std.testing.allocator);
+    const replay_accounting_denied_permit = world.Supervision.issue(fixtures.Ports.Target, PortsReplayEnv, .{
+        .mode = .replay,
+        .policy = replay_without_environment_policy,
+        .budget = world.Budget.init(.{ .max_replay_calls = 0 }),
+        .transcript_image_available = true,
+    });
+    try std.testing.expectError(error.BudgetExceeded, supervised_replay_runspace.installReplay(fixtures.Ports.Target, replay_accounting_image, replay_accounting_denied_permit));
+    const replay_accounting_denied_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_5c10,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target),
+        .mode = .replay_only,
+        .run_image = replay_accounting_export,
+        .run_permit = replay_accounting_denied_permit,
+    });
+    try std.testing.expectError(error.BudgetExceeded, supervised_replay_runspace.installAdmitted(replay_accounting_denied_admitted));
+    const out_of_range_replay_budgets = [_]world.Supervision.PerPortBudget{.{
+        .world_port_id = 0,
+        .max_replay_calls = 1,
+    }};
+    const out_of_range_replay_permit = world.Supervision.issue(fixtures.Strict.Target, StrictReplayEnv, .{
+        .mode = .replay,
+        .policy = replay_without_environment_policy,
+        .budget = world.Budget.init(.{ .per_port_budgets = &out_of_range_replay_budgets }),
+        .transcript_image_available = true,
+    });
+    try std.testing.expectError(error.SupervisionDenied, supervised_replay_runspace.installReplay(fixtures.Strict.Target, image, out_of_range_replay_permit));
+    const mismatched_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_bad,
+        .target_ref = target_ref,
+        .mode = .continue_fresh,
+        .run_image = replay_export,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, runspace.installAdmitted(mismatched_admitted));
+    try std.testing.expectError(error.ReplaySurfaceMismatch, replay_runspace.installReplay(fixtures.Ports.Target, image, null));
+    const wrong_replay_permit = world.Supervision.issue(fixtures.Ports.Target, PortsReplayEnv, .{
+        .mode = .replay,
+        .policy = world.SupervisionPolicy.strict_replay,
+        .transcript_image_available = true,
+    });
+    try std.testing.expectError(error.SupervisionDenied, replay_runspace.installReplay(fixtures.Strict.Target, image, wrong_replay_permit));
+
+    var parked_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer parked_runtime.deinit();
+    var parked_transcript = world.Transcript.init(std.testing.allocator);
+    defer parked_transcript.deinit();
+    var parked_source = world.Runspace.init(std.testing.allocator, .{});
+    defer parked_source.deinit();
+    const parked_handle = try parked_source.installMachineRun(fixtures.Ports.Target, PortsEnv, &parked_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .transcript = &parked_transcript,
+    });
+    _ = parked_handle;
+    _ = try parked_source.tick();
+    var parked_export = try parked_source.exportPending(0);
+    defer parked_export.deinit(std.testing.allocator);
+    const admitted_transcript = parked_export.transcript_image.?;
+    const bare_parked_image = world.RunImage.init(.{
+        .kind = .parked_run,
+        .target_ref = parked_export.target_ref,
+        .import_set_fingerprint = parked_export.import_set_fingerprint,
+        .current_state = parked_export.current_state,
+        .pending_request_frame = parked_export.pending_request_frame.?,
+        .prior_run_receipt_fingerprint = 0x5eed_9000,
+        .module_ref_fingerprint = 0x9000_5eed,
+    });
+    const parked_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_9000,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target),
+        .mode = .continue_fresh,
+        .run_image = bare_parked_image,
+        .transcript_image = admitted_transcript,
+    });
+    var parked_target = world.Runspace.init(std.testing.allocator, .{});
+    defer parked_target.deinit();
+    const parked_installed = try parked_target.installAdmitted(parked_admitted);
+    const parked_summary = try parked_target.getSlotSummary(parked_installed);
+    try std.testing.expectEqual(parked_export.current_state.run_state_fingerprint, parked_summary.run_state_fingerprint);
+    var reexported = try parked_target.exportRun(parked_installed);
+    defer reexported.deinit(std.testing.allocator);
+    try std.testing.expect(reexported.transcript_image != null);
+    try std.testing.expectEqual(admitted_transcript.transcript_image_fingerprint, reexported.transcript_image.?.transcript_image_fingerprint);
+    try std.testing.expectEqual(@as(?u64, 0x5eed_9000), reexported.prior_run_receipt_fingerprint);
+    try std.testing.expectEqual(@as(?u64, 0x9000_5eed), reexported.module_ref_fingerprint);
+    const reexported_bytes = try reexported.encode(std.testing.allocator);
+    defer std.testing.allocator.free(reexported_bytes);
+    var decoded_reexported = try world.RunImage.decode(std.testing.allocator, reexported_bytes);
+    defer decoded_reexported.deinit(std.testing.allocator);
+    try std.testing.expectEqual(reexported.run_image_fingerprint, decoded_reexported.run_image_fingerprint);
+
+    const detached_state = world.RunState.init(.{
+        .target_ref_fingerprint = world.TargetRef.fromTarget(fixtures.Ports.Target).target_ref_fingerprint,
+        .pending_request_fingerprint = parked_export.pending_request_frame.?.frame_fingerprint,
+        .turn_index = parked_export.pending_request_frame.?.turn_index,
+        .status = .parked_on_port,
+    });
+    const detached_image = world.RunImage.init(.{
+        .kind = .parked_run,
+        .target_ref = parked_export.target_ref,
+        .import_set_fingerprint = parked_export.import_set_fingerprint,
+        .current_state = detached_state,
+        .pending_request_frame = parked_export.pending_request_frame.?,
+    });
+    const detached_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_9001,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target),
+        .mode = .continue_fresh,
+        .run_image = detached_image,
+        .transcript_image = admitted_transcript,
+    });
+    var detached_target = world.Runspace.init(std.testing.allocator, .{});
+    defer detached_target.deinit();
+    const detached_installed = try detached_target.installAdmitted(detached_admitted);
+    const detached_summary = try detached_target.getSlotSummary(detached_installed);
+    var detached_export = try detached_target.exportRun(detached_installed);
+    defer detached_export.deinit(std.testing.allocator);
+    try std.testing.expectEqual(admitted_transcript.transcript_image_fingerprint, detached_export.current_state.transcript_image_fingerprint.?);
+    try std.testing.expectEqual(detached_export.current_state.run_state_fingerprint, detached_summary.run_state_fingerprint);
+
+    var completed_attach_transcript = world.Transcript.init(std.testing.allocator);
+    defer completed_attach_transcript.deinit();
+    try recordPortsTranscript(&completed_attach_transcript);
+    var completed_attach_image = try completed_attach_transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer completed_attach_image.deinit(std.testing.allocator);
+    const bare_completed_state = world.RunState.init(.{
+        .target_ref_fingerprint = world.TargetRef.fromTarget(fixtures.Ports.Target).target_ref_fingerprint,
+        .status = .completed,
+    });
+    const bare_completed_image = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target),
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = bare_completed_state,
+    });
+    const completed_attach_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_9002,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target),
+        .mode = .continue_fresh,
+        .run_image = bare_completed_image,
+        .transcript_image = completed_attach_image,
+    });
+    var completed_attach_target = world.Runspace.init(std.testing.allocator, .{});
+    defer completed_attach_target.deinit();
+    const completed_attach_handle = try completed_attach_target.installAdmitted(completed_attach_admitted);
+    const completed_attach_summary = try completed_attach_target.getSlotSummary(completed_attach_handle);
+    var completed_attach_export = try completed_attach_target.exportRun(completed_attach_handle);
+    defer completed_attach_export.deinit(std.testing.allocator);
+    try std.testing.expectEqual(completed_attach_image.transcript_image_fingerprint, completed_attach_export.current_state.transcript_image_fingerprint.?);
+    try std.testing.expect(completed_attach_export.current_state.final_response_fingerprint != null);
+    try std.testing.expect(completed_attach_export.current_state.final_value_image_fingerprint != null);
+    try std.testing.expect(completed_attach_export.current_state.turn_index > bare_completed_state.turn_index);
+    try std.testing.expectEqual(completed_attach_export.current_state.run_state_fingerprint, completed_attach_summary.run_state_fingerprint);
+
+    var admitted_handoff_denied = world.Runspace.init(std.testing.allocator, .{
+        .allow_handoff_install = false,
+    });
+    defer admitted_handoff_denied.deinit();
+    try std.testing.expectError(error.RunspaceInstallDenied, admitted_handoff_denied.installAdmitted(parked_admitted));
+
+    const branched_state = world.RunState.init(.{
+        .target_ref_fingerprint = world.TargetRef.fromTarget(fixtures.Ports.Target).target_ref_fingerprint,
+        .branch_id = 44,
+        .status = .completed,
+    });
+    const branched_checkpoint = world.Timeline.Checkpoint.init(.{
+        .world_surface_fingerprint = parked_export.target_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parked_export.target_ref.target_certificate_fingerprint,
+        .event_index = 0,
+        .turn_index = 0,
+        .transcript_prefix_fingerprint = 0,
+        .branch_id = 44,
+        .status = .completed,
+    });
+    const branched_branch = world.Timeline.Branch{
+        .branch_id = 44,
+        .checkpoint_fingerprint = branched_checkpoint.checkpoint_fingerprint,
+        .start_event_index = 0,
+        .final_event_index = 0,
+        .final_status = .completed,
+    };
+    const branched_image = world.RunImage.init(.{
+        .kind = .branched_run,
+        .target_ref = parked_export.target_ref,
+        .import_set_fingerprint = parked_export.import_set_fingerprint,
+        .current_state = branched_state,
+        .checkpoints = &.{branched_checkpoint},
+        .branches = @constCast(&[_]world.Timeline.Branch{branched_branch}),
+    });
+    const branched_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_b044,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target),
+        .mode = .continue_fresh,
+        .run_image = branched_image,
+    });
+    var branched_target = world.Runspace.init(std.testing.allocator, .{});
+    defer branched_target.deinit();
+    const branched_handle = try branched_target.installAdmitted(branched_admitted);
+    const branched_summary = try branched_target.getSlotSummary(branched_handle);
+    try std.testing.expectEqual(@as(?u64, 44), branched_handle.branch_id);
+    try std.testing.expectEqual(@as(?u64, 44), branched_summary.handle.branch_id);
+    try std.testing.expectEqual(@as(?u64, 44), branched_summary.branch_id);
+    const selected_state = world.RunState.init(.{
+        .target_ref_fingerprint = world.TargetRef.fromTarget(fixtures.Ports.Target).target_ref_fingerprint,
+        .status = .completed,
+    });
+    const selected_branch_image = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = parked_export.target_ref,
+        .import_set_fingerprint = parked_export.import_set_fingerprint,
+        .current_state = selected_state,
+        .checkpoints = &.{branched_checkpoint},
+        .branches = @constCast(&[_]world.Timeline.Branch{branched_branch}),
+    });
+    const selected_branch_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_b045,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target),
+        .mode = .continue_fresh,
+        .run_image = selected_branch_image,
+        .selected_branch_id = 44,
+    });
+    var selected_branch_target = world.Runspace.init(std.testing.allocator, .{});
+    defer selected_branch_target.deinit();
+    const selected_branch_handle = try selected_branch_target.installAdmitted(selected_branch_admitted);
+    const selected_branch_checkpoint = try selected_branch_target.checkpoint(selected_branch_handle);
+    try std.testing.expectEqual(@as(u64, 44), selected_branch_checkpoint.branch_id);
+    var selected_branch_export = try selected_branch_target.exportRun(selected_branch_handle);
+    defer selected_branch_export.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u64, 44), selected_branch_export.current_state.branch_id);
+    const branch_resume_missing_selection = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_b049,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target),
+        .mode = .branch_resume,
+        .run_image = selected_branch_image,
+    });
+    try std.testing.expectError(error.HandoffCheckpointMismatch, selected_branch_target.installAdmitted(branch_resume_missing_selection));
+    var selected_missing_branch_target = world.Runspace.init(std.testing.allocator, .{});
+    defer selected_missing_branch_target.deinit();
+    const selected_missing_branch_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_b047,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target),
+        .mode = .continue_fresh,
+        .run_image = selected_branch_image,
+        .selected_branch_id = 99,
+    });
+    try std.testing.expectError(error.HandoffCheckpointMismatch, selected_missing_branch_target.installAdmitted(selected_missing_branch_admitted));
+    const selected_checkpoint_mismatch_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_b046,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target),
+        .mode = .continue_fresh,
+        .run_image = selected_branch_image,
+        .selected_checkpoint_ref = branched_checkpoint.checkpoint_fingerprint,
+    });
+    var selected_checkpoint_target = world.Runspace.init(std.testing.allocator, .{});
+    defer selected_checkpoint_target.deinit();
+    try std.testing.expectError(error.HandoffCheckpointMismatch, selected_checkpoint_target.installAdmitted(selected_checkpoint_mismatch_admitted));
+    const unwitnessed_checkpoint_state = world.RunState.init(.{
+        .target_ref_fingerprint = world.TargetRef.fromTarget(fixtures.Ports.Target).target_ref_fingerprint,
+        .checkpoint_fingerprint = branched_checkpoint.checkpoint_fingerprint,
+        .status = .completed,
+    });
+    const unwitnessed_checkpoint_image = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = parked_export.target_ref,
+        .import_set_fingerprint = parked_export.import_set_fingerprint,
+        .current_state = unwitnessed_checkpoint_state,
+    });
+    const unwitnessed_checkpoint_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_b048,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target),
+        .mode = .continue_fresh,
+        .run_image = unwitnessed_checkpoint_image,
+        .selected_checkpoint_ref = branched_checkpoint.checkpoint_fingerprint,
+    });
+    var unwitnessed_checkpoint_target = world.Runspace.init(std.testing.allocator, .{});
+    defer unwitnessed_checkpoint_target.deinit();
+    try std.testing.expectError(error.HandoffCheckpointMismatch, unwitnessed_checkpoint_target.installAdmitted(unwitnessed_checkpoint_admitted));
+
+    var replay_denied = world.Runspace.init(std.testing.allocator, .{
+        .allow_replay_install = false,
+    });
+    defer replay_denied.deinit();
+    try std.testing.expectError(error.RunspaceInstallDenied, replay_denied.installReplay(fixtures.Strict.Target, image, null));
+    try std.testing.expectError(error.RunspaceInstallDenied, replay_denied.installRunImage(replay_export));
+    const replay_image_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_5517,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Strict.Target),
+        .mode = .continue_fresh,
+        .run_image = replay_export,
+    });
+    try std.testing.expectError(error.RunspaceInstallDenied, replay_denied.installAdmitted(replay_image_admitted));
+    const transcript_only_replay_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_5518,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Strict.Target),
+        .mode = .replay_only,
+        .transcript_image = image,
+    });
+    try std.testing.expectError(error.RunspaceInstallDenied, replay_denied.installAdmitted(transcript_only_replay_admitted));
+    var replay_denied_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer replay_denied_runtime.deinit();
+    try std.testing.expectError(error.RunspaceInstallDenied, replay_denied.installMachineRun(fixtures.Strict.Target, StrictReplayEnv, &replay_denied_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.replay,
+        .transcript_image = &image,
+    }));
+    try std.testing.expectError(error.RunspaceInstallDenied, replay_denied.installVerifyRun(fixtures.Strict.Target, StrictReplayEnv, &replay_denied_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.verify,
+        .transcript_image = &image,
+    }));
+    var manual_replay_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer manual_replay_runtime.deinit();
+    var manual_replay_runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer manual_replay_runspace.deinit();
+    try std.testing.expectError(error.RunspaceInstallDenied, manual_replay_runspace.installMachineRun(fixtures.Strict.Target, StrictReplayEnv, &manual_replay_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.replay,
+        .transcript_image = &image,
+    }));
+    try std.testing.expectError(error.RunspaceInstallDenied, manual_replay_runspace.installVerifyRun(fixtures.Strict.Target, StrictReplayEnv, &manual_replay_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.verify,
+        .transcript_image = &image,
+    }));
+}
+
+test "runspace tick parks responds and completes machine run" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .transcript = &transcript,
+    });
+    var report = try runspace.tick();
+    try std.testing.expectEqual(@as(usize, 1), report.parked_count);
+    try std.testing.expectEqual(@as(usize, 1), report.pending_port_count);
+    const pending = try runspace.mailbox.get(0);
+    try std.testing.expectEqual(handle.handle_fingerprint, pending.handle.handle_fingerprint);
+    try std.testing.expectEqual(PortsDecl.world_port_id, pending.world_port_id);
+    const request_frame = pending.request_frame orelse return error.ExpectedFrameRequest;
+    var deferred_response = try world.Frame.Response.fromPortableValue(
+        std.testing.allocator,
+        request_frame,
+        pending.expected_response_value_table_id,
+        pending.expected_response_kind,
+        @as(i32, 7),
+        .portable,
+    );
+    defer deferred_response.deinit(std.testing.allocator);
+    try std.testing.expect(deferred_response.responseFingerprintDeferred());
+
+    const response_event = try runspace.respondValue(0, @as(i32, 7));
+    try std.testing.expectEqual(world.Runspace.EventKind.run_resumed, response_event.kind);
+    report = runspace.poll();
+    try std.testing.expectEqual(@as(usize, 1), report.runnable_count);
+    try std.testing.expectEqual(@as(usize, 0), report.pending_port_count);
+    const pending_after_response = try runspace.mailbox.listPending(std.testing.allocator);
+    defer std.testing.allocator.free(pending_after_response);
+    try std.testing.expectEqual(@as(usize, 0), pending_after_response.len);
+    var transcript_image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer transcript_image.deinit(std.testing.allocator);
+    const transcript_response_frame = for (transcript_image.events) |event| {
+        if (event.kind == .frame_responded) break event.response_frame.?;
+    } else return error.ExpectedResponseFrame;
+    try std.testing.expect(transcript_response_frame.frame_fingerprint != deferred_response.frame_fingerprint);
+    try std.testing.expectEqual(transcript_response_frame.frame_fingerprint, response_event.response_frame_fingerprint.?);
+    try std.testing.expectEqual(request_frame.frame_fingerprint, response_event.request_frame_fingerprint.?);
+    const port_responded_event = for (runspace.events.items) |event| {
+        if (event.kind == .port_responded) break event;
+    } else return error.ExpectedResponseFrame;
+    try std.testing.expectEqual(transcript_response_frame.frame_fingerprint, port_responded_event.response_frame_fingerprint.?);
+    try std.testing.expectEqual(request_frame.frame_fingerprint, port_responded_event.request_frame_fingerprint.?);
+    const resumed_checkpoint = try runspace.checkpoint(handle);
+    try std.testing.expectEqual(transcript_response_frame.frame_fingerprint, resumed_checkpoint.last_response_fingerprint.?);
+    try std.testing.expectEqual(@as(usize, 1), resumed_checkpoint.turn_index);
+
+    report = try runspace.tick();
+    try std.testing.expectEqual(@as(usize, 1), report.completed_count);
+    try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try runspace.getSlotSummary(handle)).status);
+    var exported = try runspace.exportRun(handle);
+    defer exported.deinit(std.testing.allocator);
+    try std.testing.expectEqual(transcript_response_frame.response_value_fingerprint.?, exported.current_state.final_value_image_fingerprint.?);
+}
+
+test "runspace manual default parks without environment dispatch" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var ctx: PortsCtx = .{};
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+    });
+    const report = try runspace.tick();
+    try std.testing.expectEqual(@as(usize, 1), report.parked_count);
+    try std.testing.expectEqual(@as(usize, 1), report.pending_port_count);
+    try std.testing.expectEqual(@as(usize, 0), ctx.calls);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try runspace.getSlotSummary(handle)).status);
+    const response_event = try runspace.respondValue(0, @as(i32, 7));
+    _ = try runspace.tick();
+    var image = try runspace.exportRun(handle);
+    defer image.deinit(std.testing.allocator);
+    try std.testing.expectEqual(world.RunImage.Kind.completed_run, image.kind);
+    try std.testing.expectEqual(response_event.response_frame_fingerprint.?, image.current_state.final_response_fingerprint.?);
+    try std.testing.expect(image.current_state.final_value_image_fingerprint != null);
+}
+
+test "runspace supervised manual response charges once" {
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+        .budget = world.Budget.init(.{ .max_port_responses = 1 }),
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{
+        .require_supervision = true,
+    });
+    defer runspace.deinit();
+
+    _ = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .permit = permit,
+    });
+    _ = try runspace.tick();
+    const response_event = try runspace.respondValue(0, @as(i32, 7));
+    try std.testing.expectEqual(world.Runspace.EventKind.run_resumed, response_event.kind);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
+}
+
+test "runspace failed manual response consumes mailbox and fails slot" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    _ = try runspace.tick();
+    const pending = try runspace.mailbox.get(0);
+    const request = pending.request_frame.?;
+    const failed_response = world.Frame.Response.init(.{
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .target_certificate_fingerprint = request.target_certificate_fingerprint,
+        .world_port_id = request.world_port_id,
+        .request_fingerprint = request.request_fingerprint,
+        .response_kind = .@"resume",
+        .response_value_table_id = request.expected_response_value_table_id,
+        .response_fingerprint = 0x5a1e,
+        .replay_key = request.replay_key_seed.withResponse(0x5a1e).fingerprint(),
+        .status = .failed,
+    });
+
+    const event = try runspace.respond(0, failed_response);
+    try std.testing.expectEqual(world.Runspace.EventKind.run_failed, event.kind);
+    try std.testing.expectEqual(world.Runspace.PendingStatus.failed, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.failed, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
+}
+
+test "runspace typed response validation failure preserves pending mailbox" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    _ = try runspace.tick();
+    const pending = try runspace.mailbox.get(0);
+    const request = pending.request_frame.?;
+    var wrong_fingerprint_response = try world.Frame.Response.fromValue(
+        std.testing.allocator,
+        request,
+        pending.expected_response_value_table_id,
+        0xdec1_5100,
+        pending.expected_response_kind,
+        @as(i32, 7),
+        .portable,
+    );
+    defer wrong_fingerprint_response.deinit(std.testing.allocator);
+
+    try std.testing.expectError(error.VerifyResponseFingerprintMismatch, runspace.respond(0, wrong_fingerprint_response));
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+
+    _ = try runspace.respondValue(0, @as(i32, 7));
+    try std.testing.expectEqual(world.Runspace.PendingStatus.responded, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.runnable, (try runspace.getSlotSummary(handle)).status);
+}
+
+test "runspace terminal resume failure consumes pending mailbox and fails slot" {
+    var seed_transcript = world.Transcript.init(std.testing.allocator);
+    defer seed_transcript.deinit();
+    try recordPortsTranscript(&seed_transcript);
+    const response_fingerprint = (try firstRespondedEvent(&seed_transcript)).response_fingerprint.?;
+
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+
+    const handle = try runspace.installMachineRun(ResumeFailureTarget, ResumeFailureEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .transcript = &transcript,
+    });
+    _ = try runspace.tick();
+    const pending = try runspace.mailbox.get(0);
+    const request = pending.request_frame.?;
+    var response = try world.Frame.Response.fromValue(
+        std.testing.allocator,
+        request,
+        pending.expected_response_value_table_id,
+        response_fingerprint,
+        pending.expected_response_kind,
+        @as(i32, 7),
+        .portable,
+    );
+    defer response.deinit(std.testing.allocator);
+
+    try std.testing.expectError(error.TestResumeFailed, runspace.respond(0, response));
+    try std.testing.expectEqual(world.Runspace.PendingStatus.failed, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.failed, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().failed_count);
+}
+
+test "runspace raw terminal response checks supervision before consuming mailbox" {
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{
+        .require_supervision = true,
+    });
+    defer runspace.deinit();
+
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .permit = permit,
+    });
+    _ = try runspace.tick();
+    const pending = try runspace.mailbox.get(0);
+    const request = pending.request_frame.?;
+    const failed_response = world.Frame.Response.init(.{
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .target_certificate_fingerprint = request.target_certificate_fingerprint,
+        .world_port_id = request.world_port_id,
+        .request_fingerprint = request.request_fingerprint,
+        .response_kind = .@"resume",
+        .response_value_table_id = request.expected_response_value_table_id,
+        .response_fingerprint = 0x5a1e_5afe,
+        .replay_key = request.replay_key_seed.withResponse(0x5a1e_5afe).fingerprint(),
+        .status = .failed,
+    });
+
+    var forged_response = failed_response;
+    forged_response.frame_fingerprint +%= 1;
+    try std.testing.expectError(error.InvalidFrameEncoding, runspace.respond(0, forged_response));
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectError(error.HandlerFailed, runspace.respond(0, failed_response));
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().blocker_count);
+}
+
+test "runspace pending manual response checks supervision before preserving mailbox" {
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{
+        .require_supervision = true,
+    });
+    defer runspace.deinit();
+
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .permit = permit,
+    });
+    _ = try runspace.tick();
+    const pending = try runspace.mailbox.get(0);
+    const request = pending.request_frame.?;
+    const pending_response = world.Frame.Response.init(.{
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .target_certificate_fingerprint = request.target_certificate_fingerprint,
+        .world_port_id = request.world_port_id,
+        .request_fingerprint = request.request_fingerprint,
+        .response_kind = .@"resume",
+        .response_value_table_id = request.expected_response_value_table_id,
+        .response_fingerprint = 0x9e1d_5afe,
+        .replay_key = request.replay_key_seed.withResponse(0x9e1d_5afe).fingerprint(),
+        .status = .pending,
+    });
+
+    try std.testing.expectError(error.PendingDenied, runspace.respond(0, pending_response));
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+}
+
+test "runspace manual response park-on-budget preserves pending mailbox" {
+    const park_policy = world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .allow_native_adapters = true,
+        .allow_handoff_export = true,
+        .require_environment_certificate = true,
+        .park_on_budget_exceeded = true,
+    });
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = park_policy,
+        .budget = world.Budget.init(.{ .max_frame_response_bytes = 0 }),
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{
+        .require_supervision = true,
+    });
+    defer runspace.deinit();
+
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .permit = permit,
+    });
+    _ = try runspace.tick();
+    const event = try runspace.respondValue(0, @as(i32, 7));
+    try std.testing.expectEqual(world.Runspace.EventKind.run_parked_on_supervision, event.kind);
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_supervision, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+    var image = try runspace.exportPending(0);
+    defer image.deinit(std.testing.allocator);
+    try std.testing.expectEqual(world.RunImage.Kind.parked_run, image.kind);
+    try std.testing.expect(image.pending_request_frame != null);
+    try std.testing.expectEqual(world.Runspace.PendingStatus.exported, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.exported, (try runspace.getSlotSummary(handle)).status);
+}
+
+test "runspace strict manual response budget failure consumes mailbox and fails slot" {
+    const strict_policy = world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .allow_native_adapters = true,
+        .require_environment_certificate = true,
+    });
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = strict_policy,
+        .budget = world.Budget.init(.{ .max_frame_response_bytes = 0 }),
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{
+        .require_supervision = true,
+    });
+    defer runspace.deinit();
+
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .permit = permit,
+    });
+    _ = try runspace.tick();
+
+    try std.testing.expectError(error.BudgetExceeded, runspace.respondValue(0, @as(i32, 7)));
+    try std.testing.expectEqual(world.Runspace.PendingStatus.failed, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.failed, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().blocker_count);
+}
+
+test "runspace supervision park event budget failure preserves port parked state" {
+    const park_policy = world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .allow_native_adapters = true,
+        .allow_handoff_export = true,
+        .require_environment_certificate = true,
+        .park_on_budget_exceeded = true,
+    });
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = park_policy,
+        .budget = world.Budget.init(.{ .max_frame_response_bytes = 0 }),
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{
+        .require_supervision = true,
+    });
+    defer runspace.deinit();
+
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .permit = permit,
+    });
+    _ = try runspace.tick();
+    runspace.config.max_events = runspace.events.items.len;
+
+    try std.testing.expectError(error.BudgetExceeded, runspace.respondValue(0, @as(i32, 7)));
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+}
+
+test "runspace response event budget failure does not charge supervisor" {
+    const response_policy = world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .allow_native_adapters = true,
+        .require_environment_certificate = true,
+    });
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = response_policy,
+        .budget = world.Budget.init(.{ .max_port_responses = 1 }),
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{
+        .require_supervision = true,
+    });
+    defer runspace.deinit();
+
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .permit = permit,
+    });
+    _ = try runspace.tick();
+    runspace.config.max_events = runspace.events.items.len;
+
+    try std.testing.expectError(error.BudgetExceeded, runspace.respondValue(0, @as(i32, 7)));
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try runspace.getSlotSummary(handle)).status);
+
+    runspace.config.max_events = null;
+    const event = try runspace.respondValue(0, @as(i32, 7));
+    try std.testing.expectEqual(world.Runspace.EventKind.run_resumed, event.kind);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
+}
+
+test "runspace pending manual response byte budget preserves pending mailbox" {
+    const park_policy = world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .allow_native_adapters = true,
+        .allow_pending_responses = true,
+        .allow_handoff_export = true,
+        .require_environment_certificate = true,
+        .park_on_budget_exceeded = true,
+    });
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = park_policy,
+        .budget = world.Budget.init(.{ .max_frame_response_bytes = 0 }),
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{
+        .require_supervision = true,
+    });
+    defer runspace.deinit();
+
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .permit = permit,
+    });
+    _ = try runspace.tick();
+    const pending = try runspace.mailbox.get(0);
+    const request = pending.request_frame.?;
+    const pending_response = world.Frame.Response.init(.{
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .target_certificate_fingerprint = request.target_certificate_fingerprint,
+        .world_port_id = request.world_port_id,
+        .request_fingerprint = request.request_fingerprint,
+        .response_kind = .@"resume",
+        .response_value_table_id = request.expected_response_value_table_id,
+        .response_fingerprint = 0x9e1d_b7e5,
+        .replay_key = request.replay_key_seed.withResponse(0x9e1d_b7e5).fingerprint(),
+        .status = .pending,
+    });
+
+    const event = try runspace.respond(0, pending_response);
+    try std.testing.expectEqual(world.Runspace.EventKind.run_parked_on_supervision, event.kind);
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_supervision, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+}
+
+test "runspace pending manual response event budget preflights before supervision accounting" {
+    const park_policy = world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .allow_native_adapters = true,
+        .allow_pending_responses = true,
+        .allow_handoff_export = true,
+        .require_environment_certificate = true,
+        .park_on_budget_exceeded = true,
+    });
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = park_policy,
+        .budget = world.Budget.init(.{ .max_frame_response_bytes = 0 }),
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{
+        .require_supervision = true,
+    });
+    defer runspace.deinit();
+
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .permit = permit,
+    });
+    _ = try runspace.tick();
+    const pending = try runspace.mailbox.get(0);
+    const request = pending.request_frame.?;
+    const pending_response = world.Frame.Response.init(.{
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .target_certificate_fingerprint = request.target_certificate_fingerprint,
+        .world_port_id = request.world_port_id,
+        .request_fingerprint = request.request_fingerprint,
+        .response_kind = .@"resume",
+        .response_value_table_id = request.expected_response_value_table_id,
+        .response_fingerprint = 0x9e1d_b7e6,
+        .replay_key = request.replay_key_seed.withResponse(0x9e1d_b7e6).fingerprint(),
+        .status = .pending,
+    });
+    runspace.config.max_events = runspace.events.items.len;
+
+    try std.testing.expectError(error.BudgetExceeded, runspace.respond(0, pending_response));
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().blocker_count);
+
+    runspace.config.max_events = null;
+    const event = try runspace.respond(0, pending_response);
+    try std.testing.expectEqual(world.Runspace.EventKind.run_parked_on_supervision, event.kind);
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_supervision, (try runspace.getSlotSummary(handle)).status);
+}
+
+test "runspace pending manual response preserves parked slot and mailbox" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    _ = try runspace.tick();
+    const pending = try runspace.mailbox.get(0);
+    const request = pending.request_frame.?;
+    const pending_response = world.Frame.Response.init(.{
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .target_certificate_fingerprint = request.target_certificate_fingerprint,
+        .world_port_id = request.world_port_id,
+        .request_fingerprint = request.request_fingerprint,
+        .response_kind = .@"resume",
+        .response_fingerprint = 0x9e1d,
+        .replay_key = request.replay_key_seed.withResponse(0x9e1d).fingerprint(),
+        .status = .pending,
+    });
+
+    try std.testing.expectError(error.HandlerPending, runspace.respond(0, pending_response));
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+}
+
+test "runspace auto dispatch uses environment binding and consumes mailbox" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var ctx: PortsCtx = .{};
+    var runspace = world.Runspace.init(std.testing.allocator, .{ .auto_dispatch = true });
+    defer runspace.deinit();
+
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+    });
+    var report = try runspace.tick();
+    try std.testing.expectEqual(@as(usize, 1), report.runnable_count);
+    try std.testing.expectEqual(@as(usize, 0), report.pending_port_count);
+    try std.testing.expectEqual(@as(usize, 1), ctx.calls);
+    try std.testing.expectEqual(world.Runspace.PendingStatus.responded, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.runnable, (try runspace.getSlotSummary(handle)).status);
+
+    report = try runspace.tick();
+    try std.testing.expectEqual(@as(usize, 1), report.completed_count);
+    try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try runspace.getSlotSummary(handle)).status);
+    var image = try runspace.exportRun(handle);
+    defer image.deinit(std.testing.allocator);
+    try std.testing.expectEqual(world.RunImage.Kind.completed_run, image.kind);
+    try std.testing.expect(image.transcript_image == null);
+    try std.testing.expect(image.current_state.final_response_fingerprint != null);
+    try std.testing.expect(image.current_state.final_value_image_fingerprint != null);
+}
+
+test "runspace auto dispatch handler failure consumes mailbox and fails slot" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{ .auto_dispatch = true });
+    defer runspace.deinit();
+
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+
+    try std.testing.expectError(error.MissingHandler, runspace.tick());
+    try std.testing.expectEqual(world.Runspace.PendingStatus.failed, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.failed, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
+}
+
+test "runspace auto dispatch event allocation failure happens before handler call" {
+    var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{
+        .fail_index = std.math.maxInt(usize),
+    });
+    var runtime = boundary.Runtime.init(failing_allocator.allocator());
+    defer runtime.deinit();
+    var ctx: PortsCtx = .{};
+    var runspace = world.Runspace.init(failing_allocator.allocator(), .{ .auto_dispatch = true });
+    defer runspace.deinit();
+
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = failing_allocator.allocator(),
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+    });
+    try runspace.events.ensureUnusedCapacity(failing_allocator.allocator(), 4);
+    try runspace.mailbox.pending.ensureUnusedCapacity(failing_allocator.allocator(), 1);
+    failing_allocator.fail_index = failing_allocator.alloc_index + 5;
+
+    try std.testing.expectError(error.OutOfMemory, runspace.tick());
+    try std.testing.expect(failing_allocator.has_induced_failure);
+    try std.testing.expectEqual(@as(usize, 0), ctx.calls);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
+    try std.testing.expect((try runspace.getSlotSummary(handle)).status != .parked_on_port);
+}
+
+test "runspace export pending rejects stale mailbox without changing run state" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var ctx: PortsCtx = .{};
+    var runspace = world.Runspace.init(std.testing.allocator, .{ .auto_dispatch = true });
+    defer runspace.deinit();
+
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+    });
+
+    _ = try runspace.tick();
+    try std.testing.expectEqual(world.Runspace.PendingStatus.responded, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.runnable, (try runspace.getSlotSummary(handle)).status);
+    const checkpoint = try runspace.checkpoint(handle);
+    try std.testing.expect(checkpoint.last_response_fingerprint != null);
+    try std.testing.expectEqual(@as(usize, 1), checkpoint.turn_index);
+    const auto_port_responded = for (runspace.events.items) |event| {
+        if (event.kind == .port_responded) break event;
+    } else return error.ExpectedResponseFrame;
+    try std.testing.expect(auto_port_responded.response_frame_fingerprint != null);
+
+    try std.testing.expectError(error.PendingPortConsumed, runspace.exportPending(0));
+    try std.testing.expectEqual(world.Runspace.RunStatus.runnable, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(world.Runspace.PendingStatus.responded, (try runspace.mailbox.get(0)).status);
+}
+
+test "runspace auto dispatch replay stores frame response witness in state" {
+    var seed_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer seed_runtime.deinit();
+    var seed_ctx: PortsCtx = .{};
+    var seed_transcript = world.Transcript.init(std.testing.allocator);
+    defer seed_transcript.deinit();
+    var seed_runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer seed_runspace.deinit();
+    _ = try seed_runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &seed_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &seed_ctx,
+        .transcript = &seed_transcript,
+    });
+    _ = try seed_runspace.tick();
+    _ = try seed_runspace.respondValue(0, @as(i32, 7));
+    _ = try seed_runspace.tick();
+    var transcript_image = try seed_transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer transcript_image.deinit(std.testing.allocator);
+    const expected_response_frame_fingerprint = for (transcript_image.events) |event| {
+        if (event.kind == .frame_responded) break event.response_frame.?.frame_fingerprint;
+    } else return error.ExpectedResponseFrame;
+
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{ .auto_dispatch = true });
+    defer runspace.deinit();
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsReplayEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.replay,
+        .transcript_image = &transcript_image,
+    });
+
+    _ = try runspace.tick();
+    try std.testing.expectEqual(world.Runspace.RunStatus.runnable, (try runspace.getSlotSummary(handle)).status);
+    const auto_port_responded = for (runspace.events.items) |event| {
+        if (event.kind == .port_responded) break event;
+    } else return error.ExpectedResponseFrame;
+    try std.testing.expectEqual(expected_response_frame_fingerprint, auto_port_responded.response_frame_fingerprint.?);
+    const checkpoint = try runspace.checkpoint(handle);
+    try std.testing.expectEqual(expected_response_frame_fingerprint, checkpoint.last_response_fingerprint.?);
+
+    _ = try runspace.tick();
+    var image = try runspace.exportRun(handle);
+    defer image.deinit(std.testing.allocator);
+    try std.testing.expectEqual(expected_response_frame_fingerprint, image.current_state.final_response_fingerprint.?);
+}
+
+test "runspace export run consumes parked mailbox entry" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{
+        .max_pending_ports = 1,
+    });
+    defer runspace.deinit();
+
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    _ = try runspace.tick();
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+
+    var image = try runspace.exportRun(handle);
+    defer image.deinit(std.testing.allocator);
+    try std.testing.expectEqual(world.RunImage.Kind.parked_run, image.kind);
+    try std.testing.expectEqual(world.Runspace.RunStatus.exported, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(world.Runspace.PendingStatus.exported, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
+    const checkpoint = try runspace.checkpoint(handle);
+    try std.testing.expectEqual(world.Timeline.Checkpoint.Status.parked_on_port, checkpoint.status);
+
+    const replacement = try runspace.installTarget(fixtures.Strict.Target, .{}, null, .{});
+    try std.testing.expectEqual(@as(u64, 1), replacement.local_run_id);
+}
+
+test "runspace export run event budget failure does not change slot state" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+    const handle = try runspace.installMachineRun(fixtures.Strict.Target, world.Environment(fixtures.Strict.Target, .{
+        .ports = &.{},
+    }), &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    _ = try runspace.tick();
+    try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try runspace.getSlotSummary(handle)).status);
+    runspace.config.max_events = runspace.events.items.len;
+
+    try std.testing.expectError(error.BudgetExceeded, runspace.exportRun(handle));
+    try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try runspace.getSlotSummary(handle)).status);
+}
+
+test "runspace supervised export events carry receipt witnesses" {
+    const export_policy = world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .allow_native_adapters = true,
+        .allow_handoff_export = true,
+        .allow_handoff_accept = true,
+        .require_environment_certificate = true,
+    });
+
+    const StrictEnv = world.Environment(fixtures.Strict.Target, .{
+        .ports = &.{},
+    });
+    const completed_permit = world.Supervision.issue(fixtures.Strict.Target, StrictEnv, .{
+        .mode = .fresh,
+        .policy = export_policy,
+    });
+    var completed_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer completed_runtime.deinit();
+    var completed_runspace = world.Runspace.init(std.testing.allocator, .{ .require_supervision = true });
+    defer completed_runspace.deinit();
+    const completed_handle = try completed_runspace.installMachineRun(fixtures.Strict.Target, StrictEnv, &completed_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .permit = completed_permit,
+    });
+    _ = try completed_runspace.tick();
+    var completed_image = try completed_runspace.exportRun(completed_handle);
+    defer completed_image.deinit(std.testing.allocator);
+    const completed_receipt = completed_image.prior_run_receipt_fingerprint orelse return error.ExpectedRunReceipt;
+    const completed_export_event = completed_runspace.report().emitted_events[completed_runspace.report().emitted_events.len - 1];
+    try std.testing.expectEqual(world.Runspace.EventKind.run_exported, completed_export_event.kind);
+    try std.testing.expectEqual(completed_receipt, completed_export_event.run_receipt_fingerprint.?);
+
+    const parked_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = export_policy,
+    });
+    var parked_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer parked_runtime.deinit();
+    var parked_runspace = world.Runspace.init(std.testing.allocator, .{ .require_supervision = true });
+    defer parked_runspace.deinit();
+    _ = try parked_runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &parked_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .permit = parked_permit,
+    });
+    _ = try parked_runspace.tick();
+    var parked_image = try parked_runspace.exportPending(0);
+    defer parked_image.deinit(std.testing.allocator);
+    const parked_receipt = parked_image.prior_run_receipt_fingerprint orelse return error.ExpectedRunReceipt;
+    const parked_export_event = parked_runspace.report().emitted_events[parked_runspace.report().emitted_events.len - 1];
+    try std.testing.expectEqual(world.Runspace.EventKind.run_exported, parked_export_event.kind);
+    try std.testing.expectEqual(parked_receipt, parked_export_event.run_receipt_fingerprint.?);
+
+    const sender_receipt_fingerprint: u64 = 0x5eed_cafe;
+    const admitted_permit = world.Supervision.issue(fixtures.Strict.Target, StrictEnv, .{
+        .mode = .fresh,
+        .policy = export_policy,
+    });
+    const admitted_state = world.RunState.init(.{
+        .target_ref_fingerprint = world.TargetRef.fromTarget(fixtures.Strict.Target).target_ref_fingerprint,
+        .status = .completed,
+    });
+    const admitted_image = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Strict.Target),
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Strict.Target).import_set_fingerprint,
+        .current_state = admitted_state,
+        .prior_run_receipt_fingerprint = sender_receipt_fingerprint,
+    });
+    const admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_7ece,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Strict.Target),
+        .environment_certificate_fingerprint = StrictEnv.certificate(.fresh, false).certificate_fingerprint,
+        .mode = .continue_fresh,
+        .run_image = admitted_image,
+        .run_permit = admitted_permit,
+    });
+    var admitted_runspace = world.Runspace.init(std.testing.allocator, .{
+        .require_supervision = true,
+    });
+    defer admitted_runspace.deinit();
+    const admitted_handle = try admitted_runspace.installAdmitted(admitted);
+    var admitted_export = try admitted_runspace.exportRun(admitted_handle);
+    defer admitted_export.deinit(std.testing.allocator);
+    const admitted_receipt = admitted_export.prior_run_receipt_fingerprint orelse return error.ExpectedRunReceipt;
+    const admitted_export_event = admitted_runspace.report().emitted_events[admitted_runspace.report().emitted_events.len - 1];
+    try std.testing.expectEqual(world.Runspace.EventKind.run_exported, admitted_export_event.kind);
+    try std.testing.expect(admitted_receipt != sender_receipt_fingerprint);
+    try std.testing.expectEqual(admitted_receipt, admitted_export_event.run_receipt_fingerprint.?);
+}
+
+test "runspace export run event allocation failure does not change slot state" {
+    var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    var runspace = world.Runspace.init(failing_allocator.allocator(), .{});
+    defer runspace.deinit();
+    const target_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    const StrictEnv = world.Environment(fixtures.Strict.Target, .{
+        .ports = &.{},
+    });
+    const export_policy = world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .allow_handoff_export = true,
+        .require_environment_certificate = true,
+    });
+    const permit = world.Supervision.issue(fixtures.Strict.Target, StrictEnv, .{
+        .mode = .fresh,
+        .policy = export_policy,
+        .budget = world.Budget.init(.{ .max_handoff_exports = 1 }),
+    });
+    const supervisor = try world.Supervision.Supervisor.init(failing_allocator.allocator(), permit, 0);
+    const handle = world.RunHandle.init(.{
+        .runspace_fingerprint = runspace.runspace_fingerprint,
+        .local_run_id = 0,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .permit_fingerprint = permit.permit_fingerprint,
+    });
+    const state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .completed,
+    });
+    try runspace.slots.append(failing_allocator.allocator(), world.Runspace.RunSlot.fromState(.{
+        .handle = handle,
+        .target_ref = target_ref,
+        .current_state = state,
+        .status = .completed,
+        .run_permit_fingerprint = permit.permit_fingerprint,
+        .supervisor = supervisor,
+    }));
+    try runspace.events.ensureUnusedCapacity(failing_allocator.allocator(), 1);
+    failing_allocator.fail_index = failing_allocator.alloc_index;
+
+    try std.testing.expectError(error.OutOfMemory, runspace.exportRun(handle));
+    try std.testing.expect(failing_allocator.has_induced_failure);
+    const summary = try runspace.getSlotSummary(handle);
+    try std.testing.expectEqual(world.Runspace.RunStatus.completed, summary.status);
+    try std.testing.expectEqual(@as(usize, 0), runspace.events.items.len);
+    failing_allocator.fail_index = std.math.maxInt(usize);
+    var image = try runspace.exportRun(handle);
+    defer image.deinit(failing_allocator.allocator());
+    try std.testing.expectEqual(world.Runspace.RunStatus.exported, (try runspace.getSlotSummary(handle)).status);
+}
+
+test "runspace export checks supervision before snapshotting installed image" {
+    var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    var runspace = world.Runspace.init(failing_allocator.allocator(), .{});
+    defer runspace.deinit();
+    var transcript = world.Transcript.init(failing_allocator.allocator());
+    defer transcript.deinit();
+    try recordPortsTranscript(&transcript);
+    var transcript_image = try transcript.toImage(failing_allocator.allocator(), .{ .value_policy = world.ValuePolicy.portable });
+    var installed_image = world.RunImage.fromTranscriptImage(fixtures.Ports.Target, transcript_image, .completed_run);
+    installed_image.owns_transcript_image = true;
+    transcript_image = undefined;
+    var installed_image_owned = true;
+    errdefer if (installed_image_owned) installed_image.deinit(failing_allocator.allocator());
+
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const deny_policy = world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .require_environment_certificate = true,
+    });
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = deny_policy,
+    });
+    const supervisor = try world.Supervision.Supervisor.init(failing_allocator.allocator(), permit, fixtures.Ports.Target.WorldPortTable.entries.len);
+    const handle = world.RunHandle.init(.{
+        .runspace_fingerprint = runspace.runspace_fingerprint,
+        .local_run_id = 0,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .permit_fingerprint = permit.permit_fingerprint,
+    });
+    const state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .transcript_image_fingerprint = installed_image.transcript_image.?.transcript_image_fingerprint,
+        .status = .completed,
+    });
+    try runspace.slots.append(failing_allocator.allocator(), world.Runspace.RunSlot.fromState(.{
+        .handle = handle,
+        .target_ref = target_ref,
+        .current_state = state,
+        .status = .completed,
+        .run_permit_fingerprint = permit.permit_fingerprint,
+        .supervisor = supervisor,
+        .installed_run_image = installed_image,
+        .owns_installed_run_image = true,
+    }));
+    installed_image_owned = false;
+    try runspace.events.ensureUnusedCapacity(failing_allocator.allocator(), 1);
+    failing_allocator.fail_index = failing_allocator.alloc_index + 2;
+
+    try std.testing.expectError(error.HandoffDenied, runspace.exportRun(handle));
+    try std.testing.expect(!failing_allocator.has_induced_failure);
+    try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try runspace.getSlotSummary(handle)).status);
+}
+
+test "runspace export snapshot failure restores handoff budget" {
+    var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    var runspace = world.Runspace.init(failing_allocator.allocator(), .{});
+    defer runspace.deinit();
+    var transcript = world.Transcript.init(failing_allocator.allocator());
+    defer transcript.deinit();
+    try recordPortsTranscript(&transcript);
+    var transcript_image = try transcript.toImage(failing_allocator.allocator(), .{ .value_policy = world.ValuePolicy.portable });
+    var installed_image = world.RunImage.fromTranscriptImage(fixtures.Ports.Target, transcript_image, .completed_run);
+    installed_image.owns_transcript_image = true;
+    transcript_image = undefined;
+    var installed_image_owned = true;
+    errdefer if (installed_image_owned) installed_image.deinit(failing_allocator.allocator());
+
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const export_policy = world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .allow_handoff_export = true,
+        .require_environment_certificate = true,
+    });
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = export_policy,
+        .budget = world.Budget.init(.{ .max_handoff_exports = 1 }),
+    });
+    const supervisor = try world.Supervision.Supervisor.init(failing_allocator.allocator(), permit, fixtures.Ports.Target.WorldPortTable.entries.len);
+    const handle = world.RunHandle.init(.{
+        .runspace_fingerprint = runspace.runspace_fingerprint,
+        .local_run_id = 0,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .permit_fingerprint = permit.permit_fingerprint,
+    });
+    const state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .transcript_image_fingerprint = installed_image.transcript_image.?.transcript_image_fingerprint,
+        .status = .completed,
+    });
+    try runspace.slots.append(failing_allocator.allocator(), world.Runspace.RunSlot.fromState(.{
+        .handle = handle,
+        .target_ref = target_ref,
+        .current_state = state,
+        .status = .completed,
+        .run_permit_fingerprint = permit.permit_fingerprint,
+        .supervisor = supervisor,
+        .installed_run_image = installed_image,
+        .owns_installed_run_image = true,
+    }));
+    installed_image_owned = false;
+    try runspace.events.ensureUnusedCapacity(failing_allocator.allocator(), 1);
+    failing_allocator.fail_index = failing_allocator.alloc_index + 3;
+
+    try std.testing.expectError(error.OutOfMemory, runspace.exportRun(handle));
+    try std.testing.expect(failing_allocator.has_induced_failure);
+    try std.testing.expectEqual(@as(usize, 0), runspace.slots.items[0].supervisor.?.ledger.total_handoff_exports);
+    try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try runspace.getSlotSummary(handle)).status);
+
+    failing_allocator.fail_index = std.math.maxInt(usize);
+    var image = try runspace.exportRun(handle);
+    defer image.deinit(failing_allocator.allocator());
+    try std.testing.expectEqual(@as(usize, 1), runspace.slots.items[0].supervisor.?.ledger.total_handoff_exports);
+    try std.testing.expectEqual(world.Runspace.RunStatus.exported, (try runspace.getSlotSummary(handle)).status);
+}
+
+test "runspace checkpoint and branch allocation failures do not spend supervision budgets" {
+    var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    var runspace = world.Runspace.init(failing_allocator.allocator(), .{});
+    defer runspace.deinit();
+    const target_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    const StrictEnv = world.Environment(fixtures.Strict.Target, .{
+        .ports = &.{},
+    });
+    const lifecycle_policy = world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .allow_checkpoints = true,
+        .allow_branching = true,
+        .require_environment_certificate = true,
+    });
+    const permit = world.Supervision.issue(fixtures.Strict.Target, StrictEnv, .{
+        .mode = .fresh,
+        .policy = lifecycle_policy,
+        .budget = world.Budget.init(.{
+            .max_checkpoints = 1,
+            .max_branches = 1,
+        }),
+    });
+    const supervisor = try world.Supervision.Supervisor.init(failing_allocator.allocator(), permit, 0);
+    const handle = world.RunHandle.init(.{
+        .runspace_fingerprint = runspace.runspace_fingerprint,
+        .local_run_id = 0,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .permit_fingerprint = permit.permit_fingerprint,
+    });
+    const state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .completed,
+    });
+    try runspace.slots.append(failing_allocator.allocator(), world.Runspace.RunSlot.fromState(.{
+        .handle = handle,
+        .target_ref = target_ref,
+        .current_state = state,
+        .status = .completed,
+        .run_permit_fingerprint = permit.permit_fingerprint,
+        .supervisor = supervisor,
+    }));
+    runspace.next_run_id = 1;
+    try runspace.events.ensureUnusedCapacity(failing_allocator.allocator(), 1);
+    failing_allocator.fail_index = failing_allocator.alloc_index;
+
+    try std.testing.expectError(error.OutOfMemory, runspace.checkpoint(handle));
+    failing_allocator.fail_index = std.math.maxInt(usize);
+    const checkpoint = try runspace.checkpoint(handle);
+    try std.testing.expectEqual(@as(usize, 1), runspace.events.items.len);
+
+    try runspace.slots.ensureUnusedCapacity(failing_allocator.allocator(), 1);
+    try runspace.events.ensureUnusedCapacity(failing_allocator.allocator(), 1);
+    failing_allocator.fail_index = failing_allocator.alloc_index;
+    try std.testing.expectError(error.OutOfMemory, runspace.branch(handle, checkpoint, .{}));
+    try std.testing.expectEqual(@as(usize, 1), runspace.slots.items.len);
+    failing_allocator.fail_index = std.math.maxInt(usize);
+    const branch_handle = try runspace.branch(handle, checkpoint, .{});
+    try std.testing.expectEqual(@as(u64, 1), branch_handle.local_run_id);
+}
+
+test "runspace supervised auto dispatch denial happens before handler call" {
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+        .budget = world.Budget.init(.{ .max_fresh_calls = 0 }),
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var ctx: PortsCtx = .{};
+    var runspace = world.Runspace.init(std.testing.allocator, .{
+        .auto_dispatch = true,
+        .require_supervision = true,
+    });
+    defer runspace.deinit();
+
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+        .permit = permit,
+    });
+    try std.testing.expectError(error.BudgetExceeded, runspace.tick());
+    try std.testing.expectEqual(@as(usize, 0), ctx.calls);
+    try std.testing.expectEqual(world.Runspace.RunStatus.failed, (try runspace.getSlotSummary(handle)).status);
+    const report = runspace.report();
+    try std.testing.expectEqual(@as(usize, 1), report.blocker_count);
+    try std.testing.expectEqual(@as(usize, 0), report.warning_count);
+}
+
+test "runspace report aggregates supervised audit-only warnings" {
+    const policy = world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .allow_native_adapters = true,
+        .require_environment_certificate = true,
+        .audit_only_on_budget_exceeded = true,
+    });
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = policy,
+        .budget = world.Budget.init(.{ .max_port_requests = 0 }),
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var ctx: PortsCtx = .{};
+    var runspace = world.Runspace.init(std.testing.allocator, .{
+        .require_supervision = true,
+    });
+    defer runspace.deinit();
+
+    _ = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+        .permit = permit,
+    });
+    const tick_report = try runspace.tick();
+    try std.testing.expectEqual(@as(usize, 3), tick_report.warning_count);
+    try std.testing.expectEqual(@as(usize, 0), tick_report.blocker_count);
+    try std.testing.expectEqual(@as(usize, 1), tick_report.pending_port_count);
+}
+
+test "runspace park-on-budget preserves supervised parked slot" {
+    const park_policy = world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .allow_native_adapters = true,
+        .allow_handoff_export = true,
+        .require_environment_certificate = true,
+        .park_on_budget_exceeded = true,
+    });
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = park_policy,
+        .budget = world.Budget.init(.{ .max_session_steps = 0 }),
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var ctx: PortsCtx = .{};
+    var runspace = world.Runspace.init(std.testing.allocator, .{
+        .require_supervision = true,
+    });
+    defer runspace.deinit();
+
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+        .permit = permit,
+    });
+    const event = try runspace.step(handle);
+    try std.testing.expectEqual(world.Runspace.EventKind.run_parked_on_supervision, event.kind);
+    try std.testing.expectEqual(@as(usize, 0), ctx.calls);
+    const summary = try runspace.getSlotSummary(handle);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_supervision, summary.status);
+    try std.testing.expectEqual(@as(?u64, null), summary.pending_mailbox_id);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().parked_count);
+    var image = try runspace.exportRun(handle);
+    defer image.deinit(std.testing.allocator);
+    try std.testing.expectEqual(world.RunImage.Kind.full_target_run, image.kind);
+    try std.testing.expectEqual(world.RunState.Status.parked_on_supervision, image.current_state.status);
+    var receiver = world.Runspace.init(std.testing.allocator, .{});
+    defer receiver.deinit();
+    const installed_handle = try receiver.installRunImage(image);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_supervision, (try receiver.getSlotSummary(installed_handle)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.exported, (try runspace.getSlotSummary(handle)).status);
+    const package = world.Admission.TransferPackage.init(.{
+        .kind = .run_reference,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target),
+        .run_image = image,
+        .requested_mode = .resume_parked,
+    });
+    var admission = world.Admission.Admitter.init(.{
+        .registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Ports.Target)}),
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, package, .{});
+    defer admission.deinit(std.testing.allocator);
+    try std.testing.expect(admission.report.accepted);
+    var admitted_receiver = world.Runspace.init(std.testing.allocator, .{ .require_admission = true });
+    defer admitted_receiver.deinit();
+    const admitted_installed = try admitted_receiver.installAdmitted(admission.admitted_run.?);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_supervision, (try admitted_receiver.getSlotSummary(admitted_installed)).status);
+    var admitted_resume = admission.admitted_run.?;
+    var resume_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer resume_runtime.deinit();
+    var resume_ctx: PortsCtx = .{};
+    var resumed = try admitted_resume.@"resume"(std.testing.allocator, fixtures.Ports.Target, PortsEnv, &resume_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &resume_ctx,
+    });
+    defer resumed.deinit();
+    var resumed_request = switch (try resumed.nextFrame()) {
+        .port_request => |request| request,
+        else => return error.ExpectedFrameRequest,
+    };
+    defer resumed_request.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u32, 0), resumed_request.world_port_id);
+    const contextual_state = world.RunState.init(.{
+        .target_ref_fingerprint = image.target_ref.target_ref_fingerprint,
+        .branch_id = 7,
+        .status = .parked_on_supervision,
+    });
+    const contextual_image = world.RunImage.init(.{
+        .kind = .full_target_run,
+        .target_ref = image.target_ref,
+        .import_set_fingerprint = image.import_set_fingerprint,
+        .current_state = contextual_state,
+    });
+    const contextual_package = world.Admission.TransferPackage.init(.{
+        .kind = .run_reference,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target),
+        .run_image = contextual_image,
+        .requested_mode = .resume_parked,
+    });
+    const contextual_admission = world.Admission.Admitter.init(.{
+        .registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Ports.Target)}),
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, contextual_package, .{});
+    try std.testing.expect(!contextual_admission.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.RunImageInvalid, contextual_admission.report.blockers[0]);
+}
+
+test "runspace interrupted supervision handoff accepts transcript-bearing exports" {
+    const park_policy = world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .allow_native_adapters = true,
+        .allow_handoff_export = true,
+        .require_environment_certificate = true,
+        .park_on_budget_exceeded = true,
+    });
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = park_policy,
+        .budget = world.Budget.init(.{ .max_session_steps = 0 }),
+    });
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var ctx: PortsCtx = .{};
+    var runspace = world.Runspace.init(std.testing.allocator, .{
+        .require_supervision = true,
+    });
+    defer runspace.deinit();
+
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+        .permit = permit,
+        .transcript = &transcript,
+    });
+    _ = try runspace.step(handle);
+    var image = try runspace.exportRun(handle);
+    defer image.deinit(std.testing.allocator);
+    try std.testing.expect(image.transcript_image != null);
+    try std.testing.expectEqual(world.RunState.Status.parked_on_supervision, image.current_state.status);
+    const transcript_image = image.transcript_image.?;
+
+    const later_turn_state = world.RunState.init(.{
+        .target_ref_fingerprint = image.target_ref.target_ref_fingerprint,
+        .transcript_image_fingerprint = transcript_image.transcript_image_fingerprint,
+        .turn_index = 1,
+        .status = .parked_on_supervision,
+    });
+    const later_turn_image = world.RunImage.init(.{
+        .kind = .full_target_run,
+        .target_ref = image.target_ref,
+        .import_set_fingerprint = image.import_set_fingerprint,
+        .transcript_image = transcript_image,
+        .current_state = later_turn_state,
+        .prior_run_permit_fingerprint = image.prior_run_permit_fingerprint,
+        .prior_run_receipt_fingerprint = image.prior_run_receipt_fingerprint,
+    });
+    const later_turn_package = world.Admission.TransferPackage.init(.{
+        .kind = .run_reference,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target),
+        .run_image = later_turn_image,
+        .requested_mode = .resume_parked,
+    });
+    var later_turn_admission = world.Admission.Admitter.init(.{
+        .registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Ports.Target)}),
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, later_turn_package, .{});
+    defer later_turn_admission.deinit(std.testing.allocator);
+    try std.testing.expect(!later_turn_admission.report.accepted);
+    var later_turn_receiver = world.Runspace.init(std.testing.allocator, .{});
+    defer later_turn_receiver.deinit();
+    try std.testing.expectError(error.InvalidFrameEncoding, later_turn_receiver.installRunImage(later_turn_image));
+
+    const unwitnessed_later_turn_state = world.RunState.init(.{
+        .target_ref_fingerprint = image.target_ref.target_ref_fingerprint,
+        .turn_index = 1,
+        .status = .parked_on_supervision,
+    });
+    const unwitnessed_later_turn_image = world.RunImage.init(.{
+        .kind = .full_target_run,
+        .target_ref = image.target_ref,
+        .import_set_fingerprint = image.import_set_fingerprint,
+        .current_state = unwitnessed_later_turn_state,
+        .prior_run_permit_fingerprint = image.prior_run_permit_fingerprint,
+        .prior_run_receipt_fingerprint = image.prior_run_receipt_fingerprint,
+    });
+    const unwitnessed_later_turn_package = world.Admission.TransferPackage.init(.{
+        .kind = .run_reference,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target),
+        .run_image = unwitnessed_later_turn_image,
+        .requested_mode = .resume_parked,
+    });
+    const unwitnessed_later_turn_admission = world.Admission.Admitter.init(.{
+        .registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Ports.Target)}),
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, unwitnessed_later_turn_package, .{});
+    try std.testing.expect(!unwitnessed_later_turn_admission.report.accepted);
+    var unwitnessed_receiver = world.Runspace.init(std.testing.allocator, .{});
+    defer unwitnessed_receiver.deinit();
+    try std.testing.expectError(error.InvalidFrameEncoding, unwitnessed_receiver.installRunImage(unwitnessed_later_turn_image));
+
+    const package = world.Admission.TransferPackage.init(.{
+        .kind = .run_reference,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target),
+        .run_image = image,
+        .requested_mode = .resume_parked,
+    });
+    var admission = world.Admission.Admitter.init(.{
+        .registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Ports.Target)}),
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, package, .{});
+    defer admission.deinit(std.testing.allocator);
+    try std.testing.expect(admission.report.accepted);
+
+    var admitted = admission.admitted_run.?;
+    var resume_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer resume_runtime.deinit();
+    var resume_ctx: PortsCtx = .{};
+    var resumed = try admitted.@"resume"(std.testing.allocator, fixtures.Ports.Target, PortsEnv, &resume_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &resume_ctx,
+    });
+    defer resumed.deinit();
+    var resumed_request = switch (try resumed.nextFrame()) {
+        .port_request => |request| request,
+        else => return error.ExpectedFrameRequest,
+    };
+    defer resumed_request.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u32, 0), resumed_request.world_port_id);
+}
+
+test "interrupted supervision handoff replays transcript prefix before live request" {
+    const park_policy = world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .allow_native_adapters = true,
+        .allow_handoff_export = true,
+        .require_environment_certificate = true,
+        .park_on_budget_exceeded = true,
+    });
+    const permit = world.Supervision.issue(fixtures.Agent.Target, AgentEnv, .{
+        .mode = .fresh,
+        .policy = park_policy,
+        .budget = world.Budget.init(.{ .max_session_steps = 1 }),
+    });
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var ctx: AgentCtx = .{ .allocator = std.testing.allocator, .scenario = .skeleton };
+    var run = try AgentMachineEnv.start(&runtime, AgentArgs{ @as(usize, 3), fixtures.Agent.initialObservation(.skeleton) }, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+        .permit = permit,
+        .transcript = &transcript,
+    });
+    defer run.deinit();
+    var model_request = switch (try run.nextFrame()) {
+        .port_request => |request| request,
+        else => return error.ExpectedFrameRequest,
+    };
+    defer model_request.deinit(std.testing.allocator);
+    try run.dispatch();
+    try std.testing.expectError(error.HandlerPending, run.nextFrame());
+    try std.testing.expectEqual(@as(usize, 1), ctx.model_calls);
+    try std.testing.expectEqual(@as(usize, 0), ctx.tool_calls);
+
+    var image = try run.snapshotRunImage();
+    defer image.deinit(std.testing.allocator);
+    try std.testing.expect(image.transcript_image != null);
+    try std.testing.expectEqual(world.RunState.Status.parked_on_supervision, image.current_state.status);
+    try std.testing.expect(image.current_state.turn_index != 0);
+    try std.testing.expect(image.current_state.final_response_fingerprint != null);
+    try std.testing.expect(image.current_state.final_value_image_fingerprint != null);
+
+    var install_receiver = world.Runspace.init(std.testing.allocator, .{});
+    defer install_receiver.deinit();
+    const installed_handle = try install_receiver.installRunImage(image);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_supervision, (try install_receiver.getSlotSummary(installed_handle)).status);
+    const missing_transcript_availability_permit = world.Supervision.issue(fixtures.Agent.Target, AgentEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.handoff_receiver,
+        .transcript_image_available = false,
+    });
+    const missing_transcript_availability_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_6a16,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Agent.Target),
+        .environment_certificate_fingerprint = AgentEnv.certificate(.fresh, true).certificate_fingerprint,
+        .mode = .resume_parked,
+        .run_image = image,
+        .run_permit = missing_transcript_availability_permit,
+    });
+    var missing_transcript_availability_receiver = world.Runspace.init(std.testing.allocator, .{ .require_supervision = true });
+    defer missing_transcript_availability_receiver.deinit();
+    try std.testing.expectError(error.SupervisionDenied, missing_transcript_availability_receiver.installAdmitted(missing_transcript_availability_admitted));
+    const prefix_replay_denied_permit = world.Supervision.issue(fixtures.Agent.Target, AgentEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.handoff_receiver,
+        .budget = world.Budget.init(.{ .max_replay_calls = 0 }),
+        .transcript_image_available = true,
+    });
+    const prefix_replay_denied_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_6a17,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Agent.Target),
+        .environment_certificate_fingerprint = AgentEnv.certificate(.fresh, true).certificate_fingerprint,
+        .mode = .resume_parked,
+        .run_image = image,
+        .run_permit = prefix_replay_denied_permit,
+    });
+    var prefix_replay_denied_receiver = world.Runspace.init(std.testing.allocator, .{ .require_supervision = true });
+    defer prefix_replay_denied_receiver.deinit();
+    try std.testing.expectError(error.BudgetExceeded, prefix_replay_denied_receiver.installAdmitted(prefix_replay_denied_admitted));
+
+    const forged_state = world.RunState.init(.{
+        .target_ref_fingerprint = image.target_ref.target_ref_fingerprint,
+        .transcript_image_fingerprint = image.transcript_image.?.transcript_image_fingerprint,
+        .final_response_fingerprint = image.current_state.final_response_fingerprint,
+        .final_value_image_fingerprint = image.current_state.final_value_image_fingerprint,
+        .turn_index = image.current_state.turn_index + 1,
+        .status = .parked_on_supervision,
+    });
+    const forged_image = world.RunImage.init(.{
+        .kind = .full_target_run,
+        .target_ref = image.target_ref,
+        .import_set_fingerprint = image.import_set_fingerprint,
+        .transcript_image = image.transcript_image.?,
+        .current_state = forged_state,
+        .prior_run_permit_fingerprint = image.prior_run_permit_fingerprint,
+        .prior_run_receipt_fingerprint = image.prior_run_receipt_fingerprint,
+    });
+    var forged_receiver = world.Runspace.init(std.testing.allocator, .{});
+    defer forged_receiver.deinit();
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_receiver.installRunImage(forged_image));
+    const forged_package = world.Admission.TransferPackage.init(.{
+        .kind = .run_reference,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Agent.Target),
+        .run_image = forged_image,
+        .requested_mode = .resume_parked,
+    });
+    const forged_admission = world.Admission.Admitter.init(.{
+        .registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Agent.Target)}),
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Agent.Target, AgentEnv, forged_package, .{});
+    try std.testing.expect(!forged_admission.report.accepted);
+
+    const encoded = try image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(encoded);
+    var handoff = try world.Handoff.fromRunImage(std.testing.allocator, encoded);
+    defer handoff.deinit();
+    const report = handoff.preflight(fixtures.Agent.Target, AgentEnv, .accept_fresh);
+    try std.testing.expect(report.accepted);
+
+    var receiver_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer receiver_runtime.deinit();
+    var receiver_ctx: AgentCtx = .{ .allocator = std.testing.allocator, .scenario = .skeleton };
+    var receiver_run = try handoff.@"resume"(fixtures.Agent.Target, AgentEnv, &receiver_runtime, AgentArgs{ @as(usize, 3), fixtures.Agent.initialObservation(.skeleton) }, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &receiver_ctx,
+    }, .accept_fresh);
+    defer receiver_run.deinit();
+    var live_request = switch (try receiver_run.nextFrame()) {
+        .port_request => |request| request,
+        else => return error.ExpectedFrameRequest,
+    };
+    defer live_request.deinit(std.testing.allocator);
+    try std.testing.expectEqual(AgentToolDecl.world_port_id, live_request.world_port_id);
+    try std.testing.expectEqual(@as(usize, 0), receiver_ctx.model_calls);
+    try std.testing.expectEqual(@as(usize, 0), receiver_ctx.tool_calls);
+    try receiver_run.dispatch();
+    try std.testing.expectEqual(@as(usize, 1), receiver_ctx.tool_calls);
+
+    const bare_prefix_state = world.RunState.init(.{
+        .target_ref_fingerprint = image.target_ref.target_ref_fingerprint,
+        .status = .parked_on_supervision,
+    });
+    const bare_prefix_image = world.RunImage.init(.{
+        .kind = image.kind,
+        .target_ref = image.target_ref,
+        .import_set_fingerprint = image.import_set_fingerprint,
+        .current_state = bare_prefix_state,
+        .prior_run_permit_fingerprint = image.prior_run_permit_fingerprint,
+        .prior_run_receipt_fingerprint = image.prior_run_receipt_fingerprint,
+    });
+    var separate_transcript_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_6a18,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Agent.Target),
+        .environment_certificate_fingerprint = AgentEnv.certificate(.fresh, true).certificate_fingerprint,
+        .mode = .resume_parked,
+        .run_image = bare_prefix_image,
+        .transcript_image = image.transcript_image.?,
+    });
+    var separate_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer separate_runtime.deinit();
+    var separate_ctx: AgentCtx = .{ .allocator = std.testing.allocator, .scenario = .skeleton };
+    var separate_run = try separate_transcript_admitted.@"resume"(std.testing.allocator, fixtures.Agent.Target, AgentEnv, &separate_runtime, AgentArgs{ @as(usize, 3), fixtures.Agent.initialObservation(.skeleton) }, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &separate_ctx,
+    });
+    defer separate_run.deinit();
+    var separate_live_request = switch (try separate_run.nextFrame()) {
+        .port_request => |request| request,
+        else => return error.ExpectedFrameRequest,
+    };
+    defer separate_live_request.deinit(std.testing.allocator);
+    try std.testing.expectEqual(AgentToolDecl.world_port_id, separate_live_request.world_port_id);
+    try std.testing.expectEqual(@as(usize, 0), separate_ctx.model_calls);
+    try std.testing.expectEqual(@as(usize, 0), separate_ctx.tool_calls);
+}
+
+test "runspace pre-request supervision park event allocation failure leaves slot runnable" {
+    const park_policy = world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .allow_native_adapters = true,
+        .require_environment_certificate = true,
+        .park_on_budget_exceeded = true,
+    });
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = park_policy,
+        .budget = world.Budget.init(.{ .max_session_steps = 0 }),
+    });
+    var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{
+        .fail_index = std.math.maxInt(usize),
+    });
+    var runtime = boundary.Runtime.init(failing_allocator.allocator());
+    defer runtime.deinit();
+    var ctx: PortsCtx = .{};
+    var runspace = world.Runspace.init(failing_allocator.allocator(), .{
+        .require_supervision = true,
+    });
+    defer runspace.deinit();
+
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = failing_allocator.allocator(),
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+        .permit = permit,
+    });
+    try runspace.events.ensureUnusedCapacity(failing_allocator.allocator(), 2);
+    failing_allocator.fail_index = failing_allocator.alloc_index + 2;
+
+    try std.testing.expectError(error.OutOfMemory, runspace.step(handle));
+    try std.testing.expect(failing_allocator.has_induced_failure);
+    try std.testing.expectEqual(@as(usize, 0), ctx.calls);
+    try std.testing.expectEqual(world.Runspace.RunStatus.runnable, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().parked_count);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
+}
+
+test "runspace auto dispatch park-on-budget preserves pending mailbox" {
+    const park_policy = world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .allow_native_adapters = true,
+        .allow_handoff_export = true,
+        .require_environment_certificate = true,
+        .park_on_budget_exceeded = true,
+    });
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = park_policy,
+        .budget = world.Budget.init(.{ .max_frame_response_bytes = 0 }),
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var ctx: PortsCtx = .{};
+    var runspace = world.Runspace.init(std.testing.allocator, .{
+        .auto_dispatch = true,
+        .require_supervision = true,
+    });
+    defer runspace.deinit();
+
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+        .permit = permit,
+    });
+    const event = try runspace.step(handle);
+    try std.testing.expectEqual(world.Runspace.EventKind.run_parked_on_supervision, event.kind);
+    try std.testing.expectEqual(@as(usize, 1), ctx.calls);
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_supervision, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+}
+
+test "runspace enforces lifecycle supervision for direct and imported slots" {
+    const StrictEnv = world.Environment(fixtures.Strict.Target, .{
+        .ports = &.{},
+    });
+    const branch_denied_permit = world.Supervision.issue(fixtures.Strict.Target, StrictEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+    });
+    var direct = world.Runspace.init(std.testing.allocator, .{
+        .require_supervision = true,
+    });
+    defer direct.deinit();
+    try std.testing.expectError(error.SupervisionDenied, direct.installTarget(fixtures.Strict.Target, StrictEnv, world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+    }), .{}));
+    const strict_module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Strict.Target);
+    try std.testing.expectError(error.SupervisionDenied, direct.installTarget(fixtures.Strict.Target, StrictEnv, world.Supervision.issue(fixtures.Strict.Target, StrictEnv, .{
+        .mode = .fresh,
+        .module_ref_fingerprint = strict_module_ref.module_ref_fingerprint,
+        .policy = world.SupervisionPolicy.strict_fresh,
+    }), .{}));
+    try std.testing.expectError(error.SupervisionDenied, direct.installTarget(fixtures.Strict.Target, StrictEnv, world.Supervision.issue(fixtures.Strict.Target, StrictEnv, .{
+        .mode = .fresh,
+        .admission_receipt_fingerprint = 0xadd1_5001,
+        .policy = world.SupervisionPolicy.strict_fresh,
+    }), .{}));
+    const direct_handle = try direct.installTarget(fixtures.Strict.Target, StrictEnv, branch_denied_permit, .{});
+    try std.testing.expectError(error.InvalidRunspaceTransition, direct.exportRun(direct_handle));
+    try std.testing.expectEqual(@as(usize, 0), direct.slots.items[0].supervisor.?.ledger.total_handoff_exports);
+    const checkpoint = try direct.checkpoint(direct_handle);
+    try std.testing.expectError(error.BranchDenied, direct.branch(direct_handle, checkpoint, .{}));
+    try std.testing.expectEqual(@as(usize, 1), direct.report().blocker_count);
+    try std.testing.expectEqual(@as(usize, 2), direct.events.items.len);
+    const direct_next = try direct.installTarget(fixtures.Strict.Target, StrictEnv, branch_denied_permit, .{});
+    try std.testing.expectEqual(@as(u64, 1), direct_next.local_run_id);
+
+    const checkpoint_budget_permit = world.Supervision.issue(fixtures.Strict.Target, StrictEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+        .budget = world.Budget.init(.{ .max_checkpoints = 0 }),
+    });
+    var checkpoint_denied = world.Runspace.init(std.testing.allocator, .{
+        .require_supervision = true,
+    });
+    defer checkpoint_denied.deinit();
+    const checkpoint_handle = try checkpoint_denied.installTarget(fixtures.Strict.Target, StrictEnv, checkpoint_budget_permit, .{});
+    try std.testing.expectError(error.BudgetExceeded, checkpoint_denied.checkpoint(checkpoint_handle));
+    try std.testing.expectEqual(@as(usize, 1), checkpoint_denied.events.items.len);
+
+    var imported_image = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Strict.Target),
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Strict.Target).import_set_fingerprint,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = world.TargetRef.fromTarget(fixtures.Strict.Target).target_ref_fingerprint,
+            .status = .completed,
+        }),
+        .prior_run_permit_fingerprint = branch_denied_permit.permit_fingerprint,
+    });
+    defer imported_image.deinit(std.testing.allocator);
+    var imported = world.Runspace.init(std.testing.allocator, .{
+        .require_supervision = true,
+    });
+    defer imported.deinit();
+    try std.testing.expectError(error.SupervisionDenied, imported.installRunImage(imported_image));
+
+    const admitted_permit = world.Supervision.issue(fixtures.Strict.Target, StrictEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.audit_only,
+    });
+    const scoped_admitted_permit = world.Supervision.issue(fixtures.Strict.Target, StrictEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.audit_only,
+        .admission_receipt_fingerprint = 0xadd1_5afe,
+    });
+    const admitted_image = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Strict.Target),
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Strict.Target).import_set_fingerprint,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = world.TargetRef.fromTarget(fixtures.Strict.Target).target_ref_fingerprint,
+            .status = .completed,
+        }),
+        .prior_run_permit_fingerprint = branch_denied_permit.permit_fingerprint,
+    });
+    const supervised_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_5afe,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Strict.Target),
+        .mode = .continue_fresh,
+        .run_image = admitted_image,
+        .run_permit = admitted_permit,
+    });
+    var admitted = world.Runspace.init(std.testing.allocator, .{
+        .require_supervision = true,
+    });
+    defer admitted.deinit();
+    const admitted_handle = try admitted.installAdmitted(supervised_admitted);
+    const admitted_checkpoint = try admitted.checkpoint(admitted_handle);
+    _ = try admitted.branch(admitted_handle, admitted_checkpoint, .{});
+    var admitted_export = try admitted.exportRun(admitted_handle);
+    defer admitted_export.deinit(std.testing.allocator);
+    try std.testing.expectEqual(scoped_admitted_permit.permit_fingerprint, admitted_export.prior_run_permit_fingerprint.?);
+
+    const prior_only_image = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Strict.Target),
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Strict.Target).import_set_fingerprint,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = world.TargetRef.fromTarget(fixtures.Strict.Target).target_ref_fingerprint,
+            .status = .completed,
+        }),
+        .prior_run_permit_fingerprint = branch_denied_permit.permit_fingerprint,
+    });
+    const prior_only_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_5aff,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Strict.Target),
+        .mode = .continue_fresh,
+        .run_image = prior_only_image,
+    });
+    var prior_only = world.Runspace.init(std.testing.allocator, .{});
+    defer prior_only.deinit();
+    const prior_only_handle = try prior_only.installAdmitted(prior_only_admitted);
+    var prior_only_export = try prior_only.exportRun(prior_only_handle);
+    defer prior_only_export.deinit(std.testing.allocator);
+    try std.testing.expectEqual(branch_denied_permit.permit_fingerprint, prior_only_export.prior_run_permit_fingerprint.?);
+}
+
+test "runspace handoff export captures parked pending request and completed transcript" {
+    var parked_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer parked_runtime.deinit();
+    var parked_ctx: PortsCtx = .{};
+    var parked_runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer parked_runspace.deinit();
+    const parked_handle = try parked_runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &parked_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &parked_ctx,
+    });
+    _ = try parked_runspace.tick();
+    var parked_image = try parked_runspace.exportPending(0);
+    defer parked_image.deinit(std.testing.allocator);
+    try std.testing.expectEqual(world.RunImage.Kind.parked_run, parked_image.kind);
+    try std.testing.expect(parked_image.pending_request_frame != null);
+    try std.testing.expectEqual(world.Runspace.RunStatus.exported, (try parked_runspace.getSlotSummary(parked_handle)).status);
+    try std.testing.expectEqual(world.Runspace.PendingStatus.exported, (try parked_runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(@as(usize, 1), parked_runspace.report().parked_count);
+    try std.testing.expectEqual(@as(usize, 0), parked_runspace.report().completed_count);
+
+    var completed_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer completed_runtime.deinit();
+    var completed_ctx: PortsCtx = .{};
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    var completed_runspace = world.Runspace.init(std.testing.allocator, .{ .auto_dispatch = true });
+    defer completed_runspace.deinit();
+    const completed_handle = try completed_runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &completed_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &completed_ctx,
+        .transcript = &transcript,
+    });
+    _ = try completed_runspace.tick();
+    _ = try completed_runspace.tick();
+    var completed_image = try completed_runspace.exportRun(completed_handle);
+    defer completed_image.deinit(std.testing.allocator);
+    try std.testing.expectEqual(world.RunImage.Kind.completed_run, completed_image.kind);
+    try std.testing.expect(completed_image.transcript_image != null);
+    try std.testing.expectEqual(world.TranscriptImage.FinalStatus.completed, completed_image.transcript_image.?.final_status);
+    try std.testing.expect(completed_image.current_state.final_response_fingerprint != null);
+    try std.testing.expect(completed_image.current_state.final_value_image_fingerprint != null);
+    try std.testing.expect(completed_image.current_state.turn_index > 0);
+
+    var relay_runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer relay_runspace.deinit();
+    const relayed_handle = try relay_runspace.installRunImage(completed_image);
+    var relayed_image = try relay_runspace.exportRun(relayed_handle);
+    defer relayed_image.deinit(std.testing.allocator);
+    try std.testing.expectEqual(completed_image.import_set_fingerprint, relayed_image.import_set_fingerprint);
+    try std.testing.expect(relayed_image.transcript_image != null);
+    try std.testing.expectEqual(completed_image.transcript_image.?.transcript_image_fingerprint, relayed_image.transcript_image.?.transcript_image_fingerprint);
+    try std.testing.expectEqual(completed_image.current_state.final_response_fingerprint, relayed_image.current_state.final_response_fingerprint);
+    try std.testing.expectEqual(completed_image.current_state.final_value_image_fingerprint, relayed_image.current_state.final_value_image_fingerprint);
+    try std.testing.expectEqual(completed_image.current_state.turn_index, relayed_image.current_state.turn_index);
+}
+
+test "runspace checkpoint branch and replay install are deterministic" {
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+    const handle = try runspace.installTarget(fixtures.Strict.Target, .{}, null, .{});
+    const checkpoint = try runspace.checkpoint(handle);
+    const branch_handle = try runspace.branch(handle, checkpoint, .{});
+    try std.testing.expect(branch_handle.handle_fingerprint != handle.handle_fingerprint);
+    try std.testing.expect(branch_handle.branch_id != null);
+    try std.testing.expectEqual(world.Runspace.RunStatus.admitted, (try runspace.getSlotSummary(branch_handle)).status);
+    try std.testing.expectError(error.InvalidRunspaceTransition, runspace.step(branch_handle));
+    const branches = try runspace.listBranches(handle, std.testing.allocator);
+    defer std.testing.allocator.free(branches);
+    try std.testing.expectEqual(@as(usize, 1), branches.len);
+    try std.testing.expectEqual(branch_handle.handle_fingerprint, branches[0].handle_fingerprint);
+
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    try recordPortsTranscript(&transcript);
+    var image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer image.deinit(std.testing.allocator);
+    const replay_handle = try runspace.installReplay(fixtures.Ports.Target, image, null);
+    try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try runspace.getSlotSummary(replay_handle)).status);
+    const replay_checkpoint = try runspace.checkpoint(replay_handle);
+    try std.testing.expectEqual(image.response_count, replay_checkpoint.turn_index);
+    try std.testing.expect(replay_checkpoint.turn_index > 0);
+}
+
+test "runspace branch rejects checkpoint with stale self fingerprint" {
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+    const handle = try runspace.installTarget(fixtures.Strict.Target, .{}, null, .{});
+    const witnessed = try runspace.checkpoint(handle);
+    var forged = witnessed;
+    forged.event_index = runspace.events.items.len;
+
+    try std.testing.expectError(error.HandoffCheckpointMismatch, runspace.branch(handle, forged, .{}));
+}
+
+test "runspace branch child preserves supervised branch budget" {
+    const StrictEnv = world.Environment(fixtures.Strict.Target, .{
+        .ports = &.{},
+    });
+    const permit = world.Supervision.issue(fixtures.Strict.Target, StrictEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_branching = true,
+            .allow_checkpoints = true,
+            .require_environment_certificate = true,
+        }),
+        .budget = world.Budget.init(.{ .max_branches = 1 }),
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+    const handle = try runspace.installMachineRun(fixtures.Strict.Target, StrictEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .permit = permit,
+    });
+
+    const checkpoint_value = try runspace.checkpoint(handle);
+    const branch_handle = try runspace.branch(handle, checkpoint_value, .{});
+    const child_checkpoint = try runspace.checkpoint(branch_handle);
+    try std.testing.expectError(error.BudgetExceeded, runspace.branch(branch_handle, child_checkpoint, .{}));
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().blocker_count);
+}
+
+test "runspace branch depth budget rejects grandchildren" {
+    const StrictEnv = world.Environment(fixtures.Strict.Target, .{
+        .ports = &.{},
+    });
+    const permit = world.Supervision.issue(fixtures.Strict.Target, StrictEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_branching = true,
+            .allow_checkpoints = true,
+            .require_environment_certificate = true,
+        }),
+        .budget = world.Budget.init(.{ .max_branches = 2, .max_branch_depth = 1 }),
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+    const handle = try runspace.installMachineRun(fixtures.Strict.Target, StrictEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .permit = permit,
+    });
+
+    const checkpoint_value = try runspace.checkpoint(handle);
+    const branch_handle = try runspace.branch(handle, checkpoint_value, .{});
+    const child_checkpoint = try runspace.checkpoint(branch_handle);
+    try std.testing.expectError(error.BudgetExceeded, runspace.branch(branch_handle, child_checkpoint, .{}));
+}
+
+test "runspace branches list only selected parent lineage" {
+    var runtime_a = boundary.Runtime.init(std.testing.allocator);
+    defer runtime_a.deinit();
+    var runtime_b = boundary.Runtime.init(std.testing.allocator);
+    defer runtime_b.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+
+    const first = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime_a, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    const second = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime_b, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    const first_checkpoint = try runspace.checkpoint(first);
+    try std.testing.expectError(error.HandoffCheckpointMismatch, runspace.branch(second, first_checkpoint, .{}));
+    const first_branch = try runspace.branch(first, first_checkpoint, .{});
+    const second_branch = try runspace.branch(second, try runspace.checkpoint(second), .{});
+
+    const first_branches = try runspace.listBranches(first, std.testing.allocator);
+    defer std.testing.allocator.free(first_branches);
+    const second_branches = try runspace.listBranches(second, std.testing.allocator);
+    defer std.testing.allocator.free(second_branches);
+    try std.testing.expectEqual(@as(usize, 1), first_branches.len);
+    try std.testing.expectEqual(@as(usize, 1), second_branches.len);
+    try std.testing.expectEqual(first_branch.handle_fingerprint, first_branches[0].handle_fingerprint);
+    try std.testing.expectEqual(second_branch.handle_fingerprint, second_branches[0].handle_fingerprint);
+}
+
+test "runspace failed branch install preserves deterministic run ids" {
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+    const handle = try runspace.installTarget(fixtures.Strict.Target, .{}, null, .{});
+    const checkpoint = try runspace.checkpoint(handle);
+    runspace.config.max_events = runspace.events.items.len;
+
+    try std.testing.expectError(error.BudgetExceeded, runspace.branch(handle, checkpoint, .{}));
+    runspace.config.max_events = null;
+    const next = try runspace.installTarget(fixtures.Strict.Target, .{}, null, .{});
+    try std.testing.expectEqual(@as(u64, 1), next.local_run_id);
+}
+
+test "runspace event log owns branch summary bytes" {
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+    const handle = try runspace.installTarget(fixtures.Strict.Target, .{}, null, .{});
+    const checkpoint = try runspace.checkpoint(handle);
+    var caller_summary = try std.testing.allocator.dupe(u8, "branch-owned");
+    defer std.testing.allocator.free(caller_summary);
+
+    _ = try runspace.branch(handle, checkpoint, .{ .summary = caller_summary });
+    const event = runspace.events.items[runspace.events.items.len - 1];
+    caller_summary[0] = 'X';
+
+    try std.testing.expectEqualStrings("branch-owned", event.summary);
+    try std.testing.expectEqual(event.event_fingerprint, world.RunspaceEvent.init(.{
+        .kind = event.kind,
+        .runspace_fingerprint = event.runspace_fingerprint,
+        .event_index = event.event_index,
+        .run_handle = event.run_handle,
+        .checkpoint_fingerprint = event.checkpoint_fingerprint,
+        .run_state_fingerprint = event.run_state_fingerprint,
+        .admission_receipt_fingerprint = event.admission_receipt_fingerprint,
+        .run_permit_fingerprint = event.run_permit_fingerprint,
+        .summary = event.summary,
+    }).event_fingerprint);
+}
+
+test "runspace verify run detects changed handler" {
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    try recordPortsTranscript(&transcript);
+    var image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer image.deinit(std.testing.allocator);
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var ctx: PortsCtx = .{ .response = 99 };
+    var runspace = world.Runspace.init(std.testing.allocator, .{ .auto_dispatch = true });
+    defer runspace.deinit();
+    const handle = try runspace.installVerifyRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.verify,
+        .ctx = &ctx,
+        .transcript_image = &image,
+    });
+    try std.testing.expectError(error.VerifyDivergence, runspace.tick());
+    try std.testing.expectEqual(world.Runspace.RunStatus.failed, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(@as(usize, 1), ctx.calls);
+}
+
+test "runspace export owns transcript image supplied to machine options" {
+    var exported = blk: {
+        var transcript = world.Transcript.init(std.testing.allocator);
+        defer transcript.deinit();
+        try recordPortsTranscript(&transcript);
+        var image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+        defer image.deinit(std.testing.allocator);
+        var runtime = boundary.Runtime.init(std.testing.allocator);
+        defer runtime.deinit();
+        var runspace = world.Runspace.init(std.testing.allocator, .{ .auto_dispatch = true });
+        defer runspace.deinit();
+        const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+            .allocator = std.testing.allocator,
+            .mode = world.Mode.replay,
+            .transcript_image = &image,
+        });
+        _ = try runspace.tick();
+        _ = try runspace.tick();
+        try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try runspace.getSlotSummary(handle)).status);
+        break :blk try runspace.exportRun(handle);
+    };
+    defer exported.deinit(std.testing.allocator);
+
+    try std.testing.expect(exported.transcript_image != null);
+    const encoded = try exported.encode(std.testing.allocator);
+    defer std.testing.allocator.free(encoded);
+    var decoded = try world.RunImage.decode(std.testing.allocator, encoded);
+    defer decoded.deinit(std.testing.allocator);
+    try std.testing.expect(decoded.transcript_image != null);
+    try std.testing.expectEqual(exported.transcript_image.?.transcript_image_fingerprint, decoded.transcript_image.?.transcript_image_fingerprint);
+}
+
+test "runspace stepOne uses deterministic local run order and parked runs do not step again" {
+    var runtime_a = boundary.Runtime.init(std.testing.allocator);
+    defer runtime_a.deinit();
+    var runtime_b = boundary.Runtime.init(std.testing.allocator);
+    defer runtime_b.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+
+    const first = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime_a, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    const second = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime_b, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+
+    _ = try runspace.stepOne();
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().parked_count);
+    try std.testing.expectEqual(first.handle_fingerprint, (try runspace.mailbox.get(0)).handle.handle_fingerprint);
+
+    _ = try runspace.stepOne();
+    try std.testing.expectEqual(@as(usize, 2), runspace.report().parked_count);
+    try std.testing.expectEqual(second.handle_fingerprint, (try runspace.mailbox.get(1)).handle.handle_fingerprint);
+
+    _ = try runspace.respondValue(0, @as(i32, 7));
+    _ = try runspace.step(first);
+    try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try runspace.getSlotSummary(first)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try runspace.getSlotSummary(second)).status);
+}
+
+test "runspace tick completes zero-port machine run" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+
+    const handle = try runspace.installMachineRun(fixtures.Strict.Target, world.Environment(fixtures.Strict.Target, .{
+        .bindings = .{},
+        .policy = world.EnvironmentPolicy.strict_fresh,
+    }), &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    const report = try runspace.tick();
+    try std.testing.expectEqual(@as(usize, 1), report.completed_count);
+    try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try runspace.getSlotSummary(handle)).status);
 }
 
 test "value image scalar string product sum and policy failures" {
@@ -4386,6 +8778,51 @@ test "handoff preflight rejects target mismatch and accepts replay handoff with 
     try std.testing.expectEqual(world.AcceptanceBlocker.HandoffTargetMismatch, mismatch.blockers[0]);
 }
 
+test "run image transcript evidence saturates response turn advancement" {
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    try recordPortsTranscript(&transcript);
+    var image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer image.deinit(std.testing.allocator);
+
+    const response_event = for (image.events) |*event| {
+        if (event.response_frame != null or event.kind == .port_responded or event.kind == .frame_responded or event.kind == .port_replayed or event.kind == .frame_replayed) break event;
+    } else return error.ExpectedResponseEvent;
+    response_event.turn_index = std.math.maxInt(usize);
+    response_event.event_fingerprint = testTranscriptEventImageFingerprint(response_event.*);
+    image.transcript_image_fingerprint = testTranscriptImageFingerprint(image);
+
+    const run_image = world.RunImage.fromTranscriptImage(fixtures.Ports.Target, image, .completed_run);
+    try std.testing.expectEqual(std.math.maxInt(usize), run_image.current_state.turn_index);
+}
+
+test "run image transcript evidence ignores non-source response frames" {
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    try recordPortsTranscript(&transcript);
+    var image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer image.deinit(std.testing.allocator);
+
+    var ignored_response_events: usize = 0;
+    for (image.events) |*event| {
+        switch (event.kind) {
+            .port_responded, .frame_responded, .port_replayed, .frame_replayed => {
+                if (event.response_frame == null) continue;
+                event.kind = .frame_verified;
+                event.event_fingerprint = testTranscriptEventImageFingerprint(event.*);
+                ignored_response_events += 1;
+            },
+            else => {},
+        }
+    }
+    try std.testing.expect(ignored_response_events > 0);
+    image.transcript_image_fingerprint = testTranscriptImageFingerprint(image);
+
+    const run_image = world.RunImage.fromTranscriptImage(fixtures.Ports.Target, image, .completed_run);
+    try std.testing.expectEqual(@as(?u64, null), run_image.current_state.final_response_fingerprint);
+    try std.testing.expectEqual(@as(?u64, null), run_image.current_state.final_value_image_fingerprint);
+}
+
 test "parked handoff resumes selected pending request on receiver environment" {
     var runtime = boundary.Runtime.init(std.testing.allocator);
     defer runtime.deinit();
@@ -4877,6 +9314,118 @@ test "verify handoff detects changed fixture handler behavior" {
         .ctx = &bad_ctx,
         .transcript_image = &handoff.run_image.transcript_image.?,
     }));
+}
+
+test "runspace completed replay installs charge terminal supervision step" {
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    try recordPortsTranscript(&transcript);
+    var image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer image.deinit(std.testing.allocator);
+
+    const replay_install_policy = world.SupervisionPolicy.init(.{
+        .allow_replay_calls = true,
+        .allow_replay_adapters = true,
+        .require_portable_value_images = true,
+        .reject_native_only_values = true,
+        .require_environment_certificate = false,
+        .require_transcript_image_for_replay = true,
+    });
+    const terminal_step_limited_permit = world.Supervision.issue(fixtures.Ports.Target, PortsReplayEnv, .{
+        .mode = .replay,
+        .policy = replay_install_policy,
+        .budget = world.Budget.init(.{ .max_session_steps = 1 }),
+        .transcript_image_available = true,
+    });
+    var runspace = world.Runspace.init(std.testing.allocator, .{ .require_supervision = true });
+    defer runspace.deinit();
+    try std.testing.expectError(error.BudgetExceeded, runspace.installReplay(fixtures.Ports.Target, image, terminal_step_limited_permit));
+
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const transcriptless_state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .completed,
+    });
+    const transcriptless_image = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = transcriptless_state,
+        .environment_certificate_fingerprint = PortsReplayEnv.certificate(.replay, true).certificate_fingerprint,
+        .acceptance_report_fingerprint = PortsReplayEnv.acceptanceReport(.replay, true).report_fingerprint,
+    });
+    const admitted_transcript_permit = world.Supervision.issue(fixtures.Ports.Target, PortsReplayEnv, .{
+        .mode = .replay,
+        .policy = replay_install_policy,
+        .transcript_image_available = true,
+    });
+    const transcriptless_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_7ed1,
+        .target_ref = target_ref,
+        .environment_certificate_fingerprint = PortsReplayEnv.certificate(.replay, true).certificate_fingerprint,
+        .mode = .replay_only,
+        .run_image = transcriptless_image,
+        .run_permit = admitted_transcript_permit,
+    });
+    var admitted_runspace = world.Runspace.init(std.testing.allocator, .{ .require_supervision = true });
+    defer admitted_runspace.deinit();
+    try std.testing.expectError(error.SupervisionDenied, admitted_runspace.installAdmitted(transcriptless_admitted));
+}
+
+test "runspace replay install derives state evidence from selected replay window" {
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    _ = try appendPortsSourceRun(&transcript, 10, 0xaaa0, 0xaaa1);
+    const selected_response = try appendPortsSourceRun(&transcript, 0, 0xbbb0, 0xbbb1);
+    var image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.native_compatible });
+    defer image.deinit(std.testing.allocator);
+
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+    const handle = try runspace.installReplay(fixtures.Ports.Target, image, null);
+    var exported = try runspace.exportRun(handle);
+    defer exported.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), exported.current_state.turn_index);
+    try std.testing.expectEqual(selected_response.frame_fingerprint, exported.current_state.final_response_fingerprint.?);
+}
+
+test "runspace admitted verify installs charge verification response" {
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    try recordPortsTranscript(&transcript);
+    var image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer image.deinit(std.testing.allocator);
+
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const run_image = world.RunImage.fromTranscriptImage(fixtures.Ports.Target, image, .completed_run);
+    const verify_accept_policy = world.SupervisionPolicy.init(.{
+        .allow_verify_calls = true,
+        .allow_native_adapters = true,
+        .allow_handoff_accept = true,
+        .require_environment_certificate = true,
+        .require_transcript_image_for_replay = true,
+    });
+    const response_limited_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .verify,
+        .policy = verify_accept_policy,
+        .budget = world.Budget.init(.{ .max_port_responses = 1 }),
+        .transcript_image_available = true,
+        .handoff_policy = .allow,
+    });
+    const admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_7ed0,
+        .target_ref = target_ref,
+        .environment_certificate_fingerprint = PortsEnv.certificate(.verify, true).certificate_fingerprint,
+        .mode = .verify_only,
+        .run_image = run_image,
+        .transcript_image = image,
+        .run_permit = response_limited_permit,
+    });
+
+    var runspace = world.Runspace.init(std.testing.allocator, .{ .require_supervision = true });
+    defer runspace.deinit();
+    try std.testing.expectError(error.BudgetExceeded, runspace.installAdmitted(admitted));
 }
 
 test "branch handoff metadata roundtrips and parent transcript is not mutated" {
@@ -6511,6 +11060,42 @@ test "supervised handoff export is charged before encoded bytes are returned" {
     try std.testing.expectEqual(@as(usize, 1), allowed_run.supervisor.?.ledger.total_handoff_exports);
 }
 
+test "interrupted handoff export still enforces export-specific supervision budgets" {
+    const total_cost_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_native_adapters = true,
+            .allow_handoff_export = true,
+            .park_on_budget_exceeded = true,
+        }),
+        .budget = world.Budget.init(.{ .max_total_cost_units = 0 }),
+        .cost_model = world.CostModel.init(.{ .handoff_export_cost = 1 }),
+    });
+    var total_cost_supervisor = try world.Supervisor.init(std.testing.allocator, total_cost_permit, fixtures.Ports.Target.WorldPortTable.entries.len);
+    defer total_cost_supervisor.deinit();
+    total_cost_supervisor.interrupted = true;
+    try std.testing.expectError(error.BudgetExceeded, total_cost_supervisor.beforeInterruptedHandoffExport());
+    try std.testing.expectEqual(world.Supervision.BudgetExceededKind.total_cost_units, total_cost_supervisor.ledger.exceeded_budget.?);
+
+    const event_policy = world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .allow_native_adapters = true,
+        .allow_handoff_export = true,
+        .park_on_budget_exceeded = true,
+        .max_supervision_events = 0,
+    });
+    const event_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = event_policy,
+    });
+    var event_supervisor = try world.Supervisor.init(std.testing.allocator, event_permit, fixtures.Ports.Target.WorldPortTable.entries.len);
+    defer event_supervisor.deinit();
+    event_supervisor.interrupted = true;
+    try std.testing.expectError(error.BudgetExceeded, event_supervisor.beforeInterruptedHandoffExport());
+    try std.testing.expectEqual(world.Supervision.Blocker.max_supervision_events_exceeded, event_supervisor.last_check.?.blocker.?);
+}
+
 test "supervised branch and checkpoint budgets are enforced" {
     const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
         .mode = .fresh,
@@ -7063,6 +11648,14 @@ test "admission policy request report and receipt fingerprints are stable" {
         .environment_certificate_fingerprint = 33,
         .run_permit_fingerprint = 44,
     });
+    const receipt_with_admitted_association = world.Admission.AdmissionReceipt.init(.{
+        .request = request,
+        .report = report,
+        .target_ref_fingerprint = 66,
+        .environment_certificate_fingerprint = 33,
+        .run_permit_fingerprint = 44,
+        .admitted_run_fingerprint = 77,
+    });
     try std.testing.expect(report.accepted);
     try std.testing.expectEqual(report.report_fingerprint, world.Admission.AdmissionReport.accept(.{
         .request = request,
@@ -7072,6 +11665,7 @@ test "admission policy request report and receipt fingerprints are stable" {
         .run_permit_fingerprint = 44,
     }).report_fingerprint);
     try std.testing.expect(receipt.receipt_fingerprint != 0);
+    try std.testing.expect(receipt.receipt_fingerprint != receipt_with_admitted_association.receipt_fingerprint);
 }
 
 test "admitter accepts inspect-only full module and rejects missing permit for execution" {
@@ -7798,6 +12392,30 @@ test "admitted run constructed for accepted local target" {
     try std.testing.expectEqual(target_ref.target_ref_fingerprint, result.admitted_run.?.target_ref.target_ref_fingerprint);
     try std.testing.expectEqual(result.receipt.?.receipt_fingerprint, result.admitted_run.?.admission_receipt_fingerprint);
     try std.testing.expectEqual(result.receipt.?.admitted_run_fingerprint.?, result.admitted_run.?.admitted_run_fingerprint);
+    const forged_receipt = world.Admission.AdmissionReceipt.init(.{
+        .request = result.request,
+        .report = result.report,
+        .target_ref_fingerprint = result.receipt.?.target_ref_fingerprint,
+        .module_ref_fingerprint = result.receipt.?.module_ref_fingerprint,
+        .local_target_ref_fingerprint = result.receipt.?.local_target_ref_fingerprint,
+        .target_match_fingerprint = result.receipt.?.target_match_fingerprint,
+        .environment_certificate_fingerprint = result.receipt.?.environment_certificate_fingerprint,
+        .run_permit_fingerprint = result.receipt.?.run_permit_fingerprint,
+        .admitted_run_fingerprint = result.admitted_run.?.admitted_run_fingerprint +% 1,
+        .warnings = result.receipt.?.warnings,
+        .metadata = result.receipt.?.metadata,
+    });
+    try std.testing.expect(forged_receipt.receipt_fingerprint != result.receipt.?.receipt_fingerprint);
+    var forged_admitted = result.admitted_run.?;
+    forged_admitted.admission_receipt_fingerprint = forged_receipt.receipt_fingerprint;
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+    try std.testing.expectError(error.InvalidFrameEncoding, runspace.installAdmitted(forged_admitted));
+    var receiptless_admitted = result.admitted_run.?;
+    receiptless_admitted.admission_receipt = null;
+    var admission_gated_runspace = world.Runspace.init(std.testing.allocator, .{ .require_admission = true });
+    defer admission_gated_runspace.deinit();
+    try std.testing.expectError(error.InvalidFrameEncoding, admission_gated_runspace.installAdmitted(receiptless_admitted));
 }
 
 test "admission rejects permit mode mismatch before receipt" {
@@ -8405,6 +13023,25 @@ test "admitted run start enforces admitted transcript image" {
     try std.testing.expect(transcript_only_result.admitted_run.?.run_image == null);
     try std.testing.expectEqual(image.transcript_image_fingerprint, transcript_only_result.admitted_run.?.transcript_image.?.transcript_image_fingerprint);
     var transcript_only_admitted = transcript_only_result.admitted_run orelse return error.ExpectedAdmittedRun;
+    var transcript_only_runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer transcript_only_runspace.deinit();
+    const transcript_only_handle = try transcript_only_runspace.installAdmitted(transcript_only_admitted);
+    try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try transcript_only_runspace.getSlotSummary(transcript_only_handle)).status);
+    var transcript_only_export = try transcript_only_runspace.exportRun(transcript_only_handle);
+    defer transcript_only_export.deinit(std.testing.allocator);
+    try std.testing.expectEqual(world.RunImage.Kind.replay_only_run, transcript_only_export.kind);
+    try std.testing.expectEqual(world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint, transcript_only_export.import_set_fingerprint);
+    try std.testing.expectEqual(image.transcript_image_fingerprint, transcript_only_export.transcript_image.?.transcript_image_fingerprint);
+    const missing_import_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_7710,
+        .target_ref = target_ref,
+        .environment_certificate_fingerprint = PortsReplayEnv.certificate(.replay, true).certificate_fingerprint,
+        .mode = .replay_only,
+        .transcript_image = image,
+    });
+    var missing_import_runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer missing_import_runspace.deinit();
+    try std.testing.expectError(error.InvalidFrameEncoding, missing_import_runspace.installAdmitted(missing_import_admitted));
     var transcript_only_runtime = boundary.Runtime.init(std.testing.allocator);
     defer transcript_only_runtime.deinit();
     var transcript_only_run = try transcript_only_admitted.start(fixtures.Ports.Target, PortsReplayEnv, &transcript_only_runtime, .{}, .{
@@ -8418,7 +13055,7 @@ test "admitted run start enforces admitted transcript image" {
                 try std.testing.expectEqual(@as(i32, 7), value);
                 break;
             },
-            .port_required => try transcript_only_run.dispatch(),
+            .port_required => _ = try transcript_only_run.dispatch(),
             .parked => return error.ExpectedReplayCompletion,
             .failed => return error.ExpectedReplayCompletion,
         }
@@ -8439,7 +13076,7 @@ test "admitted run start enforces admitted transcript image" {
                 try std.testing.expectEqual(@as(i32, 7), value);
                 break;
             },
-            .port_required => try replay_sink_run.dispatch(),
+            .port_required => _ = try replay_sink_run.dispatch(),
             .parked => return error.ExpectedReplayCompletion,
             .failed => return error.ExpectedReplayCompletion,
         }

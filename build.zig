@@ -264,7 +264,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-handoff-replay",
             .desc = "Run the replay World handoff example.",
             .expected_stdout =
-            \\run_image_fingerprint=edfe08cd947151e5
+            \\run_image_fingerprint=d8ee6082faeb801c
             \\replayed_response_count=1
             \\final_result=7
             \\
@@ -304,7 +304,7 @@ pub fn build(b: *std.Build) void {
             .expected_stdout =
             \\package_fingerprint=5a5e606018190afc
             \\target_match_fingerprint=c4108ddb5ef704d9
-            \\admission_receipt_fingerprint=b5c68731661c5390
+            \\admission_receipt_fingerprint=9425e37822ccb82d
             \\final_result=7
             \\
             ,
@@ -329,7 +329,7 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World admission parked handoff example.",
             .expected_stdout =
             \\package_fingerprint=91d0e487f35697a
-            \\admission_receipt_fingerprint=2e79f9bc0a7f54e6
+            \\admission_receipt_fingerprint=7778c076f25270ab
             \\receiver_permit_fingerprint=3375ddcdc320bbf9
             \\final_result=7
             \\
@@ -341,8 +341,8 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-admission-replay-verify",
             .desc = "Run the World admission replay/verify example.",
             .expected_stdout =
-            \\replay_admission_receipt=28cf87b7eac7b791
-            \\verify_admission_receipt=b67cec857bfbcb99
+            \\replay_admission_receipt=f7ee708df7f6786
+            \\verify_admission_receipt=29df70f7ec255752
             \\divergence_detected=true
             \\
             ,
@@ -356,8 +356,70 @@ pub fn build(b: *std.Build) void {
             \\module_ref_fingerprint=8980705f83427fa6
             \\model_port_id=0
             \\tool_port_id=1
-            \\admission_receipt=36f01506c840535
+            \\admission_receipt=50be22761d4a6cd2
             \\final_result=final=actuate skeleton complete
+            \\
+            ,
+        },
+        .{
+            .name = "world-runspace-basic",
+            .path = "examples/world_runspace_basic.zig",
+            .step = "run-world-runspace-basic",
+            .desc = "Run the basic World runspace example.",
+            .expected_stdout =
+            \\run_handle=367cb72b9a8188ae
+            \\pending_port_id=0
+            \\final_result=7
+            \\
+            ,
+        },
+        .{
+            .name = "world-runspace-multi",
+            .path = "examples/world_runspace_multi.zig",
+            .step = "run-world-runspace-multi",
+            .desc = "Run the multi-run World runspace example.",
+            .expected_stdout =
+            \\first_run=367cb72b9a8188ae
+            \\second_run=8d63b7a77a33b921
+            \\pending_count=0
+            \\completed_count=2
+            \\
+            ,
+        },
+        .{
+            .name = "world-runspace-handoff",
+            .path = "examples/world_runspace_handoff.zig",
+            .step = "run-world-runspace-handoff",
+            .desc = "Run the handoff World runspace example.",
+            .expected_stdout =
+            \\admission_receipt=3fec963d52ca0d13
+            \\run_handle=7d49e74888e537a3
+            \\final_result=7
+            \\
+            ,
+        },
+        .{
+            .name = "world-runspace-agent",
+            .path = "examples/world_runspace_agent.zig",
+            .step = "run-world-runspace-agent",
+            .desc = "Run the agent-shaped World runspace example.",
+            .expected_stdout =
+            \\model_pending_count=2
+            \\tool_pending_count=1
+            \\event_count=18
+            \\final_result=final=actuate skeleton complete
+            \\
+            ,
+        },
+        .{
+            .name = "world-runspace-supervised",
+            .path = "examples/world_runspace_supervised.zig",
+            .step = "run-world-runspace-supervised",
+            .desc = "Run the supervised World runspace example.",
+            .expected_stdout =
+            \\run_permit=802923ff46eb3109
+            \\budget_exceeded=true
+            \\event_fingerprint=cea9dbf7ebf47c50
             \\
             ,
         },

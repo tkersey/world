@@ -72,6 +72,12 @@ pub const Error = error{
     VerifyResponseKindMismatch,
     VerifyResponseFingerprintMismatch,
     VerifyValueImageMismatch,
+    StaleRunHandle,
+    RunspaceAdmissionRequired,
+    RunspaceInstallDenied,
+    InvalidRunspaceTransition,
+    InvalidPendingPortTransition,
+    PendingPortConsumed,
     OutOfMemory,
 };
 
@@ -222,8 +228,16 @@ pub const world_admission_policy_fingerprint_version: u32 = 2;
 pub const world_admission_request_fingerprint_version: u32 = 1;
 pub const world_admission_report_fingerprint_version: u32 = 1;
 pub const world_admission_receipt_format_version: u32 = 1;
-pub const world_admission_receipt_fingerprint_version: u32 = 1;
-pub const world_admitted_run_fingerprint_version: u32 = 1;
+pub const world_admission_receipt_fingerprint_version: u32 = 3;
+pub const world_admitted_run_fingerprint_version: u32 = 5;
+pub const world_run_handle_format_version: u32 = 1;
+pub const world_run_handle_fingerprint_version: u32 = 1;
+pub const world_pending_port_format_version: u32 = 1;
+pub const world_pending_port_fingerprint_version: u32 = 1;
+pub const world_runspace_config_fingerprint_version: u32 = 1;
+pub const world_runspace_event_fingerprint_version: u32 = 1;
+
+var next_runspace_instance_id = std.atomic.Value(u64).init(0);
 pub const world_max_decoded_byte_field_len: usize = 16 * 1024 * 1024;
 const frame_response_deferred_fingerprint_flag: u32 = 1 << 0;
 const world_min_transcript_event_image_encoded_len_v2: usize = 8 + 1 + 8 + 8 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1;
@@ -2039,7 +2053,10 @@ pub const Admission = struct {
     pub const AdmittedRun = struct {
         admitted_run_fingerprint: u64,
         admission_receipt_fingerprint: u64,
+        admission_receipt: ?Admission.AdmissionReceipt = null,
         target_ref: TargetRef,
+        module_ref_fingerprint: ?u64 = null,
+        import_set_fingerprint: ?u64 = null,
         environment_certificate_fingerprint: ?u64 = null,
         run_permit: ?RunPermit = null,
         run_image: ?RunImage = null,
@@ -2052,7 +2069,10 @@ pub const Admission = struct {
 
         pub fn init(args: struct {
             admission_receipt_fingerprint: u64,
+            admission_receipt: ?Admission.AdmissionReceipt = null,
             target_ref: TargetRef,
+            module_ref_fingerprint: ?u64 = null,
+            import_set_fingerprint: ?u64 = null,
             environment_certificate_fingerprint: ?u64 = null,
             run_permit: ?RunPermit = null,
             run_image: ?RunImage = null,
@@ -2066,7 +2086,10 @@ pub const Admission = struct {
             var result = Admission.AdmittedRun{
                 .admitted_run_fingerprint = 0,
                 .admission_receipt_fingerprint = args.admission_receipt_fingerprint,
+                .admission_receipt = args.admission_receipt,
                 .target_ref = args.target_ref,
+                .module_ref_fingerprint = args.module_ref_fingerprint,
+                .import_set_fingerprint = args.import_set_fingerprint,
                 .environment_certificate_fingerprint = args.environment_certificate_fingerprint,
                 .run_permit = args.run_permit,
                 .run_image = args.run_image,
@@ -2156,9 +2179,10 @@ pub const Admission = struct {
                 if (@field(options, "permit").permit_fingerprint != permit.permit_fingerprint) return Error.SupervisionDenied;
             }
             var image = self.run_image orelse return error.HandoffPendingFrameMismatch;
-            if (image.transcript_image == null) {
-                image.transcript_image = self.transcript_image;
-                refreshRunImageFingerprint(&image);
+            if (image.transcript_image) |transcript_image| {
+                try attachBorrowedTranscriptToRunImage(&image, transcript_image);
+            } else if (self.transcript_image) |transcript_image| {
+                try attachBorrowedTranscriptToRunImage(&image, transcript_image);
             }
             const transcript_sink_available = comptime @hasField(Options, "transcript") and Env.policy_decl.allow_native_adapters;
             if (self.environment_certificate_fingerprint) |fingerprint| {
@@ -2449,9 +2473,14 @@ pub const Admission = struct {
                 if (package.run_image) |run_image| {
                     var handoff_run_image = run_image;
                     attachPackageModuleWitnessToRunImage(&handoff_run_image, package, module_ref);
-                    if (handoff_run_image.transcript_image == null) {
-                        handoff_run_image.transcript_image = package.transcript_image;
-                        refreshRunImageFingerprint(&handoff_run_image);
+                    if (handoff_run_image.transcript_image) |transcript_image| {
+                        attachBorrowedTranscriptToRunImage(&handoff_run_image, transcript_image) catch {
+                            return rejectedResult(request, package, target_ref, module_ref, match, &.{.RunImageInvalid}, "handoff transcript evidence rejected admission");
+                        };
+                    } else if (package.transcript_image) |transcript_image| {
+                        attachBorrowedTranscriptToRunImage(&handoff_run_image, transcript_image) catch {
+                            return rejectedResult(request, package, target_ref, module_ref, match, &.{.RunImageInvalid}, "handoff transcript evidence rejected admission");
+                        };
                     }
                     var handoff = Handoff{ .allocator = args.allocator, .run_image = handoff_run_image };
                     const handoff_report = if (args.permit) |permit|
@@ -2520,6 +2549,8 @@ pub const Admission = struct {
             var admitted = Admission.AdmittedRun.init(.{
                 .admission_receipt_fingerprint = receipt.receipt_fingerprint,
                 .target_ref = local_target_ref,
+                .module_ref_fingerprint = if (module_ref) |module| module.module_ref_fingerprint else null,
+                .import_set_fingerprint = ImportSet.fromTarget(Target).import_set_fingerprint,
                 .environment_certificate_fingerprint = cert.certificate_fingerprint,
                 .run_permit = args.permit,
                 .run_image = admitted_run_image,
@@ -2533,6 +2564,7 @@ pub const Admission = struct {
             receipt.admitted_run_fingerprint = admitted.admitted_run_fingerprint;
             receipt.receipt_fingerprint = fingerprintAdmissionReceipt(receipt);
             admitted.admission_receipt_fingerprint = receipt.receipt_fingerprint;
+            admitted.admission_receipt = receipt;
             return .{ .request = request, .report = report, .receipt = receipt, .admitted_run = admitted, .target_match = match };
         }
 
@@ -3475,6 +3507,20 @@ pub const Supervision = struct {
             self.ledger.deinit(self.allocator);
         }
 
+        pub fn clone(self: @This(), allocator: std.mem.Allocator) !@This() {
+            const ledger = try self.ledger.clone(allocator);
+            return .{
+                .allocator = allocator,
+                .permit = self.permit,
+                .ledger = ledger,
+                .last_check = self.last_check,
+                .warning_count = self.warning_count,
+                .supervision_event_count = self.supervision_event_count,
+                .interrupted = self.interrupted,
+                .blocker = self.blocker,
+            };
+        }
+
         pub fn validatePermitForRun(permit: Supervision.RunPermit, port_count: usize) !void {
             if (!modeAllowedByPolicy(permit.policy, permit.mode)) return Error.SupervisionDenied;
             const policy = permit.policy.withFingerprint();
@@ -3811,6 +3857,51 @@ pub const Supervision = struct {
             next.total_handoff_exports = addSatUsize(next.total_handoff_exports, 1);
             next.total_cost_units = addSatU64(next.total_cost_units, self.permit.cost_model.handoff_export_cost);
             try self.commitCheck(.before_handoff_export, null, &next, null, null, "handoff export");
+        }
+
+        pub fn beforeInterruptedHandoffExport(self: *@This()) !void {
+            if (!self.interrupted) return self.beforeHandoffExport();
+            if (!self.permit.policy.allow_handoff_export or self.permit.handoff_policy == .deny) return self.deny(.before_handoff_export, null, .handoff_denied, null, "handoff export denied");
+            var next = try self.ledger.clone(self.allocator);
+            defer next.deinit(self.allocator);
+            next.total_handoff_exports = addSatUsize(next.total_handoff_exports, 1);
+            next.total_cost_units = addSatU64(next.total_cost_units, self.permit.cost_model.handoff_export_cost);
+            if (self.permit.budget.max_handoff_exports) |max| {
+                if (next.total_handoff_exports > max) return self.exceed(.before_handoff_export, null, .handoff_exports, &next, null, "interrupted handoff export");
+            }
+            if (self.permit.budget.max_total_cost_units) |max| {
+                if (self.ledger.total_cost_units <= max and next.total_cost_units > max) return self.exceed(.before_handoff_export, null, .total_cost_units, &next, null, "interrupted handoff export");
+            }
+            const usage_before = self.ledger.ledger_fingerprint;
+            const reservation = try self.reserveSupervisionEvent(.before_handoff_export, null, usage_before, null, "interrupted handoff export");
+            if (reservation == .audit_only_exceeded) next.exceeded_budget = .supervision_events;
+            self.ledger.deinit(self.allocator);
+            self.ledger = next;
+            next.per_port_usage = &.{};
+            self.ledger.refreshFingerprint();
+            if (reservation == .audit_only_exceeded) {
+                self.last_check = Supervision.SupervisionCheck.init(.{
+                    .run_permit_fingerprint = self.permit.permit_fingerprint,
+                    .event_kind = .before_handoff_export,
+                    .usage_before_fingerprint = usage_before,
+                    .usage_after_fingerprint = self.ledger.ledger_fingerprint,
+                    .allowed = true,
+                    .blocker = .max_supervision_events_exceeded,
+                    .budget_exceeded = .supervision_events,
+                    .budget_fingerprint = self.permit.budget_fingerprint,
+                    .summary = "interrupted handoff export",
+                });
+                return;
+            }
+            self.last_check = Supervision.SupervisionCheck.init(.{
+                .run_permit_fingerprint = self.permit.permit_fingerprint,
+                .event_kind = .before_handoff_export,
+                .usage_before_fingerprint = usage_before,
+                .usage_after_fingerprint = self.ledger.ledger_fingerprint,
+                .allowed = true,
+                .budget_fingerprint = self.permit.budget_fingerprint,
+                .summary = "interrupted handoff export",
+            });
         }
 
         pub fn encodeHandoffExport(self: *@This(), image: RunImage) ![]const u8 {
@@ -5685,6 +5776,75 @@ pub const TranscriptImage = struct {
         self.replay_limit = pending_index;
     }
 
+    pub fn prepareReplayPrefixForInterruptedRun(
+        self: *@This(),
+        expected_world_surface_fingerprint: u64,
+        expected_target_certificate_fingerprint: u64,
+    ) !void {
+        if (self.world_surface_fingerprint != expected_world_surface_fingerprint) return error.ReplaySurfaceMismatch;
+        if (self.target_certificate_fingerprint != expected_target_certificate_fingerprint) return error.ReplayTargetCertificateMismatch;
+        var active_start: ?usize = null;
+        var active_is_source_run = false;
+        var active_pending_request = false;
+        var active_has_source_response = false;
+        for (self.events, 0..) |event, index| {
+            switch (event.kind) {
+                .run_started => {
+                    if (active_start != null) return error.ReplayMissing;
+                    if (event.world_surface_fingerprint != expected_world_surface_fingerprint) return error.ReplaySurfaceMismatch;
+                    if (event.target_certificate_fingerprint != expected_target_certificate_fingerprint) return error.ReplayTargetCertificateMismatch;
+                    active_start = index;
+                    active_is_source_run = event.source_run;
+                    active_pending_request = false;
+                    active_has_source_response = false;
+                },
+                .run_completed,
+                .run_failed,
+                => {
+                    if (active_start == null) continue;
+                    if (event.world_surface_fingerprint != expected_world_surface_fingerprint) return error.ReplaySurfaceMismatch;
+                    if (event.target_certificate_fingerprint != expected_target_certificate_fingerprint) return error.ReplayTargetCertificateMismatch;
+                    active_start = null;
+                    active_is_source_run = false;
+                    active_pending_request = false;
+                    active_has_source_response = false;
+                },
+                .port_requested,
+                .frame_requested,
+                => {
+                    _ = active_start orelse continue;
+                    if (!active_is_source_run) continue;
+                    _ = event.request_frame orelse return error.ReplayMissing;
+                    active_pending_request = true;
+                },
+                .port_responded,
+                .port_replayed,
+                .frame_responded,
+                .frame_replayed,
+                => {
+                    if (active_start != null and active_is_source_run) {
+                        _ = event.response_frame orelse return error.ReplayMissing;
+                        active_pending_request = false;
+                        active_has_source_response = true;
+                    }
+                },
+                .port_rejected,
+                .port_failed,
+                .frame_verified,
+                .frame_rejected,
+                .frame_failed,
+                => {
+                    if (active_start != null and active_is_source_run) active_pending_request = false;
+                },
+                else => {},
+            }
+        }
+        const start = active_start orelse return error.ReplayMissing;
+        if (!active_is_source_run or active_pending_request or !active_has_source_response) return error.ReplayMissing;
+        self.replay_cursor = start + 1;
+        self.replay_limit = self.events.len;
+    }
+
     pub fn validateValuePolicy(self: *const @This(), policy: ValuePolicy) !void {
         for (self.events) |event| {
             if (event.request_frame) |frame| try validateRequestFramePolicy(frame, policy);
@@ -5788,6 +5948,86 @@ pub const TranscriptImage = struct {
     }
 };
 
+const TranscriptRunStateEvidence = struct {
+    turn_index: usize = 0,
+    final_response_fingerprint: ?u64 = null,
+    final_value_image_fingerprint: ?u64 = null,
+};
+
+fn runStateEvidenceFromTranscriptImage(image: TranscriptImage) TranscriptRunStateEvidence {
+    var evidence: TranscriptRunStateEvidence = .{};
+    var index = image.replay_cursor;
+    const limit = image.replay_limit orelse image.events.len;
+    while (index < limit) : (index += 1) {
+        const event = image.events[index];
+        if (event.turn_index) |turn_index| evidence.turn_index = @max(evidence.turn_index, turn_index);
+        if (eventKindIsSourceResponse(event.kind)) {
+            if (event.response_frame) |response| {
+                if (response.status != .responded) continue;
+                evidence.final_response_fingerprint = response.frame_fingerprint;
+                evidence.final_value_image_fingerprint = response.response_value_fingerprint;
+            } else if (event.response_fingerprint) |fingerprint| {
+                evidence.final_response_fingerprint = fingerprint;
+            }
+            if (event.turn_index) |turn_index| evidence.turn_index = @max(evidence.turn_index, turn_index +| 1);
+        }
+    }
+    return evidence;
+}
+
+fn runStateWithTranscriptEvidence(state: RunState, image: TranscriptImage) RunState {
+    const evidence = runStateEvidenceFromTranscriptImage(image);
+    return RunState.init(.{
+        .target_ref_fingerprint = state.target_ref_fingerprint,
+        .transcript_image_fingerprint = image.transcript_image_fingerprint,
+        .branch_id = state.branch_id,
+        .checkpoint_fingerprint = state.checkpoint_fingerprint,
+        .pending_request_fingerprint = state.pending_request_fingerprint,
+        .final_response_fingerprint = evidence.final_response_fingerprint orelse state.final_response_fingerprint,
+        .final_value_image_fingerprint = evidence.final_value_image_fingerprint orelse state.final_value_image_fingerprint,
+        .turn_index = @max(state.turn_index, evidence.turn_index),
+        .status = state.status,
+    });
+}
+
+fn runStateWithBranch(state: RunState, branch_id: u64) RunState {
+    return RunState.init(.{
+        .target_ref_fingerprint = state.target_ref_fingerprint,
+        .transcript_image_fingerprint = state.transcript_image_fingerprint,
+        .branch_id = branch_id,
+        .checkpoint_fingerprint = state.checkpoint_fingerprint,
+        .pending_request_fingerprint = state.pending_request_fingerprint,
+        .final_response_fingerprint = state.final_response_fingerprint,
+        .final_value_image_fingerprint = state.final_value_image_fingerprint,
+        .turn_index = state.turn_index,
+        .status = state.status,
+    });
+}
+
+fn runImageContainsBranch(image: RunImage, branch_id: u64) bool {
+    for (image.branches) |branch| {
+        if (branch.branch_id == branch_id) return true;
+    }
+    return false;
+}
+
+fn runImageContainsCheckpoint(image: RunImage, checkpoint_ref: u64) bool {
+    for (image.checkpoints) |checkpoint| {
+        if (checkpoint.checkpoint_fingerprint == checkpoint_ref) return true;
+    }
+    return false;
+}
+
+fn applySelectedBranchToRunImage(image: *RunImage, selected_branch_id: ?u64) !void {
+    const branch_id = selected_branch_id orelse return;
+    if (!runImageContainsBranch(image.*, branch_id)) return error.HandoffCheckpointMismatch;
+    if (image.current_state.branch_id != 0 and image.current_state.branch_id != branch_id) return error.HandoffCheckpointMismatch;
+    if (image.current_state.branch_id == branch_id) return;
+    image.current_state = runStateWithBranch(image.current_state, branch_id);
+    refreshRunImageFingerprint(image);
+    try image.validate(.{});
+}
+
 pub const AuditReport = struct {
     world_surface_fingerprint: u64,
     target_certificate_fingerprint: u64,
@@ -5890,6 +6130,7 @@ pub const RunState = struct {
         parked_on_port,
         completed,
         failed,
+        parked_on_supervision,
     };
 
     pub fn init(args: struct {
@@ -6049,9 +6290,13 @@ pub const RunImage = struct {
     pub fn fromTranscriptImage(comptime Target: type, image: TranscriptImage, kind: Kind) @This() {
         const target_ref = TargetRef.fromTarget(Target);
         const import_set = ImportSet.fromTarget(Target);
+        const transcript_state = runStateEvidenceFromTranscriptImage(image);
         const state = RunState.init(.{
             .target_ref_fingerprint = target_ref.target_ref_fingerprint,
             .transcript_image_fingerprint = image.transcript_image_fingerprint,
+            .final_response_fingerprint = transcript_state.final_response_fingerprint,
+            .final_value_image_fingerprint = transcript_state.final_value_image_fingerprint,
+            .turn_index = transcript_state.turn_index,
             .status = switch (image.final_status) {
                 .running => .running,
                 .completed => .completed,
@@ -6115,7 +6360,7 @@ pub const RunImage = struct {
             switch (image.final_status) {
                 .completed => if (self.current_state.status != .completed) return error.HandoffTargetMismatch,
                 .failed => if (self.current_state.status != .failed) return error.HandoffTargetMismatch,
-                .running => if (self.current_state.status != .running and self.current_state.status != .parked_on_port) return error.HandoffTargetMismatch,
+                .running => if (self.current_state.status != .running and self.current_state.status != .parked_on_port and self.current_state.status != .parked_on_supervision) return error.HandoffTargetMismatch,
             }
             try image.validateValuePolicy(value_policy);
         }
@@ -6332,6 +6577,3221 @@ pub const RunImage = struct {
     }
 };
 
+pub const RunHandle = struct {
+    format_version: u32 = world_run_handle_format_version,
+    fingerprint_version: u32 = world_run_handle_fingerprint_version,
+    handle_fingerprint: u64,
+    runspace_fingerprint: u64,
+    local_run_id: u64,
+    target_ref_fingerprint: u64,
+    admission_receipt_fingerprint: ?u64 = null,
+    permit_fingerprint: ?u64 = null,
+    branch_id: ?u64 = null,
+    generation: u64 = 0,
+
+    pub fn init(args: struct {
+        runspace_fingerprint: u64,
+        local_run_id: u64,
+        target_ref_fingerprint: u64,
+        admission_receipt_fingerprint: ?u64 = null,
+        permit_fingerprint: ?u64 = null,
+        branch_id: ?u64 = null,
+        generation: u64 = 0,
+    }) @This() {
+        var result = @This(){
+            .handle_fingerprint = 0,
+            .runspace_fingerprint = args.runspace_fingerprint,
+            .local_run_id = args.local_run_id,
+            .target_ref_fingerprint = args.target_ref_fingerprint,
+            .admission_receipt_fingerprint = args.admission_receipt_fingerprint,
+            .permit_fingerprint = args.permit_fingerprint,
+            .branch_id = args.branch_id,
+            .generation = args.generation,
+        };
+        result.handle_fingerprint = fingerprintRunHandle(result);
+        return result;
+    }
+
+    pub fn validate(self: @This()) !void {
+        if (self.format_version != world_run_handle_format_version) return error.InvalidFrameEncoding;
+        if (self.fingerprint_version != world_run_handle_fingerprint_version) return error.InvalidFrameEncoding;
+        if (fingerprintRunHandle(self) != self.handle_fingerprint) return error.StaleRunHandle;
+    }
+
+    pub fn validateForRunspace(self: @This(), runspace_fingerprint: u64) !void {
+        try self.validate();
+        if (self.runspace_fingerprint != runspace_fingerprint) return error.StaleRunHandle;
+    }
+
+    pub fn matchesSlot(self: @This(), slot: Runspace.RunSlot) bool {
+        return self.handle_fingerprint == slot.handle.handle_fingerprint and
+            self.generation == slot.handle.generation and
+            self.local_run_id == slot.handle.local_run_id and
+            self.runspace_fingerprint == slot.handle.runspace_fingerprint;
+    }
+};
+
+pub const Runspace = struct {
+    allocator: std.mem.Allocator,
+    config: Config,
+    runspace_fingerprint: u64,
+    next_run_id: u64 = 0,
+    next_mailbox_id: u64 = 0,
+    next_event_index: u64 = 0,
+    slots: std.ArrayList(@This().RunSlot) = .empty,
+    events: std.ArrayList(@This().RunspaceEvent) = .empty,
+    mailbox: @This().Mailbox,
+
+    pub const Policy = enum {
+        deterministic,
+    };
+
+    pub const Config = struct {
+        policy: Policy = .deterministic,
+        max_runs: ?usize = null,
+        max_pending_ports: ?usize = null,
+        max_events: ?usize = null,
+        preserve_completed_runs: bool = true,
+        require_supervision: bool = false,
+        require_admission: bool = false,
+        allow_direct_target_install: bool = true,
+        allow_handoff_install: bool = true,
+        allow_replay_install: bool = true,
+        auto_dispatch: bool = false,
+    };
+
+    pub const RunStatus = enum {
+        admitted,
+        runnable,
+        running,
+        parked_on_port,
+        parked_on_supervision,
+        completed,
+        failed,
+        exported,
+        rejected,
+    };
+
+    pub const PendingStatus = enum {
+        pending,
+        responded,
+        cancelled,
+        exported,
+        failed,
+    };
+
+    pub const EventKind = enum {
+        run_installed,
+        run_admitted,
+        run_started,
+        run_stepped,
+        run_parked_on_port,
+        run_parked_on_supervision,
+        port_enqueued,
+        port_responded,
+        port_rejected,
+        port_failed,
+        run_resumed,
+        run_completed,
+        run_failed,
+        run_exported,
+        run_branch_created,
+        checkpoint_created,
+        handoff_created,
+    };
+
+    const DriverStep = union(enum) {
+        done,
+        port_request: Frame.Request,
+        failed,
+    };
+
+    const ResponseEvidence = struct {
+        response_fingerprint: u64,
+        response_frame_fingerprint: ?u64 = null,
+        response_value_image_fingerprint: ?u64 = null,
+    };
+
+    const SlotDriver = struct {
+        ptr: *anyopaque,
+        vtable: *const VTable,
+
+        const VTable = struct {
+            nextFrame: *const fn (*anyopaque) anyerror!DriverStep,
+            resumeFrame: *const fn (*anyopaque, Frame.Response) anyerror!ResponseEvidence,
+            beforeResponse: *const fn (*anyopaque, u32, ResponseStatus, usize, usize) anyerror!void,
+            beforeTerminalResponse: *const fn (*anyopaque, u32, ResponseStatus, usize, usize) anyerror!void,
+            resumeTerminalFrame: *const fn (*anyopaque, Frame.Response) anyerror!void,
+            dispatch: *const fn (*anyopaque) anyerror!?ResponseEvidence,
+            snapshotRunImage: *const fn (*anyopaque) anyerror!RunImage,
+            beforeHandoffExport: *const fn (*anyopaque) anyerror!void,
+            beforeInterruptedHandoffExport: *const fn (*anyopaque) anyerror!void,
+            beforeCheckpoint: *const fn (*anyopaque, usize) anyerror!void,
+            beforeBranch: *const fn (*anyopaque, usize) anyerror!void,
+            cloneSupervisor: *const fn (*anyopaque, std.mem.Allocator) anyerror!?Supervision.Supervisor,
+            restoreSupervisor: *const fn (*anyopaque, std.mem.Allocator, ?Supervision.Supervisor) void,
+            hasSupervisor: *const fn (*anyopaque) bool,
+            supervisorWarningCount: *const fn (*anyopaque) usize,
+            supervisorBlockerCount: *const fn (*anyopaque) usize,
+            supervisionInterrupted: *const fn (*anyopaque) bool,
+            failed: *const fn (*anyopaque) bool,
+            deinit: *const fn (*anyopaque, std.mem.Allocator) void,
+        };
+
+        fn nextFrame(self: @This()) !DriverStep {
+            return self.vtable.nextFrame(self.ptr);
+        }
+
+        fn resumeFrame(self: @This(), response: Frame.Response) !ResponseEvidence {
+            return self.vtable.resumeFrame(self.ptr, response);
+        }
+
+        fn beforeResponse(self: @This(), world_port_id: u32, status: ResponseStatus, response_bytes: usize, value_image_bytes: usize) !void {
+            return self.vtable.beforeResponse(self.ptr, world_port_id, status, response_bytes, value_image_bytes);
+        }
+
+        fn beforeTerminalResponse(self: @This(), world_port_id: u32, status: ResponseStatus, response_bytes: usize, value_image_bytes: usize) !void {
+            return self.vtable.beforeTerminalResponse(self.ptr, world_port_id, status, response_bytes, value_image_bytes);
+        }
+
+        fn resumeTerminalFrame(self: @This(), response: Frame.Response) !void {
+            return self.vtable.resumeTerminalFrame(self.ptr, response);
+        }
+
+        fn dispatch(self: @This()) !?ResponseEvidence {
+            return self.vtable.dispatch(self.ptr);
+        }
+
+        fn snapshotRunImage(self: @This()) !RunImage {
+            return self.vtable.snapshotRunImage(self.ptr);
+        }
+
+        fn beforeHandoffExport(self: @This()) !void {
+            return self.vtable.beforeHandoffExport(self.ptr);
+        }
+
+        fn beforeInterruptedHandoffExport(self: @This()) !void {
+            return self.vtable.beforeInterruptedHandoffExport(self.ptr);
+        }
+
+        fn beforeCheckpoint(self: @This(), value_image_bytes: usize) !void {
+            return self.vtable.beforeCheckpoint(self.ptr, value_image_bytes);
+        }
+
+        fn beforeBranch(self: @This(), depth: usize) !void {
+            return self.vtable.beforeBranch(self.ptr, depth);
+        }
+
+        fn cloneSupervisor(self: @This(), allocator: std.mem.Allocator) !?Supervision.Supervisor {
+            return self.vtable.cloneSupervisor(self.ptr, allocator);
+        }
+
+        fn restoreSupervisor(self: @This(), allocator: std.mem.Allocator, supervisor: ?Supervision.Supervisor) void {
+            self.vtable.restoreSupervisor(self.ptr, allocator, supervisor);
+        }
+
+        fn hasSupervisor(self: @This()) bool {
+            return self.vtable.hasSupervisor(self.ptr);
+        }
+
+        fn supervisorWarningCount(self: @This()) usize {
+            return self.vtable.supervisorWarningCount(self.ptr);
+        }
+
+        fn supervisorBlockerCount(self: @This()) usize {
+            return self.vtable.supervisorBlockerCount(self.ptr);
+        }
+
+        fn supervisionInterrupted(self: @This()) bool {
+            return self.vtable.supervisionInterrupted(self.ptr);
+        }
+
+        fn failed(self: @This()) bool {
+            return self.vtable.failed(self.ptr);
+        }
+
+        fn deinit(self: @This(), allocator: std.mem.Allocator) void {
+            self.vtable.deinit(self.ptr, allocator);
+        }
+
+        fn forRun(comptime RunType: type, run: *RunType) @This() {
+            const Impl = struct {
+                fn runNextFrame(ptr: *anyopaque) anyerror!DriverStep {
+                    const active: *RunType = @ptrCast(@alignCast(ptr));
+                    const frame_step = try active.nextFrame();
+                    return switch (frame_step) {
+                        .done => |value| {
+                            discardRunspaceDoneValue(RunType, active, value);
+                            return .done;
+                        },
+                        .port_request => |request| .{ .port_request = request },
+                        .failed => .failed,
+                    };
+                }
+
+                fn discardRunspaceDoneValue(comptime ActiveRunType: type, active: *ActiveRunType, value: anytype) void {
+                    if (@hasField(ActiveRunType, "done_value_present") and @hasField(ActiveRunType, "done_value") and @hasField(ActiveRunType, "allocator")) {
+                        if (active.done_value_present) {
+                            deinitRunValue(active.allocator, active.done_value);
+                            active.done_value_present = false;
+                            return;
+                        }
+                        deinitRunValue(active.allocator, value);
+                    }
+                }
+
+                fn runResumeFrame(ptr: *anyopaque, response: Frame.Response) anyerror!ResponseEvidence {
+                    const active: *RunType = @ptrCast(@alignCast(ptr));
+                    if (@hasDecl(RunType, "runspaceResumeFrame")) return active.runspaceResumeFrame(response);
+                    try active.resumeFrame(response);
+                    return .{
+                        .response_fingerprint = response.response_fingerprint,
+                        .response_frame_fingerprint = response.frame_fingerprint,
+                        .response_value_image_fingerprint = response.response_value_fingerprint,
+                    };
+                }
+
+                fn runBeforeResponse(ptr: *anyopaque, world_port_id: u32, status: ResponseStatus, response_bytes: usize, value_image_bytes: usize) anyerror!void {
+                    const active: *RunType = @ptrCast(@alignCast(ptr));
+                    if (@hasDecl(RunType, "beforeRunspaceResponse")) return active.beforeRunspaceResponse(world_port_id, status, response_bytes, value_image_bytes);
+                }
+
+                fn runBeforeTerminalResponse(ptr: *anyopaque, world_port_id: u32, status: ResponseStatus, response_bytes: usize, value_image_bytes: usize) anyerror!void {
+                    const active: *RunType = @ptrCast(@alignCast(ptr));
+                    if (@hasDecl(RunType, "beforeRunspaceTerminalResponse")) return active.beforeRunspaceTerminalResponse(world_port_id, status, response_bytes, value_image_bytes);
+                }
+
+                fn runResumeTerminalFrame(ptr: *anyopaque, response: Frame.Response) anyerror!void {
+                    const active: *RunType = @ptrCast(@alignCast(ptr));
+                    if (@hasDecl(RunType, "runspaceResumeTerminalFrame")) return active.runspaceResumeTerminalFrame(response);
+                    return active.resumeFrame(response);
+                }
+
+                fn runDispatch(ptr: *anyopaque) anyerror!?ResponseEvidence {
+                    const active: *RunType = @ptrCast(@alignCast(ptr));
+                    if (@hasDecl(RunType, "runspaceDispatch")) return active.runspaceDispatch();
+                    try active.dispatch();
+                    return null;
+                }
+
+                fn runSnapshotRunImage(ptr: *anyopaque) anyerror!RunImage {
+                    const active: *RunType = @ptrCast(@alignCast(ptr));
+                    return active.snapshotRunImage();
+                }
+
+                fn runBeforeHandoffExport(ptr: *anyopaque) anyerror!void {
+                    const active: *RunType = @ptrCast(@alignCast(ptr));
+                    if (@hasDecl(RunType, "beforeRunspaceHandoffExport")) return active.beforeRunspaceHandoffExport();
+                }
+
+                fn runBeforeInterruptedHandoffExport(ptr: *anyopaque) anyerror!void {
+                    const active: *RunType = @ptrCast(@alignCast(ptr));
+                    if (@hasDecl(RunType, "beforeRunspaceInterruptedHandoffExport")) return active.beforeRunspaceInterruptedHandoffExport();
+                    if (@hasDecl(RunType, "beforeRunspaceHandoffExport")) return active.beforeRunspaceHandoffExport();
+                }
+
+                fn runBeforeCheckpoint(ptr: *anyopaque, value_image_bytes: usize) anyerror!void {
+                    const active: *RunType = @ptrCast(@alignCast(ptr));
+                    if (@hasDecl(RunType, "beforeRunspaceCheckpoint")) return active.beforeRunspaceCheckpoint(value_image_bytes);
+                }
+
+                fn runBeforeBranch(ptr: *anyopaque, depth: usize) anyerror!void {
+                    const active: *RunType = @ptrCast(@alignCast(ptr));
+                    if (@hasDecl(RunType, "beforeRunspaceBranch")) return active.beforeRunspaceBranch(depth);
+                }
+
+                fn runCloneSupervisor(ptr: *anyopaque, allocator: std.mem.Allocator) anyerror!?Supervision.Supervisor {
+                    const active: *RunType = @ptrCast(@alignCast(ptr));
+                    if (@hasField(RunType, "supervisor")) {
+                        if (active.supervisor) |supervisor| return try supervisor.clone(allocator);
+                    }
+                    return null;
+                }
+
+                fn runRestoreSupervisor(ptr: *anyopaque, allocator: std.mem.Allocator, supervisor: ?Supervision.Supervisor) void {
+                    const active: *RunType = @ptrCast(@alignCast(ptr));
+                    if (@hasField(RunType, "supervisor")) {
+                        if (active.supervisor) |*current| current.deinit();
+                        active.supervisor = supervisor;
+                    } else if (supervisor) |owned| {
+                        var mutable = owned;
+                        mutable.deinit();
+                    }
+                    _ = allocator;
+                }
+
+                fn runHasSupervisor(ptr: *anyopaque) bool {
+                    const active: *RunType = @ptrCast(@alignCast(ptr));
+                    if (@hasField(RunType, "supervisor")) return active.supervisor != null;
+                    return false;
+                }
+
+                fn runSupervisorWarningCount(ptr: *anyopaque) usize {
+                    const active: *RunType = @ptrCast(@alignCast(ptr));
+                    if (@hasField(RunType, "supervisor")) {
+                        if (active.supervisor) |supervisor| return supervisor.warning_count;
+                    }
+                    return 0;
+                }
+
+                fn runSupervisorBlockerCount(ptr: *anyopaque) usize {
+                    const active: *RunType = @ptrCast(@alignCast(ptr));
+                    if (@hasField(RunType, "supervisor")) {
+                        if (active.supervisor) |supervisor| return if (supervisor.blocker == null) 0 else 1;
+                    }
+                    return 0;
+                }
+
+                fn runSupervisionInterrupted(ptr: *anyopaque) bool {
+                    const active: *RunType = @ptrCast(@alignCast(ptr));
+                    if (@hasField(RunType, "supervisor")) {
+                        if (active.supervisor) |*supervisor| return supervisor.interrupted;
+                    }
+                    return false;
+                }
+
+                fn runFailed(ptr: *anyopaque) bool {
+                    const active: *RunType = @ptrCast(@alignCast(ptr));
+                    if (@hasField(RunType, "audit")) return active.audit.final_status == .failed;
+                    return false;
+                }
+
+                fn runDeinit(ptr: *anyopaque, allocator: std.mem.Allocator) void {
+                    const active: *RunType = @ptrCast(@alignCast(ptr));
+                    active.deinit();
+                    allocator.destroy(active);
+                }
+
+                const vtable = VTable{
+                    .nextFrame = runNextFrame,
+                    .resumeFrame = runResumeFrame,
+                    .beforeResponse = runBeforeResponse,
+                    .beforeTerminalResponse = runBeforeTerminalResponse,
+                    .resumeTerminalFrame = runResumeTerminalFrame,
+                    .dispatch = runDispatch,
+                    .snapshotRunImage = runSnapshotRunImage,
+                    .beforeHandoffExport = runBeforeHandoffExport,
+                    .beforeInterruptedHandoffExport = runBeforeInterruptedHandoffExport,
+                    .beforeCheckpoint = runBeforeCheckpoint,
+                    .beforeBranch = runBeforeBranch,
+                    .cloneSupervisor = runCloneSupervisor,
+                    .restoreSupervisor = runRestoreSupervisor,
+                    .hasSupervisor = runHasSupervisor,
+                    .supervisorWarningCount = runSupervisorWarningCount,
+                    .supervisorBlockerCount = runSupervisorBlockerCount,
+                    .supervisionInterrupted = runSupervisionInterrupted,
+                    .failed = runFailed,
+                    .deinit = runDeinit,
+                };
+            };
+            return .{
+                .ptr = @ptrCast(run),
+                .vtable = &Impl.vtable,
+            };
+        }
+    };
+
+    pub fn canTransition(from: RunStatus, to: RunStatus) bool {
+        return switch (from) {
+            .admitted => switch (to) {
+                .runnable, .rejected, .failed => true,
+                else => false,
+            },
+            .runnable => switch (to) {
+                .running, .parked_on_port, .parked_on_supervision, .completed, .failed => true,
+                else => false,
+            },
+            .running => switch (to) {
+                .parked_on_port, .parked_on_supervision, .completed, .failed => true,
+                else => false,
+            },
+            .parked_on_port, .parked_on_supervision => switch (to) {
+                .runnable, .failed, .exported => true,
+                else => false,
+            },
+            .completed => to == .exported,
+            .failed, .exported, .rejected => false,
+        };
+    }
+
+    pub const RunSlot = struct {
+        handle: RunHandle,
+        target_ref: TargetRef,
+        current_state: RunState,
+        status: RunStatus,
+        admission_receipt_fingerprint: ?u64 = null,
+        run_permit_fingerprint: ?u64 = null,
+        run_receipt_fingerprint: ?u64 = null,
+        pending_mailbox_id: ?u64 = null,
+        branch_id: ?u64 = null,
+        parent_run_handle_fingerprint: ?u64 = null,
+        checkpoint_fingerprint: ?u64 = null,
+        target_match_fingerprint: ?u64 = null,
+        module_ref_fingerprint: ?u64 = null,
+        driver: ?SlotDriver = null,
+        driver_world_port_count: usize = 0,
+        supervisor: ?Supervision.Supervisor = null,
+        installed_run_image: ?RunImage = null,
+        owns_installed_run_image: bool = false,
+
+        pub const Status = RunStatus;
+        pub const Transition = enum {
+            step,
+            park_on_port,
+            park_on_supervision,
+            resume_from_port,
+            complete,
+            fail,
+            @"export",
+            reject,
+        };
+
+        pub fn init(handle: RunHandle) @This() {
+            const state = RunState.init(.{
+                .target_ref_fingerprint = handle.target_ref_fingerprint,
+                .status = .not_started,
+            });
+            return .{
+                .handle = handle,
+                .target_ref = .{
+                    .target_ref_fingerprint = handle.target_ref_fingerprint,
+                    .world_surface_fingerprint = 0,
+                    .target_certificate_fingerprint = 0,
+                },
+                .current_state = state,
+                .status = .admitted,
+                .admission_receipt_fingerprint = handle.admission_receipt_fingerprint,
+                .run_permit_fingerprint = handle.permit_fingerprint,
+                .branch_id = handle.branch_id,
+            };
+        }
+
+        pub fn fromState(args: struct {
+            handle: RunHandle,
+            target_ref: TargetRef,
+            current_state: RunState,
+            status: RunStatus = .admitted,
+            admission_receipt_fingerprint: ?u64 = null,
+            run_permit_fingerprint: ?u64 = null,
+            run_receipt_fingerprint: ?u64 = null,
+            pending_mailbox_id: ?u64 = null,
+            branch_id: ?u64 = null,
+            parent_run_handle_fingerprint: ?u64 = null,
+            checkpoint_fingerprint: ?u64 = null,
+            target_match_fingerprint: ?u64 = null,
+            module_ref_fingerprint: ?u64 = null,
+            driver: ?SlotDriver = null,
+            driver_world_port_count: usize = 0,
+            supervisor: ?Supervision.Supervisor = null,
+            installed_run_image: ?RunImage = null,
+            owns_installed_run_image: bool = false,
+        }) @This() {
+            return .{
+                .handle = args.handle,
+                .target_ref = args.target_ref,
+                .current_state = args.current_state,
+                .status = args.status,
+                .admission_receipt_fingerprint = args.admission_receipt_fingerprint,
+                .run_permit_fingerprint = args.run_permit_fingerprint,
+                .run_receipt_fingerprint = args.run_receipt_fingerprint,
+                .pending_mailbox_id = args.pending_mailbox_id,
+                .branch_id = args.branch_id,
+                .parent_run_handle_fingerprint = args.parent_run_handle_fingerprint,
+                .checkpoint_fingerprint = args.checkpoint_fingerprint,
+                .target_match_fingerprint = args.target_match_fingerprint,
+                .module_ref_fingerprint = args.module_ref_fingerprint,
+                .driver = args.driver,
+                .driver_world_port_count = args.driver_world_port_count,
+                .supervisor = args.supervisor,
+                .installed_run_image = args.installed_run_image,
+                .owns_installed_run_image = args.owns_installed_run_image,
+            };
+        }
+
+        pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+            if (self.driver) |driver| {
+                driver.deinit(allocator);
+                self.driver = null;
+            }
+            if (self.supervisor) |*supervisor| {
+                supervisor.deinit();
+                self.supervisor = null;
+            }
+            if (self.owns_installed_run_image) {
+                if (self.installed_run_image) |*image| image.deinit(allocator);
+            }
+            self.* = undefined;
+        }
+
+        pub fn toHandle(self: @This()) RunHandle {
+            return self.handle;
+        }
+
+        fn transitionState(self: @This(), status: RunState.Status, turn_index: usize, pending_request_fingerprint: ?u64) RunState {
+            return RunState.init(.{
+                .target_ref_fingerprint = self.handle.target_ref_fingerprint,
+                .transcript_image_fingerprint = self.current_state.transcript_image_fingerprint,
+                .branch_id = self.current_state.branch_id,
+                .checkpoint_fingerprint = self.current_state.checkpoint_fingerprint,
+                .pending_request_fingerprint = pending_request_fingerprint,
+                .final_response_fingerprint = self.current_state.final_response_fingerprint,
+                .final_value_image_fingerprint = self.current_state.final_value_image_fingerprint,
+                .turn_index = turn_index,
+                .status = status,
+            });
+        }
+
+        fn resumeFromPortState(self: @This(), response_frame_fingerprint: u64, response_value_image_fingerprint: ?u64) RunState {
+            return RunState.init(.{
+                .target_ref_fingerprint = self.handle.target_ref_fingerprint,
+                .transcript_image_fingerprint = self.current_state.transcript_image_fingerprint,
+                .branch_id = self.current_state.branch_id,
+                .checkpoint_fingerprint = self.current_state.checkpoint_fingerprint,
+                .final_response_fingerprint = response_frame_fingerprint,
+                .final_value_image_fingerprint = response_value_image_fingerprint,
+                .turn_index = self.current_state.turn_index + 1,
+                .status = .running,
+            });
+        }
+
+        pub fn transition(self: *@This(), transition_kind: Transition, mailbox_id: ?u64) !void {
+            switch (transition_kind) {
+                .step => switch (self.status) {
+                    .admitted, .runnable => {
+                        self.status = .runnable;
+                        self.current_state = self.transitionState(.running, self.current_state.turn_index, null);
+                    },
+                    else => return error.InvalidRunspaceTransition,
+                },
+                .park_on_port => switch (self.status) {
+                    .runnable, .running => {
+                        const pending_mailbox_id = mailbox_id orelse return error.InvalidRunspaceTransition;
+                        self.status = .parked_on_port;
+                        self.pending_mailbox_id = pending_mailbox_id;
+                        self.current_state = self.transitionState(.parked_on_port, self.current_state.turn_index, self.current_state.pending_request_fingerprint);
+                    },
+                    else => return error.InvalidRunspaceTransition,
+                },
+                .park_on_supervision => switch (self.status) {
+                    .runnable, .running => {
+                        self.status = .parked_on_supervision;
+                        self.pending_mailbox_id = null;
+                        self.current_state = self.transitionState(.parked_on_supervision, self.current_state.turn_index, null);
+                    },
+                    else => return error.InvalidRunspaceTransition,
+                },
+                .resume_from_port => switch (self.status) {
+                    .parked_on_port => {
+                        if (mailbox_id) |expected| {
+                            if (self.pending_mailbox_id != expected) return error.StaleRunHandle;
+                        }
+                        self.status = .runnable;
+                        self.pending_mailbox_id = null;
+                        self.current_state = self.transitionState(.running, self.current_state.turn_index + 1, null);
+                    },
+                    else => return error.InvalidRunspaceTransition,
+                },
+                .complete => switch (self.status) {
+                    .runnable, .running => {
+                        self.status = .completed;
+                        self.current_state = self.transitionState(.completed, self.current_state.turn_index, null);
+                    },
+                    else => return error.InvalidRunspaceTransition,
+                },
+                .fail => switch (self.status) {
+                    .admitted, .runnable, .running, .parked_on_port, .parked_on_supervision => {
+                        self.status = .failed;
+                        self.pending_mailbox_id = null;
+                        self.current_state = self.transitionState(.failed, self.current_state.turn_index, null);
+                    },
+                    else => return error.InvalidRunspaceTransition,
+                },
+                .@"export" => switch (self.status) {
+                    .parked_on_port, .parked_on_supervision, .completed => self.status = .exported,
+                    else => return error.InvalidRunspaceTransition,
+                },
+                .reject => switch (self.status) {
+                    .admitted => self.status = .rejected,
+                    else => return error.InvalidRunspaceTransition,
+                },
+            }
+        }
+
+        pub fn resumeFromPort(self: *@This(), mailbox_id: ?u64, response_frame_fingerprint: u64, response_value_image_fingerprint: ?u64) !void {
+            switch (self.status) {
+                .parked_on_port => {
+                    if (mailbox_id) |expected| {
+                        if (self.pending_mailbox_id != expected) return error.StaleRunHandle;
+                    }
+                    self.status = .runnable;
+                    self.pending_mailbox_id = null;
+                    self.current_state = self.resumeFromPortState(response_frame_fingerprint, response_value_image_fingerprint);
+                },
+                else => return error.InvalidRunspaceTransition,
+            }
+        }
+
+        pub fn summary(self: @This()) RunSlotSummary {
+            return .{
+                .handle = self.handle,
+                .target_ref_fingerprint = self.target_ref.target_ref_fingerprint,
+                .run_state_fingerprint = self.current_state.run_state_fingerprint,
+                .status = self.status,
+                .admission_receipt_fingerprint = self.admission_receipt_fingerprint,
+                .run_permit_fingerprint = self.run_permit_fingerprint,
+                .run_receipt_fingerprint = self.run_receipt_fingerprint,
+                .pending_mailbox_id = self.pending_mailbox_id,
+                .branch_id = self.branch_id,
+                .parent_run_handle_fingerprint = self.parent_run_handle_fingerprint,
+                .checkpoint_fingerprint = self.checkpoint_fingerprint,
+                .target_match_fingerprint = self.target_match_fingerprint,
+                .module_ref_fingerprint = self.module_ref_fingerprint,
+            };
+        }
+    };
+
+    pub const RunSlotSummary = struct {
+        handle: RunHandle,
+        target_ref_fingerprint: u64,
+        run_state_fingerprint: u64,
+        status: RunStatus,
+        admission_receipt_fingerprint: ?u64 = null,
+        run_permit_fingerprint: ?u64 = null,
+        run_receipt_fingerprint: ?u64 = null,
+        pending_mailbox_id: ?u64 = null,
+        branch_id: ?u64 = null,
+        parent_run_handle_fingerprint: ?u64 = null,
+        checkpoint_fingerprint: ?u64 = null,
+        target_match_fingerprint: ?u64 = null,
+        module_ref_fingerprint: ?u64 = null,
+    };
+
+    pub const PendingPort = struct {
+        format_version: u32 = world_pending_port_format_version,
+        fingerprint_version: u32 = world_pending_port_fingerprint_version,
+        pending_port_fingerprint: u64,
+        handle: RunHandle,
+        mailbox_id: u64,
+        world_surface_fingerprint: u64,
+        target_certificate_fingerprint: u64,
+        world_port_id: u32,
+        request_fingerprint: u64,
+        request_frame_fingerprint: u64,
+        request_frame: ?Frame.Request = null,
+        owns_request_frame: bool = false,
+        expected_response_kind: ResponseKind = .@"resume",
+        expected_response_value_table_id: ?u32 = null,
+        residual_site_index: usize,
+        residual_site_fingerprint: u64,
+        target_ref_fingerprint: u64,
+        environment_certificate_fingerprint: ?u64 = null,
+        run_permit_fingerprint: ?u64 = null,
+        turn_index: usize,
+        inserted_event_index: u64,
+        status: PendingStatus = .pending,
+
+        pub const Status = PendingStatus;
+
+        pub fn init(args: struct {
+            handle: RunHandle,
+            mailbox_id: u64,
+            request: Frame.Request,
+            target_ref_fingerprint: u64 = 0,
+            environment_certificate_fingerprint: ?u64 = null,
+            run_permit_fingerprint: ?u64 = null,
+            inserted_event_index: u64 = 0,
+        }) @This() {
+            var result = @This(){
+                .pending_port_fingerprint = 0,
+                .handle = args.handle,
+                .mailbox_id = args.mailbox_id,
+                .world_surface_fingerprint = args.request.world_surface_fingerprint,
+                .target_certificate_fingerprint = args.request.target_certificate_fingerprint,
+                .world_port_id = args.request.world_port_id,
+                .request_fingerprint = args.request.request_fingerprint,
+                .request_frame_fingerprint = args.request.frame_fingerprint,
+                .request_frame = args.request,
+                .owns_request_frame = true,
+                .expected_response_value_table_id = args.request.expected_response_value_table_id,
+                .residual_site_index = args.request.residual_site_index,
+                .residual_site_fingerprint = args.request.residual_site_fingerprint,
+                .target_ref_fingerprint = if (args.target_ref_fingerprint != 0) args.target_ref_fingerprint else args.handle.target_ref_fingerprint,
+                .environment_certificate_fingerprint = args.environment_certificate_fingerprint,
+                .run_permit_fingerprint = args.run_permit_fingerprint,
+                .turn_index = args.request.turn_index,
+                .inserted_event_index = args.inserted_event_index,
+            };
+            result.pending_port_fingerprint = fingerprintPendingPort(result);
+            return result;
+        }
+
+        pub fn withStatus(self: @This(), status: PendingStatus) @This() {
+            var result = self;
+            result.status = status;
+            result.pending_port_fingerprint = fingerprintPendingPort(result);
+            return result;
+        }
+
+        pub fn borrowed(self: @This()) @This() {
+            var result = self;
+            result.owns_request_frame = false;
+            return result;
+        }
+
+        pub fn transition(self: *@This(), status: PendingStatus) !void {
+            if (self.status != .pending) return error.InvalidPendingPortTransition;
+            if (status == .pending) return error.InvalidPendingPortTransition;
+            self.status = status;
+            self.pending_port_fingerprint = fingerprintPendingPort(self.*);
+        }
+
+        pub fn validateResponse(self: @This(), response: Frame.Response) !void {
+            if (self.status != .pending) return error.PendingPortConsumed;
+            if (response.world_surface_fingerprint != self.world_surface_fingerprint) return error.FrameSurfaceMismatch;
+            if (response.target_certificate_fingerprint != self.target_certificate_fingerprint) return error.FrameTargetCertificateMismatch;
+            if (response.world_port_id != self.world_port_id) return error.FramePortMismatch;
+            if (response.request_fingerprint != self.request_fingerprint) return error.FrameRequestFingerprintMismatch;
+            if (response.response_kind != self.expected_response_kind) return error.VerifyResponseKindMismatch;
+            if (response.status == .responded and response.response_value_table_id != self.expected_response_value_table_id) return error.FrameValueTableMismatch;
+            if (!response.responseFingerprintDeferred()) {
+                if (self.request_frame) |request| {
+                    const expected_replay_key = request.replay_key_seed.withResponse(response.response_fingerprint).fingerprint();
+                    if (response.replay_key != expected_replay_key) return error.ReplayMissing;
+                }
+            }
+            try validateResponseFrameImage(response);
+        }
+
+        pub fn validate(self: @This()) !void {
+            if (self.format_version != world_pending_port_format_version) return error.InvalidFrameEncoding;
+            if (self.fingerprint_version != world_pending_port_fingerprint_version) return error.InvalidFrameEncoding;
+            try self.handle.validate();
+            if (fingerprintPendingPort(self) != self.pending_port_fingerprint) return error.InvalidFrameEncoding;
+        }
+
+        pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+            if (self.owns_request_frame) {
+                if (self.request_frame) |*frame| frame.deinit(allocator);
+            }
+            self.* = undefined;
+        }
+    };
+
+    pub const Mailbox = struct {
+        allocator: std.mem.Allocator,
+        pending: std.ArrayList(Runspace.PendingPort) = .empty,
+        max_pending_ports: ?usize = null,
+
+        pub fn init(allocator: std.mem.Allocator, max_pending_ports: ?usize) @This() {
+            return .{
+                .allocator = allocator,
+                .max_pending_ports = max_pending_ports,
+            };
+        }
+
+        pub fn deinit(self: *@This()) void {
+            for (self.pending.items) |*pending_port| pending_port.deinit(self.allocator);
+            self.pending.deinit(self.allocator);
+            self.* = undefined;
+        }
+
+        pub fn push(self: *@This(), args: struct {
+            run_handle: RunHandle,
+            mailbox_id: u64,
+            request: Frame.Request,
+            target_ref_fingerprint: u64,
+            environment_certificate_fingerprint: ?u64 = null,
+            run_permit_fingerprint: ?u64 = null,
+            inserted_event_index: u64,
+        }) !Runspace.PendingPort {
+            if (self.max_pending_ports) |max| {
+                if (self.pendingCount() >= max) return error.BudgetExceeded;
+            }
+            try self.assertMailboxIdAvailable(args.mailbox_id);
+            try self.assertNoDuplicateRequestFingerprint(args.run_handle, args.request.request_fingerprint);
+            var request = try cloneRequestFrame(self.allocator, args.request);
+            var request_owned = true;
+            errdefer if (request_owned) request.deinit(self.allocator);
+            const pending_port = Runspace.PendingPort.init(.{
+                .handle = args.run_handle,
+                .mailbox_id = args.mailbox_id,
+                .request = request,
+                .target_ref_fingerprint = args.target_ref_fingerprint,
+                .environment_certificate_fingerprint = args.environment_certificate_fingerprint,
+                .run_permit_fingerprint = args.run_permit_fingerprint,
+                .inserted_event_index = args.inserted_event_index,
+            });
+            try self.pending.append(self.allocator, pending_port);
+            request_owned = false;
+            return self.pending.items[self.pending.items.len - 1].borrowed();
+        }
+
+        pub fn get(self: *const @This(), mailbox_id: u64) !Runspace.PendingPort {
+            const index = try self.indexOf(mailbox_id);
+            return self.pending.items[index].borrowed();
+        }
+
+        pub fn listPending(self: *const @This(), allocator: std.mem.Allocator) ![]Runspace.PendingPort {
+            const count = self.pendingCount();
+            const result = try allocator.alloc(Runspace.PendingPort, count);
+            var out_index: usize = 0;
+            for (self.pending.items) |pending_port| {
+                if (pending_port.status != .pending) continue;
+                result[out_index] = pending_port.borrowed();
+                out_index += 1;
+            }
+            return result;
+        }
+
+        fn respond(self: *@This(), mailbox_id: u64, response: Frame.Response) !Runspace.PendingPort {
+            const index = try self.indexOf(mailbox_id);
+            const current = self.pending.items[index];
+            try current.validateResponse(response);
+            const responded = current.withStatus(.responded);
+            self.pending.items[index] = responded;
+            return self.pending.items[index].borrowed();
+        }
+
+        fn markResponded(self: *@This(), mailbox_id: u64) !Runspace.PendingPort {
+            const index = try self.indexOf(mailbox_id);
+            const current = self.pending.items[index];
+            if (current.status != .pending) return error.PendingPortConsumed;
+            const responded = current.withStatus(.responded);
+            self.pending.items[index] = responded;
+            return self.pending.items[index].borrowed();
+        }
+
+        fn cancel(self: *@This(), mailbox_id: u64, reason: []const u8) !Runspace.PendingPort {
+            _ = reason;
+            const index = try self.indexOf(mailbox_id);
+            const current = self.pending.items[index];
+            if (current.status != .pending) return error.PendingPortConsumed;
+            const cancelled = current.withStatus(.cancelled);
+            self.pending.items[index] = cancelled;
+            return self.pending.items[index].borrowed();
+        }
+
+        fn markExported(self: *@This(), mailbox_id: u64) !Runspace.PendingPort {
+            const index = try self.indexOf(mailbox_id);
+            const current = self.pending.items[index];
+            if (current.status != .pending) return error.PendingPortConsumed;
+            const exported = current.withStatus(.exported);
+            self.pending.items[index] = exported;
+            return self.pending.items[index].borrowed();
+        }
+
+        fn fail(self: *@This(), mailbox_id: u64, reason: []const u8) !Runspace.PendingPort {
+            _ = reason;
+            const index = try self.indexOf(mailbox_id);
+            const current = self.pending.items[index];
+            if (current.status != .pending) return error.PendingPortConsumed;
+            const failed = current.withStatus(.failed);
+            self.pending.items[index] = failed;
+            return self.pending.items[index].borrowed();
+        }
+
+        pub fn assertNoDuplicateRequestFingerprint(self: *const @This(), run_handle: RunHandle, request_fingerprint: u64) !void {
+            for (self.pending.items) |pending_port| {
+                if (pending_port.status == .pending and
+                    pending_port.handle.handle_fingerprint == run_handle.handle_fingerprint and
+                    pending_port.request_fingerprint == request_fingerprint)
+                {
+                    return error.InvalidPendingPortTransition;
+                }
+            }
+        }
+
+        pub fn pendingCount(self: *const @This()) usize {
+            var count: usize = 0;
+            for (self.pending.items) |pending_port| {
+                if (pending_port.status == .pending) count += 1;
+            }
+            return count;
+        }
+
+        pub fn ensurePendingCapacity(self: *const @This()) !void {
+            if (self.max_pending_ports) |max| {
+                if (self.pendingCount() >= max) return error.BudgetExceeded;
+            }
+        }
+
+        fn indexOf(self: *const @This(), mailbox_id: u64) !usize {
+            for (self.pending.items, 0..) |pending_port, index| {
+                if (pending_port.mailbox_id == mailbox_id) return index;
+            }
+            return error.InvalidPendingPortTransition;
+        }
+
+        fn assertMailboxIdAvailable(self: *const @This(), mailbox_id: u64) !void {
+            for (self.pending.items) |pending_port| {
+                if (pending_port.mailbox_id == mailbox_id) return error.InvalidPendingPortTransition;
+            }
+        }
+    };
+
+    pub const RunspaceEvent = struct {
+        event_fingerprint: u64,
+        kind: Runspace.EventKind,
+        runspace_fingerprint: u64,
+        event_index: u64,
+        run_handle: RunHandle,
+        pending_port_fingerprint: ?u64 = null,
+        request_frame_fingerprint: ?u64 = null,
+        response_frame_fingerprint: ?u64 = null,
+        checkpoint_fingerprint: ?u64 = null,
+        run_state_fingerprint: u64,
+        run_receipt_fingerprint: ?u64 = null,
+        admission_receipt_fingerprint: ?u64 = null,
+        run_permit_fingerprint: ?u64 = null,
+        summary: []const u8 = "",
+        owns_summary: bool = false,
+
+        pub fn init(args: struct {
+            kind: Runspace.EventKind,
+            runspace_fingerprint: u64,
+            event_index: u64,
+            run_handle: RunHandle,
+            pending_port_fingerprint: ?u64 = null,
+            request_frame_fingerprint: ?u64 = null,
+            response_frame_fingerprint: ?u64 = null,
+            checkpoint_fingerprint: ?u64 = null,
+            run_state_fingerprint: u64,
+            run_receipt_fingerprint: ?u64 = null,
+            admission_receipt_fingerprint: ?u64 = null,
+            run_permit_fingerprint: ?u64 = null,
+            summary: []const u8 = "",
+            owns_summary: bool = false,
+        }) @This() {
+            var result = @This(){
+                .event_fingerprint = 0,
+                .kind = args.kind,
+                .runspace_fingerprint = args.runspace_fingerprint,
+                .event_index = args.event_index,
+                .run_handle = args.run_handle,
+                .pending_port_fingerprint = args.pending_port_fingerprint,
+                .request_frame_fingerprint = args.request_frame_fingerprint,
+                .response_frame_fingerprint = args.response_frame_fingerprint,
+                .checkpoint_fingerprint = args.checkpoint_fingerprint,
+                .run_state_fingerprint = args.run_state_fingerprint,
+                .run_receipt_fingerprint = args.run_receipt_fingerprint,
+                .admission_receipt_fingerprint = args.admission_receipt_fingerprint,
+                .run_permit_fingerprint = args.run_permit_fingerprint,
+                .summary = args.summary,
+                .owns_summary = args.owns_summary,
+            };
+            result.event_fingerprint = fingerprintRunspaceEvent(result);
+            return result;
+        }
+
+        pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+            if (self.owns_summary) allocator.free(@constCast(self.summary));
+            self.* = undefined;
+        }
+
+        pub fn borrowed(self: @This()) @This() {
+            var result = self;
+            result.owns_summary = false;
+            return result;
+        }
+    };
+
+    pub const RunspaceReport = struct {
+        runspace_fingerprint: u64,
+        event_count: usize,
+        run_count: usize,
+        runnable_count: usize,
+        parked_count: usize,
+        completed_count: usize,
+        failed_count: usize,
+        pending_port_count: usize,
+        emitted_events: []const Runspace.RunspaceEvent = &.{},
+        blocker_count: usize = 0,
+        warning_count: usize = 0,
+    };
+
+    pub fn init(allocator: std.mem.Allocator, config: Config) @This() {
+        const runspace_instance_id = next_runspace_instance_id.fetchAdd(1, .monotonic);
+        const runspace_fingerprint = fingerprintRunspaceConfig(config, runspace_instance_id);
+        return .{
+            .allocator = allocator,
+            .config = config,
+            .runspace_fingerprint = runspace_fingerprint,
+            .mailbox = Runspace.Mailbox.init(allocator, config.max_pending_ports),
+        };
+    }
+
+    pub fn deinit(self: *@This()) void {
+        for (self.slots.items) |*slot| {
+            slot.deinit(self.allocator);
+        }
+        for (self.events.items) |*event| {
+            event.deinit(self.allocator);
+        }
+        self.slots.deinit(self.allocator);
+        self.events.deinit(self.allocator);
+        self.mailbox.deinit();
+        self.* = undefined;
+    }
+
+    fn supervisorPortCountForPermit(permit: RunPermit) usize {
+        var count: usize = 0;
+        for (permit.budget.per_port_budgets) |budget| {
+            count = @max(count, @as(usize, budget.world_port_id) + 1);
+        }
+        for (permit.cost_model.per_port_costs) |cost| {
+            count = @max(count, @as(usize, cost.world_port_id) + 1);
+        }
+        for (permit.port_rules) |rule| {
+            count = @max(count, @as(usize, rule.world_port_id) + 1);
+        }
+        return count;
+    }
+
+    fn validateAdmittedRunPermit(admitted_run: Admission.AdmittedRun, permit: RunPermit) !void {
+        const target_ref = admitted_run.target_ref;
+        if (permit.target_ref_fingerprint != target_ref.target_ref_fingerprint) return error.SupervisionDenied;
+        if (permit.world_surface_fingerprint != target_ref.world_surface_fingerprint) return error.SupervisionDenied;
+        if (permit.target_certificate_fingerprint != target_ref.target_certificate_fingerprint) return error.SupervisionDenied;
+        if (permit.mode != admissionModeToRunMode(admitted_run.mode)) return error.SupervisionDenied;
+        if (permit.admission_receipt_fingerprint) |receipt_fingerprint| {
+            if (receipt_fingerprint != admitted_run.admission_receipt_fingerprint) return error.SupervisionDenied;
+        }
+        if (permit.module_ref_fingerprint) |permit_module_ref| {
+            const admitted_module_ref = admitted_run.module_ref_fingerprint orelse if (admitted_run.run_image) |image| image.module_ref_fingerprint else null;
+            if (admitted_module_ref == null or admitted_module_ref.? != permit_module_ref) return error.SupervisionDenied;
+        }
+        if (admitted_run.environment_certificate_fingerprint) |certificate_fingerprint| {
+            if (permit.environment_certificate_fingerprint != certificate_fingerprint) return error.SupervisionDenied;
+        } else if (permit.policy.require_environment_certificate) {
+            return error.SupervisionDenied;
+        }
+        const transcript_available = admitted_run.transcript_image != null or
+            (admitted_run.run_image != null and admitted_run.run_image.?.transcript_image != null);
+        const replays_transcript_prefix = if (admitted_run.run_image) |image|
+            runImageIsInterruptedSupervisionExport(image) and image.current_state.turn_index != 0
+        else
+            false;
+        const consumes_admitted_transcript = modeConsumesTranscript(permit.mode) or replays_transcript_prefix;
+        if (consumes_admitted_transcript) {
+            if (permit.policy.require_transcript_image_for_replay and !transcript_available) return error.SupervisionDenied;
+            if (permit.policy.require_transcript_image_for_replay and !permit.transcript_image_available) return error.SupervisionDenied;
+            if (transcript_available and !permit.transcript_image_available) return error.SupervisionDenied;
+        }
+    }
+
+    fn runImageFromAdmittedTranscript(allocator: std.mem.Allocator, target_ref: TargetRef, import_set_fingerprint: u64, module_ref_fingerprint: ?u64, transcript_image: TranscriptImage) !RunImage {
+        var replay_validation = transcript_image;
+        try replay_validation.validateReplayRun(target_ref.world_surface_fingerprint, target_ref.target_certificate_fingerprint);
+        var cloned_transcript = try cloneTranscriptImage(allocator, transcript_image);
+        errdefer cloned_transcript.deinit(allocator);
+        const evidence = runStateEvidenceFromTranscriptImage(replay_validation);
+        const state = RunState.init(.{
+            .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+            .transcript_image_fingerprint = transcript_image.transcript_image_fingerprint,
+            .final_response_fingerprint = evidence.final_response_fingerprint,
+            .final_value_image_fingerprint = evidence.final_value_image_fingerprint,
+            .turn_index = evidence.turn_index,
+            .status = switch (transcript_image.final_status) {
+                .running => .running,
+                .completed => .completed,
+                .failed => .failed,
+            },
+        });
+        var image = RunImage.init(.{
+            .kind = .replay_only_run,
+            .target_ref = target_ref,
+            .import_set_fingerprint = import_set_fingerprint,
+            .transcript_image = cloned_transcript,
+            .current_state = state,
+            .module_ref_fingerprint = module_ref_fingerprint,
+        });
+        image.owns_transcript_image = true;
+        return image;
+    }
+
+    fn validateAdmittedRunReceipt(admitted_run: Admission.AdmittedRun) !void {
+        const receipt = admitted_run.admission_receipt orelse return;
+        if (receipt.receipt_fingerprint != admitted_run.admission_receipt_fingerprint) return error.InvalidFrameEncoding;
+        if (fingerprintAdmissionReceipt(receipt) != receipt.receipt_fingerprint) return error.InvalidFrameEncoding;
+        const admitted_run_fingerprint = receipt.admitted_run_fingerprint orelse return error.InvalidFrameEncoding;
+        if (admitted_run_fingerprint != admitted_run.admitted_run_fingerprint) return error.InvalidFrameEncoding;
+        const receipt_local_target_ref = receipt.local_target_ref_fingerprint orelse receipt.target_ref_fingerprint;
+        if (receipt_local_target_ref != admitted_run.target_ref.target_ref_fingerprint) return error.InvalidFrameEncoding;
+        if (receipt.module_ref_fingerprint != admitted_run.module_ref_fingerprint) return error.InvalidFrameEncoding;
+        if (receipt.environment_certificate_fingerprint != admitted_run.environment_certificate_fingerprint) return error.InvalidFrameEncoding;
+        if (receipt.run_permit_fingerprint != if (admitted_run.run_permit) |permit| permit.permit_fingerprint else null) return error.InvalidFrameEncoding;
+        if (receipt.accepted_mode != admitted_run.mode) return error.InvalidFrameEncoding;
+    }
+
+    pub fn installAdmitted(self: *@This(), admitted_run: Admission.AdmittedRun) !RunHandle {
+        if (admitted_run.admitted_run_fingerprint != fingerprintAdmittedRun(admitted_run)) return error.InvalidFrameEncoding;
+        if (self.config.require_admission and admitted_run.admission_receipt == null) return error.InvalidFrameEncoding;
+        try validateAdmittedRunReceipt(admitted_run);
+        if (self.config.require_supervision and admitted_run.run_permit == null) return error.SupervisionDenied;
+        const target_ref = admitted_run.target_ref;
+        try validateTargetRef(target_ref);
+        if (admissionModeNeedsRunImage(admitted_run.mode)) {
+            _ = admitted_run.run_image orelse return error.InvalidFrameEncoding;
+        }
+        if (admitted_run.mode == .branch_resume and admitted_run.selected_branch_id == null) return error.HandoffCheckpointMismatch;
+        if (modeConsumesTranscript(admissionModeToRunMode(admitted_run.mode)) and !self.config.allow_replay_install) return error.RunspaceInstallDenied;
+        const transcript_only_replay_install = admitted_run.run_image == null and
+            modeConsumesTranscript(admissionModeToRunMode(admitted_run.mode)) and
+            admitted_run.transcript_image != null;
+        if (admitted_run.run_image == null and
+            modeConsumesTranscript(admissionModeToRunMode(admitted_run.mode)) and
+            !transcript_only_replay_install)
+        {
+            return error.RunspaceInstallDenied;
+        }
+        if (admitted_run.run_image) |image| {
+            if ((admissionModeNeedsRunImage(admitted_run.mode) or admitted_run.mode == .replay_only or admitted_run.mode == .verify_only) and
+                !runImageFitsAdmissionMode(image, admitted_run.mode))
+            {
+                return error.InvalidFrameEncoding;
+            }
+            if (!self.config.allow_handoff_install) return error.RunspaceInstallDenied;
+            if (image.kind == .replay_only_run and !self.config.allow_replay_install) return error.RunspaceInstallDenied;
+            try image.validate(.{});
+            if (image.target_ref.target_ref_fingerprint != target_ref.target_ref_fingerprint) return error.HandoffTargetMismatch;
+            if (image.target_ref.world_surface_fingerprint != target_ref.world_surface_fingerprint) return error.HandoffTargetMismatch;
+            if (image.target_ref.target_certificate_fingerprint != target_ref.target_certificate_fingerprint) return error.HandoffTargetMismatch;
+            if (image.current_state.target_ref_fingerprint != target_ref.target_ref_fingerprint) return error.HandoffTargetMismatch;
+            if (admitted_run.module_ref_fingerprint) |module_ref_fingerprint| {
+                const image_module_ref = image.module_ref_fingerprint orelse return error.InvalidFrameEncoding;
+                if (image_module_ref != module_ref_fingerprint) return error.InvalidFrameEncoding;
+            }
+            if (admitted_run.selected_checkpoint_ref) |selected_checkpoint_ref| {
+                const image_checkpoint = image.current_state.checkpoint_fingerprint orelse return error.HandoffCheckpointMismatch;
+                if (image_checkpoint != selected_checkpoint_ref) return error.HandoffCheckpointMismatch;
+                if (!runImageContainsCheckpoint(image, selected_checkpoint_ref)) return error.HandoffCheckpointMismatch;
+            }
+        } else if (admitted_run.selected_branch_id != null or admitted_run.selected_checkpoint_ref != null) {
+            return error.HandoffCheckpointMismatch;
+        }
+        const current_state = if (admitted_run.run_image) |image| image.current_state else RunState.init(.{
+            .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+            .transcript_image_fingerprint = if (admitted_run.transcript_image) |image| image.transcript_image_fingerprint else null,
+            .branch_id = admitted_run.selected_branch_id orelse 0,
+            .checkpoint_fingerprint = admitted_run.selected_checkpoint_ref,
+            .status = .not_started,
+        });
+        const pending_frame = if (admitted_run.run_image) |image|
+            if (image.current_state.status == .parked_on_port)
+                image.pending_request_frame orelse return error.HandoffPendingFrameMismatch
+            else
+                null
+        else
+            null;
+        const next_run_id_before = self.next_run_id;
+        var installed_image: ?RunImage = null;
+        var installed_image_owned = false;
+        errdefer if (installed_image_owned) {
+            if (installed_image) |*image| image.deinit(self.allocator);
+        };
+        if (admitted_run.run_image) |image| {
+            installed_image = try cloneRunImage(self.allocator, image);
+            installed_image_owned = true;
+            if (admitted_run.transcript_image) |transcript_image| {
+                if (admitted_run.mode == .replay_only or admitted_run.mode == .verify_only) {
+                    var replay_validation = transcript_image;
+                    try replay_validation.validateReplayRun(target_ref.world_surface_fingerprint, target_ref.target_certificate_fingerprint);
+                    try attachTranscriptToInstalledRunImage(self.allocator, &installed_image.?, replay_validation);
+                } else {
+                    try attachTranscriptToInstalledRunImage(self.allocator, &installed_image.?, transcript_image);
+                }
+                try installed_image.?.validate(.{});
+            }
+            try applySelectedBranchToRunImage(&installed_image.?, admitted_run.selected_branch_id);
+        } else if (transcript_only_replay_install) {
+            installed_image = try runImageFromAdmittedTranscript(
+                self.allocator,
+                target_ref,
+                admitted_run.import_set_fingerprint orelse return error.InvalidFrameEncoding,
+                admitted_run.module_ref_fingerprint,
+                admitted_run.transcript_image.?,
+            );
+            installed_image_owned = true;
+            try installed_image.?.validate(.{});
+        }
+        var supervisor: ?Supervision.Supervisor = null;
+        var supervisor_owned = false;
+        errdefer if (supervisor_owned) {
+            if (supervisor) |*owned| owned.deinit();
+        };
+        var installed_permit_fingerprint: ?u64 = if (installed_image) |image| image.prior_run_permit_fingerprint else null;
+        if (admitted_run.run_permit) |permit| {
+            try validateAdmittedRunPermit(admitted_run, permit);
+            const scoped_permit = scopePermitToAdmission(permit, admitted_run.admission_receipt_fingerprint);
+            installed_permit_fingerprint = scoped_permit.permit_fingerprint;
+            const port_count = blk: {
+                var count = supervisorPortCountForPermit(scoped_permit);
+                if (pending_frame) |frame| count = @max(count, @as(usize, frame.world_port_id) + 1);
+                if (installed_image) |image| {
+                    if (image.transcript_image) |transcript_image| count = @max(count, transcriptPortCount(transcript_image));
+                }
+                break :blk count;
+            };
+            supervisor = try Supervision.Supervisor.init(self.allocator, scoped_permit, port_count);
+            supervisor_owned = true;
+            try supervisor.?.beforeHandoffAccept();
+            if (installed_image) |image| {
+                if (image.transcript_image) |transcript_image| {
+                    var replay_image = transcript_image;
+                    if (admitted_run.mode == .replay_only or admitted_run.mode == .verify_only) {
+                        try replay_image.validateReplayRun(
+                            replay_image.world_surface_fingerprint,
+                            replay_image.target_certificate_fingerprint,
+                        );
+                        try self.accountPreparedTranscriptReplayWithSupervisor(replay_image, admissionModeToRunMode(admitted_run.mode), &supervisor.?, .completed_run);
+                    } else if (runImageIsInterruptedSupervisionExport(image) and image.current_state.turn_index != 0) {
+                        try replay_image.prepareReplayPrefixForInterruptedRun(
+                            replay_image.world_surface_fingerprint,
+                            replay_image.target_certificate_fingerprint,
+                        );
+                        try self.accountPreparedTranscriptReplayWithSupervisor(replay_image, .replay, &supervisor.?, .interrupted_prefix);
+                    }
+                }
+            }
+        }
+        const slot_current_state = if (installed_image) |image| image.current_state else current_state;
+        const slot_branch_id: ?u64 = if (slot_current_state.branch_id == 0)
+            admitted_run.selected_branch_id
+        else
+            slot_current_state.branch_id;
+        const handle = try self.nextHandle(.{
+            .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+            .admission_receipt_fingerprint = admitted_run.admission_receipt_fingerprint,
+            .permit_fingerprint = installed_permit_fingerprint,
+            .branch_id = slot_branch_id,
+        });
+        const slot = Runspace.RunSlot.fromState(.{
+            .handle = handle,
+            .target_ref = target_ref,
+            .current_state = slot_current_state,
+            .status = if (installed_image == null) .admitted else try statusFromInstallableRunImageState(slot_current_state),
+            .admission_receipt_fingerprint = admitted_run.admission_receipt_fingerprint,
+            .run_permit_fingerprint = installed_permit_fingerprint,
+            .run_receipt_fingerprint = if (installed_image) |image| image.prior_run_receipt_fingerprint else null,
+            .pending_mailbox_id = null,
+            .branch_id = slot_branch_id,
+            .checkpoint_fingerprint = slot_current_state.checkpoint_fingerprint,
+            .module_ref_fingerprint = admitted_run.module_ref_fingerprint orelse if (installed_image) |image| image.module_ref_fingerprint else null,
+            .supervisor = supervisor,
+            .installed_run_image = installed_image,
+            .owns_installed_run_image = installed_image != null,
+        });
+        const slot_count_before = self.slots.items.len;
+        const event_count_before = self.events.items.len;
+        const mailbox_count_before = self.mailbox.pending.items.len;
+        const next_mailbox_id_before = self.next_mailbox_id;
+        const next_event_index_before = self.next_event_index;
+        var installed = false;
+        errdefer if (!installed) self.rollbackRunspaceMutation(slot_count_before, event_count_before, mailbox_count_before, next_run_id_before, next_mailbox_id_before, next_event_index_before);
+        try self.prepareInstallSlot();
+        installed_image_owned = false;
+        supervisor_owned = false;
+        try self.installPreparedSlot(slot, .run_admitted, "admitted run installed");
+        if (pending_frame) |frame| {
+            try self.enqueueInstalledPending(self.slots.items.len - 1, frame);
+        }
+        installed = true;
+        return handle;
+    }
+
+    pub fn installRunImage(self: *@This(), image: RunImage) !RunHandle {
+        if (self.config.require_admission) return error.RunspaceAdmissionRequired;
+        if (!self.config.allow_handoff_install) return error.RunspaceInstallDenied;
+        if (image.kind == .replay_only_run and !self.config.allow_replay_install) return error.RunspaceInstallDenied;
+        if (self.config.require_supervision) return error.SupervisionDenied;
+        try image.validate(.{});
+        const run_status = try statusFromInstallableRunImageState(image.current_state);
+        if (image.current_state.status == .parked_on_supervision) {
+            if (!runImageIsInterruptedSupervisionExport(image)) return error.InvalidFrameEncoding;
+            if (image.current_state.turn_index != 0) {
+                var transcript_image = image.transcript_image orelse return error.InvalidFrameEncoding;
+                try transcript_image.prepareReplayPrefixForInterruptedRun(
+                    transcript_image.world_surface_fingerprint,
+                    transcript_image.target_certificate_fingerprint,
+                );
+            }
+        }
+        const pending_frame = if (image.current_state.status == .parked_on_port)
+            image.pending_request_frame orelse return error.HandoffPendingFrameMismatch
+        else
+            null;
+        const next_run_id_before = self.next_run_id;
+        const slot_count_before = self.slots.items.len;
+        const event_count_before = self.events.items.len;
+        const mailbox_count_before = self.mailbox.pending.items.len;
+        const next_mailbox_id_before = self.next_mailbox_id;
+        const next_event_index_before = self.next_event_index;
+        var installed = false;
+        errdefer if (!installed) self.rollbackRunspaceMutation(slot_count_before, event_count_before, mailbox_count_before, next_run_id_before, next_mailbox_id_before, next_event_index_before);
+        const handle = try self.nextHandle(.{
+            .target_ref_fingerprint = image.target_ref.target_ref_fingerprint,
+            .permit_fingerprint = image.prior_run_permit_fingerprint,
+            .branch_id = if (image.current_state.branch_id == 0) null else image.current_state.branch_id,
+        });
+        var installed_image = try cloneRunImage(self.allocator, image);
+        var installed_image_owned = true;
+        errdefer if (installed_image_owned) installed_image.deinit(self.allocator);
+        const installed_target_ref = installed_image.target_ref;
+        const installed_state = installed_image.current_state;
+        const slot = Runspace.RunSlot.fromState(.{
+            .handle = handle,
+            .target_ref = installed_target_ref,
+            .current_state = installed_state,
+            .status = run_status,
+            .run_permit_fingerprint = image.prior_run_permit_fingerprint,
+            .run_receipt_fingerprint = image.prior_run_receipt_fingerprint,
+            .branch_id = if (installed_state.branch_id == 0) null else installed_state.branch_id,
+            .checkpoint_fingerprint = installed_state.checkpoint_fingerprint,
+            .module_ref_fingerprint = image.module_ref_fingerprint,
+            .installed_run_image = installed_image,
+            .owns_installed_run_image = true,
+        });
+        try self.prepareInstallSlot();
+        installed_image_owned = false;
+        try self.installPreparedSlot(slot, .run_installed, "run image installed");
+        if (pending_frame) |frame| {
+            try self.enqueueInstalledPending(self.slots.items.len - 1, frame);
+        }
+        installed = true;
+        return handle;
+    }
+
+    pub fn installTarget(self: *@This(), comptime Target: type, env: anytype, permit: ?RunPermit, args: anytype) !RunHandle {
+        if (self.config.require_admission) return error.RunspaceAdmissionRequired;
+        if (!self.config.allow_direct_target_install) return error.RunspaceInstallDenied;
+        if (self.config.require_supervision and permit == null) return error.SupervisionDenied;
+        const target_ref = TargetRef.fromTarget(Target);
+        const next_run_id_before = self.next_run_id;
+        var installed = false;
+        errdefer if (!installed) {
+            self.next_run_id = next_run_id_before;
+        };
+        const handle = try self.nextHandle(.{
+            .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+            .permit_fingerprint = if (permit) |run_permit| run_permit.permit_fingerprint else null,
+        });
+        const state = RunState.init(.{
+            .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+            .status = .not_started,
+        });
+        var supervisor: ?Supervision.Supervisor = null;
+        var supervisor_owned = false;
+        errdefer if (supervisor_owned) {
+            if (supervisor) |*owned| owned.deinit();
+        };
+        if (permit) |run_permit| {
+            try validateInstallTargetPermit(Target, env, run_permit, args);
+            supervisor = try Supervision.Supervisor.init(self.allocator, run_permit, Target.WorldPortTable.entries.len);
+            supervisor_owned = true;
+        }
+        const slot = Runspace.RunSlot.fromState(.{
+            .handle = handle,
+            .target_ref = target_ref,
+            .current_state = state,
+            .status = .admitted,
+            .run_permit_fingerprint = if (permit) |run_permit| run_permit.permit_fingerprint else null,
+            .supervisor = supervisor,
+        });
+        try self.prepareInstallSlot();
+        supervisor_owned = false;
+        try self.installPreparedSlot(slot, .run_installed, "direct target installed");
+        installed = true;
+        return handle;
+    }
+
+    fn validateInstallTargetPermit(comptime Target: type, env: anytype, permit: RunPermit, args: anytype) !void {
+        const Args = @TypeOf(args);
+        const expected_mode: Mode = if (@hasField(Args, "mode")) @field(args, "mode") else .fresh;
+        if (permit.target_ref_fingerprint != TargetRef.fromTarget(Target).target_ref_fingerprint) return error.SupervisionDenied;
+        if (permit.world_surface_fingerprint != Target.WorldSurface.surface_fingerprint) return error.SupervisionDenied;
+        if (permit.target_certificate_fingerprint != Target.Certificate.certificate_fingerprint) return error.SupervisionDenied;
+        if (permit.mode != expected_mode) return error.SupervisionDenied;
+        if (permit.admission_receipt_fingerprint != null or permit.module_ref_fingerprint != null) return error.SupervisionDenied;
+        const transcript_available: bool = if (@hasField(Args, "transcript_image_available")) @field(args, "transcript_image_available") else false;
+        const Env = if (@TypeOf(env) == type) env else @TypeOf(env);
+        if (@hasDecl(Env, "certificate")) {
+            const cert = Env.certificate(expected_mode, transcript_available);
+            if (permit.environment_certificate_fingerprint != cert.certificate_fingerprint) return error.SupervisionDenied;
+            if (permit.binding_plan_fingerprint != cert.binding_plan_fingerprint) return error.SupervisionDenied;
+        } else if (permit.policy.require_environment_certificate) {
+            return error.SupervisionDenied;
+        }
+    }
+
+    pub fn installMachineRun(self: *@This(), comptime Target: type, comptime Env: type, runtime: anytype, args: anytype, options: anytype) !RunHandle {
+        if (self.config.require_admission) return error.RunspaceAdmissionRequired;
+        if (!self.config.allow_direct_target_install) return error.RunspaceInstallDenied;
+        const Options = @TypeOf(options);
+        const requested_mode: Mode = if (comptime @hasField(Options, "mode")) @field(options, "mode") else .fresh;
+        if (modeConsumesTranscript(requested_mode) and !self.config.allow_replay_install) return error.RunspaceInstallDenied;
+        if (modeConsumesTranscript(requested_mode) and !self.config.auto_dispatch) return error.RunspaceInstallDenied;
+        const maybe_permit: ?RunPermit = if (comptime @hasField(Options, "permit")) @field(options, "permit") else null;
+        if (self.config.require_supervision and maybe_permit == null) return error.SupervisionDenied;
+        const MachineType = Machine(Target, Env.machine_config);
+        const RunType = MachineType.Run(@TypeOf(runtime), @TypeOf(args), Options);
+        const target_ref = TargetRef.fromTarget(Target);
+        const next_run_id_before = self.next_run_id;
+        var installed = false;
+        errdefer if (!installed) {
+            self.next_run_id = next_run_id_before;
+        };
+        const handle = try self.nextHandle(.{
+            .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+            .permit_fingerprint = if (maybe_permit) |permit| permit.permit_fingerprint else null,
+        });
+        try self.prepareInstallSlot();
+        const event_summary = try self.prepareEventSummary("machine run installed");
+        var summary_owned = true;
+        errdefer if (summary_owned) self.allocator.free(event_summary);
+        const run_ptr = try self.allocator.create(RunType);
+        var run_ptr_owned = true;
+        errdefer if (run_ptr_owned) self.allocator.destroy(run_ptr);
+        var run = try MachineType.start(runtime, args, options);
+        var run_owned = true;
+        errdefer if (run_owned) run.deinit();
+        run_ptr.* = run;
+        run_owned = false;
+        var driver = SlotDriver.forRun(RunType, run_ptr);
+        run_ptr_owned = false;
+        var driver_owned = true;
+        errdefer if (driver_owned) driver.deinit(self.allocator);
+        const state = RunState.init(.{
+            .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+            .status = .not_started,
+        });
+        const slot = Runspace.RunSlot.fromState(.{
+            .handle = handle,
+            .target_ref = target_ref,
+            .current_state = state,
+            .status = .runnable,
+            .run_permit_fingerprint = if (maybe_permit) |permit| permit.permit_fingerprint else null,
+            .driver = driver,
+            .driver_world_port_count = Target.WorldPortTable.entries.len,
+        });
+        driver_owned = false;
+        self.slots.appendAssumeCapacity(slot);
+        _ = self.appendPreparedEventAssumeCapacity(.{
+            .kind = .run_installed,
+            .run_handle = slot.handle,
+            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+            .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .summary = event_summary,
+        });
+        summary_owned = false;
+        installed = true;
+        return handle;
+    }
+
+    pub fn installReplay(self: *@This(), comptime Target: type, transcript_image: TranscriptImage, permit: ?RunPermit) !RunHandle {
+        if (self.config.require_admission) return error.RunspaceAdmissionRequired;
+        if (!self.config.allow_replay_install) return error.RunspaceInstallDenied;
+        if (self.config.require_supervision and permit == null) return error.SupervisionDenied;
+        var replay_validation = transcript_image;
+        try replay_validation.validateReplayRun(Target.WorldSurface.surface_fingerprint, Target.Certificate.certificate_fingerprint);
+        if (permit) |run_permit| try validateInstallReplayPermit(Target, replay_validation, run_permit);
+        var image = RunImage.fromTranscriptImage(Target, replay_validation, .replay_only_run);
+        image.prior_run_permit_fingerprint = if (permit) |run_permit| run_permit.permit_fingerprint else null;
+        image.run_image_fingerprint = fingerprintRunImageV3(image);
+        var installed_image = try cloneRunImage(self.allocator, image);
+        var installed_image_owned = true;
+        errdefer if (installed_image_owned) installed_image.deinit(self.allocator);
+        var supervisor: ?Supervision.Supervisor = null;
+        var supervisor_owned = false;
+        errdefer if (supervisor_owned) {
+            if (supervisor) |*owned| owned.deinit();
+        };
+        if (permit) |run_permit| {
+            supervisor = try Supervision.Supervisor.init(self.allocator, run_permit, @max(Target.WorldPortTable.entries.len, transcriptPortCount(transcript_image)));
+            supervisor_owned = true;
+            try self.accountPreparedTranscriptReplayWithSupervisor(replay_validation, .replay, &supervisor.?, .completed_run);
+        }
+        const next_run_id_before = self.next_run_id;
+        var installed = false;
+        errdefer if (!installed) {
+            self.next_run_id = next_run_id_before;
+        };
+        const handle = try self.nextHandle(.{
+            .target_ref_fingerprint = image.target_ref.target_ref_fingerprint,
+            .permit_fingerprint = image.prior_run_permit_fingerprint,
+            .branch_id = if (image.current_state.branch_id == 0) null else image.current_state.branch_id,
+        });
+        const installed_target_ref = installed_image.target_ref;
+        const installed_state = installed_image.current_state;
+        const slot = Runspace.RunSlot.fromState(.{
+            .handle = handle,
+            .target_ref = installed_target_ref,
+            .current_state = installed_state,
+            .status = statusFromRunState(installed_state),
+            .run_permit_fingerprint = image.prior_run_permit_fingerprint,
+            .branch_id = if (installed_state.branch_id == 0) null else installed_state.branch_id,
+            .checkpoint_fingerprint = installed_state.checkpoint_fingerprint,
+            .supervisor = supervisor,
+            .installed_run_image = installed_image,
+            .owns_installed_run_image = true,
+        });
+        try self.prepareInstallSlot();
+        installed_image_owned = false;
+        supervisor_owned = false;
+        try self.installPreparedSlot(slot, .run_installed, "replay run installed");
+        installed = true;
+        return handle;
+    }
+
+    fn validateInstallReplayPermit(comptime Target: type, transcript_image: TranscriptImage, permit: RunPermit) !void {
+        if (permit.target_ref_fingerprint != TargetRef.fromTarget(Target).target_ref_fingerprint) return error.SupervisionDenied;
+        if (permit.world_surface_fingerprint != Target.WorldSurface.surface_fingerprint) return error.SupervisionDenied;
+        if (permit.target_certificate_fingerprint != Target.Certificate.certificate_fingerprint) return error.SupervisionDenied;
+        if (permit.mode != .replay) return error.SupervisionDenied;
+        if (permit.admission_receipt_fingerprint != null or permit.module_ref_fingerprint != null) return error.SupervisionDenied;
+        if (permit.policy.require_environment_certificate) return error.SupervisionDenied;
+        if (!permit.transcript_image_available) {
+            if (permit.policy.require_transcript_image_for_replay) return error.TranscriptImageRequired;
+            return error.SupervisionDenied;
+        }
+        if (transcript_image.world_surface_fingerprint != permit.world_surface_fingerprint) return error.SupervisionDenied;
+        if (transcript_image.target_certificate_fingerprint != permit.target_certificate_fingerprint) return error.SupervisionDenied;
+    }
+
+    pub fn installVerifyRun(self: *@This(), comptime Target: type, comptime Env: type, runtime: anytype, args: anytype, options: anytype) !RunHandle {
+        return self.installMachineRun(Target, Env, runtime, args, options);
+    }
+
+    pub fn getSlotSummary(self: *const @This(), handle: RunHandle) !Runspace.RunSlotSummary {
+        return self.slots.items[try self.slotIndex(handle)].summary();
+    }
+
+    pub fn listRunSummaries(self: *const @This(), allocator: std.mem.Allocator) ![]Runspace.RunSlotSummary {
+        const summaries = try allocator.alloc(Runspace.RunSlotSummary, self.slots.items.len);
+        for (self.slots.items, 0..) |slot, index| {
+            summaries[index] = slot.summary();
+        }
+        return summaries;
+    }
+
+    pub fn poll(self: *const @This()) Runspace.RunspaceReport {
+        return self.report();
+    }
+
+    const ResponseFrameAccounting = struct {
+        response_bytes: usize = 0,
+        value_image_bytes: usize = 0,
+    };
+
+    fn responseFrameAccounting(self: *@This(), response: Frame.Response) !ResponseFrameAccounting {
+        const encoded_response = try response.encode(self.allocator);
+        defer self.allocator.free(encoded_response);
+        return .{
+            .response_bytes = encoded_response.len,
+            .value_image_bytes = if (response.response_image) |image| image.bytes.len else 0,
+        };
+    }
+
+    fn transcriptPortCount(image: TranscriptImage) usize {
+        var count: usize = 0;
+        for (image.events) |event| {
+            if (event.world_port_id) |world_port_id| {
+                count = @max(count, @as(usize, world_port_id) + 1);
+            }
+            if (event.request_frame) |frame| {
+                count = @max(count, @as(usize, frame.world_port_id) + 1);
+            }
+            if (event.response_frame) |frame| {
+                count = @max(count, @as(usize, frame.world_port_id) + 1);
+            }
+        }
+        return count;
+    }
+
+    const TranscriptReplayAccounting = enum {
+        interrupted_prefix,
+        completed_run,
+    };
+
+    fn accountPreparedTranscriptReplayWithSupervisor(self: *@This(), image: TranscriptImage, replay_mode: Mode, supervisor: *Supervision.Supervisor, accounting: TranscriptReplayAccounting) !void {
+        var index = image.replay_cursor;
+        const limit = image.replay_limit orelse image.events.len;
+        while (index < limit) : (index += 1) {
+            const event = image.events[index];
+            switch (event.kind) {
+                .port_requested,
+                .frame_requested,
+                => {
+                    const request_frame = event.request_frame orelse return error.ReplayMissing;
+                    try supervisor.beforeSessionStep();
+                    try supervisor.beforePortRequest(request_frame.world_port_id, 0, 0);
+                    const request_bytes = bytes: {
+                        const encoded = try request_frame.encode(self.allocator);
+                        defer self.allocator.free(encoded);
+                        break :bytes encoded.len;
+                    };
+                    try supervisor.accountPortRequestBytes(
+                        request_frame.world_port_id,
+                        request_bytes,
+                        if (request_frame.payload_image) |image_value| image_value.bytes.len else 0,
+                    );
+                },
+                else => {},
+            }
+            if (eventKindIsSourceResponse(event.kind)) {
+                const response_frame = event.response_frame orelse return error.ReplayMissing;
+                try supervisor.beforeAdapterCall(.{
+                    .world_port_id = response_frame.world_port_id,
+                    .mode = replay_mode,
+                    .adapter_kind = if (replay_mode == .verify) .native else .replay,
+                    .authority_kind = if (replay_mode == .verify) PortAuthority.native_function.authority_kind else PortAuthority.replay_source.authority_kind,
+                    .value_policy = if (replay_mode == .verify) .native_compatible else .portable,
+                });
+                const response_bytes = bytes: {
+                    const encoded = try response_frame.encode(self.allocator);
+                    defer self.allocator.free(encoded);
+                    break :bytes encoded.len;
+                };
+                try supervisor.afterAdapterResponse(.{
+                    .world_port_id = response_frame.world_port_id,
+                    .status = response_frame.status,
+                    .response_bytes = response_bytes,
+                    .value_image_bytes = if (response_frame.response_image) |image_value| image_value.bytes.len else 0,
+                });
+                if (accounting == .completed_run and replay_mode == .verify) {
+                    try supervisor.afterAdapterResponse(.{
+                        .world_port_id = response_frame.world_port_id,
+                        .status = .responded,
+                    });
+                }
+            }
+        }
+        if (accounting == .completed_run) try supervisor.beforeSessionStep();
+    }
+
+    pub fn tick(self: *@This()) !Runspace.RunspaceReport {
+        const initial_len = self.slots.items.len;
+        var index: usize = 0;
+        while (index < initial_len) : (index += 1) {
+            switch (self.slots.items[index].status) {
+                .runnable => _ = try self.stepAt(index),
+                else => {},
+            }
+        }
+        return self.report();
+    }
+
+    pub fn stepOne(self: *@This()) !Runspace.RunspaceEvent {
+        for (self.slots.items, 0..) |slot, index| {
+            switch (slot.status) {
+                .runnable => return self.stepAt(index),
+                else => {},
+            }
+        }
+        return error.InvalidRunspaceTransition;
+    }
+
+    pub fn step(self: *@This(), handle: RunHandle) !Runspace.RunspaceEvent {
+        return self.stepAt(try self.slotIndex(handle));
+    }
+
+    pub fn respond(self: *@This(), mailbox_id: u64, response: Frame.Response) !Runspace.RunspaceEvent {
+        const pending = try self.mailbox.get(mailbox_id);
+        try pending.validateResponse(response);
+        const index = try self.slotIndex(pending.handle);
+        var slot = &self.slots.items[index];
+        if (slot.pending_mailbox_id != mailbox_id or slot.status != .parked_on_port) return error.StaleRunHandle;
+        var responded_summary: []u8 = "";
+        var responded_summary_owned = false;
+        defer if (responded_summary_owned) self.allocator.free(responded_summary);
+        var resumed_summary: []u8 = "";
+        var resumed_summary_owned = false;
+        defer if (resumed_summary_owned) self.allocator.free(resumed_summary);
+        var failed_response_summary: []u8 = "";
+        var failed_response_summary_owned = false;
+        defer if (failed_response_summary_owned) self.allocator.free(failed_response_summary);
+        var failed_run_summary: []u8 = "";
+        var failed_run_summary_owned = false;
+        defer if (failed_run_summary_owned) self.allocator.free(failed_run_summary);
+        switch (response.status) {
+            .responded => {
+                try self.ensureEventCapacity(2);
+                try self.events.ensureUnusedCapacity(self.allocator, 2);
+                responded_summary = try self.allocator.dupe(u8, "port responded");
+                responded_summary_owned = true;
+                resumed_summary = try self.allocator.dupe(u8, "run resumed");
+                resumed_summary_owned = true;
+                failed_response_summary = try self.allocator.dupe(u8, "port response failed");
+                failed_response_summary_owned = true;
+                failed_run_summary = try self.allocator.dupe(u8, "run failed after response");
+                failed_run_summary_owned = true;
+                const accounting = try self.responseFrameAccounting(response);
+                if (slot.driver) |driver| {
+                    driver.beforeResponse(pending.world_port_id, .responded, accounting.response_bytes, accounting.value_image_bytes) catch |err| {
+                        if (err == error.HandlerPending and driver.supervisionInterrupted()) {
+                            return self.parkPendingOnSupervision(index, pending, mailbox_id, "manual response parked on supervision");
+                        }
+                        if (err == error.BudgetExceeded and driver.supervisionInterrupted()) {
+                            return self.parkPendingOnSupervision(index, pending, mailbox_id, "manual response parked on supervision");
+                        }
+                        if (err == error.BudgetExceeded) {
+                            try self.failPendingPortAndSlot(
+                                mailbox_id,
+                                slot,
+                                response,
+                                "manual response supervision failed",
+                                failed_response_summary,
+                                failed_run_summary,
+                            );
+                            failed_response_summary_owned = false;
+                            failed_run_summary_owned = false;
+                        }
+                        return err;
+                    };
+                }
+            },
+            .pending => {
+                const accounting = try self.responseFrameAccounting(response);
+                if (slot.driver) |driver| {
+                    try self.ensureEventCapacity(1);
+                    try self.events.ensureUnusedCapacity(self.allocator, 1);
+                    driver.beforeResponse(pending.world_port_id, .pending, accounting.response_bytes, accounting.value_image_bytes) catch |err| {
+                        if (err == error.HandlerPending and driver.supervisionInterrupted()) {
+                            return self.parkPendingOnSupervision(index, pending, mailbox_id, "manual pending response parked on supervision");
+                        }
+                        if (err == error.BudgetExceeded and driver.supervisionInterrupted()) {
+                            return self.parkPendingOnSupervision(index, pending, mailbox_id, "manual pending response parked on supervision");
+                        }
+                        return err;
+                    };
+                    return error.HandlerPending;
+                }
+                if (slot.supervisor) |*supervisor| {
+                    try self.ensureEventCapacity(1);
+                    try self.events.ensureUnusedCapacity(self.allocator, 1);
+                    supervisor.afterAdapterResponse(.{
+                        .world_port_id = pending.world_port_id,
+                        .status = .pending,
+                        .response_bytes = accounting.response_bytes,
+                        .value_image_bytes = accounting.value_image_bytes,
+                    }) catch |err| {
+                        if ((err == error.HandlerPending or err == error.BudgetExceeded) and supervisor.interrupted) {
+                            return self.parkPendingOnSupervision(index, pending, mailbox_id, "manual pending response parked on supervision");
+                        }
+                        return err;
+                    };
+                    return error.HandlerPending;
+                }
+                if (self.config.require_supervision) return error.SupervisionDenied;
+                return error.HandlerPending;
+            },
+            .rejected => return self.finishTerminalResponse(index, mailbox_id, pending, slot, response, .rejected),
+            .failed => return self.finishTerminalResponse(index, mailbox_id, pending, slot, response, .failed),
+        }
+        const response_evidence = if (slot.driver) |driver|
+            driver.resumeFrame(response) catch |err| {
+                if (err == error.HandlerPending) {
+                    if (driver.supervisionInterrupted()) {
+                        return self.parkPendingOnSupervision(index, pending, mailbox_id, "manual response parked on supervision");
+                    }
+                    return err;
+                }
+                if (driver.failed()) {
+                    const failed = try self.mailbox.fail(mailbox_id, "resume failed");
+                    try slot.transition(.fail, null);
+                    _ = self.appendPreparedEventAssumeCapacity(.{
+                        .kind = .port_failed,
+                        .run_handle = slot.handle,
+                        .pending_port_fingerprint = failed.pending_port_fingerprint,
+                        .response_frame_fingerprint = response.frame_fingerprint,
+                        .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+                        .run_permit_fingerprint = slot.run_permit_fingerprint,
+                        .summary = failed_response_summary,
+                    });
+                    failed_response_summary_owned = false;
+                    _ = self.appendPreparedEventAssumeCapacity(.{
+                        .kind = .run_failed,
+                        .run_handle = slot.handle,
+                        .pending_port_fingerprint = failed.pending_port_fingerprint,
+                        .response_frame_fingerprint = response.frame_fingerprint,
+                        .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+                        .run_permit_fingerprint = slot.run_permit_fingerprint,
+                        .summary = failed_run_summary,
+                    });
+                    failed_run_summary_owned = false;
+                }
+                return err;
+            }
+        else
+            return error.InvalidRunspaceTransition;
+        if (response.status == .pending) return error.HandlerPending;
+        const effective_response_frame_fingerprint = response_evidence.response_frame_fingerprint orelse response_evidence.response_fingerprint;
+        try slot.resumeFromPort(mailbox_id, effective_response_frame_fingerprint, response_evidence.response_value_image_fingerprint);
+        const responded = try self.mailbox.markResponded(mailbox_id);
+        _ = self.appendPreparedEventAssumeCapacity(.{
+            .kind = .port_responded,
+            .run_handle = slot.handle,
+            .pending_port_fingerprint = responded.pending_port_fingerprint,
+            .request_frame_fingerprint = responded.request_frame_fingerprint,
+            .response_frame_fingerprint = effective_response_frame_fingerprint,
+            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+            .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .summary = responded_summary,
+        });
+        responded_summary_owned = false;
+        const event = self.appendPreparedEventAssumeCapacity(.{
+            .kind = .run_resumed,
+            .run_handle = slot.handle,
+            .pending_port_fingerprint = responded.pending_port_fingerprint,
+            .request_frame_fingerprint = responded.request_frame_fingerprint,
+            .response_frame_fingerprint = effective_response_frame_fingerprint,
+            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+            .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .summary = resumed_summary,
+        });
+        resumed_summary_owned = false;
+        return event;
+    }
+
+    pub fn respondValue(self: *@This(), mailbox_id: u64, value: anytype) !Runspace.RunspaceEvent {
+        const pending = try self.mailbox.get(mailbox_id);
+        const request = pending.request_frame orelse return error.InvalidPendingPortTransition;
+        var response = try Frame.Response.fromPortableValue(self.allocator, request, pending.expected_response_value_table_id, pending.expected_response_kind, value, .portable);
+        defer response.deinit(self.allocator);
+        return self.respond(mailbox_id, response);
+    }
+
+    fn failPendingPortAndSlot(
+        self: *@This(),
+        mailbox_id: u64,
+        slot: *Runspace.RunSlot,
+        response: Frame.Response,
+        failure_summary: []const u8,
+        port_summary: []u8,
+        run_summary: []u8,
+    ) !void {
+        const failed = try self.mailbox.fail(mailbox_id, failure_summary);
+        try slot.transition(.fail, null);
+        _ = self.appendPreparedEventAssumeCapacity(.{
+            .kind = .port_failed,
+            .run_handle = slot.handle,
+            .pending_port_fingerprint = failed.pending_port_fingerprint,
+            .request_frame_fingerprint = failed.request_frame_fingerprint,
+            .response_frame_fingerprint = response.frame_fingerprint,
+            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+            .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .summary = port_summary,
+        });
+        _ = self.appendPreparedEventAssumeCapacity(.{
+            .kind = .run_failed,
+            .run_handle = slot.handle,
+            .pending_port_fingerprint = failed.pending_port_fingerprint,
+            .request_frame_fingerprint = failed.request_frame_fingerprint,
+            .response_frame_fingerprint = response.frame_fingerprint,
+            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+            .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .summary = run_summary,
+        });
+    }
+
+    fn terminalResponseForPending(pending: Runspace.PendingPort, status: ResponseStatus, reason: []const u8) !Frame.Response {
+        if (status != .rejected and status != .failed) return error.InvalidPendingPortTransition;
+        const request = pending.request_frame orelse return error.InvalidPendingPortTransition;
+        const status_seed: u64 = switch (status) {
+            .rejected => 0x7275_6e73_7061_6365,
+            .failed => 0x6661_696c_706f_7274,
+            else => unreachable,
+        };
+        const response_fingerprint = pending.request_fingerprint ^ pending.request_frame_fingerprint ^ status_seed;
+        return Frame.Response.init(.{
+            .world_surface_fingerprint = request.world_surface_fingerprint,
+            .target_certificate_fingerprint = request.target_certificate_fingerprint,
+            .world_port_id = request.world_port_id,
+            .request_fingerprint = request.request_fingerprint,
+            .response_kind = pending.expected_response_kind,
+            .response_value_table_id = pending.expected_response_value_table_id,
+            .response_fingerprint = response_fingerprint,
+            .replay_key = request.replay_key_seed.withResponse(response_fingerprint).fingerprint(),
+            .status = status,
+            .reason = reason,
+        });
+    }
+
+    fn routeTerminalResponse(self: *@This(), index: usize, mailbox_id: u64, pending: Runspace.PendingPort, slot: *Runspace.RunSlot, response: Frame.Response, status: ResponseStatus) !?Runspace.RunspaceEvent {
+        if (status != .rejected and status != .failed) return error.InvalidPendingPortTransition;
+        if (response.status != status) return error.InvalidPendingPortTransition;
+        try pending.validateResponse(response);
+        var failed_event_pair = try self.prepareEventPair(
+            2,
+            "terminal port response failed",
+            "run failed after terminal port response",
+        );
+        defer failed_event_pair.deinit(self.allocator);
+        const accounting = try self.responseFrameAccounting(response);
+        if (slot.driver) |driver| {
+            driver.beforeTerminalResponse(pending.world_port_id, status, accounting.response_bytes, accounting.value_image_bytes) catch |err| {
+                if ((err == error.HandlerPending or err == error.BudgetExceeded) and driver.supervisionInterrupted()) {
+                    return try self.parkPendingOnSupervision(index, pending, mailbox_id, "terminal response parked on supervision");
+                }
+                if (err == error.BudgetExceeded) {
+                    try self.failPendingPortAndSlot(
+                        mailbox_id,
+                        slot,
+                        response,
+                        "terminal response supervision failed",
+                        failed_event_pair.takeFirst(),
+                        failed_event_pair.takeSecond(),
+                    );
+                }
+                return err;
+            };
+            driver.resumeTerminalFrame(response) catch |err| {
+                if ((err == error.HandlerPending or err == error.BudgetExceeded) and driver.supervisionInterrupted()) {
+                    return try self.parkPendingOnSupervision(index, pending, mailbox_id, "terminal response parked on supervision");
+                }
+                try self.failPendingPortAndSlot(
+                    mailbox_id,
+                    slot,
+                    response,
+                    "terminal response failed",
+                    failed_event_pair.takeFirst(),
+                    failed_event_pair.takeSecond(),
+                );
+                return err;
+            };
+        } else if (slot.supervisor) |*supervisor| {
+            supervisor.afterAdapterResponse(.{
+                .world_port_id = pending.world_port_id,
+                .status = status,
+                .response_bytes = accounting.response_bytes,
+                .value_image_bytes = accounting.value_image_bytes,
+            }) catch |err| {
+                if ((err == error.HandlerPending or err == error.BudgetExceeded) and supervisor.interrupted) {
+                    return try self.parkPendingOnSupervision(index, pending, mailbox_id, "terminal response parked on supervision");
+                }
+                return err;
+            };
+        } else if (self.config.require_supervision) {
+            return error.SupervisionDenied;
+        }
+        return null;
+    }
+
+    fn terminalPortEventKind(status: ResponseStatus) Runspace.EventKind {
+        return switch (status) {
+            .rejected => .port_rejected,
+            .failed => .port_failed,
+            else => unreachable,
+        };
+    }
+
+    fn terminalPortSummary(status: ResponseStatus) []const u8 {
+        return switch (status) {
+            .rejected => "port rejected",
+            .failed => "port failed",
+            else => unreachable,
+        };
+    }
+
+    fn terminalRunSummary(status: ResponseStatus) []const u8 {
+        return switch (status) {
+            .rejected => "run failed after port rejection",
+            .failed => "run failed after port failure",
+            else => unreachable,
+        };
+    }
+
+    fn consumeTerminalMailbox(self: *@This(), mailbox_id: u64, status: ResponseStatus, reason: []const u8) !Runspace.PendingPort {
+        return switch (status) {
+            .rejected => self.mailbox.cancel(mailbox_id, reason),
+            .failed => self.mailbox.fail(mailbox_id, reason),
+            else => unreachable,
+        };
+    }
+
+    fn finishTerminalResponse(self: *@This(), index: usize, mailbox_id: u64, pending: Runspace.PendingPort, slot: *Runspace.RunSlot, response: Frame.Response, status: ResponseStatus) !Runspace.RunspaceEvent {
+        var event_pair = try self.prepareEventPair(
+            2,
+            terminalPortSummary(status),
+            terminalRunSummary(status),
+        );
+        defer event_pair.deinit(self.allocator);
+        if (try self.routeTerminalResponse(index, mailbox_id, pending, slot, response, status)) |event| return event;
+        const consumed = try self.consumeTerminalMailbox(mailbox_id, status, response.reason orelse "");
+        try slot.transition(.fail, null);
+        _ = self.appendPreparedEventAssumeCapacity(.{
+            .kind = terminalPortEventKind(status),
+            .run_handle = slot.handle,
+            .pending_port_fingerprint = consumed.pending_port_fingerprint,
+            .request_frame_fingerprint = consumed.request_frame_fingerprint,
+            .response_frame_fingerprint = response.frame_fingerprint,
+            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+            .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .summary = event_pair.takeFirst(),
+        });
+        return self.appendPreparedEventAssumeCapacity(.{
+            .kind = .run_failed,
+            .run_handle = slot.handle,
+            .pending_port_fingerprint = consumed.pending_port_fingerprint,
+            .request_frame_fingerprint = consumed.request_frame_fingerprint,
+            .response_frame_fingerprint = response.frame_fingerprint,
+            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+            .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .summary = event_pair.takeSecond(),
+        });
+    }
+
+    const TerminalPendingRoute = struct {
+        response: Frame.Response,
+        parked_event: ?Runspace.RunspaceEvent = null,
+    };
+
+    fn routeTerminalPending(self: *@This(), index: usize, mailbox_id: u64, pending: Runspace.PendingPort, slot: *Runspace.RunSlot, status: ResponseStatus, reason: []const u8) !TerminalPendingRoute {
+        var response = try terminalResponseForPending(pending, status, reason);
+        errdefer response.deinit(self.allocator);
+        const parked_event = try self.routeTerminalResponse(index, mailbox_id, pending, slot, response, status);
+        return .{
+            .response = response,
+            .parked_event = parked_event,
+        };
+    }
+
+    fn parkPendingOnSupervision(self: *@This(), index: usize, pending: Runspace.PendingPort, mailbox_id: u64, event_summary: []const u8) !Runspace.RunspaceEvent {
+        const event_summary_bytes = try self.prepareEventSummary(event_summary);
+        var summary_owned = true;
+        errdefer if (summary_owned) self.allocator.free(event_summary_bytes);
+        var slot = &self.slots.items[index];
+        slot.status = .parked_on_supervision;
+        slot.pending_mailbox_id = mailbox_id;
+        slot.current_state = slot.transitionState(.parked_on_port, pending.turn_index, pending.request_frame_fingerprint);
+        const event = self.appendPreparedEventAssumeCapacity(.{
+            .kind = .run_parked_on_supervision,
+            .run_handle = slot.handle,
+            .pending_port_fingerprint = pending.pending_port_fingerprint,
+            .request_frame_fingerprint = pending.request_frame_fingerprint,
+            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+            .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .summary = event_summary_bytes,
+        });
+        summary_owned = false;
+        return event;
+    }
+
+    pub fn reject(self: *@This(), mailbox_id: u64, reason: []const u8) !Runspace.RunspaceEvent {
+        const pending = try self.mailbox.get(mailbox_id);
+        if (pending.status != .pending) return error.PendingPortConsumed;
+        const index = try self.slotIndex(pending.handle);
+        var slot = &self.slots.items[index];
+        if (slot.pending_mailbox_id != mailbox_id or slot.status != .parked_on_port) return error.StaleRunHandle;
+        var event_pair = try self.prepareEventPair(2, "port rejected", "run failed after port rejection");
+        defer event_pair.deinit(self.allocator);
+        var routed = try self.routeTerminalPending(index, mailbox_id, pending, slot, .rejected, reason);
+        defer routed.response.deinit(self.allocator);
+        if (routed.parked_event) |event| return event;
+        const cancelled = try self.mailbox.cancel(mailbox_id, reason);
+        try slot.transition(.fail, null);
+        _ = self.appendPreparedEventAssumeCapacity(.{
+            .kind = .port_rejected,
+            .run_handle = slot.handle,
+            .pending_port_fingerprint = cancelled.pending_port_fingerprint,
+            .request_frame_fingerprint = cancelled.request_frame_fingerprint,
+            .response_frame_fingerprint = routed.response.frame_fingerprint,
+            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+            .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .summary = event_pair.takeFirst(),
+        });
+        return self.appendPreparedEventAssumeCapacity(.{
+            .kind = .run_failed,
+            .run_handle = slot.handle,
+            .pending_port_fingerprint = cancelled.pending_port_fingerprint,
+            .request_frame_fingerprint = cancelled.request_frame_fingerprint,
+            .response_frame_fingerprint = routed.response.frame_fingerprint,
+            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+            .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .summary = event_pair.takeSecond(),
+        });
+    }
+
+    pub fn fail(self: *@This(), mailbox_id: u64, reason: []const u8) !Runspace.RunspaceEvent {
+        const pending = try self.mailbox.get(mailbox_id);
+        if (pending.status != .pending) return error.PendingPortConsumed;
+        const index = try self.slotIndex(pending.handle);
+        var slot = &self.slots.items[index];
+        if (slot.pending_mailbox_id != mailbox_id or slot.status != .parked_on_port) return error.StaleRunHandle;
+        var event_pair = try self.prepareEventPair(2, "port failed", "run failed after port failure");
+        defer event_pair.deinit(self.allocator);
+        var routed = try self.routeTerminalPending(index, mailbox_id, pending, slot, .failed, reason);
+        defer routed.response.deinit(self.allocator);
+        if (routed.parked_event) |event| return event;
+        const failed = try self.mailbox.fail(mailbox_id, reason);
+        try slot.transition(.fail, null);
+        _ = self.appendPreparedEventAssumeCapacity(.{
+            .kind = .port_failed,
+            .run_handle = slot.handle,
+            .pending_port_fingerprint = failed.pending_port_fingerprint,
+            .request_frame_fingerprint = failed.request_frame_fingerprint,
+            .response_frame_fingerprint = routed.response.frame_fingerprint,
+            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+            .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .summary = event_pair.takeFirst(),
+        });
+        return self.appendPreparedEventAssumeCapacity(.{
+            .kind = .run_failed,
+            .run_handle = slot.handle,
+            .pending_port_fingerprint = failed.pending_port_fingerprint,
+            .request_frame_fingerprint = failed.request_frame_fingerprint,
+            .response_frame_fingerprint = routed.response.frame_fingerprint,
+            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+            .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .summary = event_pair.takeSecond(),
+        });
+    }
+
+    pub fn exportRun(self: *@This(), handle: RunHandle) !RunImage {
+        const index = try self.slotIndex(handle);
+        var slot = &self.slots.items[index];
+        if (!Runspace.canTransition(slot.status, .exported)) return error.InvalidRunspaceTransition;
+        const pending = if (slot.status == .parked_on_port) pending: {
+            const mailbox_id = slot.pending_mailbox_id orelse return error.HandoffPendingFrameMismatch;
+            const pending_port = try self.mailbox.get(mailbox_id);
+            if (pending_port.request_frame == null) return error.HandoffPendingFrameMismatch;
+            break :pending pending_port;
+        } else if (slot.status == .parked_on_supervision) pending: {
+            const mailbox_id = slot.pending_mailbox_id orelse break :pending null;
+            const pending_port = try self.mailbox.get(mailbox_id);
+            if (pending_port.request_frame == null) return error.HandoffPendingFrameMismatch;
+            break :pending pending_port;
+        } else null;
+        const event_summary = try self.prepareEventSummary("run exported");
+        var summary_owned = true;
+        errdefer if (summary_owned) self.allocator.free(event_summary);
+        var supervisor_snapshot = try self.snapshotSlotSupervisor(index);
+        defer supervisor_snapshot.deinit(self.allocator);
+        try self.beforeSlotHandoffExport(index);
+        const image = self.snapshotSlotImage(index) catch |err| {
+            supervisor_snapshot.restore(self, index);
+            return err;
+        };
+        errdefer {
+            var owned = image;
+            owned.deinit(self.allocator);
+        }
+        const exported = if (pending) |pending_port| try self.mailbox.markExported(pending_port.mailbox_id) else null;
+        try slot.transition(.@"export", null);
+        _ = self.appendPreparedEventAssumeCapacity(.{
+            .kind = .run_exported,
+            .run_handle = slot.handle,
+            .pending_port_fingerprint = if (exported) |pending_port| pending_port.pending_port_fingerprint else null,
+            .request_frame_fingerprint = if (pending) |pending_port| pending_port.request_frame_fingerprint else null,
+            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+            .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .run_receipt_fingerprint = image.prior_run_receipt_fingerprint,
+            .summary = event_summary,
+        });
+        summary_owned = false;
+        return image;
+    }
+
+    pub fn exportPending(self: *@This(), mailbox_id: u64) !RunImage {
+        const pending = try self.mailbox.get(mailbox_id);
+        if (pending.status != .pending) return error.PendingPortConsumed;
+        const index = try self.slotIndex(pending.handle);
+        var slot = &self.slots.items[index];
+        if (slot.pending_mailbox_id != mailbox_id or (slot.status != .parked_on_port and slot.status != .parked_on_supervision)) return error.StaleRunHandle;
+        const event_summary = try self.prepareEventSummary("pending run exported");
+        var summary_owned = true;
+        errdefer if (summary_owned) self.allocator.free(event_summary);
+        var supervisor_snapshot = try self.snapshotSlotSupervisor(index);
+        defer supervisor_snapshot.deinit(self.allocator);
+        try self.beforeSlotHandoffExport(index);
+        var image = self.snapshotSlotImage(index) catch |err| {
+            supervisor_snapshot.restore(self, index);
+            return err;
+        };
+        errdefer image.deinit(self.allocator);
+        const exported = try self.mailbox.markExported(mailbox_id);
+        try slot.transition(.@"export", null);
+        _ = self.appendPreparedEventAssumeCapacity(.{
+            .kind = .run_exported,
+            .run_handle = slot.handle,
+            .pending_port_fingerprint = exported.pending_port_fingerprint,
+            .request_frame_fingerprint = pending.request_frame_fingerprint,
+            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+            .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .run_receipt_fingerprint = image.prior_run_receipt_fingerprint,
+            .summary = event_summary,
+        });
+        summary_owned = false;
+        return image;
+    }
+
+    pub fn exportHandoff(self: *@This(), handle: RunHandle) !RunImage {
+        return self.exportRun(handle);
+    }
+
+    const SlotSupervisorSnapshot = struct {
+        supervisor: ?Supervision.Supervisor = null,
+        from_driver: bool = false,
+        owns_supervisor: bool = false,
+
+        fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+            _ = allocator;
+            if (self.owns_supervisor) {
+                if (self.supervisor) |*supervisor| supervisor.deinit();
+            }
+            self.supervisor = null;
+            self.owns_supervisor = false;
+        }
+
+        fn restore(self: *@This(), runspace: *Runspace, index: usize) void {
+            if (!self.owns_supervisor) return;
+            var slot = &runspace.slots.items[index];
+            if (self.from_driver) {
+                if (slot.driver) |driver| {
+                    driver.restoreSupervisor(runspace.allocator, self.supervisor);
+                    self.supervisor = null;
+                    self.owns_supervisor = false;
+                    return;
+                }
+            } else if (slot.supervisor != null) {
+                slot.supervisor.?.deinit();
+                slot.supervisor = self.supervisor;
+                self.supervisor = null;
+                self.owns_supervisor = false;
+                return;
+            }
+        }
+    };
+
+    fn snapshotSlotSupervisor(self: *@This(), index: usize) !SlotSupervisorSnapshot {
+        const slot = &self.slots.items[index];
+        if (slot.driver) |driver| {
+            if (try driver.cloneSupervisor(self.allocator)) |supervisor| {
+                return .{
+                    .supervisor = supervisor,
+                    .from_driver = true,
+                    .owns_supervisor = true,
+                };
+            }
+        }
+        if (slot.supervisor) |supervisor| {
+            return .{
+                .supervisor = try supervisor.clone(self.allocator),
+                .from_driver = false,
+                .owns_supervisor = true,
+            };
+        }
+        return .{};
+    }
+
+    fn beforeSlotHandoffExport(self: *@This(), index: usize) !void {
+        var slot = &self.slots.items[index];
+        const interrupted_export = slot.status == .parked_on_supervision;
+        if (slot.driver) |driver| {
+            if (interrupted_export and driver.supervisionInterrupted()) {
+                try driver.beforeInterruptedHandoffExport();
+            } else {
+                try driver.beforeHandoffExport();
+            }
+            if (driver.hasSupervisor()) return;
+        }
+        if (slot.supervisor) |*supervisor| {
+            if (interrupted_export and supervisor.interrupted) {
+                try supervisor.beforeInterruptedHandoffExport();
+            } else {
+                try supervisor.beforeHandoffExport();
+            }
+            return;
+        }
+        if (self.config.require_supervision) return error.SupervisionDenied;
+    }
+
+    fn beforeSlotCheckpoint(self: *@This(), index: usize, value_image_bytes: usize) !void {
+        var slot = &self.slots.items[index];
+        if (slot.driver) |driver| {
+            try driver.beforeCheckpoint(value_image_bytes);
+            if (driver.hasSupervisor()) return;
+        }
+        if (slot.supervisor) |*supervisor| {
+            try supervisor.beforeCheckpoint(value_image_bytes);
+            return;
+        }
+        if (self.config.require_supervision) return error.SupervisionDenied;
+    }
+
+    fn beforeSlotBranch(self: *@This(), index: usize, depth: usize) !void {
+        var slot = &self.slots.items[index];
+        if (slot.driver) |driver| {
+            try driver.beforeBranch(depth);
+            if (driver.hasSupervisor()) return;
+        }
+        if (slot.supervisor) |*supervisor| {
+            try supervisor.beforeBranch(depth);
+            return;
+        }
+        if (self.config.require_supervision) return error.SupervisionDenied;
+    }
+
+    fn cloneSlotSupervisorForBranch(self: *@This(), slot: Runspace.RunSlot, depth: usize) !?Supervision.Supervisor {
+        var branch_supervisor: ?Supervision.Supervisor = if (slot.driver) |driver|
+            try driver.cloneSupervisor(self.allocator)
+        else if (slot.supervisor) |supervisor|
+            try supervisor.clone(self.allocator)
+        else
+            null;
+        errdefer if (branch_supervisor) |*supervisor| supervisor.deinit();
+        if (branch_supervisor) |*supervisor| try supervisor.beforeBranch(depth);
+        return branch_supervisor;
+    }
+
+    fn slotIndexByHandleFingerprint(self: *const @This(), handle_fingerprint: u64) ?usize {
+        for (self.slots.items, 0..) |slot, index| {
+            if (slot.handle.handle_fingerprint == handle_fingerprint) return index;
+        }
+        return null;
+    }
+
+    fn branchDepthForIndex(self: *const @This(), index: usize) !usize {
+        var depth: usize = 0;
+        var current_index = index;
+        var guard: usize = 0;
+        while (self.slots.items[current_index].parent_run_handle_fingerprint) |parent_fingerprint| {
+            guard += 1;
+            if (guard > self.slots.items.len) return error.InvalidRunspaceTransition;
+            current_index = self.slotIndexByHandleFingerprint(parent_fingerprint) orelse return error.StaleRunHandle;
+            depth += 1;
+        }
+        return depth;
+    }
+
+    fn childBranchDepthForIndex(self: *const @This(), index: usize) !usize {
+        const depth = try self.branchDepthForIndex(index);
+        return if (depth == std.math.maxInt(usize)) depth else depth + 1;
+    }
+
+    pub fn checkpoint(self: *@This(), handle: RunHandle) !Timeline.Checkpoint {
+        const index = try self.slotIndex(handle);
+        const slot = &self.slots.items[index];
+        const checkpoint_status = checkpointStatusForSlot(slot.*);
+        const checkpoint_value = Timeline.Checkpoint.init(.{
+            .world_surface_fingerprint = slot.target_ref.world_surface_fingerprint,
+            .target_certificate_fingerprint = slot.target_ref.target_certificate_fingerprint,
+            .event_index = self.events.items.len,
+            .turn_index = slot.current_state.turn_index,
+            .current_request_fingerprint = slot.current_state.pending_request_fingerprint,
+            .last_response_fingerprint = slot.current_state.final_response_fingerprint,
+            .transcript_prefix_fingerprint = slot.current_state.transcript_image_fingerprint orelse slot.current_state.run_state_fingerprint,
+            .branch_id = slot.branch_id orelse 0,
+            .status = checkpoint_status,
+        });
+        const event_summary = try self.prepareEventSummary("checkpoint created");
+        var summary_owned = true;
+        errdefer if (summary_owned) self.allocator.free(event_summary);
+        try self.beforeSlotCheckpoint(index, 0);
+        _ = self.appendPreparedEventAssumeCapacity(.{
+            .kind = .checkpoint_created,
+            .run_handle = slot.handle,
+            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+            .checkpoint_fingerprint = checkpoint_value.checkpoint_fingerprint,
+            .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .summary = event_summary,
+        });
+        summary_owned = false;
+        return checkpoint_value;
+    }
+
+    pub fn branch(self: *@This(), handle: RunHandle, checkpoint_value: Timeline.Checkpoint, options: anytype) !RunHandle {
+        const index = try self.slotIndex(handle);
+        const parent = self.slots.items[index];
+        try self.validateSlotCheckpoint(parent, checkpoint_value);
+        try self.ensureEventCapacity(1);
+        const branch_depth = try self.childBranchDepthForIndex(index);
+        var branch_supervisor = self.cloneSlotSupervisorForBranch(parent, branch_depth) catch |err| {
+            switch (err) {
+                error.BranchDenied, error.BudgetExceeded => {
+                    self.beforeSlotBranch(index, branch_depth) catch |live_err| return live_err;
+                },
+                else => {},
+            }
+            return err;
+        };
+        var branch_supervisor_owned = branch_supervisor != null;
+        errdefer if (branch_supervisor_owned) {
+            if (branch_supervisor) |*supervisor| supervisor.deinit();
+        };
+        const next_run_id_before = self.next_run_id;
+        var installed = false;
+        errdefer if (!installed) {
+            self.next_run_id = next_run_id_before;
+        };
+        const branch_id = self.next_run_id;
+        const branch_handle = try self.nextHandle(.{
+            .target_ref_fingerprint = parent.target_ref.target_ref_fingerprint,
+            .admission_receipt_fingerprint = parent.admission_receipt_fingerprint,
+            .permit_fingerprint = parent.run_permit_fingerprint,
+            .branch_id = branch_id,
+        });
+        var branch_state = parent.current_state;
+        branch_state.branch_id = branch_id;
+        branch_state.checkpoint_fingerprint = checkpoint_value.checkpoint_fingerprint;
+        branch_state.run_state_fingerprint = fingerprintRunState(branch_state);
+        const slot = Runspace.RunSlot.fromState(.{
+            .handle = branch_handle,
+            .target_ref = parent.target_ref,
+            .current_state = branch_state,
+            .status = .admitted,
+            .admission_receipt_fingerprint = parent.admission_receipt_fingerprint,
+            .run_permit_fingerprint = parent.run_permit_fingerprint,
+            .run_receipt_fingerprint = parent.run_receipt_fingerprint,
+            .branch_id = branch_id,
+            .parent_run_handle_fingerprint = parent.handle.handle_fingerprint,
+            .checkpoint_fingerprint = checkpoint_value.checkpoint_fingerprint,
+            .target_match_fingerprint = parent.target_match_fingerprint,
+            .module_ref_fingerprint = parent.module_ref_fingerprint,
+            .supervisor = branch_supervisor,
+        });
+        const summary_text = if (@hasField(@TypeOf(options), "summary")) @field(options, "summary") else "run branch created";
+        try self.prepareInstallSlot();
+        const event_summary = try self.prepareEventSummary(summary_text);
+        var summary_owned = true;
+        errdefer if (summary_owned) self.allocator.free(event_summary);
+        try self.beforeSlotBranch(index, branch_depth);
+        self.slots.appendAssumeCapacity(slot);
+        branch_supervisor_owned = false;
+        _ = self.appendPreparedEventAssumeCapacity(.{
+            .kind = .run_branch_created,
+            .run_handle = slot.handle,
+            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+            .checkpoint_fingerprint = slot.checkpoint_fingerprint,
+            .admission_receipt_fingerprint = slot.admission_receipt_fingerprint,
+            .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .summary = event_summary,
+        });
+        summary_owned = false;
+        installed = true;
+        return branch_handle;
+    }
+
+    fn checkpointStatusForSlot(slot: Runspace.RunSlot) Timeline.Checkpoint.Status {
+        return switch (slot.status) {
+            .admitted, .runnable, .running => .running,
+            .parked_on_port, .parked_on_supervision => .parked_on_port,
+            .completed => .completed,
+            .exported => switch (slot.current_state.status) {
+                .not_started, .running => .running,
+                .parked_on_port => .parked_on_port,
+                .completed => .completed,
+                .failed => .failed,
+                .parked_on_supervision => .parked_on_port,
+            },
+            .failed, .rejected => .failed,
+        };
+    }
+
+    fn receiptFinalStatusForRunState(state: RunState) RunReceipt.FinalStatus {
+        return switch (state.status) {
+            .not_started, .running => .interrupted,
+            .parked_on_port => .parked,
+            .completed => .completed,
+            .failed => .failed,
+            .parked_on_supervision => .interrupted,
+        };
+    }
+
+    fn slotTranscriptPrefixFingerprint(slot: Runspace.RunSlot) u64 {
+        return slot.current_state.transcript_image_fingerprint orelse slot.current_state.run_state_fingerprint;
+    }
+
+    fn validateSlotCheckpoint(self: *const @This(), slot: Runspace.RunSlot, checkpoint_value: Timeline.Checkpoint) !void {
+        if (fingerprintCheckpoint(checkpoint_value) != checkpoint_value.checkpoint_fingerprint) return error.HandoffCheckpointMismatch;
+        if (slot.target_ref.world_surface_fingerprint != checkpoint_value.world_surface_fingerprint) return error.HandoffCheckpointMismatch;
+        if (slot.target_ref.target_certificate_fingerprint != checkpoint_value.target_certificate_fingerprint) return error.HandoffCheckpointMismatch;
+        if (checkpoint_value.event_index > self.events.items.len) return error.HandoffCheckpointMismatch;
+        if (checkpoint_value.turn_index != slot.current_state.turn_index) return error.HandoffCheckpointMismatch;
+        if (checkpoint_value.current_request_fingerprint != slot.current_state.pending_request_fingerprint) return error.HandoffCheckpointMismatch;
+        if (checkpoint_value.last_response_fingerprint != slot.current_state.final_response_fingerprint) return error.HandoffCheckpointMismatch;
+        if (checkpoint_value.transcript_prefix_fingerprint != slotTranscriptPrefixFingerprint(slot)) return error.HandoffCheckpointMismatch;
+        if (checkpoint_value.branch_id != (slot.branch_id orelse 0)) return error.HandoffCheckpointMismatch;
+        if (checkpoint_value.status != checkpointStatusForSlot(slot)) return error.HandoffCheckpointMismatch;
+        if (!self.hasCheckpointWitness(slot.handle, checkpoint_value.checkpoint_fingerprint)) return error.HandoffCheckpointMismatch;
+    }
+
+    fn hasCheckpointWitness(self: *const @This(), handle: RunHandle, checkpoint_fingerprint: u64) bool {
+        for (self.events.items) |event| {
+            if (event.kind == .checkpoint_created and
+                event.run_handle.handle_fingerprint == handle.handle_fingerprint and
+                event.checkpoint_fingerprint != null and
+                event.checkpoint_fingerprint.? == checkpoint_fingerprint)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    pub fn listBranches(self: *const @This(), handle: RunHandle, allocator: std.mem.Allocator) ![]RunHandle {
+        const index = try self.slotIndex(handle);
+        const parent = self.slots.items[index];
+        var branches: std.ArrayList(RunHandle) = .empty;
+        errdefer branches.deinit(allocator);
+        for (self.slots.items) |slot| {
+            if (slot.handle.handle_fingerprint == parent.handle.handle_fingerprint) continue;
+            if (slot.target_ref.target_ref_fingerprint != parent.target_ref.target_ref_fingerprint) continue;
+            if (slot.parent_run_handle_fingerprint == parent.handle.handle_fingerprint and slot.branch_id != null) try branches.append(allocator, slot.handle);
+        }
+        return branches.toOwnedSlice(allocator);
+    }
+
+    pub fn summary(self: *const @This()) Runspace.RunspaceReport {
+        return self.report();
+    }
+
+    pub fn report(self: *const @This()) Runspace.RunspaceReport {
+        var result = Runspace.RunspaceReport{
+            .runspace_fingerprint = self.runspace_fingerprint,
+            .event_count = self.events.items.len,
+            .run_count = self.slots.items.len,
+            .runnable_count = 0,
+            .parked_count = 0,
+            .completed_count = 0,
+            .failed_count = 0,
+            .pending_port_count = self.mailbox.pendingCount(),
+            .emitted_events = self.events.items,
+        };
+        for (self.slots.items) |slot| {
+            switch (slot.status) {
+                .runnable, .running => result.runnable_count += 1,
+                .parked_on_port, .parked_on_supervision => result.parked_count += 1,
+                .completed => result.completed_count += 1,
+                .exported => switch (slot.current_state.status) {
+                    .completed => result.completed_count += 1,
+                    .parked_on_port, .parked_on_supervision => result.parked_count += 1,
+                    .failed => result.failed_count += 1,
+                    .not_started, .running => {},
+                },
+                .failed, .rejected => result.failed_count += 1,
+                .admitted => {},
+            }
+            if (slot.supervisor) |supervisor| {
+                result.warning_count += supervisor.warning_count;
+                if (supervisor.blocker != null) result.blocker_count += 1;
+            }
+            if (slot.driver) |driver| {
+                result.warning_count += driver.supervisorWarningCount();
+                result.blocker_count += driver.supervisorBlockerCount();
+            }
+        }
+        return result;
+    }
+
+    fn nextHandle(self: *@This(), args: struct {
+        target_ref_fingerprint: u64,
+        admission_receipt_fingerprint: ?u64 = null,
+        permit_fingerprint: ?u64 = null,
+        branch_id: ?u64 = null,
+    }) !RunHandle {
+        if (self.config.max_runs) |max| {
+            if (self.activeRunCountForCapacity() >= max) return error.BudgetExceeded;
+        }
+        const handle = RunHandle.init(.{
+            .runspace_fingerprint = self.runspace_fingerprint,
+            .local_run_id = self.next_run_id,
+            .target_ref_fingerprint = args.target_ref_fingerprint,
+            .admission_receipt_fingerprint = args.admission_receipt_fingerprint,
+            .permit_fingerprint = args.permit_fingerprint,
+            .branch_id = args.branch_id,
+            .generation = 0,
+        });
+        self.next_run_id += 1;
+        return handle;
+    }
+
+    fn activeRunCountForCapacity(self: *const @This()) usize {
+        var count: usize = 0;
+        for (self.slots.items) |slot| {
+            if (!self.slotCountsAgainstMaxRuns(slot)) continue;
+            count += 1;
+        }
+        return count;
+    }
+
+    fn slotCountsAgainstMaxRuns(self: *const @This(), slot: Runspace.RunSlot) bool {
+        if (self.config.preserve_completed_runs) return true;
+        return switch (slot.status) {
+            .completed => false,
+            .exported => slot.current_state.status != .completed,
+            else => true,
+        };
+    }
+
+    fn prepareInstallSlot(self: *@This()) !void {
+        if (self.config.max_events) |max| {
+            if (self.events.items.len >= max) return error.BudgetExceeded;
+        }
+        try self.slots.ensureUnusedCapacity(self.allocator, 1);
+    }
+
+    fn installSlot(self: *@This(), slot: Runspace.RunSlot, event_kind: Runspace.EventKind, summary_text: []const u8) !void {
+        try self.prepareInstallSlot();
+        try self.installPreparedSlot(slot, event_kind, summary_text);
+    }
+
+    fn installPreparedSlot(self: *@This(), slot: Runspace.RunSlot, event_kind: Runspace.EventKind, summary_text: []const u8) !void {
+        self.slots.appendAssumeCapacity(slot);
+        var slot_appended = true;
+        errdefer if (slot_appended) {
+            var appended_slot = &self.slots.items[self.slots.items.len - 1];
+            appended_slot.deinit(self.allocator);
+            self.slots.shrinkRetainingCapacity(self.slots.items.len - 1);
+        };
+        _ = try self.appendEvent(.{
+            .kind = event_kind,
+            .run_handle = slot.handle,
+            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+            .admission_receipt_fingerprint = slot.admission_receipt_fingerprint,
+            .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .summary = summary_text,
+        });
+        slot_appended = false;
+    }
+
+    fn appendEvent(self: *@This(), args: struct {
+        kind: Runspace.EventKind,
+        run_handle: RunHandle,
+        pending_port_fingerprint: ?u64 = null,
+        request_frame_fingerprint: ?u64 = null,
+        response_frame_fingerprint: ?u64 = null,
+        checkpoint_fingerprint: ?u64 = null,
+        run_state_fingerprint: u64,
+        run_receipt_fingerprint: ?u64 = null,
+        admission_receipt_fingerprint: ?u64 = null,
+        run_permit_fingerprint: ?u64 = null,
+        summary: []const u8 = "",
+    }) !Runspace.RunspaceEvent {
+        if (self.config.max_events) |max| {
+            if (self.events.items.len >= max) return error.BudgetExceeded;
+        }
+        const summary_bytes = try self.allocator.dupe(u8, args.summary);
+        var summary_owned = true;
+        errdefer if (summary_owned) self.allocator.free(summary_bytes);
+        const event = Runspace.RunspaceEvent.init(.{
+            .kind = args.kind,
+            .runspace_fingerprint = self.runspace_fingerprint,
+            .event_index = self.next_event_index,
+            .run_handle = args.run_handle,
+            .pending_port_fingerprint = args.pending_port_fingerprint,
+            .request_frame_fingerprint = args.request_frame_fingerprint,
+            .response_frame_fingerprint = args.response_frame_fingerprint,
+            .checkpoint_fingerprint = args.checkpoint_fingerprint,
+            .run_state_fingerprint = args.run_state_fingerprint,
+            .run_receipt_fingerprint = args.run_receipt_fingerprint,
+            .admission_receipt_fingerprint = args.admission_receipt_fingerprint,
+            .run_permit_fingerprint = args.run_permit_fingerprint,
+            .summary = summary_bytes,
+            .owns_summary = true,
+        });
+        try self.events.append(self.allocator, event);
+        summary_owned = false;
+        self.next_event_index += 1;
+        return event.borrowed();
+    }
+
+    fn prepareEventSummary(self: *@This(), summary_text: []const u8) ![]u8 {
+        try self.ensureEventCapacity(1);
+        try self.events.ensureUnusedCapacity(self.allocator, 1);
+        return self.allocator.dupe(u8, summary_text);
+    }
+
+    const PreparedEventPair = struct {
+        first: []u8,
+        second: []u8,
+        owns_first: bool = true,
+        owns_second: bool = true,
+
+        fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+            if (self.owns_first) allocator.free(self.first);
+            if (self.owns_second) allocator.free(self.second);
+        }
+
+        fn takeFirst(self: *@This()) []u8 {
+            self.owns_first = false;
+            return self.first;
+        }
+
+        fn takeSecond(self: *@This()) []u8 {
+            self.owns_second = false;
+            return self.second;
+        }
+    };
+
+    fn prepareEventPair(self: *@This(), additional_events: usize, first_summary: []const u8, second_summary: []const u8) !PreparedEventPair {
+        try self.ensureEventCapacity(additional_events);
+        try self.events.ensureUnusedCapacity(self.allocator, additional_events);
+        const first = try self.allocator.dupe(u8, first_summary);
+        errdefer self.allocator.free(first);
+        const second = try self.allocator.dupe(u8, second_summary);
+        return .{
+            .first = first,
+            .second = second,
+        };
+    }
+
+    const PreparedAutoDispatchEvents = struct {
+        supervision: []u8,
+        failed: PreparedEventPair,
+        responded: PreparedEventPair,
+        owns_supervision: bool = true,
+
+        fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+            if (self.owns_supervision) allocator.free(self.supervision);
+            self.failed.deinit(allocator);
+            self.responded.deinit(allocator);
+        }
+
+        fn takeSupervision(self: *@This()) []u8 {
+            self.owns_supervision = false;
+            return self.supervision;
+        }
+    };
+
+    fn prepareAutoDispatchEvents(self: *@This()) !PreparedAutoDispatchEvents {
+        try self.ensureEventCapacity(4);
+        try self.events.ensureUnusedCapacity(self.allocator, 4);
+        const supervision = try self.allocator.dupe(u8, "auto-dispatch parked on supervision");
+        errdefer self.allocator.free(supervision);
+        var failed = try self.prepareEventPair(4, "auto-dispatch port failed", "auto-dispatch failed");
+        errdefer failed.deinit(self.allocator);
+        const responded = try self.prepareEventPair(4, "port auto-dispatched", "run resumed by auto-dispatch");
+        return .{
+            .supervision = supervision,
+            .failed = failed,
+            .responded = responded,
+        };
+    }
+
+    fn appendPreparedEventAssumeCapacity(self: *@This(), args: struct {
+        kind: Runspace.EventKind,
+        run_handle: RunHandle,
+        pending_port_fingerprint: ?u64 = null,
+        request_frame_fingerprint: ?u64 = null,
+        response_frame_fingerprint: ?u64 = null,
+        checkpoint_fingerprint: ?u64 = null,
+        run_state_fingerprint: u64,
+        run_receipt_fingerprint: ?u64 = null,
+        admission_receipt_fingerprint: ?u64 = null,
+        run_permit_fingerprint: ?u64 = null,
+        summary: []u8,
+    }) Runspace.RunspaceEvent {
+        const event = Runspace.RunspaceEvent.init(.{
+            .kind = args.kind,
+            .runspace_fingerprint = self.runspace_fingerprint,
+            .event_index = self.next_event_index,
+            .run_handle = args.run_handle,
+            .pending_port_fingerprint = args.pending_port_fingerprint,
+            .request_frame_fingerprint = args.request_frame_fingerprint,
+            .response_frame_fingerprint = args.response_frame_fingerprint,
+            .checkpoint_fingerprint = args.checkpoint_fingerprint,
+            .run_state_fingerprint = args.run_state_fingerprint,
+            .run_receipt_fingerprint = args.run_receipt_fingerprint,
+            .admission_receipt_fingerprint = args.admission_receipt_fingerprint,
+            .run_permit_fingerprint = args.run_permit_fingerprint,
+            .summary = args.summary,
+            .owns_summary = true,
+        });
+        self.events.appendAssumeCapacity(event);
+        self.next_event_index += 1;
+        return event.borrowed();
+    }
+
+    fn ensureEventCapacity(self: *const @This(), additional_events: usize) !void {
+        if (self.config.max_events) |max| {
+            if (self.events.items.len + additional_events > max) return error.BudgetExceeded;
+        }
+    }
+
+    fn rollbackRunspaceMutation(
+        self: *@This(),
+        slot_count: usize,
+        event_count: usize,
+        mailbox_count: usize,
+        next_run_id: u64,
+        next_mailbox_id: u64,
+        next_event_index: u64,
+    ) void {
+        for (self.slots.items[slot_count..]) |*slot| slot.deinit(self.allocator);
+        for (self.events.items[event_count..]) |*event| event.deinit(self.allocator);
+        for (self.mailbox.pending.items[mailbox_count..]) |*pending_port| pending_port.deinit(self.allocator);
+        self.slots.shrinkRetainingCapacity(slot_count);
+        self.events.shrinkRetainingCapacity(event_count);
+        self.mailbox.pending.shrinkRetainingCapacity(mailbox_count);
+        self.next_run_id = next_run_id;
+        self.next_mailbox_id = next_mailbox_id;
+        self.next_event_index = next_event_index;
+    }
+
+    fn snapshotSlotImage(self: *@This(), index: usize) !RunImage {
+        const slot = &self.slots.items[index];
+        if (slot.driver) |driver| return driver.snapshotRunImage();
+        const run_receipt_fingerprint = if (slot.supervisor) |*supervisor|
+            supervisor.receipt(
+                receiptFinalStatusForRunState(slot.current_state),
+                slot.current_state.run_state_fingerprint,
+                slot.current_state.transcript_image_fingerprint,
+                null,
+            ).receipt_fingerprint
+        else
+            slot.run_receipt_fingerprint;
+        if (slot.installed_run_image) |installed_image| {
+            var image = try cloneRunImage(self.allocator, installed_image);
+            image.current_state = slot.current_state;
+            image.prior_run_permit_fingerprint = slot.run_permit_fingerprint;
+            image.prior_run_receipt_fingerprint = run_receipt_fingerprint;
+            image.module_ref_fingerprint = slot.module_ref_fingerprint;
+            refreshRunImageFingerprint(&image);
+            return image;
+        }
+        var pending_frame: ?Frame.Request = null;
+        var owns_pending_frame = false;
+        errdefer if (owns_pending_frame) {
+            if (pending_frame) |*frame| frame.deinit(self.allocator);
+        };
+        if (slot.pending_mailbox_id) |mailbox_id| {
+            const pending = try self.mailbox.get(mailbox_id);
+            if (pending.request_frame) |request| {
+                pending_frame = try cloneRequestFrame(self.allocator, request);
+                owns_pending_frame = true;
+            }
+        }
+        var image = RunImage.init(.{
+            .kind = switch (slot.status) {
+                .parked_on_port => .parked_run,
+                .parked_on_supervision => if (slot.current_state.status == .parked_on_port) .parked_run else .full_target_run,
+                .completed, .exported => .completed_run,
+                .failed, .rejected => .replay_only_run,
+                .admitted, .runnable, .running => .full_target_run,
+            },
+            .target_ref = slot.target_ref,
+            .import_set_fingerprint = 0,
+            .current_state = slot.current_state,
+            .pending_request_frame = pending_frame,
+            .prior_run_permit_fingerprint = slot.run_permit_fingerprint,
+            .prior_run_receipt_fingerprint = run_receipt_fingerprint,
+            .module_ref_fingerprint = slot.module_ref_fingerprint,
+        });
+        image.owns_pending_request_frame = owns_pending_frame;
+        owns_pending_frame = false;
+        return image;
+    }
+
+    fn enqueueInstalledPending(self: *@This(), index: usize, request: Frame.Request) !void {
+        var slot = &self.slots.items[index];
+        var event_pair = try self.prepareEventPair(
+            2,
+            "installed port enqueued",
+            "installed run parked on port",
+        );
+        defer event_pair.deinit(self.allocator);
+        const mailbox_id = self.next_mailbox_id;
+        const pending = try self.mailbox.push(.{
+            .run_handle = slot.handle,
+            .mailbox_id = mailbox_id,
+            .request = request,
+            .target_ref_fingerprint = slot.target_ref.target_ref_fingerprint,
+            .environment_certificate_fingerprint = null,
+            .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .inserted_event_index = self.next_event_index,
+        });
+        self.next_mailbox_id += 1;
+        slot.status = .parked_on_port;
+        slot.pending_mailbox_id = mailbox_id;
+        slot.current_state.pending_request_fingerprint = request.frame_fingerprint;
+        slot.current_state.turn_index = request.turn_index;
+        slot.current_state.status = .parked_on_port;
+        slot.current_state.run_state_fingerprint = fingerprintRunState(slot.current_state);
+        _ = self.appendPreparedEventAssumeCapacity(.{
+            .kind = .port_enqueued,
+            .run_handle = slot.handle,
+            .pending_port_fingerprint = pending.pending_port_fingerprint,
+            .request_frame_fingerprint = request.frame_fingerprint,
+            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+            .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .summary = event_pair.takeFirst(),
+        });
+        _ = self.appendPreparedEventAssumeCapacity(.{
+            .kind = .run_parked_on_port,
+            .run_handle = slot.handle,
+            .pending_port_fingerprint = pending.pending_port_fingerprint,
+            .request_frame_fingerprint = request.frame_fingerprint,
+            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+            .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .summary = event_pair.takeSecond(),
+        });
+    }
+
+    fn stepAt(self: *@This(), index: usize) !Runspace.RunspaceEvent {
+        var slot = &self.slots.items[index];
+        if (slot.driver == null) return error.InvalidRunspaceTransition;
+        const step_event_capacity: usize = if (slot.driver_world_port_count == 0)
+            2
+        else if (slot.current_state.final_response_fingerprint != null and slot.current_state.turn_index >= slot.driver_world_port_count)
+            2
+        else if (self.config.auto_dispatch)
+            5
+        else
+            3;
+        try self.ensureEventCapacity(step_event_capacity);
+        try self.events.ensureUnusedCapacity(self.allocator, step_event_capacity);
+        const stepped_summary = try self.allocator.dupe(u8, "run stepped");
+        var stepped_summary_owned = true;
+        errdefer if (stepped_summary_owned) self.allocator.free(stepped_summary);
+        const completed_summary = try self.allocator.dupe(u8, "run completed");
+        var completed_summary_owned = true;
+        defer if (completed_summary_owned) self.allocator.free(completed_summary);
+        const failed_summary = try self.allocator.dupe(u8, "run failed");
+        var failed_summary_owned = true;
+        defer if (failed_summary_owned) self.allocator.free(failed_summary);
+        try slot.transition(.step, null);
+        _ = self.appendPreparedEventAssumeCapacity(.{
+            .kind = .run_stepped,
+            .run_handle = slot.handle,
+            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+            .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .summary = stepped_summary,
+        });
+        stepped_summary_owned = false;
+        const driver = slot.driver.?;
+        const step_result = driver.nextFrame() catch |err| {
+            if (err == error.HandlerPending and driver.supervisionInterrupted()) {
+                const supervision_summary = try self.prepareEventSummary("run parked on supervision");
+                var supervision_summary_owned = true;
+                errdefer if (supervision_summary_owned) self.allocator.free(supervision_summary);
+                try slot.transition(.park_on_supervision, null);
+                const event = self.appendPreparedEventAssumeCapacity(.{
+                    .kind = .run_parked_on_supervision,
+                    .run_handle = slot.handle,
+                    .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+                    .run_permit_fingerprint = slot.run_permit_fingerprint,
+                    .summary = supervision_summary,
+                });
+                supervision_summary_owned = false;
+                return event;
+            }
+            slot.transition(.fail, null) catch {};
+            _ = self.appendPreparedEventAssumeCapacity(.{
+                .kind = .run_failed,
+                .run_handle = slot.handle,
+                .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+                .run_permit_fingerprint = slot.run_permit_fingerprint,
+                .summary = failed_summary,
+            });
+            failed_summary_owned = false;
+            return err;
+        };
+        switch (step_result) {
+            .done => {
+                try slot.transition(.complete, null);
+                const event = self.appendPreparedEventAssumeCapacity(.{
+                    .kind = .run_completed,
+                    .run_handle = slot.handle,
+                    .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+                    .run_permit_fingerprint = slot.run_permit_fingerprint,
+                    .summary = completed_summary,
+                });
+                completed_summary_owned = false;
+                return event;
+            },
+            .failed => {
+                try slot.transition(.fail, null);
+                const event = self.appendPreparedEventAssumeCapacity(.{
+                    .kind = .run_failed,
+                    .run_handle = slot.handle,
+                    .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+                    .run_permit_fingerprint = slot.run_permit_fingerprint,
+                    .summary = failed_summary,
+                });
+                failed_summary_owned = false;
+                return event;
+            },
+            .port_request => |request| {
+                var owned_request = request;
+                defer owned_request.deinit(self.allocator);
+                var event_pair = self.prepareEventPair(
+                    if (self.config.auto_dispatch) 4 else 2,
+                    "port enqueued",
+                    "run parked on port",
+                ) catch |err| {
+                    return self.failSteppedRunBeforePort(slot, err);
+                };
+                defer event_pair.deinit(self.allocator);
+                var auto_events: ?PreparedAutoDispatchEvents = null;
+                defer if (auto_events) |*events| events.deinit(self.allocator);
+                if (self.config.auto_dispatch) {
+                    auto_events = self.prepareAutoDispatchEvents() catch |err| {
+                        return self.failSteppedRunBeforePort(slot, err);
+                    };
+                }
+                self.mailbox.ensurePendingCapacity() catch |err| {
+                    return self.failSteppedRunBeforePort(slot, err);
+                };
+                const mailbox_id = self.next_mailbox_id;
+                const pending = self.mailbox.push(.{
+                    .run_handle = slot.handle,
+                    .mailbox_id = mailbox_id,
+                    .request = owned_request,
+                    .target_ref_fingerprint = slot.target_ref.target_ref_fingerprint,
+                    .environment_certificate_fingerprint = null,
+                    .run_permit_fingerprint = slot.run_permit_fingerprint,
+                    .inserted_event_index = self.next_event_index,
+                }) catch |err| {
+                    return self.failSteppedRunBeforePort(slot, err);
+                };
+                self.next_mailbox_id += 1;
+                slot.status = .parked_on_port;
+                slot.pending_mailbox_id = mailbox_id;
+                slot.current_state = slot.transitionState(.parked_on_port, owned_request.turn_index, owned_request.frame_fingerprint);
+                _ = self.appendPreparedEventAssumeCapacity(.{
+                    .kind = .port_enqueued,
+                    .run_handle = slot.handle,
+                    .pending_port_fingerprint = pending.pending_port_fingerprint,
+                    .request_frame_fingerprint = owned_request.frame_fingerprint,
+                    .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+                    .run_permit_fingerprint = slot.run_permit_fingerprint,
+                    .summary = event_pair.takeFirst(),
+                });
+                const parked_event = self.appendPreparedEventAssumeCapacity(.{
+                    .kind = .run_parked_on_port,
+                    .run_handle = slot.handle,
+                    .pending_port_fingerprint = pending.pending_port_fingerprint,
+                    .request_frame_fingerprint = owned_request.frame_fingerprint,
+                    .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+                    .run_permit_fingerprint = slot.run_permit_fingerprint,
+                    .summary = event_pair.takeSecond(),
+                });
+                if (self.config.auto_dispatch) return self.autoDispatchPending(index, pending, mailbox_id, &auto_events.?);
+                return parked_event;
+            },
+        }
+    }
+
+    fn failSteppedRunBeforePort(self: *@This(), slot: *Runspace.RunSlot, err: anyerror) !Runspace.RunspaceEvent {
+        slot.transition(.fail, null) catch {};
+        _ = self.appendEvent(.{
+            .kind = .run_failed,
+            .run_handle = slot.handle,
+            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+            .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .summary = "run failed before port enqueue",
+        }) catch {};
+        return err;
+    }
+
+    fn failAutoDispatchPending(self: *@This(), slot: *Runspace.RunSlot, pending: Runspace.PendingPort, mailbox_id: u64, events: *PreparedAutoDispatchEvents) !void {
+        const failed = try self.mailbox.fail(mailbox_id, "auto-dispatch failed");
+        try slot.transition(.fail, null);
+        _ = self.appendPreparedEventAssumeCapacity(.{
+            .kind = .port_failed,
+            .run_handle = slot.handle,
+            .pending_port_fingerprint = failed.pending_port_fingerprint,
+            .request_frame_fingerprint = pending.request_frame_fingerprint,
+            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+            .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .summary = events.failed.takeFirst(),
+        });
+        _ = self.appendPreparedEventAssumeCapacity(.{
+            .kind = .run_failed,
+            .run_handle = slot.handle,
+            .pending_port_fingerprint = failed.pending_port_fingerprint,
+            .request_frame_fingerprint = pending.request_frame_fingerprint,
+            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+            .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .summary = events.failed.takeSecond(),
+        });
+    }
+
+    fn autoDispatchPending(self: *@This(), index: usize, pending: Runspace.PendingPort, mailbox_id: u64, events: *PreparedAutoDispatchEvents) !Runspace.RunspaceEvent {
+        var slot = &self.slots.items[index];
+        const driver = slot.driver orelse return error.InvalidRunspaceTransition;
+        const response_evidence = driver.dispatch() catch |err| {
+            if (err == error.HandlerPending and driver.supervisionInterrupted()) {
+                slot.status = .parked_on_supervision;
+                slot.pending_mailbox_id = mailbox_id;
+                slot.current_state = slot.transitionState(.parked_on_port, pending.turn_index, pending.request_frame_fingerprint);
+                return self.appendPreparedEventAssumeCapacity(.{
+                    .kind = .run_parked_on_supervision,
+                    .run_handle = slot.handle,
+                    .pending_port_fingerprint = pending.pending_port_fingerprint,
+                    .request_frame_fingerprint = pending.request_frame_fingerprint,
+                    .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+                    .run_permit_fingerprint = slot.run_permit_fingerprint,
+                    .summary = events.takeSupervision(),
+                });
+            }
+            try self.failAutoDispatchPending(slot, pending, mailbox_id, events);
+            return err;
+        };
+        const evidence = response_evidence orelse {
+            try self.failAutoDispatchPending(slot, pending, mailbox_id, events);
+            return error.InvalidRunspaceTransition;
+        };
+        const responded = try self.mailbox.markResponded(mailbox_id);
+        const effective_response_frame_fingerprint = evidence.response_frame_fingerprint orelse evidence.response_fingerprint;
+        try slot.resumeFromPort(mailbox_id, effective_response_frame_fingerprint, evidence.response_value_image_fingerprint);
+        _ = self.appendPreparedEventAssumeCapacity(.{
+            .kind = .port_responded,
+            .run_handle = slot.handle,
+            .pending_port_fingerprint = responded.pending_port_fingerprint,
+            .request_frame_fingerprint = pending.request_frame_fingerprint,
+            .response_frame_fingerprint = effective_response_frame_fingerprint,
+            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+            .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .summary = events.responded.takeFirst(),
+        });
+        return self.appendPreparedEventAssumeCapacity(.{
+            .kind = .run_resumed,
+            .run_handle = slot.handle,
+            .pending_port_fingerprint = responded.pending_port_fingerprint,
+            .request_frame_fingerprint = pending.request_frame_fingerprint,
+            .response_frame_fingerprint = effective_response_frame_fingerprint,
+            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+            .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .summary = events.responded.takeSecond(),
+        });
+    }
+
+    fn slotIndex(self: *const @This(), handle: RunHandle) !usize {
+        try handle.validateForRunspace(self.runspace_fingerprint);
+        for (self.slots.items, 0..) |slot, index| {
+            if (handle.matchesSlot(slot)) return index;
+        }
+        return error.StaleRunHandle;
+    }
+
+    fn statusFromRunState(state: RunState) RunStatus {
+        return switch (state.status) {
+            .not_started, .running => .runnable,
+            .parked_on_port => .parked_on_port,
+            .parked_on_supervision => .parked_on_supervision,
+            .completed => .completed,
+            .failed => .failed,
+        };
+    }
+
+    fn statusFromInstallableRunImageState(state: RunState) !RunStatus {
+        return switch (state.status) {
+            .parked_on_port => .parked_on_port,
+            .parked_on_supervision => .parked_on_supervision,
+            .completed => .completed,
+            .failed => .failed,
+            .not_started, .running => error.InvalidRunspaceTransition,
+        };
+    }
+};
+
+pub const RunSlot = Runspace.RunSlot;
+pub const Mailbox = Runspace.Mailbox;
+pub const PendingPort = Runspace.PendingPort;
+pub const RunspaceEvent = Runspace.RunspaceEvent;
+pub const RunspaceReport = Runspace.RunspaceReport;
+
 fn isSupportedRunImageFormatVersion(format_version: u32) bool {
     return format_version == 1 or format_version == 2 or format_version == world_run_image_format_version;
 }
@@ -6513,12 +9973,31 @@ pub const Handoff = struct {
         const has_transcript = self.transcriptAvailableForFreshHandoff(mode, fresh_transcript_sink_available);
         const report = Env.acceptanceReport(modeToRunMode(mode), has_transcript);
         if (!report.accepted) return report;
+        const interrupted_export = runImageIsInterruptedSupervisionExport(self.run_image);
+        if (mode == .accept_fresh and interrupted_export and self.run_image.current_state.turn_index != 0) {
+            const image = if (self.run_image.transcript_image) |*image|
+                image
+            else
+                return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.TranscriptImageRequired});
+            validateTranscriptImageForEnvironment(Env, image) catch |err| {
+                return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{environmentValidationBlocker(err)});
+            };
+            image.prepareReplayPrefixForInterruptedRun(
+                Target.WorldSurface.surface_fingerprint,
+                Target.Certificate.certificate_fingerprint,
+            ) catch {
+                image.resetReplay();
+                return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.ReplaySourceMissing});
+            };
+            image.resetReplay();
+        }
         if (mode == .accept_fresh and
+            !interrupted_export and
             (self.run_image.current_state.status != .parked_on_port or self.run_image.pending_request_frame == null))
         {
             return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.HandoffPendingFrameMismatch});
         }
-        if (mode == .accept_fresh) {
+        if (mode == .accept_fresh and !interrupted_export) {
             const pending_frame = self.run_image.pending_request_frame.?;
             const pending_policy = valuePolicyForEnvironmentPort(Env, pending_frame.world_port_id, .request) catch |err| {
                 return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{environmentValidationBlocker(err)});
@@ -6627,8 +10106,14 @@ pub const Handoff = struct {
             return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{supervisionPreflightBlocker(err)});
         };
         switch (mode) {
-            .accept_fresh => self.preflightReplayPrefixWithSupervisor(Target, Env, &supervisor) catch |err| {
-                return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{supervisionPreflightBlocker(err)});
+            .accept_fresh => if (runImageIsInterruptedSupervisionExport(self.run_image)) {
+                self.preflightInterruptedReplayPrefixWithSupervisor(Target, &supervisor) catch |err| {
+                    return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{supervisionPreflightBlocker(err)});
+                };
+            } else {
+                self.preflightReplayPrefixWithSupervisor(Target, Env, &supervisor) catch |err| {
+                    return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{supervisionPreflightBlocker(err)});
+                };
             },
             .accept_replay, .accept_verify => self.preflightReplayRunWithSupervisor(Target, Env, modeToRunMode(mode), &supervisor) catch |err| {
                 return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{supervisionPreflightBlocker(err)});
@@ -6769,6 +10254,51 @@ pub const Handoff = struct {
         try supervisor.beforeSessionStep();
     }
 
+    fn preflightInterruptedReplayPrefixWithSupervisor(self: *@This(), comptime Target: type, supervisor: *Supervision.Supervisor) !void {
+        if (self.run_image.current_state.turn_index == 0) return;
+        const image = if (self.run_image.transcript_image) |*image| image else return error.TranscriptImageRequired;
+        try image.prepareReplayPrefixForInterruptedRun(
+            Target.WorldSurface.surface_fingerprint,
+            Target.Certificate.certificate_fingerprint,
+        );
+        defer image.resetReplay();
+        var index = image.replay_cursor;
+        const limit = image.replay_limit orelse image.events.len;
+        while (index < limit) : (index += 1) {
+            const event = image.events[index];
+            switch (event.kind) {
+                .port_requested,
+                .frame_requested,
+                => {
+                    const request_frame = event.request_frame orelse return error.ReplayMissing;
+                    try self.preflightRequestFrameWithSupervisor(supervisor, request_frame);
+                    try supervisor.beforeAdapterCall(.{
+                        .world_port_id = request_frame.world_port_id,
+                        .mode = .replay,
+                        .adapter_kind = .replay,
+                        .authority_kind = PortAuthority.replay_source.authority_kind,
+                        .value_policy = .portable,
+                    });
+                },
+                else => {},
+            }
+            if (eventKindIsSourceResponse(event.kind)) {
+                const response_frame = event.response_frame orelse return error.ReplayMissing;
+                const response_bytes = bytes: {
+                    const encoded = try response_frame.encode(self.allocator);
+                    defer self.allocator.free(encoded);
+                    break :bytes encoded.len;
+                };
+                try supervisor.afterAdapterResponse(.{
+                    .world_port_id = response_frame.world_port_id,
+                    .status = response_frame.status,
+                    .response_bytes = response_bytes,
+                    .value_image_bytes = if (response_frame.response_image) |image_value| image_value.bytes.len else 0,
+                });
+            }
+        }
+    }
+
     pub fn inspectPriorReceipts(self: *@This()) struct {
         prior_run_permit_fingerprint: ?u64,
         prior_run_receipt_fingerprint: ?u64,
@@ -6816,9 +10346,81 @@ pub const Handoff = struct {
         else
             self.preflightWithFreshTranscriptSink(Target, Env, mode, fresh_transcript_sink_available);
         if (!report.accepted) return acceptanceError(report);
+        const MachineType = Machine(Target, Env.machine_config);
+        const interrupted_export = runImageIsInterruptedSupervisionExport(self.run_image);
+        if (interrupted_export) {
+            if (effective_permit) |permit| {
+                var accept_supervisor = try Supervision.Supervisor.init(@field(options, "allocator"), permit, Target.WorldPortTable.entries.len);
+                defer accept_supervisor.deinit();
+                try accept_supervisor.beforeHandoffAccept();
+            }
+            var run = if (permit_override) |permit|
+                if (self.run_image.transcript_image) |*image|
+                    try MachineType.startWithAdmittedTranscriptPermit(runtime, args, options, permit, image)
+                else
+                    try MachineType.startWithPermit(runtime, args, options, permit)
+            else if (self.run_image.transcript_image) |*image|
+                try MachineType.startWithAdmittedTranscript(runtime, args, options, image)
+            else
+                try MachineType.start(runtime, args, options);
+            errdefer run.deinit();
+            if (run.supervisor) |*supervisor| {
+                supervisor.beforeHandoffAccept() catch |err| {
+                    try run.handleSupervisionError(err);
+                    unreachable;
+                };
+            }
+            if (self.run_image.current_state.turn_index != 0) {
+                const image = if (self.run_image.transcript_image) |*image| image else return error.TranscriptImageRequired;
+                try image.prepareReplayPrefixForInterruptedRun(
+                    Target.WorldSurface.surface_fingerprint,
+                    Target.Certificate.certificate_fingerprint,
+                );
+                defer image.resetReplay();
+                run.handoff_pending_frame_fingerprint = self.run_image.current_state.run_state_fingerprint;
+                var resume_committed = false;
+                errdefer if (!resume_committed) run.markRunFailed() catch {};
+                replay_prefix: while (true) {
+                    const step = run.nextFrame() catch |err| {
+                        if (err == Error.HandlerPending) {
+                            image.assertReplayComplete() catch |replay_err| {
+                                run.audit.replay_mismatch_count += 1;
+                                return replay_err;
+                            };
+                            run.handoff_pending_frame_fingerprint = null;
+                            break :replay_prefix;
+                        }
+                        return err;
+                    };
+                    switch (step) {
+                        .port_request => |request_frame| {
+                            var request = request_frame;
+                            defer request.deinit(run.allocator);
+                            const response = image.nextResponse(request.replay_key_seed, Target.Certificate.certificate_fingerprint, .@"resume") catch |err| {
+                                if (err == error.ReplayMissing) {
+                                    image.assertReplayComplete() catch |replay_err| {
+                                        run.audit.replay_mismatch_count += 1;
+                                        return replay_err;
+                                    };
+                                    try run.accountPendingAdapterCall(request.world_port_id);
+                                    run.handoff_pending_frame_fingerprint = null;
+                                    break :replay_prefix;
+                                }
+                                run.audit.replay_mismatch_count += 1;
+                                return err;
+                            };
+                            try run.accountReplayPrefixAdapterCall(request.world_port_id);
+                            try run.resumeReplayedFrame(response.*);
+                        },
+                        else => return error.HandoffPendingFrameMismatch,
+                    }
+                }
+                resume_committed = true;
+            }
+            return run;
+        }
         if (self.run_image.current_state.status != .parked_on_port) return error.HandoffPendingFrameMismatch;
         const pending_frame = self.run_image.pending_request_frame orelse return error.HandoffPendingFrameMismatch;
-        const MachineType = Machine(Target, Env.machine_config);
         if (effective_permit) |permit| {
             var accept_supervisor = try Supervision.Supervisor.init(@field(options, "allocator"), permit, Target.WorldPortTable.entries.len);
             defer accept_supervisor.deinit();
@@ -6870,18 +10472,7 @@ pub const Handoff = struct {
                         }
                     else
                         return error.HandoffPendingFrameMismatch;
-                    if (run.supervisor) |*supervisor| {
-                        supervisor.beforeAdapterCall(.{
-                            .world_port_id = request.world_port_id,
-                            .mode = .replay,
-                            .adapter_kind = .replay,
-                            .authority_kind = PortAuthority.replay_source.authority_kind,
-                            .value_policy = .portable,
-                        }) catch |err| {
-                            try run.handleSupervisionError(err);
-                            return Error.HandlerPending;
-                        };
-                    }
+                    try run.accountReplayPrefixAdapterCall(request.world_port_id);
                     try run.resumeReplayedFrame(response.*);
                 },
                 else => return error.HandoffPendingFrameMismatch,
@@ -7088,7 +10679,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         run_state.done_value_present = false;
                         return .{ .value = value, .audit = audit, .receipt = receipt };
                     },
-                    .port_required => run_state.dispatch() catch |err| {
+                    .port_required => _ = run_state.dispatch() catch |err| {
                         if (run_state.audit.final_status == .parked) return Error.HandlerPending;
                         try run_state.markRunFailed();
                         return err;
@@ -7125,6 +10716,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 admitted_transcript_image: ?*TranscriptImage = null,
                 pending_adapter_call_accounted: bool = false,
                 retained_values: std.ArrayList(StoredValue) = .empty,
+                last_response_evidence: ?Runspace.ResponseEvidence = null,
                 supervisor: ?Supervision.Supervisor = null,
 
                 pub const Result = struct {
@@ -7220,6 +10812,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 const ResponseAccounting = struct {
                     response_bytes: usize = 0,
                     value_image_bytes: usize = 0,
+                    value_image_fingerprint: ?u64 = null,
                 };
 
                 fn responseFrameAccounting(self: *Self, frame: Frame.Response) !ResponseAccounting {
@@ -7228,6 +10821,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     return .{
                         .response_bytes = encoded_response.len,
                         .value_image_bytes = if (frame.response_image) |image| image.bytes.len else 0,
+                        .value_image_fingerprint = frame.response_value_fingerprint,
                     };
                 }
 
@@ -7568,11 +11162,19 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 }
 
                 pub fn dispatch(self: *Self) !void {
+                    _ = try self.runspaceDispatch();
+                }
+
+                pub fn runspaceDispatch(self: *Self) !?Runspace.ResponseEvidence {
                     if (self.audit.final_status == .failed) return Error.HandlerFailed;
                     const request = self.pending_request orelse return Error.UnknownResidualSite;
                     const world_port_id = self.pending_port_id orelse return Error.UnknownWorldPort;
                     const trace = request.trace();
-                    if (Target.WorldPortTable.entries.len == 0) return self.markMissingHandler(world_port_id, trace);
+                    if (Target.WorldPortTable.entries.len == 0) {
+                        try self.markMissingHandler(world_port_id, trace);
+                        return null;
+                    }
+                    self.last_response_evidence = null;
                     switch (world_port_id) {
                         inline 0...Target.WorldPortTable.entries.len - 1 => |id| {
                             const Handler = comptime handlerForWorldPortId(Target, Config, @intCast(id));
@@ -7587,9 +11189,10 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                                 self.pending_request = null;
                                 self.pending_port_id = null;
                                 self.pending_adapter_call_accounted = false;
-                                return;
+                                return self.last_response_evidence;
                             }
-                            return self.markMissingHandler(world_port_id, trace);
+                            try self.markMissingHandler(world_port_id, trace);
+                            return null;
                         },
                         else => return Error.UnknownWorldPort,
                     }
@@ -7622,14 +11225,172 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 }
 
                 pub fn resumeFrame(self: *Self, response_frame: Frame.Response) !void {
-                    try self.resumeFrameWithProvenance(response_frame, false);
+                    _ = try self.resumeFrameWithProvenance(response_frame, false, true);
+                }
+
+                pub fn runspaceResumeFrame(self: *Self, response_frame: Frame.Response) !Runspace.ResponseEvidence {
+                    const response_frame_fingerprint = try self.resumeFrameWithProvenance(response_frame, false, false);
+                    return self.last_response_evidence orelse .{
+                        .response_fingerprint = response_frame.response_fingerprint,
+                        .response_frame_fingerprint = response_frame_fingerprint,
+                        .response_value_image_fingerprint = response_frame.response_value_fingerprint,
+                    };
+                }
+
+                pub fn beforeRunspaceResponse(self: *Self, world_port_id: u32, status: ResponseStatus, response_bytes: usize, value_image_bytes: usize) !void {
+                    if (self.supervisor) |*supervisor| {
+                        try supervisor.afterAdapterResponse(.{
+                            .world_port_id = world_port_id,
+                            .status = status,
+                            .response_bytes = response_bytes,
+                            .value_image_bytes = value_image_bytes,
+                        });
+                    }
+                }
+
+                pub fn beforeRunspaceTerminalResponse(self: *Self, world_port_id: u32, status: ResponseStatus, response_bytes: usize, value_image_bytes: usize) !void {
+                    if (status != .rejected and status != .failed) return error.InvalidPendingPortTransition;
+                    if (self.supervisor) |*supervisor| {
+                        try supervisor.afterAdapterResponse(.{
+                            .world_port_id = world_port_id,
+                            .status = status,
+                            .response_bytes = response_bytes,
+                            .value_image_bytes = value_image_bytes,
+                        });
+                    }
+                }
+
+                pub fn runspaceResumeTerminalFrame(self: *Self, response_frame: Frame.Response) !void {
+                    switch (response_frame.status) {
+                        .rejected => {
+                            _ = self.resumeFrameWithProvenance(response_frame, false, false) catch |err| switch (err) {
+                                Error.HandlerRejected => {},
+                                else => return err,
+                            };
+                        },
+                        .failed => {
+                            _ = self.resumeFrameWithProvenance(response_frame, false, false) catch |err| switch (err) {
+                                Error.HandlerFailed => {},
+                                else => return err,
+                            };
+                        },
+                        else => {
+                            _ = try self.resumeFrameWithProvenance(response_frame, false, true);
+                        },
+                    }
+                }
+
+                pub fn snapshotRunImage(self: *Self) !RunImage {
+                    const target_ref = TargetRef.fromTarget(Target);
+                    var transcript_image: ?TranscriptImage = null;
+                    var owns_transcript_image = false;
+                    errdefer if (owns_transcript_image) {
+                        if (transcript_image) |*image| image.deinit(self.allocator);
+                    };
+                    if (comptime @hasField(Options, "transcript")) {
+                        transcript_image = try @field(self.options, "transcript").toImage(self.allocator, .{ .value_policy = ValuePolicy.portable });
+                        owns_transcript_image = true;
+                    } else if (comptime @hasField(Options, "transcript_image")) {
+                        transcript_image = try cloneTranscriptImage(self.allocator, @field(self.options, "transcript_image").*);
+                        owns_transcript_image = true;
+                    } else if (self.admitted_transcript_image) |image| {
+                        transcript_image = try cloneTranscriptImage(self.allocator, image.*);
+                        owns_transcript_image = true;
+                    }
+
+                    var pending_frame: ?Frame.Request = null;
+                    var owns_pending_frame = false;
+                    errdefer if (owns_pending_frame) {
+                        if (pending_frame) |*frame| frame.deinit(self.allocator);
+                    };
+                    if (self.pending_request != null) {
+                        pending_frame = try self.pendingRequestFrame(false);
+                        owns_pending_frame = true;
+                    }
+
+                    const status: RunState.Status = if (self.audit.final_status == .completed)
+                        .completed
+                    else if (self.audit.final_status == .failed)
+                        .failed
+                    else if (pending_frame != null)
+                        .parked_on_port
+                    else if (self.audit.final_status == .parked)
+                        .parked_on_supervision
+                    else
+                        .running;
+                    const terminal_response_evidence = if (status == .completed or status == .failed) self.last_response_evidence else null;
+                    var state = RunState.init(.{
+                        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+                        .transcript_image_fingerprint = if (transcript_image) |image| image.transcript_image_fingerprint else null,
+                        .pending_request_fingerprint = if (pending_frame) |frame| frame.frame_fingerprint else null,
+                        .final_response_fingerprint = if (terminal_response_evidence) |evidence| evidence.response_frame_fingerprint orelse evidence.response_fingerprint else null,
+                        .final_value_image_fingerprint = if (terminal_response_evidence) |evidence| evidence.response_value_image_fingerprint else null,
+                        .turn_index = if (pending_frame) |frame| frame.turn_index else self.audit.port_request_count,
+                        .status = status,
+                    });
+                    if (transcript_image) |image| {
+                        state = runStateWithTranscriptEvidence(state, image);
+                    }
+                    var image = RunImage.init(.{
+                        .kind = switch (status) {
+                            .parked_on_port => .parked_run,
+                            .completed => .completed_run,
+                            .failed => .replay_only_run,
+                            .not_started, .running, .parked_on_supervision => .full_target_run,
+                        },
+                        .target_ref = target_ref,
+                        .import_set_fingerprint = ImportSet.fromTarget(Target).import_set_fingerprint,
+                        .transcript_image = transcript_image,
+                        .current_state = state,
+                        .pending_request_frame = pending_frame,
+                        .environment_certificate_fingerprint = if (comptime @hasField(@TypeOf(Config), "environment"))
+                            Config.environment.certificate(self.mode, transcript_image != null).certificate_fingerprint
+                        else
+                            null,
+                        .acceptance_report_fingerprint = if (comptime @hasField(@TypeOf(Config), "environment"))
+                            Config.environment.acceptanceReport(self.mode, transcript_image != null).report_fingerprint
+                        else
+                            null,
+                        .audit_image_fingerprint = AuditImage.fromReport(self.audit, transcript_image).audit_fingerprint,
+                        .prior_run_permit_fingerprint = if (self.supervisor) |supervisor| supervisor.permit.permit_fingerprint else null,
+                        .prior_run_receipt_fingerprint = if (self.supervisor) |*supervisor| blk: {
+                            const final_status: RunReceipt.FinalStatus = switch (status) {
+                                .completed => .completed,
+                                .failed => .failed,
+                                .parked_on_port => .parked,
+                                .not_started, .running, .parked_on_supervision => .interrupted,
+                            };
+                            break :blk supervisor.receipt(final_status, state.run_state_fingerprint, state.transcript_image_fingerprint, null).receipt_fingerprint;
+                        } else null,
+                    });
+                    image.owns_transcript_image = owns_transcript_image;
+                    image.owns_pending_request_frame = owns_pending_frame;
+                    owns_transcript_image = false;
+                    owns_pending_frame = false;
+                    return image;
+                }
+
+                pub fn beforeRunspaceHandoffExport(self: *Self) !void {
+                    if (self.supervisor) |*supervisor| try supervisor.beforeHandoffExport();
+                }
+
+                pub fn beforeRunspaceInterruptedHandoffExport(self: *Self) !void {
+                    if (self.supervisor) |*supervisor| try supervisor.beforeInterruptedHandoffExport();
+                }
+
+                pub fn beforeRunspaceCheckpoint(self: *Self, value_image_bytes: usize) !void {
+                    if (self.supervisor) |*supervisor| try supervisor.beforeCheckpoint(value_image_bytes);
+                }
+
+                pub fn beforeRunspaceBranch(self: *Self, depth: usize) !void {
+                    if (self.supervisor) |*supervisor| try supervisor.beforeBranch(depth);
                 }
 
                 fn resumeReplayedFrame(self: *Self, response_frame: Frame.Response) !void {
-                    try self.resumeFrameWithProvenance(response_frame, true);
+                    _ = try self.resumeFrameWithProvenance(response_frame, true, true);
                 }
 
-                fn resumeFrameWithProvenance(self: *Self, response_frame: Frame.Response, comptime replayed: bool) !void {
+                fn resumeFrameWithProvenance(self: *Self, response_frame: Frame.Response, comptime replayed: bool, comptime account_supervisor: bool) !u64 {
                     const request = self.pending_request orelse return error.UnknownResidualSite;
                     const world_port_id = self.pending_port_id orelse return error.UnknownWorldPort;
                     var frame = try self.pendingRequestFrame(false);
@@ -7639,6 +11400,29 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     if (response_frame.world_port_id != world_port_id) return error.FramePortMismatch;
                     if (response_frame.request_fingerprint != frame.request_fingerprint) return error.FrameRequestFingerprintMismatch;
                     if (response_frame.status == .pending) {
+                        if (account_supervisor) {
+                            if (self.supervisor) |*supervisor| {
+                                try validateResponseFrameImage(response_frame);
+                                const accounting = try self.responseFrameAccounting(response_frame);
+                                supervisor.afterAdapterResponse(.{
+                                    .world_port_id = world_port_id,
+                                    .status = response_frame.status,
+                                    .response_bytes = accounting.response_bytes,
+                                    .value_image_bytes = accounting.value_image_bytes,
+                                }) catch |err| {
+                                    try self.handleSupervisionError(err);
+                                    return Error.HandlerPending;
+                                };
+                            }
+                        }
+                        return error.HandlerPending;
+                    }
+                    if (self.effective_mode != .fresh) return Error.InvalidMode;
+                    if (response_frame.status == .responded and response_frame.response_value_table_id != frame.expected_response_value_table_id) return error.FrameValueTableMismatch;
+                    try validateResponseFrameImage(response_frame);
+                    const deferred_response_fingerprint = response_frame.responseFingerprintDeferred();
+                    if (!deferred_response_fingerprint and response_frame.replay_key != frame.replay_key_seed.withResponse(response_frame.response_fingerprint).fingerprint()) return error.ReplayMissing;
+                    if (account_supervisor) {
                         if (self.supervisor) |*supervisor| {
                             try validateResponseFrameImage(response_frame);
                             const accounting = try self.responseFrameAccounting(response_frame);
@@ -7652,24 +11436,6 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                                 return Error.HandlerPending;
                             };
                         }
-                        return error.HandlerPending;
-                    }
-                    if (self.effective_mode != .fresh) return Error.InvalidMode;
-                    if (response_frame.status == .responded and response_frame.response_value_table_id != frame.expected_response_value_table_id) return error.FrameValueTableMismatch;
-                    try validateResponseFrameImage(response_frame);
-                    const deferred_response_fingerprint = response_frame.responseFingerprintDeferred();
-                    if (!deferred_response_fingerprint and response_frame.replay_key != frame.replay_key_seed.withResponse(response_frame.response_fingerprint).fingerprint()) return error.ReplayMissing;
-                    if (self.supervisor) |*supervisor| {
-                        const accounting = try self.responseFrameAccounting(response_frame);
-                        supervisor.afterAdapterResponse(.{
-                            .world_port_id = world_port_id,
-                            .status = response_frame.status,
-                            .response_bytes = accounting.response_bytes,
-                            .value_image_bytes = accounting.value_image_bytes,
-                        }) catch |err| {
-                            try self.handleSupervisionError(err);
-                            return Error.HandlerPending;
-                        };
                     }
                     if (response_frame.status == .rejected) {
                         self.audit.rejected_count += 1;
@@ -7683,18 +11449,22 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         try self.markRunFailed();
                         return error.HandlerFailed;
                     }
-                    if (Target.WorldPortTable.entries.len == 0) return self.markMissingHandler(world_port_id, request.trace());
+                    if (Target.WorldPortTable.entries.len == 0) {
+                        try self.markMissingHandler(world_port_id, request.trace());
+                        unreachable;
+                    }
                     switch (world_port_id) {
                         inline 0...Target.WorldPortTable.entries.len - 1 => |id| {
                             const Handler = comptime handlerForWorldPortId(Target, Config, @intCast(id));
                             if (Handler) |Decl| {
-                                try self.resumeFrameDecl(Decl, request, frame, response_frame, replayed);
+                                const effective_frame_fingerprint = try self.resumeFrameDecl(Decl, request, frame, response_frame, replayed);
                                 self.pending_request = null;
                                 self.pending_port_id = null;
                                 self.pending_adapter_call_accounted = false;
-                                return;
+                                return effective_frame_fingerprint;
                             }
-                            return self.markMissingHandler(world_port_id, request.trace());
+                            try self.markMissingHandler(world_port_id, request.trace());
+                            unreachable;
                         },
                         else => return error.UnknownWorldPort,
                     }
@@ -7766,7 +11536,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     return frame;
                 }
 
-                fn resumeFrameDecl(self: *Self, comptime Decl: type, request: Request, request_frame: Frame.Request, response_frame: Frame.Response, comptime replayed: bool) !void {
+                fn resumeFrameDecl(self: *Self, comptime Decl: type, request: Request, request_frame: Frame.Request, response_frame: Frame.Response, comptime replayed: bool) !u64 {
                     const typed_request = try request.as(Decl.SiteType);
                     if (response_frame.response_kind != .@"resume") return error.VerifyResponseKindMismatch;
                     const value = try response_frame.decodeValue(self.allocator, Decl.Response);
@@ -7832,6 +11602,12 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         return err;
                     };
                     retained_committed = true;
+                    self.last_response_evidence = .{
+                        .response_fingerprint = response_trace.fingerprint,
+                        .response_frame_fingerprint = effective_response_frame.frame_fingerprint,
+                        .response_value_image_fingerprint = effective_response_frame.response_value_fingerprint,
+                    };
+                    return effective_response_frame.frame_fingerprint;
                 }
 
                 fn markMissingHandler(self: *Self, world_port_id: u32, trace: anytype) !void {
@@ -7869,6 +11645,23 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             .adapter_kind = comptime adapterKindForDecl(Decl),
                             .authority_kind = comptime authorityKindForDecl(Decl),
                             .value_policy = if (comptime @hasDecl(Decl, "value_policy")) Decl.value_policy else .native_compatible,
+                        }) catch |err| {
+                            try self.handleSupervisionError(err);
+                            return Error.HandlerPending;
+                        };
+                    }
+                    self.pending_adapter_call_accounted = true;
+                }
+
+                fn accountReplayPrefixAdapterCall(self: *Self, world_port_id: u32) !void {
+                    if (self.pending_adapter_call_accounted) return;
+                    if (self.supervisor) |*supervisor| {
+                        supervisor.beforeAdapterCall(.{
+                            .world_port_id = world_port_id,
+                            .mode = .replay,
+                            .adapter_kind = .replay,
+                            .authority_kind = PortAuthority.replay_source.authority_kind,
+                            .value_policy = .portable,
                         }) catch |err| {
                             try self.handleSupervisionError(err);
                             return Error.HandlerPending;
@@ -7965,6 +11758,10 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         null,
                     );
                     stored = null;
+                    self.last_response_evidence = .{
+                        .response_fingerprint = response_trace.fingerprint,
+                        .response_value_image_fingerprint = accounting.value_image_fingerprint,
+                    };
                     self.audit.fresh_response_count += 1;
                     return try self.retainResponse(Decl.Response, response);
                 }
@@ -7988,11 +11785,13 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         self.audit.replay_mismatch_count += 1;
                         return err;
                     };
+                    var replay_response_frame: ?Frame.Response = null;
                     const value = if (event.value) |stored|
                         try stored.as(self.allocator, Decl.Response)
                     else if (event.response_frame) |frame| value: {
                         if (frame.response_value_table_id != valueIdForRuntime(Target, Decl.world_port_id, .@"resume")) return error.FrameValueTableMismatch;
                         try validateResponseFrameImage(frame);
+                        replay_response_frame = frame;
                         break :value try frame.decodeValue(self.allocator, Decl.Response);
                     } else return Error.ReplayMissing;
                     var value_owned = true;
@@ -8003,7 +11802,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         return Error.ReplayResponseKindMismatch;
                     }
                     if (self.supervisor) |*supervisor| {
-                        const response_bytes = if (event.response_frame) |frame| bytes: {
+                        const response_bytes = if (replay_response_frame) |frame| bytes: {
                             const encoded_response = try frame.encode(self.allocator);
                             defer self.allocator.free(encoded_response);
                             break :bytes encoded_response.len;
@@ -8012,13 +11811,18 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             .world_port_id = Decl.world_port_id,
                             .status = .responded,
                             .response_bytes = response_bytes,
-                            .value_image_bytes = if (event.response_frame) |frame| if (frame.response_image) |image| image.bytes.len else 0 else 0,
+                            .value_image_bytes = if (replay_response_frame) |frame| if (frame.response_image) |image| image.bytes.len else 0 else 0,
                         }) catch |err| {
                             try self.handleSupervisionError(err);
                             return Error.HandlerPending;
                         };
                     }
-                    try self.recordPortEvent(.port_replayed, Decl.world_port_id, trace, response_trace.fingerprint, .@"resume", null, null, if (event.response_frame) |frame| frame else null);
+                    try self.recordPortEvent(.port_replayed, Decl.world_port_id, trace, response_trace.fingerprint, .@"resume", null, null, replay_response_frame);
+                    self.last_response_evidence = .{
+                        .response_fingerprint = response_trace.fingerprint,
+                        .response_frame_fingerprint = if (replay_response_frame) |frame| frame.frame_fingerprint else null,
+                        .response_value_image_fingerprint = if (replay_response_frame) |frame| frame.response_value_fingerprint else null,
+                    };
                     self.audit.replayed_response_count += 1;
                     var run_value = try StoredValue.initOwned(self.allocator, value);
                     value_owned = false;
@@ -8065,6 +11869,11 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         };
                     }
                     try self.recordPortEvent(.frame_replayed, Decl.world_port_id, trace, response_trace.fingerprint, .@"resume", null, null, frame.*);
+                    self.last_response_evidence = .{
+                        .response_fingerprint = response_trace.fingerprint,
+                        .response_frame_fingerprint = frame.frame_fingerprint,
+                        .response_value_image_fingerprint = frame.response_value_fingerprint,
+                    };
                     self.audit.replayed_response_count += 1;
                     var run_value = try StoredValue.initOwned(self.allocator, value);
                     value_owned = false;
@@ -8216,6 +12025,11 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     if (expected_response_frame) |frame| {
                         try self.recordPortEvent(.frame_verified, Decl.world_port_id, (self.pending_request orelse return Error.UnknownResidualSite).trace(), expected_response_fingerprint, .@"resume", null, null, frame);
                     }
+                    self.last_response_evidence = .{
+                        .response_fingerprint = expected_response_fingerprint,
+                        .response_frame_fingerprint = if (expected_response_frame) |frame| frame.frame_fingerprint else null,
+                        .response_value_image_fingerprint = expected_value_image_fingerprint,
+                    };
                     self.audit.fresh_response_count += 1;
                     return try self.retainResponse(Decl.Response, fresh);
                 }
@@ -8988,6 +12802,12 @@ fn validateRequestFrameImage(frame: Frame.Request) !void {
     }
 }
 
+fn cloneRequestFrame(allocator: std.mem.Allocator, frame: Frame.Request) !Frame.Request {
+    const encoded = try frame.encode(allocator);
+    defer allocator.free(encoded);
+    return Frame.Request.decode(allocator, encoded);
+}
+
 fn validateValueImagePolicy(image: Frame.ValueImage, policy: ValuePolicy) !void {
     if (policy.max_value_image_bytes) |max| {
         if (image.bytes.len > max) return error.UnsupportedValueImage;
@@ -9551,6 +13371,38 @@ fn cloneTranscriptImage(allocator: std.mem.Allocator, image: TranscriptImage) !T
     return try TranscriptImage.decode(allocator, encoded);
 }
 
+fn attachTranscriptToInstalledRunImage(allocator: std.mem.Allocator, image: *RunImage, transcript_image: TranscriptImage) !void {
+    if (image.current_state.transcript_image_fingerprint) |fingerprint| {
+        if (fingerprint != transcript_image.transcript_image_fingerprint) return error.HandoffTargetMismatch;
+    }
+    if (image.transcript_image) |embedded| {
+        if (embedded.transcript_image_fingerprint != transcript_image.transcript_image_fingerprint) return error.HandoffTargetMismatch;
+        image.current_state = runStateWithTranscriptEvidence(image.current_state, transcript_image);
+        refreshRunImageFingerprint(image);
+        return;
+    }
+    var cloned_transcript = try cloneTranscriptImage(allocator, transcript_image);
+    errdefer cloned_transcript.deinit(allocator);
+    image.transcript_image = cloned_transcript;
+    image.owns_transcript_image = true;
+    image.current_state = runStateWithTranscriptEvidence(image.current_state, transcript_image);
+    refreshRunImageFingerprint(image);
+}
+
+fn attachBorrowedTranscriptToRunImage(image: *RunImage, transcript_image: TranscriptImage) !void {
+    if (image.current_state.transcript_image_fingerprint) |fingerprint| {
+        if (fingerprint != transcript_image.transcript_image_fingerprint) return error.HandoffTargetMismatch;
+    }
+    if (image.transcript_image) |embedded| {
+        if (embedded.transcript_image_fingerprint != transcript_image.transcript_image_fingerprint) return error.HandoffTargetMismatch;
+    } else {
+        image.transcript_image = transcript_image;
+        image.owns_transcript_image = false;
+    }
+    image.current_state = runStateWithTranscriptEvidence(image.current_state, transcript_image);
+    refreshRunImageFingerprint(image);
+}
+
 fn mismatchSlice(mismatch: ?Admission.MatchMismatch) []const Admission.MatchMismatch {
     return switch (mismatch orelse return &.{}) {
         .WorldSurface => &.{.WorldSurface},
@@ -9571,10 +13423,35 @@ fn providedFingerprintMatches(provided: ?u64, expected: ?u64) bool {
     return expected != null and expected.? == actual;
 }
 
+fn runImageIsInterruptedSupervisionExport(image: RunImage) bool {
+    return image.kind == .full_target_run and
+        image.checkpoints.len == 0 and
+        image.branches.len == 0 and
+        image.current_state.status == .parked_on_supervision and
+        image.current_state.branch_id == 0 and
+        image.current_state.checkpoint_fingerprint == null and
+        image.current_state.pending_request_fingerprint == null and
+        interruptedRunStateMatchesTranscriptEvidence(image) and
+        image.pending_request_frame == null;
+}
+
+fn interruptedRunStateMatchesTranscriptEvidence(image: RunImage) bool {
+    const transcript_image = image.transcript_image orelse {
+        return image.current_state.turn_index == 0 and
+            image.current_state.final_response_fingerprint == null and
+            image.current_state.final_value_image_fingerprint == null;
+    };
+    const evidence = runStateEvidenceFromTranscriptImage(transcript_image);
+    return image.current_state.turn_index == evidence.turn_index and
+        image.current_state.final_response_fingerprint == evidence.final_response_fingerprint and
+        image.current_state.final_value_image_fingerprint == evidence.final_value_image_fingerprint;
+}
+
 fn runImageFitsAdmissionMode(image: RunImage, mode: Admission.AdmissionMode) bool {
     return switch (mode) {
         .inspect_only, .local_target_match_only, .continue_fresh => false,
-        .resume_parked => image.kind == .parked_run and image.current_state.status == .parked_on_port,
+        .resume_parked => (image.kind == .parked_run and image.current_state.status == .parked_on_port) or
+            runImageIsInterruptedSupervisionExport(image),
         .branch_resume => image.kind == .parked_run and image.current_state.status == .parked_on_port and image.branches.len != 0,
         .completed_replay => (image.kind == .completed_run or image.kind == .branched_run) and image.current_state.status == .completed,
         .replay_only, .verify_only => switch (image.kind) {
@@ -11090,6 +14967,84 @@ fn fingerprintRunState(state: RunState) u64 {
     return hasher.final();
 }
 
+fn fingerprintRunHandle(handle: RunHandle) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.run_handle.fingerprint");
+    hashU64(&hasher, world_run_handle_fingerprint_version);
+    hashU64(&hasher, handle.runspace_fingerprint);
+    hashU64(&hasher, handle.local_run_id);
+    hashU64(&hasher, handle.target_ref_fingerprint);
+    hashOptionalU64(&hasher, handle.admission_receipt_fingerprint);
+    hashOptionalU64(&hasher, handle.permit_fingerprint);
+    hashOptionalU64(&hasher, handle.branch_id);
+    hashU64(&hasher, handle.generation);
+    return hasher.final();
+}
+
+fn fingerprintRunspaceConfig(config: Runspace.Config, runspace_instance_id: u64) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.runspace.config.fingerprint");
+    hashU64(&hasher, world_runspace_config_fingerprint_version);
+    hashU64(&hasher, runspace_instance_id);
+    hashU64(&hasher, @intFromEnum(config.policy));
+    hashOptionalU64(&hasher, config.max_runs);
+    hashOptionalU64(&hasher, config.max_pending_ports);
+    hashOptionalU64(&hasher, config.max_events);
+    hashBool(&hasher, config.preserve_completed_runs);
+    hashBool(&hasher, config.require_supervision);
+    hashBool(&hasher, config.require_admission);
+    hashBool(&hasher, config.allow_direct_target_install);
+    hashBool(&hasher, config.allow_handoff_install);
+    hashBool(&hasher, config.allow_replay_install);
+    hashBool(&hasher, config.auto_dispatch);
+    return hasher.final();
+}
+
+fn fingerprintPendingPort(pending_port: PendingPort) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.pending_port.fingerprint");
+    hashU64(&hasher, world_pending_port_fingerprint_version);
+    hashU64(&hasher, pending_port.handle.handle_fingerprint);
+    hashU64(&hasher, pending_port.mailbox_id);
+    hashU64(&hasher, pending_port.world_surface_fingerprint);
+    hashU64(&hasher, pending_port.target_certificate_fingerprint);
+    hashU64(&hasher, pending_port.world_port_id);
+    hashU64(&hasher, pending_port.request_fingerprint);
+    hashU64(&hasher, pending_port.request_frame_fingerprint);
+    hashU64(&hasher, @intFromEnum(pending_port.expected_response_kind));
+    hashOptionalU32(&hasher, pending_port.expected_response_value_table_id);
+    hashU64(&hasher, pending_port.residual_site_index);
+    hashU64(&hasher, pending_port.residual_site_fingerprint);
+    hashU64(&hasher, pending_port.target_ref_fingerprint);
+    hashOptionalU64(&hasher, pending_port.environment_certificate_fingerprint);
+    hashOptionalU64(&hasher, pending_port.run_permit_fingerprint);
+    hashU64(&hasher, pending_port.turn_index);
+    hashU64(&hasher, pending_port.inserted_event_index);
+    hashU64(&hasher, @intFromEnum(pending_port.status));
+    return hasher.final();
+}
+
+fn fingerprintRunspaceEvent(event: RunspaceEvent) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.runspace.event.fingerprint");
+    hashU64(&hasher, world_runspace_event_fingerprint_version);
+    hashU64(&hasher, @intFromEnum(event.kind));
+    hashU64(&hasher, event.runspace_fingerprint);
+    hashU64(&hasher, event.event_index);
+    hashU64(&hasher, event.run_handle.handle_fingerprint);
+    hashOptionalU64(&hasher, event.pending_port_fingerprint);
+    hashOptionalU64(&hasher, event.request_frame_fingerprint);
+    hashOptionalU64(&hasher, event.response_frame_fingerprint);
+    hashOptionalU64(&hasher, event.checkpoint_fingerprint);
+    hashU64(&hasher, event.run_state_fingerprint);
+    hashOptionalU64(&hasher, event.run_receipt_fingerprint);
+    hashOptionalU64(&hasher, event.admission_receipt_fingerprint);
+    hashOptionalU64(&hasher, event.run_permit_fingerprint);
+    hashU64(&hasher, event.summary.len);
+    hashBytes(&hasher, event.summary);
+    return hasher.final();
+}
+
 fn fingerprintRunImage(image: RunImage) u64 {
     return fingerprintRunImageVersioned(image, true);
 }
@@ -11365,6 +15320,8 @@ fn fingerprintAdmittedRun(run: Admission.AdmittedRun) u64 {
     hashBytes(&hasher, "world.admitted_run.fingerprint");
     hashU64(&hasher, world_admitted_run_fingerprint_version);
     hashU64(&hasher, run.target_ref.target_ref_fingerprint);
+    hashOptionalU64(&hasher, run.module_ref_fingerprint);
+    hashOptionalU64(&hasher, run.import_set_fingerprint);
     hashOptionalU64(&hasher, run.environment_certificate_fingerprint);
     hashOptionalU64(&hasher, if (run.run_permit) |permit| permit.permit_fingerprint else null);
     hashOptionalU64(&hasher, if (run.run_image) |image| image.run_image_fingerprint else null);
