@@ -4550,6 +4550,41 @@ test "guest core clamps explicit pending-port config to ABI cap" {
     try std.testing.expectEqual(@as(?usize, world.Guest.Buffer.max_pending_ports), guest.runspace.mailbox.max_pending_ports);
 }
 
+test "guest core submit response refreshes terminal status" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var guest = world.Guest.Core.init(std.testing.allocator, .{});
+    defer guest.deinit();
+
+    try guest.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    try std.testing.expectEqual(world.Guest.Status.parked, guest.tick());
+    const request_len = guest.pendingRequestLen(0);
+    const request_bytes = try std.testing.allocator.alloc(u8, request_len);
+    defer std.testing.allocator.free(request_bytes);
+    _ = guest.readPendingRequest(0, request_bytes);
+    var request = try world.Frame.Request.decode(std.testing.allocator, request_bytes);
+    defer request.deinit(std.testing.allocator);
+    const failed_response = world.Frame.Response.init(.{
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .target_certificate_fingerprint = request.target_certificate_fingerprint,
+        .world_port_id = request.world_port_id,
+        .request_fingerprint = request.request_fingerprint,
+        .response_kind = .@"resume",
+        .response_value_table_id = request.expected_response_value_table_id,
+        .response_fingerprint = 0x5a1e,
+        .replay_key = request.replay_key_seed.withResponse(0x5a1e).fingerprint(),
+        .status = .failed,
+    });
+    const response_bytes = try failed_response.encode(std.testing.allocator);
+    defer std.testing.allocator.free(response_bytes);
+
+    try std.testing.expectEqual(world.Guest.Status.failed, guest.submitResponse(response_bytes));
+    try std.testing.expectEqual(world.Guest.Status.failed, guest.status());
+}
+
 test "guest core rejects pending request bytes above ABI cap" {
     var guest = world.Guest.Core.init(std.testing.allocator, .{});
     defer guest.deinit();

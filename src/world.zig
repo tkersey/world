@@ -9998,9 +9998,7 @@ pub const Guest = struct {
             defer response.deinit(self.allocator);
             const mailbox_id = self.matchPendingMailbox(response) catch |err| return self.mapPendingLookupError(err);
             _ = self.runspace.respond(mailbox_id, response) catch |err| return self.mapRunspaceError(err);
-            self.state = .running;
-            self.clearError();
-            return self.state;
+            return self.refreshStatus();
         }
 
         pub fn resultLen(self: *@This()) usize {
