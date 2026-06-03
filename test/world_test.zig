@@ -589,6 +589,108 @@ fn appendGuestWasmInvalidRefNullBodyCodeSection(module: *std.ArrayList(u8)) !voi
     try appendWasmSection(module, 10, code.items);
 }
 
+fn appendGuestWasmInvalidLocalGetBodyCodeSection(module: *std.ArrayList(u8)) !void {
+    var code: std.ArrayList(u8) = .empty;
+    defer code.deinit(std.testing.allocator);
+    try appendWasmU32(&code, @intCast(world.Guest.Abi.required_exports.len));
+    for (world.Guest.Abi.required_exports, 0..) |_, index| {
+        var body: std.ArrayList(u8) = .empty;
+        defer body.deinit(std.testing.allocator);
+        try appendWasmU32(&body, 0);
+        if (index == 0) {
+            try body.append(std.testing.allocator, 0x41);
+            try appendWasmU32(&body, world.Guest.Abi.version);
+        } else if (index == 1) {
+            try body.append(std.testing.allocator, 0x20);
+            try appendWasmU32(&body, 0);
+        } else {
+            try body.append(std.testing.allocator, 0x41);
+            try appendWasmU32(&body, 0);
+        }
+        try body.append(std.testing.allocator, 0x0b);
+        try appendWasmU32(&code, @intCast(body.items.len));
+        try code.appendSlice(std.testing.allocator, body.items);
+    }
+    try appendWasmSection(module, 10, code.items);
+}
+
+fn appendGuestWasmInvalidTypedBlockBodyCodeSection(module: *std.ArrayList(u8)) !void {
+    var code: std.ArrayList(u8) = .empty;
+    defer code.deinit(std.testing.allocator);
+    try appendWasmU32(&code, @intCast(world.Guest.Abi.required_exports.len));
+    for (world.Guest.Abi.required_exports, 0..) |_, index| {
+        var body: std.ArrayList(u8) = .empty;
+        defer body.deinit(std.testing.allocator);
+        try appendWasmU32(&body, 0);
+        if (index == 0) {
+            try body.append(std.testing.allocator, 0x41);
+            try appendWasmU32(&body, world.Guest.Abi.version);
+        } else if (index == 1) {
+            try body.append(std.testing.allocator, 0x02);
+            try appendWasmU32(&body, 5);
+            try body.append(std.testing.allocator, 0x0b);
+            try body.append(std.testing.allocator, 0x41);
+            try appendWasmU32(&body, 0);
+        } else {
+            try body.append(std.testing.allocator, 0x41);
+            try appendWasmU32(&body, 0);
+        }
+        try body.append(std.testing.allocator, 0x0b);
+        try appendWasmU32(&code, @intCast(body.items.len));
+        try code.appendSlice(std.testing.allocator, body.items);
+    }
+    try appendWasmSection(module, 10, code.items);
+}
+
+fn appendGuestWasmMissingResultBodyCodeSection(module: *std.ArrayList(u8)) !void {
+    var code: std.ArrayList(u8) = .empty;
+    defer code.deinit(std.testing.allocator);
+    try appendWasmU32(&code, @intCast(world.Guest.Abi.required_exports.len));
+    for (world.Guest.Abi.required_exports, 0..) |_, index| {
+        var body: std.ArrayList(u8) = .empty;
+        defer body.deinit(std.testing.allocator);
+        try appendWasmU32(&body, 0);
+        if (index == 0) {
+            try body.append(std.testing.allocator, 0x41);
+            try appendWasmU32(&body, world.Guest.Abi.version);
+        } else if (index != 1) {
+            try body.append(std.testing.allocator, 0x41);
+            try appendWasmU32(&body, 0);
+        }
+        try body.append(std.testing.allocator, 0x0b);
+        try appendWasmU32(&code, @intCast(body.items.len));
+        try code.appendSlice(std.testing.allocator, body.items);
+    }
+    try appendWasmSection(module, 10, code.items);
+}
+
+fn appendGuestWasmValidFunctionLabelBranchBodyCodeSection(module: *std.ArrayList(u8)) !void {
+    var code: std.ArrayList(u8) = .empty;
+    defer code.deinit(std.testing.allocator);
+    try appendWasmU32(&code, @intCast(world.Guest.Abi.required_exports.len));
+    for (world.Guest.Abi.required_exports, 0..) |_, index| {
+        var body: std.ArrayList(u8) = .empty;
+        defer body.deinit(std.testing.allocator);
+        try appendWasmU32(&body, 0);
+        if (index == 0) {
+            try body.append(std.testing.allocator, 0x41);
+            try appendWasmU32(&body, world.Guest.Abi.version);
+        } else if (index == 1) {
+            try body.append(std.testing.allocator, 0x41);
+            try appendWasmU32(&body, 0);
+            try body.append(std.testing.allocator, 0x0c);
+            try appendWasmU32(&body, 0);
+        } else {
+            try body.append(std.testing.allocator, 0x41);
+            try appendWasmU32(&body, 0);
+        }
+        try body.append(std.testing.allocator, 0x0b);
+        try appendWasmU32(&code, @intCast(body.items.len));
+        try code.appendSlice(std.testing.allocator, body.items);
+    }
+    try appendWasmSection(module, 10, code.items);
+}
+
 fn syntheticGuestWasm(allocator: std.mem.Allocator) ![]u8 {
     var module: std.ArrayList(u8) = .empty;
     errdefer module.deinit(allocator);
@@ -1252,6 +1354,98 @@ fn syntheticInvalidRefNullBodyGuestWasm(allocator: std.mem.Allocator) ![]u8 {
     return module.toOwnedSlice(allocator);
 }
 
+fn syntheticInvalidLocalGetBodyGuestWasm(allocator: std.mem.Allocator) ![]u8 {
+    var module: std.ArrayList(u8) = .empty;
+    errdefer module.deinit(allocator);
+    try module.appendSlice(allocator, "\x00asm\x01\x00\x00\x00");
+    try appendGuestWasmTypeSection(&module);
+    try appendGuestWasmFunctionSection(&module, false);
+    try appendGuestWasmMemorySection(&module);
+    var exports: std.ArrayList(u8) = .empty;
+    defer exports.deinit(allocator);
+    try appendWasmU32(&exports, @intCast(world.Guest.Abi.required_exports.len + 1));
+    for (world.Guest.Abi.required_exports, 0..) |name, index| {
+        try appendWasmName(&exports, name);
+        try exports.append(allocator, 0);
+        try appendWasmU32(&exports, @intCast(index));
+    }
+    try appendWasmName(&exports, "memory");
+    try exports.append(allocator, 2);
+    try appendWasmU32(&exports, 0);
+    try appendWasmSection(&module, 7, exports.items);
+    try appendGuestWasmInvalidLocalGetBodyCodeSection(&module);
+    return module.toOwnedSlice(allocator);
+}
+
+fn syntheticInvalidTypedBlockBodyGuestWasm(allocator: std.mem.Allocator) ![]u8 {
+    var module: std.ArrayList(u8) = .empty;
+    errdefer module.deinit(allocator);
+    try module.appendSlice(allocator, "\x00asm\x01\x00\x00\x00");
+    try appendGuestWasmTypeSection(&module);
+    try appendGuestWasmFunctionSection(&module, false);
+    try appendGuestWasmMemorySection(&module);
+    var exports: std.ArrayList(u8) = .empty;
+    defer exports.deinit(allocator);
+    try appendWasmU32(&exports, @intCast(world.Guest.Abi.required_exports.len + 1));
+    for (world.Guest.Abi.required_exports, 0..) |name, index| {
+        try appendWasmName(&exports, name);
+        try exports.append(allocator, 0);
+        try appendWasmU32(&exports, @intCast(index));
+    }
+    try appendWasmName(&exports, "memory");
+    try exports.append(allocator, 2);
+    try appendWasmU32(&exports, 0);
+    try appendWasmSection(&module, 7, exports.items);
+    try appendGuestWasmInvalidTypedBlockBodyCodeSection(&module);
+    return module.toOwnedSlice(allocator);
+}
+
+fn syntheticMissingResultBodyGuestWasm(allocator: std.mem.Allocator) ![]u8 {
+    var module: std.ArrayList(u8) = .empty;
+    errdefer module.deinit(allocator);
+    try module.appendSlice(allocator, "\x00asm\x01\x00\x00\x00");
+    try appendGuestWasmTypeSection(&module);
+    try appendGuestWasmFunctionSection(&module, false);
+    try appendGuestWasmMemorySection(&module);
+    var exports: std.ArrayList(u8) = .empty;
+    defer exports.deinit(allocator);
+    try appendWasmU32(&exports, @intCast(world.Guest.Abi.required_exports.len + 1));
+    for (world.Guest.Abi.required_exports, 0..) |name, index| {
+        try appendWasmName(&exports, name);
+        try exports.append(allocator, 0);
+        try appendWasmU32(&exports, @intCast(index));
+    }
+    try appendWasmName(&exports, "memory");
+    try exports.append(allocator, 2);
+    try appendWasmU32(&exports, 0);
+    try appendWasmSection(&module, 7, exports.items);
+    try appendGuestWasmMissingResultBodyCodeSection(&module);
+    return module.toOwnedSlice(allocator);
+}
+
+fn syntheticValidFunctionLabelBranchGuestWasm(allocator: std.mem.Allocator) ![]u8 {
+    var module: std.ArrayList(u8) = .empty;
+    errdefer module.deinit(allocator);
+    try module.appendSlice(allocator, "\x00asm\x01\x00\x00\x00");
+    try appendGuestWasmTypeSection(&module);
+    try appendGuestWasmFunctionSection(&module, false);
+    try appendGuestWasmMemorySection(&module);
+    var exports: std.ArrayList(u8) = .empty;
+    defer exports.deinit(allocator);
+    try appendWasmU32(&exports, @intCast(world.Guest.Abi.required_exports.len + 1));
+    for (world.Guest.Abi.required_exports, 0..) |name, index| {
+        try appendWasmName(&exports, name);
+        try exports.append(allocator, 0);
+        try appendWasmU32(&exports, @intCast(index));
+    }
+    try appendWasmName(&exports, "memory");
+    try exports.append(allocator, 2);
+    try appendWasmU32(&exports, 0);
+    try appendWasmSection(&module, 7, exports.items);
+    try appendGuestWasmValidFunctionLabelBranchBodyCodeSection(&module);
+    return module.toOwnedSlice(allocator);
+}
+
 fn syntheticInvalidUtf8ExportNameGuestWasm(allocator: std.mem.Allocator) ![]u8 {
     var module: std.ArrayList(u8) = .empty;
     errdefer module.deinit(allocator);
@@ -1568,6 +1762,22 @@ test "wasm export inspector validates required exports and forbidden imports" {
     const invalid_ref_null_body = try syntheticInvalidRefNullBodyGuestWasm(std.testing.allocator);
     defer std.testing.allocator.free(invalid_ref_null_body);
     try std.testing.expectError(error.InvalidFrameEncoding, world.Guest.Wasm.inspect(invalid_ref_null_body));
+
+    const invalid_local_get_body = try syntheticInvalidLocalGetBodyGuestWasm(std.testing.allocator);
+    defer std.testing.allocator.free(invalid_local_get_body);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Guest.Wasm.inspect(invalid_local_get_body));
+
+    const invalid_typed_block_body = try syntheticInvalidTypedBlockBodyGuestWasm(std.testing.allocator);
+    defer std.testing.allocator.free(invalid_typed_block_body);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Guest.Wasm.inspect(invalid_typed_block_body));
+
+    const missing_result_body = try syntheticMissingResultBodyGuestWasm(std.testing.allocator);
+    defer std.testing.allocator.free(missing_result_body);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Guest.Wasm.inspect(missing_result_body));
+
+    const valid_function_label_branch = try syntheticValidFunctionLabelBranchGuestWasm(std.testing.allocator);
+    defer std.testing.allocator.free(valid_function_label_branch);
+    try std.testing.expect((try world.Guest.Wasm.inspect(valid_function_label_branch)).passed());
 
     const invalid_utf8_export_name = try syntheticInvalidUtf8ExportNameGuestWasm(std.testing.allocator);
     defer std.testing.allocator.free(invalid_utf8_export_name);
