@@ -4996,6 +4996,31 @@ test "native guest world_init preserves newly installed run" {
     try std.testing.expectEqual(@as(u32, 1), guest.world_pending_count());
 }
 
+test "guest install admitted completed image refreshes status" {
+    var guest = world.Guest.Core.init(std.testing.allocator, .{});
+    defer guest.deinit();
+    const target_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    const completed_image = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Strict.Target).import_set_fingerprint,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+            .status = .completed,
+        }),
+    });
+    const admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_6010,
+        .target_ref = target_ref,
+        .mode = .continue_fresh,
+        .run_image = completed_image,
+    });
+
+    try guest.installAdmitted(admitted);
+    try std.testing.expectEqual(world.Guest.Status.done, guest.status());
+    try std.testing.expect(guest.resultLen() > 0);
+}
+
 test "native guest world_init clears failed session state" {
     var runtime = boundary.Runtime.init(std.testing.allocator);
     defer runtime.deinit();

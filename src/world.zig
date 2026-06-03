@@ -9987,9 +9987,20 @@ pub const Guest = struct {
 
         pub fn installAdmitted(self: *@This(), admitted_run: Admission.AdmittedRun) !void {
             if (self.handle != null) return self.failStatus(.invalid_state, "guest core already has an installed run");
+            const image_status = if (admitted_run.run_image) |image| image.current_state.status else null;
             self.handle = try self.runspace.installAdmitted(admitted_run);
-            self.state = .initialized;
-            self.clearError();
+            if (image_status) |run_status| {
+                switch (run_status) {
+                    .parked_on_port, .parked_on_supervision, .completed, .failed => _ = self.refreshStatus(),
+                    else => {
+                        self.state = .initialized;
+                        self.clearError();
+                    },
+                }
+            } else {
+                self.state = .initialized;
+                self.clearError();
+            }
         }
 
         pub fn installRunImage(self: *@This(), image: RunImage) !void {
