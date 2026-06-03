@@ -5020,7 +5020,7 @@ test "guest core drives one run through canonical request and response bytes" {
     try std.testing.expectEqual(world.TranscriptImage.FinalStatus.completed, transcript_image.final_status);
 }
 
-test "guest core result bytes use post-export supervised receipt" {
+test "guest core result bytes expose supervised completion receipt" {
     const StrictEnv = world.Environment(fixtures.Strict.Target, .{
         .ports = &.{},
     });
@@ -5061,12 +5061,14 @@ test "guest core result bytes use post-export supervised receipt" {
     try std.testing.expectEqual(receipt, std.mem.readInt(u64, &receipt_bytes, .little));
 
     const events = guest.runspace.report().emitted_events;
-    const exported_event = events[events.len - 1];
-    try std.testing.expectEqual(world.Runspace.EventKind.run_exported, exported_event.kind);
-    try std.testing.expectEqual(receipt, exported_event.run_receipt_fingerprint.?);
+    const completed_event = events[events.len - 1];
+    try std.testing.expectEqual(world.Runspace.EventKind.run_completed, completed_event.kind);
+    for (events) |event| {
+        try std.testing.expect(event.kind != world.Runspace.EventKind.run_exported);
+    }
 }
 
-test "guest result maps handoff denied to supervision denied" {
+test "guest result read does not require handoff export permission" {
     const StrictEnv = world.Environment(fixtures.Strict.Target, .{
         .ports = &.{},
     });
@@ -5085,9 +5087,13 @@ test "guest result maps handoff denied to supervision denied" {
         .permit = permit,
     });
     try std.testing.expectEqual(world.Guest.Status.done, guest.tick());
-    try std.testing.expectEqual(@as(usize, 0), guest.resultLen());
-    try std.testing.expectEqual(world.Guest.Status.supervision_denied, guest.status());
-    try std.testing.expect(guest.lastErrorLen() > 0);
+    try std.testing.expect(guest.resultLen() > 0);
+    try std.testing.expectEqual(world.Guest.Status.done, guest.status());
+    try std.testing.expectEqual(@as(usize, 0), guest.lastErrorLen());
+    try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try guest.runspace.getSlotSummary(guest.handle.?)).status);
+    for (guest.runspace.report().emitted_events) |event| {
+        try std.testing.expect(event.kind != world.Runspace.EventKind.run_exported);
+    }
 }
 
 test "guest core clamps explicit pending-port config to ABI cap" {
@@ -6448,7 +6454,7 @@ test "runspace export checks supervision before snapshotting installed image" {
     try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try runspace.getSlotSummary(handle)).status);
 }
 
-test "guest result preview failure restores handoff budget" {
+test "guest result read does not consume handoff export budget" {
     var guest = world.Guest.Core.init(std.testing.allocator, .{});
     defer guest.deinit();
     var transcript = world.Transcript.init(std.testing.allocator);
@@ -6498,8 +6504,8 @@ test "guest result preview failure restores handoff budget" {
     guest.handle = handle;
     guest.state = .done;
 
-    try std.testing.expectEqual(@as(usize, 0), guest.resultLen());
-    try std.testing.expectEqual(world.Guest.Status.supervision_denied, guest.status());
+    try std.testing.expect(guest.resultLen() > 0);
+    try std.testing.expectEqual(world.Guest.Status.done, guest.status());
     try std.testing.expectEqual(@as(usize, 0), guest.runspace.slots.items[0].supervisor.?.ledger.total_handoff_exports);
     try std.testing.expect(guest.runspace.slots.items[0].supervisor.?.ledger.exceeded_budget == null);
     try std.testing.expect(guest.runspace.slots.items[0].supervisor.?.last_check == null);

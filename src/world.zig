@@ -8818,6 +8818,13 @@ pub const Runspace = struct {
         return image;
     }
 
+    fn previewResultRun(self: *@This(), handle: RunHandle) !RunImage {
+        const index = try self.slotIndex(handle);
+        const slot = &self.slots.items[index];
+        if (slot.status != .completed) return error.InvalidRunspaceTransition;
+        return self.snapshotSlotImage(index);
+    }
+
     pub fn exportPending(self: *@This(), mailbox_id: u64) !RunImage {
         const pending = try self.mailbox.get(mailbox_id);
         if (pending.status != .pending) return error.PendingPortConsumed;
@@ -10166,7 +10173,7 @@ pub const Guest = struct {
         fn ensureResultBytes(self: *@This()) !void {
             if (self.result_bytes.len != 0 or self.state != .done) return;
             const handle = self.handle orelse return error.InvalidRunspaceTransition;
-            var preview = try self.runspace.previewExportRun(handle);
+            var preview = try self.runspace.previewResultRun(handle);
             defer preview.deinit(self.allocator);
             const encoded = try preview.encode(self.allocator);
             var encoded_owned = true;
@@ -10180,8 +10187,6 @@ pub const Guest = struct {
                 transcript_owned = true;
                 if (transcript_bytes.len > Buffer.max_transcript_bytes) return error.GuestBufferTooSmall;
             }
-            var exported = try self.runspace.exportRun(handle);
-            defer exported.deinit(self.allocator);
             if (preview.prior_run_receipt_fingerprint) |receipt_fingerprint| {
                 std.mem.writeInt(u64, &self.receipt_bytes, receipt_fingerprint, .little);
                 self.receipt_len_value = 8;
