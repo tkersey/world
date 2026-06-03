@@ -11276,6 +11276,7 @@ pub const Guest = struct {
                 0x24 => {
                     const global_index = try readWasmU32(bytes, cursor);
                     if (global_index >= context.global_count) return error.InvalidFrameEncoding;
+                    if (!try wasmGlobalMutable(context.global_section, global_index, context.function_count)) return error.InvalidFrameEncoding;
                     try popWasmValue(context, try wasmGlobalType(context.global_section, global_index, context.function_count));
                 },
                 0x28...0x2f => {
@@ -11481,6 +11482,22 @@ pub const Guest = struct {
                 if (mutable > 1) return error.InvalidFrameEncoding;
                 try skipWasmInitExpr(section, &cursor, function_count, index, null);
                 if (index == global_index) return value_type;
+            }
+            return error.InvalidFrameEncoding;
+        }
+
+        fn wasmGlobalMutable(section: []const u8, global_index: u32, function_count: u32) !bool {
+            var cursor: usize = 0;
+            const count = try readWasmU32(section, &cursor);
+            if (global_index >= count) return error.InvalidFrameEncoding;
+            var index: u32 = 0;
+            while (index < count) : (index += 1) {
+                const value_type = try readWasmU8(section, &cursor);
+                if (!validWasmValueType(value_type)) return error.InvalidFrameEncoding;
+                const mutable = try readWasmU8(section, &cursor);
+                if (mutable > 1) return error.InvalidFrameEncoding;
+                try skipWasmInitExpr(section, &cursor, function_count, index, null);
+                if (index == global_index) return mutable == 1;
             }
             return error.InvalidFrameEncoding;
         }
