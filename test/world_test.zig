@@ -5069,6 +5069,10 @@ test "runspace interrupted supervision handoff accepts transcript-bearing export
     }).admitForTarget(fixtures.Ports.Target, PortsEnv, later_turn_package, .{});
     defer later_turn_admission.deinit(std.testing.allocator);
     try std.testing.expect(later_turn_admission.report.accepted);
+    var later_turn_receiver = world.Runspace.init(std.testing.allocator, .{});
+    defer later_turn_receiver.deinit();
+    const later_turn_handle = try later_turn_receiver.installRunImage(later_turn_image);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_supervision, (try later_turn_receiver.getSlotSummary(later_turn_handle)).status);
 
     const unwitnessed_later_turn_state = world.RunState.init(.{
         .target_ref_fingerprint = image.target_ref.target_ref_fingerprint,
@@ -5094,6 +5098,9 @@ test "runspace interrupted supervision handoff accepts transcript-bearing export
         .policy = world.Admission.AdmissionPolicy.test_fixture,
     }).admitForTarget(fixtures.Ports.Target, PortsEnv, unwitnessed_later_turn_package, .{});
     try std.testing.expect(!unwitnessed_later_turn_admission.report.accepted);
+    var unwitnessed_receiver = world.Runspace.init(std.testing.allocator, .{});
+    defer unwitnessed_receiver.deinit();
+    try std.testing.expectError(error.InvalidFrameEncoding, unwitnessed_receiver.installRunImage(unwitnessed_later_turn_image));
 
     const package = world.Admission.TransferPackage.init(.{
         .kind = .run_reference,

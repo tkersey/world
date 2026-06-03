@@ -7733,6 +7733,7 @@ pub const Runspace = struct {
         if (self.config.require_supervision) return error.SupervisionDenied;
         try image.validate(.{});
         const run_status = try statusFromInstallableRunImageState(image.current_state);
+        if (image.current_state.status == .parked_on_supervision and !runImageIsInterruptedSupervisionExport(image)) return error.InvalidFrameEncoding;
         const pending_frame = if (image.current_state.status == .parked_on_port)
             image.pending_request_frame orelse return error.HandoffPendingFrameMismatch
         else
