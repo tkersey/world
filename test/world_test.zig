@@ -335,12 +335,22 @@ fn appendGuestWasmFunctionSectionWithAlloc(module: *std.ArrayList(u8)) !void {
     try appendWasmSection(module, 3, functions.items);
 }
 
+fn appendGuestWasmMemorySection(module: *std.ArrayList(u8)) !void {
+    var memory: std.ArrayList(u8) = .empty;
+    defer memory.deinit(std.testing.allocator);
+    try appendWasmU32(&memory, 1);
+    try memory.append(std.testing.allocator, 0);
+    try appendWasmU32(&memory, 1);
+    try appendWasmSection(module, 5, memory.items);
+}
+
 fn syntheticGuestWasm(allocator: std.mem.Allocator) ![]u8 {
     var module: std.ArrayList(u8) = .empty;
     errdefer module.deinit(allocator);
     try module.appendSlice(allocator, "\x00asm\x01\x00\x00\x00");
     try appendGuestWasmTypeSection(&module);
     try appendGuestWasmFunctionSection(&module, false);
+    try appendGuestWasmMemorySection(&module);
     var exports: std.ArrayList(u8) = .empty;
     defer exports.deinit(allocator);
     try appendWasmU32(&exports, @intCast(world.Guest.Abi.required_exports.len + 1));
@@ -362,6 +372,28 @@ fn syntheticWrongSignatureGuestWasm(allocator: std.mem.Allocator) ![]u8 {
     try module.appendSlice(allocator, "\x00asm\x01\x00\x00\x00");
     try appendGuestWasmTypeSection(&module);
     try appendGuestWasmFunctionSection(&module, true);
+    try appendGuestWasmMemorySection(&module);
+    var exports: std.ArrayList(u8) = .empty;
+    defer exports.deinit(allocator);
+    try appendWasmU32(&exports, @intCast(world.Guest.Abi.required_exports.len + 1));
+    for (world.Guest.Abi.required_exports, 0..) |name, index| {
+        try appendWasmName(&exports, name);
+        try exports.append(allocator, 0);
+        try appendWasmU32(&exports, @intCast(index));
+    }
+    try appendWasmName(&exports, "memory");
+    try exports.append(allocator, 2);
+    try appendWasmU32(&exports, 0);
+    try appendWasmSection(&module, 7, exports.items);
+    return module.toOwnedSlice(allocator);
+}
+
+fn syntheticMissingMemoryGuestWasm(allocator: std.mem.Allocator) ![]u8 {
+    var module: std.ArrayList(u8) = .empty;
+    errdefer module.deinit(allocator);
+    try module.appendSlice(allocator, "\x00asm\x01\x00\x00\x00");
+    try appendGuestWasmTypeSection(&module);
+    try appendGuestWasmFunctionSection(&module, false);
     var exports: std.ArrayList(u8) = .empty;
     defer exports.deinit(allocator);
     try appendWasmU32(&exports, @intCast(world.Guest.Abi.required_exports.len + 1));
@@ -415,6 +447,7 @@ fn syntheticGuestWasmWithImport(allocator: std.mem.Allocator, module_name: []con
     try appendWasmU32(&imports, 0);
     try appendWasmSection(&module, 2, imports.items);
     try appendGuestWasmFunctionSection(&module, false);
+    try appendGuestWasmMemorySection(&module);
     var exports: std.ArrayList(u8) = .empty;
     defer exports.deinit(allocator);
     try appendWasmU32(&exports, @intCast(world.Guest.Abi.required_exports.len + 1));
@@ -499,6 +532,13 @@ test "wasm export inspector validates required exports and forbidden imports" {
     const wrong_signature_inspection = try world.Guest.Wasm.inspect(wrong_signature_exports);
     try std.testing.expect(!wrong_signature_inspection.required_exports_present);
     try std.testing.expect(!wrong_signature_inspection.passed());
+
+    const missing_memory = try syntheticMissingMemoryGuestWasm(std.testing.allocator);
+    defer std.testing.allocator.free(missing_memory);
+    const missing_memory_inspection = try world.Guest.Wasm.inspect(missing_memory);
+    try std.testing.expect(missing_memory_inspection.required_exports_present);
+    try std.testing.expect(!missing_memory_inspection.memory_export_present);
+    try std.testing.expect(!missing_memory_inspection.passed());
 
     const alloc_only = try syntheticAllocOnlyGuestWasm(std.testing.allocator);
     defer std.testing.allocator.free(alloc_only);
@@ -4572,6 +4612,13 @@ test "guest core rejects invalid and unknown response frames at byte boundary" {
     });
     try std.testing.expectEqual(world.Guest.Status.parked, guest.tick());
     try std.testing.expectEqual(world.Guest.Status.invalid_frame, guest.submitResponse(&.{ 0, 1, 2, 3 }));
+    const invalid_error_len = guest.lastErrorLen();
+    try std.testing.expect(invalid_error_len > 0);
+    const invalid_error = try std.testing.allocator.alloc(u8, invalid_error_len);
+    defer std.testing.allocator.free(invalid_error);
+    try std.testing.expectEqual(invalid_error_len, guest.readLastError(invalid_error));
+    try std.testing.expectEqual(world.Guest.Status.invalid_frame, guest.status());
+    try std.testing.expectEqual(invalid_error_len, guest.lastErrorLen());
 
     const request_len = guest.pendingRequestLen(0);
     const request_bytes = try std.testing.allocator.alloc(u8, request_len);

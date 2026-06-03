@@ -10056,7 +10056,7 @@ pub const Guest = struct {
         }
 
         pub fn readLastError(self: *@This(), out: []u8) usize {
-            return self.copyToGuestBuffer(self.last_error[0..self.last_error_len_value], out);
+            return copyToGuestBufferNoStatus(self.last_error[0..self.last_error_len_value], out);
         }
 
         fn refreshStatus(self: *@This()) Status {
@@ -10130,6 +10130,12 @@ pub const Guest = struct {
             }
             @memcpy(out[0..bytes.len], bytes);
             _ = self.refreshStatus();
+            return bytes.len;
+        }
+
+        fn copyToGuestBufferNoStatus(bytes: []const u8, out: []u8) usize {
+            if (out.len < bytes.len) return bytes.len;
+            @memcpy(out[0..bytes.len], bytes);
             return bytes.len;
         }
 
@@ -10416,6 +10422,7 @@ pub const Guest = struct {
             var required_mask: u64 = 0;
             var type_section: []const u8 = &.{};
             var function_section: []const u8 = &.{};
+            var memory_count: u32 = 0;
             var cursor: usize = 8;
             while (cursor < bytes.len) {
                 const section_id = bytes[cursor];
@@ -10427,7 +10434,8 @@ pub const Guest = struct {
                     1 => type_section = bytes[cursor..section_end],
                     2 => inspection.function_import_count = try inspectImportSection(bytes[cursor..section_end], &inspection),
                     3 => function_section = bytes[cursor..section_end],
-                    7 => try inspectExportSection(bytes[cursor..section_end], type_section, function_section, inspection.function_import_count, &inspection, &required_mask),
+                    5 => memory_count = try inspectMemorySection(bytes[cursor..section_end]),
+                    7 => try inspectExportSection(bytes[cursor..section_end], type_section, function_section, memory_count, inspection.function_import_count, &inspection, &required_mask),
                     else => {},
                 }
                 cursor = section_end;
@@ -10458,7 +10466,16 @@ pub const Guest = struct {
             return function_import_count;
         }
 
-        fn inspectExportSection(section: []const u8, type_section: []const u8, function_section: []const u8, function_import_count: u32, inspection: *Inspection, required_mask: *u64) !void {
+        fn inspectMemorySection(section: []const u8) !u32 {
+            var cursor: usize = 0;
+            const count = try readWasmU32(section, &cursor);
+            var index: u32 = 0;
+            while (index < count) : (index += 1) try skipWasmLimits(section, &cursor);
+            if (cursor != section.len) return error.InvalidFrameEncoding;
+            return count;
+        }
+
+        fn inspectExportSection(section: []const u8, type_section: []const u8, function_section: []const u8, memory_count: u32, function_import_count: u32, inspection: *Inspection, required_mask: *u64) !void {
             var cursor: usize = 0;
             const count = try readWasmU32(section, &cursor);
             var index: u32 = 0;
@@ -10467,7 +10484,7 @@ pub const Guest = struct {
                 const kind = try readWasmU8(section, &cursor);
                 const export_index = try readWasmU32(section, &cursor);
                 inspection.export_count += 1;
-                if (kind == 2 and std.mem.eql(u8, name, "memory")) inspection.memory_export_present = true;
+                if (kind == 2 and std.mem.eql(u8, name, "memory") and export_index < memory_count) inspection.memory_export_present = true;
                 if (kind == 0 and std.mem.eql(u8, name, "world_alloc") and try functionSignatureMatches(type_section, function_section, function_import_count, export_index, .{ .param_count = 1, .result_count = 1 })) inspection.alloc_export_present = true;
                 if (kind == 0 and std.mem.eql(u8, name, "world_free") and try functionSignatureMatches(type_section, function_section, function_import_count, export_index, .{ .param_count = 2, .result_count = 0 })) inspection.free_export_present = true;
                 for (Abi.required_exports, 0..) |required, required_index| {
