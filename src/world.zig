@@ -9955,37 +9955,36 @@ pub const Guest = struct {
         }
 
         pub fn pendingRequestLen(self: *@This(), index: u32) usize {
-            const pending = self.pendingByIndex(index) catch |err| {
-                _ = self.mapPendingLookupError(err);
-                return 0;
-            };
-            const request = pending.request_frame orelse {
-                _ = self.setStatus(.unknown_pending, "pending port has no request frame");
-                return 0;
-            };
-            const bytes = request.encode(self.allocator) catch |err| {
-                _ = self.mapRunspaceError(err);
-                return 0;
-            };
+            const bytes = self.pendingRequestBytes(index) catch return 0;
             defer self.allocator.free(bytes);
             return bytes.len;
         }
 
         pub fn readPendingRequest(self: *@This(), index: u32, out: []u8) usize {
+            const bytes = self.pendingRequestBytes(index) catch return 0;
+            defer self.allocator.free(bytes);
+            return self.copyToGuestBuffer(bytes, out);
+        }
+
+        fn pendingRequestBytes(self: *@This(), index: u32) ![]const u8 {
             const pending = self.pendingByIndex(index) catch |err| {
                 _ = self.mapPendingLookupError(err);
-                return 0;
+                return err;
             };
             const request = pending.request_frame orelse {
                 _ = self.setStatus(.unknown_pending, "pending port has no request frame");
-                return 0;
+                return error.InvalidPendingPortTransition;
             };
             const bytes = request.encode(self.allocator) catch |err| {
                 _ = self.mapRunspaceError(err);
-                return 0;
+                return err;
             };
-            defer self.allocator.free(bytes);
-            return self.copyToGuestBuffer(bytes, out);
+            errdefer self.allocator.free(bytes);
+            if (bytes.len > Buffer.max_request_bytes) {
+                _ = self.setStatus(.buffer_too_small, "pending request frame exceeds guest request byte cap");
+                return error.OutOfMemory;
+            }
+            return bytes;
         }
 
         pub fn submitResponse(self: *@This(), bytes: []const u8) Status {
@@ -10395,6 +10394,7 @@ pub const Guest = struct {
             pub fn passed(self: @This()) bool {
                 return self.required_exports_present and
                     (self.memory_export_present or (self.alloc_export_present and self.free_export_present)) and
+                    self.import_count == 0 and
                     self.forbidden_import_count == 0;
             }
         };
@@ -10452,10 +10452,10 @@ pub const Guest = struct {
                 _ = try readWasmU32(section, &cursor);
                 inspection.export_count += 1;
                 if (kind == 2 and std.mem.eql(u8, name, "memory")) inspection.memory_export_present = true;
-                if (std.mem.eql(u8, name, "world_alloc")) inspection.alloc_export_present = true;
-                if (std.mem.eql(u8, name, "world_free")) inspection.free_export_present = true;
+                if (kind == 0 and std.mem.eql(u8, name, "world_alloc")) inspection.alloc_export_present = true;
+                if (kind == 0 and std.mem.eql(u8, name, "world_free")) inspection.free_export_present = true;
                 for (Abi.required_exports, 0..) |required, required_index| {
-                    if (std.mem.eql(u8, name, required)) required_mask.* |= @as(u64, 1) << @intCast(required_index);
+                    if (kind == 0 and std.mem.eql(u8, name, required)) required_mask.* |= @as(u64, 1) << @intCast(required_index);
                 }
             }
             if (cursor != section.len) return error.InvalidFrameEncoding;
@@ -10553,8 +10553,8 @@ pub const Guest = struct {
         hashBool(&hasher, report.final_result_match);
         hashBool(&hasher, report.transcript_match);
         hashBool(&hasher, report.receipt_match);
-        for (report.blockers) |blocker| hashBytes(&hasher, blocker);
-        for (report.warnings) |warning| hashBytes(&hasher, warning);
+        hashStringSlice(&hasher, report.blockers);
+        hashStringSlice(&hasher, report.warnings);
         return hasher.final();
     }
 
@@ -10569,6 +10569,14 @@ pub const Guest = struct {
     fn hashU64Slice(hasher: *std.hash.Wyhash, values: []const u64) void {
         hashU64(hasher, values.len);
         for (values) |value| hashU64(hasher, value);
+    }
+
+    fn hashStringSlice(hasher: *std.hash.Wyhash, values: []const []const u8) void {
+        hashU64(hasher, values.len);
+        for (values) |value| {
+            hashU64(hasher, value.len);
+            hashBytes(hasher, value);
+        }
     }
 };
 

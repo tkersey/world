@@ -300,6 +300,43 @@ fn syntheticGuestWasm(allocator: std.mem.Allocator) ![]u8 {
     return module.toOwnedSlice(allocator);
 }
 
+fn syntheticGuestWasmWithImport(allocator: std.mem.Allocator, module_name: []const u8, import_name: []const u8) ![]u8 {
+    var module: std.ArrayList(u8) = .empty;
+    errdefer module.deinit(allocator);
+    try module.appendSlice(allocator, "\x00asm\x01\x00\x00\x00");
+    var imports: std.ArrayList(u8) = .empty;
+    defer imports.deinit(allocator);
+    try appendWasmU32(&imports, 1);
+    try appendWasmName(&imports, module_name);
+    try appendWasmName(&imports, import_name);
+    try imports.append(allocator, 0);
+    try appendWasmU32(&imports, 0);
+    try appendWasmSection(&module, 2, imports.items);
+    const valid = try syntheticGuestWasm(allocator);
+    defer allocator.free(valid);
+    try module.appendSlice(allocator, valid[8..]);
+    return module.toOwnedSlice(allocator);
+}
+
+fn syntheticNonFunctionExportGuestWasm(allocator: std.mem.Allocator) ![]u8 {
+    var module: std.ArrayList(u8) = .empty;
+    errdefer module.deinit(allocator);
+    try module.appendSlice(allocator, "\x00asm\x01\x00\x00\x00");
+    var exports: std.ArrayList(u8) = .empty;
+    defer exports.deinit(allocator);
+    try appendWasmU32(&exports, @intCast(world.Guest.Abi.required_exports.len + 1));
+    for (world.Guest.Abi.required_exports, 0..) |name, index| {
+        try appendWasmName(&exports, name);
+        try exports.append(allocator, 3);
+        try appendWasmU32(&exports, @intCast(index));
+    }
+    try appendWasmName(&exports, "memory");
+    try exports.append(allocator, 2);
+    try appendWasmU32(&exports, 0);
+    try appendWasmSection(&module, 7, exports.items);
+    return module.toOwnedSlice(allocator);
+}
+
 fn syntheticForbiddenImportWasm(allocator: std.mem.Allocator) ![]u8 {
     var module: std.ArrayList(u8) = .empty;
     errdefer module.deinit(allocator);
@@ -330,6 +367,20 @@ test "wasm export inspector validates required exports and forbidden imports" {
     try std.testing.expectEqual(@as(usize, 1), forbidden_inspection.import_count);
     try std.testing.expectEqual(@as(usize, 1), forbidden_inspection.forbidden_import_count);
     try std.testing.expect(!forbidden_inspection.passed());
+
+    const arbitrary_import = try syntheticGuestWasmWithImport(std.testing.allocator, "env", "log");
+    defer std.testing.allocator.free(arbitrary_import);
+    const arbitrary_import_inspection = try world.Guest.Wasm.inspect(arbitrary_import);
+    try std.testing.expect(arbitrary_import_inspection.required_exports_present);
+    try std.testing.expectEqual(@as(usize, 1), arbitrary_import_inspection.import_count);
+    try std.testing.expectEqual(@as(usize, 0), arbitrary_import_inspection.forbidden_import_count);
+    try std.testing.expect(!arbitrary_import_inspection.passed());
+
+    const non_function_exports = try syntheticNonFunctionExportGuestWasm(std.testing.allocator);
+    defer std.testing.allocator.free(non_function_exports);
+    const non_function_inspection = try world.Guest.Wasm.inspect(non_function_exports);
+    try std.testing.expect(!non_function_inspection.required_exports_present);
+    try std.testing.expect(!non_function_inspection.passed());
 }
 
 const MissingDispatchTarget = struct {
@@ -4324,6 +4375,56 @@ test "guest core drives one run through canonical request and response bytes" {
     try std.testing.expectEqual(world.TranscriptImage.FinalStatus.completed, transcript_image.final_status);
 }
 
+test "guest core rejects pending request bytes above ABI cap" {
+    var guest = world.Guest.Core.init(std.testing.allocator, .{});
+    defer guest.deinit();
+    const oversized_payload = try std.testing.allocator.alloc(u8, world.Guest.Buffer.max_request_bytes + 1);
+    defer std.testing.allocator.free(oversized_payload);
+    @memset(oversized_payload, 'x');
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const run_handle = world.RunHandle.init(.{
+        .runspace_fingerprint = guest.runspace.runspace_fingerprint,
+        .local_run_id = 1,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+    });
+    var payload_image = try world.Frame.ValueImage.fromValue(
+        std.testing.allocator,
+        0,
+        null,
+        null,
+        oversized_payload,
+        world.ValuePolicy.portable,
+    );
+    var request = world.Frame.Request.init(.{
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+        .world_surface_replay_scope_fingerprint = target_ref.world_surface_replay_scope_fingerprint,
+        .target_certificate_fingerprint = target_ref.target_certificate_fingerprint,
+        .world_port_id = PortsDecl.world_port_id,
+        .residual_site_index = fixtures.Ports.ApprovalRequest.index,
+        .residual_site_fingerprint = fixtures.Ports.ApprovalRequest.fingerprint,
+        .request_fingerprint = 0x6775_6573_745f_6269,
+        .turn_index = 0,
+        .payload_value_table_id = 0,
+        .expected_response_value_table_id = 1,
+        .payload_image = payload_image,
+    });
+    payload_image = undefined;
+    defer request.deinit(std.testing.allocator);
+    _ = try guest.runspace.mailbox.push(.{
+        .run_handle = run_handle,
+        .mailbox_id = 0,
+        .request = request,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .inserted_event_index = 0,
+    });
+
+    try std.testing.expectEqual(@as(usize, 0), guest.pendingRequestLen(0));
+    try std.testing.expectEqual(world.Guest.Status.buffer_too_small, guest.status());
+    var out: [world.Guest.Buffer.max_request_bytes]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, 0), guest.readPendingRequest(0, &out));
+    try std.testing.expectEqual(world.Guest.Status.buffer_too_small, guest.status());
+}
+
 test "guest core rejects invalid and unknown response frames at byte boundary" {
     var runtime = boundary.Runtime.init(std.testing.allocator);
     defer runtime.deinit();
@@ -8099,6 +8200,40 @@ test "native guest one-port conformance matches normal runspace" {
     });
     try std.testing.expect(vector.vector_fingerprint != 0);
     try std.testing.expect(report.report_fingerprint != 0);
+}
+
+test "guest conformance report fingerprint delimits blockers and warnings" {
+    const split_blockers = [_][]const u8{ "ab", "c" };
+    const merged_blockers = [_][]const u8{ "a", "bc" };
+    const split_report = world.Guest.ConformanceReport.init(.{
+        .vector_fingerprint = 0xabc,
+        .native_run_result = .{ .status = .failed },
+        .native_abi_result = .{ .status = .failed },
+        .blockers = &split_blockers,
+    });
+    const merged_report = world.Guest.ConformanceReport.init(.{
+        .vector_fingerprint = 0xabc,
+        .native_run_result = .{ .status = .failed },
+        .native_abi_result = .{ .status = .failed },
+        .blockers = &merged_blockers,
+    });
+    try std.testing.expect(split_report.report_fingerprint != merged_report.report_fingerprint);
+
+    const split_warnings = [_][]const u8{ "xy", "z" };
+    const merged_warnings = [_][]const u8{ "x", "yz" };
+    const split_warning_report = world.Guest.ConformanceReport.init(.{
+        .vector_fingerprint = 0xdef,
+        .native_run_result = .{ .status = .failed },
+        .native_abi_result = .{ .status = .failed },
+        .warnings = &split_warnings,
+    });
+    const merged_warning_report = world.Guest.ConformanceReport.init(.{
+        .vector_fingerprint = 0xdef,
+        .native_run_result = .{ .status = .failed },
+        .native_abi_result = .{ .status = .failed },
+        .warnings = &merged_warnings,
+    });
+    try std.testing.expect(split_warning_report.report_fingerprint != merged_warning_report.report_fingerprint);
 }
 
 test "native guest agent conformance matches normal runspace" {

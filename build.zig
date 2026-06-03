@@ -465,7 +465,7 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World native guest conformance report example.",
             .expected_stdout =
             \\vector_fingerprint=d926bafecfbb1f5d
-            \\report_fingerprint=fac427e410431fd8
+            \\report_fingerprint=c97e38c05f644ec2
             \\conformance=true
             \\
             ,
