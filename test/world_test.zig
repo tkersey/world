@@ -344,6 +344,15 @@ fn appendGuestWasmMemorySection(module: *std.ArrayList(u8)) !void {
     try appendWasmSection(module, 5, memory.items);
 }
 
+fn appendGuestWasmInvalidLimitMemorySection(module: *std.ArrayList(u8)) !void {
+    var memory: std.ArrayList(u8) = .empty;
+    defer memory.deinit(std.testing.allocator);
+    try appendWasmU32(&memory, 1);
+    try memory.append(std.testing.allocator, 2);
+    try appendWasmU32(&memory, 1);
+    try appendWasmSection(module, 5, memory.items);
+}
+
 fn appendGuestWasmCodeSection(module: *std.ArrayList(u8), defined_function_count: usize, abi_version: u32) !void {
     var code: std.ArrayList(u8) = .empty;
     defer code.deinit(std.testing.allocator);
@@ -442,6 +451,29 @@ fn syntheticMissingMemoryGuestWasm(allocator: std.mem.Allocator) ![]u8 {
     try module.appendSlice(allocator, "\x00asm\x01\x00\x00\x00");
     try appendGuestWasmTypeSection(&module);
     try appendGuestWasmFunctionSection(&module, false);
+    var exports: std.ArrayList(u8) = .empty;
+    defer exports.deinit(allocator);
+    try appendWasmU32(&exports, @intCast(world.Guest.Abi.required_exports.len + 1));
+    for (world.Guest.Abi.required_exports, 0..) |name, index| {
+        try appendWasmName(&exports, name);
+        try exports.append(allocator, 0);
+        try appendWasmU32(&exports, @intCast(index));
+    }
+    try appendWasmName(&exports, "memory");
+    try exports.append(allocator, 2);
+    try appendWasmU32(&exports, 0);
+    try appendWasmSection(&module, 7, exports.items);
+    try appendGuestWasmCodeSection(&module, world.Guest.Abi.required_exports.len, world.Guest.Abi.version);
+    return module.toOwnedSlice(allocator);
+}
+
+fn syntheticInvalidLimitGuestWasm(allocator: std.mem.Allocator) ![]u8 {
+    var module: std.ArrayList(u8) = .empty;
+    errdefer module.deinit(allocator);
+    try module.appendSlice(allocator, "\x00asm\x01\x00\x00\x00");
+    try appendGuestWasmTypeSection(&module);
+    try appendGuestWasmFunctionSection(&module, false);
+    try appendGuestWasmInvalidLimitMemorySection(&module);
     var exports: std.ArrayList(u8) = .empty;
     defer exports.deinit(allocator);
     try appendWasmU32(&exports, @intCast(world.Guest.Abi.required_exports.len + 1));
@@ -608,6 +640,10 @@ test "wasm export inspector validates required exports and forbidden imports" {
     try std.testing.expectEqual(world.Guest.Abi.version + 1, stale_abi_inspection.abi_version);
     try std.testing.expect(stale_abi_inspection.required_exports_present);
     try std.testing.expect(!stale_abi_inspection.passed());
+
+    const invalid_limit = try syntheticInvalidLimitGuestWasm(std.testing.allocator);
+    defer std.testing.allocator.free(invalid_limit);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Guest.Wasm.inspect(invalid_limit));
 }
 
 const MissingDispatchTarget = struct {
