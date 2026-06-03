@@ -8230,7 +8230,20 @@ pub const Runspace = struct {
         var slot = &self.slots.items[index];
         if (slot.pending_mailbox_id != mailbox_id or slot.status != .parked_on_port) return error.StaleRunHandle;
         switch (response.status) {
-            .responded => {},
+            .responded => {
+                const accounting = try self.responseFrameAccounting(response);
+                if (slot.driver) |driver| {
+                    driver.beforeResponse(pending.world_port_id, .responded, accounting.response_bytes, accounting.value_image_bytes) catch |err| {
+                        if (err == error.HandlerPending and driver.supervisionInterrupted()) {
+                            return self.parkPendingOnSupervision(index, pending, mailbox_id, "manual response parked on supervision");
+                        }
+                        if (err == error.BudgetExceeded and driver.supervisionInterrupted()) {
+                            return self.parkPendingOnSupervision(index, pending, mailbox_id, "manual response parked on supervision");
+                        }
+                        return err;
+                    };
+                }
+            },
             .pending => {
                 const accounting = try self.responseFrameAccounting(response);
                 if (slot.driver) |driver| {
@@ -11112,7 +11125,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 }
 
                 pub fn runspaceResumeFrame(self: *Self, response_frame: Frame.Response) !Runspace.ResponseEvidence {
-                    const response_frame_fingerprint = try self.resumeFrameWithProvenance(response_frame, false, true);
+                    const response_frame_fingerprint = try self.resumeFrameWithProvenance(response_frame, false, false);
                     return self.last_response_evidence orelse .{
                         .response_fingerprint = response_frame.response_fingerprint,
                         .response_frame_fingerprint = response_frame_fingerprint,

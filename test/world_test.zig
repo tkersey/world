@@ -4055,6 +4055,30 @@ test "runspace manual default parks without environment dispatch" {
     try std.testing.expect(image.current_state.final_value_image_fingerprint != null);
 }
 
+test "runspace supervised manual response charges once" {
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+        .budget = world.Budget.init(.{ .max_port_responses = 1 }),
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{
+        .require_supervision = true,
+    });
+    defer runspace.deinit();
+
+    _ = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .permit = permit,
+    });
+    _ = try runspace.tick();
+    const response_event = try runspace.respondValue(0, @as(i32, 7));
+    try std.testing.expectEqual(world.Runspace.EventKind.run_resumed, response_event.kind);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
+}
+
 test "runspace failed manual response consumes mailbox and fails slot" {
     var runtime = boundary.Runtime.init(std.testing.allocator);
     defer runtime.deinit();
