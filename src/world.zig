@@ -7677,12 +7677,16 @@ pub const Runspace = struct {
         const target_ref = admitted_run.target_ref;
         try validateTargetRef(target_ref);
         if (admissionModeNeedsRunImage(admitted_run.mode)) {
-            const image = admitted_run.run_image orelse return error.InvalidFrameEncoding;
-            if (!runImageFitsAdmissionMode(image, admitted_run.mode)) return error.InvalidFrameEncoding;
+            _ = admitted_run.run_image orelse return error.InvalidFrameEncoding;
         }
         if (modeConsumesTranscript(admissionModeToRunMode(admitted_run.mode)) and !self.config.allow_replay_install) return error.RunspaceInstallDenied;
         if (admitted_run.run_image == null and modeConsumesTranscript(admissionModeToRunMode(admitted_run.mode))) return error.RunspaceInstallDenied;
         if (admitted_run.run_image) |image| {
+            if ((admissionModeNeedsRunImage(admitted_run.mode) or admitted_run.mode == .replay_only or admitted_run.mode == .verify_only) and
+                !runImageFitsAdmissionMode(image, admitted_run.mode))
+            {
+                return error.InvalidFrameEncoding;
+            }
             if (!self.config.allow_handoff_install) return error.RunspaceInstallDenied;
             if (image.kind == .replay_only_run and !self.config.allow_replay_install) return error.RunspaceInstallDenied;
             try image.validate(.{});

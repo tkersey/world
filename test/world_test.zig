@@ -3338,6 +3338,30 @@ test "runspace install admitted and replay records receipts summaries and events
         .mode = .resume_parked,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, runspace.installAdmitted(resume_with_completed_image));
+    const fresh_state_for_replay = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .not_started,
+    });
+    const fresh_image_for_replay = world.RunImage.init(.{
+        .kind = .full_target_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = fresh_state_for_replay,
+    });
+    const replay_with_fresh_image = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_5524,
+        .target_ref = target_ref,
+        .run_image = fresh_image_for_replay,
+        .mode = .replay_only,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, runspace.installAdmitted(replay_with_fresh_image));
+    const verify_with_fresh_image = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_5525,
+        .target_ref = target_ref,
+        .run_image = fresh_image_for_replay,
+        .mode = .verify_only,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, runspace.installAdmitted(verify_with_fresh_image));
     const admitted_handle = try runspace.installAdmitted(admitted);
     const admitted_summary = try runspace.getSlotSummary(admitted_handle);
     try std.testing.expectEqual(world.Runspace.RunStatus.admitted, admitted_summary.status);
