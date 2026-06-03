@@ -9937,6 +9937,15 @@ pub const Guest = struct {
             self.clearError();
         }
 
+        pub fn initSession(self: *@This()) void {
+            if (self.state == .done) {
+                self.resetSession();
+                return;
+            }
+            self.state = .initialized;
+            self.clearError();
+        }
+
         pub fn installMachineRun(self: *@This(), comptime Target: type, comptime Env: type, runtime: anytype, args: anytype, options: anytype) !void {
             if (self.handle != null) return self.failStatus(.invalid_state, "guest core already has an installed run");
             self.handle = try self.runspace.installMachineRun(Target, Env, runtime, args, options);
@@ -10216,7 +10225,7 @@ pub const Guest = struct {
         }
 
         pub fn world_init(self: *@This()) u32 {
-            self.core.resetSession();
+            self.core.initSession();
             return self.core.state.code();
         }
 

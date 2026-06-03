@@ -4723,6 +4723,21 @@ test "native guest world_init clears cached session state" {
     try std.testing.expectEqual(world.Guest.Status.parked.code(), guest.world_tick());
 }
 
+test "native guest world_init preserves newly installed run" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var guest = world.Guest.NativeGuest.init(std.testing.allocator, .{});
+    defer guest.deinit();
+
+    try guest.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    try std.testing.expectEqual(world.Guest.Status.initialized.code(), guest.world_init());
+    try std.testing.expectEqual(world.Guest.Status.parked.code(), guest.world_tick());
+    try std.testing.expectEqual(@as(u32, 1), guest.world_pending_count());
+}
+
 test "guest core pending response preserves parked request state" {
     var runtime = boundary.Runtime.init(std.testing.allocator);
     defer runtime.deinit();
