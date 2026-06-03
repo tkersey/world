@@ -93,6 +93,15 @@ pub const ResponseStatus = enum {
     failed,
 };
 
+fn responseStatusDeniedError(response_status: ResponseStatus, err: anyerror) bool {
+    return switch (response_status) {
+        .pending => err == error.PendingDenied,
+        .rejected => err == error.HandlerRejected,
+        .failed => err == error.HandlerFailed,
+        .responded => false,
+    };
+}
+
 pub const EventKind = enum {
     run_started,
     port_requested,
@@ -8359,6 +8368,10 @@ pub const Runspace = struct {
                     try self.ensureEventCapacity(1);
                     try self.events.ensureUnusedCapacity(self.allocator, 1);
                     driver.beforeResponse(pending.world_port_id, .pending, accounting.response_bytes, accounting.value_image_bytes) catch |err| {
+                        if (responseStatusDeniedError(.pending, err)) {
+                            _ = try self.parkPendingOnSupervision(index, pending, mailbox_id, "manual pending response denied by supervision");
+                            return err;
+                        }
                         if (err == error.HandlerPending and driver.supervisionInterrupted()) {
                             return self.parkPendingOnSupervision(index, pending, mailbox_id, "manual pending response parked on supervision");
                         }
@@ -8378,6 +8391,10 @@ pub const Runspace = struct {
                         .response_bytes = accounting.response_bytes,
                         .value_image_bytes = accounting.value_image_bytes,
                     }) catch |err| {
+                        if (responseStatusDeniedError(.pending, err)) {
+                            _ = try self.parkPendingOnSupervision(index, pending, mailbox_id, "manual pending response denied by supervision");
+                            return err;
+                        }
                         if ((err == error.HandlerPending or err == error.BudgetExceeded) and supervisor.interrupted) {
                             return self.parkPendingOnSupervision(index, pending, mailbox_id, "manual pending response parked on supervision");
                         }
@@ -8533,6 +8550,10 @@ pub const Runspace = struct {
         const accounting = try self.responseFrameAccounting(response);
         if (slot.driver) |driver| {
             driver.beforeTerminalResponse(pending.world_port_id, status, accounting.response_bytes, accounting.value_image_bytes) catch |err| {
+                if (responseStatusDeniedError(status, err)) {
+                    _ = try self.parkPendingOnSupervision(index, pending, mailbox_id, "terminal response denied by supervision");
+                    return err;
+                }
                 if ((err == error.HandlerPending or err == error.BudgetExceeded) and driver.supervisionInterrupted()) {
                     return try self.parkPendingOnSupervision(index, pending, mailbox_id, "terminal response parked on supervision");
                 }
@@ -8569,6 +8590,10 @@ pub const Runspace = struct {
                 .response_bytes = accounting.response_bytes,
                 .value_image_bytes = accounting.value_image_bytes,
             }) catch |err| {
+                if (responseStatusDeniedError(status, err)) {
+                    _ = try self.parkPendingOnSupervision(index, pending, mailbox_id, "terminal response denied by supervision");
+                    return err;
+                }
                 if ((err == error.HandlerPending or err == error.BudgetExceeded) and supervisor.interrupted) {
                     return try self.parkPendingOnSupervision(index, pending, mailbox_id, "terminal response parked on supervision");
                 }
@@ -10085,6 +10110,7 @@ pub const Guest = struct {
             const mailbox_id = self.matchPendingMailbox(response) catch |err| return self.mapPendingLookupError(err);
             _ = self.runspace.respond(mailbox_id, response) catch |err| {
                 if (err == error.HandlerPending) return self.refreshStatus();
+                if (self.mapDeniedResponseStatus(response.status, err)) |mapped_status| return mapped_status;
                 return self.mapRunspaceError(err);
             };
             return self.refreshStatus();
@@ -10252,6 +10278,16 @@ pub const Guest = struct {
                 error.ReplayMissing,
                 => self.setStatus(.invalid_frame, "response frame does not match pending request"),
                 else => self.setStatus(.unknown_pending, "pending request was not found"),
+            };
+        }
+
+        fn mapDeniedResponseStatus(self: *@This(), response_status: ResponseStatus, err: anyerror) ?Status {
+            if (!responseStatusDeniedError(response_status, err)) return null;
+            return switch (response_status) {
+                .pending => self.setStatus(.supervision_denied, "supervision denied pending response"),
+                .rejected => self.setStatus(.supervision_denied, "supervision denied rejected response"),
+                .failed => self.setStatus(.supervision_denied, "supervision denied failed response"),
+                .responded => unreachable,
             };
         }
 

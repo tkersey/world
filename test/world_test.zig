@@ -3736,7 +3736,7 @@ test "runspace terminal port decisions honor supervision before consuming mailbo
     try std.testing.expectError(error.HandlerRejected, reject_runspace.reject(0, "strict policy denies reject"));
     try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try reject_runspace.mailbox.get(0)).status);
     const reject_summary = try reject_runspace.getSlotSummary(reject_handle);
-    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, reject_summary.status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_supervision, reject_summary.status);
     try std.testing.expectEqual(@as(?u64, 0), reject_summary.pending_mailbox_id);
     try std.testing.expectEqual(@as(usize, 1), reject_runspace.report().pending_port_count);
     try std.testing.expectEqual(@as(usize, 1), reject_runspace.report().blocker_count);
@@ -3761,7 +3761,7 @@ test "runspace terminal port decisions honor supervision before consuming mailbo
     try std.testing.expectError(error.HandlerFailed, fail_runspace.fail(0, "strict policy denies fail"));
     try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try fail_runspace.mailbox.get(0)).status);
     const fail_summary = try fail_runspace.getSlotSummary(fail_handle);
-    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, fail_summary.status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_supervision, fail_summary.status);
     try std.testing.expectEqual(@as(?u64, 0), fail_summary.pending_mailbox_id);
     try std.testing.expectEqual(@as(usize, 1), fail_runspace.report().pending_port_count);
     try std.testing.expectEqual(@as(usize, 1), fail_runspace.report().blocker_count);
@@ -3799,7 +3799,7 @@ test "runspace terminal port decisions honor supervision before consuming mailbo
     const admitted_handle = try admitted_runspace.installAdmitted(admitted);
     try std.testing.expectError(error.HandlerFailed, admitted_runspace.fail(0, "strict policy denies imported fail"));
     try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try admitted_runspace.mailbox.get(0)).status);
-    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try admitted_runspace.getSlotSummary(admitted_handle)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_supervision, (try admitted_runspace.getSlotSummary(admitted_handle)).status);
 }
 
 test "runspace terminal response byte budget parks without consuming mailbox" {
@@ -5408,6 +5408,60 @@ test "guest core supervision-parked pending response does not expose pending wor
     try std.testing.expectEqual(world.Guest.Status.supervision_denied, guest.submitResponse(pending_response_bytes));
 }
 
+test "guest core maps strict supervised response status denial without failing run" {
+    const cases = [_]struct {
+        status: world.ResponseStatus,
+        fingerprint: u64,
+    }{
+        .{ .status = .pending, .fingerprint = 0x7374_7269_6374_0001 },
+        .{ .status = .rejected, .fingerprint = 0x7374_7269_6374_0002 },
+        .{ .status = .failed, .fingerprint = 0x7374_7269_6374_0003 },
+    };
+
+    for (cases) |case| {
+        const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+            .mode = .fresh,
+            .policy = world.SupervisionPolicy.strict_fresh,
+        });
+        var runtime = boundary.Runtime.init(std.testing.allocator);
+        defer runtime.deinit();
+        var guest = world.Guest.Core.init(std.testing.allocator, .{ .require_supervision = true });
+        defer guest.deinit();
+
+        try guest.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+            .allocator = std.testing.allocator,
+            .mode = world.Mode.fresh,
+            .permit = permit,
+        });
+        try std.testing.expectEqual(world.Guest.Status.parked, guest.tick());
+        const request_len = guest.pendingRequestLen(0);
+        const request_bytes = try std.testing.allocator.alloc(u8, request_len);
+        defer std.testing.allocator.free(request_bytes);
+        _ = guest.readPendingRequest(0, request_bytes);
+        var request = try world.Frame.Request.decode(std.testing.allocator, request_bytes);
+        defer request.deinit(std.testing.allocator);
+        const denied_response = world.Frame.Response.init(.{
+            .world_surface_fingerprint = request.world_surface_fingerprint,
+            .target_certificate_fingerprint = request.target_certificate_fingerprint,
+            .world_port_id = request.world_port_id,
+            .request_fingerprint = request.request_fingerprint,
+            .response_kind = .@"resume",
+            .response_fingerprint = case.fingerprint,
+            .replay_key = request.replay_key_seed.withResponse(case.fingerprint).fingerprint(),
+            .status = case.status,
+        });
+        const denied_response_bytes = try denied_response.encode(std.testing.allocator);
+        defer std.testing.allocator.free(denied_response_bytes);
+
+        try std.testing.expectEqual(world.Guest.Status.supervision_denied, guest.submitResponse(denied_response_bytes));
+        try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_supervision, (try guest.runspace.getSlotSummary(guest.handle.?)).status);
+        try std.testing.expectEqual(@as(usize, 0), guest.pendingCount());
+        try std.testing.expectEqual(@as(usize, 0), guest.pendingRequestLen(0));
+        try std.testing.expect(guest.lastErrorLen() > 0);
+        try std.testing.expectEqual(world.Guest.Status.supervision_denied, guest.submitResponse(denied_response_bytes));
+    }
+}
+
 test "guest core reports supervision-only park without exposing pending request" {
     const policy = world.SupervisionPolicy.init(.{
         .allow_fresh_calls = true,
@@ -5764,7 +5818,7 @@ test "runspace raw terminal response checks supervision before consuming mailbox
     try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
     try std.testing.expectError(error.HandlerFailed, runspace.respond(0, failed_response));
     try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
-    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_supervision, (try runspace.getSlotSummary(handle)).status);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().blocker_count);
 }
@@ -5803,7 +5857,7 @@ test "runspace pending manual response checks supervision before preserving mail
 
     try std.testing.expectError(error.PendingDenied, runspace.respond(0, pending_response));
     try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
-    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_supervision, (try runspace.getSlotSummary(handle)).status);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
 }
 
