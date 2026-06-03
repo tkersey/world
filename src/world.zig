@@ -10093,10 +10093,7 @@ pub const Guest = struct {
             defer image.deinit(self.allocator);
             const encoded = try image.encode(self.allocator);
             errdefer self.allocator.free(encoded);
-            if (encoded.len > Buffer.max_result_bytes) {
-                self.allocator.free(encoded);
-                return error.OutOfMemory;
-            }
+            if (encoded.len > Buffer.max_result_bytes) return error.OutOfMemory;
             if (image.prior_run_receipt_fingerprint) |receipt_fingerprint| {
                 std.mem.writeInt(u64, &self.receipt_bytes, receipt_fingerprint, .little);
                 self.receipt_len_value = 8;
@@ -10104,10 +10101,7 @@ pub const Guest = struct {
             if (image.transcript_image) |transcript| {
                 const transcript_bytes = try transcript.encode(self.allocator);
                 errdefer self.allocator.free(transcript_bytes);
-                if (transcript_bytes.len > Buffer.max_transcript_bytes) {
-                    self.allocator.free(transcript_bytes);
-                    return error.OutOfMemory;
-                }
+                if (transcript_bytes.len > Buffer.max_transcript_bytes) return error.OutOfMemory;
                 self.transcript_bytes = transcript_bytes;
             }
             self.result_bytes = encoded;

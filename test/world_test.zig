@@ -4805,6 +4805,33 @@ test "guest core rejects pending request bytes above ABI cap" {
     try std.testing.expectEqual(world.Guest.Status.buffer_too_small, guest.status());
 }
 
+test "guest core oversized result cap does not double free encoded image" {
+    var guest = world.Guest.Core.init(std.testing.allocator, .{});
+    defer guest.deinit();
+    const metadata = try std.testing.allocator.alloc(u8, world.Guest.Buffer.max_result_bytes + 1);
+    defer std.testing.allocator.free(metadata);
+    @memset(metadata, 'r');
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const import_set = world.ImportSet.fromTarget(fixtures.Ports.Target);
+    const state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .completed,
+    });
+    const image = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = import_set.import_set_fingerprint,
+        .current_state = state,
+        .metadata = metadata,
+    });
+
+    try guest.installRunImage(image);
+    try std.testing.expectEqual(world.Guest.Status.done, guest.tick());
+    try std.testing.expectEqual(@as(usize, 0), guest.resultLen());
+    try std.testing.expectEqual(world.Guest.Status.failed, guest.status());
+    try std.testing.expect(guest.lastErrorLen() > 0);
+}
+
 test "guest core rejects invalid and unknown response frames at byte boundary" {
     var runtime = boundary.Runtime.init(std.testing.allocator);
     defer runtime.deinit();
