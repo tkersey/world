@@ -8795,7 +8795,7 @@ pub const Runspace = struct {
         return image;
     }
 
-    pub fn previewExportRun(self: *@This(), handle: RunHandle) !RunImage {
+    fn previewExportRun(self: *@This(), handle: RunHandle) !RunImage {
         const index = try self.slotIndex(handle);
         const slot = &self.slots.items[index];
         if (!Runspace.canTransition(slot.status, .exported)) return error.InvalidRunspaceTransition;

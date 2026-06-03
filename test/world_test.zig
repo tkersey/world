@@ -6229,9 +6229,9 @@ test "runspace export checks supervision before snapshotting installed image" {
     try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try runspace.getSlotSummary(handle)).status);
 }
 
-test "runspace preview export failure restores handoff budget" {
-    var runspace = world.Runspace.init(std.testing.allocator, .{});
-    defer runspace.deinit();
+test "guest result preview failure restores handoff budget" {
+    var guest = world.Guest.Core.init(std.testing.allocator, .{});
+    defer guest.deinit();
     var transcript = world.Transcript.init(std.testing.allocator);
     defer transcript.deinit();
     try recordPortsTranscript(&transcript);
@@ -6255,7 +6255,7 @@ test "runspace preview export failure restores handoff budget" {
     });
     const supervisor = try world.Supervision.Supervisor.init(std.testing.allocator, permit, fixtures.Ports.Target.WorldPortTable.entries.len);
     const handle = world.RunHandle.init(.{
-        .runspace_fingerprint = runspace.runspace_fingerprint,
+        .runspace_fingerprint = guest.runspace.runspace_fingerprint,
         .local_run_id = 0,
         .target_ref_fingerprint = target_ref.target_ref_fingerprint,
         .permit_fingerprint = permit.permit_fingerprint,
@@ -6265,7 +6265,7 @@ test "runspace preview export failure restores handoff budget" {
         .transcript_image_fingerprint = installed_image.transcript_image.?.transcript_image_fingerprint,
         .status = .completed,
     });
-    try runspace.slots.append(std.testing.allocator, world.Runspace.RunSlot.fromState(.{
+    try guest.runspace.slots.append(std.testing.allocator, world.Runspace.RunSlot.fromState(.{
         .handle = handle,
         .target_ref = target_ref,
         .current_state = state,
@@ -6276,12 +6276,15 @@ test "runspace preview export failure restores handoff budget" {
         .owns_installed_run_image = true,
     }));
     installed_image_owned = false;
+    guest.handle = handle;
+    guest.state = .done;
 
-    try std.testing.expectError(error.BudgetExceeded, runspace.previewExportRun(handle));
-    try std.testing.expectEqual(@as(usize, 0), runspace.slots.items[0].supervisor.?.ledger.total_handoff_exports);
-    try std.testing.expect(runspace.slots.items[0].supervisor.?.ledger.exceeded_budget == null);
-    try std.testing.expect(runspace.slots.items[0].supervisor.?.last_check == null);
-    try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(@as(usize, 0), guest.resultLen());
+    try std.testing.expectEqual(world.Guest.Status.supervision_denied, guest.status());
+    try std.testing.expectEqual(@as(usize, 0), guest.runspace.slots.items[0].supervisor.?.ledger.total_handoff_exports);
+    try std.testing.expect(guest.runspace.slots.items[0].supervisor.?.ledger.exceeded_budget == null);
+    try std.testing.expect(guest.runspace.slots.items[0].supervisor.?.last_check == null);
+    try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try guest.runspace.getSlotSummary(handle)).status);
 }
 
 test "runspace export snapshot failure restores handoff budget" {
