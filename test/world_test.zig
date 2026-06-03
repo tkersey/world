@@ -6229,6 +6229,61 @@ test "runspace export checks supervision before snapshotting installed image" {
     try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try runspace.getSlotSummary(handle)).status);
 }
 
+test "runspace preview export failure restores handoff budget" {
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    try recordPortsTranscript(&transcript);
+    var transcript_image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    var installed_image = world.RunImage.fromTranscriptImage(fixtures.Ports.Target, transcript_image, .completed_run);
+    installed_image.owns_transcript_image = true;
+    transcript_image = undefined;
+    var installed_image_owned = true;
+    errdefer if (installed_image_owned) installed_image.deinit(std.testing.allocator);
+
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const export_policy = world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .allow_handoff_export = true,
+        .require_environment_certificate = true,
+    });
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = export_policy,
+        .budget = world.Budget.init(.{ .max_handoff_exports = 0 }),
+    });
+    const supervisor = try world.Supervision.Supervisor.init(std.testing.allocator, permit, fixtures.Ports.Target.WorldPortTable.entries.len);
+    const handle = world.RunHandle.init(.{
+        .runspace_fingerprint = runspace.runspace_fingerprint,
+        .local_run_id = 0,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .permit_fingerprint = permit.permit_fingerprint,
+    });
+    const state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .transcript_image_fingerprint = installed_image.transcript_image.?.transcript_image_fingerprint,
+        .status = .completed,
+    });
+    try runspace.slots.append(std.testing.allocator, world.Runspace.RunSlot.fromState(.{
+        .handle = handle,
+        .target_ref = target_ref,
+        .current_state = state,
+        .status = .completed,
+        .run_permit_fingerprint = permit.permit_fingerprint,
+        .supervisor = supervisor,
+        .installed_run_image = installed_image,
+        .owns_installed_run_image = true,
+    }));
+    installed_image_owned = false;
+
+    try std.testing.expectError(error.BudgetExceeded, runspace.previewExportRun(handle));
+    try std.testing.expectEqual(@as(usize, 0), runspace.slots.items[0].supervisor.?.ledger.total_handoff_exports);
+    try std.testing.expect(runspace.slots.items[0].supervisor.?.ledger.exceeded_budget == null);
+    try std.testing.expect(runspace.slots.items[0].supervisor.?.last_check == null);
+    try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try runspace.getSlotSummary(handle)).status);
+}
+
 test "runspace export snapshot failure restores handoff budget" {
     var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{});
     var runspace = world.Runspace.init(failing_allocator.allocator(), .{});

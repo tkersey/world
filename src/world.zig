@@ -8811,11 +8811,9 @@ pub const Runspace = struct {
         }
         var supervisor_snapshot = try self.snapshotSlotSupervisor(index);
         defer supervisor_snapshot.deinit(self.allocator);
+        errdefer supervisor_snapshot.restore(self, index);
         try self.beforeSlotHandoffExport(index);
-        const image = self.snapshotSlotImage(index) catch |err| {
-            supervisor_snapshot.restore(self, index);
-            return err;
-        };
+        const image = try self.snapshotSlotImage(index);
         supervisor_snapshot.restore(self, index);
         return image;
     }
