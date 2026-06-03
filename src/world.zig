@@ -11358,7 +11358,7 @@ pub const Guest = struct {
                 },
                 0x1c => try validateWasmTypedSelect(context, bytes, cursor),
                 0xfc => try validateWasmMiscInstruction(bytes, cursor, context),
-                0xfd, 0xfe => try skipWasmInstructionImmediate(opcode, bytes, cursor),
+                0xfd, 0xfe => return error.InvalidFrameEncoding,
                 else => return error.InvalidFrameEncoding,
             }
         }
@@ -11463,7 +11463,9 @@ pub const Guest = struct {
             }
             const type_index = try readWasmSignedTypeIndexFromFirst(bytes, cursor, first);
             if (type_index >= type_count) return error.InvalidFrameEncoding;
-            return wasmFunctionShape(type_section, type_index);
+            const shape = try wasmFunctionShape(type_section, type_index);
+            if (shape.param_count != 0) return error.InvalidFrameEncoding;
+            return shape;
         }
 
         fn readWasmSignedTypeIndexFromFirst(bytes: []const u8, cursor: *usize, first: u8) !u32 {
