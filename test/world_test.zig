@@ -3053,6 +3053,39 @@ test "runspace terminal response byte budget parks without consuming mailbox" {
     try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
 }
 
+test "runspace strict terminal response budget failure consumes mailbox and fails slot" {
+    const strict_policy = world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .allow_native_adapters = true,
+        .allow_failed_responses = true,
+        .require_environment_certificate = true,
+    });
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = strict_policy,
+        .budget = world.Budget.init(.{ .max_frame_response_bytes = 0 }),
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{
+        .require_supervision = true,
+    });
+    defer runspace.deinit();
+
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .permit = permit,
+    });
+    _ = try runspace.tick();
+
+    try std.testing.expectError(error.BudgetExceeded, runspace.fail(0, "strict terminal budget failure"));
+    try std.testing.expectEqual(world.Runspace.PendingStatus.failed, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.failed, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().blocker_count);
+}
+
 test "runspace terminal response accounting charges allowed failure once" {
     const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
         .mode = .fresh,
@@ -3706,6 +3739,17 @@ test "runspace install admitted and replay records receipts summaries and events
         .run_permit = embedded_transcript_unavailable_permit,
     });
     try std.testing.expectError(error.SupervisionDenied, supervised_replay_runspace.installAdmitted(embedded_transcript_unavailable_admitted));
+    const transcript_unattested_replay_policy = world.SupervisionPolicy.init(.{
+        .allow_replay_calls = true,
+        .allow_replay_adapters = true,
+        .require_environment_certificate = false,
+        .require_transcript_image_for_replay = false,
+    });
+    const transcript_unattested_replay_permit = world.Supervision.issue(fixtures.Strict.Target, StrictReplayEnv, .{
+        .mode = .replay,
+        .policy = transcript_unattested_replay_policy,
+    });
+    try std.testing.expectError(error.SupervisionDenied, supervised_replay_runspace.installReplay(fixtures.Strict.Target, image, transcript_unattested_replay_permit));
     const replay_without_environment_policy = world.SupervisionPolicy.init(.{
         .allow_replay_calls = true,
         .allow_replay_adapters = true,
@@ -4541,6 +4585,61 @@ test "runspace pending manual response byte budget preserves pending mailbox" {
     try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
     try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_supervision, (try runspace.getSlotSummary(handle)).status);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+}
+
+test "runspace pending manual response event budget preflights before supervision accounting" {
+    const park_policy = world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .allow_native_adapters = true,
+        .allow_pending_responses = true,
+        .allow_handoff_export = true,
+        .require_environment_certificate = true,
+        .park_on_budget_exceeded = true,
+    });
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = park_policy,
+        .budget = world.Budget.init(.{ .max_frame_response_bytes = 0 }),
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{
+        .require_supervision = true,
+    });
+    defer runspace.deinit();
+
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .permit = permit,
+    });
+    _ = try runspace.tick();
+    const pending = try runspace.mailbox.get(0);
+    const request = pending.request_frame.?;
+    const pending_response = world.Frame.Response.init(.{
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .target_certificate_fingerprint = request.target_certificate_fingerprint,
+        .world_port_id = request.world_port_id,
+        .request_fingerprint = request.request_fingerprint,
+        .response_kind = .@"resume",
+        .response_value_table_id = request.expected_response_value_table_id,
+        .response_fingerprint = 0x9e1d_b7e6,
+        .replay_key = request.replay_key_seed.withResponse(0x9e1d_b7e6).fingerprint(),
+        .status = .pending,
+    });
+    runspace.config.max_events = runspace.events.items.len;
+
+    try std.testing.expectError(error.BudgetExceeded, runspace.respond(0, pending_response));
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().blocker_count);
+
+    runspace.config.max_events = null;
+    const event = try runspace.respond(0, pending_response);
+    try std.testing.expectEqual(world.Runspace.EventKind.run_parked_on_supervision, event.kind);
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_supervision, (try runspace.getSlotSummary(handle)).status);
 }
 
 test "runspace pending manual response preserves parked slot and mailbox" {

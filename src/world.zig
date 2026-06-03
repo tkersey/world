@@ -8143,7 +8143,10 @@ pub const Runspace = struct {
         if (permit.mode != .replay) return error.SupervisionDenied;
         if (permit.admission_receipt_fingerprint != null or permit.module_ref_fingerprint != null) return error.SupervisionDenied;
         if (permit.policy.require_environment_certificate) return error.SupervisionDenied;
-        if (permit.policy.require_transcript_image_for_replay and !permit.transcript_image_available) return error.TranscriptImageRequired;
+        if (!permit.transcript_image_available) {
+            if (permit.policy.require_transcript_image_for_replay) return error.TranscriptImageRequired;
+            return error.SupervisionDenied;
+        }
         if (transcript_image.world_surface_fingerprint != permit.world_surface_fingerprint) return error.SupervisionDenied;
         if (transcript_image.target_certificate_fingerprint != permit.target_certificate_fingerprint) return error.SupervisionDenied;
     }
@@ -8325,29 +8328,15 @@ pub const Runspace = struct {
                             return self.parkPendingOnSupervision(index, pending, mailbox_id, "manual response parked on supervision");
                         }
                         if (err == error.BudgetExceeded) {
-                            const failed = try self.mailbox.fail(mailbox_id, "manual response supervision failed");
-                            try slot.transition(.fail, null);
-                            _ = self.appendPreparedEventAssumeCapacity(.{
-                                .kind = .port_failed,
-                                .run_handle = slot.handle,
-                                .pending_port_fingerprint = failed.pending_port_fingerprint,
-                                .request_frame_fingerprint = failed.request_frame_fingerprint,
-                                .response_frame_fingerprint = response.frame_fingerprint,
-                                .run_state_fingerprint = slot.current_state.run_state_fingerprint,
-                                .run_permit_fingerprint = slot.run_permit_fingerprint,
-                                .summary = failed_response_summary,
-                            });
+                            try self.failPendingPortAndSlot(
+                                mailbox_id,
+                                slot,
+                                response,
+                                "manual response supervision failed",
+                                failed_response_summary,
+                                failed_run_summary,
+                            );
                             failed_response_summary_owned = false;
-                            _ = self.appendPreparedEventAssumeCapacity(.{
-                                .kind = .run_failed,
-                                .run_handle = slot.handle,
-                                .pending_port_fingerprint = failed.pending_port_fingerprint,
-                                .request_frame_fingerprint = failed.request_frame_fingerprint,
-                                .response_frame_fingerprint = response.frame_fingerprint,
-                                .run_state_fingerprint = slot.current_state.run_state_fingerprint,
-                                .run_permit_fingerprint = slot.run_permit_fingerprint,
-                                .summary = failed_run_summary,
-                            });
                             failed_run_summary_owned = false;
                         }
                         return err;
@@ -8357,6 +8346,8 @@ pub const Runspace = struct {
             .pending => {
                 const accounting = try self.responseFrameAccounting(response);
                 if (slot.driver) |driver| {
+                    try self.ensureEventCapacity(1);
+                    try self.events.ensureUnusedCapacity(self.allocator, 1);
                     driver.beforeResponse(pending.world_port_id, .pending, accounting.response_bytes, accounting.value_image_bytes) catch |err| {
                         if (err == error.HandlerPending and driver.supervisionInterrupted()) {
                             return self.parkPendingOnSupervision(index, pending, mailbox_id, "manual pending response parked on supervision");
@@ -8369,6 +8360,8 @@ pub const Runspace = struct {
                     return error.HandlerPending;
                 }
                 if (slot.supervisor) |*supervisor| {
+                    try self.ensureEventCapacity(1);
+                    try self.events.ensureUnusedCapacity(self.allocator, 1);
                     supervisor.afterAdapterResponse(.{
                         .world_port_id = pending.world_port_id,
                         .status = .pending,
@@ -8461,6 +8454,39 @@ pub const Runspace = struct {
         return self.respond(mailbox_id, response);
     }
 
+    fn failPendingPortAndSlot(
+        self: *@This(),
+        mailbox_id: u64,
+        slot: *Runspace.RunSlot,
+        response: Frame.Response,
+        failure_summary: []const u8,
+        port_summary: []u8,
+        run_summary: []u8,
+    ) !void {
+        const failed = try self.mailbox.fail(mailbox_id, failure_summary);
+        try slot.transition(.fail, null);
+        _ = self.appendPreparedEventAssumeCapacity(.{
+            .kind = .port_failed,
+            .run_handle = slot.handle,
+            .pending_port_fingerprint = failed.pending_port_fingerprint,
+            .request_frame_fingerprint = failed.request_frame_fingerprint,
+            .response_frame_fingerprint = response.frame_fingerprint,
+            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+            .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .summary = port_summary,
+        });
+        _ = self.appendPreparedEventAssumeCapacity(.{
+            .kind = .run_failed,
+            .run_handle = slot.handle,
+            .pending_port_fingerprint = failed.pending_port_fingerprint,
+            .request_frame_fingerprint = failed.request_frame_fingerprint,
+            .response_frame_fingerprint = response.frame_fingerprint,
+            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+            .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .summary = run_summary,
+        });
+    }
+
     fn terminalResponseForPending(pending: Runspace.PendingPort, status: ResponseStatus, reason: []const u8) !Frame.Response {
         if (status != .rejected and status != .failed) return error.InvalidPendingPortTransition;
         const request = pending.request_frame orelse return error.InvalidPendingPortTransition;
@@ -8500,34 +8526,30 @@ pub const Runspace = struct {
                 if ((err == error.HandlerPending or err == error.BudgetExceeded) and driver.supervisionInterrupted()) {
                     return try self.parkPendingOnSupervision(index, pending, mailbox_id, "terminal response parked on supervision");
                 }
+                if (err == error.BudgetExceeded) {
+                    try self.failPendingPortAndSlot(
+                        mailbox_id,
+                        slot,
+                        response,
+                        "terminal response supervision failed",
+                        failed_event_pair.takeFirst(),
+                        failed_event_pair.takeSecond(),
+                    );
+                }
                 return err;
             };
             driver.resumeTerminalFrame(response) catch |err| {
                 if ((err == error.HandlerPending or err == error.BudgetExceeded) and driver.supervisionInterrupted()) {
                     return try self.parkPendingOnSupervision(index, pending, mailbox_id, "terminal response parked on supervision");
                 }
-                const failed = try self.mailbox.fail(mailbox_id, "terminal response failed");
-                try slot.transition(.fail, null);
-                _ = self.appendPreparedEventAssumeCapacity(.{
-                    .kind = .port_failed,
-                    .run_handle = slot.handle,
-                    .pending_port_fingerprint = failed.pending_port_fingerprint,
-                    .request_frame_fingerprint = failed.request_frame_fingerprint,
-                    .response_frame_fingerprint = response.frame_fingerprint,
-                    .run_state_fingerprint = slot.current_state.run_state_fingerprint,
-                    .run_permit_fingerprint = slot.run_permit_fingerprint,
-                    .summary = failed_event_pair.takeFirst(),
-                });
-                _ = self.appendPreparedEventAssumeCapacity(.{
-                    .kind = .run_failed,
-                    .run_handle = slot.handle,
-                    .pending_port_fingerprint = failed.pending_port_fingerprint,
-                    .request_frame_fingerprint = failed.request_frame_fingerprint,
-                    .response_frame_fingerprint = response.frame_fingerprint,
-                    .run_state_fingerprint = slot.current_state.run_state_fingerprint,
-                    .run_permit_fingerprint = slot.run_permit_fingerprint,
-                    .summary = failed_event_pair.takeSecond(),
-                });
+                try self.failPendingPortAndSlot(
+                    mailbox_id,
+                    slot,
+                    response,
+                    "terminal response failed",
+                    failed_event_pair.takeFirst(),
+                    failed_event_pair.takeSecond(),
+                );
                 return err;
             };
         } else if (slot.supervisor) |*supervisor| {
