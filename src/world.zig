@@ -5950,7 +5950,10 @@ const TranscriptRunStateEvidence = struct {
 
 fn runStateEvidenceFromTranscriptImage(image: TranscriptImage) TranscriptRunStateEvidence {
     var evidence: TranscriptRunStateEvidence = .{};
-    for (image.events) |event| {
+    var index = image.replay_cursor;
+    const limit = image.replay_limit orelse image.events.len;
+    while (index < limit) : (index += 1) {
+        const event = image.events[index];
         if (event.turn_index) |turn_index| evidence.turn_index = @max(evidence.turn_index, turn_index);
         if (eventKindIsSourceResponse(event.kind)) {
             if (event.response_frame) |response| {
@@ -7671,9 +7674,11 @@ pub const Runspace = struct {
     }
 
     fn runImageFromAdmittedTranscript(allocator: std.mem.Allocator, target_ref: TargetRef, import_set_fingerprint: u64, module_ref_fingerprint: ?u64, transcript_image: TranscriptImage) !RunImage {
+        var replay_validation = transcript_image;
+        try replay_validation.validateReplayRun(target_ref.world_surface_fingerprint, target_ref.target_certificate_fingerprint);
         var cloned_transcript = try cloneTranscriptImage(allocator, transcript_image);
         errdefer cloned_transcript.deinit(allocator);
-        const evidence = runStateEvidenceFromTranscriptImage(transcript_image);
+        const evidence = runStateEvidenceFromTranscriptImage(replay_validation);
         const state = RunState.init(.{
             .target_ref_fingerprint = target_ref.target_ref_fingerprint,
             .transcript_image_fingerprint = transcript_image.transcript_image_fingerprint,
@@ -7782,7 +7787,13 @@ pub const Runspace = struct {
             installed_image = try cloneRunImage(self.allocator, image);
             installed_image_owned = true;
             if (admitted_run.transcript_image) |transcript_image| {
-                try attachTranscriptToInstalledRunImage(self.allocator, &installed_image.?, transcript_image);
+                if (admitted_run.mode == .replay_only or admitted_run.mode == .verify_only) {
+                    var replay_validation = transcript_image;
+                    try replay_validation.validateReplayRun(target_ref.world_surface_fingerprint, target_ref.target_certificate_fingerprint);
+                    try attachTranscriptToInstalledRunImage(self.allocator, &installed_image.?, replay_validation);
+                } else {
+                    try attachTranscriptToInstalledRunImage(self.allocator, &installed_image.?, transcript_image);
+                }
                 try installed_image.?.validate(.{});
             }
             try applySelectedBranchToRunImage(&installed_image.?, admitted_run.selected_branch_id);
@@ -8077,7 +8088,7 @@ pub const Runspace = struct {
         var replay_validation = transcript_image;
         try replay_validation.validateReplayRun(Target.WorldSurface.surface_fingerprint, Target.Certificate.certificate_fingerprint);
         if (permit) |run_permit| try validateInstallReplayPermit(Target, replay_validation, run_permit);
-        var image = RunImage.fromTranscriptImage(Target, transcript_image, .replay_only_run);
+        var image = RunImage.fromTranscriptImage(Target, replay_validation, .replay_only_run);
         image.prior_run_permit_fingerprint = if (permit) |run_permit| run_permit.permit_fingerprint else null;
         image.run_image_fingerprint = fingerprintRunImageV3(image);
         var installed_image = try cloneRunImage(self.allocator, image);
@@ -9466,6 +9477,8 @@ pub const Runspace = struct {
         var slot = &self.slots.items[index];
         if (slot.driver == null) return error.InvalidRunspaceTransition;
         const step_event_capacity: usize = if (slot.driver_world_port_count == 0)
+            2
+        else if (slot.current_state.final_response_fingerprint != null and slot.current_state.turn_index >= slot.driver_world_port_count)
             2
         else if (self.config.auto_dispatch)
             5

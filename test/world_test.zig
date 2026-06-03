@@ -564,6 +564,75 @@ fn testRunspaceResponseFrame(request: world.Frame.Request) world.Frame.Response 
     });
 }
 
+fn appendPortsSourceRun(transcript: *world.Transcript, turn_index: usize, request_fingerprint: u64, response_fingerprint: u64) !world.Frame.Response {
+    try transcript.append(.{
+        .kind = .run_started,
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .source_run = true,
+    });
+    const request = world.Frame.Request.init(.{
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .world_surface_replay_scope_fingerprint = fixtures.Ports.Target.WorldSurface.replayScopeRef().fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .world_port_id = 0,
+        .residual_site_index = fixtures.Ports.ApprovalRequest.index,
+        .residual_site_fingerprint = fixtures.Ports.ApprovalRequest.fingerprint,
+        .request_fingerprint = request_fingerprint,
+        .turn_index = turn_index,
+        .payload_value_table_id = 0,
+        .expected_response_value_table_id = 1,
+    });
+    try transcript.append(.{
+        .kind = .port_requested,
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .world_surface_replay_scope_fingerprint = fixtures.Ports.Target.WorldSurface.replayScopeRef().fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .world_port_id = request.world_port_id,
+        .request_fingerprint = request.request_fingerprint,
+        .turn_index = request.turn_index,
+        .residual_site_index = request.residual_site_index,
+        .residual_site_fingerprint = request.residual_site_fingerprint,
+        .request_frame = request,
+        .source_run = true,
+    });
+    const response = world.Frame.Response.init(.{
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .target_certificate_fingerprint = request.target_certificate_fingerprint,
+        .world_port_id = request.world_port_id,
+        .request_fingerprint = request.request_fingerprint,
+        .response_kind = .@"resume",
+        .response_value_table_id = request.expected_response_value_table_id,
+        .response_fingerprint = response_fingerprint,
+        .replay_key = request.replay_key_seed.withResponse(response_fingerprint).fingerprint(),
+    });
+    try transcript.append(.{
+        .kind = .port_responded,
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .world_surface_replay_scope_fingerprint = fixtures.Ports.Target.WorldSurface.replayScopeRef().fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .world_port_id = request.world_port_id,
+        .request_fingerprint = request.request_fingerprint,
+        .response_fingerprint = response.response_fingerprint,
+        .response_kind = response.response_kind,
+        .replay_key = response.replay_key,
+        .turn_index = request.turn_index,
+        .residual_site_index = request.residual_site_index,
+        .residual_site_fingerprint = request.residual_site_fingerprint,
+        .status = .responded,
+        .response_frame = response,
+        .source_run = true,
+    });
+    try transcript.append(.{
+        .kind = .run_completed,
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .status = .responded,
+        .source_run = true,
+    });
+    return response;
+}
+
 test "runspace handle identity binds runspace target and generation" {
     const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const handle = world.RunHandle.init(.{
@@ -3148,6 +3217,26 @@ test "runspace exact event budget allows zero-port completion" {
     const summary = try runspace.getSlotSummary(handle);
     try std.testing.expectEqual(world.Runspace.RunStatus.completed, summary.status);
     try std.testing.expectEqual(@as(usize, 3), runspace.report().event_count);
+}
+
+test "runspace exact terminal event budget allows port run completion after response" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+
+    _ = try runspace.tick();
+    _ = try runspace.respondValue(0, @as(i32, 7));
+    runspace.config.max_events = runspace.report().event_count + 2;
+
+    _ = try runspace.tick();
+    const summary = try runspace.getSlotSummary(handle);
+    try std.testing.expectEqual(world.Runspace.RunStatus.completed, summary.status);
+    try std.testing.expectEqual(runspace.config.max_events.?, runspace.report().event_count);
 }
 
 test "runspace step event allocation failure leaves run runnable" {
@@ -9112,6 +9201,24 @@ test "runspace completed replay installs charge terminal supervision step" {
     var admitted_runspace = world.Runspace.init(std.testing.allocator, .{ .require_supervision = true });
     defer admitted_runspace.deinit();
     try std.testing.expectError(error.SupervisionDenied, admitted_runspace.installAdmitted(transcriptless_admitted));
+}
+
+test "runspace replay install derives state evidence from selected replay window" {
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    _ = try appendPortsSourceRun(&transcript, 10, 0xaaa0, 0xaaa1);
+    const selected_response = try appendPortsSourceRun(&transcript, 0, 0xbbb0, 0xbbb1);
+    var image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.native_compatible });
+    defer image.deinit(std.testing.allocator);
+
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+    const handle = try runspace.installReplay(fixtures.Ports.Target, image, null);
+    var exported = try runspace.exportRun(handle);
+    defer exported.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), exported.current_state.turn_index);
+    try std.testing.expectEqual(selected_response.frame_fingerprint, exported.current_state.final_response_fingerprint.?);
 }
 
 test "runspace admitted verify installs charge verification response" {
