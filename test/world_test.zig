@@ -538,6 +538,33 @@ fn appendGuestWasmInvalidBranchBodyCodeSection(module: *std.ArrayList(u8)) !void
     try appendWasmSection(module, 10, code.items);
 }
 
+fn appendGuestWasmInvalidCallBodyCodeSection(module: *std.ArrayList(u8)) !void {
+    var code: std.ArrayList(u8) = .empty;
+    defer code.deinit(std.testing.allocator);
+    try appendWasmU32(&code, @intCast(world.Guest.Abi.required_exports.len));
+    for (world.Guest.Abi.required_exports, 0..) |_, index| {
+        var body: std.ArrayList(u8) = .empty;
+        defer body.deinit(std.testing.allocator);
+        try appendWasmU32(&body, 0);
+        if (index == 0) {
+            try body.append(std.testing.allocator, 0x41);
+            try appendWasmU32(&body, world.Guest.Abi.version);
+        } else if (index == 1) {
+            try body.append(std.testing.allocator, 0x10);
+            try appendWasmU32(&body, @intCast(world.Guest.Abi.required_exports.len));
+            try body.append(std.testing.allocator, 0x41);
+            try appendWasmU32(&body, 0);
+        } else {
+            try body.append(std.testing.allocator, 0x41);
+            try appendWasmU32(&body, 0);
+        }
+        try body.append(std.testing.allocator, 0x0b);
+        try appendWasmU32(&code, @intCast(body.items.len));
+        try code.appendSlice(std.testing.allocator, body.items);
+    }
+    try appendWasmSection(module, 10, code.items);
+}
+
 fn syntheticGuestWasm(allocator: std.mem.Allocator) ![]u8 {
     var module: std.ArrayList(u8) = .empty;
     errdefer module.deinit(allocator);
@@ -1155,6 +1182,29 @@ fn syntheticInvalidBranchBodyGuestWasm(allocator: std.mem.Allocator) ![]u8 {
     return module.toOwnedSlice(allocator);
 }
 
+fn syntheticInvalidCallBodyGuestWasm(allocator: std.mem.Allocator) ![]u8 {
+    var module: std.ArrayList(u8) = .empty;
+    errdefer module.deinit(allocator);
+    try module.appendSlice(allocator, "\x00asm\x01\x00\x00\x00");
+    try appendGuestWasmTypeSection(&module);
+    try appendGuestWasmFunctionSection(&module, false);
+    try appendGuestWasmMemorySection(&module);
+    var exports: std.ArrayList(u8) = .empty;
+    defer exports.deinit(allocator);
+    try appendWasmU32(&exports, @intCast(world.Guest.Abi.required_exports.len + 1));
+    for (world.Guest.Abi.required_exports, 0..) |name, index| {
+        try appendWasmName(&exports, name);
+        try exports.append(allocator, 0);
+        try appendWasmU32(&exports, @intCast(index));
+    }
+    try appendWasmName(&exports, "memory");
+    try exports.append(allocator, 2);
+    try appendWasmU32(&exports, 0);
+    try appendWasmSection(&module, 7, exports.items);
+    try appendGuestWasmInvalidCallBodyCodeSection(&module);
+    return module.toOwnedSlice(allocator);
+}
+
 fn syntheticInvalidUtf8ExportNameGuestWasm(allocator: std.mem.Allocator) ![]u8 {
     var module: std.ArrayList(u8) = .empty;
     errdefer module.deinit(allocator);
@@ -1463,6 +1513,10 @@ test "wasm export inspector validates required exports and forbidden imports" {
     const invalid_branch_body = try syntheticInvalidBranchBodyGuestWasm(std.testing.allocator);
     defer std.testing.allocator.free(invalid_branch_body);
     try std.testing.expectError(error.InvalidFrameEncoding, world.Guest.Wasm.inspect(invalid_branch_body));
+
+    const invalid_call_body = try syntheticInvalidCallBodyGuestWasm(std.testing.allocator);
+    defer std.testing.allocator.free(invalid_call_body);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Guest.Wasm.inspect(invalid_call_body));
 
     const invalid_utf8_export_name = try syntheticInvalidUtf8ExportNameGuestWasm(std.testing.allocator);
     defer std.testing.allocator.free(invalid_utf8_export_name);
@@ -6067,6 +6121,13 @@ test "guest core oversized result cap does not export run before cap check" {
     try guest.installRunImage(image);
     try std.testing.expectEqual(world.Guest.Status.done, guest.tick());
     try std.testing.expectEqual(@as(usize, 0), guest.resultLen());
+    try std.testing.expectEqual(world.Guest.Status.buffer_too_small, guest.status());
+    var read_buf: [1]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, 0), guest.readResult(&read_buf));
+    try std.testing.expectEqual(world.Guest.Status.buffer_too_small, guest.status());
+    try std.testing.expectEqual(@as(usize, 0), guest.readReceipt(&read_buf));
+    try std.testing.expectEqual(world.Guest.Status.buffer_too_small, guest.status());
+    try std.testing.expectEqual(@as(usize, 0), guest.readTranscript(&read_buf));
     try std.testing.expectEqual(world.Guest.Status.buffer_too_small, guest.status());
     try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try guest.runspace.getSlotSummary(guest.handle.?)).status);
     try std.testing.expect(guest.lastErrorLen() > 0);

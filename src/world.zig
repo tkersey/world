@@ -10197,7 +10197,11 @@ pub const Guest = struct {
         }
 
         fn ensureResultBytes(self: *@This()) !void {
-            if (self.result_bytes.len != 0 or self.state != .done) return;
+            if (self.result_bytes.len != 0) return;
+            if (self.state != .done) {
+                if (self.state == .buffer_too_small) return error.GuestBufferTooSmall;
+                return error.InvalidRunspaceTransition;
+            }
             const handle = self.handle orelse return error.InvalidRunspaceTransition;
             var preview = try self.runspace.previewResultRun(handle);
             defer preview.deinit(self.allocator);
@@ -10638,7 +10642,7 @@ pub const Guest = struct {
             inspection.required_exports_present = (required_mask & all_required) == all_required;
             if (abi_defined_function_index) |defined_index| {
                 const defined_function_count = try functionCount(function_section);
-                inspection.abi_version = try inspectCodeSection(code_section, defined_index, defined_function_count);
+                inspection.abi_version = try inspectCodeSection(code_section, defined_index, defined_function_count, inspection.function_import_count + defined_function_count);
             }
             return inspection;
         }
@@ -10868,7 +10872,7 @@ pub const Guest = struct {
             return false;
         }
 
-        fn inspectCodeSection(section: []const u8, abi_defined_index: u32, expected_defined_function_count: u32) !u32 {
+        fn inspectCodeSection(section: []const u8, abi_defined_index: u32, expected_defined_function_count: u32, function_count: u32) !u32 {
             var cursor: usize = 0;
             const count = try readWasmU32(section, &cursor);
             if (count != expected_defined_function_count) return error.InvalidFrameEncoding;
@@ -10880,7 +10884,7 @@ pub const Guest = struct {
                 if (cursor + body_len > section.len) return error.InvalidFrameEncoding;
                 const body = section[cursor .. cursor + body_len];
                 cursor += body_len;
-                try validateWasmFunctionBody(body);
+                try validateWasmFunctionBody(body, function_count);
                 if (index == abi_defined_index) abi_version = try inspectAbiVersionBody(body);
             }
             if (cursor != section.len) return error.InvalidFrameEncoding;
@@ -10897,7 +10901,7 @@ pub const Guest = struct {
             return count;
         }
 
-        fn validateWasmFunctionBody(body: []const u8) !void {
+        fn validateWasmFunctionBody(body: []const u8, function_count: u32) !void {
             var cursor: usize = 0;
             const local_decl_count = try readWasmU32(body, &cursor);
             var local_decl_index: u32 = 0;
@@ -10920,6 +10924,7 @@ pub const Guest = struct {
                     },
                     0x0c, 0x0d => try validateWasmBranchTarget(body, &cursor, block_depth),
                     0x0e => try validateWasmBranchTable(body, &cursor, block_depth),
+                    0x10 => try validateWasmFunctionIndex(body, &cursor, function_count),
                     0x0b => {
                         if (block_depth == 0) {
                             if (cursor != body.len) return error.InvalidFrameEncoding;
@@ -10943,6 +10948,11 @@ pub const Guest = struct {
             var label_index: u32 = 0;
             while (label_index < label_count) : (label_index += 1) try validateWasmBranchTarget(bytes, cursor, block_depth);
             try validateWasmBranchTarget(bytes, cursor, block_depth);
+        }
+
+        fn validateWasmFunctionIndex(bytes: []const u8, cursor: *usize, function_count: u32) !void {
+            const function_index = try readWasmU32(bytes, cursor);
+            if (function_index >= function_count) return error.InvalidFrameEncoding;
         }
 
         fn inspectAbiVersionBody(body: []const u8) !u32 {
@@ -11089,7 +11099,7 @@ pub const Guest = struct {
         fn skipWasmInstructionImmediate(opcode: u8, bytes: []const u8, cursor: *usize) !void {
             switch (opcode) {
                 0x00, 0x01, 0x0f, 0x1a, 0x1b, 0x45...0xc4, 0xd1 => {},
-                0x10, 0x20...0x24 => _ = try readWasmU32(bytes, cursor),
+                0x20...0x24 => _ = try readWasmU32(bytes, cursor),
                 0x11 => {
                     _ = try readWasmU32(bytes, cursor);
                     _ = try readWasmU32(bytes, cursor);
