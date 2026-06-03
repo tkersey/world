@@ -9905,7 +9905,10 @@ pub const Guest = struct {
         pub fn init(allocator: std.mem.Allocator, config: Runspace.Config) @This() {
             var runspace_config = config;
             runspace_config.auto_dispatch = false;
-            runspace_config.max_pending_ports = runspace_config.max_pending_ports orelse Buffer.max_pending_ports;
+            runspace_config.max_pending_ports = if (runspace_config.max_pending_ports) |max|
+                @min(max, Buffer.max_pending_ports)
+            else
+                Buffer.max_pending_ports;
             return .{
                 .allocator = allocator,
                 .runspace = Runspace.init(allocator, runspace_config),
@@ -10399,7 +10402,7 @@ pub const Guest = struct {
 
             pub fn passed(self: @This()) bool {
                 return self.required_exports_present and
-                    (self.memory_export_present or (self.alloc_export_present and self.free_export_present)) and
+                    self.memory_export_present and
                     self.import_count == 0 and
                     self.forbidden_import_count == 0;
             }

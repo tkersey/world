@@ -323,6 +323,18 @@ fn appendGuestWasmFunctionSection(module: *std.ArrayList(u8), wrong_signature: b
     try appendWasmSection(module, 3, functions.items);
 }
 
+fn appendGuestWasmFunctionSectionWithAlloc(module: *std.ArrayList(u8)) !void {
+    var functions: std.ArrayList(u8) = .empty;
+    defer functions.deinit(std.testing.allocator);
+    try appendWasmU32(&functions, @intCast(world.Guest.Abi.required_exports.len + 2));
+    for (world.Guest.Abi.required_exports, 0..) |_, index| {
+        try appendWasmU32(&functions, guestRequiredSignatureTypeIndex(index));
+    }
+    try appendWasmU32(&functions, 1);
+    try appendWasmU32(&functions, 4);
+    try appendWasmSection(module, 3, functions.items);
+}
+
 fn syntheticGuestWasm(allocator: std.mem.Allocator) ![]u8 {
     var module: std.ArrayList(u8) = .empty;
     errdefer module.deinit(allocator);
@@ -361,6 +373,30 @@ fn syntheticWrongSignatureGuestWasm(allocator: std.mem.Allocator) ![]u8 {
     try appendWasmName(&exports, "memory");
     try exports.append(allocator, 2);
     try appendWasmU32(&exports, 0);
+    try appendWasmSection(&module, 7, exports.items);
+    return module.toOwnedSlice(allocator);
+}
+
+fn syntheticAllocOnlyGuestWasm(allocator: std.mem.Allocator) ![]u8 {
+    var module: std.ArrayList(u8) = .empty;
+    errdefer module.deinit(allocator);
+    try module.appendSlice(allocator, "\x00asm\x01\x00\x00\x00");
+    try appendGuestWasmTypeSection(&module);
+    try appendGuestWasmFunctionSectionWithAlloc(&module);
+    var exports: std.ArrayList(u8) = .empty;
+    defer exports.deinit(allocator);
+    try appendWasmU32(&exports, @intCast(world.Guest.Abi.required_exports.len + 2));
+    for (world.Guest.Abi.required_exports, 0..) |name, index| {
+        try appendWasmName(&exports, name);
+        try exports.append(allocator, 0);
+        try appendWasmU32(&exports, @intCast(index));
+    }
+    try appendWasmName(&exports, "world_alloc");
+    try exports.append(allocator, 0);
+    try appendWasmU32(&exports, @intCast(world.Guest.Abi.required_exports.len));
+    try appendWasmName(&exports, "world_free");
+    try exports.append(allocator, 0);
+    try appendWasmU32(&exports, @intCast(world.Guest.Abi.required_exports.len + 1));
     try appendWasmSection(&module, 7, exports.items);
     return module.toOwnedSlice(allocator);
 }
@@ -463,6 +499,15 @@ test "wasm export inspector validates required exports and forbidden imports" {
     const wrong_signature_inspection = try world.Guest.Wasm.inspect(wrong_signature_exports);
     try std.testing.expect(!wrong_signature_inspection.required_exports_present);
     try std.testing.expect(!wrong_signature_inspection.passed());
+
+    const alloc_only = try syntheticAllocOnlyGuestWasm(std.testing.allocator);
+    defer std.testing.allocator.free(alloc_only);
+    const alloc_only_inspection = try world.Guest.Wasm.inspect(alloc_only);
+    try std.testing.expect(alloc_only_inspection.required_exports_present);
+    try std.testing.expect(alloc_only_inspection.alloc_export_present);
+    try std.testing.expect(alloc_only_inspection.free_export_present);
+    try std.testing.expect(!alloc_only_inspection.memory_export_present);
+    try std.testing.expect(!alloc_only_inspection.passed());
 }
 
 const MissingDispatchTarget = struct {
@@ -4455,6 +4500,14 @@ test "guest core drives one run through canonical request and response bytes" {
     var transcript_image = try world.TranscriptImage.decode(std.testing.allocator, transcript_bytes);
     defer transcript_image.deinit(std.testing.allocator);
     try std.testing.expectEqual(world.TranscriptImage.FinalStatus.completed, transcript_image.final_status);
+}
+
+test "guest core clamps explicit pending-port config to ABI cap" {
+    var guest = world.Guest.Core.init(std.testing.allocator, .{
+        .max_pending_ports = world.Guest.Buffer.max_pending_ports + 10,
+    });
+    defer guest.deinit();
+    try std.testing.expectEqual(@as(?usize, world.Guest.Buffer.max_pending_ports), guest.runspace.mailbox.max_pending_ports);
 }
 
 test "guest core rejects pending request bytes above ABI cap" {
