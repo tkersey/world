@@ -10998,11 +10998,11 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 }
 
                 pub fn resumeFrame(self: *Self, response_frame: Frame.Response) !void {
-                    _ = try self.resumeFrameWithProvenance(response_frame, false);
+                    _ = try self.resumeFrameWithProvenance(response_frame, false, true);
                 }
 
                 pub fn runspaceResumeFrame(self: *Self, response_frame: Frame.Response) !Runspace.ResponseEvidence {
-                    const response_frame_fingerprint = try self.resumeFrameWithProvenance(response_frame, false);
+                    const response_frame_fingerprint = try self.resumeFrameWithProvenance(response_frame, false, true);
                     return self.last_response_evidence orelse .{
                         .response_fingerprint = response_frame.response_fingerprint,
                         .response_frame_fingerprint = response_frame_fingerprint,
@@ -11023,43 +11023,32 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
 
                 pub fn beforeRunspaceTerminalResponse(self: *Self, world_port_id: u32, status: ResponseStatus, response_bytes: usize, value_image_bytes: usize) !void {
                     if (status != .rejected and status != .failed) return error.InvalidPendingPortTransition;
-                    _ = response_bytes;
-                    _ = value_image_bytes;
                     if (self.supervisor) |*supervisor| {
-                        try supervisor.validateWorldPortId(world_port_id);
-                        var allowed = Supervision.responseAllowedByPolicy(supervisor.permit.policy, status);
-                        if (supervisor.permit.ruleFor(world_port_id)) |rule| {
-                            allowed = allowed and switch (status) {
-                                .rejected => rule.allow_reject,
-                                .failed => rule.allow_fail,
-                                else => unreachable,
-                            };
-                        }
-                        if (!allowed) {
-                            supervisor.afterAdapterResponse(.{
-                                .world_port_id = world_port_id,
-                                .status = status,
-                            }) catch |err| return err;
-                        }
+                        try supervisor.afterAdapterResponse(.{
+                            .world_port_id = world_port_id,
+                            .status = status,
+                            .response_bytes = response_bytes,
+                            .value_image_bytes = value_image_bytes,
+                        });
                     }
                 }
 
                 pub fn runspaceResumeTerminalFrame(self: *Self, response_frame: Frame.Response) !void {
                     switch (response_frame.status) {
                         .rejected => {
-                            _ = self.resumeFrameWithProvenance(response_frame, false) catch |err| switch (err) {
+                            _ = self.resumeFrameWithProvenance(response_frame, false, false) catch |err| switch (err) {
                                 Error.HandlerRejected => {},
                                 else => return err,
                             };
                         },
                         .failed => {
-                            _ = self.resumeFrameWithProvenance(response_frame, false) catch |err| switch (err) {
+                            _ = self.resumeFrameWithProvenance(response_frame, false, false) catch |err| switch (err) {
                                 Error.HandlerFailed => {},
                                 else => return err,
                             };
                         },
                         else => {
-                            _ = try self.resumeFrameWithProvenance(response_frame, false);
+                            _ = try self.resumeFrameWithProvenance(response_frame, false, true);
                         },
                     }
                 }
@@ -11171,10 +11160,10 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 }
 
                 fn resumeReplayedFrame(self: *Self, response_frame: Frame.Response) !void {
-                    _ = try self.resumeFrameWithProvenance(response_frame, true);
+                    _ = try self.resumeFrameWithProvenance(response_frame, true, true);
                 }
 
-                fn resumeFrameWithProvenance(self: *Self, response_frame: Frame.Response, comptime replayed: bool) !u64 {
+                fn resumeFrameWithProvenance(self: *Self, response_frame: Frame.Response, comptime replayed: bool, comptime account_supervisor: bool) !u64 {
                     const request = self.pending_request orelse return error.UnknownResidualSite;
                     const world_port_id = self.pending_port_id orelse return error.UnknownWorldPort;
                     var frame = try self.pendingRequestFrame(false);
@@ -11184,6 +11173,29 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     if (response_frame.world_port_id != world_port_id) return error.FramePortMismatch;
                     if (response_frame.request_fingerprint != frame.request_fingerprint) return error.FrameRequestFingerprintMismatch;
                     if (response_frame.status == .pending) {
+                        if (account_supervisor) {
+                            if (self.supervisor) |*supervisor| {
+                                try validateResponseFrameImage(response_frame);
+                                const accounting = try self.responseFrameAccounting(response_frame);
+                                supervisor.afterAdapterResponse(.{
+                                    .world_port_id = world_port_id,
+                                    .status = response_frame.status,
+                                    .response_bytes = accounting.response_bytes,
+                                    .value_image_bytes = accounting.value_image_bytes,
+                                }) catch |err| {
+                                    try self.handleSupervisionError(err);
+                                    return Error.HandlerPending;
+                                };
+                            }
+                        }
+                        return error.HandlerPending;
+                    }
+                    if (self.effective_mode != .fresh) return Error.InvalidMode;
+                    if (response_frame.status == .responded and response_frame.response_value_table_id != frame.expected_response_value_table_id) return error.FrameValueTableMismatch;
+                    try validateResponseFrameImage(response_frame);
+                    const deferred_response_fingerprint = response_frame.responseFingerprintDeferred();
+                    if (!deferred_response_fingerprint and response_frame.replay_key != frame.replay_key_seed.withResponse(response_frame.response_fingerprint).fingerprint()) return error.ReplayMissing;
+                    if (account_supervisor) {
                         if (self.supervisor) |*supervisor| {
                             try validateResponseFrameImage(response_frame);
                             const accounting = try self.responseFrameAccounting(response_frame);
@@ -11197,24 +11209,6 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                                 return Error.HandlerPending;
                             };
                         }
-                        return error.HandlerPending;
-                    }
-                    if (self.effective_mode != .fresh) return Error.InvalidMode;
-                    if (response_frame.status == .responded and response_frame.response_value_table_id != frame.expected_response_value_table_id) return error.FrameValueTableMismatch;
-                    try validateResponseFrameImage(response_frame);
-                    const deferred_response_fingerprint = response_frame.responseFingerprintDeferred();
-                    if (!deferred_response_fingerprint and response_frame.replay_key != frame.replay_key_seed.withResponse(response_frame.response_fingerprint).fingerprint()) return error.ReplayMissing;
-                    if (self.supervisor) |*supervisor| {
-                        const accounting = try self.responseFrameAccounting(response_frame);
-                        supervisor.afterAdapterResponse(.{
-                            .world_port_id = world_port_id,
-                            .status = response_frame.status,
-                            .response_bytes = accounting.response_bytes,
-                            .value_image_bytes = accounting.value_image_bytes,
-                        }) catch |err| {
-                            try self.handleSupervisionError(err);
-                            return Error.HandlerPending;
-                        };
                     }
                     if (response_frame.status == .rejected) {
                         self.audit.rejected_count += 1;
