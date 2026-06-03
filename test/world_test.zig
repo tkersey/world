@@ -3605,6 +3605,18 @@ test "runspace install admitted and replay records receipts summaries and events
         .module_ref_fingerprint = world.Admission.ModuleRef.fromTarget(fixtures.Strict.Target).module_ref_fingerprint,
     });
     try std.testing.expectError(error.SupervisionDenied, supervised_replay_runspace.installReplay(fixtures.Strict.Target, image, module_scoped_replay_permit));
+    const embedded_transcript_unavailable_permit = world.Supervision.issue(fixtures.Strict.Target, StrictReplayEnv, .{
+        .mode = .replay,
+        .policy = world.SupervisionPolicy.strict_replay,
+    });
+    const embedded_transcript_unavailable_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_5c0f,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Strict.Target),
+        .mode = .replay_only,
+        .run_image = replay_export,
+        .run_permit = embedded_transcript_unavailable_permit,
+    });
+    try std.testing.expectError(error.SupervisionDenied, supervised_replay_runspace.installAdmitted(embedded_transcript_unavailable_admitted));
     const replay_without_environment_policy = world.SupervisionPolicy.init(.{
         .allow_replay_calls = true,
         .allow_replay_adapters = true,

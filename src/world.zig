@@ -7652,7 +7652,9 @@ pub const Runspace = struct {
         } else if (permit.policy.require_environment_certificate) {
             return error.SupervisionDenied;
         }
-        if (admitted_run.transcript_image != null and !permit.transcript_image_available and modeConsumesTranscript(permit.mode)) return error.SupervisionDenied;
+        const transcript_available = admitted_run.transcript_image != null or
+            (admitted_run.run_image != null and admitted_run.run_image.?.transcript_image != null);
+        if (transcript_available and !permit.transcript_image_available and modeConsumesTranscript(permit.mode)) return error.SupervisionDenied;
     }
 
     fn validateAdmittedRunReceipt(admitted_run: Admission.AdmittedRun) !void {
