@@ -686,6 +686,12 @@ test "wasm export inspector validates required exports and forbidden imports" {
     const short_code = try syntheticShortCodeGuestWasm(std.testing.allocator);
     defer std.testing.allocator.free(short_code);
     try std.testing.expectError(error.InvalidFrameEncoding, world.Guest.Wasm.inspect(short_code));
+
+    const overflowing_section_len = [_]u8{
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+        0x00, 0x80, 0x80, 0x80, 0x80, 0x10,
+    };
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Guest.Wasm.inspect(&overflowing_section_len));
 }
 
 const MissingDispatchTarget = struct {
@@ -4817,6 +4823,26 @@ test "native guest world_init clears failed session state" {
         .mode = world.Mode.fresh,
     });
     try std.testing.expectEqual(world.Guest.Status.parked.code(), guest.world_tick());
+}
+
+test "native guest pending request length refreshes stale invalid frame status" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var guest = world.Guest.NativeGuest.init(std.testing.allocator, .{});
+    defer guest.deinit();
+
+    try guest.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    try std.testing.expectEqual(world.Guest.Status.parked.code(), guest.world_tick());
+    try std.testing.expectEqual(world.Guest.Status.invalid_frame.code(), guest.world_submit_response(&.{ 0, 1, 2, 3 }));
+    try std.testing.expectEqual(world.Guest.Status.invalid_frame.code(), guest.world_status());
+
+    const request_len = guest.world_pending_request_len(0);
+    try std.testing.expect(request_len > 0);
+    try std.testing.expectEqual(world.Guest.Status.parked.code(), guest.world_status());
+    try std.testing.expectEqual(@as(usize, 0), guest.world_last_error_len());
 }
 
 test "guest core pending response preserves parked request state" {

@@ -10011,6 +10011,7 @@ pub const Guest = struct {
                 _ = self.setStatus(.buffer_too_small, "pending request frame exceeds guest request byte cap");
                 return error.OutOfMemory;
             }
+            _ = self.refreshStatus();
             return bytes;
         }
 
@@ -10672,9 +10673,11 @@ pub const Guest = struct {
                 if (cursor.* >= bytes.len) return error.InvalidFrameEncoding;
                 const byte = bytes[cursor.*];
                 cursor.* += 1;
-                result |= @as(u32, byte & 0x7f) << shift;
+                const payload = byte & 0x7f;
+                if (shift == 28 and payload > 0x0f) return error.InvalidFrameEncoding;
+                result |= @as(u32, payload) << shift;
                 if ((byte & 0x80) == 0) return result;
-                if (shift >= 28) return error.InvalidFrameEncoding;
+                if (shift == 28) return error.InvalidFrameEncoding;
                 shift += 7;
             }
         }
