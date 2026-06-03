@@ -281,10 +281,75 @@ fn appendWasmSection(module: *std.ArrayList(u8), section_id: u8, section: []cons
     try module.appendSlice(std.testing.allocator, section);
 }
 
+fn appendWasmFuncType(out: *std.ArrayList(u8), param_count: u32, result_count: u32) !void {
+    try out.append(std.testing.allocator, 0x60);
+    try appendWasmU32(out, param_count);
+    var param_index: u32 = 0;
+    while (param_index < param_count) : (param_index += 1) try out.append(std.testing.allocator, 0x7f);
+    try appendWasmU32(out, result_count);
+    var result_index: u32 = 0;
+    while (result_index < result_count) : (result_index += 1) try out.append(std.testing.allocator, 0x7f);
+}
+
+fn appendGuestWasmTypeSection(module: *std.ArrayList(u8)) !void {
+    var types: std.ArrayList(u8) = .empty;
+    defer types.deinit(std.testing.allocator);
+    try appendWasmU32(&types, 5);
+    try appendWasmFuncType(&types, 0, 1);
+    try appendWasmFuncType(&types, 1, 1);
+    try appendWasmFuncType(&types, 2, 1);
+    try appendWasmFuncType(&types, 3, 1);
+    try appendWasmFuncType(&types, 2, 0);
+    try appendWasmSection(module, 1, types.items);
+}
+
+fn guestRequiredSignatureTypeIndex(required_index: usize) u32 {
+    return switch (required_index) {
+        5 => 1,
+        6 => 3,
+        7, 9, 11, 13, 15 => 2,
+        else => 0,
+    };
+}
+
+fn appendGuestWasmFunctionSection(module: *std.ArrayList(u8), wrong_signature: bool) !void {
+    var functions: std.ArrayList(u8) = .empty;
+    defer functions.deinit(std.testing.allocator);
+    try appendWasmU32(&functions, @intCast(world.Guest.Abi.required_exports.len));
+    for (world.Guest.Abi.required_exports, 0..) |_, index| {
+        const type_index: u32 = if (wrong_signature and index == 2) 2 else guestRequiredSignatureTypeIndex(index);
+        try appendWasmU32(&functions, type_index);
+    }
+    try appendWasmSection(module, 3, functions.items);
+}
+
 fn syntheticGuestWasm(allocator: std.mem.Allocator) ![]u8 {
     var module: std.ArrayList(u8) = .empty;
     errdefer module.deinit(allocator);
     try module.appendSlice(allocator, "\x00asm\x01\x00\x00\x00");
+    try appendGuestWasmTypeSection(&module);
+    try appendGuestWasmFunctionSection(&module, false);
+    var exports: std.ArrayList(u8) = .empty;
+    defer exports.deinit(allocator);
+    try appendWasmU32(&exports, @intCast(world.Guest.Abi.required_exports.len + 1));
+    for (world.Guest.Abi.required_exports, 0..) |name, index| {
+        try appendWasmName(&exports, name);
+        try exports.append(allocator, 0);
+        try appendWasmU32(&exports, @intCast(index));
+    }
+    try appendWasmName(&exports, "memory");
+    try exports.append(allocator, 2);
+    try appendWasmU32(&exports, 0);
+    try appendWasmSection(&module, 7, exports.items);
+    return module.toOwnedSlice(allocator);
+}
+
+fn syntheticWrongSignatureGuestWasm(allocator: std.mem.Allocator) ![]u8 {
+    var module: std.ArrayList(u8) = .empty;
+    errdefer module.deinit(allocator);
+    try module.appendSlice(allocator, "\x00asm\x01\x00\x00\x00");
+    try appendGuestWasmTypeSection(&module);
+    try appendGuestWasmFunctionSection(&module, true);
     var exports: std.ArrayList(u8) = .empty;
     defer exports.deinit(allocator);
     try appendWasmU32(&exports, @intCast(world.Guest.Abi.required_exports.len + 1));
@@ -304,6 +369,7 @@ fn syntheticGuestWasmWithImport(allocator: std.mem.Allocator, module_name: []con
     var module: std.ArrayList(u8) = .empty;
     errdefer module.deinit(allocator);
     try module.appendSlice(allocator, "\x00asm\x01\x00\x00\x00");
+    try appendGuestWasmTypeSection(&module);
     var imports: std.ArrayList(u8) = .empty;
     defer imports.deinit(allocator);
     try appendWasmU32(&imports, 1);
@@ -312,9 +378,19 @@ fn syntheticGuestWasmWithImport(allocator: std.mem.Allocator, module_name: []con
     try imports.append(allocator, 0);
     try appendWasmU32(&imports, 0);
     try appendWasmSection(&module, 2, imports.items);
-    const valid = try syntheticGuestWasm(allocator);
-    defer allocator.free(valid);
-    try module.appendSlice(allocator, valid[8..]);
+    try appendGuestWasmFunctionSection(&module, false);
+    var exports: std.ArrayList(u8) = .empty;
+    defer exports.deinit(allocator);
+    try appendWasmU32(&exports, @intCast(world.Guest.Abi.required_exports.len + 1));
+    for (world.Guest.Abi.required_exports, 0..) |name, index| {
+        try appendWasmName(&exports, name);
+        try exports.append(allocator, 0);
+        try appendWasmU32(&exports, @intCast(index + 1));
+    }
+    try appendWasmName(&exports, "memory");
+    try exports.append(allocator, 2);
+    try appendWasmU32(&exports, 0);
+    try appendWasmSection(&module, 7, exports.items);
     return module.toOwnedSlice(allocator);
 }
 
@@ -381,6 +457,12 @@ test "wasm export inspector validates required exports and forbidden imports" {
     const non_function_inspection = try world.Guest.Wasm.inspect(non_function_exports);
     try std.testing.expect(!non_function_inspection.required_exports_present);
     try std.testing.expect(!non_function_inspection.passed());
+
+    const wrong_signature_exports = try syntheticWrongSignatureGuestWasm(std.testing.allocator);
+    defer std.testing.allocator.free(wrong_signature_exports);
+    const wrong_signature_inspection = try world.Guest.Wasm.inspect(wrong_signature_exports);
+    try std.testing.expect(!wrong_signature_inspection.required_exports_present);
+    try std.testing.expect(!wrong_signature_inspection.passed());
 }
 
 const MissingDispatchTarget = struct {

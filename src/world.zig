@@ -10126,7 +10126,7 @@ pub const Guest = struct {
                 return bytes.len;
             }
             @memcpy(out[0..bytes.len], bytes);
-            self.clearError();
+            _ = self.refreshStatus();
             return bytes.len;
         }
 
@@ -10381,10 +10381,16 @@ pub const Guest = struct {
     };
 
     pub const Wasm = struct {
+        const ExpectedSignature = struct {
+            param_count: u32,
+            result_count: u32,
+        };
+
         pub const Inspection = struct {
             abi_version: u32 = Abi.version,
             export_count: usize = 0,
             import_count: usize = 0,
+            function_import_count: u32 = 0,
             forbidden_import_count: usize = 0,
             required_exports_present: bool = false,
             memory_export_present: bool = false,
@@ -10405,6 +10411,8 @@ pub const Guest = struct {
             if (std.mem.readInt(u32, bytes[4..8], .little) != 1) return error.InvalidFrameEncoding;
             var inspection: Inspection = .{};
             var required_mask: u64 = 0;
+            var type_section: []const u8 = &.{};
+            var function_section: []const u8 = &.{};
             var cursor: usize = 8;
             while (cursor < bytes.len) {
                 const section_id = bytes[cursor];
@@ -10413,8 +10421,10 @@ pub const Guest = struct {
                 if (cursor + section_len > bytes.len) return error.InvalidFrameEncoding;
                 const section_end = cursor + section_len;
                 switch (section_id) {
-                    2 => try inspectImportSection(bytes[cursor..section_end], &inspection),
-                    7 => try inspectExportSection(bytes[cursor..section_end], &inspection, &required_mask),
+                    1 => type_section = bytes[cursor..section_end],
+                    2 => inspection.function_import_count = try inspectImportSection(bytes[cursor..section_end], &inspection),
+                    3 => function_section = bytes[cursor..section_end],
+                    7 => try inspectExportSection(bytes[cursor..section_end], type_section, function_section, inspection.function_import_count, &inspection, &required_mask),
                     else => {},
                 }
                 cursor = section_end;
@@ -10427,35 +10437,38 @@ pub const Guest = struct {
             return inspection;
         }
 
-        fn inspectImportSection(section: []const u8, inspection: *Inspection) !void {
+        fn inspectImportSection(section: []const u8, inspection: *Inspection) !u32 {
             var cursor: usize = 0;
             const count = try readWasmU32(section, &cursor);
+            var function_import_count: u32 = 0;
             var index: u32 = 0;
             while (index < count) : (index += 1) {
                 const module = try readWasmName(section, &cursor);
                 const name = try readWasmName(section, &cursor);
-                _ = try readWasmU8(section, &cursor);
+                const kind = try readWasmU8(section, &cursor);
                 try skipWasmImportDesc(section, &cursor);
                 inspection.import_count += 1;
+                if (kind == 0) function_import_count += 1;
                 if (forbiddenImport(module) or forbiddenImport(name)) inspection.forbidden_import_count += 1;
             }
             if (cursor != section.len) return error.InvalidFrameEncoding;
+            return function_import_count;
         }
 
-        fn inspectExportSection(section: []const u8, inspection: *Inspection, required_mask: *u64) !void {
+        fn inspectExportSection(section: []const u8, type_section: []const u8, function_section: []const u8, function_import_count: u32, inspection: *Inspection, required_mask: *u64) !void {
             var cursor: usize = 0;
             const count = try readWasmU32(section, &cursor);
             var index: u32 = 0;
             while (index < count) : (index += 1) {
                 const name = try readWasmName(section, &cursor);
                 const kind = try readWasmU8(section, &cursor);
-                _ = try readWasmU32(section, &cursor);
+                const export_index = try readWasmU32(section, &cursor);
                 inspection.export_count += 1;
                 if (kind == 2 and std.mem.eql(u8, name, "memory")) inspection.memory_export_present = true;
-                if (kind == 0 and std.mem.eql(u8, name, "world_alloc")) inspection.alloc_export_present = true;
-                if (kind == 0 and std.mem.eql(u8, name, "world_free")) inspection.free_export_present = true;
+                if (kind == 0 and std.mem.eql(u8, name, "world_alloc") and try functionSignatureMatches(type_section, function_section, function_import_count, export_index, .{ .param_count = 1, .result_count = 1 })) inspection.alloc_export_present = true;
+                if (kind == 0 and std.mem.eql(u8, name, "world_free") and try functionSignatureMatches(type_section, function_section, function_import_count, export_index, .{ .param_count = 2, .result_count = 0 })) inspection.free_export_present = true;
                 for (Abi.required_exports, 0..) |required, required_index| {
-                    if (kind == 0 and std.mem.eql(u8, name, required)) required_mask.* |= @as(u64, 1) << @intCast(required_index);
+                    if (kind == 0 and std.mem.eql(u8, name, required) and try functionSignatureMatches(type_section, function_section, function_import_count, export_index, requiredSignature(required_index))) required_mask.* |= @as(u64, 1) << @intCast(required_index);
                 }
             }
             if (cursor != section.len) return error.InvalidFrameEncoding;
@@ -10466,6 +10479,60 @@ pub const Guest = struct {
                 if (std.mem.indexOf(u8, name, fragment) != null) return true;
             }
             return false;
+        }
+
+        fn requiredSignature(required_index: usize) ExpectedSignature {
+            return switch (required_index) {
+                5 => .{ .param_count = 1, .result_count = 1 },
+                6 => .{ .param_count = 3, .result_count = 1 },
+                7 => .{ .param_count = 2, .result_count = 1 },
+                9, 11, 13, 15 => .{ .param_count = 2, .result_count = 1 },
+                else => .{ .param_count = 0, .result_count = 1 },
+            };
+        }
+
+        fn functionSignatureMatches(type_section: []const u8, function_section: []const u8, function_import_count: u32, function_index: u32, expected: ExpectedSignature) !bool {
+            if (function_index < function_import_count) return false;
+            const defined_index = function_index - function_import_count;
+            const type_index = try functionTypeIndex(function_section, defined_index);
+            return try typeSignatureMatches(type_section, type_index, expected);
+        }
+
+        fn functionTypeIndex(section: []const u8, defined_index: u32) !u32 {
+            var cursor: usize = 0;
+            const count = try readWasmU32(section, &cursor);
+            if (defined_index >= count) return error.InvalidFrameEncoding;
+            var index: u32 = 0;
+            while (index < count) : (index += 1) {
+                const type_index = try readWasmU32(section, &cursor);
+                if (index == defined_index) return type_index;
+            }
+            return error.InvalidFrameEncoding;
+        }
+
+        fn typeSignatureMatches(section: []const u8, type_index: u32, expected: ExpectedSignature) !bool {
+            var cursor: usize = 0;
+            const count = try readWasmU32(section, &cursor);
+            if (type_index >= count) return error.InvalidFrameEncoding;
+            var index: u32 = 0;
+            while (index < count) : (index += 1) {
+                const tag = try readWasmU8(section, &cursor);
+                if (tag != 0x60) return error.InvalidFrameEncoding;
+                const param_count = try readWasmU32(section, &cursor);
+                var param_index: u32 = 0;
+                var params_i32 = true;
+                while (param_index < param_count) : (param_index += 1) {
+                    if (try readWasmU8(section, &cursor) != 0x7f) params_i32 = false;
+                }
+                const result_count = try readWasmU32(section, &cursor);
+                var result_index: u32 = 0;
+                var results_i32 = true;
+                while (result_index < result_count) : (result_index += 1) {
+                    if (try readWasmU8(section, &cursor) != 0x7f) results_i32 = false;
+                }
+                if (index == type_index) return params_i32 and results_i32 and param_count == expected.param_count and result_count == expected.result_count;
+            }
+            return error.InvalidFrameEncoding;
         }
 
         fn skipWasmImportDesc(bytes: []const u8, cursor: *usize) !void {
