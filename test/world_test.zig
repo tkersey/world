@@ -5095,7 +5095,7 @@ test "runspace interrupted supervision handoff accepts transcript-bearing export
     try std.testing.expect(!later_turn_admission.report.accepted);
     var later_turn_receiver = world.Runspace.init(std.testing.allocator, .{});
     defer later_turn_receiver.deinit();
-    try std.testing.expectError(error.ReplayMissing, later_turn_receiver.installRunImage(later_turn_image));
+    try std.testing.expectError(error.InvalidFrameEncoding, later_turn_receiver.installRunImage(later_turn_image));
 
     const unwitnessed_later_turn_state = world.RunState.init(.{
         .target_ref_fingerprint = image.target_ref.target_ref_fingerprint,
@@ -5204,6 +5204,38 @@ test "interrupted supervision handoff replays transcript prefix before live requ
     defer install_receiver.deinit();
     const installed_handle = try install_receiver.installRunImage(image);
     try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_supervision, (try install_receiver.getSlotSummary(installed_handle)).status);
+
+    const forged_state = world.RunState.init(.{
+        .target_ref_fingerprint = image.target_ref.target_ref_fingerprint,
+        .transcript_image_fingerprint = image.transcript_image.?.transcript_image_fingerprint,
+        .final_response_fingerprint = image.current_state.final_response_fingerprint,
+        .final_value_image_fingerprint = image.current_state.final_value_image_fingerprint,
+        .turn_index = image.current_state.turn_index + 1,
+        .status = .parked_on_supervision,
+    });
+    const forged_image = world.RunImage.init(.{
+        .kind = .full_target_run,
+        .target_ref = image.target_ref,
+        .import_set_fingerprint = image.import_set_fingerprint,
+        .transcript_image = image.transcript_image.?,
+        .current_state = forged_state,
+        .prior_run_permit_fingerprint = image.prior_run_permit_fingerprint,
+        .prior_run_receipt_fingerprint = image.prior_run_receipt_fingerprint,
+    });
+    var forged_receiver = world.Runspace.init(std.testing.allocator, .{});
+    defer forged_receiver.deinit();
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_receiver.installRunImage(forged_image));
+    const forged_package = world.Admission.TransferPackage.init(.{
+        .kind = .run_reference,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Agent.Target),
+        .run_image = forged_image,
+        .requested_mode = .resume_parked,
+    });
+    const forged_admission = world.Admission.Admitter.init(.{
+        .registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Agent.Target)}),
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Agent.Target, AgentEnv, forged_package, .{});
+    try std.testing.expect(!forged_admission.report.accepted);
 
     const encoded = try image.encode(std.testing.allocator);
     defer std.testing.allocator.free(encoded);

@@ -13166,18 +13166,27 @@ fn providedFingerprintMatches(provided: ?u64, expected: ?u64) bool {
 }
 
 fn runImageIsInterruptedSupervisionExport(image: RunImage) bool {
-    const has_transcript = image.transcript_image != null;
     return image.kind == .full_target_run and
         image.checkpoints.len == 0 and
         image.branches.len == 0 and
         image.current_state.status == .parked_on_supervision and
         image.current_state.branch_id == 0 and
         image.current_state.checkpoint_fingerprint == null and
-        (image.current_state.turn_index == 0 or has_transcript) and
         image.current_state.pending_request_fingerprint == null and
-        (image.current_state.final_response_fingerprint == null or has_transcript) and
-        (image.current_state.final_value_image_fingerprint == null or has_transcript) and
+        interruptedRunStateMatchesTranscriptEvidence(image) and
         image.pending_request_frame == null;
+}
+
+fn interruptedRunStateMatchesTranscriptEvidence(image: RunImage) bool {
+    const transcript_image = image.transcript_image orelse {
+        return image.current_state.turn_index == 0 and
+            image.current_state.final_response_fingerprint == null and
+            image.current_state.final_value_image_fingerprint == null;
+    };
+    const evidence = runStateEvidenceFromTranscriptImage(transcript_image);
+    return image.current_state.turn_index == evidence.turn_index and
+        image.current_state.final_response_fingerprint == evidence.final_response_fingerprint and
+        image.current_state.final_value_image_fingerprint == evidence.final_value_image_fingerprint;
 }
 
 fn runImageFitsAdmissionMode(image: RunImage, mode: Admission.AdmissionMode) bool {
