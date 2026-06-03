@@ -367,6 +367,16 @@ fn appendGuestWasmInvalidLimitMemorySection(module: *std.ArrayList(u8)) !void {
     try appendWasmSection(module, 5, memory.items);
 }
 
+fn appendGuestWasmMaxBelowMinMemorySection(module: *std.ArrayList(u8)) !void {
+    var memory: std.ArrayList(u8) = .empty;
+    defer memory.deinit(std.testing.allocator);
+    try appendWasmU32(&memory, 1);
+    try memory.append(std.testing.allocator, 1);
+    try appendWasmU32(&memory, 18);
+    try appendWasmU32(&memory, 1);
+    try appendWasmSection(module, 5, memory.items);
+}
+
 fn appendGuestWasmMalformedTableSection(module: *std.ArrayList(u8)) !void {
     var table: std.ArrayList(u8) = .empty;
     defer table.deinit(std.testing.allocator);
@@ -783,6 +793,29 @@ fn syntheticInvalidLimitGuestWasm(allocator: std.mem.Allocator) ![]u8 {
     return module.toOwnedSlice(allocator);
 }
 
+fn syntheticMaxBelowMinLimitGuestWasm(allocator: std.mem.Allocator) ![]u8 {
+    var module: std.ArrayList(u8) = .empty;
+    errdefer module.deinit(allocator);
+    try module.appendSlice(allocator, "\x00asm\x01\x00\x00\x00");
+    try appendGuestWasmTypeSection(&module);
+    try appendGuestWasmFunctionSection(&module, false);
+    try appendGuestWasmMaxBelowMinMemorySection(&module);
+    var exports: std.ArrayList(u8) = .empty;
+    defer exports.deinit(allocator);
+    try appendWasmU32(&exports, @intCast(world.Guest.Abi.required_exports.len + 1));
+    for (world.Guest.Abi.required_exports, 0..) |name, index| {
+        try appendWasmName(&exports, name);
+        try exports.append(allocator, 0);
+        try appendWasmU32(&exports, @intCast(index));
+    }
+    try appendWasmName(&exports, "memory");
+    try exports.append(allocator, 2);
+    try appendWasmU32(&exports, 0);
+    try appendWasmSection(&module, 7, exports.items);
+    try appendGuestWasmCodeSection(&module, world.Guest.Abi.required_exports.len, world.Guest.Abi.version);
+    return module.toOwnedSlice(allocator);
+}
+
 fn syntheticMalformedTableGuestWasm(allocator: std.mem.Allocator) ![]u8 {
     var module: std.ArrayList(u8) = .empty;
     errdefer module.deinit(allocator);
@@ -1095,6 +1128,10 @@ test "wasm export inspector validates required exports and forbidden imports" {
     const invalid_limit = try syntheticInvalidLimitGuestWasm(std.testing.allocator);
     defer std.testing.allocator.free(invalid_limit);
     try std.testing.expectError(error.InvalidFrameEncoding, world.Guest.Wasm.inspect(invalid_limit));
+
+    const max_below_min_limit = try syntheticMaxBelowMinLimitGuestWasm(std.testing.allocator);
+    defer std.testing.allocator.free(max_below_min_limit);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Guest.Wasm.inspect(max_below_min_limit));
 
     const malformed_table = try syntheticMalformedTableGuestWasm(std.testing.allocator);
     defer std.testing.allocator.free(malformed_table);

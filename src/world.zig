@@ -10989,8 +10989,11 @@ pub const Guest = struct {
         fn skipWasmLimits(bytes: []const u8, cursor: *usize) !void {
             const tag = try readWasmU8(bytes, cursor);
             if (tag == 2 or tag > 3) return error.InvalidFrameEncoding;
-            _ = try readWasmU32(bytes, cursor);
-            if (tag == 1 or tag == 3) _ = try readWasmU32(bytes, cursor);
+            const min = try readWasmU32(bytes, cursor);
+            if (tag == 1 or tag == 3) {
+                const max = try readWasmU32(bytes, cursor);
+                if (max < min) return error.InvalidFrameEncoding;
+            }
         }
 
         fn validWasmValueType(value: u8) bool {
