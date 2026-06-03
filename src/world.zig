@@ -10669,7 +10669,12 @@ pub const Guest = struct {
             }
             if (try readWasmU8(body, &cursor) != 0x41) return error.InvalidFrameEncoding;
             const abi_version = try readWasmI32NonNegative(body, &cursor);
-            if (try readWasmU8(body, &cursor) != 0x0b) return error.InvalidFrameEncoding;
+            const terminator = try readWasmU8(body, &cursor);
+            if (terminator == 0x0f) {
+                if (try readWasmU8(body, &cursor) != 0x0b) return error.InvalidFrameEncoding;
+            } else if (terminator != 0x0b) {
+                return error.InvalidFrameEncoding;
+            }
             if (cursor != body.len) return error.InvalidFrameEncoding;
             return abi_version;
         }
