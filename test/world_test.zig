@@ -5618,6 +5618,44 @@ test "interrupted supervision handoff replays transcript prefix before live requ
     try std.testing.expectEqual(@as(usize, 0), receiver_ctx.tool_calls);
     try receiver_run.dispatch();
     try std.testing.expectEqual(@as(usize, 1), receiver_ctx.tool_calls);
+
+    const bare_prefix_state = world.RunState.init(.{
+        .target_ref_fingerprint = image.target_ref.target_ref_fingerprint,
+        .status = .parked_on_supervision,
+    });
+    const bare_prefix_image = world.RunImage.init(.{
+        .kind = image.kind,
+        .target_ref = image.target_ref,
+        .import_set_fingerprint = image.import_set_fingerprint,
+        .current_state = bare_prefix_state,
+        .prior_run_permit_fingerprint = image.prior_run_permit_fingerprint,
+        .prior_run_receipt_fingerprint = image.prior_run_receipt_fingerprint,
+    });
+    var separate_transcript_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_6a18,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Agent.Target),
+        .environment_certificate_fingerprint = AgentEnv.certificate(.fresh, true).certificate_fingerprint,
+        .mode = .resume_parked,
+        .run_image = bare_prefix_image,
+        .transcript_image = image.transcript_image.?,
+    });
+    var separate_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer separate_runtime.deinit();
+    var separate_ctx: AgentCtx = .{ .allocator = std.testing.allocator, .scenario = .skeleton };
+    var separate_run = try separate_transcript_admitted.@"resume"(std.testing.allocator, fixtures.Agent.Target, AgentEnv, &separate_runtime, AgentArgs{ @as(usize, 3), fixtures.Agent.initialObservation(.skeleton) }, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &separate_ctx,
+    });
+    defer separate_run.deinit();
+    var separate_live_request = switch (try separate_run.nextFrame()) {
+        .port_request => |request| request,
+        else => return error.ExpectedFrameRequest,
+    };
+    defer separate_live_request.deinit(std.testing.allocator);
+    try std.testing.expectEqual(AgentToolDecl.world_port_id, separate_live_request.world_port_id);
+    try std.testing.expectEqual(@as(usize, 0), separate_ctx.model_calls);
+    try std.testing.expectEqual(@as(usize, 0), separate_ctx.tool_calls);
 }
 
 test "runspace pre-request supervision park event allocation failure leaves slot runnable" {

@@ -2179,9 +2179,10 @@ pub const Admission = struct {
                 if (@field(options, "permit").permit_fingerprint != permit.permit_fingerprint) return Error.SupervisionDenied;
             }
             var image = self.run_image orelse return error.HandoffPendingFrameMismatch;
-            if (image.transcript_image == null) {
-                image.transcript_image = self.transcript_image;
-                refreshRunImageFingerprint(&image);
+            if (image.transcript_image) |transcript_image| {
+                try attachBorrowedTranscriptToRunImage(&image, transcript_image);
+            } else if (self.transcript_image) |transcript_image| {
+                try attachBorrowedTranscriptToRunImage(&image, transcript_image);
             }
             const transcript_sink_available = comptime @hasField(Options, "transcript") and Env.policy_decl.allow_native_adapters;
             if (self.environment_certificate_fingerprint) |fingerprint| {
@@ -2472,9 +2473,14 @@ pub const Admission = struct {
                 if (package.run_image) |run_image| {
                     var handoff_run_image = run_image;
                     attachPackageModuleWitnessToRunImage(&handoff_run_image, package, module_ref);
-                    if (handoff_run_image.transcript_image == null) {
-                        handoff_run_image.transcript_image = package.transcript_image;
-                        refreshRunImageFingerprint(&handoff_run_image);
+                    if (handoff_run_image.transcript_image) |transcript_image| {
+                        attachBorrowedTranscriptToRunImage(&handoff_run_image, transcript_image) catch {
+                            return rejectedResult(request, package, target_ref, module_ref, match, &.{.RunImageInvalid}, "handoff transcript evidence rejected admission");
+                        };
+                    } else if (package.transcript_image) |transcript_image| {
+                        attachBorrowedTranscriptToRunImage(&handoff_run_image, transcript_image) catch {
+                            return rejectedResult(request, package, target_ref, module_ref, match, &.{.RunImageInvalid}, "handoff transcript evidence rejected admission");
+                        };
                     }
                     var handoff = Handoff{ .allocator = args.allocator, .run_image = handoff_run_image };
                     const handoff_report = if (args.permit) |permit|
@@ -13379,6 +13385,20 @@ fn attachTranscriptToInstalledRunImage(allocator: std.mem.Allocator, image: *Run
     errdefer cloned_transcript.deinit(allocator);
     image.transcript_image = cloned_transcript;
     image.owns_transcript_image = true;
+    image.current_state = runStateWithTranscriptEvidence(image.current_state, transcript_image);
+    refreshRunImageFingerprint(image);
+}
+
+fn attachBorrowedTranscriptToRunImage(image: *RunImage, transcript_image: TranscriptImage) !void {
+    if (image.current_state.transcript_image_fingerprint) |fingerprint| {
+        if (fingerprint != transcript_image.transcript_image_fingerprint) return error.HandoffTargetMismatch;
+    }
+    if (image.transcript_image) |embedded| {
+        if (embedded.transcript_image_fingerprint != transcript_image.transcript_image_fingerprint) return error.HandoffTargetMismatch;
+    } else {
+        image.transcript_image = transcript_image;
+        image.owns_transcript_image = false;
+    }
     image.current_state = runStateWithTranscriptEvidence(image.current_state, transcript_image);
     refreshRunImageFingerprint(image);
 }
