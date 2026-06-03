@@ -8230,8 +8230,30 @@ pub const Runspace = struct {
         const index = try self.slotIndex(pending.handle);
         var slot = &self.slots.items[index];
         if (slot.pending_mailbox_id != mailbox_id or slot.status != .parked_on_port) return error.StaleRunHandle;
+        var responded_summary: []u8 = "";
+        var responded_summary_owned = false;
+        defer if (responded_summary_owned) self.allocator.free(responded_summary);
+        var resumed_summary: []u8 = "";
+        var resumed_summary_owned = false;
+        defer if (resumed_summary_owned) self.allocator.free(resumed_summary);
+        var failed_response_summary: []u8 = "";
+        var failed_response_summary_owned = false;
+        defer if (failed_response_summary_owned) self.allocator.free(failed_response_summary);
+        var failed_run_summary: []u8 = "";
+        var failed_run_summary_owned = false;
+        defer if (failed_run_summary_owned) self.allocator.free(failed_run_summary);
         switch (response.status) {
             .responded => {
+                try self.ensureEventCapacity(2);
+                try self.events.ensureUnusedCapacity(self.allocator, 2);
+                responded_summary = try self.allocator.dupe(u8, "port responded");
+                responded_summary_owned = true;
+                resumed_summary = try self.allocator.dupe(u8, "run resumed");
+                resumed_summary_owned = true;
+                failed_response_summary = try self.allocator.dupe(u8, "port response failed");
+                failed_response_summary_owned = true;
+                failed_run_summary = try self.allocator.dupe(u8, "run failed after response");
+                failed_run_summary_owned = true;
                 const accounting = try self.responseFrameAccounting(response);
                 if (slot.driver) |driver| {
                     driver.beforeResponse(pending.world_port_id, .responded, accounting.response_bytes, accounting.value_image_bytes) catch |err| {
@@ -8279,20 +8301,6 @@ pub const Runspace = struct {
             .rejected => return self.finishTerminalResponse(index, mailbox_id, pending, slot, response, .rejected),
             .failed => return self.finishTerminalResponse(index, mailbox_id, pending, slot, response, .failed),
         }
-        try self.ensureEventCapacity(2);
-        try self.events.ensureUnusedCapacity(self.allocator, 2);
-        const responded_summary = try self.allocator.dupe(u8, "port responded");
-        var responded_summary_owned = true;
-        defer if (responded_summary_owned) self.allocator.free(responded_summary);
-        const resumed_summary = try self.allocator.dupe(u8, "run resumed");
-        var resumed_summary_owned = true;
-        defer if (resumed_summary_owned) self.allocator.free(resumed_summary);
-        const failed_response_summary = try self.allocator.dupe(u8, "port response failed");
-        var failed_response_summary_owned = true;
-        defer if (failed_response_summary_owned) self.allocator.free(failed_response_summary);
-        const failed_run_summary = try self.allocator.dupe(u8, "run failed after response");
-        var failed_run_summary_owned = true;
-        defer if (failed_run_summary_owned) self.allocator.free(failed_run_summary);
         const response_evidence = if (slot.driver) |driver|
             driver.resumeFrame(response) catch |err| {
                 if (err == error.HandlerPending) {
