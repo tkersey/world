@@ -10966,6 +10966,7 @@ pub const Guest = struct {
         }
 
         const max_wasm_validator_values = 512;
+        const wasm_unknown_type = 0xff;
         const WasmFunctionShape = struct {
             params: [max_wasm_validator_values]u8 = undefined,
             param_count: u32 = 0,
@@ -11081,6 +11082,7 @@ pub const Guest = struct {
             if (context.control_count == 0) return error.InvalidFrameEncoding;
             const frame_index = context.control_count - 1;
             const frame = &context.controls[frame_index];
+            if (frame.is_if and frame.result_count != 0 and !frame.else_seen) return error.InvalidFrameEncoding;
             try finishWasmControlArm(context, frame);
             context.control_count = frame_index;
             context.stack_len = frame.start_height;
@@ -11106,7 +11108,7 @@ pub const Guest = struct {
 
         fn popWasmAny(context: *WasmBodyContext) !u8 {
             if (context.stack_len == currentWasmFrame(context).start_height) {
-                if (currentWasmFrame(context).is_unreachable) return 0x7f;
+                if (currentWasmFrame(context).is_unreachable) return wasm_unknown_type;
                 return error.InvalidFrameEncoding;
             }
             context.stack_len -= 1;
@@ -11115,7 +11117,19 @@ pub const Guest = struct {
 
         fn popWasmValue(context: *WasmBodyContext, expected_type: u8) !void {
             const actual = try popWasmAny(context);
-            if (actual != expected_type) return error.InvalidFrameEncoding;
+            if (actual != wasm_unknown_type and actual != expected_type) return error.InvalidFrameEncoding;
+        }
+
+        fn popWasmRef(context: *WasmBodyContext) !void {
+            const actual = try popWasmAny(context);
+            if (actual != wasm_unknown_type and actual != 0x70 and actual != 0x6f) return error.InvalidFrameEncoding;
+        }
+
+        fn wasmNumericType(value_type: u8) bool {
+            return switch (value_type) {
+                0x7f, 0x7e, 0x7d, 0x7c, wasm_unknown_type => true,
+                else => false,
+            };
         }
 
         fn validateWasmLabelValues(context: *WasmBodyContext, label_index: u32) !void {
@@ -11233,8 +11247,10 @@ pub const Guest = struct {
                     const rhs = try popWasmAny(context);
                     const lhs = try popWasmAny(context);
                     try popWasmValue(context, 0x7f);
-                    if (lhs != rhs) return error.InvalidFrameEncoding;
-                    try pushWasmValue(context, lhs);
+                    if (lhs != wasm_unknown_type and rhs != wasm_unknown_type and lhs != rhs) return error.InvalidFrameEncoding;
+                    const result_type = if (lhs == wasm_unknown_type) rhs else lhs;
+                    if (!wasmNumericType(result_type)) return error.InvalidFrameEncoding;
+                    try pushWasmValue(context, result_type);
                 },
                 0x20 => {
                     const local_index = try readWasmU32(bytes, cursor);
@@ -11263,17 +11279,17 @@ pub const Guest = struct {
                     try popWasmValue(context, try wasmGlobalType(context.global_section, global_index, context.function_count));
                 },
                 0x28...0x2f => {
-                    try skipWasmMemArg(bytes, cursor);
+                    try skipWasmMemArg(bytes, cursor, wasmMemoryOpcodeMaxAlign(opcode));
                     try popWasmValue(context, 0x7f);
                     try pushWasmValue(context, if (opcode == 0x29) 0x7e else 0x7f);
                 },
                 0x30...0x35 => {
-                    try skipWasmMemArg(bytes, cursor);
+                    try skipWasmMemArg(bytes, cursor, wasmMemoryOpcodeMaxAlign(opcode));
                     try popWasmValue(context, 0x7f);
                     try pushWasmValue(context, if (opcode == 0x31) 0x7c else 0x7d);
                 },
                 0x36...0x3e => {
-                    try skipWasmMemArg(bytes, cursor);
+                    try skipWasmMemArg(bytes, cursor, wasmMemoryOpcodeMaxAlign(opcode));
                     try popWasmValue(context, switch (opcode) {
                         0x37 => 0x7e,
                         0x38 => 0x7d,
@@ -11350,7 +11366,10 @@ pub const Guest = struct {
                     const ref_type = try readWasmRefType(bytes, cursor);
                     try pushWasmValue(context, ref_type);
                 },
-                0xd1 => {},
+                0xd1 => {
+                    try popWasmRef(context);
+                    try pushWasmValue(context, 0x7f);
+                },
                 0xd2 => {
                     const function_index = try readWasmU32(bytes, cursor);
                     if (function_index >= context.function_count) return error.InvalidFrameEncoding;
@@ -11381,14 +11400,7 @@ pub const Guest = struct {
                 0x02, 0x03 => try validateWasmUnary(context, 0x7c, 0x7f),
                 0x04, 0x05 => try validateWasmUnary(context, 0x7d, 0x7e),
                 0x06, 0x07 => try validateWasmUnary(context, 0x7c, 0x7e),
-                0x08 => {
-                    if (try readWasmU32(bytes, cursor) != 0) return error.InvalidFrameEncoding;
-                    if (try readWasmU32(bytes, cursor) != 0) return error.InvalidFrameEncoding;
-                    try popWasmValue(context, 0x7f);
-                    try popWasmValue(context, 0x7f);
-                    try popWasmValue(context, 0x7f);
-                },
-                0x09 => _ = try readWasmU32(bytes, cursor),
+                0x08, 0x09 => return error.InvalidFrameEncoding,
                 0x0a => {
                     if (try readWasmU32(bytes, cursor) != 0) return error.InvalidFrameEncoding;
                     if (try readWasmU32(bytes, cursor) != 0) return error.InvalidFrameEncoding;
@@ -11402,37 +11414,7 @@ pub const Guest = struct {
                     try popWasmValue(context, 0x7f);
                     try popWasmValue(context, 0x7f);
                 },
-                0x0c => {
-                    _ = try readWasmU32(bytes, cursor);
-                    _ = try readWasmU32(bytes, cursor);
-                    try popWasmValue(context, 0x7f);
-                    try popWasmValue(context, 0x7f);
-                    try popWasmValue(context, 0x7f);
-                },
-                0x0d => _ = try readWasmU32(bytes, cursor),
-                0x0e => {
-                    _ = try readWasmU32(bytes, cursor);
-                    _ = try readWasmU32(bytes, cursor);
-                    try popWasmValue(context, 0x7f);
-                    try popWasmValue(context, 0x7f);
-                    try popWasmValue(context, 0x7f);
-                },
-                0x0f => {
-                    _ = try readWasmU32(bytes, cursor);
-                    try popWasmValue(context, 0x7f);
-                    _ = try popWasmAny(context);
-                    try pushWasmValue(context, 0x7f);
-                },
-                0x10 => {
-                    _ = try readWasmU32(bytes, cursor);
-                    try pushWasmValue(context, 0x7f);
-                },
-                0x11 => {
-                    _ = try readWasmU32(bytes, cursor);
-                    try popWasmValue(context, 0x7f);
-                    _ = try popWasmAny(context);
-                    try popWasmValue(context, 0x7f);
-                },
+                0x0c...0x11 => return error.InvalidFrameEncoding,
                 else => return error.InvalidFrameEncoding,
             }
         }
@@ -11660,7 +11642,7 @@ pub const Guest = struct {
                         if (!validWasmValueType(value_type)) return error.InvalidFrameEncoding;
                     }
                 },
-                0x28...0x3e => try skipWasmMemArg(bytes, cursor),
+                0x28...0x3e => try skipWasmMemArg(bytes, cursor, null),
                 0x3f, 0x40 => _ = try readWasmU32(bytes, cursor),
                 0x41 => try skipWasmLeb128(bytes, cursor, 5),
                 0x42 => try skipWasmLeb128(bytes, cursor, 10),
@@ -11675,9 +11657,21 @@ pub const Guest = struct {
             }
         }
 
-        fn skipWasmMemArg(bytes: []const u8, cursor: *usize) !void {
+        fn skipWasmMemArg(bytes: []const u8, cursor: *usize, max_align: ?u32) !void {
+            const alignment = try readWasmU32(bytes, cursor);
+            if (max_align) |limit| {
+                if (alignment > limit) return error.InvalidFrameEncoding;
+            }
             _ = try readWasmU32(bytes, cursor);
-            _ = try readWasmU32(bytes, cursor);
+        }
+
+        fn wasmMemoryOpcodeMaxAlign(opcode: u8) u32 {
+            return switch (opcode) {
+                0x29, 0x31, 0x37, 0x39 => 3,
+                0x28, 0x2a, 0x32, 0x36, 0x38 => 2,
+                0x2d, 0x2e, 0x35, 0x3d, 0x3e => 1,
+                else => 0,
+            };
         }
 
         fn skipWasmMiscInstruction(bytes: []const u8, cursor: *usize) !void {
@@ -11701,11 +11695,11 @@ pub const Guest = struct {
             const subopcode = try readWasmU32(bytes, cursor);
             if (!validWasmSimdOpcode(subopcode)) return error.InvalidFrameEncoding;
             switch (subopcode) {
-                0x00...0x0b, 0x5c, 0x5d => try skipWasmMemArg(bytes, cursor),
+                0x00...0x0b, 0x5c, 0x5d => try skipWasmMemArg(bytes, cursor, null),
                 0x0c, 0x0d => try skipWasmBytes(bytes, cursor, 16),
                 0x15...0x22 => _ = try readWasmU8(bytes, cursor),
                 0x54...0x5b => {
-                    try skipWasmMemArg(bytes, cursor);
+                    try skipWasmMemArg(bytes, cursor, null);
                     _ = try readWasmU8(bytes, cursor);
                 },
                 else => {},
@@ -11722,7 +11716,7 @@ pub const Guest = struct {
         fn skipWasmAtomicInstruction(bytes: []const u8, cursor: *usize) !void {
             const subopcode = try readWasmU32(bytes, cursor);
             switch (subopcode) {
-                0x00...0x02, 0x10...0x4e => try skipWasmMemArg(bytes, cursor),
+                0x00...0x02, 0x10...0x4e => try skipWasmMemArg(bytes, cursor, null),
                 0x03 => _ = try readWasmU8(bytes, cursor),
                 else => return error.InvalidFrameEncoding,
             }
