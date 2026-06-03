@@ -95,9 +95,9 @@ pub const ResponseStatus = enum {
 
 fn responseStatusDeniedError(response_status: ResponseStatus, err: anyerror) bool {
     return switch (response_status) {
-        .pending => err == error.PendingDenied,
-        .rejected => err == error.HandlerRejected,
-        .failed => err == error.HandlerFailed,
+        .pending => err == Error.PendingDenied or err == Error.PortRuleDenied or err == error.SupervisionPortRuleDenied,
+        .rejected => err == Error.HandlerRejected or err == Error.PortRuleDenied or err == error.SupervisionPortRuleDenied,
+        .failed => err == Error.HandlerFailed or err == Error.PortRuleDenied or err == error.SupervisionPortRuleDenied,
         .responded => false,
     };
 }
@@ -8541,12 +8541,6 @@ pub const Runspace = struct {
         if (status != .rejected and status != .failed) return error.InvalidPendingPortTransition;
         if (response.status != status) return error.InvalidPendingPortTransition;
         try pending.validateResponse(response);
-        var failed_event_pair = try self.prepareEventPair(
-            2,
-            "terminal port response failed",
-            "run failed after terminal port response",
-        );
-        defer failed_event_pair.deinit(self.allocator);
         const accounting = try self.responseFrameAccounting(response);
         if (slot.driver) |driver| {
             driver.beforeTerminalResponse(pending.world_port_id, status, accounting.response_bytes, accounting.value_image_bytes) catch |err| {
@@ -8558,6 +8552,12 @@ pub const Runspace = struct {
                     return try self.parkPendingOnSupervision(index, pending, mailbox_id, "terminal response parked on supervision");
                 }
                 if (err == error.BudgetExceeded) {
+                    var failed_event_pair = try self.prepareEventPair(
+                        2,
+                        "terminal port response failed",
+                        "run failed after terminal port response",
+                    );
+                    defer failed_event_pair.deinit(self.allocator);
                     try self.failPendingPortAndSlot(
                         mailbox_id,
                         slot,
@@ -8573,6 +8573,12 @@ pub const Runspace = struct {
                 if ((err == error.HandlerPending or err == error.BudgetExceeded) and driver.supervisionInterrupted()) {
                     return try self.parkPendingOnSupervision(index, pending, mailbox_id, "terminal response parked on supervision");
                 }
+                var failed_event_pair = try self.prepareEventPair(
+                    2,
+                    "terminal port response failed",
+                    "run failed after terminal port response",
+                );
+                defer failed_event_pair.deinit(self.allocator);
                 try self.failPendingPortAndSlot(
                     mailbox_id,
                     slot,
@@ -8685,6 +8691,8 @@ pub const Runspace = struct {
     }
 
     fn parkPendingOnSupervision(self: *@This(), index: usize, pending: Runspace.PendingPort, mailbox_id: u64, event_summary: []const u8) !Runspace.RunspaceEvent {
+        try self.ensureEventCapacity(1);
+        try self.events.ensureUnusedCapacity(self.allocator, 1);
         const event_summary_bytes = try self.prepareEventSummary(event_summary);
         var summary_owned = true;
         errdefer if (summary_owned) self.allocator.free(event_summary_bytes);
@@ -8711,11 +8719,11 @@ pub const Runspace = struct {
         const index = try self.slotIndex(pending.handle);
         var slot = &self.slots.items[index];
         if (slot.pending_mailbox_id != mailbox_id or slot.status != .parked_on_port) return error.StaleRunHandle;
-        var event_pair = try self.prepareEventPair(2, "port rejected", "run failed after port rejection");
-        defer event_pair.deinit(self.allocator);
         var routed = try self.routeTerminalPending(index, mailbox_id, pending, slot, .rejected, reason);
         defer routed.response.deinit(self.allocator);
         if (routed.parked_event) |event| return event;
+        var event_pair = try self.prepareEventPair(2, "port rejected", "run failed after port rejection");
+        defer event_pair.deinit(self.allocator);
         const cancelled = try self.mailbox.cancel(mailbox_id, reason);
         try slot.transition(.fail, null);
         _ = self.appendPreparedEventAssumeCapacity(.{
@@ -8746,11 +8754,11 @@ pub const Runspace = struct {
         const index = try self.slotIndex(pending.handle);
         var slot = &self.slots.items[index];
         if (slot.pending_mailbox_id != mailbox_id or slot.status != .parked_on_port) return error.StaleRunHandle;
-        var event_pair = try self.prepareEventPair(2, "port failed", "run failed after port failure");
-        defer event_pair.deinit(self.allocator);
         var routed = try self.routeTerminalPending(index, mailbox_id, pending, slot, .failed, reason);
         defer routed.response.deinit(self.allocator);
         if (routed.parked_event) |event| return event;
+        var event_pair = try self.prepareEventPair(2, "port failed", "run failed after port failure");
+        defer event_pair.deinit(self.allocator);
         const failed = try self.mailbox.fail(mailbox_id, reason);
         try slot.transition(.fail, null);
         _ = self.appendPreparedEventAssumeCapacity(.{
