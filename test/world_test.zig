@@ -12749,7 +12749,23 @@ test "admitted run start enforces admitted transcript image" {
     var transcript_only_admitted = transcript_only_result.admitted_run orelse return error.ExpectedAdmittedRun;
     var transcript_only_runspace = world.Runspace.init(std.testing.allocator, .{});
     defer transcript_only_runspace.deinit();
-    try std.testing.expectError(error.RunspaceInstallDenied, transcript_only_runspace.installAdmitted(transcript_only_admitted));
+    const transcript_only_handle = try transcript_only_runspace.installAdmitted(transcript_only_admitted);
+    try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try transcript_only_runspace.getSlotSummary(transcript_only_handle)).status);
+    var transcript_only_export = try transcript_only_runspace.exportRun(transcript_only_handle);
+    defer transcript_only_export.deinit(std.testing.allocator);
+    try std.testing.expectEqual(world.RunImage.Kind.replay_only_run, transcript_only_export.kind);
+    try std.testing.expectEqual(world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint, transcript_only_export.import_set_fingerprint);
+    try std.testing.expectEqual(image.transcript_image_fingerprint, transcript_only_export.transcript_image.?.transcript_image_fingerprint);
+    const missing_import_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_7710,
+        .target_ref = target_ref,
+        .environment_certificate_fingerprint = PortsReplayEnv.certificate(.replay, true).certificate_fingerprint,
+        .mode = .replay_only,
+        .transcript_image = image,
+    });
+    var missing_import_runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer missing_import_runspace.deinit();
+    try std.testing.expectError(error.InvalidFrameEncoding, missing_import_runspace.installAdmitted(missing_import_admitted));
     var transcript_only_runtime = boundary.Runtime.init(std.testing.allocator);
     defer transcript_only_runtime.deinit();
     var transcript_only_run = try transcript_only_admitted.start(fixtures.Ports.Target, PortsReplayEnv, &transcript_only_runtime, .{}, .{

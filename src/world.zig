@@ -229,7 +229,7 @@ pub const world_admission_request_fingerprint_version: u32 = 1;
 pub const world_admission_report_fingerprint_version: u32 = 1;
 pub const world_admission_receipt_format_version: u32 = 1;
 pub const world_admission_receipt_fingerprint_version: u32 = 3;
-pub const world_admitted_run_fingerprint_version: u32 = 4;
+pub const world_admitted_run_fingerprint_version: u32 = 5;
 pub const world_run_handle_format_version: u32 = 1;
 pub const world_run_handle_fingerprint_version: u32 = 1;
 pub const world_pending_port_format_version: u32 = 1;
@@ -2056,6 +2056,7 @@ pub const Admission = struct {
         admission_receipt: ?Admission.AdmissionReceipt = null,
         target_ref: TargetRef,
         module_ref_fingerprint: ?u64 = null,
+        import_set_fingerprint: ?u64 = null,
         environment_certificate_fingerprint: ?u64 = null,
         run_permit: ?RunPermit = null,
         run_image: ?RunImage = null,
@@ -2071,6 +2072,7 @@ pub const Admission = struct {
             admission_receipt: ?Admission.AdmissionReceipt = null,
             target_ref: TargetRef,
             module_ref_fingerprint: ?u64 = null,
+            import_set_fingerprint: ?u64 = null,
             environment_certificate_fingerprint: ?u64 = null,
             run_permit: ?RunPermit = null,
             run_image: ?RunImage = null,
@@ -2087,6 +2089,7 @@ pub const Admission = struct {
                 .admission_receipt = args.admission_receipt,
                 .target_ref = args.target_ref,
                 .module_ref_fingerprint = args.module_ref_fingerprint,
+                .import_set_fingerprint = args.import_set_fingerprint,
                 .environment_certificate_fingerprint = args.environment_certificate_fingerprint,
                 .run_permit = args.run_permit,
                 .run_image = args.run_image,
@@ -2541,6 +2544,7 @@ pub const Admission = struct {
                 .admission_receipt_fingerprint = receipt.receipt_fingerprint,
                 .target_ref = local_target_ref,
                 .module_ref_fingerprint = if (module_ref) |module| module.module_ref_fingerprint else null,
+                .import_set_fingerprint = ImportSet.fromTarget(Target).import_set_fingerprint,
                 .environment_certificate_fingerprint = cert.certificate_fingerprint,
                 .run_permit = args.permit,
                 .run_image = admitted_run_image,
@@ -7666,6 +7670,34 @@ pub const Runspace = struct {
         }
     }
 
+    fn runImageFromAdmittedTranscript(allocator: std.mem.Allocator, target_ref: TargetRef, import_set_fingerprint: u64, module_ref_fingerprint: ?u64, transcript_image: TranscriptImage) !RunImage {
+        var cloned_transcript = try cloneTranscriptImage(allocator, transcript_image);
+        errdefer cloned_transcript.deinit(allocator);
+        const evidence = runStateEvidenceFromTranscriptImage(transcript_image);
+        const state = RunState.init(.{
+            .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+            .transcript_image_fingerprint = transcript_image.transcript_image_fingerprint,
+            .final_response_fingerprint = evidence.final_response_fingerprint,
+            .final_value_image_fingerprint = evidence.final_value_image_fingerprint,
+            .turn_index = evidence.turn_index,
+            .status = switch (transcript_image.final_status) {
+                .running => .running,
+                .completed => .completed,
+                .failed => .failed,
+            },
+        });
+        var image = RunImage.init(.{
+            .kind = .replay_only_run,
+            .target_ref = target_ref,
+            .import_set_fingerprint = import_set_fingerprint,
+            .transcript_image = cloned_transcript,
+            .current_state = state,
+            .module_ref_fingerprint = module_ref_fingerprint,
+        });
+        image.owns_transcript_image = true;
+        return image;
+    }
+
     fn validateAdmittedRunReceipt(admitted_run: Admission.AdmittedRun) !void {
         const receipt = admitted_run.admission_receipt orelse return;
         if (receipt.receipt_fingerprint != admitted_run.admission_receipt_fingerprint) return error.InvalidFrameEncoding;
@@ -7692,7 +7724,15 @@ pub const Runspace = struct {
         }
         if (admitted_run.mode == .branch_resume and admitted_run.selected_branch_id == null) return error.HandoffCheckpointMismatch;
         if (modeConsumesTranscript(admissionModeToRunMode(admitted_run.mode)) and !self.config.allow_replay_install) return error.RunspaceInstallDenied;
-        if (admitted_run.run_image == null and modeConsumesTranscript(admissionModeToRunMode(admitted_run.mode))) return error.RunspaceInstallDenied;
+        const transcript_only_replay_install = admitted_run.run_image == null and
+            modeConsumesTranscript(admissionModeToRunMode(admitted_run.mode)) and
+            admitted_run.transcript_image != null;
+        if (admitted_run.run_image == null and
+            modeConsumesTranscript(admissionModeToRunMode(admitted_run.mode)) and
+            !transcript_only_replay_install)
+        {
+            return error.RunspaceInstallDenied;
+        }
         if (admitted_run.run_image) |image| {
             if ((admissionModeNeedsRunImage(admitted_run.mode) or admitted_run.mode == .replay_only or admitted_run.mode == .verify_only) and
                 !runImageFitsAdmissionMode(image, admitted_run.mode))
@@ -7746,6 +7786,16 @@ pub const Runspace = struct {
                 try installed_image.?.validate(.{});
             }
             try applySelectedBranchToRunImage(&installed_image.?, admitted_run.selected_branch_id);
+        } else if (transcript_only_replay_install) {
+            installed_image = try runImageFromAdmittedTranscript(
+                self.allocator,
+                target_ref,
+                admitted_run.import_set_fingerprint orelse return error.InvalidFrameEncoding,
+                admitted_run.module_ref_fingerprint,
+                admitted_run.transcript_image.?,
+            );
+            installed_image_owned = true;
+            try installed_image.?.validate(.{});
         }
         var supervisor: ?Supervision.Supervisor = null;
         var supervisor_owned = false;
@@ -7802,7 +7852,7 @@ pub const Runspace = struct {
             .handle = handle,
             .target_ref = target_ref,
             .current_state = slot_current_state,
-            .status = if (admitted_run.run_image == null) .admitted else try statusFromInstallableRunImageState(slot_current_state),
+            .status = if (installed_image == null) .admitted else try statusFromInstallableRunImageState(slot_current_state),
             .admission_receipt_fingerprint = admitted_run.admission_receipt_fingerprint,
             .run_permit_fingerprint = installed_permit_fingerprint,
             .run_receipt_fingerprint = if (installed_image) |image| image.prior_run_receipt_fingerprint else null,
@@ -10292,18 +10342,7 @@ pub const Handoff = struct {
                                 run.audit.replay_mismatch_count += 1;
                                 return err;
                             };
-                            if (run.supervisor) |*supervisor| {
-                                supervisor.beforeAdapterCall(.{
-                                    .world_port_id = request.world_port_id,
-                                    .mode = .replay,
-                                    .adapter_kind = .replay,
-                                    .authority_kind = PortAuthority.replay_source.authority_kind,
-                                    .value_policy = .portable,
-                                }) catch |err| {
-                                    try run.handleSupervisionError(err);
-                                    return Error.HandlerPending;
-                                };
-                            }
+                            try run.accountReplayPrefixAdapterCall(request.world_port_id);
                             try run.resumeReplayedFrame(response.*);
                         },
                         else => return error.HandoffPendingFrameMismatch,
@@ -10366,18 +10405,7 @@ pub const Handoff = struct {
                         }
                     else
                         return error.HandoffPendingFrameMismatch;
-                    if (run.supervisor) |*supervisor| {
-                        supervisor.beforeAdapterCall(.{
-                            .world_port_id = request.world_port_id,
-                            .mode = .replay,
-                            .adapter_kind = .replay,
-                            .authority_kind = PortAuthority.replay_source.authority_kind,
-                            .value_policy = .portable,
-                        }) catch |err| {
-                            try run.handleSupervisionError(err);
-                            return Error.HandlerPending;
-                        };
-                    }
+                    try run.accountReplayPrefixAdapterCall(request.world_port_id);
                     try run.resumeReplayedFrame(response.*);
                 },
                 else => return error.HandoffPendingFrameMismatch,
@@ -11550,6 +11578,23 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             .adapter_kind = comptime adapterKindForDecl(Decl),
                             .authority_kind = comptime authorityKindForDecl(Decl),
                             .value_policy = if (comptime @hasDecl(Decl, "value_policy")) Decl.value_policy else .native_compatible,
+                        }) catch |err| {
+                            try self.handleSupervisionError(err);
+                            return Error.HandlerPending;
+                        };
+                    }
+                    self.pending_adapter_call_accounted = true;
+                }
+
+                fn accountReplayPrefixAdapterCall(self: *Self, world_port_id: u32) !void {
+                    if (self.pending_adapter_call_accounted) return;
+                    if (self.supervisor) |*supervisor| {
+                        supervisor.beforeAdapterCall(.{
+                            .world_port_id = world_port_id,
+                            .mode = .replay,
+                            .adapter_kind = .replay,
+                            .authority_kind = PortAuthority.replay_source.authority_kind,
+                            .value_policy = .portable,
                         }) catch |err| {
                             try self.handleSupervisionError(err);
                             return Error.HandlerPending;
@@ -15195,6 +15240,7 @@ fn fingerprintAdmittedRun(run: Admission.AdmittedRun) u64 {
     hashU64(&hasher, world_admitted_run_fingerprint_version);
     hashU64(&hasher, run.target_ref.target_ref_fingerprint);
     hashOptionalU64(&hasher, run.module_ref_fingerprint);
+    hashOptionalU64(&hasher, run.import_set_fingerprint);
     hashOptionalU64(&hasher, run.environment_certificate_fingerprint);
     hashOptionalU64(&hasher, if (run.run_permit) |permit| permit.permit_fingerprint else null);
     hashOptionalU64(&hasher, if (run.run_image) |image| image.run_image_fingerprint else null);
