@@ -4750,6 +4750,52 @@ test "guest core drives one run through canonical request and response bytes" {
     try std.testing.expectEqual(world.TranscriptImage.FinalStatus.completed, transcript_image.final_status);
 }
 
+test "guest core result bytes use post-export supervised receipt" {
+    const StrictEnv = world.Environment(fixtures.Strict.Target, .{
+        .ports = &.{},
+    });
+    const export_policy = world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .allow_native_adapters = true,
+        .allow_handoff_export = true,
+        .require_environment_certificate = true,
+    });
+    const permit = world.Supervision.issue(fixtures.Strict.Target, StrictEnv, .{
+        .mode = .fresh,
+        .policy = export_policy,
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var guest = world.Guest.Core.init(std.testing.allocator, .{ .require_supervision = true });
+    defer guest.deinit();
+
+    try guest.installMachineRun(fixtures.Strict.Target, StrictEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .permit = permit,
+    });
+    try std.testing.expectEqual(world.Guest.Status.done, guest.tick());
+
+    const result_len = guest.resultLen();
+    try std.testing.expect(result_len > 0);
+    const result_bytes = try std.testing.allocator.alloc(u8, result_len);
+    defer std.testing.allocator.free(result_bytes);
+    try std.testing.expectEqual(result_len, guest.readResult(result_bytes));
+    var image = try world.RunImage.decode(std.testing.allocator, result_bytes);
+    defer image.deinit(std.testing.allocator);
+    const receipt = image.prior_run_receipt_fingerprint orelse return error.ExpectedRunReceipt;
+
+    var receipt_bytes: [8]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, receipt_bytes.len), guest.receiptLen());
+    try std.testing.expectEqual(@as(usize, receipt_bytes.len), guest.readReceipt(&receipt_bytes));
+    try std.testing.expectEqual(receipt, std.mem.readInt(u64, &receipt_bytes, .little));
+
+    const events = guest.runspace.report().emitted_events;
+    const exported_event = events[events.len - 1];
+    try std.testing.expectEqual(world.Runspace.EventKind.run_exported, exported_event.kind);
+    try std.testing.expectEqual(receipt, exported_event.run_receipt_fingerprint.?);
+}
+
 test "guest core clamps explicit pending-port config to ABI cap" {
     var guest = world.Guest.Core.init(std.testing.allocator, .{
         .max_pending_ports = world.Guest.Buffer.max_pending_ports + 10,

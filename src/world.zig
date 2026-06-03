@@ -8809,7 +8809,15 @@ pub const Runspace = struct {
                 if (pending_port.request_frame == null) return error.HandoffPendingFrameMismatch;
             }
         }
-        return self.snapshotSlotImage(index);
+        var supervisor_snapshot = try self.snapshotSlotSupervisor(index);
+        defer supervisor_snapshot.deinit(self.allocator);
+        try self.beforeSlotHandoffExport(index);
+        const image = self.snapshotSlotImage(index) catch |err| {
+            supervisor_snapshot.restore(self, index);
+            return err;
+        };
+        supervisor_snapshot.restore(self, index);
+        return image;
     }
 
     pub fn exportPending(self: *@This(), mailbox_id: u64) !RunImage {
