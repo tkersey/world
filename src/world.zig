@@ -7654,7 +7654,15 @@ pub const Runspace = struct {
         }
         const transcript_available = admitted_run.transcript_image != null or
             (admitted_run.run_image != null and admitted_run.run_image.?.transcript_image != null);
-        if (transcript_available and !permit.transcript_image_available and modeConsumesTranscript(permit.mode)) return error.SupervisionDenied;
+        const replays_transcript_prefix = if (admitted_run.run_image) |image|
+            runImageIsInterruptedSupervisionExport(image) and image.current_state.turn_index != 0
+        else
+            false;
+        if (transcript_available and !permit.transcript_image_available and
+            (modeConsumesTranscript(permit.mode) or replays_transcript_prefix))
+        {
+            return error.SupervisionDenied;
+        }
     }
 
     fn validateAdmittedRunReceipt(admitted_run: Admission.AdmittedRun) !void {

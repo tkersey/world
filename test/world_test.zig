@@ -5246,6 +5246,22 @@ test "interrupted supervision handoff replays transcript prefix before live requ
     defer install_receiver.deinit();
     const installed_handle = try install_receiver.installRunImage(image);
     try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_supervision, (try install_receiver.getSlotSummary(installed_handle)).status);
+    const missing_transcript_availability_permit = world.Supervision.issue(fixtures.Agent.Target, AgentEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.handoff_receiver,
+        .transcript_image_available = false,
+    });
+    const missing_transcript_availability_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_6a16,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Agent.Target),
+        .environment_certificate_fingerprint = AgentEnv.certificate(.fresh, true).certificate_fingerprint,
+        .mode = .resume_parked,
+        .run_image = image,
+        .run_permit = missing_transcript_availability_permit,
+    });
+    var missing_transcript_availability_receiver = world.Runspace.init(std.testing.allocator, .{ .require_supervision = true });
+    defer missing_transcript_availability_receiver.deinit();
+    try std.testing.expectError(error.SupervisionDenied, missing_transcript_availability_receiver.installAdmitted(missing_transcript_availability_admitted));
     const prefix_replay_denied_permit = world.Supervision.issue(fixtures.Agent.Target, AgentEnv, .{
         .mode = .fresh,
         .policy = world.SupervisionPolicy.handoff_receiver,
