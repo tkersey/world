@@ -420,6 +420,16 @@ fn appendGuestWasmMalformedTableSection(module: *std.ArrayList(u8)) !void {
     try appendWasmSection(module, 4, table.items);
 }
 
+fn appendGuestWasmTableSection(module: *std.ArrayList(u8), element_type: u8) !void {
+    var table: std.ArrayList(u8) = .empty;
+    defer table.deinit(std.testing.allocator);
+    try appendWasmU32(&table, 1);
+    try table.append(std.testing.allocator, element_type);
+    try table.append(std.testing.allocator, 0);
+    try appendWasmU32(&table, 1);
+    try appendWasmSection(module, 4, table.items);
+}
+
 fn appendGuestWasmMalformedGlobalSection(module: *std.ArrayList(u8)) !void {
     var global: std.ArrayList(u8) = .empty;
     defer global.deinit(std.testing.allocator);
@@ -592,6 +602,34 @@ fn appendGuestWasmInvalidCallBodyCodeSection(module: *std.ArrayList(u8)) !void {
             try appendWasmU32(&body, @intCast(world.Guest.Abi.required_exports.len));
             try body.append(std.testing.allocator, 0x41);
             try appendWasmU32(&body, 0);
+        } else {
+            try body.append(std.testing.allocator, 0x41);
+            try appendWasmU32(&body, 0);
+        }
+        try body.append(std.testing.allocator, 0x0b);
+        try appendWasmU32(&code, @intCast(body.items.len));
+        try code.appendSlice(std.testing.allocator, body.items);
+    }
+    try appendWasmSection(module, 10, code.items);
+}
+
+fn appendGuestWasmExternrefIndirectCallBodyCodeSection(module: *std.ArrayList(u8)) !void {
+    var code: std.ArrayList(u8) = .empty;
+    defer code.deinit(std.testing.allocator);
+    try appendWasmU32(&code, @intCast(world.Guest.Abi.required_exports.len));
+    for (world.Guest.Abi.required_exports, 0..) |_, index| {
+        var body: std.ArrayList(u8) = .empty;
+        defer body.deinit(std.testing.allocator);
+        try appendWasmU32(&body, 0);
+        if (index == 1) {
+            try body.append(std.testing.allocator, 0x41);
+            try appendWasmU32(&body, 0);
+            try body.append(std.testing.allocator, 0x11);
+            try appendWasmU32(&body, 0);
+            try appendWasmU32(&body, 0);
+        } else if (index == 0) {
+            try body.append(std.testing.allocator, 0x41);
+            try appendWasmU32(&body, world.Guest.Abi.version);
         } else {
             try body.append(std.testing.allocator, 0x41);
             try appendWasmU32(&body, 0);
@@ -1428,6 +1466,30 @@ fn syntheticMalformedTableGuestWasm(allocator: std.mem.Allocator) ![]u8 {
     return module.toOwnedSlice(allocator);
 }
 
+fn syntheticExternrefIndirectCallGuestWasm(allocator: std.mem.Allocator) ![]u8 {
+    var module: std.ArrayList(u8) = .empty;
+    errdefer module.deinit(allocator);
+    try module.appendSlice(allocator, "\x00asm\x01\x00\x00\x00");
+    try appendGuestWasmTypeSection(&module);
+    try appendGuestWasmFunctionSection(&module, false);
+    try appendGuestWasmTableSection(&module, 0x6f);
+    try appendGuestWasmMemorySection(&module);
+    var exports: std.ArrayList(u8) = .empty;
+    defer exports.deinit(allocator);
+    try appendWasmU32(&exports, @intCast(world.Guest.Abi.required_exports.len + 1));
+    for (world.Guest.Abi.required_exports, 0..) |name, index| {
+        try appendWasmName(&exports, name);
+        try exports.append(allocator, 0);
+        try appendWasmU32(&exports, @intCast(index));
+    }
+    try appendWasmName(&exports, "memory");
+    try exports.append(allocator, 2);
+    try appendWasmU32(&exports, 0);
+    try appendWasmSection(&module, 7, exports.items);
+    try appendGuestWasmExternrefIndirectCallBodyCodeSection(&module);
+    return module.toOwnedSlice(allocator);
+}
+
 fn syntheticMalformedGlobalGuestWasm(allocator: std.mem.Allocator) ![]u8 {
     var module: std.ArrayList(u8) = .empty;
     errdefer module.deinit(allocator);
@@ -2163,6 +2225,10 @@ test "wasm export inspector validates required exports and forbidden imports" {
     const malformed_table = try syntheticMalformedTableGuestWasm(std.testing.allocator);
     defer std.testing.allocator.free(malformed_table);
     try std.testing.expectError(error.InvalidFrameEncoding, world.Guest.Wasm.inspect(malformed_table));
+
+    const externref_indirect_call = try syntheticExternrefIndirectCallGuestWasm(std.testing.allocator);
+    defer std.testing.allocator.free(externref_indirect_call);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Guest.Wasm.inspect(externref_indirect_call));
 
     const malformed_global = try syntheticMalformedGlobalGuestWasm(std.testing.allocator);
     defer std.testing.allocator.free(malformed_global);
@@ -6521,6 +6587,29 @@ test "native guest world_init preserves newly installed run" {
     try std.testing.expectEqual(world.Guest.Status.initialized.code(), guest.world_init());
     try std.testing.expectEqual(world.Guest.Status.parked.code(), guest.world_tick());
     try std.testing.expectEqual(@as(u32, 1), guest.world_pending_count());
+}
+
+test "native guest world_init preserves parked run image" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var source = world.Runspace.init(std.testing.allocator, .{});
+    defer source.deinit();
+    const handle = try source.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    _ = try source.tick();
+    var image = try source.exportRun(handle);
+    defer image.deinit(std.testing.allocator);
+
+    var guest = world.Guest.NativeGuest.init(std.testing.allocator, .{});
+    defer guest.deinit();
+    try guest.core.installRunImage(image);
+
+    try std.testing.expectEqual(world.Guest.Status.parked.code(), guest.world_init());
+    try std.testing.expectEqual(@as(u32, 1), guest.world_pending_count());
+    try std.testing.expect(guest.world_pending_request_len(0) > 0);
+    try std.testing.expectEqual(world.Guest.Status.parked.code(), guest.world_tick());
 }
 
 test "guest install admitted completed image refreshes status" {
