@@ -10018,6 +10018,7 @@ pub const Guest = struct {
         }
 
         pub fn pendingCount(self: *const @This()) usize {
+            if (self.installedRunParkedOnSupervision()) return 0;
             return self.runspace.mailbox.pendingCount();
         }
 
@@ -10129,6 +10130,7 @@ pub const Guest = struct {
             const report = self.runspace.report();
             if (report.failed_count != 0) return self.setStatus(.failed, "guest run failed");
             if (report.completed_count != 0) return self.setStatus(.done, "");
+            if (self.installedRunParkedOnSupervision()) return self.setStatus(.supervision_denied, "guest run parked on supervision");
             if (report.pending_port_count != 0) return self.setStatus(.parked, "");
             if (report.parked_count != 0) return self.setStatus(.supervision_denied, "guest run parked on supervision without a pending port");
             if (report.runnable_count != 0) return self.setStatus(.running, "");
@@ -10166,6 +10168,7 @@ pub const Guest = struct {
         }
 
         fn pendingByIndex(self: *const @This(), index: u32) !PendingPort {
+            if (self.installedRunParkedOnSupervision()) return error.SupervisionDenied;
             var current: u32 = 0;
             for (self.runspace.mailbox.pending.items) |pending_port| {
                 if (pending_port.status != .pending) continue;
@@ -10176,6 +10179,7 @@ pub const Guest = struct {
         }
 
         fn matchPendingMailbox(self: *const @This(), response: Frame.Response) !u64 {
+            if (self.installedRunParkedOnSupervision()) return error.SupervisionDenied;
             var stale = false;
             for (self.runspace.mailbox.pending.items) |pending_port| {
                 if (pending_port.request_fingerprint != response.request_fingerprint) continue;
@@ -10190,6 +10194,14 @@ pub const Guest = struct {
                 return pending_port.mailbox_id;
             }
             return if (stale) error.PendingPortConsumed else error.InvalidPendingPortTransition;
+        }
+
+        fn installedRunParkedOnSupervision(self: *const @This()) bool {
+            const handle = self.handle orelse return false;
+            for (self.runspace.slots.items) |slot| {
+                if (slot.handle.handle_fingerprint == handle.handle_fingerprint and slot.status == .parked_on_supervision) return true;
+            }
+            return false;
         }
 
         fn copyToGuestBuffer(self: *@This(), bytes: []const u8, out: []u8) usize {
@@ -10212,6 +10224,7 @@ pub const Guest = struct {
             return switch (err) {
                 error.PendingPortConsumed => self.setStatus(.stale_pending, "pending request has already been consumed"),
                 error.StaleRunHandle => self.setStatus(.stale_pending, "pending request is stale for this run"),
+                error.SupervisionDenied => self.setStatus(.supervision_denied, "guest run parked on supervision"),
                 error.FrameSurfaceMismatch,
                 error.FrameTargetCertificateMismatch,
                 error.FramePortMismatch,

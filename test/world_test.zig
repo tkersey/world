@@ -5113,6 +5113,55 @@ test "guest core pending response preserves parked request state" {
     try std.testing.expectEqual(@as(usize, 0), guest.lastErrorLen());
 }
 
+test "guest core supervision-parked pending response does not expose pending work" {
+    const park_policy = world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .allow_native_adapters = true,
+        .allow_pending_responses = true,
+        .require_environment_certificate = true,
+        .park_on_budget_exceeded = true,
+    });
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = park_policy,
+        .budget = world.Budget.init(.{ .max_frame_response_bytes = 0 }),
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var guest = world.Guest.Core.init(std.testing.allocator, .{ .require_supervision = true });
+    defer guest.deinit();
+
+    try guest.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .permit = permit,
+    });
+    try std.testing.expectEqual(world.Guest.Status.parked, guest.tick());
+    const request_len = guest.pendingRequestLen(0);
+    const request_bytes = try std.testing.allocator.alloc(u8, request_len);
+    defer std.testing.allocator.free(request_bytes);
+    _ = guest.readPendingRequest(0, request_bytes);
+    var request = try world.Frame.Request.decode(std.testing.allocator, request_bytes);
+    defer request.deinit(std.testing.allocator);
+    const pending_response = world.Frame.Response.init(.{
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .target_certificate_fingerprint = request.target_certificate_fingerprint,
+        .world_port_id = request.world_port_id,
+        .request_fingerprint = request.request_fingerprint,
+        .response_kind = .@"resume",
+        .response_fingerprint = 0x7375_7065_725f_706b,
+        .replay_key = request.replay_key_seed.withResponse(0x7375_7065_725f_706b).fingerprint(),
+        .status = .pending,
+    });
+    const pending_response_bytes = try pending_response.encode(std.testing.allocator);
+    defer std.testing.allocator.free(pending_response_bytes);
+
+    try std.testing.expectEqual(world.Guest.Status.supervision_denied, guest.submitResponse(pending_response_bytes));
+    try std.testing.expectEqual(@as(usize, 0), guest.pendingCount());
+    try std.testing.expectEqual(@as(usize, 0), guest.pendingRequestLen(0));
+    try std.testing.expectEqual(world.Guest.Status.supervision_denied, guest.submitResponse(pending_response_bytes));
+}
+
 test "guest core reports supervision-only park without exposing pending request" {
     const policy = world.SupervisionPolicy.init(.{
         .allow_fresh_calls = true,
