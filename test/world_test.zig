@@ -8982,6 +8982,70 @@ test "verify handoff detects changed fixture handler behavior" {
     }));
 }
 
+test "runspace completed replay installs charge terminal supervision step" {
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    try recordPortsTranscript(&transcript);
+    var image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer image.deinit(std.testing.allocator);
+
+    const replay_install_policy = world.SupervisionPolicy.init(.{
+        .allow_replay_calls = true,
+        .allow_replay_adapters = true,
+        .require_portable_value_images = true,
+        .reject_native_only_values = true,
+        .require_environment_certificate = false,
+        .require_transcript_image_for_replay = true,
+    });
+    const terminal_step_limited_permit = world.Supervision.issue(fixtures.Ports.Target, PortsReplayEnv, .{
+        .mode = .replay,
+        .policy = replay_install_policy,
+        .budget = world.Budget.init(.{ .max_session_steps = 1 }),
+        .transcript_image_available = true,
+    });
+    var runspace = world.Runspace.init(std.testing.allocator, .{ .require_supervision = true });
+    defer runspace.deinit();
+    try std.testing.expectError(error.BudgetExceeded, runspace.installReplay(fixtures.Ports.Target, image, terminal_step_limited_permit));
+}
+
+test "runspace admitted verify installs charge verification response" {
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    try recordPortsTranscript(&transcript);
+    var image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer image.deinit(std.testing.allocator);
+
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const run_image = world.RunImage.fromTranscriptImage(fixtures.Ports.Target, image, .completed_run);
+    const verify_accept_policy = world.SupervisionPolicy.init(.{
+        .allow_verify_calls = true,
+        .allow_native_adapters = true,
+        .allow_handoff_accept = true,
+        .require_environment_certificate = true,
+        .require_transcript_image_for_replay = true,
+    });
+    const response_limited_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .verify,
+        .policy = verify_accept_policy,
+        .budget = world.Budget.init(.{ .max_port_responses = 1 }),
+        .transcript_image_available = true,
+        .handoff_policy = .allow,
+    });
+    const admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_7ed0,
+        .target_ref = target_ref,
+        .environment_certificate_fingerprint = PortsEnv.certificate(.verify, true).certificate_fingerprint,
+        .mode = .verify_only,
+        .run_image = run_image,
+        .transcript_image = image,
+        .run_permit = response_limited_permit,
+    });
+
+    var runspace = world.Runspace.init(std.testing.allocator, .{ .require_supervision = true });
+    defer runspace.deinit();
+    try std.testing.expectError(error.BudgetExceeded, runspace.installAdmitted(admitted));
+}
+
 test "branch handoff metadata roundtrips and parent transcript is not mutated" {
     var baseline = try runAgentScenario(std.testing.allocator, .skeleton);
     defer baseline.fresh_result.deinit(std.testing.allocator);

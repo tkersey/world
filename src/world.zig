@@ -7767,13 +7767,13 @@ pub const Runspace = struct {
                             replay_image.world_surface_fingerprint,
                             replay_image.target_certificate_fingerprint,
                         );
-                        try self.accountPreparedTranscriptReplayWithSupervisor(replay_image, admissionModeToRunMode(admitted_run.mode), &supervisor.?);
+                        try self.accountPreparedTranscriptReplayWithSupervisor(replay_image, admissionModeToRunMode(admitted_run.mode), &supervisor.?, .completed_run);
                     } else if (runImageIsInterruptedSupervisionExport(image) and image.current_state.turn_index != 0) {
                         try replay_image.prepareReplayPrefixForInterruptedRun(
                             replay_image.world_surface_fingerprint,
                             replay_image.target_certificate_fingerprint,
                         );
-                        try self.accountPreparedTranscriptReplayWithSupervisor(replay_image, .replay, &supervisor.?);
+                        try self.accountPreparedTranscriptReplayWithSupervisor(replay_image, .replay, &supervisor.?, .interrupted_prefix);
                     }
                 }
             }
@@ -8032,7 +8032,7 @@ pub const Runspace = struct {
         if (permit) |run_permit| {
             supervisor = try Supervision.Supervisor.init(self.allocator, run_permit, @max(Target.WorldPortTable.entries.len, transcriptPortCount(transcript_image)));
             supervisor_owned = true;
-            try self.accountPreparedTranscriptReplayWithSupervisor(replay_validation, .replay, &supervisor.?);
+            try self.accountPreparedTranscriptReplayWithSupervisor(replay_validation, .replay, &supervisor.?, .completed_run);
         }
         const next_run_id_before = self.next_run_id;
         var installed = false;
@@ -8128,7 +8128,12 @@ pub const Runspace = struct {
         return count;
     }
 
-    fn accountPreparedTranscriptReplayWithSupervisor(self: *@This(), image: TranscriptImage, replay_mode: Mode, supervisor: *Supervision.Supervisor) !void {
+    const TranscriptReplayAccounting = enum {
+        interrupted_prefix,
+        completed_run,
+    };
+
+    fn accountPreparedTranscriptReplayWithSupervisor(self: *@This(), image: TranscriptImage, replay_mode: Mode, supervisor: *Supervision.Supervisor, accounting: TranscriptReplayAccounting) !void {
         var index = image.replay_cursor;
         const limit = image.replay_limit orelse image.events.len;
         while (index < limit) : (index += 1) {
@@ -8158,9 +8163,9 @@ pub const Runspace = struct {
                 try supervisor.beforeAdapterCall(.{
                     .world_port_id = response_frame.world_port_id,
                     .mode = replay_mode,
-                    .adapter_kind = .replay,
-                    .authority_kind = PortAuthority.replay_source.authority_kind,
-                    .value_policy = .portable,
+                    .adapter_kind = if (replay_mode == .verify) .native else .replay,
+                    .authority_kind = if (replay_mode == .verify) PortAuthority.native_function.authority_kind else PortAuthority.replay_source.authority_kind,
+                    .value_policy = if (replay_mode == .verify) .native_compatible else .portable,
                 });
                 const response_bytes = bytes: {
                     const encoded = try response_frame.encode(self.allocator);
@@ -8173,8 +8178,15 @@ pub const Runspace = struct {
                     .response_bytes = response_bytes,
                     .value_image_bytes = if (response_frame.response_image) |image_value| image_value.bytes.len else 0,
                 });
+                if (accounting == .completed_run and replay_mode == .verify) {
+                    try supervisor.afterAdapterResponse(.{
+                        .world_port_id = response_frame.world_port_id,
+                        .status = .responded,
+                    });
+                }
             }
         }
+        if (accounting == .completed_run) try supervisor.beforeSessionStep();
     }
 
     pub fn tick(self: *@This()) !Runspace.RunspaceReport {
