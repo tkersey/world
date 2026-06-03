@@ -569,12 +569,23 @@ pub fn build(b: *std.Build) void {
         check_step.dependOn(run_step);
     }
 
-    const wasm_export_check_mod = b.createModule(.{
-        .root_source_file = b.path("examples/world_wasm_export_check.zig"),
-        .target = target,
+    const host_boundary_dep = b.dependency("boundary", .{
+        .target = b.graph.host,
         .optimize = optimize,
     });
-    wasm_export_check_mod.addImport("world", world);
+    const host_boundary = host_boundary_dep.module("boundary");
+    const host_world = b.createModule(.{
+        .root_source_file = b.path("src/world.zig"),
+        .target = b.graph.host,
+        .optimize = optimize,
+    });
+    host_world.addImport("boundary", host_boundary);
+    const wasm_export_check_mod = b.createModule(.{
+        .root_source_file = b.path("examples/world_wasm_export_check.zig"),
+        .target = b.graph.host,
+        .optimize = optimize,
+    });
+    wasm_export_check_mod.addImport("world", host_world);
     const wasm_export_check = b.addExecutable(.{ .name = "world-wasm-export-check", .root_module = wasm_export_check_mod });
     const run_wasm_export_check = b.addRunArtifact(wasm_export_check);
     run_wasm_export_check.addFileArg(wasm_guest.getEmittedBin());

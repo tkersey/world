@@ -10395,7 +10395,7 @@ pub const Guest = struct {
         };
 
         pub const Inspection = struct {
-            abi_version: u32 = Abi.version,
+            abi_version: u32 = 0,
             export_count: usize = 0,
             import_count: usize = 0,
             function_import_count: u32 = 0,
@@ -10406,7 +10406,8 @@ pub const Guest = struct {
             free_export_present: bool = false,
 
             pub fn passed(self: @This()) bool {
-                return self.required_exports_present and
+                return self.abi_version == Abi.version and
+                    self.required_exports_present and
                     self.memory_export_present and
                     self.import_count == 0 and
                     self.forbidden_import_count == 0;
@@ -10421,7 +10422,9 @@ pub const Guest = struct {
             var required_mask: u64 = 0;
             var type_section: []const u8 = &.{};
             var function_section: []const u8 = &.{};
+            var code_section: []const u8 = &.{};
             var memory_count: u32 = 0;
+            var abi_defined_function_index: ?u32 = null;
             var cursor: usize = 8;
             while (cursor < bytes.len) {
                 const section_id = bytes[cursor];
@@ -10434,7 +10437,8 @@ pub const Guest = struct {
                     2 => inspection.function_import_count = try inspectImportSection(bytes[cursor..section_end], &inspection),
                     3 => function_section = bytes[cursor..section_end],
                     5 => memory_count = try inspectMemorySection(bytes[cursor..section_end]),
-                    7 => try inspectExportSection(bytes[cursor..section_end], type_section, function_section, memory_count, inspection.function_import_count, &inspection, &required_mask),
+                    7 => try inspectExportSection(bytes[cursor..section_end], type_section, function_section, memory_count, inspection.function_import_count, &inspection, &required_mask, &abi_defined_function_index),
+                    10 => code_section = bytes[cursor..section_end],
                     else => {},
                 }
                 cursor = section_end;
@@ -10444,6 +10448,9 @@ pub const Guest = struct {
             else
                 (@as(u64, 1) << @intCast(Abi.required_exports.len)) - 1;
             inspection.required_exports_present = (required_mask & all_required) == all_required;
+            if (abi_defined_function_index) |defined_index| {
+                inspection.abi_version = try inspectAbiVersionCode(code_section, defined_index);
+            }
             return inspection;
         }
 
@@ -10474,7 +10481,7 @@ pub const Guest = struct {
             return count;
         }
 
-        fn inspectExportSection(section: []const u8, type_section: []const u8, function_section: []const u8, memory_count: u32, function_import_count: u32, inspection: *Inspection, required_mask: *u64) !void {
+        fn inspectExportSection(section: []const u8, type_section: []const u8, function_section: []const u8, memory_count: u32, function_import_count: u32, inspection: *Inspection, required_mask: *u64, abi_defined_function_index: *?u32) !void {
             var cursor: usize = 0;
             const count = try readWasmU32(section, &cursor);
             var index: u32 = 0;
@@ -10487,10 +10494,43 @@ pub const Guest = struct {
                 if (kind == 0 and std.mem.eql(u8, name, "world_alloc") and try functionSignatureMatches(type_section, function_section, function_import_count, export_index, .{ .param_count = 1, .result_count = 1 })) inspection.alloc_export_present = true;
                 if (kind == 0 and std.mem.eql(u8, name, "world_free") and try functionSignatureMatches(type_section, function_section, function_import_count, export_index, .{ .param_count = 2, .result_count = 0 })) inspection.free_export_present = true;
                 for (Abi.required_exports, 0..) |required, required_index| {
-                    if (kind == 0 and std.mem.eql(u8, name, required) and try functionSignatureMatches(type_section, function_section, function_import_count, export_index, requiredSignature(required_index))) required_mask.* |= @as(u64, 1) << @intCast(required_index);
+                    if (kind == 0 and std.mem.eql(u8, name, required) and try functionSignatureMatches(type_section, function_section, function_import_count, export_index, requiredSignature(required_index))) {
+                        required_mask.* |= @as(u64, 1) << @intCast(required_index);
+                        if (required_index == 0) abi_defined_function_index.* = export_index - function_import_count;
+                    }
                 }
             }
             if (cursor != section.len) return error.InvalidFrameEncoding;
+        }
+
+        fn inspectAbiVersionCode(section: []const u8, defined_index: u32) !u32 {
+            var cursor: usize = 0;
+            const count = try readWasmU32(section, &cursor);
+            if (defined_index >= count) return error.InvalidFrameEncoding;
+            var index: u32 = 0;
+            while (index < count) : (index += 1) {
+                const body_len = try readWasmU32(section, &cursor);
+                if (cursor + body_len > section.len) return error.InvalidFrameEncoding;
+                const body = section[cursor .. cursor + body_len];
+                cursor += body_len;
+                if (index == defined_index) return try inspectAbiVersionBody(body);
+            }
+            return error.InvalidFrameEncoding;
+        }
+
+        fn inspectAbiVersionBody(body: []const u8) !u32 {
+            var cursor: usize = 0;
+            const local_decl_count = try readWasmU32(body, &cursor);
+            var local_decl_index: u32 = 0;
+            while (local_decl_index < local_decl_count) : (local_decl_index += 1) {
+                _ = try readWasmU32(body, &cursor);
+                _ = try readWasmU8(body, &cursor);
+            }
+            if (try readWasmU8(body, &cursor) != 0x41) return error.InvalidFrameEncoding;
+            const abi_version = try readWasmI32NonNegative(body, &cursor);
+            if (try readWasmU8(body, &cursor) != 0x0b) return error.InvalidFrameEncoding;
+            if (cursor != body.len) return error.InvalidFrameEncoding;
+            return abi_version;
         }
 
         fn forbiddenImport(name: []const u8) bool {
@@ -10604,6 +10644,12 @@ pub const Guest = struct {
                 if (shift >= 28) return error.InvalidFrameEncoding;
                 shift += 7;
             }
+        }
+
+        fn readWasmI32NonNegative(bytes: []const u8, cursor: *usize) !u32 {
+            const value = try readWasmU32(bytes, cursor);
+            if ((value & 0x8000_0000) != 0) return error.InvalidFrameEncoding;
+            return value;
         }
     };
 

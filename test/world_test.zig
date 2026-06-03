@@ -344,6 +344,29 @@ fn appendGuestWasmMemorySection(module: *std.ArrayList(u8)) !void {
     try appendWasmSection(module, 5, memory.items);
 }
 
+fn appendGuestWasmCodeSection(module: *std.ArrayList(u8), defined_function_count: usize, abi_version: u32) !void {
+    var code: std.ArrayList(u8) = .empty;
+    defer code.deinit(std.testing.allocator);
+    try appendWasmU32(&code, @intCast(defined_function_count));
+    var index: usize = 0;
+    while (index < defined_function_count) : (index += 1) {
+        var body: std.ArrayList(u8) = .empty;
+        defer body.deinit(std.testing.allocator);
+        try appendWasmU32(&body, 0);
+        if (index == 0) {
+            try body.append(std.testing.allocator, 0x41);
+            try appendWasmU32(&body, abi_version);
+        } else if (index < world.Guest.Abi.required_exports.len or index == world.Guest.Abi.required_exports.len) {
+            try body.append(std.testing.allocator, 0x41);
+            try appendWasmU32(&body, 0);
+        }
+        try body.append(std.testing.allocator, 0x0b);
+        try appendWasmU32(&code, @intCast(body.items.len));
+        try code.appendSlice(std.testing.allocator, body.items);
+    }
+    try appendWasmSection(module, 10, code.items);
+}
+
 fn syntheticGuestWasm(allocator: std.mem.Allocator) ![]u8 {
     var module: std.ArrayList(u8) = .empty;
     errdefer module.deinit(allocator);
@@ -363,6 +386,30 @@ fn syntheticGuestWasm(allocator: std.mem.Allocator) ![]u8 {
     try exports.append(allocator, 2);
     try appendWasmU32(&exports, 0);
     try appendWasmSection(&module, 7, exports.items);
+    try appendGuestWasmCodeSection(&module, world.Guest.Abi.required_exports.len, world.Guest.Abi.version);
+    return module.toOwnedSlice(allocator);
+}
+
+fn syntheticStaleAbiGuestWasm(allocator: std.mem.Allocator) ![]u8 {
+    var module: std.ArrayList(u8) = .empty;
+    errdefer module.deinit(allocator);
+    try module.appendSlice(allocator, "\x00asm\x01\x00\x00\x00");
+    try appendGuestWasmTypeSection(&module);
+    try appendGuestWasmFunctionSection(&module, false);
+    try appendGuestWasmMemorySection(&module);
+    var exports: std.ArrayList(u8) = .empty;
+    defer exports.deinit(allocator);
+    try appendWasmU32(&exports, @intCast(world.Guest.Abi.required_exports.len + 1));
+    for (world.Guest.Abi.required_exports, 0..) |name, index| {
+        try appendWasmName(&exports, name);
+        try exports.append(allocator, 0);
+        try appendWasmU32(&exports, @intCast(index));
+    }
+    try appendWasmName(&exports, "memory");
+    try exports.append(allocator, 2);
+    try appendWasmU32(&exports, 0);
+    try appendWasmSection(&module, 7, exports.items);
+    try appendGuestWasmCodeSection(&module, world.Guest.Abi.required_exports.len, world.Guest.Abi.version + 1);
     return module.toOwnedSlice(allocator);
 }
 
@@ -385,6 +432,7 @@ fn syntheticWrongSignatureGuestWasm(allocator: std.mem.Allocator) ![]u8 {
     try exports.append(allocator, 2);
     try appendWasmU32(&exports, 0);
     try appendWasmSection(&module, 7, exports.items);
+    try appendGuestWasmCodeSection(&module, world.Guest.Abi.required_exports.len, world.Guest.Abi.version);
     return module.toOwnedSlice(allocator);
 }
 
@@ -406,6 +454,7 @@ fn syntheticMissingMemoryGuestWasm(allocator: std.mem.Allocator) ![]u8 {
     try exports.append(allocator, 2);
     try appendWasmU32(&exports, 0);
     try appendWasmSection(&module, 7, exports.items);
+    try appendGuestWasmCodeSection(&module, world.Guest.Abi.required_exports.len, world.Guest.Abi.version);
     return module.toOwnedSlice(allocator);
 }
 
@@ -430,6 +479,7 @@ fn syntheticAllocOnlyGuestWasm(allocator: std.mem.Allocator) ![]u8 {
     try exports.append(allocator, 0);
     try appendWasmU32(&exports, @intCast(world.Guest.Abi.required_exports.len + 1));
     try appendWasmSection(&module, 7, exports.items);
+    try appendGuestWasmCodeSection(&module, world.Guest.Abi.required_exports.len + 2, world.Guest.Abi.version);
     return module.toOwnedSlice(allocator);
 }
 
@@ -460,6 +510,7 @@ fn syntheticGuestWasmWithImport(allocator: std.mem.Allocator, module_name: []con
     try exports.append(allocator, 2);
     try appendWasmU32(&exports, 0);
     try appendWasmSection(&module, 7, exports.items);
+    try appendGuestWasmCodeSection(&module, world.Guest.Abi.required_exports.len, world.Guest.Abi.version);
     return module.toOwnedSlice(allocator);
 }
 
@@ -501,6 +552,7 @@ test "wasm export inspector validates required exports and forbidden imports" {
     const valid = try syntheticGuestWasm(std.testing.allocator);
     defer std.testing.allocator.free(valid);
     const valid_inspection = try world.Guest.Wasm.inspect(valid);
+    try std.testing.expectEqual(world.Guest.Abi.version, valid_inspection.abi_version);
     try std.testing.expect(valid_inspection.required_exports_present);
     try std.testing.expect(valid_inspection.memory_export_present);
     try std.testing.expectEqual(@as(usize, 0), valid_inspection.forbidden_import_count);
@@ -516,6 +568,7 @@ test "wasm export inspector validates required exports and forbidden imports" {
     const arbitrary_import = try syntheticGuestWasmWithImport(std.testing.allocator, "env", "log");
     defer std.testing.allocator.free(arbitrary_import);
     const arbitrary_import_inspection = try world.Guest.Wasm.inspect(arbitrary_import);
+    try std.testing.expectEqual(world.Guest.Abi.version, arbitrary_import_inspection.abi_version);
     try std.testing.expect(arbitrary_import_inspection.required_exports_present);
     try std.testing.expectEqual(@as(usize, 1), arbitrary_import_inspection.import_count);
     try std.testing.expectEqual(@as(usize, 0), arbitrary_import_inspection.forbidden_import_count);
@@ -548,6 +601,13 @@ test "wasm export inspector validates required exports and forbidden imports" {
     try std.testing.expect(alloc_only_inspection.free_export_present);
     try std.testing.expect(!alloc_only_inspection.memory_export_present);
     try std.testing.expect(!alloc_only_inspection.passed());
+
+    const stale_abi = try syntheticStaleAbiGuestWasm(std.testing.allocator);
+    defer std.testing.allocator.free(stale_abi);
+    const stale_abi_inspection = try world.Guest.Wasm.inspect(stale_abi);
+    try std.testing.expectEqual(world.Guest.Abi.version + 1, stale_abi_inspection.abi_version);
+    try std.testing.expect(stale_abi_inspection.required_exports_present);
+    try std.testing.expect(!stale_abi_inspection.passed());
 }
 
 const MissingDispatchTarget = struct {
