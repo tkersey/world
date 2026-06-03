@@ -10293,7 +10293,19 @@ pub const Guest = struct {
 
         fn mapRunspaceError(self: *@This(), err: anyerror) Status {
             return switch (err) {
-                error.SupervisionDenied, error.HandoffDenied, error.BudgetExceeded, error.SupervisionBudgetExceeded, error.SupervisionPortRuleDenied => self.setStatus(.supervision_denied, "supervision denied guest run"),
+                error.SupervisionDenied,
+                error.HandoffDenied,
+                error.BudgetExceeded,
+                error.SupervisionBudgetExceeded,
+                error.SupervisionPortRuleDenied,
+                error.PortRuleDenied,
+                error.AdapterKindDenied,
+                error.AuthorityDenied,
+                error.PortableValueRequired,
+                error.NativeValueRejected,
+                error.FreshCallDenied,
+                error.ReplayCallDenied,
+                => self.setStatus(.supervision_denied, "supervision denied guest run"),
                 error.RunspaceAdmissionRequired, error.AdmissionRejected => self.setStatus(.admission_failed, "runspace admission failed"),
                 error.FrameSurfaceMismatch, error.FrameTargetCertificateMismatch => self.setStatus(.target_mismatch, "frame target does not match guest run"),
                 error.InvalidFrameEncoding, error.VerifyValueImageMismatch, error.FramePortMismatch, error.FrameRequestFingerprintMismatch, error.FrameValueTableMismatch => self.setStatus(.invalid_frame, "invalid canonical frame bytes"),

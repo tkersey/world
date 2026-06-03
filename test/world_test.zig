@@ -9623,6 +9623,31 @@ test "native guest supervised denial matches normal runspace denial" {
     try std.testing.expectEqual(world.Guest.Status.supervision_denied.code(), guest.world_tick());
     try std.testing.expectEqual(@as(usize, 0), guest_ctx.calls);
     try std.testing.expectEqual(@as(u32, 0), guest.world_pending_count());
+
+    const request_denied_rules = [_]world.PortRule{world.PortRule.init(.{
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .world_port_id = 0,
+        .max_requests = 0,
+    })};
+    const request_denied_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+        .port_rules = &request_denied_rules,
+    });
+    var policy_denied_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer policy_denied_runtime.deinit();
+    var policy_denied_ctx: PortsCtx = .{};
+    var policy_denied_guest = world.Guest.NativeGuest.init(std.testing.allocator, .{});
+    defer policy_denied_guest.deinit();
+    try policy_denied_guest.installMachineRun(fixtures.Ports.Target, PortsEnv, &policy_denied_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &policy_denied_ctx,
+        .permit = request_denied_permit,
+    });
+    try std.testing.expectEqual(world.Guest.Status.supervision_denied.code(), policy_denied_guest.world_tick());
+    try std.testing.expectEqual(@as(usize, 0), policy_denied_ctx.calls);
+    try std.testing.expectEqual(@as(u32, 0), policy_denied_guest.world_pending_count());
 }
 
 const BorrowedAgentCtx = struct {
