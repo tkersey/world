@@ -11282,17 +11282,22 @@ pub const Guest = struct {
                 0x28...0x2f => {
                     try skipWasmMemArg(bytes, cursor, wasmMemoryOpcodeMaxAlign(opcode));
                     try popWasmValue(context, 0x7f);
-                    try pushWasmValue(context, if (opcode == 0x29) 0x7e else 0x7f);
+                    try pushWasmValue(context, switch (opcode) {
+                        0x29 => 0x7e,
+                        0x2a => 0x7d,
+                        0x2b => 0x7c,
+                        else => 0x7f,
+                    });
                 },
                 0x30...0x35 => {
                     try skipWasmMemArg(bytes, cursor, wasmMemoryOpcodeMaxAlign(opcode));
                     try popWasmValue(context, 0x7f);
-                    try pushWasmValue(context, if (opcode == 0x31) 0x7c else 0x7d);
+                    try pushWasmValue(context, 0x7e);
                 },
                 0x36...0x3e => {
                     try skipWasmMemArg(bytes, cursor, wasmMemoryOpcodeMaxAlign(opcode));
                     try popWasmValue(context, switch (opcode) {
-                        0x37 => 0x7e,
+                        0x37, 0x3c...0x3e => 0x7e,
                         0x38 => 0x7d,
                         0x39 => 0x7c,
                         else => 0x7f,
@@ -11360,9 +11365,8 @@ pub const Guest = struct {
                 0xbd => try validateWasmUnary(context, 0x7c, 0x7e),
                 0xbe => try validateWasmUnary(context, 0x7f, 0x7d),
                 0xbf => try validateWasmUnary(context, 0x7e, 0x7c),
-                0xc0 => try validateWasmUnary(context, 0x7f, 0x7e),
-                0xc1 => try validateWasmUnary(context, 0x7e, 0x7f),
-                0xc2...0xc4 => try validateWasmUnary(context, 0x7f, 0x7f),
+                0xc0, 0xc1 => try validateWasmUnary(context, 0x7f, 0x7f),
+                0xc2...0xc4 => try validateWasmUnary(context, 0x7e, 0x7e),
                 0xd0 => {
                     const ref_type = try readWasmRefType(bytes, cursor);
                     try pushWasmValue(context, ref_type);
