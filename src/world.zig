@@ -8324,6 +8324,32 @@ pub const Runspace = struct {
                         if (err == error.BudgetExceeded and driver.supervisionInterrupted()) {
                             return self.parkPendingOnSupervision(index, pending, mailbox_id, "manual response parked on supervision");
                         }
+                        if (err == error.BudgetExceeded) {
+                            const failed = try self.mailbox.fail(mailbox_id, "manual response supervision failed");
+                            try slot.transition(.fail, null);
+                            _ = self.appendPreparedEventAssumeCapacity(.{
+                                .kind = .port_failed,
+                                .run_handle = slot.handle,
+                                .pending_port_fingerprint = failed.pending_port_fingerprint,
+                                .request_frame_fingerprint = failed.request_frame_fingerprint,
+                                .response_frame_fingerprint = response.frame_fingerprint,
+                                .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+                                .run_permit_fingerprint = slot.run_permit_fingerprint,
+                                .summary = failed_response_summary,
+                            });
+                            failed_response_summary_owned = false;
+                            _ = self.appendPreparedEventAssumeCapacity(.{
+                                .kind = .run_failed,
+                                .run_handle = slot.handle,
+                                .pending_port_fingerprint = failed.pending_port_fingerprint,
+                                .request_frame_fingerprint = failed.request_frame_fingerprint,
+                                .response_frame_fingerprint = response.frame_fingerprint,
+                                .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+                                .run_permit_fingerprint = slot.run_permit_fingerprint,
+                                .summary = failed_run_summary,
+                            });
+                            failed_run_summary_owned = false;
+                        }
                         return err;
                     };
                 }
