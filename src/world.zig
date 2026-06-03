@@ -7681,6 +7681,7 @@ pub const Runspace = struct {
         if (admissionModeNeedsRunImage(admitted_run.mode)) {
             _ = admitted_run.run_image orelse return error.InvalidFrameEncoding;
         }
+        if (admitted_run.mode == .branch_resume and admitted_run.selected_branch_id == null) return error.HandoffCheckpointMismatch;
         if (modeConsumesTranscript(admissionModeToRunMode(admitted_run.mode)) and !self.config.allow_replay_install) return error.RunspaceInstallDenied;
         if (admitted_run.run_image == null and modeConsumesTranscript(admissionModeToRunMode(admitted_run.mode))) return error.RunspaceInstallDenied;
         if (admitted_run.run_image) |image| {
@@ -7750,11 +7751,32 @@ pub const Runspace = struct {
             const port_count = blk: {
                 var count = supervisorPortCountForPermit(scoped_permit);
                 if (pending_frame) |frame| count = @max(count, @as(usize, frame.world_port_id) + 1);
+                if (installed_image) |image| {
+                    if (image.transcript_image) |transcript_image| count = @max(count, transcriptPortCount(transcript_image));
+                }
                 break :blk count;
             };
             supervisor = try Supervision.Supervisor.init(self.allocator, scoped_permit, port_count);
             supervisor_owned = true;
             try supervisor.?.beforeHandoffAccept();
+            if (installed_image) |image| {
+                if (image.transcript_image) |transcript_image| {
+                    var replay_image = transcript_image;
+                    if (admitted_run.mode == .replay_only or admitted_run.mode == .verify_only) {
+                        try replay_image.validateReplayRun(
+                            replay_image.world_surface_fingerprint,
+                            replay_image.target_certificate_fingerprint,
+                        );
+                        try self.accountPreparedTranscriptReplayWithSupervisor(replay_image, admissionModeToRunMode(admitted_run.mode), &supervisor.?);
+                    } else if (runImageIsInterruptedSupervisionExport(image) and image.current_state.turn_index != 0) {
+                        try replay_image.prepareReplayPrefixForInterruptedRun(
+                            replay_image.world_surface_fingerprint,
+                            replay_image.target_certificate_fingerprint,
+                        );
+                        try self.accountPreparedTranscriptReplayWithSupervisor(replay_image, .replay, &supervisor.?);
+                    }
+                }
+            }
         }
         const slot_current_state = if (installed_image) |image| image.current_state else current_state;
         const slot_branch_id: ?u64 = if (slot_current_state.branch_id == 0)
@@ -8008,8 +8030,9 @@ pub const Runspace = struct {
             if (supervisor) |*owned| owned.deinit();
         };
         if (permit) |run_permit| {
-            supervisor = try Supervision.Supervisor.init(self.allocator, run_permit, Target.WorldPortTable.entries.len);
+            supervisor = try Supervision.Supervisor.init(self.allocator, run_permit, @max(Target.WorldPortTable.entries.len, transcriptPortCount(transcript_image)));
             supervisor_owned = true;
+            try self.accountPreparedTranscriptReplayWithSupervisor(replay_validation, .replay, &supervisor.?);
         }
         const next_run_id_before = self.next_run_id;
         var installed = false;
@@ -8087,6 +8110,71 @@ pub const Runspace = struct {
             .response_bytes = encoded_response.len,
             .value_image_bytes = if (response.response_image) |image| image.bytes.len else 0,
         };
+    }
+
+    fn transcriptPortCount(image: TranscriptImage) usize {
+        var count: usize = 0;
+        for (image.events) |event| {
+            if (event.world_port_id) |world_port_id| {
+                count = @max(count, @as(usize, world_port_id) + 1);
+            }
+            if (event.request_frame) |frame| {
+                count = @max(count, @as(usize, frame.world_port_id) + 1);
+            }
+            if (event.response_frame) |frame| {
+                count = @max(count, @as(usize, frame.world_port_id) + 1);
+            }
+        }
+        return count;
+    }
+
+    fn accountPreparedTranscriptReplayWithSupervisor(self: *@This(), image: TranscriptImage, replay_mode: Mode, supervisor: *Supervision.Supervisor) !void {
+        var index = image.replay_cursor;
+        const limit = image.replay_limit orelse image.events.len;
+        while (index < limit) : (index += 1) {
+            const event = image.events[index];
+            switch (event.kind) {
+                .port_requested,
+                .frame_requested,
+                => {
+                    const request_frame = event.request_frame orelse return error.ReplayMissing;
+                    try supervisor.beforeSessionStep();
+                    try supervisor.beforePortRequest(request_frame.world_port_id, 0, 0);
+                    const request_bytes = bytes: {
+                        const encoded = try request_frame.encode(self.allocator);
+                        defer self.allocator.free(encoded);
+                        break :bytes encoded.len;
+                    };
+                    try supervisor.accountPortRequestBytes(
+                        request_frame.world_port_id,
+                        request_bytes,
+                        if (request_frame.payload_image) |image_value| image_value.bytes.len else 0,
+                    );
+                },
+                else => {},
+            }
+            if (eventKindIsSourceResponse(event.kind)) {
+                const response_frame = event.response_frame orelse return error.ReplayMissing;
+                try supervisor.beforeAdapterCall(.{
+                    .world_port_id = response_frame.world_port_id,
+                    .mode = replay_mode,
+                    .adapter_kind = .replay,
+                    .authority_kind = PortAuthority.replay_source.authority_kind,
+                    .value_policy = .portable,
+                });
+                const response_bytes = bytes: {
+                    const encoded = try response_frame.encode(self.allocator);
+                    defer self.allocator.free(encoded);
+                    break :bytes encoded.len;
+                };
+                try supervisor.afterAdapterResponse(.{
+                    .world_port_id = response_frame.world_port_id,
+                    .status = response_frame.status,
+                    .response_bytes = response_bytes,
+                    .value_image_bytes = if (response_frame.response_image) |image_value| image_value.bytes.len else 0,
+                });
+            }
+        }
     }
 
     pub fn tick(self: *@This()) !Runspace.RunspaceReport {

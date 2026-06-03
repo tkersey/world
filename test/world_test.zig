@@ -3620,6 +3620,7 @@ test "runspace install admitted and replay records receipts summaries and events
     const replay_without_environment_policy = world.SupervisionPolicy.init(.{
         .allow_replay_calls = true,
         .allow_replay_adapters = true,
+        .allow_handoff_accept = true,
         .require_portable_value_images = true,
         .reject_native_only_values = true,
         .require_environment_certificate = false,
@@ -3632,6 +3633,28 @@ test "runspace install admitted and replay records receipts summaries and events
     });
     const supervised_replay_handle = try supervised_replay_runspace.installReplay(fixtures.Strict.Target, image, replay_export_denied_permit);
     try std.testing.expectError(error.HandoffDenied, supervised_replay_runspace.exportRun(supervised_replay_handle));
+    var replay_accounting_transcript = world.Transcript.init(std.testing.allocator);
+    defer replay_accounting_transcript.deinit();
+    try recordPortsTranscript(&replay_accounting_transcript);
+    var replay_accounting_image = try replay_accounting_transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer replay_accounting_image.deinit(std.testing.allocator);
+    var replay_accounting_export = world.RunImage.fromTranscriptImage(fixtures.Ports.Target, replay_accounting_image, .replay_only_run);
+    defer replay_accounting_export.deinit(std.testing.allocator);
+    const replay_accounting_denied_permit = world.Supervision.issue(fixtures.Ports.Target, PortsReplayEnv, .{
+        .mode = .replay,
+        .policy = replay_without_environment_policy,
+        .budget = world.Budget.init(.{ .max_replay_calls = 0 }),
+        .transcript_image_available = true,
+    });
+    try std.testing.expectError(error.BudgetExceeded, supervised_replay_runspace.installReplay(fixtures.Ports.Target, replay_accounting_image, replay_accounting_denied_permit));
+    const replay_accounting_denied_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_5c10,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target),
+        .mode = .replay_only,
+        .run_image = replay_accounting_export,
+        .run_permit = replay_accounting_denied_permit,
+    });
+    try std.testing.expectError(error.BudgetExceeded, supervised_replay_runspace.installAdmitted(replay_accounting_denied_admitted));
     const out_of_range_replay_budgets = [_]world.Supervision.PerPortBudget{.{
         .world_port_id = 0,
         .max_replay_calls = 1,
@@ -3845,6 +3868,13 @@ test "runspace install admitted and replay records receipts summaries and events
     var selected_branch_export = try selected_branch_target.exportRun(selected_branch_handle);
     defer selected_branch_export.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(u64, 44), selected_branch_export.current_state.branch_id);
+    const branch_resume_missing_selection = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_b049,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target),
+        .mode = .branch_resume,
+        .run_image = selected_branch_image,
+    });
+    try std.testing.expectError(error.HandoffCheckpointMismatch, selected_branch_target.installAdmitted(branch_resume_missing_selection));
     var selected_missing_branch_target = world.Runspace.init(std.testing.allocator, .{});
     defer selected_missing_branch_target.deinit();
     const selected_missing_branch_admitted = world.Admission.AdmittedRun.init(.{
@@ -5216,6 +5246,23 @@ test "interrupted supervision handoff replays transcript prefix before live requ
     defer install_receiver.deinit();
     const installed_handle = try install_receiver.installRunImage(image);
     try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_supervision, (try install_receiver.getSlotSummary(installed_handle)).status);
+    const prefix_replay_denied_permit = world.Supervision.issue(fixtures.Agent.Target, AgentEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.handoff_receiver,
+        .budget = world.Budget.init(.{ .max_replay_calls = 0 }),
+        .transcript_image_available = true,
+    });
+    const prefix_replay_denied_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_6a17,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Agent.Target),
+        .environment_certificate_fingerprint = AgentEnv.certificate(.fresh, true).certificate_fingerprint,
+        .mode = .resume_parked,
+        .run_image = image,
+        .run_permit = prefix_replay_denied_permit,
+    });
+    var prefix_replay_denied_receiver = world.Runspace.init(std.testing.allocator, .{ .require_supervision = true });
+    defer prefix_replay_denied_receiver.deinit();
+    try std.testing.expectError(error.BudgetExceeded, prefix_replay_denied_receiver.installAdmitted(prefix_replay_denied_admitted));
 
     const forged_state = world.RunState.init(.{
         .target_ref_fingerprint = image.target_ref.target_ref_fingerprint,
