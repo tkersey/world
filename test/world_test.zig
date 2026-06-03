@@ -303,6 +303,20 @@ fn appendGuestWasmTypeSection(module: *std.ArrayList(u8)) !void {
     try appendWasmSection(module, 1, types.items);
 }
 
+fn appendGuestWasmMalformedTrailingTypeSection(module: *std.ArrayList(u8)) !void {
+    var types: std.ArrayList(u8) = .empty;
+    defer types.deinit(std.testing.allocator);
+    try appendWasmU32(&types, 6);
+    try appendWasmFuncType(&types, 0, 1);
+    try appendWasmFuncType(&types, 1, 1);
+    try appendWasmFuncType(&types, 2, 1);
+    try appendWasmFuncType(&types, 3, 1);
+    try appendWasmFuncType(&types, 2, 0);
+    try types.append(std.testing.allocator, 0x60);
+    try appendWasmU32(&types, 1);
+    try appendWasmSection(module, 1, types.items);
+}
+
 fn guestRequiredSignatureTypeIndex(required_index: usize) u32 {
     return switch (required_index) {
         5 => 1,
@@ -432,6 +446,29 @@ fn syntheticDuplicateExportNameGuestWasm(allocator: std.mem.Allocator) ![]u8 {
     try appendWasmName(&exports, "memory");
     try exports.append(allocator, 2);
     try appendWasmU32(&exports, 0);
+    try appendWasmName(&exports, "memory");
+    try exports.append(allocator, 2);
+    try appendWasmU32(&exports, 0);
+    try appendWasmSection(&module, 7, exports.items);
+    try appendGuestWasmCodeSection(&module, world.Guest.Abi.required_exports.len, world.Guest.Abi.version);
+    return module.toOwnedSlice(allocator);
+}
+
+fn syntheticMalformedTrailingTypeGuestWasm(allocator: std.mem.Allocator) ![]u8 {
+    var module: std.ArrayList(u8) = .empty;
+    errdefer module.deinit(allocator);
+    try module.appendSlice(allocator, "\x00asm\x01\x00\x00\x00");
+    try appendGuestWasmMalformedTrailingTypeSection(&module);
+    try appendGuestWasmFunctionSection(&module, false);
+    try appendGuestWasmMemorySection(&module);
+    var exports: std.ArrayList(u8) = .empty;
+    defer exports.deinit(allocator);
+    try appendWasmU32(&exports, @intCast(world.Guest.Abi.required_exports.len + 1));
+    for (world.Guest.Abi.required_exports, 0..) |name, index| {
+        try appendWasmName(&exports, name);
+        try exports.append(allocator, 0);
+        try appendWasmU32(&exports, @intCast(index));
+    }
     try appendWasmName(&exports, "memory");
     try exports.append(allocator, 2);
     try appendWasmU32(&exports, 0);
@@ -801,6 +838,10 @@ test "wasm export inspector validates required exports and forbidden imports" {
     const duplicate_export = try syntheticDuplicateExportNameGuestWasm(std.testing.allocator);
     defer std.testing.allocator.free(duplicate_export);
     try std.testing.expectError(error.InvalidFrameEncoding, world.Guest.Wasm.inspect(duplicate_export));
+
+    const malformed_trailing_type = try syntheticMalformedTrailingTypeGuestWasm(std.testing.allocator);
+    defer std.testing.allocator.free(malformed_trailing_type);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Guest.Wasm.inspect(malformed_trailing_type));
 
     const duplicate_section = try syntheticDuplicateSectionGuestWasm(std.testing.allocator);
     defer std.testing.allocator.free(duplicate_section);

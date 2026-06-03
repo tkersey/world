@@ -10692,6 +10692,7 @@ pub const Guest = struct {
             var cursor: usize = 0;
             const count = try readWasmU32(section, &cursor);
             if (type_index >= count) return error.InvalidFrameEncoding;
+            var matched = false;
             var index: u32 = 0;
             while (index < count) : (index += 1) {
                 const tag = try readWasmU8(section, &cursor);
@@ -10708,9 +10709,10 @@ pub const Guest = struct {
                 while (result_index < result_count) : (result_index += 1) {
                     if (try readWasmU8(section, &cursor) != 0x7f) results_i32 = false;
                 }
-                if (index == type_index) return params_i32 and results_i32 and param_count == expected.param_count and result_count == expected.result_count;
+                if (index == type_index) matched = params_i32 and results_i32 and param_count == expected.param_count and result_count == expected.result_count;
             }
-            return error.InvalidFrameEncoding;
+            if (cursor != section.len) return error.InvalidFrameEncoding;
+            return matched;
         }
 
         fn skipWasmImportDesc(bytes: []const u8, cursor: *usize) !void {
