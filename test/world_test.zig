@@ -3130,6 +3130,26 @@ test "runspace event budget failure does not enqueue or park request" {
     try std.testing.expectEqual(@as(usize, 1), runspace.report().event_count);
 }
 
+test "runspace exact event budget allows zero-port completion" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{
+        .max_events = 3,
+    });
+    defer runspace.deinit();
+    const handle = try runspace.installMachineRun(fixtures.Strict.Target, world.Environment(fixtures.Strict.Target, .{
+        .ports = &.{},
+    }), &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+
+    _ = try runspace.tick();
+    const summary = try runspace.getSlotSummary(handle);
+    try std.testing.expectEqual(world.Runspace.RunStatus.completed, summary.status);
+    try std.testing.expectEqual(@as(usize, 3), runspace.report().event_count);
+}
+
 test "runspace step event allocation failure leaves run runnable" {
     var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{
         .fail_index = std.math.maxInt(usize),
@@ -4983,6 +5003,73 @@ test "runspace park-on-budget preserves supervised parked slot" {
     }).admitForTarget(fixtures.Ports.Target, PortsEnv, contextual_package, .{});
     try std.testing.expect(!contextual_admission.report.accepted);
     try std.testing.expectEqual(world.Admission.AdmissionBlocker.RunImageInvalid, contextual_admission.report.blockers[0]);
+}
+
+test "runspace interrupted supervision handoff accepts transcript-bearing exports" {
+    const park_policy = world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .allow_native_adapters = true,
+        .allow_handoff_export = true,
+        .require_environment_certificate = true,
+        .park_on_budget_exceeded = true,
+    });
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = park_policy,
+        .budget = world.Budget.init(.{ .max_session_steps = 0 }),
+    });
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var ctx: PortsCtx = .{};
+    var runspace = world.Runspace.init(std.testing.allocator, .{
+        .require_supervision = true,
+    });
+    defer runspace.deinit();
+
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+        .permit = permit,
+        .transcript = &transcript,
+    });
+    _ = try runspace.step(handle);
+    var image = try runspace.exportRun(handle);
+    defer image.deinit(std.testing.allocator);
+    try std.testing.expect(image.transcript_image != null);
+    try std.testing.expectEqual(world.RunState.Status.parked_on_supervision, image.current_state.status);
+
+    const package = world.Admission.TransferPackage.init(.{
+        .kind = .run_reference,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target),
+        .run_image = image,
+        .requested_mode = .resume_parked,
+    });
+    var admission = world.Admission.Admitter.init(.{
+        .registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Ports.Target)}),
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, package, .{});
+    defer admission.deinit(std.testing.allocator);
+    try std.testing.expect(admission.report.accepted);
+
+    var admitted = admission.admitted_run.?;
+    var resume_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer resume_runtime.deinit();
+    var resume_ctx: PortsCtx = .{};
+    var resumed = try admitted.@"resume"(std.testing.allocator, fixtures.Ports.Target, PortsEnv, &resume_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &resume_ctx,
+    });
+    defer resumed.deinit();
+    var resumed_request = switch (try resumed.nextFrame()) {
+        .port_request => |request| request,
+        else => return error.ExpectedFrameRequest,
+    };
+    defer resumed_request.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u32, 0), resumed_request.world_port_id);
 }
 
 test "runspace pre-request supervision park event allocation failure leaves slot runnable" {

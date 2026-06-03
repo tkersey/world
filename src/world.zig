@@ -6947,6 +6947,7 @@ pub const Runspace = struct {
         target_match_fingerprint: ?u64 = null,
         module_ref_fingerprint: ?u64 = null,
         driver: ?SlotDriver = null,
+        driver_world_port_count: usize = 0,
         supervisor: ?Supervision.Supervisor = null,
         installed_run_image: ?RunImage = null,
         owns_installed_run_image: bool = false,
@@ -6998,6 +6999,7 @@ pub const Runspace = struct {
             target_match_fingerprint: ?u64 = null,
             module_ref_fingerprint: ?u64 = null,
             driver: ?SlotDriver = null,
+            driver_world_port_count: usize = 0,
             supervisor: ?Supervision.Supervisor = null,
             installed_run_image: ?RunImage = null,
             owns_installed_run_image: bool = false,
@@ -7017,6 +7019,7 @@ pub const Runspace = struct {
                 .target_match_fingerprint = args.target_match_fingerprint,
                 .module_ref_fingerprint = args.module_ref_fingerprint,
                 .driver = args.driver,
+                .driver_world_port_count = args.driver_world_port_count,
                 .supervisor = args.supervisor,
                 .installed_run_image = args.installed_run_image,
                 .owns_installed_run_image = args.owns_installed_run_image,
@@ -7884,6 +7887,7 @@ pub const Runspace = struct {
             .status = .runnable,
             .run_permit_fingerprint = if (maybe_permit) |permit| permit.permit_fingerprint else null,
             .driver = driver,
+            .driver_world_port_count = Target.WorldPortTable.entries.len,
         });
         driver_owned = false;
         self.slots.appendAssumeCapacity(slot);
@@ -9195,8 +9199,14 @@ pub const Runspace = struct {
     fn stepAt(self: *@This(), index: usize) !Runspace.RunspaceEvent {
         var slot = &self.slots.items[index];
         if (slot.driver == null) return error.InvalidRunspaceTransition;
-        try self.ensureEventCapacity(if (self.config.auto_dispatch) 5 else 3);
-        try self.events.ensureUnusedCapacity(self.allocator, if (self.config.auto_dispatch) 5 else 3);
+        const step_event_capacity: usize = if (slot.driver_world_port_count == 0)
+            2
+        else if (self.config.auto_dispatch)
+            5
+        else
+            3;
+        try self.ensureEventCapacity(step_event_capacity);
+        try self.events.ensureUnusedCapacity(self.allocator, step_event_capacity);
         const stepped_summary = try self.allocator.dupe(u8, "run stepped");
         var stepped_summary_owned = true;
         errdefer if (stepped_summary_owned) self.allocator.free(stepped_summary);
@@ -12955,7 +12965,6 @@ fn providedFingerprintMatches(provided: ?u64, expected: ?u64) bool {
 
 fn runImageIsInterruptedSupervisionExport(image: RunImage) bool {
     return image.kind == .full_target_run and
-        image.transcript_image == null and
         image.checkpoints.len == 0 and
         image.branches.len == 0 and
         image.current_state.status == .parked_on_supervision and
