@@ -374,6 +374,17 @@ fn appendGuestWasmMemorySection(module: *std.ArrayList(u8)) !void {
     try appendWasmSection(module, 5, memory.items);
 }
 
+fn appendGuestWasmMultipleMemorySection(module: *std.ArrayList(u8)) !void {
+    var memory: std.ArrayList(u8) = .empty;
+    defer memory.deinit(std.testing.allocator);
+    try appendWasmU32(&memory, 2);
+    try memory.append(std.testing.allocator, 0);
+    try appendWasmU32(&memory, 1);
+    try memory.append(std.testing.allocator, 0);
+    try appendWasmU32(&memory, 1);
+    try appendWasmSection(module, 5, memory.items);
+}
+
 fn appendGuestWasmInvalidLimitMemorySection(module: *std.ArrayList(u8)) !void {
     var memory: std.ArrayList(u8) = .empty;
     defer memory.deinit(std.testing.allocator);
@@ -809,6 +820,29 @@ fn syntheticMissingMemoryGuestWasm(allocator: std.mem.Allocator) ![]u8 {
     return module.toOwnedSlice(allocator);
 }
 
+fn syntheticMultipleMemoryGuestWasm(allocator: std.mem.Allocator) ![]u8 {
+    var module: std.ArrayList(u8) = .empty;
+    errdefer module.deinit(allocator);
+    try module.appendSlice(allocator, "\x00asm\x01\x00\x00\x00");
+    try appendGuestWasmTypeSection(&module);
+    try appendGuestWasmFunctionSection(&module, false);
+    try appendGuestWasmMultipleMemorySection(&module);
+    var exports: std.ArrayList(u8) = .empty;
+    defer exports.deinit(allocator);
+    try appendWasmU32(&exports, @intCast(world.Guest.Abi.required_exports.len + 1));
+    for (world.Guest.Abi.required_exports, 0..) |name, index| {
+        try appendWasmName(&exports, name);
+        try exports.append(allocator, 0);
+        try appendWasmU32(&exports, @intCast(index));
+    }
+    try appendWasmName(&exports, "memory");
+    try exports.append(allocator, 2);
+    try appendWasmU32(&exports, 0);
+    try appendWasmSection(&module, 7, exports.items);
+    try appendGuestWasmCodeSection(&module, world.Guest.Abi.required_exports.len, world.Guest.Abi.version);
+    return module.toOwnedSlice(allocator);
+}
+
 fn syntheticInvalidLimitGuestWasm(allocator: std.mem.Allocator) ![]u8 {
     var module: std.ArrayList(u8) = .empty;
     errdefer module.deinit(allocator);
@@ -1131,6 +1165,10 @@ test "wasm export inspector validates required exports and forbidden imports" {
     const missing_memory = try syntheticMissingMemoryGuestWasm(std.testing.allocator);
     defer std.testing.allocator.free(missing_memory);
     try std.testing.expectError(error.InvalidFrameEncoding, world.Guest.Wasm.inspect(missing_memory));
+
+    const multiple_memory = try syntheticMultipleMemoryGuestWasm(std.testing.allocator);
+    defer std.testing.allocator.free(multiple_memory);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Guest.Wasm.inspect(multiple_memory));
 
     const alloc_only = try syntheticAllocOnlyGuestWasm(std.testing.allocator);
     defer std.testing.allocator.free(alloc_only);

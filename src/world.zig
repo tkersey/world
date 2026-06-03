@@ -10672,6 +10672,7 @@ pub const Guest = struct {
         fn inspectMemorySection(section: []const u8) !u32 {
             var cursor: usize = 0;
             const count = try readWasmU32(section, &cursor);
+            if (count > 1) return error.InvalidFrameEncoding;
             var index: u32 = 0;
             while (index < count) : (index += 1) try skipWasmLimits(section, &cursor);
             if (cursor != section.len) return error.InvalidFrameEncoding;
