@@ -5040,6 +5040,60 @@ test "runspace interrupted supervision handoff accepts transcript-bearing export
     defer image.deinit(std.testing.allocator);
     try std.testing.expect(image.transcript_image != null);
     try std.testing.expectEqual(world.RunState.Status.parked_on_supervision, image.current_state.status);
+    const transcript_image = image.transcript_image.?;
+
+    const later_turn_state = world.RunState.init(.{
+        .target_ref_fingerprint = image.target_ref.target_ref_fingerprint,
+        .transcript_image_fingerprint = transcript_image.transcript_image_fingerprint,
+        .turn_index = 1,
+        .status = .parked_on_supervision,
+    });
+    const later_turn_image = world.RunImage.init(.{
+        .kind = .full_target_run,
+        .target_ref = image.target_ref,
+        .import_set_fingerprint = image.import_set_fingerprint,
+        .transcript_image = transcript_image,
+        .current_state = later_turn_state,
+        .prior_run_permit_fingerprint = image.prior_run_permit_fingerprint,
+        .prior_run_receipt_fingerprint = image.prior_run_receipt_fingerprint,
+    });
+    const later_turn_package = world.Admission.TransferPackage.init(.{
+        .kind = .run_reference,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target),
+        .run_image = later_turn_image,
+        .requested_mode = .resume_parked,
+    });
+    var later_turn_admission = world.Admission.Admitter.init(.{
+        .registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Ports.Target)}),
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, later_turn_package, .{});
+    defer later_turn_admission.deinit(std.testing.allocator);
+    try std.testing.expect(later_turn_admission.report.accepted);
+
+    const unwitnessed_later_turn_state = world.RunState.init(.{
+        .target_ref_fingerprint = image.target_ref.target_ref_fingerprint,
+        .turn_index = 1,
+        .status = .parked_on_supervision,
+    });
+    const unwitnessed_later_turn_image = world.RunImage.init(.{
+        .kind = .full_target_run,
+        .target_ref = image.target_ref,
+        .import_set_fingerprint = image.import_set_fingerprint,
+        .current_state = unwitnessed_later_turn_state,
+        .prior_run_permit_fingerprint = image.prior_run_permit_fingerprint,
+        .prior_run_receipt_fingerprint = image.prior_run_receipt_fingerprint,
+    });
+    const unwitnessed_later_turn_package = world.Admission.TransferPackage.init(.{
+        .kind = .run_reference,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target),
+        .run_image = unwitnessed_later_turn_image,
+        .requested_mode = .resume_parked,
+    });
+    const unwitnessed_later_turn_admission = world.Admission.Admitter.init(.{
+        .registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Ports.Target)}),
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, unwitnessed_later_turn_package, .{});
+    try std.testing.expect(!unwitnessed_later_turn_admission.report.accepted);
 
     const package = world.Admission.TransferPackage.init(.{
         .kind = .run_reference,
