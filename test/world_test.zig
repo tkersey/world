@@ -439,6 +439,18 @@ fn appendGuestWasmInvalidGlobalReferenceSection(module: *std.ArrayList(u8)) !voi
     try appendWasmSection(module, 6, global.items);
 }
 
+fn appendGuestWasmInvalidRefNullGlobalSection(module: *std.ArrayList(u8)) !void {
+    var global: std.ArrayList(u8) = .empty;
+    defer global.deinit(std.testing.allocator);
+    try appendWasmU32(&global, 1);
+    try global.append(std.testing.allocator, 0x70);
+    try global.append(std.testing.allocator, 0);
+    try global.append(std.testing.allocator, 0xd0);
+    try global.append(std.testing.allocator, 0);
+    try global.append(std.testing.allocator, 0x0b);
+    try appendWasmSection(module, 6, global.items);
+}
+
 fn appendGuestWasmCodeSectionWithAbiReturn(module: *std.ArrayList(u8), defined_function_count: usize, abi_version: u32, explicit_abi_return: bool) !void {
     var code: std.ArrayList(u8) = .empty;
     defer code.deinit(std.testing.allocator);
@@ -1364,6 +1376,30 @@ fn syntheticInvalidGlobalReferenceGuestWasm(allocator: std.mem.Allocator) ![]u8 
     return module.toOwnedSlice(allocator);
 }
 
+fn syntheticInvalidRefNullGlobalGuestWasm(allocator: std.mem.Allocator) ![]u8 {
+    var module: std.ArrayList(u8) = .empty;
+    errdefer module.deinit(allocator);
+    try module.appendSlice(allocator, "\x00asm\x01\x00\x00\x00");
+    try appendGuestWasmTypeSection(&module);
+    try appendGuestWasmFunctionSection(&module, false);
+    try appendGuestWasmMemorySection(&module);
+    try appendGuestWasmInvalidRefNullGlobalSection(&module);
+    var exports: std.ArrayList(u8) = .empty;
+    defer exports.deinit(allocator);
+    try appendWasmU32(&exports, @intCast(world.Guest.Abi.required_exports.len + 1));
+    for (world.Guest.Abi.required_exports, 0..) |name, index| {
+        try appendWasmName(&exports, name);
+        try exports.append(allocator, 0);
+        try appendWasmU32(&exports, @intCast(index));
+    }
+    try appendWasmName(&exports, "memory");
+    try exports.append(allocator, 2);
+    try appendWasmU32(&exports, 0);
+    try appendWasmSection(&module, 7, exports.items);
+    try appendGuestWasmCodeSection(&module, world.Guest.Abi.required_exports.len, world.Guest.Abi.version);
+    return module.toOwnedSlice(allocator);
+}
+
 fn syntheticInvalidDataOffsetGlobalGuestWasm(allocator: std.mem.Allocator) ![]u8 {
     var module: std.ArrayList(u8) = .empty;
     errdefer module.deinit(allocator);
@@ -1987,6 +2023,10 @@ test "wasm export inspector validates required exports and forbidden imports" {
     const invalid_global_reference = try syntheticInvalidGlobalReferenceGuestWasm(std.testing.allocator);
     defer std.testing.allocator.free(invalid_global_reference);
     try std.testing.expectError(error.InvalidFrameEncoding, world.Guest.Wasm.inspect(invalid_global_reference));
+
+    const invalid_ref_null_global = try syntheticInvalidRefNullGlobalGuestWasm(std.testing.allocator);
+    defer std.testing.allocator.free(invalid_ref_null_global);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Guest.Wasm.inspect(invalid_ref_null_global));
 
     const invalid_data_offset_global = try syntheticInvalidDataOffsetGlobalGuestWasm(std.testing.allocator);
     defer std.testing.allocator.free(invalid_data_offset_global);
