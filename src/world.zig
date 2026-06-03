@@ -10954,13 +10954,17 @@ pub const Guest = struct {
                 var param_index: u32 = 0;
                 var params_i32 = true;
                 while (param_index < param_count) : (param_index += 1) {
-                    if (try readWasmU8(section, &cursor) != 0x7f) params_i32 = false;
+                    const param_type = try readWasmU8(section, &cursor);
+                    if (!validWasmValueType(param_type)) return error.InvalidFrameEncoding;
+                    if (param_type != 0x7f) params_i32 = false;
                 }
                 const result_count = try readWasmU32(section, &cursor);
                 var result_index: u32 = 0;
                 var results_i32 = true;
                 while (result_index < result_count) : (result_index += 1) {
-                    if (try readWasmU8(section, &cursor) != 0x7f) results_i32 = false;
+                    const result_type = try readWasmU8(section, &cursor);
+                    if (!validWasmValueType(result_type)) return error.InvalidFrameEncoding;
+                    if (result_type != 0x7f) results_i32 = false;
                 }
                 if (index == type_index) matched = params_i32 and results_i32 and param_count == expected.param_count and result_count == expected.result_count;
             }
