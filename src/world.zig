@@ -7829,6 +7829,7 @@ pub const Runspace = struct {
         if (permit.world_surface_fingerprint != Target.WorldSurface.surface_fingerprint) return error.SupervisionDenied;
         if (permit.target_certificate_fingerprint != Target.Certificate.certificate_fingerprint) return error.SupervisionDenied;
         if (permit.mode != expected_mode) return error.SupervisionDenied;
+        if (permit.admission_receipt_fingerprint != null or permit.module_ref_fingerprint != null) return error.SupervisionDenied;
         const transcript_available: bool = if (@hasField(Args, "transcript_image_available")) @field(args, "transcript_image_available") else false;
         const Env = if (@TypeOf(env) == type) env else @TypeOf(env);
         if (@hasDecl(Env, "certificate")) {

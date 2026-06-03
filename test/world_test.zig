@@ -5225,6 +5225,17 @@ test "runspace enforces lifecycle supervision for direct and imported slots" {
         .mode = .fresh,
         .policy = world.SupervisionPolicy.strict_fresh,
     }), .{}));
+    const strict_module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Strict.Target);
+    try std.testing.expectError(error.SupervisionDenied, direct.installTarget(fixtures.Strict.Target, StrictEnv, world.Supervision.issue(fixtures.Strict.Target, StrictEnv, .{
+        .mode = .fresh,
+        .module_ref_fingerprint = strict_module_ref.module_ref_fingerprint,
+        .policy = world.SupervisionPolicy.strict_fresh,
+    }), .{}));
+    try std.testing.expectError(error.SupervisionDenied, direct.installTarget(fixtures.Strict.Target, StrictEnv, world.Supervision.issue(fixtures.Strict.Target, StrictEnv, .{
+        .mode = .fresh,
+        .admission_receipt_fingerprint = 0xadd1_5001,
+        .policy = world.SupervisionPolicy.strict_fresh,
+    }), .{}));
     const direct_handle = try direct.installTarget(fixtures.Strict.Target, StrictEnv, branch_denied_permit, .{});
     try std.testing.expectError(error.InvalidRunspaceTransition, direct.exportRun(direct_handle));
     try std.testing.expectEqual(@as(usize, 0), direct.slots.items[0].supervisor.?.ledger.total_handoff_exports);
