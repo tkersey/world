@@ -9938,7 +9938,7 @@ pub const Guest = struct {
         }
 
         pub fn initSession(self: *@This()) void {
-            if (self.state == .done) {
+            if (self.state == .done or self.state == .failed) {
                 self.resetSession();
                 return;
             }
@@ -10469,7 +10469,8 @@ pub const Guest = struct {
                 (@as(u64, 1) << @intCast(Abi.required_exports.len)) - 1;
             inspection.required_exports_present = (required_mask & all_required) == all_required;
             if (abi_defined_function_index) |defined_index| {
-                inspection.abi_version = try inspectAbiVersionCode(code_section, defined_index);
+                const defined_function_count = try functionCount(function_section);
+                inspection.abi_version = try inspectCodeSection(code_section, defined_index, defined_function_count);
             }
             return inspection;
         }
@@ -10523,19 +10524,31 @@ pub const Guest = struct {
             if (cursor != section.len) return error.InvalidFrameEncoding;
         }
 
-        fn inspectAbiVersionCode(section: []const u8, defined_index: u32) !u32 {
+        fn inspectCodeSection(section: []const u8, abi_defined_index: u32, expected_defined_function_count: u32) !u32 {
             var cursor: usize = 0;
             const count = try readWasmU32(section, &cursor);
-            if (defined_index >= count) return error.InvalidFrameEncoding;
+            if (count != expected_defined_function_count) return error.InvalidFrameEncoding;
+            if (abi_defined_index >= count) return error.InvalidFrameEncoding;
+            var abi_version: ?u32 = null;
             var index: u32 = 0;
             while (index < count) : (index += 1) {
                 const body_len = try readWasmU32(section, &cursor);
                 if (cursor + body_len > section.len) return error.InvalidFrameEncoding;
                 const body = section[cursor .. cursor + body_len];
                 cursor += body_len;
-                if (index == defined_index) return try inspectAbiVersionBody(body);
+                if (index == abi_defined_index) abi_version = try inspectAbiVersionBody(body);
             }
-            return error.InvalidFrameEncoding;
+            if (cursor != section.len) return error.InvalidFrameEncoding;
+            return abi_version orelse error.InvalidFrameEncoding;
+        }
+
+        fn functionCount(section: []const u8) !u32 {
+            var cursor: usize = 0;
+            const count = try readWasmU32(section, &cursor);
+            var index: u32 = 0;
+            while (index < count) : (index += 1) _ = try readWasmU32(section, &cursor);
+            if (cursor != section.len) return error.InvalidFrameEncoding;
+            return count;
         }
 
         fn inspectAbiVersionBody(body: []const u8) !u32 {

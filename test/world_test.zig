@@ -376,6 +376,21 @@ fn appendGuestWasmCodeSection(module: *std.ArrayList(u8), defined_function_count
     try appendWasmSection(module, 10, code.items);
 }
 
+fn appendGuestWasmShortCodeSection(module: *std.ArrayList(u8), abi_version: u32) !void {
+    var code: std.ArrayList(u8) = .empty;
+    defer code.deinit(std.testing.allocator);
+    try appendWasmU32(&code, 1);
+    var body: std.ArrayList(u8) = .empty;
+    defer body.deinit(std.testing.allocator);
+    try appendWasmU32(&body, 0);
+    try body.append(std.testing.allocator, 0x41);
+    try appendWasmU32(&body, abi_version);
+    try body.append(std.testing.allocator, 0x0b);
+    try appendWasmU32(&code, @intCast(body.items.len));
+    try code.appendSlice(std.testing.allocator, body.items);
+    try appendWasmSection(module, 10, code.items);
+}
+
 fn syntheticGuestWasm(allocator: std.mem.Allocator) ![]u8 {
     var module: std.ArrayList(u8) = .empty;
     errdefer module.deinit(allocator);
@@ -487,6 +502,29 @@ fn syntheticInvalidLimitGuestWasm(allocator: std.mem.Allocator) ![]u8 {
     try appendWasmU32(&exports, 0);
     try appendWasmSection(&module, 7, exports.items);
     try appendGuestWasmCodeSection(&module, world.Guest.Abi.required_exports.len, world.Guest.Abi.version);
+    return module.toOwnedSlice(allocator);
+}
+
+fn syntheticShortCodeGuestWasm(allocator: std.mem.Allocator) ![]u8 {
+    var module: std.ArrayList(u8) = .empty;
+    errdefer module.deinit(allocator);
+    try module.appendSlice(allocator, "\x00asm\x01\x00\x00\x00");
+    try appendGuestWasmTypeSection(&module);
+    try appendGuestWasmFunctionSection(&module, false);
+    try appendGuestWasmMemorySection(&module);
+    var exports: std.ArrayList(u8) = .empty;
+    defer exports.deinit(allocator);
+    try appendWasmU32(&exports, @intCast(world.Guest.Abi.required_exports.len + 1));
+    for (world.Guest.Abi.required_exports, 0..) |name, index| {
+        try appendWasmName(&exports, name);
+        try exports.append(allocator, 0);
+        try appendWasmU32(&exports, @intCast(index));
+    }
+    try appendWasmName(&exports, "memory");
+    try exports.append(allocator, 2);
+    try appendWasmU32(&exports, 0);
+    try appendWasmSection(&module, 7, exports.items);
+    try appendGuestWasmShortCodeSection(&module, world.Guest.Abi.version);
     return module.toOwnedSlice(allocator);
 }
 
@@ -644,6 +682,10 @@ test "wasm export inspector validates required exports and forbidden imports" {
     const invalid_limit = try syntheticInvalidLimitGuestWasm(std.testing.allocator);
     defer std.testing.allocator.free(invalid_limit);
     try std.testing.expectError(error.InvalidFrameEncoding, world.Guest.Wasm.inspect(invalid_limit));
+
+    const short_code = try syntheticShortCodeGuestWasm(std.testing.allocator);
+    defer std.testing.allocator.free(short_code);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Guest.Wasm.inspect(short_code));
 }
 
 const MissingDispatchTarget = struct {
@@ -4736,6 +4778,45 @@ test "native guest world_init preserves newly installed run" {
     try std.testing.expectEqual(world.Guest.Status.initialized.code(), guest.world_init());
     try std.testing.expectEqual(world.Guest.Status.parked.code(), guest.world_tick());
     try std.testing.expectEqual(@as(u32, 1), guest.world_pending_count());
+}
+
+test "native guest world_init clears failed session state" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var guest = world.Guest.NativeGuest.init(std.testing.allocator, .{});
+    defer guest.deinit();
+
+    try guest.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    try std.testing.expectEqual(world.Guest.Status.parked.code(), guest.world_tick());
+    const request_len = guest.world_pending_request_len(0);
+    const request_bytes = try std.testing.allocator.alloc(u8, request_len);
+    defer std.testing.allocator.free(request_bytes);
+    _ = guest.world_read_pending_request(0, request_bytes);
+    var request = try world.Frame.Request.decode(std.testing.allocator, request_bytes);
+    defer request.deinit(std.testing.allocator);
+    const failed_response = world.Frame.Response.init(.{
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .target_certificate_fingerprint = request.target_certificate_fingerprint,
+        .world_port_id = request.world_port_id,
+        .request_fingerprint = request.request_fingerprint,
+        .response_kind = .@"resume",
+        .response_value_table_id = request.expected_response_value_table_id,
+        .response_fingerprint = 0x6572_726f_725f_696e,
+        .replay_key = request.replay_key_seed.withResponse(0x6572_726f_725f_696e).fingerprint(),
+        .status = .failed,
+    });
+    const failed_response_bytes = try failed_response.encode(std.testing.allocator);
+    defer std.testing.allocator.free(failed_response_bytes);
+    try std.testing.expectEqual(world.Guest.Status.failed.code(), guest.world_submit_response(failed_response_bytes));
+    try std.testing.expectEqual(world.Guest.Status.initialized.code(), guest.world_init());
+    try guest.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    try std.testing.expectEqual(world.Guest.Status.parked.code(), guest.world_tick());
 }
 
 test "guest core pending response preserves parked request state" {
