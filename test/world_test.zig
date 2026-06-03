@@ -5221,6 +5221,27 @@ test "guest install admitted completed image refreshes status" {
     try std.testing.expect(guest.resultLen() > 0);
 }
 
+test "guest install admitted transcript-only image refreshes status" {
+    var guest = world.Guest.Core.init(std.testing.allocator, .{});
+    defer guest.deinit();
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    try recordPortsTranscript(&transcript);
+    var transcript_image = try transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer transcript_image.deinit(std.testing.allocator);
+    const admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_7711,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target),
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .mode = .replay_only,
+        .transcript_image = transcript_image,
+    });
+
+    try guest.installAdmitted(admitted);
+    try std.testing.expectEqual(world.Guest.Status.done, guest.status());
+    try std.testing.expect(guest.resultLen() > 0);
+}
+
 test "native guest world_init clears failed session state" {
     var runtime = boundary.Runtime.init(std.testing.allocator);
     defer runtime.deinit();
