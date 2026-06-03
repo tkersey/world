@@ -10918,6 +10918,8 @@ pub const Guest = struct {
                     0x05 => {
                         if (block_depth == 0) return error.InvalidFrameEncoding;
                     },
+                    0x0c, 0x0d => try validateWasmBranchTarget(body, &cursor, block_depth),
+                    0x0e => try validateWasmBranchTable(body, &cursor, block_depth),
                     0x0b => {
                         if (block_depth == 0) {
                             if (cursor != body.len) return error.InvalidFrameEncoding;
@@ -10929,6 +10931,18 @@ pub const Guest = struct {
                 }
             }
             return error.InvalidFrameEncoding;
+        }
+
+        fn validateWasmBranchTarget(bytes: []const u8, cursor: *usize, block_depth: u32) !void {
+            const label_index = try readWasmU32(bytes, cursor);
+            if (label_index >= block_depth) return error.InvalidFrameEncoding;
+        }
+
+        fn validateWasmBranchTable(bytes: []const u8, cursor: *usize, block_depth: u32) !void {
+            const label_count = try readWasmU32(bytes, cursor);
+            var label_index: u32 = 0;
+            while (label_index < label_count) : (label_index += 1) try validateWasmBranchTarget(bytes, cursor, block_depth);
+            try validateWasmBranchTarget(bytes, cursor, block_depth);
         }
 
         fn inspectAbiVersionBody(body: []const u8) !u32 {
@@ -11075,13 +11089,7 @@ pub const Guest = struct {
         fn skipWasmInstructionImmediate(opcode: u8, bytes: []const u8, cursor: *usize) !void {
             switch (opcode) {
                 0x00, 0x01, 0x0f, 0x1a, 0x1b, 0x45...0xc4, 0xd1 => {},
-                0x0c, 0x0d, 0x10, 0x20...0x24 => _ = try readWasmU32(bytes, cursor),
-                0x0e => {
-                    const label_count = try readWasmU32(bytes, cursor);
-                    var label_index: u32 = 0;
-                    while (label_index < label_count) : (label_index += 1) _ = try readWasmU32(bytes, cursor);
-                    _ = try readWasmU32(bytes, cursor);
-                },
+                0x10, 0x20...0x24 => _ = try readWasmU32(bytes, cursor),
                 0x11 => {
                     _ = try readWasmU32(bytes, cursor);
                     _ = try readWasmU32(bytes, cursor);
