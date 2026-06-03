@@ -10940,7 +10940,7 @@ pub const Guest = struct {
 
         fn validateWasmBranchTarget(bytes: []const u8, cursor: *usize, block_depth: u32) !void {
             const label_index = try readWasmU32(bytes, cursor);
-            if (label_index >= block_depth) return error.InvalidFrameEncoding;
+            if (label_index > block_depth) return error.InvalidFrameEncoding;
         }
 
         fn validateWasmBranchTable(bytes: []const u8, cursor: *usize, block_depth: u32) !void {
