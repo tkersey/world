@@ -579,6 +579,32 @@ fn syntheticAllocOnlyGuestWasm(allocator: std.mem.Allocator) ![]u8 {
     return module.toOwnedSlice(allocator);
 }
 
+fn syntheticMalformedAllocGuestWasm(allocator: std.mem.Allocator) ![]u8 {
+    var module: std.ArrayList(u8) = .empty;
+    errdefer module.deinit(allocator);
+    try module.appendSlice(allocator, "\x00asm\x01\x00\x00\x00");
+    try appendGuestWasmTypeSection(&module);
+    try appendGuestWasmFunctionSection(&module, false);
+    try appendGuestWasmMemorySection(&module);
+    var exports: std.ArrayList(u8) = .empty;
+    defer exports.deinit(allocator);
+    try appendWasmU32(&exports, @intCast(world.Guest.Abi.required_exports.len + 2));
+    for (world.Guest.Abi.required_exports, 0..) |name, index| {
+        try appendWasmName(&exports, name);
+        try exports.append(allocator, 0);
+        try appendWasmU32(&exports, @intCast(index));
+    }
+    try appendWasmName(&exports, "memory");
+    try exports.append(allocator, 2);
+    try appendWasmU32(&exports, 0);
+    try appendWasmName(&exports, "world_alloc");
+    try exports.append(allocator, 0);
+    try appendWasmU32(&exports, 0);
+    try appendWasmSection(&module, 7, exports.items);
+    try appendGuestWasmCodeSection(&module, world.Guest.Abi.required_exports.len, world.Guest.Abi.version);
+    return module.toOwnedSlice(allocator);
+}
+
 fn syntheticGuestWasmWithImport(allocator: std.mem.Allocator, module_name: []const u8, import_name: []const u8) ![]u8 {
     var module: std.ArrayList(u8) = .empty;
     errdefer module.deinit(allocator);
@@ -697,6 +723,14 @@ test "wasm export inspector validates required exports and forbidden imports" {
     try std.testing.expect(alloc_only_inspection.free_export_present);
     try std.testing.expect(!alloc_only_inspection.memory_export_present);
     try std.testing.expect(!alloc_only_inspection.passed());
+
+    const malformed_alloc = try syntheticMalformedAllocGuestWasm(std.testing.allocator);
+    defer std.testing.allocator.free(malformed_alloc);
+    const malformed_alloc_inspection = try world.Guest.Wasm.inspect(malformed_alloc);
+    try std.testing.expect(malformed_alloc_inspection.required_exports_present);
+    try std.testing.expect(malformed_alloc_inspection.memory_export_present);
+    try std.testing.expect(!malformed_alloc_inspection.alloc_export_present);
+    try std.testing.expect(!malformed_alloc_inspection.passed());
 
     const stale_abi = try syntheticStaleAbiGuestWasm(std.testing.allocator);
     defer std.testing.allocator.free(stale_abi);
@@ -5041,6 +5075,10 @@ test "guest core oversized result cap does not export run before cap check" {
     try std.testing.expectEqual(world.Guest.Status.buffer_too_small, guest.status());
     try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try guest.runspace.getSlotSummary(guest.handle.?)).status);
     try std.testing.expect(guest.lastErrorLen() > 0);
+    guest.initSession();
+    try std.testing.expectEqual(world.Guest.Status.initialized, guest.status());
+    try guest.installRunImage(image);
+    try std.testing.expectEqual(world.Guest.Status.done, guest.status());
     try std.testing.expectEqual(world.Guest.Status.done, guest.tick());
     try std.testing.expectEqual(@as(usize, 0), guest.resultLen());
     try std.testing.expectEqual(world.Guest.Status.buffer_too_small, guest.status());

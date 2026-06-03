@@ -9955,12 +9955,21 @@ pub const Guest = struct {
         }
 
         pub fn initSession(self: *@This()) void {
-            if (self.state == .done or self.state == .failed) {
+            if (self.state == .done or self.state == .failed or self.installedRunIsTerminal()) {
                 self.resetSession();
                 return;
             }
             self.state = .initialized;
             self.clearError();
+        }
+
+        fn installedRunIsTerminal(self: *const @This()) bool {
+            const handle = self.handle orelse return false;
+            const summary = self.runspace.getSlotSummary(handle) catch return false;
+            return switch (summary.status) {
+                .completed, .failed, .exported => true,
+                else => false,
+            };
         }
 
         pub fn installMachineRun(self: *@This(), comptime Target: type, comptime Env: type, runtime: anytype, args: anytype, options: anytype) !void {
@@ -10457,13 +10466,15 @@ pub const Guest = struct {
             memory_export_present: bool = false,
             alloc_export_present: bool = false,
             free_export_present: bool = false,
+            optional_helper_exports_valid: bool = true,
 
             pub fn passed(self: @This()) bool {
                 return self.abi_version == Abi.version and
                     self.required_exports_present and
                     self.memory_export_present and
                     self.import_count == 0 and
-                    self.forbidden_import_count == 0;
+                    self.forbidden_import_count == 0 and
+                    self.optional_helper_exports_valid;
             }
         };
 
@@ -10547,8 +10558,20 @@ pub const Guest = struct {
                 if (try exportNameAppeared(section, entry_start, name)) return error.InvalidFrameEncoding;
                 inspection.export_count += 1;
                 if (kind == 2 and std.mem.eql(u8, name, "memory") and export_index < memory_count) inspection.memory_export_present = true;
-                if (kind == 0 and std.mem.eql(u8, name, "world_alloc") and try functionSignatureMatches(type_section, function_section, function_import_count, export_index, .{ .param_count = 1, .result_count = 1 })) inspection.alloc_export_present = true;
-                if (kind == 0 and std.mem.eql(u8, name, "world_free") and try functionSignatureMatches(type_section, function_section, function_import_count, export_index, .{ .param_count = 2, .result_count = 0 })) inspection.free_export_present = true;
+                if (std.mem.eql(u8, name, "world_alloc")) {
+                    if (kind == 0 and try functionSignatureMatches(type_section, function_section, function_import_count, export_index, .{ .param_count = 1, .result_count = 1 })) {
+                        inspection.alloc_export_present = true;
+                    } else {
+                        inspection.optional_helper_exports_valid = false;
+                    }
+                }
+                if (std.mem.eql(u8, name, "world_free")) {
+                    if (kind == 0 and try functionSignatureMatches(type_section, function_section, function_import_count, export_index, .{ .param_count = 2, .result_count = 0 })) {
+                        inspection.free_export_present = true;
+                    } else {
+                        inspection.optional_helper_exports_valid = false;
+                    }
+                }
                 for (Abi.required_exports, 0..) |required, required_index| {
                     if (kind == 0 and std.mem.eql(u8, name, required) and try functionSignatureMatches(type_section, function_section, function_import_count, export_index, requiredSignature(required_index))) {
                         required_mask.* |= @as(u64, 1) << @intCast(required_index);
