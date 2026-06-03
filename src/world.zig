@@ -238,7 +238,7 @@ pub const world_runspace_config_fingerprint_version: u32 = 1;
 pub const world_runspace_event_fingerprint_version: u32 = 1;
 pub const world_guest_abi_version: u32 = 1;
 pub const world_guest_abi_contract_fingerprint_version: u32 = 1;
-pub const world_guest_conformance_vector_fingerprint_version: u32 = 1;
+pub const world_guest_conformance_vector_fingerprint_version: u32 = 2;
 pub const world_guest_conformance_report_fingerprint_version: u32 = 1;
 
 var next_runspace_instance_id = std.atomic.Value(u64).init(0);
@@ -10497,6 +10497,7 @@ pub const Guest = struct {
             var code_section: []const u8 = &.{};
             var memory_count: u32 = 0;
             var abi_defined_function_index: ?u32 = null;
+            var last_non_custom_section_id: u8 = 0;
             var cursor: usize = 8;
             while (cursor < bytes.len) {
                 const section_id = bytes[cursor];
@@ -10504,6 +10505,12 @@ pub const Guest = struct {
                 const section_len = try readWasmU32(bytes, &cursor);
                 if (cursor + section_len > bytes.len) return error.InvalidFrameEncoding;
                 const section_end = cursor + section_len;
+                if (section_id > 12) return error.InvalidFrameEncoding;
+                if (section_id != 0) {
+                    if (section_id <= last_non_custom_section_id) return error.InvalidFrameEncoding;
+                    last_non_custom_section_id = section_id;
+                    if (section_id == 8) return error.InvalidFrameEncoding;
+                }
                 switch (section_id) {
                     1 => type_section = bytes[cursor..section_end],
                     2 => inspection.function_import_count = try inspectImportSection(bytes[cursor..section_end], &inspection),
@@ -10770,6 +10777,7 @@ pub const Guest = struct {
     fn fingerprintVector(vector: ConformanceVector) u64 {
         var hasher = std.hash.Wyhash.init(0x6775_6573_745f_7665);
         hashU64(&hasher, vector.fingerprint_version);
+        hashU64(&hasher, vector.name.len);
         hashBytes(&hasher, vector.name);
         hashU64(&hasher, @intFromEnum(vector.kind));
         hashU64(&hasher, vector.target_ref_fingerprint);
