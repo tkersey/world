@@ -11144,15 +11144,33 @@ pub const Guest = struct {
 
         fn validateWasmBranchTable(context: *WasmBodyContext, bytes: []const u8, cursor: *usize) !void {
             const label_count = try readWasmU32(bytes, cursor);
+            if (label_count > max_wasm_validator_values) return error.InvalidFrameEncoding;
+            var targets: [max_wasm_validator_values]u32 = undefined;
             var label_index: u32 = 0;
             while (label_index < label_count) : (label_index += 1) {
                 const target = try readWasmU32(bytes, cursor);
                 if (target >= context.control_count) return error.InvalidFrameEncoding;
+                targets[label_index] = target;
             }
             const default_target = try readWasmU32(bytes, cursor);
             if (default_target >= context.control_count) return error.InvalidFrameEncoding;
+            const default_frame = context.controls[context.control_count - 1 - default_target];
+            label_index = 0;
+            while (label_index < label_count) : (label_index += 1) {
+                const target_frame = context.controls[context.control_count - 1 - targets[label_index]];
+                try validateWasmBranchTableTargetShape(default_frame, target_frame);
+            }
             try popWasmValue(context, 0x7f);
+            try validateWasmLabelValues(context, default_target);
             markWasmUnreachable(context);
+        }
+
+        fn validateWasmBranchTableTargetShape(default_frame: WasmControlFrame, target_frame: WasmControlFrame) !void {
+            if (target_frame.result_count != default_frame.result_count) return error.InvalidFrameEncoding;
+            var result_index: u32 = 0;
+            while (result_index < default_frame.result_count) : (result_index += 1) {
+                if (target_frame.results[result_index] != default_frame.results[result_index]) return error.InvalidFrameEncoding;
+            }
         }
 
         fn validateWasmReturn(context: *WasmBodyContext) !void {
