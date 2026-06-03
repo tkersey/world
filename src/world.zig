@@ -10013,9 +10013,8 @@ pub const Guest = struct {
         }
 
         pub fn initSession(self: *@This()) void {
-            if (self.state == .done or self.state == .failed or self.installedRunIsTerminal()) {
-                self.clearSessionArtifacts();
-                self.state = .initialized;
+            if (self.installedRunIsTerminal()) {
+                _ = self.refreshStatus();
                 return;
             }
             self.state = .initialized;

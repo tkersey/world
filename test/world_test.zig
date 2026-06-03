@@ -5242,7 +5242,7 @@ test "guest core submit response refreshes terminal status" {
     try std.testing.expectEqual(world.Guest.Status.failed, guest.status());
 }
 
-test "native guest world_init clears cached session state" {
+test "native guest world_init preserves completed terminal state" {
     var runtime = boundary.Runtime.init(std.testing.allocator);
     defer runtime.deinit();
     var guest = world.Guest.NativeGuest.init(std.testing.allocator, .{});
@@ -5274,8 +5274,8 @@ test "native guest world_init clears cached session state" {
     try std.testing.expectEqual(world.Guest.Status.done.code(), guest.world_tick());
     try std.testing.expect(guest.world_result_len() > 0);
 
-    try std.testing.expectEqual(world.Guest.Status.initialized.code(), guest.world_init());
-    try std.testing.expectEqual(@as(usize, 0), guest.world_result_len());
+    try std.testing.expectEqual(world.Guest.Status.done.code(), guest.world_init());
+    try std.testing.expect(guest.world_result_len() > 0);
     try std.testing.expectEqual(@as(u32, 0), guest.world_pending_count());
     try std.testing.expectEqual(world.Guest.Status.done.code(), guest.world_tick());
     try std.testing.expect(guest.world_result_len() > 0);
@@ -5373,7 +5373,7 @@ test "native guest world_init clears failed session state" {
     const failed_response_bytes = try failed_response.encode(std.testing.allocator);
     defer std.testing.allocator.free(failed_response_bytes);
     try std.testing.expectEqual(world.Guest.Status.failed.code(), guest.world_submit_response(failed_response_bytes));
-    try std.testing.expectEqual(world.Guest.Status.initialized.code(), guest.world_init());
+    try std.testing.expectEqual(world.Guest.Status.failed.code(), guest.world_init());
     try std.testing.expectEqual(world.Guest.Status.failed.code(), guest.world_tick());
     try std.testing.expectEqual(@as(u32, 0), guest.world_pending_count());
 }
@@ -5668,7 +5668,7 @@ test "guest core oversized result cap does not export run before cap check" {
     try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try guest.runspace.getSlotSummary(guest.handle.?)).status);
     try std.testing.expect(guest.lastErrorLen() > 0);
     guest.initSession();
-    try std.testing.expectEqual(world.Guest.Status.initialized, guest.status());
+    try std.testing.expectEqual(world.Guest.Status.done, guest.status());
     try std.testing.expectEqual(world.Guest.Status.done, guest.tick());
     try std.testing.expectEqual(@as(usize, 0), guest.resultLen());
     try std.testing.expectEqual(world.Guest.Status.buffer_too_small, guest.status());
