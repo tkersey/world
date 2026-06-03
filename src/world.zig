@@ -236,6 +236,10 @@ pub const world_pending_port_format_version: u32 = 1;
 pub const world_pending_port_fingerprint_version: u32 = 1;
 pub const world_runspace_config_fingerprint_version: u32 = 1;
 pub const world_runspace_event_fingerprint_version: u32 = 1;
+pub const world_guest_abi_version: u32 = 1;
+pub const world_guest_abi_contract_fingerprint_version: u32 = 1;
+pub const world_guest_conformance_vector_fingerprint_version: u32 = 1;
+pub const world_guest_conformance_report_fingerprint_version: u32 = 1;
 
 var next_runspace_instance_id = std.atomic.Value(u64).init(0);
 pub const world_max_decoded_byte_field_len: usize = 16 * 1024 * 1024;
@@ -9783,6 +9787,788 @@ pub const Runspace = struct {
             .failed => .failed,
             .not_started, .running => error.InvalidRunspaceTransition,
         };
+    }
+};
+
+pub const Guest = struct {
+    pub const Status = enum(u32) {
+        ok = 0,
+        initialized = 1,
+        running = 2,
+        parked = 3,
+        done = 4,
+        failed = 5,
+        buffer_too_small = 6,
+        invalid_frame = 7,
+        invalid_state = 8,
+        unknown_pending = 9,
+        stale_pending = 10,
+        supervision_denied = 11,
+        target_mismatch = 12,
+        admission_failed = 13,
+
+        pub fn code(self: @This()) u32 {
+            return @intFromEnum(self);
+        }
+    };
+
+    pub const Buffer = struct {
+        pub const max_request_bytes: usize = 64 * 1024;
+        pub const max_response_bytes: usize = 64 * 1024;
+        pub const max_result_bytes: usize = 256 * 1024;
+        pub const max_receipt_bytes: usize = 8 * 1024;
+        pub const max_transcript_bytes: usize = 256 * 1024;
+        pub const max_error_bytes: usize = 1024;
+        pub const max_pending_ports: usize = 16;
+    };
+
+    pub const Abi = struct {
+        pub const version = world_guest_abi_version;
+        pub const required_exports = [_][]const u8{
+            "world_abi_version",
+            "world_init",
+            "world_tick",
+            "world_status",
+            "world_pending_count",
+            "world_pending_request_len",
+            "world_read_pending_request",
+            "world_submit_response",
+            "world_result_len",
+            "world_read_result",
+            "world_receipt_len",
+            "world_read_receipt",
+            "world_transcript_len",
+            "world_read_transcript",
+            "world_last_error_len",
+            "world_read_last_error",
+        };
+        pub const optional_exports = [_][]const u8{
+            "world_alloc",
+            "world_free",
+        };
+        pub const forbidden_import_fragments = [_][]const u8{
+            "wasi",
+            "fd_",
+            "path_",
+            "sock_",
+            "random",
+            "clock",
+            "sched",
+            "treaty",
+            "provider",
+            "handler",
+            "boundary",
+        };
+
+        pub const Contract = struct {
+            abi_version: u32 = version,
+            fingerprint_version: u32 = world_guest_abi_contract_fingerprint_version,
+            required_export_count: usize = required_exports.len,
+            max_request_bytes: usize = Buffer.max_request_bytes,
+            max_response_bytes: usize = Buffer.max_response_bytes,
+            max_result_bytes: usize = Buffer.max_result_bytes,
+            max_receipt_bytes: usize = Buffer.max_receipt_bytes,
+            max_transcript_bytes: usize = Buffer.max_transcript_bytes,
+            max_error_bytes: usize = Buffer.max_error_bytes,
+            max_pending_ports: usize = Buffer.max_pending_ports,
+
+            pub fn fingerprint(self: @This()) u64 {
+                var hasher = std.hash.Wyhash.init(0x776f_726c_645f_6775);
+                hashU64(&hasher, self.abi_version);
+                hashU64(&hasher, self.fingerprint_version);
+                hashU64(&hasher, self.required_export_count);
+                for (required_exports) |name| hashBytes(&hasher, name);
+                hashU64(&hasher, self.max_request_bytes);
+                hashU64(&hasher, self.max_response_bytes);
+                hashU64(&hasher, self.max_result_bytes);
+                hashU64(&hasher, self.max_receipt_bytes);
+                hashU64(&hasher, self.max_transcript_bytes);
+                hashU64(&hasher, self.max_error_bytes);
+                hashU64(&hasher, self.max_pending_ports);
+                return hasher.final();
+            }
+        };
+    };
+
+    pub const Core = struct {
+        allocator: std.mem.Allocator,
+        runspace: Runspace,
+        handle: ?RunHandle = null,
+        state: Status = .initialized,
+        result_bytes: []const u8 = &.{},
+        receipt_bytes: [8]u8 = [_]u8{0} ** 8,
+        receipt_len_value: usize = 0,
+        transcript_bytes: []const u8 = &.{},
+        last_error: [Buffer.max_error_bytes]u8 = [_]u8{0} ** Buffer.max_error_bytes,
+        last_error_len_value: usize = 0,
+
+        pub fn init(allocator: std.mem.Allocator, config: Runspace.Config) @This() {
+            var runspace_config = config;
+            runspace_config.auto_dispatch = false;
+            runspace_config.max_pending_ports = runspace_config.max_pending_ports orelse Buffer.max_pending_ports;
+            return .{
+                .allocator = allocator,
+                .runspace = Runspace.init(allocator, runspace_config),
+            };
+        }
+
+        pub fn deinit(self: *@This()) void {
+            self.allocator.free(self.result_bytes);
+            self.allocator.free(self.transcript_bytes);
+            self.runspace.deinit();
+            self.* = undefined;
+        }
+
+        pub fn installMachineRun(self: *@This(), comptime Target: type, comptime Env: type, runtime: anytype, args: anytype, options: anytype) !void {
+            if (self.handle != null) return self.failStatus(.invalid_state, "guest core already has an installed run");
+            self.handle = try self.runspace.installMachineRun(Target, Env, runtime, args, options);
+            self.state = .initialized;
+            self.clearError();
+        }
+
+        pub fn installAdmitted(self: *@This(), admitted_run: Admission.AdmittedRun) !void {
+            if (self.handle != null) return self.failStatus(.invalid_state, "guest core already has an installed run");
+            self.handle = try self.runspace.installAdmitted(admitted_run);
+            self.state = .initialized;
+            self.clearError();
+        }
+
+        pub fn installRunImage(self: *@This(), image: RunImage) !void {
+            if (self.handle != null) return self.failStatus(.invalid_state, "guest core already has an installed run");
+            self.handle = try self.runspace.installRunImage(image);
+            self.state = .initialized;
+            self.clearError();
+        }
+
+        pub fn tick(self: *@This()) Status {
+            if (self.handle == null) return self.setStatus(.invalid_state, "guest core has no installed run");
+            _ = self.runspace.tick() catch |err| return self.mapRunspaceError(err);
+            return self.refreshStatus();
+        }
+
+        pub fn status(self: *const @This()) Status {
+            return self.state;
+        }
+
+        pub fn pendingCount(self: *const @This()) usize {
+            return self.runspace.mailbox.pendingCount();
+        }
+
+        pub fn pendingRequestLen(self: *@This(), index: u32) usize {
+            const pending = self.pendingByIndex(index) catch |err| {
+                _ = self.mapPendingLookupError(err);
+                return 0;
+            };
+            const request = pending.request_frame orelse {
+                _ = self.setStatus(.unknown_pending, "pending port has no request frame");
+                return 0;
+            };
+            const bytes = request.encode(self.allocator) catch |err| {
+                _ = self.mapRunspaceError(err);
+                return 0;
+            };
+            defer self.allocator.free(bytes);
+            return bytes.len;
+        }
+
+        pub fn readPendingRequest(self: *@This(), index: u32, out: []u8) usize {
+            const pending = self.pendingByIndex(index) catch |err| {
+                _ = self.mapPendingLookupError(err);
+                return 0;
+            };
+            const request = pending.request_frame orelse {
+                _ = self.setStatus(.unknown_pending, "pending port has no request frame");
+                return 0;
+            };
+            const bytes = request.encode(self.allocator) catch |err| {
+                _ = self.mapRunspaceError(err);
+                return 0;
+            };
+            defer self.allocator.free(bytes);
+            return self.copyToGuestBuffer(bytes, out);
+        }
+
+        pub fn submitResponse(self: *@This(), bytes: []const u8) Status {
+            if (bytes.len > Buffer.max_response_bytes) return self.setStatus(.buffer_too_small, "response frame exceeds guest response byte cap");
+            if (self.handle == null) return self.setStatus(.invalid_state, "guest core has no installed run");
+            if (self.runspace.mailbox.pending.items.len == 0) return self.setStatus(.invalid_state, "guest core is not parked on a pending port");
+            var response = Frame.Response.decode(self.allocator, bytes) catch return self.setStatus(.invalid_frame, "response bytes do not decode as Frame.Response");
+            defer response.deinit(self.allocator);
+            const mailbox_id = self.matchPendingMailbox(response) catch |err| return self.mapPendingLookupError(err);
+            _ = self.runspace.respond(mailbox_id, response) catch |err| return self.mapRunspaceError(err);
+            self.state = .running;
+            self.clearError();
+            return self.state;
+        }
+
+        pub fn resultLen(self: *@This()) usize {
+            self.ensureResultBytes() catch |err| {
+                _ = self.mapRunspaceError(err);
+                return 0;
+            };
+            return self.result_bytes.len;
+        }
+
+        pub fn readResult(self: *@This(), out: []u8) usize {
+            self.ensureResultBytes() catch |err| {
+                _ = self.mapRunspaceError(err);
+                return 0;
+            };
+            return self.copyToGuestBuffer(self.result_bytes, out);
+        }
+
+        pub fn receiptLen(self: *@This()) usize {
+            self.ensureResultBytes() catch |err| {
+                _ = self.mapRunspaceError(err);
+                return 0;
+            };
+            return self.receipt_len_value;
+        }
+
+        pub fn readReceipt(self: *@This(), out: []u8) usize {
+            self.ensureResultBytes() catch |err| {
+                _ = self.mapRunspaceError(err);
+                return 0;
+            };
+            return self.copyToGuestBuffer(self.receipt_bytes[0..self.receipt_len_value], out);
+        }
+
+        pub fn transcriptLen(self: *@This()) usize {
+            self.ensureResultBytes() catch |err| {
+                _ = self.mapRunspaceError(err);
+                return 0;
+            };
+            return self.transcript_bytes.len;
+        }
+
+        pub fn readTranscript(self: *@This(), out: []u8) usize {
+            self.ensureResultBytes() catch |err| {
+                _ = self.mapRunspaceError(err);
+                return 0;
+            };
+            return self.copyToGuestBuffer(self.transcript_bytes, out);
+        }
+
+        pub fn lastErrorLen(self: *const @This()) usize {
+            return self.last_error_len_value;
+        }
+
+        pub fn readLastError(self: *@This(), out: []u8) usize {
+            return self.copyToGuestBuffer(self.last_error[0..self.last_error_len_value], out);
+        }
+
+        fn refreshStatus(self: *@This()) Status {
+            const report = self.runspace.report();
+            if (report.failed_count != 0) return self.setStatus(.failed, "guest run failed");
+            if (report.completed_count != 0) return self.setStatus(.done, "");
+            if (report.parked_count != 0 or report.pending_port_count != 0) return self.setStatus(.parked, "");
+            if (report.runnable_count != 0) return self.setStatus(.running, "");
+            if (report.run_count != 0) return self.setStatus(.initialized, "");
+            return self.setStatus(.initialized, "");
+        }
+
+        fn ensureResultBytes(self: *@This()) !void {
+            if (self.result_bytes.len != 0 or self.state != .done) return;
+            const handle = self.handle orelse return error.InvalidRunspaceTransition;
+            var image = try self.runspace.exportRun(handle);
+            defer image.deinit(self.allocator);
+            const encoded = try image.encode(self.allocator);
+            errdefer self.allocator.free(encoded);
+            if (encoded.len > Buffer.max_result_bytes) {
+                self.allocator.free(encoded);
+                return error.OutOfMemory;
+            }
+            if (image.prior_run_receipt_fingerprint) |receipt_fingerprint| {
+                std.mem.writeInt(u64, &self.receipt_bytes, receipt_fingerprint, .little);
+                self.receipt_len_value = 8;
+            }
+            if (image.transcript_image) |transcript| {
+                const transcript_bytes = try transcript.encode(self.allocator);
+                errdefer self.allocator.free(transcript_bytes);
+                if (transcript_bytes.len > Buffer.max_transcript_bytes) {
+                    self.allocator.free(transcript_bytes);
+                    return error.OutOfMemory;
+                }
+                self.transcript_bytes = transcript_bytes;
+            }
+            self.result_bytes = encoded;
+        }
+
+        fn pendingByIndex(self: *const @This(), index: u32) !PendingPort {
+            var current: u32 = 0;
+            for (self.runspace.mailbox.pending.items) |pending_port| {
+                if (pending_port.status != .pending) continue;
+                if (current == index) return pending_port.borrowed();
+                current += 1;
+            }
+            return error.InvalidPendingPortTransition;
+        }
+
+        fn matchPendingMailbox(self: *const @This(), response: Frame.Response) !u64 {
+            var stale = false;
+            for (self.runspace.mailbox.pending.items) |pending_port| {
+                if (pending_port.request_fingerprint != response.request_fingerprint) continue;
+                if (pending_port.status != .pending) {
+                    stale = true;
+                    continue;
+                }
+                pending_port.borrowed().validateResponse(response) catch |err| {
+                    if (err == error.PendingPortConsumed) stale = true;
+                    return err;
+                };
+                return pending_port.mailbox_id;
+            }
+            return if (stale) error.PendingPortConsumed else error.InvalidPendingPortTransition;
+        }
+
+        fn copyToGuestBuffer(self: *@This(), bytes: []const u8, out: []u8) usize {
+            if (out.len < bytes.len) {
+                _ = self.setStatus(.buffer_too_small, "guest buffer is too small");
+                return bytes.len;
+            }
+            @memcpy(out[0..bytes.len], bytes);
+            self.clearError();
+            return bytes.len;
+        }
+
+        fn mapPendingLookupError(self: *@This(), err: anyerror) Status {
+            return switch (err) {
+                error.PendingPortConsumed => self.setStatus(.stale_pending, "pending request has already been consumed"),
+                error.StaleRunHandle => self.setStatus(.stale_pending, "pending request is stale for this run"),
+                error.FrameSurfaceMismatch,
+                error.FrameTargetCertificateMismatch,
+                error.FramePortMismatch,
+                error.FrameRequestFingerprintMismatch,
+                error.FrameValueTableMismatch,
+                error.VerifyResponseKindMismatch,
+                error.ReplayMissing,
+                => self.setStatus(.invalid_frame, "response frame does not match pending request"),
+                else => self.setStatus(.unknown_pending, "pending request was not found"),
+            };
+        }
+
+        fn mapRunspaceError(self: *@This(), err: anyerror) Status {
+            return switch (err) {
+                error.SupervisionDenied, error.BudgetExceeded, error.SupervisionBudgetExceeded, error.SupervisionPortRuleDenied => self.setStatus(.supervision_denied, "supervision denied guest run"),
+                error.RunspaceAdmissionRequired, error.AdmissionRejected => self.setStatus(.admission_failed, "runspace admission failed"),
+                error.FrameSurfaceMismatch, error.FrameTargetCertificateMismatch => self.setStatus(.target_mismatch, "frame target does not match guest run"),
+                error.InvalidFrameEncoding, error.VerifyValueImageMismatch, error.FramePortMismatch, error.FrameRequestFingerprintMismatch, error.FrameValueTableMismatch => self.setStatus(.invalid_frame, "invalid canonical frame bytes"),
+                error.StaleRunHandle, error.PendingPortConsumed => self.setStatus(.stale_pending, "pending request is stale"),
+                error.InvalidRunspaceTransition, error.InvalidPendingPortTransition => self.setStatus(.invalid_state, "invalid guest state transition"),
+                else => self.setStatus(.failed, @errorName(err)),
+            };
+        }
+
+        fn setStatus(self: *@This(), status_value: Status, message: []const u8) Status {
+            self.state = status_value;
+            if (message.len == 0) {
+                self.clearError();
+            } else {
+                const len = @min(message.len, self.last_error.len);
+                @memcpy(self.last_error[0..len], message[0..len]);
+                self.last_error_len_value = len;
+            }
+            return self.state;
+        }
+
+        fn failStatus(self: *@This(), status_value: Status, message: []const u8) !void {
+            _ = self.setStatus(status_value, message);
+            return error.InvalidRunspaceTransition;
+        }
+
+        fn clearError(self: *@This()) void {
+            self.last_error_len_value = 0;
+        }
+    };
+
+    pub const NativeGuest = struct {
+        core: Core,
+
+        pub fn init(allocator: std.mem.Allocator, config: Runspace.Config) @This() {
+            return .{ .core = Core.init(allocator, config) };
+        }
+
+        pub fn deinit(self: *@This()) void {
+            self.core.deinit();
+        }
+
+        pub fn world_abi_version(_: *@This()) u32 {
+            return Abi.version;
+        }
+
+        pub fn world_init(self: *@This()) u32 {
+            self.core.state = .initialized;
+            self.core.clearError();
+            return self.core.state.code();
+        }
+
+        pub fn installMachineRun(self: *@This(), comptime Target: type, comptime Env: type, runtime: anytype, args: anytype, options: anytype) !void {
+            return self.core.installMachineRun(Target, Env, runtime, args, options);
+        }
+
+        pub fn world_tick(self: *@This()) u32 {
+            return self.core.tick().code();
+        }
+
+        pub fn world_status(self: *const @This()) u32 {
+            return self.core.status().code();
+        }
+
+        pub fn world_pending_count(self: *const @This()) u32 {
+            return @intCast(self.core.pendingCount());
+        }
+
+        pub fn world_pending_request_len(self: *@This(), index: u32) usize {
+            return self.core.pendingRequestLen(index);
+        }
+
+        pub fn world_read_pending_request(self: *@This(), index: u32, out: []u8) usize {
+            return self.core.readPendingRequest(index, out);
+        }
+
+        pub fn world_submit_response(self: *@This(), bytes: []const u8) u32 {
+            return self.core.submitResponse(bytes).code();
+        }
+
+        pub fn world_result_len(self: *@This()) usize {
+            return self.core.resultLen();
+        }
+
+        pub fn world_read_result(self: *@This(), out: []u8) usize {
+            return self.core.readResult(out);
+        }
+
+        pub fn world_receipt_len(self: *@This()) usize {
+            return self.core.receiptLen();
+        }
+
+        pub fn world_read_receipt(self: *@This(), out: []u8) usize {
+            return self.core.readReceipt(out);
+        }
+
+        pub fn world_transcript_len(self: *@This()) usize {
+            return self.core.transcriptLen();
+        }
+
+        pub fn world_read_transcript(self: *@This(), out: []u8) usize {
+            return self.core.readTranscript(out);
+        }
+
+        pub fn world_last_error_len(self: *const @This()) usize {
+            return self.core.lastErrorLen();
+        }
+
+        pub fn world_read_last_error(self: *@This(), out: []u8) usize {
+            return self.core.readLastError(out);
+        }
+    };
+
+    pub const VectorKind = enum {
+        one_port,
+        agent,
+        supervised_denial,
+        parked_handoff,
+        replay,
+    };
+
+    pub const ConformanceVector = struct {
+        fingerprint_version: u32 = world_guest_conformance_vector_fingerprint_version,
+        vector_fingerprint: u64 = 0,
+        name: []const u8,
+        kind: VectorKind,
+        target_ref_fingerprint: u64,
+        admission_receipt_fingerprint: ?u64 = null,
+        run_permit_fingerprint: ?u64 = null,
+        input_fingerprints: []const u64 = &.{},
+        expected_pending_frame_fingerprints: []const u64 = &.{},
+        response_frame_fingerprints: []const u64 = &.{},
+        expected_final_result_fingerprint: ?u64 = null,
+        expected_transcript_fingerprint: ?u64 = null,
+        expected_receipt_fingerprint: ?u64 = null,
+        expected_status_sequence: []const Status = &.{},
+
+        pub fn init(args: struct {
+            name: []const u8,
+            kind: VectorKind,
+            target_ref_fingerprint: u64,
+            admission_receipt_fingerprint: ?u64 = null,
+            run_permit_fingerprint: ?u64 = null,
+            input_fingerprints: []const u64 = &.{},
+            expected_pending_frame_fingerprints: []const u64 = &.{},
+            response_frame_fingerprints: []const u64 = &.{},
+            expected_final_result_fingerprint: ?u64 = null,
+            expected_transcript_fingerprint: ?u64 = null,
+            expected_receipt_fingerprint: ?u64 = null,
+            expected_status_sequence: []const Status = &.{},
+        }) @This() {
+            var result = @This(){
+                .name = args.name,
+                .kind = args.kind,
+                .target_ref_fingerprint = args.target_ref_fingerprint,
+                .admission_receipt_fingerprint = args.admission_receipt_fingerprint,
+                .run_permit_fingerprint = args.run_permit_fingerprint,
+                .input_fingerprints = args.input_fingerprints,
+                .expected_pending_frame_fingerprints = args.expected_pending_frame_fingerprints,
+                .response_frame_fingerprints = args.response_frame_fingerprints,
+                .expected_final_result_fingerprint = args.expected_final_result_fingerprint,
+                .expected_transcript_fingerprint = args.expected_transcript_fingerprint,
+                .expected_receipt_fingerprint = args.expected_receipt_fingerprint,
+                .expected_status_sequence = args.expected_status_sequence,
+            };
+            result.vector_fingerprint = fingerprintVector(result);
+            return result;
+        }
+
+        pub fn fingerprint(self: @This()) u64 {
+            return fingerprintVector(self);
+        }
+    };
+
+    pub const RunResultSummary = struct {
+        status: Status,
+        result_fingerprint: ?u64 = null,
+        transcript_fingerprint: ?u64 = null,
+        receipt_fingerprint: ?u64 = null,
+        pending_frame_fingerprints: []const u64 = &.{},
+    };
+
+    pub const ConformanceReport = struct {
+        fingerprint_version: u32 = world_guest_conformance_report_fingerprint_version,
+        report_fingerprint: u64 = 0,
+        vector_fingerprint: u64,
+        native_run_result: RunResultSummary,
+        native_abi_result: RunResultSummary,
+        wasm_inspection_passed: bool = false,
+        wasm_runtime_result: ?RunResultSummary = null,
+        status_sequence_match: bool = false,
+        pending_frame_match: bool = false,
+        final_result_match: bool = false,
+        transcript_match: bool = false,
+        receipt_match: bool = false,
+        blockers: []const []const u8 = &.{},
+        warnings: []const []const u8 = &.{},
+
+        pub fn init(args: struct {
+            vector_fingerprint: u64,
+            native_run_result: RunResultSummary,
+            native_abi_result: RunResultSummary,
+            wasm_inspection_passed: bool = false,
+            wasm_runtime_result: ?RunResultSummary = null,
+            status_sequence_match: bool = false,
+            pending_frame_match: bool = false,
+            final_result_match: bool = false,
+            transcript_match: bool = false,
+            receipt_match: bool = false,
+            blockers: []const []const u8 = &.{},
+            warnings: []const []const u8 = &.{},
+        }) @This() {
+            var result = @This(){
+                .vector_fingerprint = args.vector_fingerprint,
+                .native_run_result = args.native_run_result,
+                .native_abi_result = args.native_abi_result,
+                .wasm_inspection_passed = args.wasm_inspection_passed,
+                .wasm_runtime_result = args.wasm_runtime_result,
+                .status_sequence_match = args.status_sequence_match,
+                .pending_frame_match = args.pending_frame_match,
+                .final_result_match = args.final_result_match,
+                .transcript_match = args.transcript_match,
+                .receipt_match = args.receipt_match,
+                .blockers = args.blockers,
+                .warnings = args.warnings,
+            };
+            result.report_fingerprint = fingerprintReport(result);
+            return result;
+        }
+    };
+
+    pub const Wasm = struct {
+        pub const Inspection = struct {
+            abi_version: u32 = Abi.version,
+            export_count: usize = 0,
+            import_count: usize = 0,
+            forbidden_import_count: usize = 0,
+            required_exports_present: bool = false,
+            memory_export_present: bool = false,
+            alloc_export_present: bool = false,
+            free_export_present: bool = false,
+
+            pub fn passed(self: @This()) bool {
+                return self.required_exports_present and
+                    (self.memory_export_present or (self.alloc_export_present and self.free_export_present)) and
+                    self.forbidden_import_count == 0;
+            }
+        };
+
+        pub fn inspect(bytes: []const u8) !Inspection {
+            if (bytes.len < 8) return error.InvalidFrameEncoding;
+            if (!std.mem.eql(u8, bytes[0..4], "\x00asm")) return error.InvalidFrameEncoding;
+            if (std.mem.readInt(u32, bytes[4..8], .little) != 1) return error.InvalidFrameEncoding;
+            var inspection: Inspection = .{};
+            var required_mask: u64 = 0;
+            var cursor: usize = 8;
+            while (cursor < bytes.len) {
+                const section_id = bytes[cursor];
+                cursor += 1;
+                const section_len = try readWasmU32(bytes, &cursor);
+                if (cursor + section_len > bytes.len) return error.InvalidFrameEncoding;
+                const section_end = cursor + section_len;
+                switch (section_id) {
+                    2 => try inspectImportSection(bytes[cursor..section_end], &inspection),
+                    7 => try inspectExportSection(bytes[cursor..section_end], &inspection, &required_mask),
+                    else => {},
+                }
+                cursor = section_end;
+            }
+            const all_required = if (Abi.required_exports.len == 64)
+                std.math.maxInt(u64)
+            else
+                (@as(u64, 1) << @intCast(Abi.required_exports.len)) - 1;
+            inspection.required_exports_present = (required_mask & all_required) == all_required;
+            return inspection;
+        }
+
+        fn inspectImportSection(section: []const u8, inspection: *Inspection) !void {
+            var cursor: usize = 0;
+            const count = try readWasmU32(section, &cursor);
+            var index: u32 = 0;
+            while (index < count) : (index += 1) {
+                const module = try readWasmName(section, &cursor);
+                const name = try readWasmName(section, &cursor);
+                _ = try readWasmU8(section, &cursor);
+                try skipWasmImportDesc(section, &cursor);
+                inspection.import_count += 1;
+                if (forbiddenImport(module) or forbiddenImport(name)) inspection.forbidden_import_count += 1;
+            }
+            if (cursor != section.len) return error.InvalidFrameEncoding;
+        }
+
+        fn inspectExportSection(section: []const u8, inspection: *Inspection, required_mask: *u64) !void {
+            var cursor: usize = 0;
+            const count = try readWasmU32(section, &cursor);
+            var index: u32 = 0;
+            while (index < count) : (index += 1) {
+                const name = try readWasmName(section, &cursor);
+                const kind = try readWasmU8(section, &cursor);
+                _ = try readWasmU32(section, &cursor);
+                inspection.export_count += 1;
+                if (kind == 2 and std.mem.eql(u8, name, "memory")) inspection.memory_export_present = true;
+                if (std.mem.eql(u8, name, "world_alloc")) inspection.alloc_export_present = true;
+                if (std.mem.eql(u8, name, "world_free")) inspection.free_export_present = true;
+                for (Abi.required_exports, 0..) |required, required_index| {
+                    if (std.mem.eql(u8, name, required)) required_mask.* |= @as(u64, 1) << @intCast(required_index);
+                }
+            }
+            if (cursor != section.len) return error.InvalidFrameEncoding;
+        }
+
+        fn forbiddenImport(name: []const u8) bool {
+            for (Abi.forbidden_import_fragments) |fragment| {
+                if (std.mem.indexOf(u8, name, fragment) != null) return true;
+            }
+            return false;
+        }
+
+        fn skipWasmImportDesc(bytes: []const u8, cursor: *usize) !void {
+            const kind = bytes[cursor.* - 1];
+            switch (kind) {
+                0 => {
+                    _ = try readWasmU32(bytes, cursor);
+                },
+                1 => try skipWasmLimits(bytes, cursor),
+                2 => try skipWasmLimits(bytes, cursor),
+                3 => {
+                    _ = try readWasmU8(bytes, cursor);
+                    _ = try readWasmU8(bytes, cursor);
+                },
+                else => return error.InvalidFrameEncoding,
+            }
+        }
+
+        fn skipWasmLimits(bytes: []const u8, cursor: *usize) !void {
+            const tag = try readWasmU8(bytes, cursor);
+            _ = try readWasmU32(bytes, cursor);
+            if (tag == 1 or tag == 3) _ = try readWasmU32(bytes, cursor);
+            if (tag > 3) return error.InvalidFrameEncoding;
+        }
+
+        fn readWasmName(bytes: []const u8, cursor: *usize) ![]const u8 {
+            const len = try readWasmU32(bytes, cursor);
+            if (cursor.* + len > bytes.len) return error.InvalidFrameEncoding;
+            const value = bytes[cursor.* .. cursor.* + len];
+            cursor.* += len;
+            return value;
+        }
+
+        fn readWasmU8(bytes: []const u8, cursor: *usize) !u8 {
+            if (cursor.* >= bytes.len) return error.InvalidFrameEncoding;
+            const value = bytes[cursor.*];
+            cursor.* += 1;
+            return value;
+        }
+
+        fn readWasmU32(bytes: []const u8, cursor: *usize) !u32 {
+            var result: u32 = 0;
+            var shift: u5 = 0;
+            while (true) {
+                if (cursor.* >= bytes.len) return error.InvalidFrameEncoding;
+                const byte = bytes[cursor.*];
+                cursor.* += 1;
+                result |= @as(u32, byte & 0x7f) << shift;
+                if ((byte & 0x80) == 0) return result;
+                if (shift >= 28) return error.InvalidFrameEncoding;
+                shift += 7;
+            }
+        }
+    };
+
+    fn fingerprintVector(vector: ConformanceVector) u64 {
+        var hasher = std.hash.Wyhash.init(0x6775_6573_745f_7665);
+        hashU64(&hasher, vector.fingerprint_version);
+        hashBytes(&hasher, vector.name);
+        hashU64(&hasher, @intFromEnum(vector.kind));
+        hashU64(&hasher, vector.target_ref_fingerprint);
+        hashOptionalU64(&hasher, vector.admission_receipt_fingerprint);
+        hashOptionalU64(&hasher, vector.run_permit_fingerprint);
+        hashU64Slice(&hasher, vector.input_fingerprints);
+        hashU64Slice(&hasher, vector.expected_pending_frame_fingerprints);
+        hashU64Slice(&hasher, vector.response_frame_fingerprints);
+        hashOptionalU64(&hasher, vector.expected_final_result_fingerprint);
+        hashOptionalU64(&hasher, vector.expected_transcript_fingerprint);
+        hashOptionalU64(&hasher, vector.expected_receipt_fingerprint);
+        for (vector.expected_status_sequence) |status_value| hashU64(&hasher, @intFromEnum(status_value));
+        return hasher.final();
+    }
+
+    fn fingerprintReport(report: ConformanceReport) u64 {
+        var hasher = std.hash.Wyhash.init(0x6775_6573_745f_7265);
+        hashU64(&hasher, report.fingerprint_version);
+        hashU64(&hasher, report.vector_fingerprint);
+        fingerprintResultSummary(&hasher, report.native_run_result);
+        fingerprintResultSummary(&hasher, report.native_abi_result);
+        hashBool(&hasher, report.wasm_inspection_passed);
+        hashBool(&hasher, report.wasm_runtime_result != null);
+        if (report.wasm_runtime_result) |summary| fingerprintResultSummary(&hasher, summary);
+        hashBool(&hasher, report.status_sequence_match);
+        hashBool(&hasher, report.pending_frame_match);
+        hashBool(&hasher, report.final_result_match);
+        hashBool(&hasher, report.transcript_match);
+        hashBool(&hasher, report.receipt_match);
+        for (report.blockers) |blocker| hashBytes(&hasher, blocker);
+        for (report.warnings) |warning| hashBytes(&hasher, warning);
+        return hasher.final();
+    }
+
+    fn fingerprintResultSummary(hasher: *std.hash.Wyhash, summary: RunResultSummary) void {
+        hashU64(hasher, @intFromEnum(summary.status));
+        hashOptionalU64(hasher, summary.result_fingerprint);
+        hashOptionalU64(hasher, summary.transcript_fingerprint);
+        hashOptionalU64(hasher, summary.receipt_fingerprint);
+        hashU64Slice(hasher, summary.pending_frame_fingerprints);
+    }
+
+    fn hashU64Slice(hasher: *std.hash.Wyhash, values: []const u64) void {
+        hashU64(hasher, values.len);
+        for (values) |value| hashU64(hasher, value);
     }
 };
 

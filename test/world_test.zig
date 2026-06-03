@@ -243,6 +243,95 @@ const PortsRequestMachine = world.Machine(fixtures.Ports.Target, .{
     .strict_handler_coverage = true,
 });
 
+test "guest abi exposes stable v0 contract and status ordinals" {
+    try std.testing.expectEqual(@as(u32, 1), world.world_guest_abi_version);
+    try std.testing.expectEqual(@as(u32, 1), world.world_guest_abi_contract_fingerprint_version);
+    try std.testing.expectEqual(@as(u32, 1), world.world_guest_conformance_vector_fingerprint_version);
+    try std.testing.expectEqual(@as(u32, 1), world.world_guest_conformance_report_fingerprint_version);
+    try std.testing.expectEqual(@as(u32, 0), @intFromEnum(world.Guest.Status.ok));
+    try std.testing.expectEqual(@as(u32, 3), @intFromEnum(world.Guest.Status.parked));
+    try std.testing.expectEqual(@as(u32, 6), @intFromEnum(world.Guest.Status.buffer_too_small));
+    try std.testing.expectEqual(@as(u32, 13), @intFromEnum(world.Guest.Status.admission_failed));
+    try std.testing.expectEqual(@as(usize, 16), world.Guest.Abi.required_exports.len);
+    try std.testing.expect(world.Guest.Buffer.max_request_bytes > 0);
+    try std.testing.expect(world.Guest.Buffer.max_response_bytes > 0);
+    const contract = world.Guest.Abi.Contract{};
+    try std.testing.expect(contract.fingerprint() != 0);
+}
+
+fn appendWasmU32(out: *std.ArrayList(u8), value: u32) !void {
+    var remaining = value;
+    while (true) {
+        var byte: u8 = @intCast(remaining & 0x7f);
+        remaining >>= 7;
+        if (remaining != 0) byte |= 0x80;
+        try out.append(std.testing.allocator, byte);
+        if (remaining == 0) break;
+    }
+}
+
+fn appendWasmName(out: *std.ArrayList(u8), name: []const u8) !void {
+    try appendWasmU32(out, @intCast(name.len));
+    try out.appendSlice(std.testing.allocator, name);
+}
+
+fn appendWasmSection(module: *std.ArrayList(u8), section_id: u8, section: []const u8) !void {
+    try module.append(std.testing.allocator, section_id);
+    try appendWasmU32(module, @intCast(section.len));
+    try module.appendSlice(std.testing.allocator, section);
+}
+
+fn syntheticGuestWasm(allocator: std.mem.Allocator) ![]u8 {
+    var module: std.ArrayList(u8) = .empty;
+    errdefer module.deinit(allocator);
+    try module.appendSlice(allocator, "\x00asm\x01\x00\x00\x00");
+    var exports: std.ArrayList(u8) = .empty;
+    defer exports.deinit(allocator);
+    try appendWasmU32(&exports, @intCast(world.Guest.Abi.required_exports.len + 1));
+    for (world.Guest.Abi.required_exports, 0..) |name, index| {
+        try appendWasmName(&exports, name);
+        try exports.append(allocator, 0);
+        try appendWasmU32(&exports, @intCast(index));
+    }
+    try appendWasmName(&exports, "memory");
+    try exports.append(allocator, 2);
+    try appendWasmU32(&exports, 0);
+    try appendWasmSection(&module, 7, exports.items);
+    return module.toOwnedSlice(allocator);
+}
+
+fn syntheticForbiddenImportWasm(allocator: std.mem.Allocator) ![]u8 {
+    var module: std.ArrayList(u8) = .empty;
+    errdefer module.deinit(allocator);
+    try module.appendSlice(allocator, "\x00asm\x01\x00\x00\x00");
+    var imports: std.ArrayList(u8) = .empty;
+    defer imports.deinit(allocator);
+    try appendWasmU32(&imports, 1);
+    try appendWasmName(&imports, "wasi_snapshot_preview1");
+    try appendWasmName(&imports, "fd_read");
+    try imports.append(allocator, 0);
+    try appendWasmU32(&imports, 0);
+    try appendWasmSection(&module, 2, imports.items);
+    return module.toOwnedSlice(allocator);
+}
+
+test "wasm export inspector validates required exports and forbidden imports" {
+    const valid = try syntheticGuestWasm(std.testing.allocator);
+    defer std.testing.allocator.free(valid);
+    const valid_inspection = try world.Guest.Wasm.inspect(valid);
+    try std.testing.expect(valid_inspection.required_exports_present);
+    try std.testing.expect(valid_inspection.memory_export_present);
+    try std.testing.expectEqual(@as(usize, 0), valid_inspection.forbidden_import_count);
+    try std.testing.expect(valid_inspection.passed());
+
+    const forbidden = try syntheticForbiddenImportWasm(std.testing.allocator);
+    defer std.testing.allocator.free(forbidden);
+    const forbidden_inspection = try world.Guest.Wasm.inspect(forbidden);
+    try std.testing.expectEqual(@as(usize, 1), forbidden_inspection.import_count);
+    try std.testing.expectEqual(@as(usize, 1), forbidden_inspection.forbidden_import_count);
+    try std.testing.expect(!forbidden_inspection.passed());
+}
+
 const MissingDispatchTarget = struct {
     pub const Program = fixtures.Ports.Target.Program;
     pub const WorldSurface = fixtures.Ports.Target.WorldSurface;
@@ -4162,6 +4251,118 @@ test "runspace tick parks responds and completes machine run" {
     try std.testing.expectEqual(transcript_response_frame.response_value_fingerprint.?, exported.current_state.final_value_image_fingerprint.?);
 }
 
+test "guest core drives one run through canonical request and response bytes" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    var ctx: PortsCtx = .{};
+    var guest = world.Guest.Core.init(std.testing.allocator, .{});
+    defer guest.deinit();
+
+    try guest.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+        .transcript = &transcript,
+    });
+    try std.testing.expectEqual(world.Guest.Status.initialized, guest.status());
+    try std.testing.expectEqual(world.Guest.Status.parked, guest.tick());
+    try std.testing.expectEqual(@as(usize, 0), ctx.calls);
+    try std.testing.expectEqual(@as(usize, 1), guest.pendingCount());
+
+    const request_len = guest.pendingRequestLen(0);
+    try std.testing.expect(request_len > 0);
+    var tiny_request: [1]u8 = undefined;
+    try std.testing.expectEqual(request_len, guest.readPendingRequest(0, &tiny_request));
+    try std.testing.expectEqual(world.Guest.Status.buffer_too_small, guest.status());
+
+    const request_bytes = try std.testing.allocator.alloc(u8, request_len);
+    defer std.testing.allocator.free(request_bytes);
+    try std.testing.expectEqual(request_len, guest.readPendingRequest(0, request_bytes));
+    var request = try world.Frame.Request.decode(std.testing.allocator, request_bytes);
+    defer request.deinit(std.testing.allocator);
+    try std.testing.expectEqual(PortsDecl.world_port_id, request.world_port_id);
+    try std.testing.expectEqual(fixtures.Ports.ApprovalRequest.fingerprint, request.residual_site_fingerprint);
+
+    var response = try world.Frame.Response.fromPortableValue(
+        std.testing.allocator,
+        request,
+        1,
+        .@"resume",
+        @as(i32, 7),
+        .portable,
+    );
+    defer response.deinit(std.testing.allocator);
+    const response_bytes = try response.encode(std.testing.allocator);
+    defer std.testing.allocator.free(response_bytes);
+
+    try std.testing.expectEqual(world.Guest.Status.running, guest.submitResponse(response_bytes));
+    try std.testing.expectEqual(@as(usize, 0), ctx.calls);
+    try std.testing.expectEqual(world.Guest.Status.stale_pending, guest.submitResponse(response_bytes));
+    try std.testing.expect(guest.lastErrorLen() > 0);
+    try std.testing.expectEqual(world.Guest.Status.done, guest.tick());
+
+    const result_len = guest.resultLen();
+    try std.testing.expect(result_len > 0);
+    const result_bytes = try std.testing.allocator.alloc(u8, result_len);
+    defer std.testing.allocator.free(result_bytes);
+    try std.testing.expectEqual(result_len, guest.readResult(result_bytes));
+    var image = try world.RunImage.decode(std.testing.allocator, result_bytes);
+    defer image.deinit(std.testing.allocator);
+    try std.testing.expectEqual(world.RunImage.Kind.completed_run, image.kind);
+    try std.testing.expectEqual(world.RunState.Status.completed, image.current_state.status);
+    try std.testing.expect(image.current_state.final_value_image_fingerprint != null);
+
+    const transcript_len = guest.transcriptLen();
+    try std.testing.expect(transcript_len > 0);
+    const transcript_bytes = try std.testing.allocator.alloc(u8, transcript_len);
+    defer std.testing.allocator.free(transcript_bytes);
+    try std.testing.expectEqual(transcript_len, guest.readTranscript(transcript_bytes));
+    var transcript_image = try world.TranscriptImage.decode(std.testing.allocator, transcript_bytes);
+    defer transcript_image.deinit(std.testing.allocator);
+    try std.testing.expectEqual(world.TranscriptImage.FinalStatus.completed, transcript_image.final_status);
+}
+
+test "guest core rejects invalid and unknown response frames at byte boundary" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var guest = world.Guest.Core.init(std.testing.allocator, .{});
+    defer guest.deinit();
+
+    try guest.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    try std.testing.expectEqual(world.Guest.Status.parked, guest.tick());
+    try std.testing.expectEqual(world.Guest.Status.invalid_frame, guest.submitResponse(&.{ 0, 1, 2, 3 }));
+
+    const request_len = guest.pendingRequestLen(0);
+    const request_bytes = try std.testing.allocator.alloc(u8, request_len);
+    defer std.testing.allocator.free(request_bytes);
+    _ = guest.readPendingRequest(0, request_bytes);
+    var request = try world.Frame.Request.decode(std.testing.allocator, request_bytes);
+    defer request.deinit(std.testing.allocator);
+    var wrong_response = try world.Frame.Response.fromPortableValue(
+        std.testing.allocator,
+        request,
+        1,
+        .@"resume",
+        @as(i32, 7),
+        .portable,
+    );
+    defer wrong_response.deinit(std.testing.allocator);
+    wrong_response.request_fingerprint +%= 1;
+    wrong_response.frame_fingerprint = 0;
+    wrong_response.frame_fingerprint = wrong_response.frame_fingerprint;
+    const wrong_response_bytes = try wrong_response.encode(std.testing.allocator);
+    defer std.testing.allocator.free(wrong_response_bytes);
+    try std.testing.expectEqual(world.Guest.Status.invalid_frame, guest.submitResponse(wrong_response_bytes));
+
+    try std.testing.expectEqual(@as(usize, 0), guest.pendingRequestLen(99));
+    try std.testing.expectEqual(world.Guest.Status.unknown_pending, guest.status());
+}
+
 test "runspace manual default parks without environment dispatch" {
     var runtime = boundary.Runtime.init(std.testing.allocator);
     defer runtime.deinit();
@@ -7688,6 +7889,269 @@ const AgentOptions = struct {
     transcript: *world.Transcript,
 };
 const AgentResult = AgentMachine.Run(*boundary.Runtime, AgentArgs, AgentOptions).Result;
+
+const GuestConformanceSummary = struct {
+    status: world.Guest.Status,
+    result_fingerprint: u64,
+    pending_fingerprints: [4]u64 = [_]u64{0} ** 4,
+    pending_count: usize = 0,
+    model_pending: usize = 0,
+    tool_pending: usize = 0,
+};
+
+fn runNormalOnePortConformance() !GuestConformanceSummary {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var ctx: PortsCtx = .{};
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+    });
+    _ = try runspace.tick();
+    const pending = try runspace.mailbox.get(0);
+    const request = pending.request_frame orelse return error.ExpectedFrameRequest;
+    _ = try runspace.respondValue(0, @as(i32, 7));
+    _ = try runspace.tick();
+    try std.testing.expectEqual(@as(usize, 0), ctx.calls);
+    var image = try runspace.exportRun(handle);
+    defer image.deinit(std.testing.allocator);
+    return .{
+        .status = .done,
+        .result_fingerprint = image.run_image_fingerprint,
+        .pending_fingerprints = .{ request.frame_fingerprint, 0, 0, 0 },
+        .pending_count = 1,
+    };
+}
+
+fn runNativeGuestOnePortConformance() !GuestConformanceSummary {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var ctx: PortsCtx = .{};
+    var guest = world.Guest.NativeGuest.init(std.testing.allocator, .{});
+    defer guest.deinit();
+    try guest.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+    });
+    try std.testing.expectEqual(world.Guest.Status.parked.code(), guest.world_tick());
+    const request_len = guest.world_pending_request_len(0);
+    const request_bytes = try std.testing.allocator.alloc(u8, request_len);
+    defer std.testing.allocator.free(request_bytes);
+    _ = guest.world_read_pending_request(0, request_bytes);
+    var request = try world.Frame.Request.decode(std.testing.allocator, request_bytes);
+    defer request.deinit(std.testing.allocator);
+    var response = try world.Frame.Response.fromPortableValue(std.testing.allocator, request, 1, .@"resume", @as(i32, 7), .portable);
+    defer response.deinit(std.testing.allocator);
+    const response_bytes = try response.encode(std.testing.allocator);
+    defer std.testing.allocator.free(response_bytes);
+    try std.testing.expectEqual(world.Guest.Status.running.code(), guest.world_submit_response(response_bytes));
+    try std.testing.expectEqual(@as(usize, 0), ctx.calls);
+    try std.testing.expectEqual(world.Guest.Status.done.code(), guest.world_tick());
+    const result_len = guest.world_result_len();
+    const result_bytes = try std.testing.allocator.alloc(u8, result_len);
+    defer std.testing.allocator.free(result_bytes);
+    _ = guest.world_read_result(result_bytes);
+    var image = try world.RunImage.decode(std.testing.allocator, result_bytes);
+    defer image.deinit(std.testing.allocator);
+    return .{
+        .status = .done,
+        .result_fingerprint = image.run_image_fingerprint,
+        .pending_fingerprints = .{ request.frame_fingerprint, 0, 0, 0 },
+        .pending_count = 1,
+    };
+}
+
+fn respondAgentRequest(request: world.Frame.Request, model_pending: *usize, tool_pending: *usize) !world.Frame.Response {
+    if (request.world_port_id == AgentDecideDecl.world_port_id) {
+        model_pending.* += 1;
+        const action: fixtures.Agent.Action = if (model_pending.* == 1)
+            .{ .tool = "actuate" }
+        else
+            .{ .final = "final=actuate skeleton complete" };
+        return world.Frame.Response.fromPortableValue(
+            std.testing.allocator,
+            request,
+            request.expected_response_value_table_id,
+            .@"resume",
+            action,
+            .portable,
+        );
+    }
+    if (request.world_port_id == AgentToolDecl.world_port_id) {
+        tool_pending.* += 1;
+        return world.Frame.Response.fromPortableValue(
+            std.testing.allocator,
+            request,
+            request.expected_response_value_table_id,
+            .@"resume",
+            @as([]const u8, "actuate"),
+            .portable,
+        );
+    }
+    return error.FramePortMismatch;
+}
+
+fn runNormalAgentConformance() !GuestConformanceSummary {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var ctx: AgentCtx = .{ .allocator = std.testing.allocator, .scenario = .skeleton };
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+    const handle = try runspace.installMachineRun(fixtures.Agent.Target, AgentEnv, &runtime, AgentArgs{ @as(usize, 3), fixtures.Agent.initialObservation(.skeleton) }, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+    });
+    var summary: GuestConformanceSummary = .{ .status = .running, .result_fingerprint = 0 };
+    while (runspace.report().completed_count == 0) {
+        _ = try runspace.tick();
+        const pending_ports = try runspace.mailbox.listPending(std.testing.allocator);
+        defer std.testing.allocator.free(pending_ports);
+        for (pending_ports) |pending| {
+            const request = pending.request_frame orelse return error.ExpectedFrameRequest;
+            if (summary.pending_count >= summary.pending_fingerprints.len) return error.TooManyPendingPorts;
+            summary.pending_fingerprints[summary.pending_count] = request.frame_fingerprint;
+            summary.pending_count += 1;
+            var response = try respondAgentRequest(request, &summary.model_pending, &summary.tool_pending);
+            defer response.deinit(std.testing.allocator);
+            _ = try runspace.respond(pending.mailbox_id, response);
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 0), ctx.model_calls);
+    try std.testing.expectEqual(@as(usize, 0), ctx.tool_calls);
+    var image = try runspace.exportRun(handle);
+    defer image.deinit(std.testing.allocator);
+    summary.status = .done;
+    summary.result_fingerprint = image.run_image_fingerprint;
+    return summary;
+}
+
+fn runNativeGuestAgentConformance() !GuestConformanceSummary {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var ctx: AgentCtx = .{ .allocator = std.testing.allocator, .scenario = .skeleton };
+    var guest = world.Guest.NativeGuest.init(std.testing.allocator, .{});
+    defer guest.deinit();
+    try guest.installMachineRun(fixtures.Agent.Target, AgentEnv, &runtime, AgentArgs{ @as(usize, 3), fixtures.Agent.initialObservation(.skeleton) }, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+    });
+    var summary: GuestConformanceSummary = .{ .status = .running, .result_fingerprint = 0 };
+    while (guest.world_status() != world.Guest.Status.done.code()) {
+        const status = guest.world_tick();
+        if (status == world.Guest.Status.done.code()) break;
+        try std.testing.expectEqual(world.Guest.Status.parked.code(), status);
+        const request_len = guest.world_pending_request_len(0);
+        const request_bytes = try std.testing.allocator.alloc(u8, request_len);
+        defer std.testing.allocator.free(request_bytes);
+        _ = guest.world_read_pending_request(0, request_bytes);
+        var request = try world.Frame.Request.decode(std.testing.allocator, request_bytes);
+        defer request.deinit(std.testing.allocator);
+        if (summary.pending_count >= summary.pending_fingerprints.len) return error.TooManyPendingPorts;
+        summary.pending_fingerprints[summary.pending_count] = request.frame_fingerprint;
+        summary.pending_count += 1;
+        var response = try respondAgentRequest(request, &summary.model_pending, &summary.tool_pending);
+        defer response.deinit(std.testing.allocator);
+        const response_bytes = try response.encode(std.testing.allocator);
+        defer std.testing.allocator.free(response_bytes);
+        try std.testing.expectEqual(world.Guest.Status.running.code(), guest.world_submit_response(response_bytes));
+    }
+    try std.testing.expectEqual(@as(usize, 0), ctx.model_calls);
+    try std.testing.expectEqual(@as(usize, 0), ctx.tool_calls);
+    const result_len = guest.world_result_len();
+    const result_bytes = try std.testing.allocator.alloc(u8, result_len);
+    defer std.testing.allocator.free(result_bytes);
+    _ = guest.world_read_result(result_bytes);
+    var image = try world.RunImage.decode(std.testing.allocator, result_bytes);
+    defer image.deinit(std.testing.allocator);
+    summary.status = .done;
+    summary.result_fingerprint = image.run_image_fingerprint;
+    return summary;
+}
+
+test "native guest one-port conformance matches normal runspace" {
+    const native = try runNormalOnePortConformance();
+    const guest = try runNativeGuestOnePortConformance();
+    try std.testing.expectEqual(native.status, guest.status);
+    try std.testing.expectEqual(native.result_fingerprint, guest.result_fingerprint);
+    try std.testing.expectEqual(native.pending_count, guest.pending_count);
+    try std.testing.expectEqual(native.pending_fingerprints[0], guest.pending_fingerprints[0]);
+    const vector = world.Guest.ConformanceVector.init(.{
+        .name = "one-port",
+        .kind = .one_port,
+        .target_ref_fingerprint = world.TargetRef.fromTarget(fixtures.Ports.Target).target_ref_fingerprint,
+        .expected_pending_frame_fingerprints = native.pending_fingerprints[0..native.pending_count],
+        .expected_final_result_fingerprint = native.result_fingerprint,
+        .expected_status_sequence = &.{ .initialized, .parked, .running, .done },
+    });
+    const report = world.Guest.ConformanceReport.init(.{
+        .vector_fingerprint = vector.vector_fingerprint,
+        .native_run_result = .{ .status = native.status, .result_fingerprint = native.result_fingerprint, .pending_frame_fingerprints = native.pending_fingerprints[0..native.pending_count] },
+        .native_abi_result = .{ .status = guest.status, .result_fingerprint = guest.result_fingerprint, .pending_frame_fingerprints = guest.pending_fingerprints[0..guest.pending_count] },
+        .status_sequence_match = true,
+        .pending_frame_match = true,
+        .final_result_match = true,
+    });
+    try std.testing.expect(vector.vector_fingerprint != 0);
+    try std.testing.expect(report.report_fingerprint != 0);
+}
+
+test "native guest agent conformance matches normal runspace" {
+    const native = try runNormalAgentConformance();
+    const guest = try runNativeGuestAgentConformance();
+    try std.testing.expectEqual(native.status, guest.status);
+    try std.testing.expectEqual(native.result_fingerprint, guest.result_fingerprint);
+    try std.testing.expectEqual(native.pending_count, guest.pending_count);
+    try std.testing.expectEqual(@as(usize, 2), guest.model_pending);
+    try std.testing.expectEqual(@as(usize, 1), guest.tool_pending);
+    try std.testing.expectEqual(native.model_pending, guest.model_pending);
+    try std.testing.expectEqual(native.tool_pending, guest.tool_pending);
+    for (native.pending_fingerprints[0..native.pending_count], guest.pending_fingerprints[0..guest.pending_count]) |native_frame, guest_frame| {
+        try std.testing.expectEqual(native_frame, guest_frame);
+    }
+}
+
+test "native guest supervised denial matches normal runspace denial" {
+    var native_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer native_runtime.deinit();
+    var native_ctx: PortsCtx = .{};
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+        .budget = world.Budget.init(.{ .max_port_requests = 0 }),
+    });
+    var native_runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer native_runspace.deinit();
+    _ = try native_runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &native_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &native_ctx,
+        .permit = permit,
+    });
+    try std.testing.expectError(error.BudgetExceeded, native_runspace.tick());
+    try std.testing.expectEqual(@as(usize, 0), native_ctx.calls);
+    try std.testing.expectEqual(@as(usize, 0), native_runspace.report().pending_port_count);
+
+    var guest_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer guest_runtime.deinit();
+    var guest_ctx: PortsCtx = .{};
+    var guest = world.Guest.NativeGuest.init(std.testing.allocator, .{});
+    defer guest.deinit();
+    try guest.installMachineRun(fixtures.Ports.Target, PortsEnv, &guest_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &guest_ctx,
+        .permit = permit,
+    });
+    try std.testing.expectEqual(world.Guest.Status.supervision_denied.code(), guest.world_tick());
+    try std.testing.expectEqual(@as(usize, 0), guest_ctx.calls);
+    try std.testing.expectEqual(@as(u32, 0), guest.world_pending_count());
+}
 
 const BorrowedAgentCtx = struct {
     final_storage: [32]u8 = undefined,

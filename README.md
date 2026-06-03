@@ -46,6 +46,7 @@ The public root is intentionally small:
 - `world.Admission`
 - `world.Runspace`
 - `world.RunHandle`
+- `world.Guest`
 - `world.AuditImage`
 - `world.AuditReport`
 - `world.Error`
@@ -228,6 +229,20 @@ Runspace integrates with Admission by installing `AdmittedRun` values and preser
 
 Runspace is not a scheduler, async runtime, storage backend, network transport, xitdb integration, agent framework, real model/tool/file/human integration, service discovery layer, WASM ABI, Boundary loaded execution path, Boundary closure/normalization path, package manager, artifact registry, signing layer, or encryption layer.
 
+## World Guest Conformance
+
+Runspace makes execution local and deterministic. Guest Conformance proves that local execution can cross a runtime boundary.
+
+`world.Guest.Core` wraps one manual-dispatch `Runspace` and exposes a byte-driven guest boundary: initialize, tick, read pending `Frame.Request` bytes, submit `Frame.Response` bytes, read result bytes, read receipt/transcript evidence where available, and read the last error. It does not call native handlers while parked, own storage, own transport, start scheduler threads, use wall-clock time, call TreatyResolver, call ProviderHarness, or dispatch by operation name.
+
+`world.Guest.Abi` is World-owned ABI v0. Boundary remains target-neutral and does not define a WASM ABI. The ABI payloads are canonical World frame bytes; model/tool/file/human calls are represented as pending frames, not imported functions.
+
+`world.Guest.NativeGuest` implements the same ABI shape in native Zig so default CI can prove native Runspace and guest-style byte driving match without a wasm runtime dependency.
+
+`world.Guest.Wasm.inspect` validates wasm artifacts for required exports, memory/alloc convention, and forbidden imports. `zig build world-wasm` builds `world_wasm_guest_one_port.wasm`; `zig build check-world-wasm` builds and inspects it. Optional real wasm runtime execution can be added as an explicit step without changing the semantic boundary.
+
+See `docs/guest.md`.
+
 ## Audit Reports
 
 `world.AuditReport` includes the WorldSurface fingerprint, target certificate fingerprint, run mode, final status, request counts, fresh/replayed/rejected/failed counts, replay mismatches, missing handlers, and per-port counts.
@@ -261,11 +276,17 @@ zig build run-world-runspace-multi
 zig build run-world-runspace-handoff
 zig build run-world-runspace-agent
 zig build run-world-runspace-supervised
+zig build run-world-guest-one-port
+zig build run-world-guest-conformance
+zig build run-world-wasm-export-check
+zig build run-world-guest-agent-conformance
 zig build run-world-supervised-budget
 zig build run-world-supervised-agent
 zig build run-world-supervised-handoff
 zig build run-world-supervised-branch
 zig build run-world-supervised-replay-verify
+zig build world-wasm
+zig build check-world-wasm
 ```
 
 `world_run_strict` runs a strict closed zero-port target.
@@ -283,6 +304,14 @@ zig build run-world-supervised-replay-verify
 `world_runspace_agent` drives an agent-shaped run with manual model/tool mailbox responses.
 
 `world_runspace_supervised` shows a supervised runspace run failing before over-budget handler dispatch.
+
+`world_guest_one_port` drives a one-port target through NativeGuest ABI-style calls and prints request, response, and result fingerprints.
+
+`world_guest_conformance` compares normal Runspace and NativeGuest for the one-port vector and prints a conformance report fingerprint.
+
+`world_wasm_export_check` inspects the freestanding wasm guest artifact for ABI exports and forbidden imports.
+
+`world_guest_agent_conformance` drives an agent-shaped target through model/tool pending frames using canonical response bytes.
 
 `world_agent_loop` demonstrates an agent-shaped residual surface with `model.decide` and `tool.call` ports. It is not an agent framework; it is a port dispatch and replay fixture.
 
@@ -342,4 +371,4 @@ The `check` step runs unit tests, the forged-descriptor compile-fail fixture, al
 
 ## Non-Goals
 
-World v0 does not implement a scheduler, async runtime, storage backend, xitdb integration, network transport, provider lifecycle manager, service discovery, real model/tool/file/human integrations, WASM ABI, security/signing/encryption, distributed execution, Boundary closure, Boundary normalization, treaty resolution, provider harness execution, provider catalog lookup, morphism catalog lookup, closure graph traversal, or evidence graph traversal.
+World v0 does not implement a scheduler, async runtime, storage backend, xitdb integration, network transport, provider lifecycle manager, service discovery, real model/tool/file/human integrations, WASI filesystem, Component Model/WIT bindings, security/signing/encryption, distributed execution, Boundary loaded module execution, Boundary closure, Boundary normalization, treaty resolution, provider harness execution, provider catalog lookup, morphism catalog lookup, closure graph traversal, or evidence graph traversal.
