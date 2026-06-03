@@ -4585,6 +4585,38 @@ test "guest core submit response refreshes terminal status" {
     try std.testing.expectEqual(world.Guest.Status.failed, guest.status());
 }
 
+test "guest core reports supervision-only park without exposing pending request" {
+    const policy = world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .allow_native_adapters = true,
+        .require_environment_certificate = true,
+        .park_on_budget_exceeded = true,
+    });
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = policy,
+        .budget = world.Budget.init(.{ .max_session_steps = 0 }),
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var ctx: PortsCtx = .{};
+    var guest = world.Guest.Core.init(std.testing.allocator, .{});
+    defer guest.deinit();
+
+    try guest.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ctx,
+        .permit = permit,
+    });
+
+    try std.testing.expectEqual(world.Guest.Status.supervision_denied, guest.tick());
+    try std.testing.expectEqual(@as(usize, 0), ctx.calls);
+    try std.testing.expectEqual(@as(usize, 0), guest.pendingCount());
+    try std.testing.expectEqual(@as(usize, 0), guest.pendingRequestLen(0));
+    try std.testing.expect(guest.lastErrorLen() > 0);
+}
+
 test "guest core rejects pending request bytes above ABI cap" {
     var guest = world.Guest.Core.init(std.testing.allocator, .{});
     defer guest.deinit();

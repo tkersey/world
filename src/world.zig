@@ -10061,7 +10061,8 @@ pub const Guest = struct {
             const report = self.runspace.report();
             if (report.failed_count != 0) return self.setStatus(.failed, "guest run failed");
             if (report.completed_count != 0) return self.setStatus(.done, "");
-            if (report.parked_count != 0 or report.pending_port_count != 0) return self.setStatus(.parked, "");
+            if (report.pending_port_count != 0) return self.setStatus(.parked, "");
+            if (report.parked_count != 0) return self.setStatus(.supervision_denied, "guest run parked on supervision without a pending port");
             if (report.runnable_count != 0) return self.setStatus(.running, "");
             if (report.run_count != 0) return self.setStatus(.initialized, "");
             return self.setStatus(.initialized, "");
