@@ -4930,6 +4930,30 @@ test "guest core result bytes use post-export supervised receipt" {
     try std.testing.expectEqual(receipt, exported_event.run_receipt_fingerprint.?);
 }
 
+test "guest result maps handoff denied to supervision denied" {
+    const StrictEnv = world.Environment(fixtures.Strict.Target, .{
+        .ports = &.{},
+    });
+    const permit = world.Supervision.issue(fixtures.Strict.Target, StrictEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var guest = world.Guest.Core.init(std.testing.allocator, .{ .require_supervision = true });
+    defer guest.deinit();
+
+    try guest.installMachineRun(fixtures.Strict.Target, StrictEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .permit = permit,
+    });
+    try std.testing.expectEqual(world.Guest.Status.done, guest.tick());
+    try std.testing.expectEqual(@as(usize, 0), guest.resultLen());
+    try std.testing.expectEqual(world.Guest.Status.supervision_denied, guest.status());
+    try std.testing.expect(guest.lastErrorLen() > 0);
+}
+
 test "guest core clamps explicit pending-port config to ABI cap" {
     var guest = world.Guest.Core.init(std.testing.allocator, .{
         .max_pending_ports = world.Guest.Buffer.max_pending_ports + 10,

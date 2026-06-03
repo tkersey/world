@@ -9899,8 +9899,24 @@ pub const Guest = struct {
                 var hasher = std.hash.Wyhash.init(0x776f_726c_645f_6775);
                 hashU64(&hasher, self.abi_version);
                 hashU64(&hasher, self.fingerprint_version);
+                inline for (std.meta.fields(Status)) |field| {
+                    hashU64(&hasher, @as(u32, @intCast(field.value)));
+                }
                 hashU64(&hasher, self.required_export_count);
-                for (required_exports) |name| hashBytes(&hasher, name);
+                for (required_exports) |name| {
+                    hashU64(&hasher, name.len);
+                    hashBytes(&hasher, name);
+                }
+                hashU64(&hasher, optional_exports.len);
+                for (optional_exports) |name| {
+                    hashU64(&hasher, name.len);
+                    hashBytes(&hasher, name);
+                }
+                hashU64(&hasher, forbidden_import_fragments.len);
+                for (forbidden_import_fragments) |fragment| {
+                    hashU64(&hasher, fragment.len);
+                    hashBytes(&hasher, fragment);
+                }
                 hashU64(&hasher, self.max_request_bytes);
                 hashU64(&hasher, self.max_response_bytes);
                 hashU64(&hasher, self.max_result_bytes);
@@ -10248,7 +10264,7 @@ pub const Guest = struct {
 
         fn mapRunspaceError(self: *@This(), err: anyerror) Status {
             return switch (err) {
-                error.SupervisionDenied, error.BudgetExceeded, error.SupervisionBudgetExceeded, error.SupervisionPortRuleDenied => self.setStatus(.supervision_denied, "supervision denied guest run"),
+                error.SupervisionDenied, error.HandoffDenied, error.BudgetExceeded, error.SupervisionBudgetExceeded, error.SupervisionPortRuleDenied => self.setStatus(.supervision_denied, "supervision denied guest run"),
                 error.RunspaceAdmissionRequired, error.AdmissionRejected => self.setStatus(.admission_failed, "runspace admission failed"),
                 error.FrameSurfaceMismatch, error.FrameTargetCertificateMismatch => self.setStatus(.target_mismatch, "frame target does not match guest run"),
                 error.InvalidFrameEncoding, error.VerifyValueImageMismatch, error.FramePortMismatch, error.FrameRequestFingerprintMismatch, error.FrameValueTableMismatch => self.setStatus(.invalid_frame, "invalid canonical frame bytes"),
