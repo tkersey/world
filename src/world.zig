@@ -8795,6 +8795,23 @@ pub const Runspace = struct {
         return image;
     }
 
+    pub fn previewExportRun(self: *@This(), handle: RunHandle) !RunImage {
+        const index = try self.slotIndex(handle);
+        const slot = &self.slots.items[index];
+        if (!Runspace.canTransition(slot.status, .exported)) return error.InvalidRunspaceTransition;
+        if (slot.status == .parked_on_port) {
+            const mailbox_id = slot.pending_mailbox_id orelse return error.HandoffPendingFrameMismatch;
+            const pending_port = try self.mailbox.get(mailbox_id);
+            if (pending_port.request_frame == null) return error.HandoffPendingFrameMismatch;
+        } else if (slot.status == .parked_on_supervision) {
+            if (slot.pending_mailbox_id) |mailbox_id| {
+                const pending_port = try self.mailbox.get(mailbox_id);
+                if (pending_port.request_frame == null) return error.HandoffPendingFrameMismatch;
+            }
+        }
+        return self.snapshotSlotImage(index);
+    }
+
     pub fn exportPending(self: *@This(), mailbox_id: u64) !RunImage {
         const pending = try self.mailbox.get(mailbox_id);
         if (pending.status != .pending) return error.PendingPortConsumed;
@@ -10105,22 +10122,30 @@ pub const Guest = struct {
         fn ensureResultBytes(self: *@This()) !void {
             if (self.result_bytes.len != 0 or self.state != .done) return;
             const handle = self.handle orelse return error.InvalidRunspaceTransition;
-            var image = try self.runspace.exportRun(handle);
-            defer image.deinit(self.allocator);
-            const encoded = try image.encode(self.allocator);
-            errdefer self.allocator.free(encoded);
-            if (encoded.len > Buffer.max_result_bytes) return error.OutOfMemory;
-            if (image.prior_run_receipt_fingerprint) |receipt_fingerprint| {
+            var preview = try self.runspace.previewExportRun(handle);
+            defer preview.deinit(self.allocator);
+            const encoded = try preview.encode(self.allocator);
+            var encoded_owned = true;
+            errdefer if (encoded_owned) self.allocator.free(encoded);
+            if (encoded.len > Buffer.max_result_bytes) return error.GuestBufferTooSmall;
+            var transcript_bytes: []const u8 = &.{};
+            var transcript_owned = false;
+            errdefer if (transcript_owned) self.allocator.free(transcript_bytes);
+            if (preview.transcript_image) |transcript| {
+                transcript_bytes = try transcript.encode(self.allocator);
+                transcript_owned = true;
+                if (transcript_bytes.len > Buffer.max_transcript_bytes) return error.GuestBufferTooSmall;
+            }
+            var exported = try self.runspace.exportRun(handle);
+            defer exported.deinit(self.allocator);
+            if (preview.prior_run_receipt_fingerprint) |receipt_fingerprint| {
                 std.mem.writeInt(u64, &self.receipt_bytes, receipt_fingerprint, .little);
                 self.receipt_len_value = 8;
             }
-            if (image.transcript_image) |transcript| {
-                const transcript_bytes = try transcript.encode(self.allocator);
-                errdefer self.allocator.free(transcript_bytes);
-                if (transcript_bytes.len > Buffer.max_transcript_bytes) return error.OutOfMemory;
-                self.transcript_bytes = transcript_bytes;
-            }
+            self.transcript_bytes = transcript_bytes;
+            transcript_owned = false;
             self.result_bytes = encoded;
+            encoded_owned = false;
         }
 
         fn pendingByIndex(self: *const @This(), index: u32) !PendingPort {
@@ -10190,6 +10215,7 @@ pub const Guest = struct {
                 error.InvalidFrameEncoding, error.VerifyValueImageMismatch, error.FramePortMismatch, error.FrameRequestFingerprintMismatch, error.FrameValueTableMismatch => self.setStatus(.invalid_frame, "invalid canonical frame bytes"),
                 error.StaleRunHandle, error.PendingPortConsumed => self.setStatus(.stale_pending, "pending request is stale"),
                 error.InvalidRunspaceTransition, error.InvalidPendingPortTransition => self.setStatus(.invalid_state, "invalid guest state transition"),
+                error.GuestBufferTooSmall => self.setStatus(.buffer_too_small, "guest ABI byte cap exceeded"),
                 else => self.setStatus(.failed, @errorName(err)),
             };
         }

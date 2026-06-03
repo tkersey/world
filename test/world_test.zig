@@ -5015,7 +5015,7 @@ test "guest core rejects pending request bytes above ABI cap" {
     try std.testing.expectEqual(world.Guest.Status.buffer_too_small, guest.status());
 }
 
-test "guest core oversized result cap does not double free encoded image" {
+test "guest core oversized result cap does not export run before cap check" {
     var guest = world.Guest.Core.init(std.testing.allocator, .{});
     defer guest.deinit();
     const metadata = try std.testing.allocator.alloc(u8, world.Guest.Buffer.max_result_bytes + 1);
@@ -5038,8 +5038,12 @@ test "guest core oversized result cap does not double free encoded image" {
     try guest.installRunImage(image);
     try std.testing.expectEqual(world.Guest.Status.done, guest.tick());
     try std.testing.expectEqual(@as(usize, 0), guest.resultLen());
-    try std.testing.expectEqual(world.Guest.Status.failed, guest.status());
+    try std.testing.expectEqual(world.Guest.Status.buffer_too_small, guest.status());
+    try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try guest.runspace.getSlotSummary(guest.handle.?)).status);
     try std.testing.expect(guest.lastErrorLen() > 0);
+    try std.testing.expectEqual(world.Guest.Status.done, guest.tick());
+    try std.testing.expectEqual(@as(usize, 0), guest.resultLen());
+    try std.testing.expectEqual(world.Guest.Status.buffer_too_small, guest.status());
 }
 
 test "guest core rejects invalid and unknown response frames at byte boundary" {
