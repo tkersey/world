@@ -1,3 +1,5 @@
+const std = @import("std");
+
 const abi_version: u32 = 1;
 const status_initialized: u32 = 1;
 const status_running: u32 = 2;
@@ -184,8 +186,13 @@ export fn world_read_last_error(ptr: usize, cap: usize) usize {
 }
 
 export fn world_alloc(len: usize) usize {
+    if (len == 0) return @intFromPtr(&memory_buf[0]);
+    if (len > memory_buf.len) {
+        _ = setError(status_buffer_too_small, "allocation exceeds guest memory");
+        return 0;
+    }
     const aligned = (len + 15) & ~@as(usize, 15);
-    if (bump + aligned > memory_buf.len) {
+    if (bump > memory_buf.len or aligned > memory_buf.len - bump) {
         _ = setError(status_buffer_too_small, "allocation exceeds guest memory");
         return 0;
     }
@@ -219,6 +226,22 @@ fn setError(status_value: u32, message: []const u8) u32 {
 
 fn clearError() void {
     last_error_len_value = 0;
+}
+
+test "world_alloc rejects overflowing sizes without one-past indexing" {
+    _ = world_init();
+    try std.testing.expectEqual(@intFromPtr(&memory_buf[0]), world_alloc(max_memory));
+    try std.testing.expectEqual(@intFromPtr(&memory_buf[0]), world_alloc(0));
+    try std.testing.expectEqual(@as(usize, 0), world_alloc(1));
+    try std.testing.expectEqual(status_buffer_too_small, current_status);
+
+    _ = world_init();
+    try std.testing.expectEqual(@as(usize, 0), world_alloc(max_memory + 1));
+    try std.testing.expectEqual(status_buffer_too_small, current_status);
+
+    _ = world_init();
+    try std.testing.expectEqual(@as(usize, 0), world_alloc(std.math.maxInt(usize)));
+    try std.testing.expectEqual(status_buffer_too_small, current_status);
 }
 
 fn copyToGuest(ptr: usize, cap: usize, bytes: []const u8) usize {

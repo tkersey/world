@@ -102,7 +102,16 @@ pub fn build(b: *std.Build) void {
         }),
         .filters = test_args.filters,
     });
+    const wasm_guest_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/world_wasm_guest_one_port.zig"),
+            .target = b.graph.host,
+            .optimize = optimize,
+        }),
+        .filters = test_args.filters,
+    });
     const test_step = b.step("test", "Run world tests.");
+    test_step.dependOn(&addRunArtifactWithArgs(b, wasm_guest_tests, test_args.passthrough).step);
     if (target.query.isNative()) {
         test_step.dependOn(&addRunArtifactWithArgs(b, tests, test_args.passthrough).step);
         b.default_step.dependOn(test_step);
