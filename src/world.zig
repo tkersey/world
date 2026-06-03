@@ -10533,7 +10533,9 @@ pub const Guest = struct {
             var type_section: []const u8 = &.{};
             var function_section: []const u8 = &.{};
             var code_section: []const u8 = &.{};
+            var table_count: u32 = 0;
             var memory_count: u32 = 0;
+            var global_count: u32 = 0;
             var abi_defined_function_index: ?u32 = null;
             var last_non_custom_section_rank: u8 = 0;
             var cursor: usize = 8;
@@ -10553,8 +10555,10 @@ pub const Guest = struct {
                     1 => type_section = bytes[cursor..section_end],
                     2 => inspection.function_import_count = try inspectImportSection(bytes[cursor..section_end], &inspection),
                     3 => function_section = bytes[cursor..section_end],
+                    4 => table_count = try sectionDeclaredCount(bytes[cursor..section_end]),
                     5 => memory_count = try inspectMemorySection(bytes[cursor..section_end]),
-                    7 => try inspectExportSection(bytes[cursor..section_end], type_section, function_section, memory_count, inspection.function_import_count, &inspection, &required_mask, &abi_defined_function_index),
+                    6 => global_count = try sectionDeclaredCount(bytes[cursor..section_end]),
+                    7 => try inspectExportSection(bytes[cursor..section_end], type_section, function_section, table_count, memory_count, global_count, inspection.function_import_count, &inspection, &required_mask, &abi_defined_function_index),
                     10 => code_section = bytes[cursor..section_end],
                     else => {},
                 }
@@ -10617,9 +10621,17 @@ pub const Guest = struct {
             return count;
         }
 
-        fn inspectExportSection(section: []const u8, type_section: []const u8, function_section: []const u8, memory_count: u32, function_import_count: u32, inspection: *Inspection, required_mask: *u64, abi_defined_function_index: *?u32) !void {
+        fn sectionDeclaredCount(section: []const u8) !u32 {
+            var cursor: usize = 0;
+            return readWasmU32(section, &cursor);
+        }
+
+        fn inspectExportSection(section: []const u8, type_section: []const u8, function_section: []const u8, table_count: u32, memory_count: u32, global_count: u32, function_import_count: u32, inspection: *Inspection, required_mask: *u64, abi_defined_function_index: *?u32) !void {
             var cursor: usize = 0;
             const count = try readWasmU32(section, &cursor);
+            const defined_function_count = try functionCount(function_section);
+            if (function_import_count > std.math.maxInt(u32) - defined_function_count) return error.InvalidFrameEncoding;
+            const function_count = function_import_count + defined_function_count;
             var index: u32 = 0;
             while (index < count) : (index += 1) {
                 const entry_start = cursor;
@@ -10627,6 +10639,7 @@ pub const Guest = struct {
                 const kind = try readWasmU8(section, &cursor);
                 const export_index = try readWasmU32(section, &cursor);
                 if (try exportNameAppeared(section, entry_start, name)) return error.InvalidFrameEncoding;
+                try validateExportDescriptor(kind, export_index, function_count, table_count, memory_count, global_count);
                 inspection.export_count += 1;
                 if (kind == 2 and std.mem.eql(u8, name, "memory") and export_index < memory_count) inspection.memory_export_present = true;
                 if (std.mem.eql(u8, name, "world_alloc")) {
@@ -10651,6 +10664,17 @@ pub const Guest = struct {
                 }
             }
             if (cursor != section.len) return error.InvalidFrameEncoding;
+        }
+
+        fn validateExportDescriptor(kind: u8, export_index: u32, function_count: u32, table_count: u32, memory_count: u32, global_count: u32) !void {
+            const limit = switch (kind) {
+                0 => function_count,
+                1 => table_count,
+                2 => memory_count,
+                3 => global_count,
+                else => return error.InvalidFrameEncoding,
+            };
+            if (export_index >= limit) return error.InvalidFrameEncoding;
         }
 
         fn exportNameAppeared(section: []const u8, end: usize, name: []const u8) !bool {
@@ -10685,6 +10709,7 @@ pub const Guest = struct {
         }
 
         fn functionCount(section: []const u8) !u32 {
+            if (section.len == 0) return 0;
             var cursor: usize = 0;
             const count = try readWasmU32(section, &cursor);
             var index: u32 = 0;

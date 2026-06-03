@@ -752,6 +752,32 @@ fn syntheticMalformedAllocGuestWasm(allocator: std.mem.Allocator) ![]u8 {
     return module.toOwnedSlice(allocator);
 }
 
+fn syntheticMalformedExportDescriptorGuestWasm(allocator: std.mem.Allocator, export_kind: u8, export_index: u32) ![]u8 {
+    var module: std.ArrayList(u8) = .empty;
+    errdefer module.deinit(allocator);
+    try module.appendSlice(allocator, "\x00asm\x01\x00\x00\x00");
+    try appendGuestWasmTypeSection(&module);
+    try appendGuestWasmFunctionSection(&module, false);
+    try appendGuestWasmMemorySection(&module);
+    var exports: std.ArrayList(u8) = .empty;
+    defer exports.deinit(allocator);
+    try appendWasmU32(&exports, @intCast(world.Guest.Abi.required_exports.len + 2));
+    for (world.Guest.Abi.required_exports, 0..) |name, index| {
+        try appendWasmName(&exports, name);
+        try exports.append(allocator, 0);
+        try appendWasmU32(&exports, @intCast(index));
+    }
+    try appendWasmName(&exports, "memory");
+    try exports.append(allocator, 2);
+    try appendWasmU32(&exports, 0);
+    try appendWasmName(&exports, "bad_descriptor");
+    try exports.append(allocator, export_kind);
+    try appendWasmU32(&exports, export_index);
+    try appendWasmSection(&module, 7, exports.items);
+    try appendGuestWasmCodeSection(&module, world.Guest.Abi.required_exports.len, world.Guest.Abi.version);
+    return module.toOwnedSlice(allocator);
+}
+
 fn syntheticGuestWasmWithImport(allocator: std.mem.Allocator, module_name: []const u8, import_name: []const u8) ![]u8 {
     var module: std.ArrayList(u8) = .empty;
     errdefer module.deinit(allocator);
@@ -857,9 +883,7 @@ test "wasm export inspector validates required exports and forbidden imports" {
 
     const non_function_exports = try syntheticNonFunctionExportGuestWasm(std.testing.allocator);
     defer std.testing.allocator.free(non_function_exports);
-    const non_function_inspection = try world.Guest.Wasm.inspect(non_function_exports);
-    try std.testing.expect(!non_function_inspection.required_exports_present);
-    try std.testing.expect(!non_function_inspection.passed());
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Guest.Wasm.inspect(non_function_exports));
 
     const wrong_signature_exports = try syntheticWrongSignatureGuestWasm(std.testing.allocator);
     defer std.testing.allocator.free(wrong_signature_exports);
@@ -869,10 +893,7 @@ test "wasm export inspector validates required exports and forbidden imports" {
 
     const missing_memory = try syntheticMissingMemoryGuestWasm(std.testing.allocator);
     defer std.testing.allocator.free(missing_memory);
-    const missing_memory_inspection = try world.Guest.Wasm.inspect(missing_memory);
-    try std.testing.expect(missing_memory_inspection.required_exports_present);
-    try std.testing.expect(!missing_memory_inspection.memory_export_present);
-    try std.testing.expect(!missing_memory_inspection.passed());
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Guest.Wasm.inspect(missing_memory));
 
     const alloc_only = try syntheticAllocOnlyGuestWasm(std.testing.allocator);
     defer std.testing.allocator.free(alloc_only);
@@ -890,6 +911,14 @@ test "wasm export inspector validates required exports and forbidden imports" {
     try std.testing.expect(malformed_alloc_inspection.memory_export_present);
     try std.testing.expect(!malformed_alloc_inspection.alloc_export_present);
     try std.testing.expect(!malformed_alloc_inspection.passed());
+
+    const invalid_export_kind = try syntheticMalformedExportDescriptorGuestWasm(std.testing.allocator, 4, 0);
+    defer std.testing.allocator.free(invalid_export_kind);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Guest.Wasm.inspect(invalid_export_kind));
+
+    const invalid_export_index = try syntheticMalformedExportDescriptorGuestWasm(std.testing.allocator, 0, @intCast(world.Guest.Abi.required_exports.len + 1));
+    defer std.testing.allocator.free(invalid_export_index);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Guest.Wasm.inspect(invalid_export_index));
 
     const stale_abi = try syntheticStaleAbiGuestWasm(std.testing.allocator);
     defer std.testing.allocator.free(stale_abi);
