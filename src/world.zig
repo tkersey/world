@@ -9962,9 +9962,15 @@ pub const Guest = struct {
 
         pub fn installRunImage(self: *@This(), image: RunImage) !void {
             if (self.handle != null) return self.failStatus(.invalid_state, "guest core already has an installed run");
+            const image_status = image.current_state.status;
             self.handle = try self.runspace.installRunImage(image);
-            self.state = .initialized;
-            self.clearError();
+            switch (image_status) {
+                .parked_on_port, .parked_on_supervision, .completed, .failed => _ = self.refreshStatus(),
+                else => {
+                    self.state = .initialized;
+                    self.clearError();
+                },
+            }
         }
 
         pub fn tick(self: *@This()) Status {
@@ -10508,9 +10514,11 @@ pub const Guest = struct {
             const count = try readWasmU32(section, &cursor);
             var index: u32 = 0;
             while (index < count) : (index += 1) {
+                const entry_start = cursor;
                 const name = try readWasmName(section, &cursor);
                 const kind = try readWasmU8(section, &cursor);
                 const export_index = try readWasmU32(section, &cursor);
+                if (try exportNameAppeared(section, entry_start, name)) return error.InvalidFrameEncoding;
                 inspection.export_count += 1;
                 if (kind == 2 and std.mem.eql(u8, name, "memory") and export_index < memory_count) inspection.memory_export_present = true;
                 if (kind == 0 and std.mem.eql(u8, name, "world_alloc") and try functionSignatureMatches(type_section, function_section, function_import_count, export_index, .{ .param_count = 1, .result_count = 1 })) inspection.alloc_export_present = true;
@@ -10523,6 +10531,19 @@ pub const Guest = struct {
                 }
             }
             if (cursor != section.len) return error.InvalidFrameEncoding;
+        }
+
+        fn exportNameAppeared(section: []const u8, end: usize, name: []const u8) !bool {
+            var cursor: usize = 0;
+            _ = try readWasmU32(section, &cursor);
+            while (cursor < end) {
+                const previous = try readWasmName(section, &cursor);
+                _ = try readWasmU8(section, &cursor);
+                _ = try readWasmU32(section, &cursor);
+                if (std.mem.eql(u8, previous, name)) return true;
+            }
+            if (cursor != end) return error.InvalidFrameEncoding;
+            return false;
         }
 
         fn inspectCodeSection(section: []const u8, abi_defined_index: u32, expected_defined_function_count: u32) !u32 {

@@ -414,6 +414,32 @@ fn syntheticGuestWasm(allocator: std.mem.Allocator) ![]u8 {
     return module.toOwnedSlice(allocator);
 }
 
+fn syntheticDuplicateExportNameGuestWasm(allocator: std.mem.Allocator) ![]u8 {
+    var module: std.ArrayList(u8) = .empty;
+    errdefer module.deinit(allocator);
+    try module.appendSlice(allocator, "\x00asm\x01\x00\x00\x00");
+    try appendGuestWasmTypeSection(&module);
+    try appendGuestWasmFunctionSection(&module, false);
+    try appendGuestWasmMemorySection(&module);
+    var exports: std.ArrayList(u8) = .empty;
+    defer exports.deinit(allocator);
+    try appendWasmU32(&exports, @intCast(world.Guest.Abi.required_exports.len + 2));
+    for (world.Guest.Abi.required_exports, 0..) |name, index| {
+        try appendWasmName(&exports, name);
+        try exports.append(allocator, 0);
+        try appendWasmU32(&exports, @intCast(index));
+    }
+    try appendWasmName(&exports, "memory");
+    try exports.append(allocator, 2);
+    try appendWasmU32(&exports, 0);
+    try appendWasmName(&exports, "memory");
+    try exports.append(allocator, 2);
+    try appendWasmU32(&exports, 0);
+    try appendWasmSection(&module, 7, exports.items);
+    try appendGuestWasmCodeSection(&module, world.Guest.Abi.required_exports.len, world.Guest.Abi.version);
+    return module.toOwnedSlice(allocator);
+}
+
 fn syntheticStaleAbiGuestWasm(allocator: std.mem.Allocator) ![]u8 {
     var module: std.ArrayList(u8) = .empty;
     errdefer module.deinit(allocator);
@@ -686,6 +712,10 @@ test "wasm export inspector validates required exports and forbidden imports" {
     const short_code = try syntheticShortCodeGuestWasm(std.testing.allocator);
     defer std.testing.allocator.free(short_code);
     try std.testing.expectError(error.InvalidFrameEncoding, world.Guest.Wasm.inspect(short_code));
+
+    const duplicate_export = try syntheticDuplicateExportNameGuestWasm(std.testing.allocator);
+    defer std.testing.allocator.free(duplicate_export);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Guest.Wasm.inspect(duplicate_export));
 
     const overflowing_section_len = [_]u8{
         0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
@@ -4843,6 +4873,28 @@ test "native guest pending request length refreshes stale invalid frame status" 
     try std.testing.expect(request_len > 0);
     try std.testing.expectEqual(world.Guest.Status.parked.code(), guest.world_status());
     try std.testing.expectEqual(@as(usize, 0), guest.world_last_error_len());
+}
+
+test "guest core install run image exposes parked handoff immediately" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var source = world.Runspace.init(std.testing.allocator, .{});
+    defer source.deinit();
+    const handle = try source.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    _ = try source.tick();
+    var image = try source.exportRun(handle);
+    defer image.deinit(std.testing.allocator);
+
+    var guest = world.Guest.Core.init(std.testing.allocator, .{});
+    defer guest.deinit();
+    try guest.installRunImage(image);
+
+    try std.testing.expectEqual(world.Guest.Status.parked, guest.status());
+    try std.testing.expectEqual(@as(usize, 1), guest.pendingCount());
+    try std.testing.expect(guest.pendingRequestLen(0) > 0);
 }
 
 test "guest core pending response preserves parked request state" {
