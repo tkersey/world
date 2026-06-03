@@ -4645,6 +4645,84 @@ test "guest core submit response refreshes terminal status" {
     try std.testing.expectEqual(world.Guest.Status.failed, guest.status());
 }
 
+test "native guest world_init clears cached session state" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var guest = world.Guest.NativeGuest.init(std.testing.allocator, .{});
+    defer guest.deinit();
+
+    try guest.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    try std.testing.expectEqual(world.Guest.Status.parked.code(), guest.world_tick());
+    const request_len = guest.world_pending_request_len(0);
+    const request_bytes = try std.testing.allocator.alloc(u8, request_len);
+    defer std.testing.allocator.free(request_bytes);
+    _ = guest.world_read_pending_request(0, request_bytes);
+    var request = try world.Frame.Request.decode(std.testing.allocator, request_bytes);
+    defer request.deinit(std.testing.allocator);
+    var response = try world.Frame.Response.fromPortableValue(
+        std.testing.allocator,
+        request,
+        request.expected_response_value_table_id,
+        .@"resume",
+        @as(i32, 7),
+        .portable,
+    );
+    defer response.deinit(std.testing.allocator);
+    const response_bytes = try response.encode(std.testing.allocator);
+    defer std.testing.allocator.free(response_bytes);
+    try std.testing.expectEqual(world.Guest.Status.running.code(), guest.world_submit_response(response_bytes));
+    try std.testing.expectEqual(world.Guest.Status.done.code(), guest.world_tick());
+    try std.testing.expect(guest.world_result_len() > 0);
+
+    try std.testing.expectEqual(world.Guest.Status.initialized.code(), guest.world_init());
+    try std.testing.expectEqual(@as(usize, 0), guest.world_result_len());
+    try std.testing.expectEqual(@as(u32, 0), guest.world_pending_count());
+    try guest.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    try std.testing.expectEqual(world.Guest.Status.parked.code(), guest.world_tick());
+}
+
+test "guest core pending response preserves parked request state" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var guest = world.Guest.Core.init(std.testing.allocator, .{});
+    defer guest.deinit();
+
+    try guest.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    try std.testing.expectEqual(world.Guest.Status.parked, guest.tick());
+    const request_len = guest.pendingRequestLen(0);
+    const request_bytes = try std.testing.allocator.alloc(u8, request_len);
+    defer std.testing.allocator.free(request_bytes);
+    _ = guest.readPendingRequest(0, request_bytes);
+    var request = try world.Frame.Request.decode(std.testing.allocator, request_bytes);
+    defer request.deinit(std.testing.allocator);
+    const pending_response = world.Frame.Response.init(.{
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .target_certificate_fingerprint = request.target_certificate_fingerprint,
+        .world_port_id = request.world_port_id,
+        .request_fingerprint = request.request_fingerprint,
+        .response_kind = .@"resume",
+        .response_fingerprint = 0x6775_6573_745f_7065,
+        .replay_key = request.replay_key_seed.withResponse(0x6775_6573_745f_7065).fingerprint(),
+        .status = .pending,
+    });
+    const pending_response_bytes = try pending_response.encode(std.testing.allocator);
+    defer std.testing.allocator.free(pending_response_bytes);
+
+    try std.testing.expectEqual(world.Guest.Status.parked, guest.submitResponse(pending_response_bytes));
+    try std.testing.expectEqual(@as(usize, 1), guest.pendingCount());
+    try std.testing.expectEqual(@as(usize, request_len), guest.pendingRequestLen(0));
+    try std.testing.expectEqual(@as(usize, 0), guest.lastErrorLen());
+}
+
 test "guest core reports supervision-only park without exposing pending request" {
     const policy = world.SupervisionPolicy.init(.{
         .allow_fresh_calls = true,

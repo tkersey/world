@@ -9922,6 +9922,21 @@ pub const Guest = struct {
             self.* = undefined;
         }
 
+        pub fn resetSession(self: *@This()) void {
+            self.allocator.free(self.result_bytes);
+            self.result_bytes = &.{};
+            self.allocator.free(self.transcript_bytes);
+            self.transcript_bytes = &.{};
+            self.receipt_bytes = [_]u8{0} ** self.receipt_bytes.len;
+            self.receipt_len_value = 0;
+            const runspace_config = self.runspace.config;
+            self.runspace.deinit();
+            self.runspace = Runspace.init(self.allocator, runspace_config);
+            self.handle = null;
+            self.state = .initialized;
+            self.clearError();
+        }
+
         pub fn installMachineRun(self: *@This(), comptime Target: type, comptime Env: type, runtime: anytype, args: anytype, options: anytype) !void {
             if (self.handle != null) return self.failStatus(.invalid_state, "guest core already has an installed run");
             self.handle = try self.runspace.installMachineRun(Target, Env, runtime, args, options);
@@ -9997,7 +10012,10 @@ pub const Guest = struct {
             var response = Frame.Response.decode(self.allocator, bytes) catch return self.setStatus(.invalid_frame, "response bytes do not decode as Frame.Response");
             defer response.deinit(self.allocator);
             const mailbox_id = self.matchPendingMailbox(response) catch |err| return self.mapPendingLookupError(err);
-            _ = self.runspace.respond(mailbox_id, response) catch |err| return self.mapRunspaceError(err);
+            _ = self.runspace.respond(mailbox_id, response) catch |err| {
+                if (err == error.HandlerPending) return self.refreshStatus();
+                return self.mapRunspaceError(err);
+            };
             return self.refreshStatus();
         }
 
@@ -10204,8 +10222,7 @@ pub const Guest = struct {
         }
 
         pub fn world_init(self: *@This()) u32 {
-            self.core.state = .initialized;
-            self.core.clearError();
+            self.core.resetSession();
             return self.core.state.code();
         }
 
