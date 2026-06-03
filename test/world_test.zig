@@ -463,6 +463,20 @@ fn appendGuestWasmImmutableI32GlobalSection(module: *std.ArrayList(u8)) !void {
     try appendWasmSection(module, 6, global.items);
 }
 
+fn appendGuestWasmDoubleValueGlobalSection(module: *std.ArrayList(u8)) !void {
+    var global: std.ArrayList(u8) = .empty;
+    defer global.deinit(std.testing.allocator);
+    try appendWasmU32(&global, 1);
+    try global.append(std.testing.allocator, 0x7f);
+    try global.append(std.testing.allocator, 0);
+    try global.append(std.testing.allocator, 0x41);
+    try appendWasmU32(&global, 1);
+    try global.append(std.testing.allocator, 0x41);
+    try appendWasmU32(&global, 2);
+    try global.append(std.testing.allocator, 0x0b);
+    try appendWasmSection(module, 6, global.items);
+}
+
 fn appendGuestWasmCodeSectionWithAbiReturn(module: *std.ArrayList(u8), defined_function_count: usize, abi_version: u32, explicit_abi_return: bool) !void {
     var code: std.ArrayList(u8) = .empty;
     defer code.deinit(std.testing.allocator);
@@ -811,6 +825,8 @@ const GuestWasmBodyMutation = enum {
     valid_i64_extend8,
     invalid_i64_extend8_i32,
     valid_f32_select,
+    valid_typed_block_param,
+    valid_result_loop_branch,
 };
 
 fn appendGuestWasmMutatedBodyCodeSection(module: *std.ArrayList(u8), mutation: GuestWasmBodyMutation) !void {
@@ -917,6 +933,20 @@ fn appendGuestWasmMutatedBodyCodeSection(module: *std.ArrayList(u8), mutation: G
                     try body.append(std.testing.allocator, 0x1a);
                     try body.append(std.testing.allocator, 0x41);
                     try appendWasmU32(&body, 0);
+                },
+                .valid_typed_block_param => {
+                    try body.append(std.testing.allocator, 0x41);
+                    try appendWasmU32(&body, 0);
+                    try body.append(std.testing.allocator, 0x02);
+                    try appendWasmU32(&body, 1);
+                    try body.append(std.testing.allocator, 0x0b);
+                },
+                .valid_result_loop_branch => {
+                    try body.append(std.testing.allocator, 0x03);
+                    try body.append(std.testing.allocator, 0x7f);
+                    try body.append(std.testing.allocator, 0x0c);
+                    try appendWasmU32(&body, 0);
+                    try body.append(std.testing.allocator, 0x0b);
                 },
             }
         } else {
@@ -1825,6 +1855,30 @@ fn syntheticImmutableGlobalSetGuestWasm(allocator: std.mem.Allocator) ![]u8 {
     return module.toOwnedSlice(allocator);
 }
 
+fn syntheticDoubleValueGlobalGuestWasm(allocator: std.mem.Allocator) ![]u8 {
+    var module: std.ArrayList(u8) = .empty;
+    errdefer module.deinit(allocator);
+    try module.appendSlice(allocator, "\x00asm\x01\x00\x00\x00");
+    try appendGuestWasmTypeSection(&module);
+    try appendGuestWasmFunctionSection(&module, false);
+    try appendGuestWasmMemorySection(&module);
+    try appendGuestWasmDoubleValueGlobalSection(&module);
+    var exports: std.ArrayList(u8) = .empty;
+    defer exports.deinit(allocator);
+    try appendWasmU32(&exports, @intCast(world.Guest.Abi.required_exports.len + 1));
+    for (world.Guest.Abi.required_exports, 0..) |name, index| {
+        try appendWasmName(&exports, name);
+        try exports.append(allocator, 0);
+        try appendWasmU32(&exports, @intCast(index));
+    }
+    try appendWasmName(&exports, "memory");
+    try exports.append(allocator, 2);
+    try appendWasmU32(&exports, 0);
+    try appendWasmSection(&module, 7, exports.items);
+    try appendGuestWasmCodeSection(&module, world.Guest.Abi.required_exports.len, world.Guest.Abi.version);
+    return module.toOwnedSlice(allocator);
+}
+
 fn syntheticInvalidUtf8ExportNameGuestWasm(allocator: std.mem.Allocator) ![]u8 {
     var module: std.ArrayList(u8) = .empty;
     errdefer module.deinit(allocator);
@@ -2218,9 +2272,21 @@ test "wasm export inspector validates required exports and forbidden imports" {
     defer std.testing.allocator.free(invalid_i64_extend8_i32);
     try std.testing.expectError(error.InvalidFrameEncoding, world.Guest.Wasm.inspect(invalid_i64_extend8_i32));
 
+    const double_value_global = try syntheticDoubleValueGlobalGuestWasm(std.testing.allocator);
+    defer std.testing.allocator.free(double_value_global);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Guest.Wasm.inspect(double_value_global));
+
     const valid_f32_select = try syntheticMutatedBodyGuestWasm(std.testing.allocator, .valid_f32_select);
     defer std.testing.allocator.free(valid_f32_select);
     try std.testing.expect((try world.Guest.Wasm.inspect(valid_f32_select)).passed());
+
+    const valid_typed_block_param = try syntheticMutatedBodyGuestWasm(std.testing.allocator, .valid_typed_block_param);
+    defer std.testing.allocator.free(valid_typed_block_param);
+    try std.testing.expect((try world.Guest.Wasm.inspect(valid_typed_block_param)).passed());
+
+    const valid_result_loop_branch = try syntheticMutatedBodyGuestWasm(std.testing.allocator, .valid_result_loop_branch);
+    defer std.testing.allocator.free(valid_result_loop_branch);
+    try std.testing.expect((try world.Guest.Wasm.inspect(valid_result_loop_branch)).passed());
 
     const invalid_utf8_export_name = try syntheticInvalidUtf8ExportNameGuestWasm(std.testing.allocator);
     defer std.testing.allocator.free(invalid_utf8_export_name);
