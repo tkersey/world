@@ -11244,9 +11244,9 @@ pub const Guest = struct {
                 0x10 => try validateWasmCall(context, bytes, cursor),
                 0x1a => _ = try popWasmAny(context),
                 0x1b => {
+                    try popWasmValue(context, 0x7f);
                     const rhs = try popWasmAny(context);
                     const lhs = try popWasmAny(context);
-                    try popWasmValue(context, 0x7f);
                     if (lhs != wasm_unknown_type and rhs != wasm_unknown_type and lhs != rhs) return error.InvalidFrameEncoding;
                     const result_type = if (lhs == wasm_unknown_type) rhs else lhs;
                     if (!wasmNumericType(result_type)) return error.InvalidFrameEncoding;

@@ -810,6 +810,7 @@ const GuestWasmBodyMutation = enum {
     invalid_i64_store8_i32,
     valid_i64_extend8,
     invalid_i64_extend8_i32,
+    valid_f32_select,
 };
 
 fn appendGuestWasmMutatedBodyCodeSection(module: *std.ArrayList(u8), mutation: GuestWasmBodyMutation) !void {
@@ -902,6 +903,18 @@ fn appendGuestWasmMutatedBodyCodeSection(module: *std.ArrayList(u8), mutation: G
                     try body.append(std.testing.allocator, 0x41);
                     try appendWasmU32(&body, 0);
                     try body.append(std.testing.allocator, 0xc2);
+                    try body.append(std.testing.allocator, 0x41);
+                    try appendWasmU32(&body, 0);
+                },
+                .valid_f32_select => {
+                    try body.append(std.testing.allocator, 0x43);
+                    try body.appendNTimes(std.testing.allocator, 0, 4);
+                    try body.append(std.testing.allocator, 0x43);
+                    try body.appendNTimes(std.testing.allocator, 0, 4);
+                    try body.append(std.testing.allocator, 0x41);
+                    try appendWasmU32(&body, 1);
+                    try body.append(std.testing.allocator, 0x1b);
+                    try body.append(std.testing.allocator, 0x1a);
                     try body.append(std.testing.allocator, 0x41);
                     try appendWasmU32(&body, 0);
                 },
@@ -2204,6 +2217,10 @@ test "wasm export inspector validates required exports and forbidden imports" {
     const invalid_i64_extend8_i32 = try syntheticMutatedBodyGuestWasm(std.testing.allocator, .invalid_i64_extend8_i32);
     defer std.testing.allocator.free(invalid_i64_extend8_i32);
     try std.testing.expectError(error.InvalidFrameEncoding, world.Guest.Wasm.inspect(invalid_i64_extend8_i32));
+
+    const valid_f32_select = try syntheticMutatedBodyGuestWasm(std.testing.allocator, .valid_f32_select);
+    defer std.testing.allocator.free(valid_f32_select);
+    try std.testing.expect((try world.Guest.Wasm.inspect(valid_f32_select)).passed());
 
     const invalid_utf8_export_name = try syntheticInvalidUtf8ExportNameGuestWasm(std.testing.allocator);
     defer std.testing.allocator.free(invalid_utf8_export_name);
