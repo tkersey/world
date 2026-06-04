@@ -10670,7 +10670,7 @@ pub const Guest = struct {
                     return error.InvalidFrameEncoding;
                 }
             }
-            try validateGlobalFunctionRefs(global_section, inspection.function_import_count + try functionCount(function_section), &function_refs);
+            try validateGlobalFunctionRefs(global_section, inspection.function_import_count + try functionCount(function_section), element_section, &function_refs);
             const all_required = if (Abi.required_exports.len == 64)
                 std.math.maxInt(u64)
             else
@@ -10759,7 +10759,7 @@ pub const Guest = struct {
             return count;
         }
 
-        fn validateGlobalFunctionRefs(section: []const u8, function_count: u32, function_refs: []const bool) !void {
+        fn validateGlobalFunctionRefs(section: []const u8, function_count: u32, element_section: []const u8, function_refs: []const bool) !void {
             if (section.len == 0) return;
             var cursor: usize = 0;
             const count = try readWasmU32(section, &cursor);
@@ -10771,7 +10771,7 @@ pub const Guest = struct {
                 if (mutable > 1) return error.InvalidFrameEncoding;
                 const expr_start = cursor;
                 try skipWasmInitExpr(section, &cursor, function_count, section, index, value_type);
-                try validateWasmInitExprDeclaredRefs(section[expr_start..cursor], function_refs);
+                try validateWasmInitExprDeclaredRefs(section[expr_start..cursor], function_count, element_section, function_refs);
             }
             if (cursor != section.len) return error.InvalidFrameEncoding;
         }
@@ -11470,8 +11470,7 @@ pub const Guest = struct {
                 },
                 0xd2 => {
                     const function_index = try readWasmU32(bytes, cursor);
-                    if (function_index >= context.function_count) return error.InvalidFrameEncoding;
-                    if (function_index >= context.function_refs.len or !context.function_refs[function_index]) return error.InvalidFrameEncoding;
+                    if (!try wasmFunctionRefDeclared(function_index, context.function_count, context.element_section, context.function_refs)) return error.InvalidFrameEncoding;
                     try pushWasmValue(context, 0x70);
                 },
                 0x25 => {
@@ -12045,7 +12044,7 @@ pub const Guest = struct {
             return error.InvalidFrameEncoding;
         }
 
-        fn validateWasmInitExprDeclaredRefs(expr: []const u8, function_refs: []const bool) !void {
+        fn validateWasmInitExprDeclaredRefs(expr: []const u8, function_count: u32, element_section: []const u8, function_refs: []const bool) !void {
             var cursor: usize = 0;
             while (cursor < expr.len) {
                 const opcode = try readWasmU8(expr, &cursor);
@@ -12054,7 +12053,7 @@ pub const Guest = struct {
                     0x23 => _ = try readWasmU32(expr, &cursor),
                     0xd2 => {
                         const function_index = try readWasmU32(expr, &cursor);
-                        if (function_index >= function_refs.len or !function_refs[function_index]) return error.InvalidFrameEncoding;
+                        if (!try wasmFunctionRefDeclared(function_index, function_count, element_section, function_refs)) return error.InvalidFrameEncoding;
                     },
                     0x41 => try skipWasmSignedLeb128(expr, &cursor, 5, 4),
                     0x42 => try skipWasmSignedLeb128(expr, &cursor, 10, 1),
@@ -12065,6 +12064,108 @@ pub const Guest = struct {
                 }
             }
             return error.InvalidFrameEncoding;
+        }
+
+        fn wasmFunctionRefDeclared(function_index: u32, function_count: u32, element_section: []const u8, function_refs: []const bool) !bool {
+            if (function_index >= function_count) return error.InvalidFrameEncoding;
+            if (function_index < function_refs.len and function_refs[function_index]) return true;
+            return wasmElementSectionDeclaresFunction(element_section, function_count, function_index);
+        }
+
+        fn wasmElementSectionDeclaresFunction(section: []const u8, function_count: u32, target_function_index: u32) !bool {
+            if (section.len == 0) return false;
+            var cursor: usize = 0;
+            const count = try readWasmU32(section, &cursor);
+            var index: u32 = 0;
+            while (index < count) : (index += 1) {
+                const tag = try readWasmU32(section, &cursor);
+                switch (tag) {
+                    0 => {
+                        if (try skipWasmInitExprDeclaresFunction(section, &cursor, function_count, target_function_index)) return true;
+                        try readWasmElementKind(section, &cursor);
+                        if (try skipWasmFunctionIndexVectorDeclares(section, &cursor, function_count, target_function_index)) return true;
+                    },
+                    1 => {
+                        try readWasmElementKind(section, &cursor);
+                        if (try skipWasmFunctionIndexVectorDeclares(section, &cursor, function_count, target_function_index)) return true;
+                    },
+                    2 => {
+                        _ = try readWasmU32(section, &cursor);
+                        if (try skipWasmInitExprDeclaresFunction(section, &cursor, function_count, target_function_index)) return true;
+                        try readWasmElementKind(section, &cursor);
+                        if (try skipWasmFunctionIndexVectorDeclares(section, &cursor, function_count, target_function_index)) return true;
+                    },
+                    3 => {
+                        try readWasmElementKind(section, &cursor);
+                        if (try skipWasmFunctionIndexVectorDeclares(section, &cursor, function_count, target_function_index)) return true;
+                    },
+                    4 => {
+                        if (try skipWasmInitExprDeclaresFunction(section, &cursor, function_count, target_function_index)) return true;
+                        if (try skipWasmInitExprVectorDeclaresFunction(section, &cursor, function_count, target_function_index)) return true;
+                    },
+                    5 => {
+                        _ = try readWasmRefType(section, &cursor);
+                        if (try skipWasmInitExprVectorDeclaresFunction(section, &cursor, function_count, target_function_index)) return true;
+                    },
+                    6 => {
+                        _ = try readWasmU32(section, &cursor);
+                        if (try skipWasmInitExprDeclaresFunction(section, &cursor, function_count, target_function_index)) return true;
+                        _ = try readWasmRefType(section, &cursor);
+                        if (try skipWasmInitExprVectorDeclaresFunction(section, &cursor, function_count, target_function_index)) return true;
+                    },
+                    7 => {
+                        _ = try readWasmRefType(section, &cursor);
+                        if (try skipWasmInitExprVectorDeclaresFunction(section, &cursor, function_count, target_function_index)) return true;
+                    },
+                    else => return error.InvalidFrameEncoding,
+                }
+            }
+            if (cursor != section.len) return error.InvalidFrameEncoding;
+            return false;
+        }
+
+        fn skipWasmFunctionIndexVectorDeclares(bytes: []const u8, cursor: *usize, function_count: u32, target_function_index: u32) !bool {
+            const count = try readWasmU32(bytes, cursor);
+            var index: u32 = 0;
+            var found = false;
+            while (index < count) : (index += 1) {
+                const function_index = try readWasmU32(bytes, cursor);
+                if (function_index >= function_count) return error.InvalidFrameEncoding;
+                if (function_index == target_function_index) found = true;
+            }
+            return found;
+        }
+
+        fn skipWasmInitExprVectorDeclaresFunction(bytes: []const u8, cursor: *usize, function_count: u32, target_function_index: u32) !bool {
+            const count = try readWasmU32(bytes, cursor);
+            var index: u32 = 0;
+            var found = false;
+            while (index < count) : (index += 1) {
+                if (try skipWasmInitExprDeclaresFunction(bytes, cursor, function_count, target_function_index)) found = true;
+            }
+            return found;
+        }
+
+        fn skipWasmInitExprDeclaresFunction(bytes: []const u8, cursor: *usize, function_count: u32, target_function_index: u32) !bool {
+            var found = false;
+            while (true) {
+                const opcode = try readWasmU8(bytes, cursor);
+                switch (opcode) {
+                    0x0b => return found,
+                    0x23 => _ = try readWasmU32(bytes, cursor),
+                    0xd2 => {
+                        const function_index = try readWasmU32(bytes, cursor);
+                        if (function_index >= function_count) return error.InvalidFrameEncoding;
+                        if (function_index == target_function_index) found = true;
+                    },
+                    0x41 => try skipWasmSignedLeb128(bytes, cursor, 5, 4),
+                    0x42 => try skipWasmSignedLeb128(bytes, cursor, 10, 1),
+                    0x43 => try skipWasmBytes(bytes, cursor, 4),
+                    0x44 => try skipWasmBytes(bytes, cursor, 8),
+                    0xd0 => _ = try readWasmRefType(bytes, cursor),
+                    else => return error.InvalidFrameEncoding,
+                }
+            }
         }
 
         fn skipWasmInitExpr(bytes: []const u8, cursor: *usize, function_count: u32, global_section: []const u8, global_count: u32, expected_type: ?u8) anyerror!void {

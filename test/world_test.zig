@@ -711,6 +711,35 @@ fn appendGuestWasmLargeCodeSection(module: *std.ArrayList(u8), defined_function_
     try appendWasmSection(module, 10, code.items);
 }
 
+fn appendGuestWasmHighDeclaredRefFuncCodeSection(module: *std.ArrayList(u8), defined_function_count: usize, ref_function_index: u32) !void {
+    var code: std.ArrayList(u8) = .empty;
+    defer code.deinit(std.testing.allocator);
+    try appendWasmU32(&code, @intCast(defined_function_count));
+    var index: usize = 0;
+    while (index < defined_function_count) : (index += 1) {
+        var body: std.ArrayList(u8) = .empty;
+        defer body.deinit(std.testing.allocator);
+        try appendWasmU32(&body, 0);
+        if (index == 0) {
+            try body.append(std.testing.allocator, 0x41);
+            try appendWasmU32(&body, world.Guest.Abi.version);
+        } else if (index == 1) {
+            try body.append(std.testing.allocator, 0xd2);
+            try appendWasmU32(&body, ref_function_index);
+            try body.append(std.testing.allocator, 0x1a);
+            try body.append(std.testing.allocator, 0x41);
+            try appendWasmU32(&body, 0);
+        } else if (index < world.Guest.Abi.required_exports.len) {
+            try body.append(std.testing.allocator, 0x41);
+            try appendWasmU32(&body, 0);
+        }
+        try body.append(std.testing.allocator, 0x0b);
+        try appendWasmU32(&code, @intCast(body.items.len));
+        try code.appendSlice(std.testing.allocator, body.items);
+    }
+    try appendWasmSection(module, 10, code.items);
+}
+
 fn appendGuestWasmCodeSectionWithLargeHelper(module: *std.ArrayList(u8)) !void {
     var code: std.ArrayList(u8) = .empty;
     defer code.deinit(std.testing.allocator);
@@ -2617,6 +2646,32 @@ fn syntheticHighElementDropGuestWasm(allocator: std.mem.Allocator) ![]u8 {
     return module.toOwnedSlice(allocator);
 }
 
+fn syntheticHighDeclaredRefFuncGuestWasm(allocator: std.mem.Allocator) ![]u8 {
+    const defined_function_count = 513;
+    const ref_function_index = 512;
+    var module: std.ArrayList(u8) = .empty;
+    errdefer module.deinit(allocator);
+    try module.appendSlice(allocator, "\x00asm\x01\x00\x00\x00");
+    try appendGuestWasmTypeSection(&module);
+    try appendGuestWasmLargeFunctionSection(&module, defined_function_count);
+    try appendGuestWasmMemorySection(&module);
+    var exports: std.ArrayList(u8) = .empty;
+    defer exports.deinit(allocator);
+    try appendWasmU32(&exports, @intCast(world.Guest.Abi.required_exports.len + 1));
+    for (world.Guest.Abi.required_exports, 0..) |name, index| {
+        try appendWasmName(&exports, name);
+        try exports.append(allocator, 0);
+        try appendWasmU32(&exports, @intCast(index));
+    }
+    try appendWasmName(&exports, "memory");
+    try exports.append(allocator, 2);
+    try appendWasmU32(&exports, 0);
+    try appendWasmSection(&module, 7, exports.items);
+    try appendGuestWasmManyFunctionElementSection(&module, 1, ref_function_index);
+    try appendGuestWasmHighDeclaredRefFuncCodeSection(&module, defined_function_count, ref_function_index);
+    return module.toOwnedSlice(allocator);
+}
+
 fn syntheticMismatchedHighElementTableInitGuestWasm(allocator: std.mem.Allocator) ![]u8 {
     var module: std.ArrayList(u8) = .empty;
     errdefer module.deinit(allocator);
@@ -3188,6 +3243,10 @@ test "wasm export inspector validates required exports and forbidden imports" {
     const high_element_drop = try syntheticHighElementDropGuestWasm(std.testing.allocator);
     defer std.testing.allocator.free(high_element_drop);
     try std.testing.expect((try world.Guest.Wasm.inspect(high_element_drop)).passed());
+
+    const high_declared_ref_func = try syntheticHighDeclaredRefFuncGuestWasm(std.testing.allocator);
+    defer std.testing.allocator.free(high_declared_ref_func);
+    try std.testing.expect((try world.Guest.Wasm.inspect(high_declared_ref_func)).passed());
 
     const mismatched_high_element_table_init = try syntheticMismatchedHighElementTableInitGuestWasm(std.testing.allocator);
     defer std.testing.allocator.free(mismatched_high_element_table_init);
