@@ -3586,7 +3586,7 @@ test "wasm export inspector validates required exports and forbidden imports" {
 
     const simd_body = try syntheticSimdBodyGuestWasm(std.testing.allocator);
     defer std.testing.allocator.free(simd_body);
-    try std.testing.expect((try world.Guest.Wasm.inspect(simd_body)).passed());
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Guest.Wasm.inspect(simd_body));
 
     const unreachable_i64_dead_code = try syntheticMutatedBodyGuestWasm(std.testing.allocator, .unreachable_i64_dead_code);
     defer std.testing.allocator.free(unreachable_i64_dead_code);

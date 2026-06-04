@@ -11026,7 +11026,6 @@ pub const Guest = struct {
 
         const max_wasm_validator_values = 512;
         const wasm_unknown_type = 0xff;
-        const wasm_v128_type = 0x7b;
         const WasmFunctionShape = struct {
             params: [max_wasm_validator_values]u8 = undefined,
             param_count: u32 = 0,
@@ -11496,7 +11495,7 @@ pub const Guest = struct {
                 },
                 0x1c => try validateWasmTypedSelect(context, bytes, cursor),
                 0xfc => try validateWasmMiscInstruction(bytes, cursor, context),
-                0xfd => try validateWasmSimdInstruction(bytes, cursor, context),
+                0xfd => return error.InvalidFrameEncoding,
                 0xfe => return error.InvalidFrameEncoding,
                 else => return error.InvalidFrameEncoding,
             }
@@ -11718,17 +11717,6 @@ pub const Guest = struct {
                     try popWasmValue(context, 0x7f);
                     try popWasmValue(context, table_type);
                     try popWasmValue(context, 0x7f);
-                },
-                else => return error.InvalidFrameEncoding,
-            }
-        }
-
-        fn validateWasmSimdInstruction(bytes: []const u8, cursor: *usize, context: *WasmBodyContext) !void {
-            const subopcode = try readWasmU32(bytes, cursor);
-            switch (subopcode) {
-                0x0c => {
-                    try skipWasmBytes(bytes, cursor, 16);
-                    try pushWasmValue(context, wasm_v128_type);
                 },
                 else => return error.InvalidFrameEncoding,
             }
@@ -12055,7 +12043,7 @@ pub const Guest = struct {
                 0xd0 => _ = try readWasmRefType(bytes, cursor),
                 0xd2 => _ = try readWasmU32(bytes, cursor),
                 0xfc => try skipWasmMiscInstruction(bytes, cursor),
-                0xfd => try skipWasmSimdInstruction(bytes, cursor),
+                0xfd => return error.InvalidFrameEncoding,
                 0xfe => try skipWasmAtomicInstruction(bytes, cursor),
                 else => return error.InvalidFrameEncoding,
             }
@@ -12093,28 +12081,6 @@ pub const Guest = struct {
                 },
                 else => return error.InvalidFrameEncoding,
             }
-        }
-
-        fn skipWasmSimdInstruction(bytes: []const u8, cursor: *usize) !void {
-            const subopcode = try readWasmU32(bytes, cursor);
-            if (!validWasmSimdOpcode(subopcode)) return error.InvalidFrameEncoding;
-            switch (subopcode) {
-                0x00...0x0b, 0x5c, 0x5d => try skipWasmMemArg(bytes, cursor, null),
-                0x0c, 0x0d => try skipWasmBytes(bytes, cursor, 16),
-                0x15...0x22 => _ = try readWasmU8(bytes, cursor),
-                0x54...0x5b => {
-                    try skipWasmMemArg(bytes, cursor, null);
-                    _ = try readWasmU8(bytes, cursor);
-                },
-                else => {},
-            }
-        }
-
-        fn validWasmSimdOpcode(subopcode: u32) bool {
-            return switch (subopcode) {
-                0x00...0x5f, 0x60...0x7f, 0x80...0x9f, 0xa0...0xc4, 0xc7...0xdf, 0xe0...0xeb, 0xec...0xf7, 0xf8...0x114 => true,
-                else => false,
-            };
         }
 
         fn skipWasmAtomicInstruction(bytes: []const u8, cursor: *usize) !void {
