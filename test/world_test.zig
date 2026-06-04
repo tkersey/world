@@ -432,6 +432,17 @@ fn appendGuestWasmMalformedTableSection(module: *std.ArrayList(u8)) !void {
     try appendWasmSection(module, 4, table.items);
 }
 
+fn appendGuestWasmSharedTableLimitSection(module: *std.ArrayList(u8)) !void {
+    var table: std.ArrayList(u8) = .empty;
+    defer table.deinit(std.testing.allocator);
+    try appendWasmU32(&table, 1);
+    try table.append(std.testing.allocator, 0x70);
+    try table.append(std.testing.allocator, 3);
+    try appendWasmU32(&table, 1);
+    try appendWasmU32(&table, 1);
+    try appendWasmSection(module, 4, table.items);
+}
+
 fn appendGuestWasmTableSection(module: *std.ArrayList(u8), element_type: u8) !void {
     var table: std.ArrayList(u8) = .empty;
     defer table.deinit(std.testing.allocator);
@@ -479,6 +490,20 @@ fn appendGuestWasmExternrefElementSection(module: *std.ArrayList(u8)) !void {
     try element.append(std.testing.allocator, 0xd0);
     try element.append(std.testing.allocator, 0x6f);
     try element.append(std.testing.allocator, 0x0b);
+    try appendWasmSection(module, 9, element.items);
+}
+
+fn appendGuestWasmManyFunctionElementSection(module: *std.ArrayList(u8), count: u32, function_index: u32) !void {
+    var element: std.ArrayList(u8) = .empty;
+    defer element.deinit(std.testing.allocator);
+    try appendWasmU32(&element, count);
+    var index: u32 = 0;
+    while (index < count) : (index += 1) {
+        try appendWasmU32(&element, 1);
+        try element.append(std.testing.allocator, 0);
+        try appendWasmU32(&element, 1);
+        try appendWasmU32(&element, function_index);
+    }
     try appendWasmSection(module, 9, element.items);
 }
 
@@ -532,6 +557,18 @@ fn appendGuestWasmImmutableI32GlobalSection(module: *std.ArrayList(u8)) !void {
     try global.append(std.testing.allocator, 0x7f);
     try global.append(std.testing.allocator, 0);
     try global.append(std.testing.allocator, 0x41);
+    try appendWasmU32(&global, 0);
+    try global.append(std.testing.allocator, 0x0b);
+    try appendWasmSection(module, 6, global.items);
+}
+
+fn appendGuestWasmImmutableI64GlobalSection(module: *std.ArrayList(u8)) !void {
+    var global: std.ArrayList(u8) = .empty;
+    defer global.deinit(std.testing.allocator);
+    try appendWasmU32(&global, 1);
+    try global.append(std.testing.allocator, 0x7e);
+    try global.append(std.testing.allocator, 0);
+    try global.append(std.testing.allocator, 0x42);
     try appendWasmU32(&global, 0);
     try global.append(std.testing.allocator, 0x0b);
     try appendWasmSection(module, 6, global.items);
@@ -968,6 +1005,7 @@ const GuestWasmBodyMutation = enum {
     many_unused_locals,
     valid_table_get_set,
     valid_table_bulk_memory,
+    valid_high_elem_drop,
     malformed_i32_leb,
     invalid_table_copy_mismatch,
     invalid_table_init_mismatch,
@@ -1192,6 +1230,13 @@ fn appendGuestWasmMutatedBodyCodeSection(module: *std.ArrayList(u8), mutation: G
                     try body.append(std.testing.allocator, 0xfc);
                     try appendWasmU32(&body, 0x11);
                     try appendWasmU32(&body, 0);
+                    try body.append(std.testing.allocator, 0x41);
+                    try appendWasmU32(&body, 0);
+                },
+                .valid_high_elem_drop => {
+                    try body.append(std.testing.allocator, 0xfc);
+                    try appendWasmU32(&body, 0x0d);
+                    try appendWasmU32(&body, 512);
                     try body.append(std.testing.allocator, 0x41);
                     try appendWasmU32(&body, 0);
                 },
@@ -1733,6 +1778,30 @@ fn syntheticMalformedTableGuestWasm(allocator: std.mem.Allocator) ![]u8 {
     return module.toOwnedSlice(allocator);
 }
 
+fn syntheticSharedTableLimitGuestWasm(allocator: std.mem.Allocator) ![]u8 {
+    var module: std.ArrayList(u8) = .empty;
+    errdefer module.deinit(allocator);
+    try module.appendSlice(allocator, "\x00asm\x01\x00\x00\x00");
+    try appendGuestWasmTypeSection(&module);
+    try appendGuestWasmFunctionSection(&module, false);
+    try appendGuestWasmSharedTableLimitSection(&module);
+    try appendGuestWasmMemorySection(&module);
+    var exports: std.ArrayList(u8) = .empty;
+    defer exports.deinit(allocator);
+    try appendWasmU32(&exports, @intCast(world.Guest.Abi.required_exports.len + 1));
+    for (world.Guest.Abi.required_exports, 0..) |name, index| {
+        try appendWasmName(&exports, name);
+        try exports.append(allocator, 0);
+        try appendWasmU32(&exports, @intCast(index));
+    }
+    try appendWasmName(&exports, "memory");
+    try exports.append(allocator, 2);
+    try appendWasmU32(&exports, 0);
+    try appendWasmSection(&module, 7, exports.items);
+    try appendGuestWasmCodeSection(&module, world.Guest.Abi.required_exports.len, world.Guest.Abi.version);
+    return module.toOwnedSlice(allocator);
+}
+
 fn syntheticExternrefIndirectCallGuestWasm(allocator: std.mem.Allocator) ![]u8 {
     var module: std.ArrayList(u8) = .empty;
     errdefer module.deinit(allocator);
@@ -1909,6 +1978,72 @@ fn syntheticInvalidDataOffsetGlobalGuestWasm(allocator: std.mem.Allocator) ![]u8
     try appendGuestWasmTypeSection(&module);
     try appendGuestWasmFunctionSection(&module, false);
     try appendGuestWasmMemorySection(&module);
+    var exports: std.ArrayList(u8) = .empty;
+    defer exports.deinit(allocator);
+    try appendWasmU32(&exports, @intCast(world.Guest.Abi.required_exports.len + 1));
+    for (world.Guest.Abi.required_exports, 0..) |name, index| {
+        try appendWasmName(&exports, name);
+        try exports.append(allocator, 0);
+        try appendWasmU32(&exports, @intCast(index));
+    }
+    try appendWasmName(&exports, "memory");
+    try exports.append(allocator, 2);
+    try appendWasmU32(&exports, 0);
+    try appendWasmSection(&module, 7, exports.items);
+    try appendGuestWasmCodeSection(&module, world.Guest.Abi.required_exports.len, world.Guest.Abi.version);
+    var data: std.ArrayList(u8) = .empty;
+    defer data.deinit(allocator);
+    try appendWasmU32(&data, 1);
+    try appendWasmU32(&data, 0);
+    try data.append(allocator, 0x23);
+    try appendWasmU32(&data, 0);
+    try data.append(allocator, 0x0b);
+    try appendWasmU32(&data, 0);
+    try appendWasmSection(&module, 11, data.items);
+    return module.toOwnedSlice(allocator);
+}
+
+fn syntheticDataOffsetGlobalGuestWasm(allocator: std.mem.Allocator) ![]u8 {
+    var module: std.ArrayList(u8) = .empty;
+    errdefer module.deinit(allocator);
+    try module.appendSlice(allocator, "\x00asm\x01\x00\x00\x00");
+    try appendGuestWasmTypeSection(&module);
+    try appendGuestWasmFunctionSection(&module, false);
+    try appendGuestWasmMemorySection(&module);
+    try appendGuestWasmImmutableI32GlobalSection(&module);
+    var exports: std.ArrayList(u8) = .empty;
+    defer exports.deinit(allocator);
+    try appendWasmU32(&exports, @intCast(world.Guest.Abi.required_exports.len + 1));
+    for (world.Guest.Abi.required_exports, 0..) |name, index| {
+        try appendWasmName(&exports, name);
+        try exports.append(allocator, 0);
+        try appendWasmU32(&exports, @intCast(index));
+    }
+    try appendWasmName(&exports, "memory");
+    try exports.append(allocator, 2);
+    try appendWasmU32(&exports, 0);
+    try appendWasmSection(&module, 7, exports.items);
+    try appendGuestWasmCodeSection(&module, world.Guest.Abi.required_exports.len, world.Guest.Abi.version);
+    var data: std.ArrayList(u8) = .empty;
+    defer data.deinit(allocator);
+    try appendWasmU32(&data, 1);
+    try appendWasmU32(&data, 0);
+    try data.append(allocator, 0x23);
+    try appendWasmU32(&data, 0);
+    try data.append(allocator, 0x0b);
+    try appendWasmU32(&data, 0);
+    try appendWasmSection(&module, 11, data.items);
+    return module.toOwnedSlice(allocator);
+}
+
+fn syntheticWrongTypeDataOffsetGlobalGuestWasm(allocator: std.mem.Allocator) ![]u8 {
+    var module: std.ArrayList(u8) = .empty;
+    errdefer module.deinit(allocator);
+    try module.appendSlice(allocator, "\x00asm\x01\x00\x00\x00");
+    try appendGuestWasmTypeSection(&module);
+    try appendGuestWasmFunctionSection(&module, false);
+    try appendGuestWasmMemorySection(&module);
+    try appendGuestWasmImmutableI64GlobalSection(&module);
     var exports: std.ArrayList(u8) = .empty;
     defer exports.deinit(allocator);
     try appendWasmU32(&exports, @intCast(world.Guest.Abi.required_exports.len + 1));
@@ -2255,6 +2390,30 @@ fn syntheticTableInstructionGuestWasm(allocator: std.mem.Allocator, mutation: Gu
     try appendWasmSection(&module, 7, exports.items);
     try appendGuestWasmFunctionElementSection(&module, 0);
     try appendGuestWasmMutatedBodyCodeSection(&module, mutation);
+    return module.toOwnedSlice(allocator);
+}
+
+fn syntheticHighElementDropGuestWasm(allocator: std.mem.Allocator) ![]u8 {
+    var module: std.ArrayList(u8) = .empty;
+    errdefer module.deinit(allocator);
+    try module.appendSlice(allocator, "\x00asm\x01\x00\x00\x00");
+    try appendGuestWasmTypeSection(&module);
+    try appendGuestWasmFunctionSection(&module, false);
+    try appendGuestWasmMemorySection(&module);
+    var exports: std.ArrayList(u8) = .empty;
+    defer exports.deinit(allocator);
+    try appendWasmU32(&exports, @intCast(world.Guest.Abi.required_exports.len + 1));
+    for (world.Guest.Abi.required_exports, 0..) |name, index| {
+        try appendWasmName(&exports, name);
+        try exports.append(allocator, 0);
+        try appendWasmU32(&exports, @intCast(index));
+    }
+    try appendWasmName(&exports, "memory");
+    try exports.append(allocator, 2);
+    try appendWasmU32(&exports, 0);
+    try appendWasmSection(&module, 7, exports.items);
+    try appendGuestWasmManyFunctionElementSection(&module, 513, 0);
+    try appendGuestWasmMutatedBodyCodeSection(&module, .valid_high_elem_drop);
     return module.toOwnedSlice(allocator);
 }
 
@@ -2621,6 +2780,10 @@ test "wasm export inspector validates required exports and forbidden imports" {
     defer std.testing.allocator.free(malformed_table);
     try std.testing.expectError(error.InvalidFrameEncoding, world.Guest.Wasm.inspect(malformed_table));
 
+    const shared_table_limit = try syntheticSharedTableLimitGuestWasm(std.testing.allocator);
+    defer std.testing.allocator.free(shared_table_limit);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Guest.Wasm.inspect(shared_table_limit));
+
     const externref_indirect_call = try syntheticExternrefIndirectCallGuestWasm(std.testing.allocator);
     defer std.testing.allocator.free(externref_indirect_call);
     try std.testing.expectError(error.InvalidFrameEncoding, world.Guest.Wasm.inspect(externref_indirect_call));
@@ -2648,6 +2811,14 @@ test "wasm export inspector validates required exports and forbidden imports" {
     const invalid_data_offset_global = try syntheticInvalidDataOffsetGlobalGuestWasm(std.testing.allocator);
     defer std.testing.allocator.free(invalid_data_offset_global);
     try std.testing.expectError(error.InvalidFrameEncoding, world.Guest.Wasm.inspect(invalid_data_offset_global));
+
+    const data_offset_global = try syntheticDataOffsetGlobalGuestWasm(std.testing.allocator);
+    defer std.testing.allocator.free(data_offset_global);
+    try std.testing.expect((try world.Guest.Wasm.inspect(data_offset_global)).passed());
+
+    const wrong_type_data_offset_global = try syntheticWrongTypeDataOffsetGlobalGuestWasm(std.testing.allocator);
+    defer std.testing.allocator.free(wrong_type_data_offset_global);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Guest.Wasm.inspect(wrong_type_data_offset_global));
 
     const short_code = try syntheticShortCodeGuestWasm(std.testing.allocator);
     defer std.testing.allocator.free(short_code);
@@ -2772,6 +2943,10 @@ test "wasm export inspector validates required exports and forbidden imports" {
     const valid_table_bulk_memory = try syntheticTableInstructionGuestWasm(std.testing.allocator, .valid_table_bulk_memory);
     defer std.testing.allocator.free(valid_table_bulk_memory);
     try std.testing.expect((try world.Guest.Wasm.inspect(valid_table_bulk_memory)).passed());
+
+    const high_element_drop = try syntheticHighElementDropGuestWasm(std.testing.allocator);
+    defer std.testing.allocator.free(high_element_drop);
+    try std.testing.expect((try world.Guest.Wasm.inspect(high_element_drop)).passed());
 
     const malformed_i32_leb = try syntheticMutatedBodyGuestWasm(std.testing.allocator, .malformed_i32_leb);
     defer std.testing.allocator.free(malformed_i32_leb);
