@@ -8547,11 +8547,17 @@ pub const Runspace = struct {
             defer supervisor_snapshot.deinit(self.allocator);
             driver.beforeTerminalResponse(pending.world_port_id, status, accounting.response_bytes, accounting.value_image_bytes) catch |err| {
                 if (responseStatusDeniedError(status, err)) {
-                    _ = try self.parkPendingOnSupervision(index, pending, mailbox_id, "terminal response denied by supervision");
+                    _ = self.parkPendingOnSupervision(index, pending, mailbox_id, "terminal response denied by supervision") catch |park_err| {
+                        supervisor_snapshot.restore(self, index);
+                        return park_err;
+                    };
                     return err;
                 }
                 if ((err == error.HandlerPending or err == error.BudgetExceeded) and driver.supervisionInterrupted()) {
-                    return try self.parkPendingOnSupervision(index, pending, mailbox_id, "terminal response parked on supervision");
+                    return self.parkPendingOnSupervision(index, pending, mailbox_id, "terminal response parked on supervision") catch |park_err| {
+                        supervisor_snapshot.restore(self, index);
+                        return park_err;
+                    };
                 }
                 if (err == error.BudgetExceeded) {
                     var failed_event_pair = self.prepareEventPair(
@@ -8579,7 +8585,10 @@ pub const Runspace = struct {
             };
             driver.resumeTerminalFrame(response) catch |err| {
                 if ((err == error.HandlerPending or err == error.BudgetExceeded) and driver.supervisionInterrupted()) {
-                    return try self.parkPendingOnSupervision(index, pending, mailbox_id, "terminal response parked on supervision");
+                    return self.parkPendingOnSupervision(index, pending, mailbox_id, "terminal response parked on supervision") catch |park_err| {
+                        supervisor_snapshot.restore(self, index);
+                        return park_err;
+                    };
                 }
                 var failed_event_pair = try self.prepareEventPair(
                     2,

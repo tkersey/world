@@ -6436,6 +6436,48 @@ test "runspace terminal port-rule denial parks with one event slot" {
     try std.testing.expectEqual(runspace.config.max_events.?, runspace.report().event_count);
 }
 
+test "runspace terminal denial park event-cap failure rolls back supervision" {
+    const rules = [_]world.PortRule{world.PortRule.init(.{
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .world_port_id = 0,
+        .allow_fail = false,
+    })};
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_native_adapters = true,
+            .allow_failed_responses = true,
+            .allow_handoff_export = true,
+            .require_environment_certificate = true,
+        }),
+        .port_rules = &rules,
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{
+        .require_supervision = true,
+    });
+    defer runspace.deinit();
+
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .permit = permit,
+    });
+    _ = try runspace.tick();
+    runspace.config.max_events = runspace.events.items.len;
+
+    try std.testing.expectError(error.BudgetExceeded, runspace.fail(0, "port rule denied terminal failure"));
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
+    const summary = try runspace.getSlotSummary(handle);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, summary.status);
+    try std.testing.expectEqual(@as(?u64, 0), summary.pending_mailbox_id);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().blocker_count);
+    try std.testing.expectEqual(runspace.config.max_events.?, runspace.report().event_count);
+}
+
 test "runspace strict terminal response budget failure consumes mailbox and fails slot" {
     const strict_policy = world.SupervisionPolicy.init(.{
         .allow_fresh_calls = true,
