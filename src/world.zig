@@ -10117,7 +10117,10 @@ pub const Guest = struct {
             if (bytes.len > Buffer.max_response_bytes) return self.setStatus(.buffer_too_small, "response frame exceeds guest response byte cap");
             if (self.handle == null) return self.setStatus(.invalid_state, "guest core has no installed run");
             if (self.runspace.mailbox.pending.items.len == 0) return self.setStatus(.invalid_state, "guest core is not parked on a pending port");
-            var response = Frame.Response.decode(self.allocator, bytes) catch return self.setStatus(.invalid_frame, "response bytes do not decode as Frame.Response");
+            var response = Frame.Response.decode(self.allocator, bytes) catch |err| switch (err) {
+                error.OutOfMemory => return self.mapRunspaceError(err),
+                else => return self.setStatus(.invalid_frame, "response bytes do not decode as Frame.Response"),
+            };
             defer response.deinit(self.allocator);
             const mailbox_id = self.matchPendingMailbox(response) catch |err| return self.mapPendingLookupError(err);
             _ = self.runspace.respond(mailbox_id, response) catch |err| {

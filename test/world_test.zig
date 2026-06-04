@@ -7950,6 +7950,50 @@ test "guest core rejects invalid and unknown response frames at byte boundary" {
     try std.testing.expectEqual(world.Guest.Status.unknown_pending, guest.status());
 }
 
+test "guest core maps response decode allocation failure as resource failure" {
+    var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{
+        .fail_index = std.math.maxInt(usize),
+    });
+    const allocator = failing_allocator.allocator();
+
+    var runtime = boundary.Runtime.init(allocator);
+    defer runtime.deinit();
+    var guest = world.Guest.Core.init(allocator, .{});
+    defer guest.deinit();
+
+    try guest.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = allocator,
+        .mode = world.Mode.fresh,
+    });
+    try std.testing.expectEqual(world.Guest.Status.parked, guest.tick());
+    const request_len = guest.pendingRequestLen(0);
+    const request_bytes = try std.testing.allocator.alloc(u8, request_len);
+    defer std.testing.allocator.free(request_bytes);
+    _ = guest.readPendingRequest(0, request_bytes);
+    var request = try world.Frame.Request.decode(std.testing.allocator, request_bytes);
+    defer request.deinit(std.testing.allocator);
+
+    const failed_response = world.Frame.Response.init(.{
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .target_certificate_fingerprint = request.target_certificate_fingerprint,
+        .world_port_id = request.world_port_id,
+        .request_fingerprint = request.request_fingerprint,
+        .response_kind = .@"resume",
+        .response_value_table_id = request.expected_response_value_table_id,
+        .response_fingerprint = 0,
+        .replay_key = request.replay_key_seed.withResponse(0).fingerprint(),
+        .status = .failed,
+        .error_tag = "host.resource",
+        .reason = "decode allocation failed",
+    });
+    const response_bytes = try failed_response.encode(std.testing.allocator);
+    defer std.testing.allocator.free(response_bytes);
+
+    failing_allocator.fail_index = failing_allocator.alloc_index;
+    try std.testing.expectEqual(world.Guest.Status.failed, guest.submitResponse(response_bytes));
+    try std.testing.expectEqual(world.Guest.Status.failed, guest.status());
+}
+
 test "runspace manual default parks without environment dispatch" {
     var runtime = boundary.Runtime.init(std.testing.allocator);
     defer runtime.deinit();
