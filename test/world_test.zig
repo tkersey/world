@@ -522,6 +522,16 @@ fn appendGuestWasmDataCountSection(module: *std.ArrayList(u8), data_segment_coun
     try appendWasmSection(module, 12, data_count.items);
 }
 
+fn appendGuestWasmPassiveDataSection(module: *std.ArrayList(u8)) !void {
+    var data: std.ArrayList(u8) = .empty;
+    defer data.deinit(std.testing.allocator);
+    try appendWasmU32(&data, 1);
+    try appendWasmU32(&data, 1);
+    try appendWasmU32(&data, 1);
+    try data.append(std.testing.allocator, 0);
+    try appendWasmSection(module, 11, data.items);
+}
+
 fn appendGuestWasmShortCodeSection(module: *std.ArrayList(u8), abi_version: u32) !void {
     var code: std.ArrayList(u8) = .empty;
     defer code.deinit(std.testing.allocator);
@@ -865,6 +875,9 @@ const GuestWasmBodyMutation = enum {
     valid_f32_select,
     valid_typed_block_param,
     valid_result_loop_branch,
+    valid_typed_if_param_else,
+    memory_init_without_data_count,
+    undeclared_ref_func,
 };
 
 fn appendGuestWasmMutatedBodyCodeSection(module: *std.ArrayList(u8), mutation: GuestWasmBodyMutation) !void {
@@ -985,6 +998,40 @@ fn appendGuestWasmMutatedBodyCodeSection(module: *std.ArrayList(u8), mutation: G
                     try body.append(std.testing.allocator, 0x0c);
                     try appendWasmU32(&body, 0);
                     try body.append(std.testing.allocator, 0x0b);
+                },
+                .valid_typed_if_param_else => {
+                    try body.append(std.testing.allocator, 0x41);
+                    try appendWasmU32(&body, 7);
+                    try body.append(std.testing.allocator, 0x41);
+                    try appendWasmU32(&body, 0);
+                    try body.append(std.testing.allocator, 0x04);
+                    try appendWasmU32(&body, 1);
+                    try body.append(std.testing.allocator, 0x05);
+                    try body.append(std.testing.allocator, 0x0b);
+                    try body.append(std.testing.allocator, 0x1a);
+                    try body.append(std.testing.allocator, 0x41);
+                    try appendWasmU32(&body, 0);
+                },
+                .memory_init_without_data_count => {
+                    try body.append(std.testing.allocator, 0x41);
+                    try appendWasmU32(&body, 0);
+                    try body.append(std.testing.allocator, 0x41);
+                    try appendWasmU32(&body, 0);
+                    try body.append(std.testing.allocator, 0x41);
+                    try appendWasmU32(&body, 0);
+                    try body.append(std.testing.allocator, 0xfc);
+                    try appendWasmU32(&body, 0x08);
+                    try appendWasmU32(&body, 0);
+                    try appendWasmU32(&body, 0);
+                    try body.append(std.testing.allocator, 0x41);
+                    try appendWasmU32(&body, 0);
+                },
+                .undeclared_ref_func => {
+                    try body.append(std.testing.allocator, 0xd2);
+                    try appendWasmU32(&body, 0);
+                    try body.append(std.testing.allocator, 0x1a);
+                    try body.append(std.testing.allocator, 0x41);
+                    try appendWasmU32(&body, 0);
                 },
             }
         } else {
@@ -1487,6 +1534,30 @@ fn syntheticExternrefIndirectCallGuestWasm(allocator: std.mem.Allocator) ![]u8 {
     try appendWasmU32(&exports, 0);
     try appendWasmSection(&module, 7, exports.items);
     try appendGuestWasmExternrefIndirectCallBodyCodeSection(&module);
+    return module.toOwnedSlice(allocator);
+}
+
+fn syntheticMemoryInitWithoutDataCountGuestWasm(allocator: std.mem.Allocator) ![]u8 {
+    var module: std.ArrayList(u8) = .empty;
+    errdefer module.deinit(allocator);
+    try module.appendSlice(allocator, "\x00asm\x01\x00\x00\x00");
+    try appendGuestWasmTypeSection(&module);
+    try appendGuestWasmFunctionSection(&module, false);
+    try appendGuestWasmMemorySection(&module);
+    var exports: std.ArrayList(u8) = .empty;
+    defer exports.deinit(allocator);
+    try appendWasmU32(&exports, @intCast(world.Guest.Abi.required_exports.len + 1));
+    for (world.Guest.Abi.required_exports, 0..) |name, index| {
+        try appendWasmName(&exports, name);
+        try exports.append(allocator, 0);
+        try appendWasmU32(&exports, @intCast(index));
+    }
+    try appendWasmName(&exports, "memory");
+    try exports.append(allocator, 2);
+    try appendWasmU32(&exports, 0);
+    try appendWasmSection(&module, 7, exports.items);
+    try appendGuestWasmMutatedBodyCodeSection(&module, .memory_init_without_data_count);
+    try appendGuestWasmPassiveDataSection(&module);
     return module.toOwnedSlice(allocator);
 }
 
@@ -2353,6 +2424,18 @@ test "wasm export inspector validates required exports and forbidden imports" {
     const valid_result_loop_branch = try syntheticMutatedBodyGuestWasm(std.testing.allocator, .valid_result_loop_branch);
     defer std.testing.allocator.free(valid_result_loop_branch);
     try std.testing.expect((try world.Guest.Wasm.inspect(valid_result_loop_branch)).passed());
+
+    const valid_typed_if_param_else = try syntheticMutatedBodyGuestWasm(std.testing.allocator, .valid_typed_if_param_else);
+    defer std.testing.allocator.free(valid_typed_if_param_else);
+    try std.testing.expect((try world.Guest.Wasm.inspect(valid_typed_if_param_else)).passed());
+
+    const memory_init_without_data_count = try syntheticMemoryInitWithoutDataCountGuestWasm(std.testing.allocator);
+    defer std.testing.allocator.free(memory_init_without_data_count);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Guest.Wasm.inspect(memory_init_without_data_count));
+
+    const undeclared_ref_func = try syntheticMutatedBodyGuestWasm(std.testing.allocator, .undeclared_ref_func);
+    defer std.testing.allocator.free(undeclared_ref_func);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Guest.Wasm.inspect(undeclared_ref_func));
 
     const invalid_utf8_export_name = try syntheticInvalidUtf8ExportNameGuestWasm(std.testing.allocator);
     defer std.testing.allocator.free(invalid_utf8_export_name);
