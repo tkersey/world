@@ -10610,6 +10610,7 @@ pub const Guest = struct {
             var code_section: []const u8 = &.{};
             var global_section: []const u8 = &.{};
             var table_types: [max_wasm_validator_values]u8 = undefined;
+            var element_types: [max_wasm_validator_values]u8 = undefined;
             var function_refs = [_]bool{false} ** max_wasm_validator_values;
             var table_count: u32 = 0;
             var memory_count: u32 = 0;
@@ -10643,7 +10644,7 @@ pub const Guest = struct {
                         global_count = try inspectGlobalSection(global_section, inspection.function_import_count + try functionCount(function_section));
                     },
                     7 => try inspectExportSection(bytes[cursor..section_end], type_section, function_section, table_count, memory_count, global_count, inspection.function_import_count, &inspection, &required_mask, &abi_defined_function_index),
-                    9 => element_count = try inspectElementSection(bytes[cursor..section_end], table_types[0..table_count], inspection.function_import_count + try functionCount(function_section), global_count, &function_refs),
+                    9 => element_count = try inspectElementSection(bytes[cursor..section_end], table_types[0..table_count], inspection.function_import_count + try functionCount(function_section), global_count, &function_refs, &element_types),
                     10 => code_section = bytes[cursor..section_end],
                     11 => data_segment_count = try inspectDataSection(bytes[cursor..section_end], memory_count, global_count),
                     12 => data_count_section = try inspectDataCountSection(bytes[cursor..section_end]),
@@ -10667,7 +10668,7 @@ pub const Guest = struct {
             if (abi_defined_function_index) |defined_index| {
                 const defined_function_count = try functionCount(function_section);
                 const data_count = data_count_section orelse data_segment_count orelse 0;
-                inspection.abi_version = try inspectCodeSection(code_section, type_section, function_section, global_section, defined_index, defined_function_count, inspection.function_import_count, table_types[0..table_count], global_count, element_count, data_count, data_count_section != null, &function_refs);
+                inspection.abi_version = try inspectCodeSection(code_section, type_section, function_section, global_section, defined_index, defined_function_count, inspection.function_import_count, table_types[0..table_count], global_count, element_types[0..@min(element_count, max_wasm_validator_values)], element_count, data_count, data_count_section != null, &function_refs);
             }
             return inspection;
         }
@@ -10805,12 +10806,13 @@ pub const Guest = struct {
             if (cursor != section.len) return error.InvalidFrameEncoding;
         }
 
-        fn inspectElementSection(section: []const u8, table_types: []const u8, function_count: u32, global_count: u32, function_refs: *[max_wasm_validator_values]bool) !u32 {
+        fn inspectElementSection(section: []const u8, table_types: []const u8, function_count: u32, global_count: u32, function_refs: *[max_wasm_validator_values]bool, element_types: *[max_wasm_validator_values]u8) !u32 {
             var cursor: usize = 0;
             const count = try readWasmU32(section, &cursor);
             var index: u32 = 0;
             while (index < count) : (index += 1) {
                 const tag = try readWasmU32(section, &cursor);
+                var element_type: u8 = 0x70;
                 switch (tag) {
                     0 => {
                         if (table_types.len == 0 or table_types[0] != 0x70) return error.InvalidFrameEncoding;
@@ -10840,6 +10842,7 @@ pub const Guest = struct {
                     },
                     5 => {
                         const ref_type = try readWasmRefType(section, &cursor);
+                        element_type = ref_type;
                         try skipWasmInitExprVector(section, &cursor, function_count, global_count, ref_type, function_refs);
                     },
                     6 => {
@@ -10847,15 +10850,18 @@ pub const Guest = struct {
                         if (table_index >= table_types.len) return error.InvalidFrameEncoding;
                         try skipWasmInitExpr(section, &cursor, function_count, global_count, 0x7f);
                         const ref_type = try readWasmRefType(section, &cursor);
+                        element_type = ref_type;
                         if (table_types[table_index] != ref_type) return error.InvalidFrameEncoding;
                         try skipWasmInitExprVector(section, &cursor, function_count, global_count, ref_type, function_refs);
                     },
                     7 => {
                         const ref_type = try readWasmRefType(section, &cursor);
+                        element_type = ref_type;
                         try skipWasmInitExprVector(section, &cursor, function_count, global_count, ref_type, function_refs);
                     },
                     else => return error.InvalidFrameEncoding,
                 }
+                if (index < max_wasm_validator_values) element_types[index] = element_type;
             }
             if (cursor != section.len) return error.InvalidFrameEncoding;
             return count;
@@ -10918,7 +10924,7 @@ pub const Guest = struct {
             return false;
         }
 
-        fn inspectCodeSection(section: []const u8, type_section: []const u8, function_section: []const u8, global_section: []const u8, abi_defined_index: u32, expected_defined_function_count: u32, function_import_count: u32, table_types: []const u8, global_count: u32, element_count: u32, data_count: u32, data_count_present: bool, function_refs: []const bool) !u32 {
+        fn inspectCodeSection(section: []const u8, type_section: []const u8, function_section: []const u8, global_section: []const u8, abi_defined_index: u32, expected_defined_function_count: u32, function_import_count: u32, table_types: []const u8, global_count: u32, element_types: []const u8, element_count: u32, data_count: u32, data_count_present: bool, function_refs: []const bool) !u32 {
             var cursor: usize = 0;
             const count = try readWasmU32(section, &cursor);
             if (count != expected_defined_function_count) return error.InvalidFrameEncoding;
@@ -10933,7 +10939,7 @@ pub const Guest = struct {
                 const body = section[cursor .. cursor + body_len];
                 cursor += body_len;
                 const type_index = try functionTypeIndex(function_section, index);
-                try validateWasmFunctionBody(body, type_section, function_section, global_section, type_index, function_import_count, function_count, type_count, table_types, global_count, element_count, data_count, data_count_present, function_refs);
+                try validateWasmFunctionBody(body, type_section, function_section, global_section, type_index, function_import_count, function_count, type_count, table_types, global_count, element_types, element_count, data_count, data_count_present, function_refs);
                 if (index == abi_defined_index) abi_version = try inspectAbiVersionBody(body);
             }
             if (cursor != section.len) return error.InvalidFrameEncoding;
@@ -11036,6 +11042,7 @@ pub const Guest = struct {
             type_count: u32,
             table_types: []const u8,
             global_count: u32,
+            element_types: []const u8,
             element_count: u32,
             data_count: u32,
             data_count_present: bool,
@@ -11048,7 +11055,7 @@ pub const Guest = struct {
             control_count: u32 = 0,
         };
 
-        fn validateWasmFunctionBody(body: []const u8, type_section: []const u8, function_section: []const u8, global_section: []const u8, type_index: u32, function_import_count: u32, function_count: u32, type_count: u32, table_types: []const u8, global_count: u32, element_count: u32, data_count: u32, data_count_present: bool, function_refs: []const bool) !void {
+        fn validateWasmFunctionBody(body: []const u8, type_section: []const u8, function_section: []const u8, global_section: []const u8, type_index: u32, function_import_count: u32, function_count: u32, type_count: u32, table_types: []const u8, global_count: u32, element_types: []const u8, element_count: u32, data_count: u32, data_count_present: bool, function_refs: []const bool) !void {
             const shape = try wasmFunctionShape(type_section, type_index);
             var context = WasmBodyContext{
                 .type_section = type_section,
@@ -11059,6 +11066,7 @@ pub const Guest = struct {
                 .type_count = type_count,
                 .table_types = table_types,
                 .global_count = global_count,
+                .element_types = element_types,
                 .element_count = element_count,
                 .data_count = data_count,
                 .data_count_present = data_count_present,
@@ -11380,11 +11388,11 @@ pub const Guest = struct {
                     try pushWasmValue(context, 0x7f);
                 },
                 0x41 => {
-                    try skipWasmLeb128(bytes, cursor, 5);
+                    try skipWasmSignedLeb128(bytes, cursor, 5, 4);
                     try pushWasmValue(context, 0x7f);
                 },
                 0x42 => {
-                    try skipWasmLeb128(bytes, cursor, 10);
+                    try skipWasmSignedLeb128(bytes, cursor, 10, 1);
                     try pushWasmValue(context, 0x7e);
                 },
                 0x43 => {
@@ -11488,6 +11496,12 @@ pub const Guest = struct {
             return context.table_types[table_index];
         }
 
+        fn wasmElementType(context: *const WasmBodyContext, element_index: u32) !u8 {
+            if (element_index >= context.element_count) return error.InvalidFrameEncoding;
+            if (element_index >= context.element_types.len) return error.InvalidFrameEncoding;
+            return context.element_types[element_index];
+        }
+
         fn validateWasmMiscInstruction(bytes: []const u8, cursor: *usize, context: *WasmBodyContext) !void {
             const subopcode = try readWasmU32(bytes, cursor);
             switch (subopcode) {
@@ -11524,8 +11538,9 @@ pub const Guest = struct {
                 },
                 0x0c => {
                     const element_index = try readWasmU32(bytes, cursor);
-                    if (element_index >= context.element_count) return error.InvalidFrameEncoding;
-                    _ = try wasmTableType(context, try readWasmU32(bytes, cursor));
+                    const element_type = try wasmElementType(context, element_index);
+                    const table_type = try wasmTableType(context, try readWasmU32(bytes, cursor));
+                    if (element_type != table_type) return error.InvalidFrameEncoding;
                     try popWasmValue(context, 0x7f);
                     try popWasmValue(context, 0x7f);
                     try popWasmValue(context, 0x7f);
@@ -11535,8 +11550,9 @@ pub const Guest = struct {
                     if (element_index >= context.element_count) return error.InvalidFrameEncoding;
                 },
                 0x0e => {
-                    _ = try wasmTableType(context, try readWasmU32(bytes, cursor));
-                    _ = try wasmTableType(context, try readWasmU32(bytes, cursor));
+                    const destination_type = try wasmTableType(context, try readWasmU32(bytes, cursor));
+                    const source_type = try wasmTableType(context, try readWasmU32(bytes, cursor));
+                    if (destination_type != source_type) return error.InvalidFrameEncoding;
                     try popWasmValue(context, 0x7f);
                     try popWasmValue(context, 0x7f);
                     try popWasmValue(context, 0x7f);
@@ -11800,8 +11816,8 @@ pub const Guest = struct {
                 },
                 0x28...0x3e => try skipWasmMemArg(bytes, cursor, null),
                 0x3f, 0x40 => _ = try readWasmU32(bytes, cursor),
-                0x41 => try skipWasmLeb128(bytes, cursor, 5),
-                0x42 => try skipWasmLeb128(bytes, cursor, 10),
+                0x41 => try skipWasmSignedLeb128(bytes, cursor, 5, 4),
+                0x42 => try skipWasmSignedLeb128(bytes, cursor, 10, 1),
                 0x43 => try skipWasmBytes(bytes, cursor, 4),
                 0x44 => try skipWasmBytes(bytes, cursor, 8),
                 0xd0 => _ = try readWasmRefType(bytes, cursor),
@@ -11921,8 +11937,8 @@ pub const Guest = struct {
                         const function_index = try readWasmU32(expr, &cursor);
                         if (function_index < max_wasm_validator_values) function_refs[function_index] = true;
                     },
-                    0x41 => try skipWasmLeb128(expr, &cursor, 5),
-                    0x42 => try skipWasmLeb128(expr, &cursor, 10),
+                    0x41 => try skipWasmSignedLeb128(expr, &cursor, 5, 4),
+                    0x42 => try skipWasmSignedLeb128(expr, &cursor, 10, 1),
                     0x43 => try skipWasmBytes(expr, &cursor, 4),
                     0x44 => try skipWasmBytes(expr, &cursor, 8),
                     0xd0 => _ = try readWasmRefType(expr, &cursor),
@@ -11943,8 +11959,8 @@ pub const Guest = struct {
                         const function_index = try readWasmU32(expr, &cursor);
                         if (function_index >= function_refs.len or !function_refs[function_index]) return error.InvalidFrameEncoding;
                     },
-                    0x41 => try skipWasmLeb128(expr, &cursor, 5),
-                    0x42 => try skipWasmLeb128(expr, &cursor, 10),
+                    0x41 => try skipWasmSignedLeb128(expr, &cursor, 5, 4),
+                    0x42 => try skipWasmSignedLeb128(expr, &cursor, 10, 1),
                     0x43 => try skipWasmBytes(expr, &cursor, 4),
                     0x44 => try skipWasmBytes(expr, &cursor, 8),
                     0xd0 => _ = try readWasmRefType(expr, &cursor),
@@ -11979,12 +11995,12 @@ pub const Guest = struct {
                         result_count += 1;
                     },
                     0x41 => {
-                        try skipWasmLeb128(bytes, cursor, 5);
+                        try skipWasmSignedLeb128(bytes, cursor, 5, 4);
                         result_type = 0x7f;
                         result_count += 1;
                     },
                     0x42 => {
-                        try skipWasmLeb128(bytes, cursor, 10);
+                        try skipWasmSignedLeb128(bytes, cursor, 10, 1);
                         result_type = 0x7e;
                         result_count += 1;
                     },
@@ -12008,11 +12024,20 @@ pub const Guest = struct {
             }
         }
 
-        fn skipWasmLeb128(bytes: []const u8, cursor: *usize, max_bytes: usize) !void {
+        fn skipWasmSignedLeb128(bytes: []const u8, cursor: *usize, max_bytes: usize, terminal_value_bits: u3) !void {
             var read_count: usize = 0;
             while (read_count < max_bytes) : (read_count += 1) {
                 const byte = try readWasmU8(bytes, cursor);
-                if ((byte & 0x80) == 0) return;
+                if ((byte & 0x80) == 0) {
+                    if (read_count + 1 == max_bytes) {
+                        const payload = byte & 0x7f;
+                        const sign_bit = @as(u8, 1) << (terminal_value_bits - 1);
+                        const unused_mask = (@as(u8, 0x7f) << terminal_value_bits) & 0x7f;
+                        const expected_unused = if ((payload & sign_bit) == 0) 0 else unused_mask;
+                        if ((payload & unused_mask) != expected_unused) return error.InvalidFrameEncoding;
+                    }
+                    return;
+                }
             }
             return error.InvalidFrameEncoding;
         }
