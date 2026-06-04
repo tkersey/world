@@ -8583,6 +8583,12 @@ pub const Runspace = struct {
                 }
                 return err;
             };
+            var resume_failed_event_pair = try self.prepareEventPair(
+                2,
+                "terminal port response failed",
+                "run failed after terminal port response",
+            );
+            defer resume_failed_event_pair.deinit(self.allocator);
             driver.resumeTerminalFrame(response) catch |err| {
                 if ((err == error.HandlerPending or err == error.BudgetExceeded) and driver.supervisionInterrupted()) {
                     return self.parkPendingOnSupervision(index, pending, mailbox_id, "terminal response parked on supervision") catch |park_err| {
@@ -8590,19 +8596,13 @@ pub const Runspace = struct {
                         return park_err;
                     };
                 }
-                var failed_event_pair = try self.prepareEventPair(
-                    2,
-                    "terminal port response failed",
-                    "run failed after terminal port response",
-                );
-                defer failed_event_pair.deinit(self.allocator);
                 try self.failPendingPortAndSlot(
                     mailbox_id,
                     slot,
                     response,
                     "terminal response failed",
-                    failed_event_pair.takeFirst(),
-                    failed_event_pair.takeSecond(),
+                    resume_failed_event_pair.takeFirst(),
+                    resume_failed_event_pair.takeSecond(),
                 );
                 return err;
             };
