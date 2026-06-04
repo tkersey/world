@@ -131,7 +131,9 @@ export fn world_read_pending_request(index: u32, ptr: usize, cap: usize) usize {
         return 0;
     }
     const copied = copyToGuest(ptr, cap, &request_bytes);
-    if (copied == request_bytes.len and cap >= request_bytes.len) current_status = status_parked;
+    if (copied == request_bytes.len and
+        cap >= request_bytes.len and
+        guestMemoryRange(ptr, request_bytes.len) != null) current_status = status_parked;
     return copied;
 }
 
@@ -157,7 +159,9 @@ export fn world_result_len() usize {
 export fn world_read_result(ptr: usize, cap: usize) usize {
     if (!result_ready) return 0;
     const copied = copyToGuest(ptr, cap, &result_bytes);
-    if (copied == result_bytes.len and cap >= result_bytes.len) current_status = status_done;
+    if (copied == result_bytes.len and
+        cap >= result_bytes.len and
+        guestMemoryRange(ptr, result_bytes.len) != null) current_status = status_done;
     return copied;
 }
 
@@ -209,11 +213,21 @@ fn hasPending(index: u32) bool {
 
 fn responseMatches(ptr: usize, len: usize) bool {
     if (len != expected_response_bytes.len) return false;
-    const in: [*]const u8 = @ptrFromInt(ptr);
+    const in = guestMemoryRange(ptr, len) orelse return false;
     for (expected_response_bytes, 0..) |expected, index| {
         if (in[index] != expected) return false;
     }
     return true;
+}
+
+fn guestMemoryRange(ptr: usize, len: usize) ?[]u8 {
+    if (len == 0) return memory_buf[0..0];
+    const base = @intFromPtr(&memory_buf[0]);
+    if (ptr < base) return null;
+    const offset = ptr - base;
+    if (offset > memory_buf.len) return null;
+    if (len > memory_buf.len - offset) return null;
+    return memory_buf[offset .. offset + len];
 }
 
 fn setError(status_value: u32, message: []const u8) u32 {
@@ -244,12 +258,50 @@ test "world_alloc rejects overflowing sizes without one-past indexing" {
     try std.testing.expectEqual(status_buffer_too_small, current_status);
 }
 
+test "world_submit_response rejects pointers outside guest memory" {
+    _ = world_init();
+    try std.testing.expectEqual(status_parked, world_tick());
+
+    const base = @intFromPtr(&memory_buf[0]);
+    try std.testing.expectEqual(status_invalid_frame, world_submit_response(base + memory_buf.len, expected_response_bytes.len));
+    try std.testing.expect(pending_available);
+
+    try std.testing.expectEqual(status_invalid_frame, world_submit_response(base + memory_buf.len - 1, expected_response_bytes.len));
+    try std.testing.expect(pending_available);
+
+    const response_ptr = world_alloc(expected_response_bytes.len);
+    try std.testing.expect(response_ptr != 0);
+    @memcpy(memory_buf[0..expected_response_bytes.len], &expected_response_bytes);
+    try std.testing.expectEqual(status_running, world_submit_response(response_ptr, expected_response_bytes.len));
+}
+
+test "read helpers reject output pointers outside guest memory" {
+    _ = world_init();
+    try std.testing.expectEqual(status_parked, world_tick());
+
+    const invalid_ptr = @intFromPtr(&memory_buf[0]) + memory_buf.len;
+    try std.testing.expectEqual(request_bytes.len, world_read_pending_request(0, invalid_ptr, request_bytes.len));
+    try std.testing.expectEqual(status_buffer_too_small, current_status);
+    try std.testing.expect(pending_available);
+
+    const request_ptr = world_alloc(request_bytes.len);
+    try std.testing.expect(request_ptr != 0);
+    try std.testing.expectEqual(request_bytes.len, world_read_pending_request(0, request_ptr, request_bytes.len));
+    try std.testing.expectEqual(status_parked, current_status);
+}
+
 fn copyToGuest(ptr: usize, cap: usize, bytes: []const u8) usize {
     if (cap < bytes.len) {
         _ = setError(status_buffer_too_small, "guest buffer is too small");
         return bytes.len;
     }
-    _ = copyToGuestNoStatus(ptr, cap, bytes);
+    if (bytes.len != 0) {
+        const out = guestMemoryRange(ptr, bytes.len) orelse {
+            _ = setError(status_buffer_too_small, "guest buffer is outside guest memory");
+            return bytes.len;
+        };
+        @memcpy(out, bytes);
+    }
     clearError();
     return bytes.len;
 }
@@ -257,7 +309,7 @@ fn copyToGuest(ptr: usize, cap: usize, bytes: []const u8) usize {
 fn copyToGuestNoStatus(ptr: usize, cap: usize, bytes: []const u8) usize {
     if (cap < bytes.len) return bytes.len;
     if (bytes.len == 0) return 0;
-    const out: [*]u8 = @ptrFromInt(ptr);
-    @memcpy(out[0..bytes.len], bytes);
+    const out = guestMemoryRange(ptr, bytes.len) orelse return bytes.len;
+    @memcpy(out, bytes);
     return bytes.len;
 }
