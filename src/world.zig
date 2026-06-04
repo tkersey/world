@@ -11055,6 +11055,8 @@ pub const Guest = struct {
             table_section: []const u8,
             element_section: []const u8,
             data_section: []const u8,
+            body: []const u8,
+            type_index: u32,
             function_import_count: u32,
             function_count: u32,
             type_count: u32,
@@ -11083,6 +11085,8 @@ pub const Guest = struct {
                 .table_section = table_section,
                 .element_section = element_section,
                 .data_section = data_section,
+                .body = body,
+                .type_index = type_index,
                 .function_import_count = function_import_count,
                 .function_count = function_count,
                 .type_count = type_count,
@@ -11514,8 +11518,46 @@ pub const Guest = struct {
 
         fn wasmLocalType(context: *const WasmBodyContext, local_index: u32) !u8 {
             if (local_index >= context.local_count) return error.InvalidFrameEncoding;
-            if (local_index >= max_wasm_validator_values) return error.InvalidFrameEncoding;
+            if (local_index >= max_wasm_validator_values) return try wasmFunctionBodyLocalType(context.type_section, context.type_index, context.body, local_index);
             return context.locals[local_index];
+        }
+
+        fn wasmFunctionBodyLocalType(type_section: []const u8, type_index: u32, body: []const u8, local_index: u32) !u8 {
+            var type_cursor: usize = 0;
+            const type_count = try readWasmU32(type_section, &type_cursor);
+            if (type_index >= type_count) return error.InvalidFrameEncoding;
+            var current_type: u32 = 0;
+            while (current_type < type_count) : (current_type += 1) {
+                const tag = try readWasmU8(type_section, &type_cursor);
+                if (tag != 0x60) return error.InvalidFrameEncoding;
+                const param_count = try readWasmU32(type_section, &type_cursor);
+                var param_index: u32 = 0;
+                while (param_index < param_count) : (param_index += 1) {
+                    const param_type = try readWasmU8(type_section, &type_cursor);
+                    if (!validWasmValueType(param_type)) return error.InvalidFrameEncoding;
+                    if (current_type == type_index and local_index == param_index) return param_type;
+                }
+                const result_count = try readWasmU32(type_section, &type_cursor);
+                var result_index: u32 = 0;
+                while (result_index < result_count) : (result_index += 1) {
+                    if (!validWasmValueType(try readWasmU8(type_section, &type_cursor))) return error.InvalidFrameEncoding;
+                }
+                if (current_type == type_index) {
+                    var local_offset = local_index - param_count;
+                    var body_cursor: usize = 0;
+                    const local_decl_count = try readWasmU32(body, &body_cursor);
+                    var local_decl_index: u32 = 0;
+                    while (local_decl_index < local_decl_count) : (local_decl_index += 1) {
+                        const local_count = try readWasmU32(body, &body_cursor);
+                        const value_type = try readWasmU8(body, &body_cursor);
+                        if (!validWasmValueType(value_type)) return error.InvalidFrameEncoding;
+                        if (local_offset < local_count) return value_type;
+                        local_offset -= local_count;
+                    }
+                    return error.InvalidFrameEncoding;
+                }
+            }
+            return error.InvalidFrameEncoding;
         }
 
         fn wasmTableType(context: *const WasmBodyContext, table_index: u32) !u8 {
