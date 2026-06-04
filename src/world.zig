@@ -9327,11 +9327,16 @@ pub const Runspace = struct {
     }
 
     pub fn respond(self: *@This(), mailbox_id: u64, response: Frame.Response) !Runspace.RunspaceEvent {
+        return self.respondWithFabricOwnership(mailbox_id, response, false);
+    }
+
+    fn respondWithFabricOwnership(self: *@This(), mailbox_id: u64, response: Frame.Response, allow_active_fabric: bool) !Runspace.RunspaceEvent {
         const pending = try self.mailbox.get(mailbox_id);
         try pending.validateResponse(response);
         const index = try self.slotIndex(pending.handle);
         const slot = &self.slots.items[index];
         if (slot.pending_mailbox_id != mailbox_id or slot.status != .parked_on_port) return error.StaleRunHandle;
+        if (!allow_active_fabric and self.hasActiveFabricInvocationForMailbox(mailbox_id)) return error.ActiveFabricUnsupported;
         var responded_summary: []u8 = "";
         var responded_summary_owned = false;
         defer if (responded_summary_owned) self.allocator.free(responded_summary);
@@ -9560,7 +9565,6 @@ pub const Runspace = struct {
             .sequence = self.fabric_invocations.items.len,
             .status = .started,
         });
-        try self.recordFabricInvocation(parent_slot.*, invocation, route, .fabric_invocation_started, "fabric invocation started");
         switch (route.kind) {
             .replay => return error.ReplayRouteDenied,
             .reject, .unsupported => {
@@ -9579,18 +9583,9 @@ pub const Runspace = struct {
                     .sequence = invocation.sequence,
                     .status = if (route.kind == .reject) .rejected else .unsupported,
                 });
-                try self.replaceFabricInvocation(invocation);
-                _ = try self.respond(mailbox_id, response);
+                _ = try self.respondWithFabricOwnership(mailbox_id, response, true);
+                try self.recordFabricInvocation(parent_slot.*, invocation, route, .fabric_failed, "fabric terminal route recorded");
                 try self.recordFabricReceipt(parent_slot.handle, invocation, route.route_fingerprint, pending, response.frame_fingerprint, null, invocation.status, if (route.kind == .reject) .FabricRejected else .UnsupportedMapping);
-                _ = try self.appendFabricEvent(.{
-                    .kind = .fabric_failed,
-                    .run_handle = parent_slot.handle,
-                    .run_state_fingerprint = parent_slot.current_state.run_state_fingerprint,
-                    .fabric_invocation_fingerprint = invocation.invocation_fingerprint,
-                    .fabric_route_fingerprint = route.route_fingerprint,
-                    .response_frame_fingerprint = response.frame_fingerprint,
-                    .summary = "fabric terminal route completed",
-                });
                 return invocation;
             },
             .target_export, .admitted_run, .guest => return error.ProviderRunDenied,
@@ -9683,7 +9678,6 @@ pub const Runspace = struct {
             .sequence = self.fabric_invocations.items.len,
             .status = .started,
         });
-        try self.recordFabricInvocation(parent_slot.*, invocation, route, .fabric_invocation_started, "fabric replay invocation started");
         var transcript = try Transcript.fromImage(self.allocator, replay_image);
         defer transcript.deinit();
         const request = pending.request_frame orelse return error.InvalidPendingPortTransition;
@@ -9704,20 +9698,9 @@ pub const Runspace = struct {
             .sequence = invocation.sequence,
             .status = .completed,
         });
-        try self.replaceFabricInvocation(invocation);
-        _ = try self.respond(mailbox_id, response);
+        _ = try self.respondWithFabricOwnership(mailbox_id, response, true);
+        try self.recordFabricInvocation(parent_slot.*, invocation, route, .fabric_invocation_started, "fabric replay invocation recorded");
         try self.recordFabricReceipt(parent_slot.handle, invocation, route.route_fingerprint, pending, response.frame_fingerprint, null, .completed, null);
-        _ = try self.appendFabricEvent(.{
-            .kind = .fabric_response_emitted,
-            .run_handle = parent_slot.handle,
-            .pending_port_fingerprint = pending.pending_port_fingerprint,
-            .request_frame_fingerprint = pending.request_frame_fingerprint,
-            .response_frame_fingerprint = response.frame_fingerprint,
-            .run_state_fingerprint = parent_slot.current_state.run_state_fingerprint,
-            .fabric_invocation_fingerprint = invocation.invocation_fingerprint,
-            .fabric_route_fingerprint = route.route_fingerprint,
-            .summary = "fabric replay response emitted",
-        });
         return invocation;
     }
 
@@ -9739,7 +9722,7 @@ pub const Runspace = struct {
         var response = try fabricDeferredResponseForPending(pending, response_image);
         response_image_owned = false;
         defer response.deinit(self.allocator);
-        const event = try self.respond(invocation.parent_mailbox_id, response);
+        const event = try self.respondWithFabricOwnership(invocation.parent_mailbox_id, response, true);
         const parent_response_frame_fingerprint = event.response_frame_fingerprint orelse response.frame_fingerprint;
         const completed = Fabric.Invocation.init(.{
             .plan_fingerprint = recorded.plan_fingerprint,
@@ -9758,17 +9741,6 @@ pub const Runspace = struct {
         });
         try self.replaceFabricInvocation(completed);
         try self.recordFabricReceipt(parent_slot.handle, completed, completed.route_fingerprint, pending, parent_response_frame_fingerprint, recorded.provider_run_handle_fingerprint, .completed, null);
-        _ = try self.appendFabricEvent(.{
-            .kind = .fabric_response_emitted,
-            .run_handle = parent_slot.handle,
-            .pending_port_fingerprint = pending.pending_port_fingerprint,
-            .request_frame_fingerprint = pending.request_frame_fingerprint,
-            .response_frame_fingerprint = parent_response_frame_fingerprint,
-            .run_state_fingerprint = parent_slot.current_state.run_state_fingerprint,
-            .fabric_invocation_fingerprint = completed.invocation_fingerprint,
-            .fabric_route_fingerprint = completed.route_fingerprint,
-            .summary = "fabric response emitted",
-        });
         return event;
     }
 
@@ -9995,6 +9967,31 @@ pub const Runspace = struct {
         return false;
     }
 
+    fn hasActiveFabricInvocationForMailbox(self: *const @This(), mailbox_id: u64) bool {
+        for (self.fabric_invocations.items) |invocation| {
+            if (invocation.parent_mailbox_id != mailbox_id) continue;
+            switch (invocation.status) {
+                .started,
+                .provider_installed,
+                .provider_running,
+                .provider_parked,
+                .provider_completed,
+                => return true,
+                .planned,
+                .parent_responded,
+                .completed,
+                .rejected,
+                .failed,
+                .unsupported,
+                .denied,
+                .cycle_blocked,
+                .supervision_denied,
+                => {},
+            }
+        }
+        return false;
+    }
+
     fn recordFabricInvocation(
         self: *@This(),
         parent_slot: Runspace.RunSlot,
@@ -10075,6 +10072,14 @@ pub const Runspace = struct {
             .blocker = blocker,
         });
         try receipt.validate();
+        const receipt_count_before = self.fabric_receipts.items.len;
+        const event_count_before = self.events.items.len;
+        var recorded = false;
+        errdefer if (!recorded) {
+            for (self.events.items[event_count_before..]) |*event| event.deinit(self.allocator);
+            self.events.shrinkRetainingCapacity(event_count_before);
+            self.fabric_receipts.shrinkRetainingCapacity(receipt_count_before);
+        };
         try self.fabric_receipts.append(self.allocator, receipt);
         _ = try self.appendFabricEvent(.{
             .kind = .fabric_receipt_recorded,
@@ -10089,6 +10094,7 @@ pub const Runspace = struct {
             .fabric_receipt_fingerprint = receipt.receipt_fingerprint,
             .summary = "fabric receipt recorded",
         });
+        recorded = true;
     }
 
     fn appendFabricEvent(self: *@This(), args: struct {
@@ -10399,6 +10405,7 @@ pub const Runspace = struct {
         const index = try self.slotIndex(pending.handle);
         const slot = &self.slots.items[index];
         if (slot.pending_mailbox_id != mailbox_id or slot.status != .parked_on_port) return error.StaleRunHandle;
+        if (self.hasActiveFabricInvocationForMailbox(mailbox_id)) return error.ActiveFabricUnsupported;
         var response = try terminalResponseForPending(pending, .rejected, reason);
         defer response.deinit(self.allocator);
         return self.finishTerminalResponse(index, mailbox_id, pending, slot, response, .rejected);
@@ -10410,6 +10417,7 @@ pub const Runspace = struct {
         const index = try self.slotIndex(pending.handle);
         const slot = &self.slots.items[index];
         if (slot.pending_mailbox_id != mailbox_id or slot.status != .parked_on_port) return error.StaleRunHandle;
+        if (self.hasActiveFabricInvocationForMailbox(mailbox_id)) return error.ActiveFabricUnsupported;
         var response = try terminalResponseForPending(pending, .failed, reason);
         defer response.deinit(self.allocator);
         return self.finishTerminalResponse(index, mailbox_id, pending, slot, response, .failed);
