@@ -10626,7 +10626,7 @@ pub const Guest = struct {
                         global_count = try inspectGlobalSection(global_section, inspection.function_import_count + try functionCount(function_section));
                     },
                     7 => try inspectExportSection(bytes[cursor..section_end], type_section, function_section, table_count, memory_count, global_count, inspection.function_import_count, &inspection, &required_mask, &abi_defined_function_index),
-                    9 => try inspectElementSection(bytes[cursor..section_end], table_count, inspection.function_import_count + try functionCount(function_section), global_count, &function_refs),
+                    9 => try inspectElementSection(bytes[cursor..section_end], table_types[0..table_count], inspection.function_import_count + try functionCount(function_section), global_count, &function_refs),
                     10 => code_section = bytes[cursor..section_end],
                     11 => data_segment_count = try inspectDataSection(bytes[cursor..section_end], memory_count, global_count),
                     12 => data_count_section = try inspectDataCountSection(bytes[cursor..section_end]),
@@ -10770,7 +10770,7 @@ pub const Guest = struct {
             if (cursor != section.len) return error.InvalidFrameEncoding;
         }
 
-        fn inspectElementSection(section: []const u8, table_count: u32, function_count: u32, global_count: u32, function_refs: *[max_wasm_validator_values]bool) !void {
+        fn inspectElementSection(section: []const u8, table_types: []const u8, function_count: u32, global_count: u32, function_refs: *[max_wasm_validator_values]bool) !void {
             var cursor: usize = 0;
             const count = try readWasmU32(section, &cursor);
             var index: u32 = 0;
@@ -10778,7 +10778,7 @@ pub const Guest = struct {
                 const tag = try readWasmU32(section, &cursor);
                 switch (tag) {
                     0 => {
-                        if (table_count == 0) return error.InvalidFrameEncoding;
+                        if (table_types.len == 0 or table_types[0] != 0x70) return error.InvalidFrameEncoding;
                         try skipWasmInitExpr(section, &cursor, function_count, global_count, 0x7f);
                         try readWasmElementKind(section, &cursor);
                         try skipWasmFunctionIndexVector(section, &cursor, function_count, function_refs);
@@ -10789,7 +10789,7 @@ pub const Guest = struct {
                     },
                     2 => {
                         const table_index = try readWasmU32(section, &cursor);
-                        if (table_index >= table_count) return error.InvalidFrameEncoding;
+                        if (table_index >= table_types.len or table_types[table_index] != 0x70) return error.InvalidFrameEncoding;
                         try skipWasmInitExpr(section, &cursor, function_count, global_count, 0x7f);
                         try readWasmElementKind(section, &cursor);
                         try skipWasmFunctionIndexVector(section, &cursor, function_count, function_refs);
@@ -10799,7 +10799,7 @@ pub const Guest = struct {
                         try skipWasmFunctionIndexVector(section, &cursor, function_count, function_refs);
                     },
                     4 => {
-                        if (table_count == 0) return error.InvalidFrameEncoding;
+                        if (table_types.len == 0 or table_types[0] != 0x70) return error.InvalidFrameEncoding;
                         try skipWasmInitExpr(section, &cursor, function_count, global_count, 0x7f);
                         try skipWasmInitExprVector(section, &cursor, function_count, global_count, 0x70, function_refs);
                     },
@@ -10809,9 +10809,10 @@ pub const Guest = struct {
                     },
                     6 => {
                         const table_index = try readWasmU32(section, &cursor);
-                        if (table_index >= table_count) return error.InvalidFrameEncoding;
+                        if (table_index >= table_types.len) return error.InvalidFrameEncoding;
                         try skipWasmInitExpr(section, &cursor, function_count, global_count, 0x7f);
                         const ref_type = try readWasmRefType(section, &cursor);
+                        if (table_types[table_index] != ref_type) return error.InvalidFrameEncoding;
                         try skipWasmInitExprVector(section, &cursor, function_count, global_count, ref_type, function_refs);
                     },
                     7 => {
