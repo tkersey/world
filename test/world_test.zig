@@ -7007,6 +7007,76 @@ test "runspace imported terminal park event-cap failure rolls back supervision" 
     try std.testing.expectEqual(runspace.config.max_events.?, runspace.report().event_count);
 }
 
+test "runspace imported pending response park event-cap failure rolls back supervision" {
+    var source_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer source_runtime.deinit();
+    var source_transcript = world.Transcript.init(std.testing.allocator);
+    defer source_transcript.deinit();
+    var source_runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer source_runspace.deinit();
+    _ = try source_runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &source_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .transcript = &source_transcript,
+    });
+    _ = try source_runspace.tick();
+    var parked_image = try source_runspace.exportPending(0);
+    defer parked_image.deinit(std.testing.allocator);
+
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_native_adapters = true,
+            .allow_handoff_export = true,
+            .allow_handoff_accept = true,
+            .require_environment_certificate = true,
+        }),
+    });
+    const admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_b7e6,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target),
+        .environment_certificate_fingerprint = PortsEnv.certificate(.fresh, false).certificate_fingerprint,
+        .mode = .continue_fresh,
+        .run_image = parked_image,
+        .run_permit = permit,
+    });
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+    const handle = try runspace.installAdmitted(admitted);
+    const pending = try runspace.mailbox.get(0);
+    const request = pending.request_frame.?;
+    const pending_response = world.Frame.Response.init(.{
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .target_certificate_fingerprint = request.target_certificate_fingerprint,
+        .world_port_id = request.world_port_id,
+        .request_fingerprint = request.request_fingerprint,
+        .response_kind = .@"resume",
+        .response_value_table_id = request.expected_response_value_table_id,
+        .response_fingerprint = 0x9e1d_5afd,
+        .replay_key = request.replay_key_seed.withResponse(0x9e1d_5afd).fingerprint(),
+        .status = .pending,
+    });
+
+    runspace.config.max_events = runspace.events.items.len;
+    try std.testing.expectError(error.BudgetExceeded, runspace.respond(0, pending_response));
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
+    var summary = try runspace.getSlotSummary(handle);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, summary.status);
+    try std.testing.expectEqual(@as(?u64, 0), summary.pending_mailbox_id);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().blocker_count);
+    try std.testing.expectEqual(runspace.config.max_events.?, runspace.report().event_count);
+
+    runspace.config.max_events = null;
+    try std.testing.expectError(error.PendingDenied, runspace.respond(0, pending_response));
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
+    summary = try runspace.getSlotSummary(handle);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_supervision, summary.status);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().blocker_count);
+}
+
 test "runspace event budget failure does not enqueue or park request" {
     var runtime = boundary.Runtime.init(std.testing.allocator);
     defer runtime.deinit();

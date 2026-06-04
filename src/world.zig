@@ -8367,16 +8367,27 @@ pub const Runspace = struct {
                 if (slot.driver) |driver| {
                     try self.ensureEventCapacity(1);
                     try self.events.ensureUnusedCapacity(self.allocator, 1);
+                    var supervisor_snapshot = try self.snapshotSlotSupervisor(index);
+                    defer supervisor_snapshot.deinit(self.allocator);
                     driver.beforeResponse(pending.world_port_id, .pending, accounting.response_bytes, accounting.value_image_bytes) catch |err| {
                         if (responseStatusDeniedError(.pending, err)) {
-                            _ = try self.parkPendingOnSupervision(index, pending, mailbox_id, "manual pending response denied by supervision");
+                            _ = self.parkPendingOnSupervision(index, pending, mailbox_id, "manual pending response denied by supervision") catch |park_err| {
+                                supervisor_snapshot.restore(self, index);
+                                return park_err;
+                            };
                             return err;
                         }
                         if (err == error.HandlerPending and driver.supervisionInterrupted()) {
-                            return self.parkPendingOnSupervision(index, pending, mailbox_id, "manual pending response parked on supervision");
+                            return self.parkPendingOnSupervision(index, pending, mailbox_id, "manual pending response parked on supervision") catch |park_err| {
+                                supervisor_snapshot.restore(self, index);
+                                return park_err;
+                            };
                         }
                         if (err == error.BudgetExceeded and driver.supervisionInterrupted()) {
-                            return self.parkPendingOnSupervision(index, pending, mailbox_id, "manual pending response parked on supervision");
+                            return self.parkPendingOnSupervision(index, pending, mailbox_id, "manual pending response parked on supervision") catch |park_err| {
+                                supervisor_snapshot.restore(self, index);
+                                return park_err;
+                            };
                         }
                         return err;
                     };
@@ -8385,6 +8396,8 @@ pub const Runspace = struct {
                 if (slot.supervisor) |*supervisor| {
                     try self.ensureEventCapacity(1);
                     try self.events.ensureUnusedCapacity(self.allocator, 1);
+                    var supervisor_snapshot = try self.snapshotSlotSupervisor(index);
+                    defer supervisor_snapshot.deinit(self.allocator);
                     supervisor.afterAdapterResponse(.{
                         .world_port_id = pending.world_port_id,
                         .status = .pending,
@@ -8392,11 +8405,17 @@ pub const Runspace = struct {
                         .value_image_bytes = accounting.value_image_bytes,
                     }) catch |err| {
                         if (responseStatusDeniedError(.pending, err)) {
-                            _ = try self.parkPendingOnSupervision(index, pending, mailbox_id, "manual pending response denied by supervision");
+                            _ = self.parkPendingOnSupervision(index, pending, mailbox_id, "manual pending response denied by supervision") catch |park_err| {
+                                supervisor_snapshot.restore(self, index);
+                                return park_err;
+                            };
                             return err;
                         }
                         if ((err == error.HandlerPending or err == error.BudgetExceeded) and supervisor.interrupted) {
-                            return self.parkPendingOnSupervision(index, pending, mailbox_id, "manual pending response parked on supervision");
+                            return self.parkPendingOnSupervision(index, pending, mailbox_id, "manual pending response parked on supervision") catch |park_err| {
+                                supervisor_snapshot.restore(self, index);
+                                return park_err;
+                            };
                         }
                         return err;
                     };
