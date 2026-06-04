@@ -8550,6 +8550,14 @@ pub const Runspace = struct {
         );
     }
 
+    fn prepareTerminalFailureEventPair(self: *@This()) !PreparedEventPair {
+        return self.prepareEventPair(
+            2,
+            "terminal port response failed",
+            "run failed after terminal port response",
+        );
+    }
+
     fn routeTerminalResponse(self: *@This(), index: usize, mailbox_id: u64, pending: Runspace.PendingPort, slot: *Runspace.RunSlot, response: Frame.Response, status: ResponseStatus) !TerminalRoute {
         if (status != .rejected and status != .failed) return error.InvalidPendingPortTransition;
         if (response.status != status) return error.InvalidPendingPortTransition;
@@ -8574,11 +8582,7 @@ pub const Runspace = struct {
                     return .{ .parked = event };
                 }
                 if (err == error.BudgetExceeded) {
-                    var failed_event_pair = self.prepareEventPair(
-                        2,
-                        "terminal port response failed",
-                        "run failed after terminal port response",
-                    ) catch |prepare_err| {
+                    var failed_event_pair = self.prepareTerminalFailureEventPair() catch |prepare_err| {
                         supervisor_snapshot.restore(self, index);
                         return prepare_err;
                     };
@@ -8602,9 +8606,15 @@ pub const Runspace = struct {
                 return err;
             };
             errdefer terminal_event_pair.deinit(self.allocator);
+            var terminal_failure_event_pair = self.prepareTerminalFailureEventPair() catch |err| {
+                supervisor_snapshot.restore(self, index);
+                return err;
+            };
+            errdefer terminal_failure_event_pair.deinit(self.allocator);
             driver.resumeTerminalFrame(response) catch |err| {
                 if ((err == error.HandlerPending or err == error.BudgetExceeded) and driver.supervisionInterrupted()) {
                     terminal_event_pair.deinit(self.allocator);
+                    terminal_failure_event_pair.deinit(self.allocator);
                     const event = self.parkPendingOnSupervision(index, pending, mailbox_id, "terminal response parked on supervision") catch |park_err| {
                         supervisor_snapshot.restore(self, index);
                         return park_err;
@@ -8616,11 +8626,12 @@ pub const Runspace = struct {
                     slot,
                     response,
                     "terminal response failed",
-                    terminal_event_pair.takeFirst(),
-                    terminal_event_pair.takeSecond(),
+                    terminal_failure_event_pair.takeFirst(),
+                    terminal_failure_event_pair.takeSecond(),
                 );
                 return err;
             };
+            terminal_failure_event_pair.deinit(self.allocator);
             return .{ .event_pair = terminal_event_pair };
         } else if (slot.supervisor) |*supervisor| {
             var supervisor_snapshot = try self.snapshotSlotSupervisor(index);

@@ -8917,6 +8917,12 @@ test "runspace terminal resume failure consumes pending mailbox and fails slot" 
     try std.testing.expectEqual(world.Runspace.RunStatus.failed, (try runspace.getSlotSummary(handle)).status);
     try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().failed_count);
+    const port_event = runspace.events.items[runspace.events.items.len - 2];
+    const run_event = runspace.events.items[runspace.events.items.len - 1];
+    try std.testing.expectEqual(world.Runspace.EventKind.port_failed, port_event.kind);
+    try std.testing.expectEqual(world.Runspace.EventKind.run_failed, run_event.kind);
+    try std.testing.expect(std.mem.eql(u8, port_event.summary, "port response failed"));
+    try std.testing.expect(std.mem.eql(u8, run_event.summary, "run failed after response"));
 }
 
 test "runspace raw terminal response checks supervision before consuming mailbox" {
