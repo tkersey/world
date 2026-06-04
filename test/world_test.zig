@@ -7531,6 +7531,22 @@ test "guest core submit response refreshes terminal status" {
 
     try std.testing.expectEqual(world.Guest.Status.failed, guest.submitResponse(response_bytes));
     try std.testing.expectEqual(world.Guest.Status.failed, guest.status());
+    const failed_error_len = guest.lastErrorLen();
+    try std.testing.expect(failed_error_len > 0);
+    try std.testing.expectEqual(@as(usize, 0), guest.resultLen());
+    try std.testing.expectEqual(world.Guest.Status.failed, guest.status());
+    try std.testing.expectEqual(@as(usize, 0), guest.receiptLen());
+    try std.testing.expectEqual(world.Guest.Status.failed, guest.status());
+    try std.testing.expectEqual(@as(usize, 0), guest.transcriptLen());
+    try std.testing.expectEqual(world.Guest.Status.failed, guest.status());
+    var read_buf: [1]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, 0), guest.readResult(&read_buf));
+    try std.testing.expectEqual(world.Guest.Status.failed, guest.status());
+    try std.testing.expectEqual(@as(usize, 0), guest.readReceipt(&read_buf));
+    try std.testing.expectEqual(world.Guest.Status.failed, guest.status());
+    try std.testing.expectEqual(@as(usize, 0), guest.readTranscript(&read_buf));
+    try std.testing.expectEqual(world.Guest.Status.failed, guest.status());
+    try std.testing.expectEqual(failed_error_len, guest.lastErrorLen());
 }
 
 test "native guest world_init preserves completed terminal state" {

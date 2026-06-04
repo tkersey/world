@@ -10204,6 +10204,7 @@ pub const Guest = struct {
 
         fn ensureResultBytes(self: *@This()) !void {
             if (self.result_bytes.len != 0) return;
+            if (self.state == .failed) return;
             if (self.state != .done) {
                 if (self.state == .buffer_too_small) return error.GuestBufferTooSmall;
                 return error.InvalidRunspaceTransition;
