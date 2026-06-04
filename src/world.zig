@@ -10167,7 +10167,7 @@ pub const Guest = struct {
 
         pub fn resultLen(self: *@This()) usize {
             self.ensureResultBytes() catch |err| {
-                _ = self.mapRunspaceError(err);
+                _ = self.mapResultReadError(err);
                 return 0;
             };
             return self.result_bytes.len;
@@ -10175,7 +10175,7 @@ pub const Guest = struct {
 
         pub fn readResult(self: *@This(), out: []u8) usize {
             self.ensureResultBytes() catch |err| {
-                _ = self.mapRunspaceError(err);
+                _ = self.mapResultReadError(err);
                 return 0;
             };
             return self.copyToGuestBuffer(self.result_bytes, out);
@@ -10183,7 +10183,7 @@ pub const Guest = struct {
 
         pub fn receiptLen(self: *@This()) usize {
             self.ensureResultBytes() catch |err| {
-                _ = self.mapRunspaceError(err);
+                _ = self.mapResultReadError(err);
                 return 0;
             };
             return self.receipt_len_value;
@@ -10191,7 +10191,7 @@ pub const Guest = struct {
 
         pub fn readReceipt(self: *@This(), out: []u8) usize {
             self.ensureResultBytes() catch |err| {
-                _ = self.mapRunspaceError(err);
+                _ = self.mapResultReadError(err);
                 return 0;
             };
             return self.copyToGuestBuffer(self.receipt_bytes[0..self.receipt_len_value], out);
@@ -10199,7 +10199,7 @@ pub const Guest = struct {
 
         pub fn transcriptLen(self: *@This()) usize {
             self.ensureResultBytes() catch |err| {
-                _ = self.mapRunspaceError(err);
+                _ = self.mapResultReadError(err);
                 return 0;
             };
             return self.transcript_bytes.len;
@@ -10207,7 +10207,7 @@ pub const Guest = struct {
 
         pub fn readTranscript(self: *@This(), out: []u8) usize {
             self.ensureResultBytes() catch |err| {
-                _ = self.mapRunspaceError(err);
+                _ = self.mapResultReadError(err);
                 return 0;
             };
             return self.copyToGuestBuffer(self.transcript_bytes, out);
@@ -10237,6 +10237,7 @@ pub const Guest = struct {
             if (self.result_bytes.len != 0) return;
             if (self.state == .failed) return;
             if (self.state != .done) {
+                if (self.state == .supervision_denied) return error.SupervisionDenied;
                 if (self.state == .buffer_too_small) return error.GuestBufferTooSmall;
                 return error.InvalidRunspaceTransition;
             }
@@ -10343,6 +10344,11 @@ pub const Guest = struct {
                 .failed => self.setStatus(.supervision_denied, "supervision denied failed response"),
                 .responded => unreachable,
             };
+        }
+
+        fn mapResultReadError(self: *@This(), err: anyerror) Status {
+            if (err == error.SupervisionDenied and self.state == .supervision_denied) return self.state;
+            return self.mapRunspaceError(err);
         }
 
         fn respondedDenialLeftPending(self: *const @This(), mailbox_id: u64, err: anyerror) bool {
@@ -11062,6 +11068,7 @@ pub const Guest = struct {
 
         const max_wasm_validator_values = 512;
         const wasm_unknown_type = 0xff;
+        const wasm_v128_type = 0x7b;
         const WasmFunctionShape = struct {
             params: [max_wasm_validator_values]u8 = undefined,
             param_count: u32 = 0,
@@ -11295,22 +11302,22 @@ pub const Guest = struct {
 
         fn validateWasmBranchTable(context: *WasmBodyContext, bytes: []const u8, cursor: *usize) !void {
             const label_count = try readWasmU32(bytes, cursor);
-            if (label_count > max_wasm_validator_values) return error.InvalidFrameEncoding;
-            var targets: [max_wasm_validator_values]u32 = undefined;
             var label_index: u32 = 0;
+            var reference_frame: ?WasmControlFrame = null;
             while (label_index < label_count) : (label_index += 1) {
                 const target = try readWasmU32(bytes, cursor);
                 if (target >= context.control_count) return error.InvalidFrameEncoding;
-                targets[label_index] = target;
+                const target_frame = context.controls[context.control_count - 1 - target];
+                if (reference_frame) |frame| {
+                    try validateWasmBranchTableTargetShape(frame, target_frame);
+                } else {
+                    reference_frame = target_frame;
+                }
             }
             const default_target = try readWasmU32(bytes, cursor);
             if (default_target >= context.control_count) return error.InvalidFrameEncoding;
             const default_frame = context.controls[context.control_count - 1 - default_target];
-            label_index = 0;
-            while (label_index < label_count) : (label_index += 1) {
-                const target_frame = context.controls[context.control_count - 1 - targets[label_index]];
-                try validateWasmBranchTableTargetShape(default_frame, target_frame);
-            }
+            if (reference_frame) |frame| try validateWasmBranchTableTargetShape(default_frame, frame);
             try popWasmValue(context, 0x7f);
             try validateWasmLabelValues(context, default_target);
             markWasmUnreachable(context);
@@ -11531,7 +11538,8 @@ pub const Guest = struct {
                 },
                 0x1c => try validateWasmTypedSelect(context, bytes, cursor),
                 0xfc => try validateWasmMiscInstruction(bytes, cursor, context),
-                0xfd, 0xfe => return error.InvalidFrameEncoding,
+                0xfd => try validateWasmSimdInstruction(bytes, cursor, context),
+                0xfe => return error.InvalidFrameEncoding,
                 else => return error.InvalidFrameEncoding,
             }
         }
@@ -11752,6 +11760,17 @@ pub const Guest = struct {
                     try popWasmValue(context, 0x7f);
                     try popWasmValue(context, table_type);
                     try popWasmValue(context, 0x7f);
+                },
+                else => return error.InvalidFrameEncoding,
+            }
+        }
+
+        fn validateWasmSimdInstruction(bytes: []const u8, cursor: *usize, context: *WasmBodyContext) !void {
+            const subopcode = try readWasmU32(bytes, cursor);
+            switch (subopcode) {
+                0x0c => {
+                    try skipWasmBytes(bytes, cursor, 16);
+                    try pushWasmValue(context, wasm_v128_type);
                 },
                 else => return error.InvalidFrameEncoding,
             }

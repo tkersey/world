@@ -1177,6 +1177,38 @@ fn appendGuestWasmInvalidBranchTableStackBodyCodeSection(module: *std.ArrayList(
     try appendWasmSection(module, 10, code.items);
 }
 
+fn appendGuestWasmLargeBranchTableBodyCodeSection(module: *std.ArrayList(u8)) !void {
+    var code: std.ArrayList(u8) = .empty;
+    defer code.deinit(std.testing.allocator);
+    try appendWasmU32(&code, @intCast(world.Guest.Abi.required_exports.len));
+    for (world.Guest.Abi.required_exports, 0..) |_, index| {
+        var body: std.ArrayList(u8) = .empty;
+        defer body.deinit(std.testing.allocator);
+        try appendWasmU32(&body, 0);
+        if (index == 0) {
+            try body.append(std.testing.allocator, 0x41);
+            try appendWasmU32(&body, world.Guest.Abi.version);
+        } else if (index == 1) {
+            try body.append(std.testing.allocator, 0x41);
+            try appendWasmU32(&body, 0);
+            try body.append(std.testing.allocator, 0x41);
+            try appendWasmU32(&body, 0);
+            try body.append(std.testing.allocator, 0x0e);
+            try appendWasmU32(&body, 513);
+            var target_index: u32 = 0;
+            while (target_index < 513) : (target_index += 1) try appendWasmU32(&body, 0);
+            try appendWasmU32(&body, 0);
+        } else {
+            try body.append(std.testing.allocator, 0x41);
+            try appendWasmU32(&body, 0);
+        }
+        try body.append(std.testing.allocator, 0x0b);
+        try appendWasmU32(&code, @intCast(body.items.len));
+        try code.appendSlice(std.testing.allocator, body.items);
+    }
+    try appendWasmSection(module, 10, code.items);
+}
+
 fn appendGuestWasmTypedBlockParamBodyCodeSection(module: *std.ArrayList(u8)) !void {
     var code: std.ArrayList(u8) = .empty;
     defer code.deinit(std.testing.allocator);
@@ -1220,6 +1252,11 @@ fn appendGuestWasmSimdBodyCodeSection(module: *std.ArrayList(u8)) !void {
             try appendWasmU32(&body, world.Guest.Abi.version);
         } else if (index == 1) {
             try body.append(std.testing.allocator, 0xfd);
+            try appendWasmU32(&body, 0x0c);
+            try body.appendNTimes(std.testing.allocator, 0, 16);
+            try body.append(std.testing.allocator, 0x1a);
+            try body.append(std.testing.allocator, 0x41);
+            try appendWasmU32(&body, 0);
         } else {
             try body.append(std.testing.allocator, 0x41);
             try appendWasmU32(&body, 0);
@@ -2818,6 +2855,29 @@ fn syntheticInvalidBranchTableStackGuestWasm(allocator: std.mem.Allocator) ![]u8
     return module.toOwnedSlice(allocator);
 }
 
+fn syntheticLargeBranchTableGuestWasm(allocator: std.mem.Allocator) ![]u8 {
+    var module: std.ArrayList(u8) = .empty;
+    errdefer module.deinit(allocator);
+    try module.appendSlice(allocator, "\x00asm\x01\x00\x00\x00");
+    try appendGuestWasmTypeSection(&module);
+    try appendGuestWasmFunctionSection(&module, false);
+    try appendGuestWasmMemorySection(&module);
+    var exports: std.ArrayList(u8) = .empty;
+    defer exports.deinit(allocator);
+    try appendWasmU32(&exports, @intCast(world.Guest.Abi.required_exports.len + 1));
+    for (world.Guest.Abi.required_exports, 0..) |name, index| {
+        try appendWasmName(&exports, name);
+        try exports.append(allocator, 0);
+        try appendWasmU32(&exports, @intCast(index));
+    }
+    try appendWasmName(&exports, "memory");
+    try exports.append(allocator, 2);
+    try appendWasmU32(&exports, 0);
+    try appendWasmSection(&module, 7, exports.items);
+    try appendGuestWasmLargeBranchTableBodyCodeSection(&module);
+    return module.toOwnedSlice(allocator);
+}
+
 fn syntheticTypedBlockParamGuestWasm(allocator: std.mem.Allocator) ![]u8 {
     var module: std.ArrayList(u8) = .empty;
     errdefer module.deinit(allocator);
@@ -3512,6 +3572,10 @@ test "wasm export inspector validates required exports and forbidden imports" {
     defer std.testing.allocator.free(invalid_branch_table_stack);
     try std.testing.expectError(error.InvalidFrameEncoding, world.Guest.Wasm.inspect(invalid_branch_table_stack));
 
+    const large_branch_table = try syntheticLargeBranchTableGuestWasm(std.testing.allocator);
+    defer std.testing.allocator.free(large_branch_table);
+    try std.testing.expect((try world.Guest.Wasm.inspect(large_branch_table)).passed());
+
     const typed_block_param = try syntheticTypedBlockParamGuestWasm(std.testing.allocator);
     defer std.testing.allocator.free(typed_block_param);
     try std.testing.expectError(error.InvalidFrameEncoding, world.Guest.Wasm.inspect(typed_block_param));
@@ -3522,7 +3586,7 @@ test "wasm export inspector validates required exports and forbidden imports" {
 
     const simd_body = try syntheticSimdBodyGuestWasm(std.testing.allocator);
     defer std.testing.allocator.free(simd_body);
-    try std.testing.expectError(error.InvalidFrameEncoding, world.Guest.Wasm.inspect(simd_body));
+    try std.testing.expect((try world.Guest.Wasm.inspect(simd_body)).passed());
 
     const unreachable_i64_dead_code = try syntheticMutatedBodyGuestWasm(std.testing.allocator, .unreachable_i64_dead_code);
     defer std.testing.allocator.free(unreachable_i64_dead_code);
@@ -12518,6 +12582,19 @@ test "native guest supervised denial matches normal runspace denial" {
     try std.testing.expectEqual(world.Guest.Status.supervision_denied.code(), policy_denied_guest.world_tick());
     try std.testing.expectEqual(@as(usize, 0), policy_denied_ctx.calls);
     try std.testing.expectEqual(@as(u32, 0), policy_denied_guest.world_pending_count());
+    try std.testing.expectEqual(@as(usize, 0), policy_denied_guest.world_result_len());
+    try std.testing.expectEqual(world.Guest.Status.supervision_denied.code(), policy_denied_guest.world_status());
+    try std.testing.expectEqual(@as(usize, 0), policy_denied_guest.world_receipt_len());
+    try std.testing.expectEqual(world.Guest.Status.supervision_denied.code(), policy_denied_guest.world_status());
+    try std.testing.expectEqual(@as(usize, 0), policy_denied_guest.world_transcript_len());
+    try std.testing.expectEqual(world.Guest.Status.supervision_denied.code(), policy_denied_guest.world_status());
+    var denied_probe_buffer: [8]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, 0), policy_denied_guest.world_read_result(&denied_probe_buffer));
+    try std.testing.expectEqual(world.Guest.Status.supervision_denied.code(), policy_denied_guest.world_status());
+    try std.testing.expectEqual(@as(usize, 0), policy_denied_guest.world_read_receipt(&denied_probe_buffer));
+    try std.testing.expectEqual(world.Guest.Status.supervision_denied.code(), policy_denied_guest.world_status());
+    try std.testing.expectEqual(@as(usize, 0), policy_denied_guest.world_read_transcript(&denied_probe_buffer));
+    try std.testing.expectEqual(world.Guest.Status.supervision_denied.code(), policy_denied_guest.world_status());
 }
 
 const BorrowedAgentCtx = struct {
