@@ -11501,7 +11501,7 @@ pub const Guest = struct {
 
         fn wasmLocalType(context: *const WasmBodyContext, local_index: u32) !u8 {
             if (local_index >= context.local_count) return error.InvalidFrameEncoding;
-            if (local_index >= max_wasm_validator_values) return wasm_unknown_type;
+            if (local_index >= max_wasm_validator_values) return error.InvalidFrameEncoding;
             return context.locals[local_index];
         }
 

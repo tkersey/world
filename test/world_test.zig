@@ -1102,6 +1102,7 @@ const GuestWasmBodyMutation = enum {
     valid_table_bulk_memory,
     valid_high_elem_drop,
     high_table_init,
+    invalid_high_local_type,
     malformed_i32_leb,
     invalid_table_copy_mismatch,
     invalid_table_init_mismatch,
@@ -1114,7 +1115,7 @@ fn appendGuestWasmMutatedBodyCodeSection(module: *std.ArrayList(u8), mutation: G
     for (world.Guest.Abi.required_exports, 0..) |_, index| {
         var body: std.ArrayList(u8) = .empty;
         defer body.deinit(std.testing.allocator);
-        try appendWasmU32(&body, if (index == 1 and mutation == .many_unused_locals) 1 else 0);
+        try appendWasmU32(&body, if (index == 1 and (mutation == .many_unused_locals or mutation == .invalid_high_local_type)) 1 else 0);
         if (index == 0) {
             try body.append(std.testing.allocator, 0x41);
             try appendWasmU32(&body, world.Guest.Abi.version);
@@ -1347,6 +1348,15 @@ fn appendGuestWasmMutatedBodyCodeSection(module: *std.ArrayList(u8), mutation: G
                     try appendWasmU32(&body, 0x0c);
                     try appendWasmU32(&body, 512);
                     try appendWasmU32(&body, 0);
+                    try body.append(std.testing.allocator, 0x41);
+                    try appendWasmU32(&body, 0);
+                },
+                .invalid_high_local_type => {
+                    try appendWasmU32(&body, 513);
+                    try body.append(std.testing.allocator, 0x7c);
+                    try body.append(std.testing.allocator, 0x20);
+                    try appendWasmU32(&body, 512);
+                    try body.append(std.testing.allocator, 0x45);
                     try body.append(std.testing.allocator, 0x41);
                     try appendWasmU32(&body, 0);
                 },
@@ -3162,6 +3172,10 @@ test "wasm export inspector validates required exports and forbidden imports" {
     const large_parameter_helper = try syntheticLargeParameterHelperGuestWasm(std.testing.allocator);
     defer std.testing.allocator.free(large_parameter_helper);
     try std.testing.expect((try world.Guest.Wasm.inspect(large_parameter_helper)).passed());
+
+    const invalid_high_local_type = try syntheticMutatedBodyGuestWasm(std.testing.allocator, .invalid_high_local_type);
+    defer std.testing.allocator.free(invalid_high_local_type);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Guest.Wasm.inspect(invalid_high_local_type));
 
     const valid_table_get_set = try syntheticTableInstructionGuestWasm(std.testing.allocator, .valid_table_get_set);
     defer std.testing.allocator.free(valid_table_get_set);
