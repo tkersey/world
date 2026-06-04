@@ -637,13 +637,17 @@ fn appendGuestWasmUndeclaredRefFuncGlobalSection(module: *std.ArrayList(u8)) !vo
 }
 
 fn appendGuestWasmImmutableI32GlobalSection(module: *std.ArrayList(u8)) !void {
+    return appendGuestWasmImmutableI32GlobalSectionValue(module, 0);
+}
+
+fn appendGuestWasmImmutableI32GlobalSectionValue(module: *std.ArrayList(u8), value: u32) !void {
     var global: std.ArrayList(u8) = .empty;
     defer global.deinit(std.testing.allocator);
     try appendWasmU32(&global, 1);
     try global.append(std.testing.allocator, 0x7f);
     try global.append(std.testing.allocator, 0);
     try global.append(std.testing.allocator, 0x41);
-    try appendWasmU32(&global, 0);
+    try appendWasmU32(&global, value);
     try global.append(std.testing.allocator, 0x0b);
     try appendWasmSection(module, 6, global.items);
 }
@@ -700,6 +704,86 @@ fn appendGuestWasmCodeSectionWithAbiReturn(module: *std.ArrayList(u8), defined_f
             try appendWasmU32(&body, abi_version);
             if (explicit_abi_return) try body.append(std.testing.allocator, 0x0f);
         } else if (index < world.Guest.Abi.required_exports.len or index == world.Guest.Abi.required_exports.len) {
+            try body.append(std.testing.allocator, 0x41);
+            try appendWasmU32(&body, 0);
+        }
+        try body.append(std.testing.allocator, 0x0b);
+        try appendWasmU32(&code, @intCast(body.items.len));
+        try code.appendSlice(std.testing.allocator, body.items);
+    }
+    try appendWasmSection(module, 10, code.items);
+}
+
+fn appendGuestWasmCodeSectionWithAbiLocal(module: *std.ArrayList(u8), defined_function_count: usize, abi_version: u32) !void {
+    var code: std.ArrayList(u8) = .empty;
+    defer code.deinit(std.testing.allocator);
+    try appendWasmU32(&code, @intCast(defined_function_count));
+    var index: usize = 0;
+    while (index < defined_function_count) : (index += 1) {
+        var body: std.ArrayList(u8) = .empty;
+        defer body.deinit(std.testing.allocator);
+        if (index == 0) {
+            try appendWasmU32(&body, 1);
+            try appendWasmU32(&body, 1);
+            try body.append(std.testing.allocator, 0x7f);
+            try body.append(std.testing.allocator, 0x41);
+            try appendWasmU32(&body, abi_version);
+            try body.append(std.testing.allocator, 0x21);
+            try appendWasmU32(&body, 0);
+            try body.append(std.testing.allocator, 0x20);
+            try appendWasmU32(&body, 0);
+        } else {
+            try appendWasmU32(&body, 0);
+            try body.append(std.testing.allocator, 0x41);
+            try appendWasmU32(&body, 0);
+        }
+        try body.append(std.testing.allocator, 0x0b);
+        try appendWasmU32(&code, @intCast(body.items.len));
+        try code.appendSlice(std.testing.allocator, body.items);
+    }
+    try appendWasmSection(module, 10, code.items);
+}
+
+fn appendGuestWasmCodeSectionWithAbiGlobal(module: *std.ArrayList(u8), defined_function_count: usize) !void {
+    var code: std.ArrayList(u8) = .empty;
+    defer code.deinit(std.testing.allocator);
+    try appendWasmU32(&code, @intCast(defined_function_count));
+    var index: usize = 0;
+    while (index < defined_function_count) : (index += 1) {
+        var body: std.ArrayList(u8) = .empty;
+        defer body.deinit(std.testing.allocator);
+        try appendWasmU32(&body, 0);
+        if (index == 0) {
+            try body.append(std.testing.allocator, 0x23);
+            try appendWasmU32(&body, 0);
+        } else {
+            try body.append(std.testing.allocator, 0x41);
+            try appendWasmU32(&body, 0);
+        }
+        try body.append(std.testing.allocator, 0x0b);
+        try appendWasmU32(&code, @intCast(body.items.len));
+        try code.appendSlice(std.testing.allocator, body.items);
+    }
+    try appendWasmSection(module, 10, code.items);
+}
+
+fn appendGuestWasmCodeSectionWithAbiEarlyReturnDeadCode(module: *std.ArrayList(u8), defined_function_count: usize, abi_version: u32) !void {
+    var code: std.ArrayList(u8) = .empty;
+    defer code.deinit(std.testing.allocator);
+    try appendWasmU32(&code, @intCast(defined_function_count));
+    var index: usize = 0;
+    while (index < defined_function_count) : (index += 1) {
+        var body: std.ArrayList(u8) = .empty;
+        defer body.deinit(std.testing.allocator);
+        try appendWasmU32(&body, 0);
+        if (index == 0) {
+            try body.append(std.testing.allocator, 0x41);
+            try appendWasmU32(&body, abi_version);
+            try body.append(std.testing.allocator, 0x0f);
+            try body.append(std.testing.allocator, 0x41);
+            try appendWasmU32(&body, 99);
+            try body.append(std.testing.allocator, 0x1a);
+        } else {
             try body.append(std.testing.allocator, 0x41);
             try appendWasmU32(&body, 0);
         }
@@ -1502,6 +1586,104 @@ fn syntheticExplicitReturnAbiGuestWasm(allocator: std.mem.Allocator) ![]u8 {
     try appendWasmU32(&exports, 0);
     try appendWasmSection(&module, 7, exports.items);
     try appendGuestWasmCodeSectionWithAbiReturn(&module, world.Guest.Abi.required_exports.len, world.Guest.Abi.version, true);
+    return module.toOwnedSlice(allocator);
+}
+
+fn syntheticLocalAbiGuestWasm(allocator: std.mem.Allocator) ![]u8 {
+    var module: std.ArrayList(u8) = .empty;
+    errdefer module.deinit(allocator);
+    try module.appendSlice(allocator, "\x00asm\x01\x00\x00\x00");
+    try appendGuestWasmTypeSection(&module);
+    try appendGuestWasmFunctionSection(&module, false);
+    try appendGuestWasmMemorySection(&module);
+    var exports: std.ArrayList(u8) = .empty;
+    defer exports.deinit(allocator);
+    try appendWasmU32(&exports, @intCast(world.Guest.Abi.required_exports.len + 1));
+    for (world.Guest.Abi.required_exports, 0..) |name, index| {
+        try appendWasmName(&exports, name);
+        try exports.append(allocator, 0);
+        try appendWasmU32(&exports, @intCast(index));
+    }
+    try appendWasmName(&exports, "memory");
+    try exports.append(allocator, 2);
+    try appendWasmU32(&exports, 0);
+    try appendWasmSection(&module, 7, exports.items);
+    try appendGuestWasmCodeSectionWithAbiLocal(&module, world.Guest.Abi.required_exports.len, world.Guest.Abi.version);
+    return module.toOwnedSlice(allocator);
+}
+
+fn syntheticGlobalAbiGuestWasm(allocator: std.mem.Allocator) ![]u8 {
+    var module: std.ArrayList(u8) = .empty;
+    errdefer module.deinit(allocator);
+    try module.appendSlice(allocator, "\x00asm\x01\x00\x00\x00");
+    try appendGuestWasmTypeSection(&module);
+    try appendGuestWasmFunctionSection(&module, false);
+    try appendGuestWasmMemorySection(&module);
+    try appendGuestWasmImmutableI32GlobalSectionValue(&module, world.Guest.Abi.version);
+    var exports: std.ArrayList(u8) = .empty;
+    defer exports.deinit(allocator);
+    try appendWasmU32(&exports, @intCast(world.Guest.Abi.required_exports.len + 1));
+    for (world.Guest.Abi.required_exports, 0..) |name, index| {
+        try appendWasmName(&exports, name);
+        try exports.append(allocator, 0);
+        try appendWasmU32(&exports, @intCast(index));
+    }
+    try appendWasmName(&exports, "memory");
+    try exports.append(allocator, 2);
+    try appendWasmU32(&exports, 0);
+    try appendWasmSection(&module, 7, exports.items);
+    try appendGuestWasmCodeSectionWithAbiGlobal(&module, world.Guest.Abi.required_exports.len);
+    return module.toOwnedSlice(allocator);
+}
+
+fn syntheticEarlyReturnDeadCodeAbiGuestWasm(allocator: std.mem.Allocator) ![]u8 {
+    var module: std.ArrayList(u8) = .empty;
+    errdefer module.deinit(allocator);
+    try module.appendSlice(allocator, "\x00asm\x01\x00\x00\x00");
+    try appendGuestWasmTypeSection(&module);
+    try appendGuestWasmFunctionSection(&module, false);
+    try appendGuestWasmMemorySection(&module);
+    var exports: std.ArrayList(u8) = .empty;
+    defer exports.deinit(allocator);
+    try appendWasmU32(&exports, @intCast(world.Guest.Abi.required_exports.len + 1));
+    for (world.Guest.Abi.required_exports, 0..) |name, index| {
+        try appendWasmName(&exports, name);
+        try exports.append(allocator, 0);
+        try appendWasmU32(&exports, @intCast(index));
+    }
+    try appendWasmName(&exports, "memory");
+    try exports.append(allocator, 2);
+    try appendWasmU32(&exports, 0);
+    try appendWasmSection(&module, 7, exports.items);
+    try appendGuestWasmCodeSectionWithAbiEarlyReturnDeadCode(&module, world.Guest.Abi.required_exports.len, world.Guest.Abi.version);
+    return module.toOwnedSlice(allocator);
+}
+
+fn syntheticMalformedCustomSectionGuestWasm(allocator: std.mem.Allocator) ![]u8 {
+    var module: std.ArrayList(u8) = .empty;
+    errdefer module.deinit(allocator);
+    try module.appendSlice(allocator, "\x00asm\x01\x00\x00\x00");
+    var custom: std.ArrayList(u8) = .empty;
+    defer custom.deinit(allocator);
+    try appendWasmU32(&custom, 8);
+    try custom.appendSlice(allocator, "bad");
+    try appendWasmSection(&module, 0, custom.items);
+    try appendGuestWasmTypeSection(&module);
+    try appendGuestWasmFunctionSection(&module, false);
+    try appendGuestWasmMemorySection(&module);
+    var exports: std.ArrayList(u8) = .empty;
+    defer exports.deinit(allocator);
+    try appendWasmU32(&exports, @intCast(world.Guest.Abi.required_exports.len + 1));
+    for (world.Guest.Abi.required_exports, 0..) |name, index| {
+        try appendWasmName(&exports, name);
+        try exports.append(allocator, 0);
+        try appendWasmU32(&exports, @intCast(index));
+    }
+    try appendWasmName(&exports, "memory");
+    try exports.append(allocator, 2);
+    try appendWasmU32(&exports, 0);
+    try appendWasmSection(&module, 7, exports.items);
+    try appendGuestWasmCodeSection(&module, world.Guest.Abi.required_exports.len, world.Guest.Abi.version);
     return module.toOwnedSlice(allocator);
 }
 
@@ -3026,6 +3208,28 @@ test "wasm export inspector validates required exports and forbidden imports" {
     const explicit_return_inspection = try world.Guest.Wasm.inspect(explicit_return_abi);
     try std.testing.expectEqual(world.Guest.Abi.version, explicit_return_inspection.abi_version);
     try std.testing.expect(explicit_return_inspection.passed());
+
+    const local_abi = try syntheticLocalAbiGuestWasm(std.testing.allocator);
+    defer std.testing.allocator.free(local_abi);
+    const local_abi_inspection = try world.Guest.Wasm.inspect(local_abi);
+    try std.testing.expectEqual(world.Guest.Abi.version, local_abi_inspection.abi_version);
+    try std.testing.expect(local_abi_inspection.passed());
+
+    const global_abi = try syntheticGlobalAbiGuestWasm(std.testing.allocator);
+    defer std.testing.allocator.free(global_abi);
+    const global_abi_inspection = try world.Guest.Wasm.inspect(global_abi);
+    try std.testing.expectEqual(world.Guest.Abi.version, global_abi_inspection.abi_version);
+    try std.testing.expect(global_abi_inspection.passed());
+
+    const early_return_dead_code_abi = try syntheticEarlyReturnDeadCodeAbiGuestWasm(std.testing.allocator);
+    defer std.testing.allocator.free(early_return_dead_code_abi);
+    const early_return_dead_code_inspection = try world.Guest.Wasm.inspect(early_return_dead_code_abi);
+    try std.testing.expectEqual(world.Guest.Abi.version, early_return_dead_code_inspection.abi_version);
+    try std.testing.expect(early_return_dead_code_inspection.passed());
+
+    const malformed_custom = try syntheticMalformedCustomSectionGuestWasm(std.testing.allocator);
+    defer std.testing.allocator.free(malformed_custom);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Guest.Wasm.inspect(malformed_custom));
 
     const data_count_guest = try syntheticDataCountGuestWasm(std.testing.allocator);
     defer std.testing.allocator.free(data_count_guest);
@@ -7930,7 +8134,7 @@ test "guest core keeps retryable responded policy denial visible as pending work
     defer std.testing.allocator.free(denied_response_bytes);
 
     try std.testing.expect(denied_response.response_image.?.bytes.len > 1);
-    try std.testing.expectEqual(world.Guest.Status.invalid_frame, guest.submitResponse(denied_response_bytes));
+    try std.testing.expectEqual(world.Guest.Status.supervision_denied, guest.submitResponse(denied_response_bytes));
     try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try guest.runspace.getSlotSummary(guest.handle.?)).status);
     try std.testing.expectEqual(@as(usize, 1), guest.pendingCount());
     try std.testing.expect(guest.lastErrorLen() > 0);

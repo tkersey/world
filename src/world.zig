@@ -10126,7 +10126,7 @@ pub const Guest = struct {
             _ = self.runspace.respond(mailbox_id, response) catch |err| {
                 if (err == error.HandlerPending) return self.refreshStatus();
                 if (response.status == .responded and self.respondedDenialLeftPending(mailbox_id, err)) {
-                    return self.setStatus(.invalid_frame, "response denied while pending request remains retryable");
+                    return self.setStatus(.supervision_denied, "supervision denied response while pending request remains retryable");
                 }
                 if (self.mapDeniedResponseStatus(response.status, err)) |mapped_status| return mapped_status;
                 return self.mapRunspaceError(err);
@@ -10638,6 +10638,8 @@ pub const Guest = struct {
                     if (section_rank <= last_non_custom_section_rank) return error.InvalidFrameEncoding;
                     last_non_custom_section_rank = section_rank;
                     if (section_id == 8) return error.InvalidFrameEncoding;
+                } else {
+                    try validateCustomSection(bytes[cursor..section_end]);
                 }
                 switch (section_id) {
                     1 => type_section = bytes[cursor..section_end],
@@ -10951,7 +10953,7 @@ pub const Guest = struct {
                 cursor += body_len;
                 const type_index = try functionTypeIndex(function_section, index);
                 try validateWasmFunctionBody(body, type_section, function_section, global_section, table_section, element_section, type_index, function_import_count, function_count, type_count, table_types, table_count, global_count, element_types, element_count, data_count, data_count_present, function_refs);
-                if (index == abi_defined_index) abi_version = try inspectAbiVersionBody(body);
+                if (index == abi_defined_index) abi_version = try inspectAbiVersionBody(body, global_section, global_count, function_count);
             }
             if (cursor != section.len) return error.InvalidFrameEncoding;
             return abi_version orelse error.InvalidFrameEncoding;
@@ -11753,24 +11755,98 @@ pub const Guest = struct {
             return error.InvalidFrameEncoding;
         }
 
-        fn inspectAbiVersionBody(body: []const u8) !u32 {
+        fn validateCustomSection(section: []const u8) !void {
+            var cursor: usize = 0;
+            _ = try readWasmName(section, &cursor);
+        }
+
+        fn inspectAbiVersionBody(body: []const u8, global_section: []const u8, global_count: u32, function_count: u32) !u32 {
             var cursor: usize = 0;
             const local_decl_count = try readWasmU32(body, &cursor);
+            var local_values = [_]u32{0} ** max_wasm_validator_values;
+            var local_known = [_]bool{false} ** max_wasm_validator_values;
+            var local_total: u32 = 0;
             var local_decl_index: u32 = 0;
             while (local_decl_index < local_decl_count) : (local_decl_index += 1) {
-                _ = try readWasmU32(body, &cursor);
-                _ = try readWasmU8(body, &cursor);
+                const local_count = try readWasmU32(body, &cursor);
+                const value_type = try readWasmU8(body, &cursor);
+                if (!validWasmValueType(value_type)) return error.InvalidFrameEncoding;
+                if (local_count > std.math.maxInt(u32) - local_total) return error.InvalidFrameEncoding;
+                const first_local = local_total;
+                local_total += local_count;
+                if (local_total > max_wasm_validator_values) return error.InvalidFrameEncoding;
+                if (value_type == 0x7f) {
+                    var index: u32 = 0;
+                    while (index < local_count) : (index += 1) {
+                        local_known[first_local + index] = true;
+                        local_values[first_local + index] = 0;
+                    }
+                }
             }
-            if (try readWasmU8(body, &cursor) != 0x41) return error.InvalidFrameEncoding;
-            const abi_version = try readWasmI32NonNegative(body, &cursor);
-            const terminator = try readWasmU8(body, &cursor);
-            if (terminator == 0x0f) {
-                if (try readWasmU8(body, &cursor) != 0x0b) return error.InvalidFrameEncoding;
-            } else if (terminator != 0x0b) {
-                return error.InvalidFrameEncoding;
+            var stack_known = false;
+            var stack_value: u32 = 0;
+            while (cursor < body.len) {
+                const opcode = try readWasmU8(body, &cursor);
+                switch (opcode) {
+                    0x0b, 0x0f => {
+                        if (!stack_known) return error.InvalidFrameEncoding;
+                        return stack_value;
+                    },
+                    0x1a => stack_known = false,
+                    0x20 => {
+                        const local_index = try readWasmU32(body, &cursor);
+                        if (local_index >= local_total or !local_known[local_index]) return error.InvalidFrameEncoding;
+                        stack_known = true;
+                        stack_value = local_values[local_index];
+                    },
+                    0x21 => {
+                        const local_index = try readWasmU32(body, &cursor);
+                        if (local_index >= local_total or !stack_known) return error.InvalidFrameEncoding;
+                        local_known[local_index] = true;
+                        local_values[local_index] = stack_value;
+                        stack_known = false;
+                    },
+                    0x22 => {
+                        const local_index = try readWasmU32(body, &cursor);
+                        if (local_index >= local_total or !stack_known) return error.InvalidFrameEncoding;
+                        local_known[local_index] = true;
+                        local_values[local_index] = stack_value;
+                    },
+                    0x23 => {
+                        stack_value = try wasmI32GlobalConst(global_section, try readWasmU32(body, &cursor), global_count, function_count);
+                        stack_known = true;
+                    },
+                    0x41 => {
+                        stack_value = try readWasmI32NonNegative(body, &cursor);
+                        stack_known = true;
+                    },
+                    else => return error.InvalidFrameEncoding,
+                }
             }
-            if (cursor != body.len) return error.InvalidFrameEncoding;
-            return abi_version;
+            return error.InvalidFrameEncoding;
+        }
+
+        fn wasmI32GlobalConst(section: []const u8, global_index: u32, global_count: u32, function_count: u32) !u32 {
+            if (global_index >= global_count) return error.InvalidFrameEncoding;
+            var cursor: usize = 0;
+            const count = try readWasmU32(section, &cursor);
+            if (global_index >= count) return error.InvalidFrameEncoding;
+            var index: u32 = 0;
+            while (index < count) : (index += 1) {
+                const value_type = try readWasmU8(section, &cursor);
+                if (!validWasmValueType(value_type)) return error.InvalidFrameEncoding;
+                const mutable = try readWasmU8(section, &cursor);
+                if (mutable > 1) return error.InvalidFrameEncoding;
+                if (index == global_index) {
+                    if (value_type != 0x7f or mutable != 0) return error.InvalidFrameEncoding;
+                    if (try readWasmU8(section, &cursor) != 0x41) return error.InvalidFrameEncoding;
+                    const value = try readWasmI32NonNegative(section, &cursor);
+                    if (try readWasmU8(section, &cursor) != 0x0b) return error.InvalidFrameEncoding;
+                    return value;
+                }
+                try skipWasmInitExpr(section, &cursor, function_count, section, index, value_type);
+            }
+            return error.InvalidFrameEncoding;
         }
 
         fn forbiddenImport(name: []const u8) bool {
