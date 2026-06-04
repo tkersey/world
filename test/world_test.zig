@@ -316,6 +316,22 @@ fn appendGuestWasmTypeSectionWithLargeHelper(module: *std.ArrayList(u8)) !void {
     try appendWasmSection(module, 1, types.items);
 }
 
+fn appendGuestWasmTypeSectionWithV128Helper(module: *std.ArrayList(u8)) !void {
+    var types: std.ArrayList(u8) = .empty;
+    defer types.deinit(std.testing.allocator);
+    try appendWasmU32(&types, 6);
+    try appendWasmFuncType(&types, 0, 1);
+    try appendWasmFuncType(&types, 1, 1);
+    try appendWasmFuncType(&types, 2, 1);
+    try appendWasmFuncType(&types, 3, 1);
+    try appendWasmFuncType(&types, 2, 0);
+    try types.append(std.testing.allocator, 0x60);
+    try appendWasmU32(&types, 1);
+    try types.append(std.testing.allocator, 0x7b);
+    try appendWasmU32(&types, 0);
+    try appendWasmSection(module, 1, types.items);
+}
+
 fn appendGuestWasmMalformedTrailingTypeSection(module: *std.ArrayList(u8)) !void {
     var types: std.ArrayList(u8) = .empty;
     defer types.deinit(std.testing.allocator);
@@ -417,6 +433,16 @@ fn appendGuestWasmMultipleMemorySection(module: *std.ArrayList(u8)) !void {
     try memory.append(std.testing.allocator, 0);
     try appendWasmU32(&memory, 1);
     try memory.append(std.testing.allocator, 0);
+    try appendWasmU32(&memory, 1);
+    try appendWasmSection(module, 5, memory.items);
+}
+
+fn appendGuestWasmSharedMemorySection(module: *std.ArrayList(u8)) !void {
+    var memory: std.ArrayList(u8) = .empty;
+    defer memory.deinit(std.testing.allocator);
+    try appendWasmU32(&memory, 1);
+    try memory.append(std.testing.allocator, 3);
+    try appendWasmU32(&memory, 1);
     try appendWasmU32(&memory, 1);
     try appendWasmSection(module, 5, memory.items);
 }
@@ -1692,6 +1718,29 @@ fn syntheticInvalidUnusedTypeGuestWasm(allocator: std.mem.Allocator) ![]u8 {
     return module.toOwnedSlice(allocator);
 }
 
+fn syntheticV128TypeGuestWasm(allocator: std.mem.Allocator) ![]u8 {
+    var module: std.ArrayList(u8) = .empty;
+    errdefer module.deinit(allocator);
+    try module.appendSlice(allocator, "\x00asm\x01\x00\x00\x00");
+    try appendGuestWasmTypeSectionWithV128Helper(&module);
+    try appendGuestWasmFunctionSection(&module, false);
+    try appendGuestWasmMemorySection(&module);
+    var exports: std.ArrayList(u8) = .empty;
+    defer exports.deinit(allocator);
+    try appendWasmU32(&exports, @intCast(world.Guest.Abi.required_exports.len + 1));
+    for (world.Guest.Abi.required_exports, 0..) |name, index| {
+        try appendWasmName(&exports, name);
+        try exports.append(allocator, 0);
+        try appendWasmU32(&exports, @intCast(index));
+    }
+    try appendWasmName(&exports, "memory");
+    try exports.append(allocator, 2);
+    try appendWasmU32(&exports, 0);
+    try appendWasmSection(&module, 7, exports.items);
+    try appendGuestWasmCodeSection(&module, world.Guest.Abi.required_exports.len, world.Guest.Abi.version);
+    return module.toOwnedSlice(allocator);
+}
+
 fn syntheticDuplicateSectionGuestWasm(allocator: std.mem.Allocator) ![]u8 {
     var module: std.ArrayList(u8) = .empty;
     errdefer module.deinit(allocator);
@@ -1818,6 +1867,29 @@ fn syntheticMultipleMemoryGuestWasm(allocator: std.mem.Allocator) ![]u8 {
     try appendGuestWasmTypeSection(&module);
     try appendGuestWasmFunctionSection(&module, false);
     try appendGuestWasmMultipleMemorySection(&module);
+    var exports: std.ArrayList(u8) = .empty;
+    defer exports.deinit(allocator);
+    try appendWasmU32(&exports, @intCast(world.Guest.Abi.required_exports.len + 1));
+    for (world.Guest.Abi.required_exports, 0..) |name, index| {
+        try appendWasmName(&exports, name);
+        try exports.append(allocator, 0);
+        try appendWasmU32(&exports, @intCast(index));
+    }
+    try appendWasmName(&exports, "memory");
+    try exports.append(allocator, 2);
+    try appendWasmU32(&exports, 0);
+    try appendWasmSection(&module, 7, exports.items);
+    try appendGuestWasmCodeSection(&module, world.Guest.Abi.required_exports.len, world.Guest.Abi.version);
+    return module.toOwnedSlice(allocator);
+}
+
+fn syntheticSharedMemoryGuestWasm(allocator: std.mem.Allocator) ![]u8 {
+    var module: std.ArrayList(u8) = .empty;
+    errdefer module.deinit(allocator);
+    try module.appendSlice(allocator, "\x00asm\x01\x00\x00\x00");
+    try appendGuestWasmTypeSection(&module);
+    try appendGuestWasmFunctionSection(&module, false);
+    try appendGuestWasmSharedMemorySection(&module);
     var exports: std.ArrayList(u8) = .empty;
     defer exports.deinit(allocator);
     try appendWasmU32(&exports, @intCast(world.Guest.Abi.required_exports.len + 1));
@@ -3012,6 +3084,10 @@ test "wasm export inspector validates required exports and forbidden imports" {
     defer std.testing.allocator.free(multiple_memory);
     try std.testing.expectError(error.InvalidFrameEncoding, world.Guest.Wasm.inspect(multiple_memory));
 
+    const shared_memory = try syntheticSharedMemoryGuestWasm(std.testing.allocator);
+    defer std.testing.allocator.free(shared_memory);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Guest.Wasm.inspect(shared_memory));
+
     const alloc_only = try syntheticAllocOnlyGuestWasm(std.testing.allocator);
     defer std.testing.allocator.free(alloc_only);
     const alloc_only_inspection = try world.Guest.Wasm.inspect(alloc_only);
@@ -3151,6 +3227,10 @@ test "wasm export inspector validates required exports and forbidden imports" {
     const typed_block_param = try syntheticTypedBlockParamGuestWasm(std.testing.allocator);
     defer std.testing.allocator.free(typed_block_param);
     try std.testing.expectError(error.InvalidFrameEncoding, world.Guest.Wasm.inspect(typed_block_param));
+
+    const v128_type = try syntheticV128TypeGuestWasm(std.testing.allocator);
+    defer std.testing.allocator.free(v128_type);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Guest.Wasm.inspect(v128_type));
 
     const simd_body = try syntheticSimdBodyGuestWasm(std.testing.allocator);
     defer std.testing.allocator.free(simd_body);

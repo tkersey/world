@@ -10725,7 +10725,7 @@ pub const Guest = struct {
             const count = try readWasmU32(section, &cursor);
             if (count > 1) return error.InvalidFrameEncoding;
             var index: u32 = 0;
-            while (index < count) : (index += 1) try skipWasmLimits(section, &cursor, wasm32_max_memory_pages, true);
+            while (index < count) : (index += 1) try skipWasmLimits(section, &cursor, wasm32_max_memory_pages, false);
             if (cursor != section.len) return error.InvalidFrameEncoding;
             return count;
         }
@@ -11846,7 +11846,7 @@ pub const Guest = struct {
                     _ = try readWasmU32(bytes, cursor);
                 },
                 1 => try skipWasmLimits(bytes, cursor, null, false),
-                2 => try skipWasmLimits(bytes, cursor, wasm32_max_memory_pages, true),
+                2 => try skipWasmLimits(bytes, cursor, wasm32_max_memory_pages, false),
                 3 => {
                     const value_type = try readWasmU8(bytes, cursor);
                     if (!validWasmValueType(value_type)) return error.InvalidFrameEncoding;
@@ -11876,7 +11876,7 @@ pub const Guest = struct {
 
         fn validWasmValueType(value: u8) bool {
             return switch (value) {
-                0x7f, 0x7e, 0x7d, 0x7c, 0x7b, 0x70, 0x6f => true,
+                0x7f, 0x7e, 0x7d, 0x7c, 0x70, 0x6f => true,
                 else => false,
             };
         }
