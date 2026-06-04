@@ -10668,6 +10668,7 @@ pub const Guest = struct {
                     const section_rank = try wasmSectionOrderRank(section_id);
                     if (section_rank <= last_non_custom_section_rank) return error.InvalidFrameEncoding;
                     last_non_custom_section_rank = section_rank;
+                    if (section_id == 8) return error.InvalidFrameEncoding;
                 } else {
                     try validateCustomSection(bytes[cursor..section_end]);
                 }
@@ -10685,7 +10686,6 @@ pub const Guest = struct {
                         global_count = try inspectGlobalSection(global_section, inspection.function_import_count + try functionCount(function_section));
                     },
                     7 => try inspectExportSection(bytes[cursor..section_end], type_section, function_section, table_count, memory_count, global_count, inspection.function_import_count, &inspection, &required_mask, &abi_defined_function_index),
-                    8 => try inspectStartSection(bytes[cursor..section_end], type_section, function_section, inspection.function_import_count),
                     9 => {
                         element_section = bytes[cursor..section_end];
                         element_count = try inspectElementSection(element_section, table_section, table_count, inspection.function_import_count + try functionCount(function_section), global_section, global_count, &function_refs, &element_types);
@@ -10734,19 +10734,6 @@ pub const Guest = struct {
                 11 => 12,
                 else => error.InvalidFrameEncoding,
             };
-        }
-
-        fn inspectStartSection(section: []const u8, type_section: []const u8, function_section: []const u8, function_import_count: u32) !void {
-            var cursor: usize = 0;
-            const function_index = try readWasmU32(section, &cursor);
-            if (cursor != section.len) return error.InvalidFrameEncoding;
-            const defined_function_count = try functionCount(function_section);
-            if (function_import_count > std.math.maxInt(u32) - defined_function_count) return error.InvalidFrameEncoding;
-            if (function_index >= function_import_count + defined_function_count) return error.InvalidFrameEncoding;
-            if (!try functionSignatureMatches(type_section, function_section, function_import_count, function_index, .{
-                .param_count = 0,
-                .result_count = 0,
-            })) return error.InvalidFrameEncoding;
         }
 
         fn inspectImportSection(section: []const u8, inspection: *Inspection) !u32 {
