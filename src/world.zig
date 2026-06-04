@@ -8607,6 +8607,8 @@ pub const Runspace = struct {
                 return err;
             };
         } else if (slot.supervisor) |*supervisor| {
+            var supervisor_snapshot = try self.snapshotSlotSupervisor(index);
+            defer supervisor_snapshot.deinit(self.allocator);
             supervisor.afterAdapterResponse(.{
                 .world_port_id = pending.world_port_id,
                 .status = status,
@@ -8614,11 +8616,17 @@ pub const Runspace = struct {
                 .value_image_bytes = accounting.value_image_bytes,
             }) catch |err| {
                 if (responseStatusDeniedError(status, err)) {
-                    _ = try self.parkPendingOnSupervision(index, pending, mailbox_id, "terminal response denied by supervision");
+                    _ = self.parkPendingOnSupervision(index, pending, mailbox_id, "terminal response denied by supervision") catch |park_err| {
+                        supervisor_snapshot.restore(self, index);
+                        return park_err;
+                    };
                     return err;
                 }
                 if ((err == error.HandlerPending or err == error.BudgetExceeded) and supervisor.interrupted) {
-                    return try self.parkPendingOnSupervision(index, pending, mailbox_id, "terminal response parked on supervision");
+                    return self.parkPendingOnSupervision(index, pending, mailbox_id, "terminal response parked on supervision") catch |park_err| {
+                        supervisor_snapshot.restore(self, index);
+                        return park_err;
+                    };
                 }
                 return err;
             };
