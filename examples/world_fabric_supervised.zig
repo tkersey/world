@@ -33,7 +33,7 @@ fn providerImage(allocator: std.mem.Allocator, seed: u64, value: []const u8) !st
     value_image: world.Frame.ValueImage,
 } {
     const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
-    var value_image = try world.Frame.ValueImage.fromValue(allocator, 1, seed, null, value, world.ValuePolicy.portable);
+    var value_image = try world.Frame.ValueImage.fromValue(allocator, 4, seed, null, value, world.ValuePolicy.portable);
     errdefer value_image.deinit(allocator);
     const state = world.RunState.init(.{
         .target_ref_fingerprint = provider_ref.target_ref_fingerprint,
@@ -84,6 +84,11 @@ pub fn main(init: std.process.Init) !void {
     const second_handle = try runspace.installRunImage(second.image);
     const parent_ref = world.TargetRef.fromTarget(fixtures.Agent.Target);
     const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    const mapping = world.Fabric.ValueMapping.init(.{
+        .kind = .provider_result_to_parent_response,
+        .provider_result_value_table_id = 4,
+        .parent_response_value_table_id = 4,
+    });
     const route = world.Fabric.Route.init(.{
         .route_id = 0xfab4,
         .kind = .target_export,
@@ -93,6 +98,7 @@ pub fn main(init: std.process.Init) !void {
         .provider_target_ref_fingerprint = provider_ref.target_ref_fingerprint,
         .provider_world_surface_fingerprint = provider_ref.world_surface_fingerprint,
         .provider_target_certificate_fingerprint = provider_ref.target_certificate_fingerprint,
+        .value_mapping_fingerprint = mapping.mapping_fingerprint,
     });
     const plan = world.Fabric.Plan.init(.{
         .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
@@ -101,9 +107,11 @@ pub fn main(init: std.process.Init) !void {
         .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
         .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Agent.Target).import_set_fingerprint,
         .routes = &.{route},
+        .value_mappings = &.{mapping},
         .max_depth = 2,
         .max_provider_runs = 2,
     });
+    try runspace.installFabricPlan(parent_ref, plan);
     var budget_exceeded = false;
     var model_responses: usize = 0;
 

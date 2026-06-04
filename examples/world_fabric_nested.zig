@@ -152,7 +152,7 @@ fn completedProviderImage(allocator: std.mem.Allocator, value: []const u8) !stru
     value_image: world.Frame.ValueImage,
 } {
     const provider_ref = world.TargetRef.fromTarget(StringProvider.Target);
-    var value_image = try world.Frame.ValueImage.fromValue(allocator, 1, 0x5150_fab3, null, value, world.ValuePolicy.portable);
+    var value_image = try world.Frame.ValueImage.fromValue(allocator, 4, 0x5150_fab3, null, value, world.ValuePolicy.portable);
     errdefer value_image.deinit(allocator);
     const state = world.RunState.init(.{
         .target_ref_fingerprint = provider_ref.target_ref_fingerprint,
@@ -199,8 +199,8 @@ pub fn main(init: std.process.Init) !void {
     const parent_ref = world.TargetRef.fromTarget(fixtures.Agent.Target);
     const mapping = world.Fabric.ValueMapping.init(.{
         .kind = .provider_result_to_parent_response,
-        .provider_result_value_table_id = 1,
-        .parent_response_value_table_id = 1,
+        .provider_result_value_table_id = 4,
+        .parent_response_value_table_id = 4,
     });
     const route = world.Fabric.Route.init(.{
         .route_id = 0xfab3,
@@ -226,21 +226,19 @@ pub fn main(init: std.process.Init) !void {
         .max_depth = 2,
         .max_provider_runs = 1,
     });
-    var saved_invocation: ?world.Fabric.Invocation = null;
+    try runspace.installFabricPlan(parent_ref, plan);
 
     var parent_decisions: usize = 0;
     var provider_result: []const u8 = "";
-    var routed_to_provider = false;
+    var fabric_routed = false;
     while ((try runspace.getSlotSummary(parent_handle)).status != .completed) {
         _ = try runspace.tick();
         const pending_ports = try runspace.mailbox.listPending(allocator);
         defer allocator.free(pending_ports);
         for (pending_ports) |pending| {
             if (pending.handle.handle_fingerprint == provider_handle.handle_fingerprint and pending.world_port_id == ProviderPort.world_port_id) {
-                if (routed_to_provider) {
-                    _ = try runspace.respondValue(pending.mailbox_id, @as([]const u8, "actuate"));
-                    provider_result = "actuate";
-                }
+                _ = try runspace.respondValue(pending.mailbox_id, @as([]const u8, "actuate"));
+                provider_result = "actuate";
             } else if (pending.world_port_id == DecidePort.world_port_id) {
                 parent_decisions += 1;
                 const action: fixtures.Agent.Action = if (parent_decisions == 1)
@@ -248,32 +246,15 @@ pub fn main(init: std.process.Init) !void {
                 else
                     .{ .final = "final=actuate skeleton complete" };
                 _ = try runspace.respondValue(pending.mailbox_id, action);
-            } else if (pending.world_port_id == ToolPort.world_port_id and saved_invocation == null) {
-                const invocation = try runspace.routePendingToProviderRun(pending.mailbox_id, plan, provider_handle);
-                saved_invocation = invocation;
-                routed_to_provider = true;
-            }
-        }
-        if (saved_invocation) |invocation| {
-            if ((try runspace.getSlotSummary(provider_handle)).status == .completed and runspace.report().pending_port_count == 1) {
+            } else if (pending.world_port_id == ToolPort.world_port_id and !fabric_routed and
+                (try runspace.getSlotSummary(provider_handle)).status == .completed)
+            {
                 var completed_provider = try completedProviderImage(allocator, provider_result);
                 defer completed_provider.value_image.deinit(allocator);
                 const completed_provider_handle = try runspace.installRunImage(completed_provider.image);
-                const completed_invocation = world.Fabric.Invocation.init(.{
-                    .plan_fingerprint = invocation.plan_fingerprint,
-                    .route_fingerprint = invocation.route_fingerprint,
-                    .parent_run_handle_fingerprint = invocation.parent_run_handle_fingerprint,
-                    .parent_pending_port_fingerprint = invocation.parent_pending_port_fingerprint,
-                    .parent_mailbox_id = invocation.parent_mailbox_id,
-                    .request_frame_fingerprint = invocation.request_frame_fingerprint,
-                    .provider_run_handle_fingerprint = completed_provider_handle.handle_fingerprint,
-                    .run_permit_fingerprint = invocation.run_permit_fingerprint,
-                    .depth = invocation.depth,
-                    .sequence = invocation.sequence,
-                    .status = .provider_completed,
-                });
-                _ = try runspace.respondFromFabric(completed_invocation);
-                saved_invocation = null;
+                const invocation = try runspace.routePendingToProviderRun(pending.mailbox_id, plan, completed_provider_handle);
+                _ = try runspace.respondFromFabric(invocation);
+                fabric_routed = true;
             }
         }
     }

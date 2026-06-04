@@ -4597,6 +4597,26 @@ test "fabric core validation rejects unsupported mappings and missing routes" {
     });
     try reject_route.validate();
 
+    const bad_reject_status = world.Fabric.Route.init(.{
+        .route_id = 20,
+        .kind = .reject,
+        .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .parent_world_port_id = 0,
+        .response_status = .failed,
+    });
+    try std.testing.expectError(error.UnsupportedMapping, bad_reject_status.validate());
+
+    const bad_unsupported_status = world.Fabric.Route.init(.{
+        .route_id = 21,
+        .kind = .unsupported,
+        .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .parent_world_port_id = 0,
+        .response_status = .rejected,
+    });
+    try std.testing.expectError(error.UnsupportedMapping, bad_unsupported_status.validate());
+
     const missing_route_binding = world.Fabric.Binding.init(.{
         .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
         .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
@@ -4824,6 +4844,7 @@ test "runspace fabric provider result resumes exactly one parent pending port" {
         .routes = &.{forged_provider_route},
         .value_mappings = &.{mapping},
     });
+    try runspace.installFabricPlan(parent_ref, forged_provider_plan);
     try std.testing.expectError(error.WrongTargetCertificate, runspace.routePendingToProviderRun(0, forged_provider_plan, provider_handle));
     try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_invocation_count);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
@@ -4845,6 +4866,203 @@ test "runspace fabric provider result resumes exactly one parent pending port" {
     defer exported.deinit(std.testing.allocator);
     try std.testing.expect(exported.current_state.final_response_fingerprint != null);
     try std.testing.expect(exported.current_state.final_value_image_fingerprint != null);
+}
+
+test "runspace fabric routing requires installed plans before mutation" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+
+    _ = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    _ = try runspace.tick();
+
+    const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const route = world.Fabric.Route.init(.{
+        .route_id = 421,
+        .kind = .reject,
+        .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .parent_world_port_id = 0,
+        .response_status = .rejected,
+    });
+    const plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .routes = &.{route},
+    });
+
+    try std.testing.expectError(error.FabricMissingRoute, runspace.routePending(0, plan));
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_invocation_count);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+}
+
+test "runspace fabric response rejects unrecorded invocation before consuming mailbox" {
+    var parent_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer parent_runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+
+    _ = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &parent_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    _ = try runspace.tick();
+    const pending = try runspace.mailbox.get(0);
+
+    const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    var provider_final_image = try world.Frame.ValueImage.fromValue(std.testing.allocator, 1, 0x5150_00f1, null, @as(i32, 1), world.ValuePolicy.portable);
+    defer provider_final_image.deinit(std.testing.allocator);
+    const provider_handle = try runspace.installRunImage(world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = provider_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Strict.Target).import_set_fingerprint,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+            .final_response_fingerprint = 0x5150_00f1,
+            .final_value_image_fingerprint = provider_final_image.value_image_fingerprint,
+            .status = .completed,
+        }),
+        .final_result_image = provider_final_image,
+    }));
+
+    const forged = world.Fabric.Invocation.init(.{
+        .plan_fingerprint = 0x51ace,
+        .route_fingerprint = 0x420,
+        .parent_run_handle_fingerprint = pending.handle.handle_fingerprint,
+        .parent_pending_port_fingerprint = pending.pending_port_fingerprint,
+        .parent_mailbox_id = pending.mailbox_id,
+        .request_frame_fingerprint = pending.request_frame_fingerprint,
+        .provider_run_handle_fingerprint = provider_handle.handle_fingerprint,
+        .sequence = 0,
+        .status = .provider_completed,
+    });
+
+    try std.testing.expectError(error.InvalidRunspaceTransition, runspace.respondFromFabric(forged));
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_receipt_count);
+}
+
+test "runspace fabric response enforces provider result value mapping" {
+    var parent_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer parent_runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+
+    _ = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &parent_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    _ = try runspace.tick();
+
+    const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    var provider_final_image = try world.Frame.ValueImage.fromValue(std.testing.allocator, 1, 0x5150_00f2, null, @as(i32, 1), world.ValuePolicy.portable);
+    defer provider_final_image.deinit(std.testing.allocator);
+    const provider_handle = try runspace.installRunImage(world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = provider_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Strict.Target).import_set_fingerprint,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+            .final_response_fingerprint = 0x5150_00f2,
+            .final_value_image_fingerprint = provider_final_image.value_image_fingerprint,
+            .status = .completed,
+        }),
+        .final_result_image = provider_final_image,
+    }));
+
+    const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const mapping = world.Fabric.ValueMapping.init(.{
+        .kind = .provider_result_to_parent_response,
+        .provider_result_value_table_id = 1,
+        .provider_result_value_fingerprint = provider_final_image.value_image_fingerprint + 1,
+        .parent_response_value_table_id = 1,
+    });
+    const route = world.Fabric.Route.init(.{
+        .route_id = 422,
+        .kind = .target_export,
+        .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .parent_world_port_id = 0,
+        .provider_target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+        .provider_world_surface_fingerprint = provider_ref.world_surface_fingerprint,
+        .provider_target_certificate_fingerprint = provider_ref.target_certificate_fingerprint,
+        .value_mapping_fingerprint = mapping.mapping_fingerprint,
+    });
+    const plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .routes = &.{route},
+        .value_mappings = &.{mapping},
+    });
+
+    try runspace.installFabricPlan(parent_ref, plan);
+    const invocation = try runspace.routePendingToProviderRun(0, plan, provider_handle);
+    try std.testing.expectError(error.ProviderResultMismatch, runspace.respondFromFabric(invocation));
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_receipt_count);
+}
+
+test "runspace fabric plan provider-run limit counts recorded invocations" {
+    var parent_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer parent_runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+
+    _ = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &parent_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    _ = try runspace.tick();
+
+    const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    var provider_final_image = try world.Frame.ValueImage.fromValue(std.testing.allocator, 1, 0x5150_00f3, null, @as(i32, 1), world.ValuePolicy.portable);
+    defer provider_final_image.deinit(std.testing.allocator);
+    const provider_handle = try runspace.installRunImage(world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = provider_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Strict.Target).import_set_fingerprint,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+            .final_response_fingerprint = 0x5150_00f3,
+            .final_value_image_fingerprint = provider_final_image.value_image_fingerprint,
+            .status = .completed,
+        }),
+        .final_result_image = provider_final_image,
+    }));
+
+    const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const route = world.Fabric.Route.init(.{
+        .route_id = 423,
+        .kind = .target_export,
+        .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .parent_world_port_id = 0,
+        .provider_target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+        .provider_world_surface_fingerprint = provider_ref.world_surface_fingerprint,
+        .provider_target_certificate_fingerprint = provider_ref.target_certificate_fingerprint,
+    });
+    const plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .routes = &.{route},
+        .max_provider_runs = 1,
+    });
+
+    try runspace.installFabricPlan(parent_ref, plan);
+    _ = try runspace.routePendingToProviderRun(0, plan, provider_handle);
+    try std.testing.expectError(error.ProviderRunLimitExceeded, runspace.routePendingToProviderRun(0, plan, provider_handle));
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().fabric_invocation_count);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
 }
 
 test "runspace fabric reject route records failed receipt" {
@@ -4877,6 +5095,7 @@ test "runspace fabric reject route records failed receipt" {
         .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
         .routes = &.{route},
     });
+    try runspace.installFabricPlan(parent_ref, plan);
     const invocation = try runspace.routePending(0, plan);
     try std.testing.expectEqual(world.Fabric.InvocationStatus.rejected, invocation.status);
     try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
@@ -4945,6 +5164,7 @@ test "runspace fabric supervision denies before invocation mutation" {
         .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
         .routes = &.{route},
     });
+    try runspace.installFabricPlan(parent_ref, plan);
     try std.testing.expectError(error.FabricDenied, runspace.routePendingToProviderRun(0, plan, provider_handle));
     try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_invocation_count);
     try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_receipt_count);
@@ -5005,6 +5225,7 @@ test "runspace fabric supervision counts provider run budget" {
         .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
         .routes = &.{route},
     });
+    try runspace.installFabricPlan(parent_ref, plan);
     try std.testing.expectError(error.BudgetExceeded, runspace.routePendingToProviderRun(0, plan, provider_handle));
     try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_invocation_count);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
@@ -5046,6 +5267,49 @@ test "environment preflight accepts fabric-covered port and rejects missing rout
     try std.testing.expectEqual(world.AcceptanceBlocker.MissingBinding, still_rejected.blockers[0]);
 }
 
+test "environment preflight accepts host and fabric complement coverage" {
+    const parent_ref = world.TargetRef.fromTarget(fixtures.Agent.Target);
+    const route = world.Fabric.Route.init(.{
+        .route_id = 424,
+        .kind = .reject,
+        .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .parent_world_port_id = AgentToolDecl.world_port_id,
+        .response_status = .rejected,
+    });
+    const covered = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Agent.Target).import_set_fingerprint,
+        .routes = &.{route},
+    });
+
+    const accepted = AgentDecideOnlyEnv.acceptanceReportWithFabricPlan(.fresh, false, covered);
+    try std.testing.expect(accepted.accepted);
+    try std.testing.expectEqual(fixtures.Agent.Target.WorldPortTable.entries.len, accepted.bound_port_count);
+    try std.testing.expectEqual(@as(usize, 0), accepted.missing_port_count);
+
+    const wrong_port_route = world.Fabric.Route.init(.{
+        .route_id = 425,
+        .kind = .reject,
+        .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .parent_world_port_id = AgentDecideDecl.world_port_id,
+        .response_status = .rejected,
+    });
+    const wrong_port_plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Agent.Target).import_set_fingerprint,
+        .routes = &.{wrong_port_route},
+    });
+    const still_rejected = AgentDecideOnlyEnv.acceptanceReportWithFabricPlan(.fresh, false, wrong_port_plan);
+    try std.testing.expect(!still_rejected.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.MissingBinding, still_rejected.blockers[0]);
+}
+
 test "runspace fabric replay route uses transcript response image" {
     var source_transcript = world.Transcript.init(std.testing.allocator);
     defer source_transcript.deinit();
@@ -5079,12 +5343,53 @@ test "runspace fabric replay route uses transcript response image" {
         .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
         .routes = &.{route},
     });
+    try runspace.installFabricPlan(parent_ref, plan);
     const invocation = try runspace.routePendingFromReplay(0, plan, replay_image);
     try std.testing.expectEqual(world.Fabric.InvocationStatus.completed, invocation.status);
     try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().fabric_receipt_count);
     _ = try runspace.tick();
     try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try runspace.getSlotSummary(handle)).status);
+}
+
+test "runspace fabric generic routing rejects replay routes without transcript evidence" {
+    var source_transcript = world.Transcript.init(std.testing.allocator);
+    defer source_transcript.deinit();
+    try recordPortsTranscript(&source_transcript);
+    var replay_image = try source_transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer replay_image.deinit(std.testing.allocator);
+
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+    _ = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    _ = try runspace.tick();
+
+    const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const route = world.Fabric.Route.init(.{
+        .route_id = 426,
+        .kind = .replay,
+        .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .parent_world_port_id = 0,
+        .provider_transcript_image_fingerprint = replay_image.transcript_image_fingerprint,
+    });
+    const plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .routes = &.{route},
+    });
+    try runspace.installFabricPlan(parent_ref, plan);
+
+    try std.testing.expectError(error.ReplayRouteDenied, runspace.routePending(0, plan));
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_invocation_count);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
 }
 
 test "runspace fabric replay route rejects transcript fingerprint mismatch" {
@@ -5120,6 +5425,7 @@ test "runspace fabric replay route rejects transcript fingerprint mismatch" {
         .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
         .routes = &.{route},
     });
+    try runspace.installFabricPlan(parent_ref, plan);
     try std.testing.expectError(error.ReplayRouteDenied, runspace.routePendingFromReplay(0, plan, replay_image));
     try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_invocation_count);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
@@ -5172,6 +5478,7 @@ test "runspace active fabric handoff export fails closed until parent responds" 
         .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
         .routes = &.{route},
     });
+    try runspace.installFabricPlan(parent_ref, plan);
     const invocation = try runspace.routePendingToProviderRun(0, plan, provider_handle);
     try std.testing.expectError(error.ActiveFabricUnsupported, runspace.exportRun(parent_handle));
     try std.testing.expectError(error.ActiveFabricUnsupported, runspace.exportRun(provider_handle));
@@ -5209,6 +5516,7 @@ test "runspace fabric event fingerprints are stable" {
         .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
         .routes = &.{route},
     });
+    try runspace.installFabricPlan(parent_ref, plan);
     _ = try runspace.routePending(0, plan);
     const event = for (runspace.events.items) |candidate| {
         if (candidate.kind == .fabric_route_selected) break candidate;
@@ -5265,6 +5573,7 @@ test "runspace fabric guest route adopts provider image" {
         .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
         .routes = &.{route},
     });
+    try runspace.installFabricPlan(parent_ref, plan);
     const invocation = try runspace.routePendingToProviderRun(0, plan, provider_handle);
     try std.testing.expectEqual(world.Fabric.InvocationStatus.provider_completed, invocation.status);
     _ = try runspace.respondFromFabric(invocation);
@@ -13495,6 +13804,12 @@ const AgentEnv = world.Environment(fixtures.Agent.Target, .{
     .bindings = .{
         world.bind(AgentDecideDecl, world.NativeAdapter(decide)),
         world.bind(AgentToolDecl, world.NativeAdapter(tool)),
+    },
+    .policy = world.EnvironmentPolicy.fresh_and_replay,
+});
+const AgentDecideOnlyEnv = world.Environment(fixtures.Agent.Target, .{
+    .bindings = .{
+        world.bind(AgentDecideDecl, world.NativeAdapter(decide)),
     },
     .policy = world.EnvironmentPolicy.fresh_and_replay,
 });

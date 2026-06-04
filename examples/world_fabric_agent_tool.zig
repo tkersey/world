@@ -100,7 +100,7 @@ fn providerImage(allocator: std.mem.Allocator) !struct {
     const provider_ref = world.TargetRef.fromTarget(ToolProvider.Target);
     var value_image = try world.Frame.ValueImage.fromValue(
         allocator,
-        1,
+        4,
         0x5150_fab2,
         null,
         @as([]const u8, "actuate"),
@@ -149,8 +149,8 @@ pub fn main(init: std.process.Init) !void {
     const provider_ref = world.TargetRef.fromTarget(ToolProvider.Target);
     const mapping = world.Fabric.ValueMapping.init(.{
         .kind = .provider_result_to_parent_response,
-        .provider_result_value_table_id = 1,
-        .parent_response_value_table_id = 1,
+        .provider_result_value_table_id = 4,
+        .parent_response_value_table_id = 4,
     });
     const route = world.Fabric.Route.init(.{
         .route_id = 0xfab2,
@@ -175,6 +175,7 @@ pub fn main(init: std.process.Init) !void {
         .max_depth = 2,
         .max_provider_runs = 1,
     });
+    try runspace.installFabricPlan(parent_ref, plan);
 
     var model_responses: usize = 0;
     while ((try runspace.getSlotSummary(parent_handle)).status != .completed) {

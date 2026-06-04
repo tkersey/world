@@ -43,6 +43,8 @@ Plans are ordered by dense `world_port_id`. They provide:
 
 There is no implicit lookup and no operation-name dispatch on the hot path. The plan records missing route ids, optional default route, maximum conduit depth, maximum provider runs, cycle policy, value policy, and supervision policy references.
 
+Runspace routing requires the plan to be installed first with `installFabricPlan`. Route calls validate the supplied plan against the installed plan fingerprint before any invocation, mailbox, or response mutation. Installed plans also provide the route and value-mapping witnesses used later by `respondFromFabric`.
+
 ## Fabric.Binding
 
 `world.Fabric.Binding` connects a parent import requirement to a provider route. It records the parent import requirement fingerprint, parent port id, route fingerprint, provider target/module/run/export references, value mapping fingerprint, route kind, required flag, and metadata.
@@ -79,6 +81,8 @@ A `target_export` route uses a registered, admitted, or test-policy local genera
 
 If the provider parks on its own port, that pending port appears in the same Runspace mailbox. The parent invocation stays parked until the provider completes and `respondFromFabric` emits the parent response.
 
+`respondFromFabric` accepts only recorded invocation occurrences from the same Runspace. A caller cannot complete a parent mailbox with a freshly constructed invocation or a different provider handle.
+
 ## Nested fabric routes
 
 Nested routes use the same mailbox and deterministic tick model. The route stack, depth, parent run, provider target/module, and route fingerprint are tracked so cycles and depth violations fail closed.
@@ -89,7 +93,7 @@ Guest routes use the existing guest boundary. NativeGuest conformance can prove 
 
 ## Replay fabric routes
 
-Replay routes validate the transcript image fingerprint and replay key, then emit the parent response frame from transcript-backed data. Missing transcript images, replay-key mismatch, target mismatch, and missing response events are rejected.
+Replay routes validate the transcript image fingerprint and replay key through `routePendingFromReplay`, then emit the parent response frame from transcript-backed data. The generic `routePending` path rejects replay routes because it has no transcript witness. Missing transcript images, replay-key mismatch, target mismatch, and missing response events are rejected.
 
 ## Cycle/depth rules
 

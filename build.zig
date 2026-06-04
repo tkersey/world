@@ -540,7 +540,7 @@ pub fn build(b: *std.Build) void {
             .expected_stdout =
             \\fabric_invocation_count=1
             \\budget_exceeded=true
-            \\run_receipt_fingerprint=ef36a3e3eb037258
+            \\run_receipt_fingerprint=921fee9402a29fc5
             \\
             ,
         },

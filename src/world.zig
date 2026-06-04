@@ -4339,8 +4339,7 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
             plan.assertNoCycles() catch return report;
             plan.assertDeterministicRouteOrder() catch return report;
             const coverage = plan.coverage(target_ref, import_set);
-            if (!coverage.accepted) return report;
-            if (bindings.len + coverage.fabric_covered_port_count < Target.WorldPortTable.entries.len) return report;
+            if (!fabricCoversMissingEnvironmentPorts(Target, bindings, coverage, plan)) return report;
             var accepted = report;
             accepted.accepted = true;
             accepted.bound_port_count = bindings.len + coverage.fabric_covered_port_count;
@@ -7125,6 +7124,8 @@ pub const Fabric = struct {
                 },
                 .reject, .unsupported => {
                     if (self.response_status == .responded) return error.UnsupportedMapping;
+                    if (self.kind == .reject and self.response_status != .rejected) return error.UnsupportedMapping;
+                    if (self.kind == .unsupported and self.response_status != .failed) return error.UnsupportedMapping;
                 },
                 .adapter => {},
             }
@@ -7259,12 +7260,18 @@ pub const Fabric = struct {
                 try route.validate();
                 if (route.parent_world_surface_fingerprint != 0 and route.parent_world_surface_fingerprint != self.world_surface_fingerprint) return error.WrongWorldSurface;
                 if (route.parent_target_certificate_fingerprint != 0 and route.parent_target_certificate_fingerprint != self.target_certificate_fingerprint) return error.WrongTargetCertificate;
+                if (route.value_mapping_fingerprint) |mapping_fingerprint| {
+                    _ = self.findValueMapping(mapping_fingerprint) orelse return error.UnsupportedMapping;
+                }
             }
             for (self.bindings) |binding| {
                 try binding.validate();
                 if (binding.parent_world_surface_fingerprint != self.world_surface_fingerprint) return error.WrongWorldSurface;
                 if (binding.parent_target_certificate_fingerprint != self.target_certificate_fingerprint) return error.WrongTargetCertificate;
                 _ = self.findRoute(binding.route_fingerprint) orelse return error.FabricMissingRoute;
+                if (binding.value_mapping_fingerprint) |mapping_fingerprint| {
+                    _ = self.findValueMapping(mapping_fingerprint) orelse return error.UnsupportedMapping;
+                }
             }
         }
 
@@ -7338,6 +7345,13 @@ pub const Fabric = struct {
         pub fn findRoute(self: Fabric.Plan, route_fingerprint: u64) ?Fabric.Route {
             for (self.routes) |route| {
                 if (route.route_fingerprint == route_fingerprint) return route;
+            }
+            return null;
+        }
+
+        pub fn findValueMapping(self: Fabric.Plan, mapping_fingerprint: u64) ?Fabric.ValueMapping {
+            for (self.value_mappings) |mapping| {
+                if (mapping.mapping_fingerprint == mapping_fingerprint) return mapping;
             }
             return null;
         }
@@ -7616,6 +7630,8 @@ pub const Runspace = struct {
     events: std.ArrayList(@This().RunspaceEvent) = .empty,
     mailbox: @This().Mailbox,
     fabric_plan_fingerprints: std.ArrayList(u64) = .empty,
+    fabric_routes: std.ArrayList(Fabric.Route) = .empty,
+    fabric_value_mappings: std.ArrayList(Fabric.ValueMapping) = .empty,
     fabric_invocations: std.ArrayList(Fabric.Invocation) = .empty,
     fabric_receipts: std.ArrayList(Fabric.Receipt) = .empty,
 
@@ -8627,6 +8643,8 @@ pub const Runspace = struct {
         self.events.deinit(self.allocator);
         self.mailbox.deinit();
         self.fabric_plan_fingerprints.deinit(self.allocator);
+        self.fabric_routes.deinit(self.allocator);
+        self.fabric_value_mappings.deinit(self.allocator);
         self.fabric_invocations.deinit(self.allocator);
         self.fabric_receipts.deinit(self.allocator);
         self.* = undefined;
@@ -9505,7 +9523,13 @@ pub const Runspace = struct {
         try plan.validate();
         try plan.assertNoCycles();
         try plan.assertDeterministicRouteOrder();
-        try self.fabric_plan_fingerprints.append(self.allocator, plan.plan_fingerprint);
+        if (self.hasInstalledFabricPlan(plan.plan_fingerprint)) return;
+        try self.fabric_plan_fingerprints.ensureUnusedCapacity(self.allocator, 1);
+        try self.fabric_routes.ensureUnusedCapacity(self.allocator, plan.routes.len);
+        try self.fabric_value_mappings.ensureUnusedCapacity(self.allocator, plan.value_mappings.len);
+        self.fabric_plan_fingerprints.appendAssumeCapacity(plan.plan_fingerprint);
+        for (plan.routes) |route| self.fabric_routes.appendAssumeCapacity(route);
+        for (plan.value_mappings) |mapping| self.fabric_value_mappings.appendAssumeCapacity(mapping);
     }
 
     pub fn routePending(self: *@This(), mailbox_id: u64, plan: Fabric.Plan) !Fabric.Invocation {
@@ -9516,7 +9540,10 @@ pub const Runspace = struct {
         try self.validateFabricPlanForPending(plan, pending);
         const route = plan.routeForPort(pending.world_port_id) orelse return error.FabricMissingRoute;
         try route.validate();
-        try self.beforeFabricInvocationForSlot(parent_slot, pending.world_port_id, route.kind, 1, 0);
+        if (route.kind == .replay) return error.ReplayRouteDenied;
+        const depth = try self.fabricDepthForParent(parent_slot.handle);
+        try plan.assertDepth(depth);
+        try self.beforeFabricInvocationForSlot(parent_slot, pending.world_port_id, route.kind, depth, 0);
         var invocation = Fabric.Invocation.init(.{
             .plan_fingerprint = plan.plan_fingerprint,
             .route_fingerprint = route.route_fingerprint,
@@ -9525,45 +9552,15 @@ pub const Runspace = struct {
             .parent_mailbox_id = mailbox_id,
             .request_frame_fingerprint = pending.request_frame_fingerprint,
             .run_permit_fingerprint = pending.run_permit_fingerprint,
-            .depth = 0,
+            .depth = depth,
             .sequence = self.fabric_invocations.items.len,
             .status = .started,
         });
         try self.recordFabricInvocation(parent_slot.*, invocation, route, .fabric_invocation_started, "fabric invocation started");
         switch (route.kind) {
-            .replay => {
-                var response = try fabricResponseForPending(pending, .responded, route.route_fingerprint, "fabric replay response");
-                defer response.deinit(self.allocator);
-                invocation = Fabric.Invocation.init(.{
-                    .plan_fingerprint = invocation.plan_fingerprint,
-                    .route_fingerprint = invocation.route_fingerprint,
-                    .parent_run_handle_fingerprint = invocation.parent_run_handle_fingerprint,
-                    .parent_pending_port_fingerprint = invocation.parent_pending_port_fingerprint,
-                    .parent_mailbox_id = invocation.parent_mailbox_id,
-                    .request_frame_fingerprint = invocation.request_frame_fingerprint,
-                    .mapped_response_frame_fingerprint = response.frame_fingerprint,
-                    .run_permit_fingerprint = invocation.run_permit_fingerprint,
-                    .depth = invocation.depth,
-                    .sequence = invocation.sequence,
-                    .status = .completed,
-                });
-                try self.replaceFabricInvocation(invocation);
-                _ = try self.respond(mailbox_id, response);
-                try self.recordFabricReceipt(parent_slot.handle, invocation, route.route_fingerprint, pending, response.frame_fingerprint, null, .completed, null);
-                _ = try self.appendFabricEvent(.{
-                    .kind = .fabric_response_emitted,
-                    .run_handle = parent_slot.handle,
-                    .run_state_fingerprint = parent_slot.current_state.run_state_fingerprint,
-                    .fabric_invocation_fingerprint = invocation.invocation_fingerprint,
-                    .fabric_route_fingerprint = route.route_fingerprint,
-                    .response_frame_fingerprint = response.frame_fingerprint,
-                    .summary = "fabric response emitted",
-                });
-                return invocation;
-            },
+            .replay => return error.ReplayRouteDenied,
             .reject, .unsupported => {
-                const status: ResponseStatus = if (route.kind == .reject) .rejected else .failed;
-                var response = try fabricResponseForPending(pending, status, route.route_fingerprint, "fabric terminal response");
+                var response = try fabricResponseForPending(pending, route.response_status, route.route_fingerprint, "fabric terminal response");
                 defer response.deinit(self.allocator);
                 invocation = Fabric.Invocation.init(.{
                     .plan_fingerprint = invocation.plan_fingerprint,
@@ -9616,7 +9613,11 @@ pub const Runspace = struct {
             if (provider_handle.target_ref_fingerprint != expected_target) return error.HandoffTargetMismatch;
         }
         try self.validateFabricProviderSlot(route, provider_slot);
-        try self.beforeFabricInvocationForSlot(parent_slot, pending.world_port_id, route.kind, 1, 1);
+        const depth = try self.fabricDepthForParent(parent_slot.handle);
+        const provider_run_count = self.fabricProviderRunCount(plan.plan_fingerprint) + 1;
+        try plan.assertDepth(depth);
+        try plan.assertProviderRunLimit(provider_run_count);
+        try self.beforeFabricInvocationForSlot(parent_slot, pending.world_port_id, route.kind, depth, 1);
         const status: Fabric.InvocationStatus = switch (provider_slot.status) {
             .completed => .provider_completed,
             .parked_on_port, .parked_on_supervision => .provider_parked,
@@ -9635,7 +9636,7 @@ pub const Runspace = struct {
             .provider_run_handle_fingerprint = provider_handle.handle_fingerprint,
             .mapped_response_frame_fingerprint = provider_slot.current_state.final_response_fingerprint,
             .run_permit_fingerprint = pending.run_permit_fingerprint,
-            .depth = 1,
+            .depth = depth,
             .sequence = self.fabric_invocations.items.len,
             .status = status,
         });
@@ -9663,7 +9664,9 @@ pub const Runspace = struct {
         }
         var replay_image = transcript_image;
         try replay_image.validateReplayRun(pending.world_surface_fingerprint, pending.target_certificate_fingerprint);
-        try self.beforeFabricInvocationForSlot(parent_slot, pending.world_port_id, route.kind, 1, 0);
+        const depth = try self.fabricDepthForParent(parent_slot.handle);
+        try plan.assertDepth(depth);
+        try self.beforeFabricInvocationForSlot(parent_slot, pending.world_port_id, route.kind, depth, 0);
         var invocation = Fabric.Invocation.init(.{
             .plan_fingerprint = plan.plan_fingerprint,
             .route_fingerprint = route.route_fingerprint,
@@ -9672,7 +9675,7 @@ pub const Runspace = struct {
             .parent_mailbox_id = mailbox_id,
             .request_frame_fingerprint = pending.request_frame_fingerprint,
             .run_permit_fingerprint = pending.run_permit_fingerprint,
-            .depth = 1,
+            .depth = depth,
             .sequence = self.fabric_invocations.items.len,
             .status = .started,
         });
@@ -9716,14 +9719,17 @@ pub const Runspace = struct {
 
     pub fn respondFromFabric(self: *@This(), invocation: Fabric.Invocation) !Runspace.RunspaceEvent {
         try invocation.validate();
+        const recorded = try self.recordedFabricInvocation(invocation);
         const pending = try self.mailbox.get(invocation.parent_mailbox_id);
         if (pending.pending_port_fingerprint != invocation.parent_pending_port_fingerprint) return error.InvalidPendingPortTransition;
         const parent_index = try self.slotIndex(pending.handle);
         const parent_slot = &self.slots.items[parent_index];
-        var provider_image = try self.fabricProviderResultImage(invocation);
+        const route = try self.installedFabricRoute(recorded.route_fingerprint);
+        var provider_image = try self.fabricProviderResultImage(recorded);
         defer provider_image.deinit(self.allocator);
         const provider_result = provider_image.final_result_image orelse return error.MissingValueImage;
-        var response_image = try provider_result.cloneForValueContract(self.allocator, pending.expected_response_value_table_id, null);
+        const mapped_contract = try self.fabricParentResponseContract(route, provider_result, pending.expected_response_value_table_id);
+        var response_image = try provider_result.cloneForValueContract(self.allocator, mapped_contract.value_table_id, mapped_contract.boundary_value_fingerprint);
         var response_image_owned = true;
         errdefer if (response_image_owned) response_image.deinit(self.allocator);
         var response = try fabricDeferredResponseForPending(pending, response_image);
@@ -9732,22 +9738,22 @@ pub const Runspace = struct {
         const event = try self.respond(invocation.parent_mailbox_id, response);
         const parent_response_frame_fingerprint = event.response_frame_fingerprint orelse response.frame_fingerprint;
         const completed = Fabric.Invocation.init(.{
-            .plan_fingerprint = invocation.plan_fingerprint,
-            .route_fingerprint = invocation.route_fingerprint,
-            .parent_run_handle_fingerprint = invocation.parent_run_handle_fingerprint,
-            .parent_pending_port_fingerprint = invocation.parent_pending_port_fingerprint,
-            .parent_mailbox_id = invocation.parent_mailbox_id,
-            .request_frame_fingerprint = invocation.request_frame_fingerprint,
-            .provider_run_handle_fingerprint = invocation.provider_run_handle_fingerprint,
-            .mapped_request_frame_fingerprint = invocation.mapped_request_frame_fingerprint,
+            .plan_fingerprint = recorded.plan_fingerprint,
+            .route_fingerprint = recorded.route_fingerprint,
+            .parent_run_handle_fingerprint = recorded.parent_run_handle_fingerprint,
+            .parent_pending_port_fingerprint = recorded.parent_pending_port_fingerprint,
+            .parent_mailbox_id = recorded.parent_mailbox_id,
+            .request_frame_fingerprint = recorded.request_frame_fingerprint,
+            .provider_run_handle_fingerprint = recorded.provider_run_handle_fingerprint,
+            .mapped_request_frame_fingerprint = recorded.mapped_request_frame_fingerprint,
             .mapped_response_frame_fingerprint = parent_response_frame_fingerprint,
-            .run_permit_fingerprint = invocation.run_permit_fingerprint,
-            .depth = invocation.depth,
-            .sequence = invocation.sequence,
+            .run_permit_fingerprint = recorded.run_permit_fingerprint,
+            .depth = recorded.depth,
+            .sequence = recorded.sequence,
             .status = .parent_responded,
         });
         try self.replaceFabricInvocation(completed);
-        try self.recordFabricReceipt(parent_slot.handle, completed, completed.route_fingerprint, pending, parent_response_frame_fingerprint, invocation.provider_run_handle_fingerprint, .completed, null);
+        try self.recordFabricReceipt(parent_slot.handle, completed, completed.route_fingerprint, pending, parent_response_frame_fingerprint, recorded.provider_run_handle_fingerprint, .completed, null);
         _ = try self.appendFabricEvent(.{
             .kind = .fabric_response_emitted,
             .run_handle = parent_slot.handle,
@@ -9766,15 +9772,105 @@ pub const Runspace = struct {
         return self.report();
     }
 
-    fn validateFabricPlanForPending(_: *@This(), plan: Fabric.Plan, pending: Runspace.PendingPort) !void {
+    fn validateFabricPlanForPending(self: *@This(), plan: Fabric.Plan, pending: Runspace.PendingPort) !void {
+        if (!self.hasInstalledFabricPlan(plan.plan_fingerprint)) return error.FabricMissingRoute;
         if (plan.target_ref_fingerprint != pending.target_ref_fingerprint) return error.HandoffTargetMismatch;
         if (plan.world_surface_fingerprint != pending.world_surface_fingerprint) return error.WrongWorldSurface;
         if (plan.target_certificate_fingerprint != pending.target_certificate_fingerprint) return error.WrongTargetCertificate;
         try plan.validate();
         try plan.assertNoCycles();
         try plan.assertDeterministicRouteOrder();
-        try plan.assertDepth(1);
-        try plan.assertProviderRunLimit(1);
+    }
+
+    fn hasInstalledFabricPlan(self: *const @This(), plan_fingerprint: u64) bool {
+        for (self.fabric_plan_fingerprints.items) |installed| {
+            if (installed == plan_fingerprint) return true;
+        }
+        return false;
+    }
+
+    fn installedFabricRoute(self: *const @This(), route_fingerprint: u64) !Fabric.Route {
+        for (self.fabric_routes.items) |route| {
+            if (route.route_fingerprint == route_fingerprint) return route;
+        }
+        return error.FabricMissingRoute;
+    }
+
+    fn installedFabricValueMapping(self: *const @This(), mapping_fingerprint: u64) !Fabric.ValueMapping {
+        for (self.fabric_value_mappings.items) |mapping| {
+            if (mapping.mapping_fingerprint == mapping_fingerprint) return mapping;
+        }
+        return error.UnsupportedMapping;
+    }
+
+    fn recordedFabricInvocation(self: *const @This(), invocation: Fabric.Invocation) !Fabric.Invocation {
+        if (invocation.sequence >= self.fabric_invocations.items.len) return error.InvalidRunspaceTransition;
+        const recorded = self.fabric_invocations.items[invocation.sequence];
+        if (recorded.invocation_fingerprint != invocation.invocation_fingerprint) return error.InvalidRunspaceTransition;
+        return recorded;
+    }
+
+    fn fabricParentResponseContract(
+        self: *const @This(),
+        route: Fabric.Route,
+        provider_result: Frame.ValueImage,
+        expected_response_value_table_id: ?u32,
+    ) !struct { value_table_id: ?u32, boundary_value_fingerprint: ?u64 } {
+        if (route.value_mapping_fingerprint) |mapping_fingerprint| {
+            const mapping = try self.installedFabricValueMapping(mapping_fingerprint);
+            if (mapping.kind != .provider_result_to_parent_response) return error.UnsupportedMapping;
+            try mapping.assertExactValueTableMatch();
+            if (provider_result.value_table_id != mapping.provider_result_value_table_id) return error.ProviderResultMismatch;
+            if (mapping.provider_result_value_fingerprint) |expected| {
+                if (provider_result.value_image_fingerprint != expected and provider_result.boundary_value_fingerprint != expected) return error.ProviderResultMismatch;
+            }
+            const parent_table_id = mapping.parent_response_value_table_id;
+            if (parent_table_id != expected_response_value_table_id) return error.CrossTypeConversionRejected;
+            return .{
+                .value_table_id = parent_table_id,
+                .boundary_value_fingerprint = mapping.parent_response_value_fingerprint,
+            };
+        }
+        if (provider_result.value_table_id != expected_response_value_table_id) return error.ProviderResultMismatch;
+        return .{
+            .value_table_id = expected_response_value_table_id,
+            .boundary_value_fingerprint = null,
+        };
+    }
+
+    fn fabricProviderRunCount(self: *const @This(), plan_fingerprint: u64) usize {
+        var count: usize = 0;
+        for (self.fabric_invocations.items) |invocation| {
+            if (invocation.plan_fingerprint == plan_fingerprint and invocation.provider_run_handle_fingerprint != null) count += 1;
+        }
+        return count;
+    }
+
+    fn fabricDepthForParent(self: *const @This(), handle: RunHandle) !usize {
+        var depth: usize = 1;
+        for (self.fabric_invocations.items) |invocation| {
+            const provider = invocation.provider_run_handle_fingerprint orelse continue;
+            if (provider != handle.handle_fingerprint) continue;
+            switch (invocation.status) {
+                .started,
+                .provider_installed,
+                .provider_running,
+                .provider_parked,
+                .provider_completed,
+                => depth = @max(depth, invocation.depth + 1),
+                .planned,
+                .parent_responded,
+                .completed,
+                .rejected,
+                .failed,
+                .unsupported,
+                .denied,
+                .cycle_blocked,
+                .supervision_denied,
+                => {},
+            }
+        }
+        return depth;
     }
 
     fn validateFabricProviderSlot(_: *@This(), route: Fabric.Route, provider_slot: Runspace.RunSlot) !void {
@@ -9932,9 +10028,16 @@ pub const Runspace = struct {
     fn replaceFabricInvocation(self: *@This(), invocation: Fabric.Invocation) !void {
         if (invocation.sequence >= self.fabric_invocations.items.len) return error.InvalidRunspaceTransition;
         const current = self.fabric_invocations.items[invocation.sequence];
+        if (current.plan_fingerprint != invocation.plan_fingerprint) return error.InvalidRunspaceTransition;
         if (current.parent_mailbox_id != invocation.parent_mailbox_id) return error.InvalidRunspaceTransition;
+        if (current.parent_run_handle_fingerprint != invocation.parent_run_handle_fingerprint) return error.InvalidRunspaceTransition;
         if (current.parent_pending_port_fingerprint != invocation.parent_pending_port_fingerprint) return error.InvalidRunspaceTransition;
+        if (current.request_frame_fingerprint != invocation.request_frame_fingerprint) return error.InvalidRunspaceTransition;
         if (current.route_fingerprint != invocation.route_fingerprint) return error.InvalidRunspaceTransition;
+        if (current.provider_run_handle_fingerprint != invocation.provider_run_handle_fingerprint) return error.InvalidRunspaceTransition;
+        if (current.mapped_request_frame_fingerprint != invocation.mapped_request_frame_fingerprint) return error.InvalidRunspaceTransition;
+        if (current.run_permit_fingerprint != invocation.run_permit_fingerprint) return error.InvalidRunspaceTransition;
+        if (current.depth != invocation.depth) return error.InvalidRunspaceTransition;
         self.fabric_invocations.items[invocation.sequence] = invocation;
     }
 
@@ -16610,6 +16713,28 @@ fn acceptanceReportHasOnlyMissingBinding(report: AcceptanceReport) bool {
     if (report.accepted) return false;
     if (report.blockers.len != 1) return false;
     return report.blockers[0] == .MissingBinding;
+}
+
+fn fabricCoversMissingEnvironmentPorts(comptime Target: type, comptime bindings: anytype, coverage: Fabric.CoverageReport, plan: Fabric.Plan) bool {
+    const target_ref = TargetRef.fromTarget(Target);
+    if (coverage.target_ref_fingerprint != target_ref.target_ref_fingerprint) return false;
+    if (coverage.world_surface_fingerprint != target_ref.world_surface_fingerprint) return false;
+    if (coverage.target_certificate_fingerprint != target_ref.target_certificate_fingerprint) return false;
+    if (coverage.duplicate_route_count != 0 or coverage.unsupported_route_count != 0) return false;
+    var fabric_covered_missing: usize = 0;
+    inline for (0..Target.WorldPortTable.entries.len) |world_port_id| {
+        comptime var host_bound = false;
+        inline for (bindings) |BindingDecl| {
+            if (BindingDecl.TargetType == Target and BindingDecl.world_port_id == world_port_id) host_bound = true;
+        }
+        if (!host_bound) {
+            const route = plan.findRouteForPort(@intCast(world_port_id)) orelse return false;
+            if (route.kind == .unsupported) return false;
+            fabric_covered_missing += 1;
+        }
+    }
+    return fabric_covered_missing == coverage.fabric_covered_port_count and
+        bindings.len + fabric_covered_missing >= Target.WorldPortTable.entries.len;
 }
 
 fn rejectedReport(base: AcceptanceReport, blockers: []const AcceptanceBlocker) AcceptanceReport {
