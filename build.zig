@@ -58,6 +58,29 @@ pub fn build(b: *std.Build) void {
     });
     world.addImport("boundary", boundary);
 
+    const wasm_target = b.resolveTargetQuery(.{
+        .cpu_arch = .wasm32,
+        .os_tag = .freestanding,
+        .abi = .none,
+    });
+    const wasm_guest_module = b.createModule(.{
+        .root_source_file = b.path("examples/world_wasm_guest_one_port.zig"),
+        .target = wasm_target,
+        .optimize = .ReleaseSmall,
+    });
+    const wasm_guest = b.addExecutable(.{
+        .name = "world_wasm_guest_one_port",
+        .root_module = wasm_guest_module,
+    });
+    wasm_guest.entry = .disabled;
+    wasm_guest.rdynamic = true;
+    wasm_guest.export_memory = true;
+    const install_wasm_guest = b.addInstallArtifact(wasm_guest, .{});
+    const world_wasm_step = b.step("world-wasm", "Build World wasm guest artifacts.");
+    world_wasm_step.dependOn(&install_wasm_guest.step);
+    const check_world_wasm_step = b.step("check-world-wasm", "Build and inspect World wasm guest artifacts.");
+    check_world_wasm_step.dependOn(&wasm_guest.step);
+
     const fixtures = b.createModule(.{
         .root_source_file = b.path("test/fixtures.zig"),
         .target = target,
@@ -79,7 +102,16 @@ pub fn build(b: *std.Build) void {
         }),
         .filters = test_args.filters,
     });
+    const wasm_guest_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/world_wasm_guest_one_port.zig"),
+            .target = b.graph.host,
+            .optimize = optimize,
+        }),
+        .filters = test_args.filters,
+    });
     const test_step = b.step("test", "Run world tests.");
+    test_step.dependOn(&addRunArtifactWithArgs(b, wasm_guest_tests, test_args.passthrough).step);
     if (target.query.isNative()) {
         test_step.dependOn(&addRunArtifactWithArgs(b, tests, test_args.passthrough).step);
         b.default_step.dependOn(test_step);
@@ -424,6 +456,43 @@ pub fn build(b: *std.Build) void {
             ,
         },
         .{
+            .name = "world-guest-one-port",
+            .path = "examples/world_guest_one_port.zig",
+            .step = "run-world-guest-one-port",
+            .desc = "Run the World native guest one-port ABI example.",
+            .expected_stdout =
+            \\request_frame_fingerprint=a2e08a01b91af8f0
+            \\response_frame_fingerprint=736978f58eeb5450
+            \\result_fingerprint=f41a4f1f93242ab4
+            \\
+            ,
+        },
+        .{
+            .name = "world-guest-conformance",
+            .path = "examples/world_guest_conformance.zig",
+            .step = "run-world-guest-conformance",
+            .desc = "Run the World native guest conformance report example.",
+            .expected_stdout =
+            \\vector_fingerprint=904403ad28c05d54
+            \\report_fingerprint=9d1af280bea0b200
+            \\conformance=true
+            \\
+            ,
+        },
+        .{
+            .name = "world-guest-agent-conformance",
+            .path = "examples/world_guest_agent_conformance.zig",
+            .step = "run-world-guest-agent-conformance",
+            .desc = "Run the World native guest agent conformance example.",
+            .expected_stdout =
+            \\model_pending_count=2
+            \\tool_pending_count=1
+            \\result_fingerprint=5e84107fd6677320
+            \\conformance=true
+            \\
+            ,
+        },
+        .{
             .name = "world-supervised-budget",
             .path = "examples/world_supervised_budget.zig",
             .step = "run-world-supervised-budget",
@@ -508,6 +577,39 @@ pub fn build(b: *std.Build) void {
         }
         check_step.dependOn(run_step);
     }
+
+    const host_boundary_dep = b.dependency("boundary", .{
+        .target = b.graph.host,
+        .optimize = optimize,
+    });
+    const host_boundary = host_boundary_dep.module("boundary");
+    const host_world = b.createModule(.{
+        .root_source_file = b.path("src/world.zig"),
+        .target = b.graph.host,
+        .optimize = optimize,
+    });
+    host_world.addImport("boundary", host_boundary);
+    const wasm_export_check_mod = b.createModule(.{
+        .root_source_file = b.path("examples/world_wasm_export_check.zig"),
+        .target = b.graph.host,
+        .optimize = optimize,
+    });
+    wasm_export_check_mod.addImport("world", host_world);
+    const wasm_export_check = b.addExecutable(.{ .name = "world-wasm-export-check", .root_module = wasm_export_check_mod });
+    const run_wasm_export_check = b.addRunArtifact(wasm_export_check);
+    run_wasm_export_check.addFileArg(wasm_guest.getEmittedBin());
+    const wasm_export_check_step = b.step("run-world-wasm-export-check", "Inspect World wasm guest exports and imports.");
+    wasm_export_check_step.dependOn(&run_wasm_export_check.step);
+    check_world_wasm_step.dependOn(&run_wasm_export_check.step);
+    check_step.dependOn(check_world_wasm_step);
+    const run_wasm_one_port_step = b.step("run-world-wasm-one-port", "Optionally run the World wasm one-port guest with an external runtime.");
+    const skip_wasm_runtime = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "echo 'wasm_runtime=skipped'; echo 'reason=external runtime host not configured'",
+    });
+    skip_wasm_runtime.step.dependOn(&wasm_guest.step);
+    run_wasm_one_port_step.dependOn(&skip_wasm_runtime.step);
 
     const lint_step = b.step("lint", "Run formatting and hot-path source guards.");
     const fmt_check = b.addSystemCommand(&.{

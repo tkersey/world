@@ -93,6 +93,15 @@ pub const ResponseStatus = enum {
     failed,
 };
 
+fn responseStatusDeniedError(response_status: ResponseStatus, err: anyerror) bool {
+    return switch (response_status) {
+        .pending => err == Error.PendingDenied or err == Error.PortRuleDenied or err == error.SupervisionPortRuleDenied,
+        .rejected => err == Error.HandlerRejected or err == Error.PortRuleDenied or err == error.SupervisionPortRuleDenied,
+        .failed => err == Error.HandlerFailed or err == Error.PortRuleDenied or err == error.SupervisionPortRuleDenied,
+        .responded => false,
+    };
+}
+
 pub const EventKind = enum {
     run_started,
     port_requested,
@@ -236,6 +245,10 @@ pub const world_pending_port_format_version: u32 = 1;
 pub const world_pending_port_fingerprint_version: u32 = 1;
 pub const world_runspace_config_fingerprint_version: u32 = 1;
 pub const world_runspace_event_fingerprint_version: u32 = 1;
+pub const world_guest_abi_version: u32 = 1;
+pub const world_guest_abi_contract_fingerprint_version: u32 = 1;
+pub const world_guest_conformance_vector_fingerprint_version: u32 = 2;
+pub const world_guest_conformance_report_fingerprint_version: u32 = 1;
 
 var next_runspace_instance_id = std.atomic.Value(u64).init(0);
 pub const world_max_decoded_byte_field_len: usize = 16 * 1024 * 1024;
@@ -8298,7 +8311,7 @@ pub const Runspace = struct {
         const pending = try self.mailbox.get(mailbox_id);
         try pending.validateResponse(response);
         const index = try self.slotIndex(pending.handle);
-        var slot = &self.slots.items[index];
+        const slot = &self.slots.items[index];
         if (slot.pending_mailbox_id != mailbox_id or slot.status != .parked_on_port) return error.StaleRunHandle;
         var responded_summary: []u8 = "";
         var responded_summary_owned = false;
@@ -8354,12 +8367,27 @@ pub const Runspace = struct {
                 if (slot.driver) |driver| {
                     try self.ensureEventCapacity(1);
                     try self.events.ensureUnusedCapacity(self.allocator, 1);
+                    var supervisor_snapshot = try self.snapshotSlotSupervisor(index);
+                    defer supervisor_snapshot.deinit(self.allocator);
                     driver.beforeResponse(pending.world_port_id, .pending, accounting.response_bytes, accounting.value_image_bytes) catch |err| {
+                        if (responseStatusDeniedError(.pending, err)) {
+                            _ = self.parkPendingOnSupervision(index, pending, mailbox_id, "manual pending response denied by supervision") catch |park_err| {
+                                supervisor_snapshot.restore(self, index);
+                                return park_err;
+                            };
+                            return err;
+                        }
                         if (err == error.HandlerPending and driver.supervisionInterrupted()) {
-                            return self.parkPendingOnSupervision(index, pending, mailbox_id, "manual pending response parked on supervision");
+                            return self.parkPendingOnSupervision(index, pending, mailbox_id, "manual pending response parked on supervision") catch |park_err| {
+                                supervisor_snapshot.restore(self, index);
+                                return park_err;
+                            };
                         }
                         if (err == error.BudgetExceeded and driver.supervisionInterrupted()) {
-                            return self.parkPendingOnSupervision(index, pending, mailbox_id, "manual pending response parked on supervision");
+                            return self.parkPendingOnSupervision(index, pending, mailbox_id, "manual pending response parked on supervision") catch |park_err| {
+                                supervisor_snapshot.restore(self, index);
+                                return park_err;
+                            };
                         }
                         return err;
                     };
@@ -8368,14 +8396,26 @@ pub const Runspace = struct {
                 if (slot.supervisor) |*supervisor| {
                     try self.ensureEventCapacity(1);
                     try self.events.ensureUnusedCapacity(self.allocator, 1);
+                    var supervisor_snapshot = try self.snapshotSlotSupervisor(index);
+                    defer supervisor_snapshot.deinit(self.allocator);
                     supervisor.afterAdapterResponse(.{
                         .world_port_id = pending.world_port_id,
                         .status = .pending,
                         .response_bytes = accounting.response_bytes,
                         .value_image_bytes = accounting.value_image_bytes,
                     }) catch |err| {
+                        if (responseStatusDeniedError(.pending, err)) {
+                            _ = self.parkPendingOnSupervision(index, pending, mailbox_id, "manual pending response denied by supervision") catch |park_err| {
+                                supervisor_snapshot.restore(self, index);
+                                return park_err;
+                            };
+                            return err;
+                        }
                         if ((err == error.HandlerPending or err == error.BudgetExceeded) and supervisor.interrupted) {
-                            return self.parkPendingOnSupervision(index, pending, mailbox_id, "manual pending response parked on supervision");
+                            return self.parkPendingOnSupervision(index, pending, mailbox_id, "manual pending response parked on supervision") catch |park_err| {
+                                supervisor_snapshot.restore(self, index);
+                                return park_err;
+                            };
                         }
                         return err;
                     };
@@ -8516,64 +8556,136 @@ pub const Runspace = struct {
         });
     }
 
-    fn routeTerminalResponse(self: *@This(), index: usize, mailbox_id: u64, pending: Runspace.PendingPort, slot: *Runspace.RunSlot, response: Frame.Response, status: ResponseStatus) !?Runspace.RunspaceEvent {
-        if (status != .rejected and status != .failed) return error.InvalidPendingPortTransition;
-        if (response.status != status) return error.InvalidPendingPortTransition;
-        try pending.validateResponse(response);
-        var failed_event_pair = try self.prepareEventPair(
+    const TerminalRoute = union(enum) {
+        parked: Runspace.RunspaceEvent,
+        event_pair: PreparedEventPair,
+    };
+
+    fn prepareTerminalEventPair(self: *@This(), status: ResponseStatus) !PreparedEventPair {
+        return self.prepareEventPair(
+            2,
+            terminalPortSummary(status),
+            terminalRunSummary(status),
+        );
+    }
+
+    fn prepareTerminalFailureEventPair(self: *@This()) !PreparedEventPair {
+        return self.prepareEventPair(
             2,
             "terminal port response failed",
             "run failed after terminal port response",
         );
-        defer failed_event_pair.deinit(self.allocator);
+    }
+
+    fn routeTerminalResponse(self: *@This(), index: usize, mailbox_id: u64, pending: Runspace.PendingPort, slot: *Runspace.RunSlot, response: Frame.Response, status: ResponseStatus) !TerminalRoute {
+        if (status != .rejected and status != .failed) return error.InvalidPendingPortTransition;
+        if (response.status != status) return error.InvalidPendingPortTransition;
+        try pending.validateResponse(response);
         const accounting = try self.responseFrameAccounting(response);
         if (slot.driver) |driver| {
+            var supervisor_snapshot = try self.snapshotSlotSupervisor(index);
+            defer supervisor_snapshot.deinit(self.allocator);
             driver.beforeTerminalResponse(pending.world_port_id, status, accounting.response_bytes, accounting.value_image_bytes) catch |err| {
+                if (responseStatusDeniedError(status, err)) {
+                    _ = self.parkPendingOnSupervision(index, pending, mailbox_id, "terminal response denied by supervision") catch |park_err| {
+                        supervisor_snapshot.restore(self, index);
+                        return park_err;
+                    };
+                    return err;
+                }
                 if ((err == error.HandlerPending or err == error.BudgetExceeded) and driver.supervisionInterrupted()) {
-                    return try self.parkPendingOnSupervision(index, pending, mailbox_id, "terminal response parked on supervision");
+                    const event = self.parkPendingOnSupervision(index, pending, mailbox_id, "terminal response parked on supervision") catch |park_err| {
+                        supervisor_snapshot.restore(self, index);
+                        return park_err;
+                    };
+                    return .{ .parked = event };
                 }
                 if (err == error.BudgetExceeded) {
-                    try self.failPendingPortAndSlot(
+                    var failed_event_pair = self.prepareTerminalFailureEventPair() catch |prepare_err| {
+                        supervisor_snapshot.restore(self, index);
+                        return prepare_err;
+                    };
+                    defer failed_event_pair.deinit(self.allocator);
+                    self.failPendingPortAndSlot(
                         mailbox_id,
                         slot,
                         response,
                         "terminal response supervision failed",
                         failed_event_pair.takeFirst(),
                         failed_event_pair.takeSecond(),
-                    );
+                    ) catch |fail_err| {
+                        supervisor_snapshot.restore(self, index);
+                        return fail_err;
+                    };
                 }
                 return err;
             };
+            var terminal_event_pair = self.prepareTerminalEventPair(status) catch |err| {
+                supervisor_snapshot.restore(self, index);
+                return err;
+            };
+            errdefer terminal_event_pair.deinit(self.allocator);
+            var terminal_failure_event_pair = self.prepareTerminalFailureEventPair() catch |err| {
+                supervisor_snapshot.restore(self, index);
+                return err;
+            };
+            errdefer terminal_failure_event_pair.deinit(self.allocator);
             driver.resumeTerminalFrame(response) catch |err| {
                 if ((err == error.HandlerPending or err == error.BudgetExceeded) and driver.supervisionInterrupted()) {
-                    return try self.parkPendingOnSupervision(index, pending, mailbox_id, "terminal response parked on supervision");
+                    terminal_event_pair.deinit(self.allocator);
+                    terminal_failure_event_pair.deinit(self.allocator);
+                    const event = self.parkPendingOnSupervision(index, pending, mailbox_id, "terminal response parked on supervision") catch |park_err| {
+                        supervisor_snapshot.restore(self, index);
+                        return park_err;
+                    };
+                    return .{ .parked = event };
                 }
                 try self.failPendingPortAndSlot(
                     mailbox_id,
                     slot,
                     response,
                     "terminal response failed",
-                    failed_event_pair.takeFirst(),
-                    failed_event_pair.takeSecond(),
+                    terminal_failure_event_pair.takeFirst(),
+                    terminal_failure_event_pair.takeSecond(),
                 );
                 return err;
             };
+            terminal_failure_event_pair.deinit(self.allocator);
+            return .{ .event_pair = terminal_event_pair };
         } else if (slot.supervisor) |*supervisor| {
+            var supervisor_snapshot = try self.snapshotSlotSupervisor(index);
+            defer supervisor_snapshot.deinit(self.allocator);
             supervisor.afterAdapterResponse(.{
                 .world_port_id = pending.world_port_id,
                 .status = status,
                 .response_bytes = accounting.response_bytes,
                 .value_image_bytes = accounting.value_image_bytes,
             }) catch |err| {
+                if (responseStatusDeniedError(status, err)) {
+                    _ = self.parkPendingOnSupervision(index, pending, mailbox_id, "terminal response denied by supervision") catch |park_err| {
+                        supervisor_snapshot.restore(self, index);
+                        return park_err;
+                    };
+                    return err;
+                }
                 if ((err == error.HandlerPending or err == error.BudgetExceeded) and supervisor.interrupted) {
-                    return try self.parkPendingOnSupervision(index, pending, mailbox_id, "terminal response parked on supervision");
+                    const event = self.parkPendingOnSupervision(index, pending, mailbox_id, "terminal response parked on supervision") catch |park_err| {
+                        supervisor_snapshot.restore(self, index);
+                        return park_err;
+                    };
+                    return .{ .parked = event };
                 }
                 return err;
             };
+            const terminal_event_pair = self.prepareTerminalEventPair(status) catch |err| {
+                supervisor_snapshot.restore(self, index);
+                return err;
+            };
+            return .{ .event_pair = terminal_event_pair };
         } else if (self.config.require_supervision) {
             return error.SupervisionDenied;
         }
-        return null;
+        return .{ .event_pair = try self.prepareTerminalEventPair(status) };
     }
 
     fn terminalPortEventKind(status: ResponseStatus) Runspace.EventKind {
@@ -8609,13 +8721,12 @@ pub const Runspace = struct {
     }
 
     fn finishTerminalResponse(self: *@This(), index: usize, mailbox_id: u64, pending: Runspace.PendingPort, slot: *Runspace.RunSlot, response: Frame.Response, status: ResponseStatus) !Runspace.RunspaceEvent {
-        var event_pair = try self.prepareEventPair(
-            2,
-            terminalPortSummary(status),
-            terminalRunSummary(status),
-        );
+        const route = try self.routeTerminalResponse(index, mailbox_id, pending, slot, response, status);
+        var event_pair = switch (route) {
+            .parked => |event| return event,
+            .event_pair => |pair| pair,
+        };
         defer event_pair.deinit(self.allocator);
-        if (try self.routeTerminalResponse(index, mailbox_id, pending, slot, response, status)) |event| return event;
         const consumed = try self.consumeTerminalMailbox(mailbox_id, status, response.reason orelse "");
         try slot.transition(.fail, null);
         _ = self.appendPreparedEventAssumeCapacity(.{
@@ -8640,26 +8751,13 @@ pub const Runspace = struct {
         });
     }
 
-    const TerminalPendingRoute = struct {
-        response: Frame.Response,
-        parked_event: ?Runspace.RunspaceEvent = null,
-    };
-
-    fn routeTerminalPending(self: *@This(), index: usize, mailbox_id: u64, pending: Runspace.PendingPort, slot: *Runspace.RunSlot, status: ResponseStatus, reason: []const u8) !TerminalPendingRoute {
-        var response = try terminalResponseForPending(pending, status, reason);
-        errdefer response.deinit(self.allocator);
-        const parked_event = try self.routeTerminalResponse(index, mailbox_id, pending, slot, response, status);
-        return .{
-            .response = response,
-            .parked_event = parked_event,
-        };
-    }
-
     fn parkPendingOnSupervision(self: *@This(), index: usize, pending: Runspace.PendingPort, mailbox_id: u64, event_summary: []const u8) !Runspace.RunspaceEvent {
+        try self.ensureEventCapacity(1);
+        try self.events.ensureUnusedCapacity(self.allocator, 1);
         const event_summary_bytes = try self.prepareEventSummary(event_summary);
         var summary_owned = true;
         errdefer if (summary_owned) self.allocator.free(event_summary_bytes);
-        var slot = &self.slots.items[index];
+        const slot = &self.slots.items[index];
         slot.status = .parked_on_supervision;
         slot.pending_mailbox_id = mailbox_id;
         slot.current_state = slot.transitionState(.parked_on_port, pending.turn_index, pending.request_frame_fingerprint);
@@ -8680,70 +8778,22 @@ pub const Runspace = struct {
         const pending = try self.mailbox.get(mailbox_id);
         if (pending.status != .pending) return error.PendingPortConsumed;
         const index = try self.slotIndex(pending.handle);
-        var slot = &self.slots.items[index];
+        const slot = &self.slots.items[index];
         if (slot.pending_mailbox_id != mailbox_id or slot.status != .parked_on_port) return error.StaleRunHandle;
-        var event_pair = try self.prepareEventPair(2, "port rejected", "run failed after port rejection");
-        defer event_pair.deinit(self.allocator);
-        var routed = try self.routeTerminalPending(index, mailbox_id, pending, slot, .rejected, reason);
-        defer routed.response.deinit(self.allocator);
-        if (routed.parked_event) |event| return event;
-        const cancelled = try self.mailbox.cancel(mailbox_id, reason);
-        try slot.transition(.fail, null);
-        _ = self.appendPreparedEventAssumeCapacity(.{
-            .kind = .port_rejected,
-            .run_handle = slot.handle,
-            .pending_port_fingerprint = cancelled.pending_port_fingerprint,
-            .request_frame_fingerprint = cancelled.request_frame_fingerprint,
-            .response_frame_fingerprint = routed.response.frame_fingerprint,
-            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
-            .run_permit_fingerprint = slot.run_permit_fingerprint,
-            .summary = event_pair.takeFirst(),
-        });
-        return self.appendPreparedEventAssumeCapacity(.{
-            .kind = .run_failed,
-            .run_handle = slot.handle,
-            .pending_port_fingerprint = cancelled.pending_port_fingerprint,
-            .request_frame_fingerprint = cancelled.request_frame_fingerprint,
-            .response_frame_fingerprint = routed.response.frame_fingerprint,
-            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
-            .run_permit_fingerprint = slot.run_permit_fingerprint,
-            .summary = event_pair.takeSecond(),
-        });
+        var response = try terminalResponseForPending(pending, .rejected, reason);
+        defer response.deinit(self.allocator);
+        return self.finishTerminalResponse(index, mailbox_id, pending, slot, response, .rejected);
     }
 
     pub fn fail(self: *@This(), mailbox_id: u64, reason: []const u8) !Runspace.RunspaceEvent {
         const pending = try self.mailbox.get(mailbox_id);
         if (pending.status != .pending) return error.PendingPortConsumed;
         const index = try self.slotIndex(pending.handle);
-        var slot = &self.slots.items[index];
+        const slot = &self.slots.items[index];
         if (slot.pending_mailbox_id != mailbox_id or slot.status != .parked_on_port) return error.StaleRunHandle;
-        var event_pair = try self.prepareEventPair(2, "port failed", "run failed after port failure");
-        defer event_pair.deinit(self.allocator);
-        var routed = try self.routeTerminalPending(index, mailbox_id, pending, slot, .failed, reason);
-        defer routed.response.deinit(self.allocator);
-        if (routed.parked_event) |event| return event;
-        const failed = try self.mailbox.fail(mailbox_id, reason);
-        try slot.transition(.fail, null);
-        _ = self.appendPreparedEventAssumeCapacity(.{
-            .kind = .port_failed,
-            .run_handle = slot.handle,
-            .pending_port_fingerprint = failed.pending_port_fingerprint,
-            .request_frame_fingerprint = failed.request_frame_fingerprint,
-            .response_frame_fingerprint = routed.response.frame_fingerprint,
-            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
-            .run_permit_fingerprint = slot.run_permit_fingerprint,
-            .summary = event_pair.takeFirst(),
-        });
-        return self.appendPreparedEventAssumeCapacity(.{
-            .kind = .run_failed,
-            .run_handle = slot.handle,
-            .pending_port_fingerprint = failed.pending_port_fingerprint,
-            .request_frame_fingerprint = failed.request_frame_fingerprint,
-            .response_frame_fingerprint = routed.response.frame_fingerprint,
-            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
-            .run_permit_fingerprint = slot.run_permit_fingerprint,
-            .summary = event_pair.takeSecond(),
-        });
+        var response = try terminalResponseForPending(pending, .failed, reason);
+        defer response.deinit(self.allocator);
+        return self.finishTerminalResponse(index, mailbox_id, pending, slot, response, .failed);
     }
 
     pub fn exportRun(self: *@This(), handle: RunHandle) !RunImage {
@@ -8788,6 +8838,42 @@ pub const Runspace = struct {
             .summary = event_summary,
         });
         summary_owned = false;
+        return image;
+    }
+
+    fn previewExportRun(self: *@This(), handle: RunHandle) !RunImage {
+        const index = try self.slotIndex(handle);
+        const slot = &self.slots.items[index];
+        if (!Runspace.canTransition(slot.status, .exported)) return error.InvalidRunspaceTransition;
+        if (slot.status == .parked_on_port) {
+            const mailbox_id = slot.pending_mailbox_id orelse return error.HandoffPendingFrameMismatch;
+            const pending_port = try self.mailbox.get(mailbox_id);
+            if (pending_port.request_frame == null) return error.HandoffPendingFrameMismatch;
+        } else if (slot.status == .parked_on_supervision) {
+            if (slot.pending_mailbox_id) |mailbox_id| {
+                const pending_port = try self.mailbox.get(mailbox_id);
+                if (pending_port.request_frame == null) return error.HandoffPendingFrameMismatch;
+            }
+        }
+        var supervisor_snapshot = try self.snapshotSlotSupervisor(index);
+        defer supervisor_snapshot.deinit(self.allocator);
+        errdefer supervisor_snapshot.restore(self, index);
+        try self.beforeSlotHandoffExport(index);
+        const image = try self.snapshotSlotImage(index);
+        supervisor_snapshot.restore(self, index);
+        return image;
+    }
+
+    fn previewResultRun(self: *@This(), handle: RunHandle) !RunImage {
+        const index = try self.slotIndex(handle);
+        const slot = &self.slots.items[index];
+        if (slot.status != .completed) return error.InvalidRunspaceTransition;
+        var supervisor_snapshot = try self.snapshotSlotSupervisor(index);
+        defer supervisor_snapshot.deinit(self.allocator);
+        errdefer supervisor_snapshot.restore(self, index);
+        try self.beforeSlotHandoffExport(index);
+        const image = try self.snapshotSlotImage(index);
+        supervisor_snapshot.restore(self, index);
         return image;
     }
 
@@ -9783,6 +9869,2662 @@ pub const Runspace = struct {
             .failed => .failed,
             .not_started, .running => error.InvalidRunspaceTransition,
         };
+    }
+};
+
+pub const Guest = struct {
+    pub const Status = enum(u32) {
+        ok = 0,
+        initialized = 1,
+        running = 2,
+        parked = 3,
+        done = 4,
+        failed = 5,
+        buffer_too_small = 6,
+        invalid_frame = 7,
+        invalid_state = 8,
+        unknown_pending = 9,
+        stale_pending = 10,
+        supervision_denied = 11,
+        target_mismatch = 12,
+        admission_failed = 13,
+
+        pub fn code(self: @This()) u32 {
+            return @intFromEnum(self);
+        }
+    };
+
+    pub const Buffer = struct {
+        pub const max_request_bytes: usize = 64 * 1024;
+        pub const max_response_bytes: usize = 64 * 1024;
+        pub const max_result_bytes: usize = 256 * 1024;
+        pub const max_receipt_bytes: usize = 8 * 1024;
+        pub const max_transcript_bytes: usize = 256 * 1024;
+        pub const max_error_bytes: usize = 1024;
+        pub const max_pending_ports: usize = 16;
+    };
+
+    pub const Abi = struct {
+        pub const version = world_guest_abi_version;
+        pub const required_exports = [_][]const u8{
+            "world_abi_version",
+            "world_init",
+            "world_tick",
+            "world_status",
+            "world_pending_count",
+            "world_pending_request_len",
+            "world_read_pending_request",
+            "world_submit_response",
+            "world_result_len",
+            "world_read_result",
+            "world_receipt_len",
+            "world_read_receipt",
+            "world_transcript_len",
+            "world_read_transcript",
+            "world_last_error_len",
+            "world_read_last_error",
+        };
+        pub const optional_exports = [_][]const u8{
+            "world_alloc",
+            "world_free",
+        };
+        pub const forbidden_import_fragments = [_][]const u8{
+            "wasi",
+            "fd_",
+            "path_",
+            "sock_",
+            "random",
+            "clock",
+            "sched",
+            "treaty",
+            "provider",
+            "handler",
+            "boundary",
+        };
+
+        pub const Contract = struct {
+            abi_version: u32 = version,
+            fingerprint_version: u32 = world_guest_abi_contract_fingerprint_version,
+            required_export_count: usize = required_exports.len,
+            max_request_bytes: usize = Buffer.max_request_bytes,
+            max_response_bytes: usize = Buffer.max_response_bytes,
+            max_result_bytes: usize = Buffer.max_result_bytes,
+            max_receipt_bytes: usize = Buffer.max_receipt_bytes,
+            max_transcript_bytes: usize = Buffer.max_transcript_bytes,
+            max_error_bytes: usize = Buffer.max_error_bytes,
+            max_pending_ports: usize = Buffer.max_pending_ports,
+
+            pub fn fingerprint(self: @This()) u64 {
+                var hasher = std.hash.Wyhash.init(0x776f_726c_645f_6775);
+                hashU64(&hasher, self.abi_version);
+                hashU64(&hasher, self.fingerprint_version);
+                inline for (std.meta.fields(Status)) |field| {
+                    hashU64(&hasher, @as(u32, @intCast(field.value)));
+                }
+                hashU64(&hasher, self.required_export_count);
+                for (required_exports) |name| {
+                    hashU64(&hasher, name.len);
+                    hashBytes(&hasher, name);
+                }
+                hashU64(&hasher, optional_exports.len);
+                for (optional_exports) |name| {
+                    hashU64(&hasher, name.len);
+                    hashBytes(&hasher, name);
+                }
+                hashU64(&hasher, forbidden_import_fragments.len);
+                for (forbidden_import_fragments) |fragment| {
+                    hashU64(&hasher, fragment.len);
+                    hashBytes(&hasher, fragment);
+                }
+                hashU64(&hasher, self.max_request_bytes);
+                hashU64(&hasher, self.max_response_bytes);
+                hashU64(&hasher, self.max_result_bytes);
+                hashU64(&hasher, self.max_receipt_bytes);
+                hashU64(&hasher, self.max_transcript_bytes);
+                hashU64(&hasher, self.max_error_bytes);
+                hashU64(&hasher, self.max_pending_ports);
+                return hasher.final();
+            }
+        };
+    };
+
+    pub const Core = struct {
+        allocator: std.mem.Allocator,
+        runspace: Runspace,
+        handle: ?RunHandle = null,
+        state: Status = .initialized,
+        result_bytes: []const u8 = &.{},
+        receipt_bytes: [8]u8 = [_]u8{0} ** 8,
+        receipt_len_value: usize = 0,
+        transcript_bytes: []const u8 = &.{},
+        last_error: [Buffer.max_error_bytes]u8 = [_]u8{0} ** Buffer.max_error_bytes,
+        last_error_len_value: usize = 0,
+
+        pub fn init(allocator: std.mem.Allocator, config: Runspace.Config) @This() {
+            var runspace_config = config;
+            runspace_config.auto_dispatch = false;
+            runspace_config.max_pending_ports = if (runspace_config.max_pending_ports) |max|
+                @min(max, Buffer.max_pending_ports)
+            else
+                Buffer.max_pending_ports;
+            return .{
+                .allocator = allocator,
+                .runspace = Runspace.init(allocator, runspace_config),
+            };
+        }
+
+        pub fn deinit(self: *@This()) void {
+            self.allocator.free(self.result_bytes);
+            self.allocator.free(self.transcript_bytes);
+            self.runspace.deinit();
+            self.* = undefined;
+        }
+
+        fn clearSessionArtifacts(self: *@This()) void {
+            self.allocator.free(self.result_bytes);
+            self.result_bytes = &.{};
+            self.allocator.free(self.transcript_bytes);
+            self.transcript_bytes = &.{};
+            self.receipt_bytes = [_]u8{0} ** self.receipt_bytes.len;
+            self.receipt_len_value = 0;
+            self.clearError();
+        }
+
+        pub fn resetSession(self: *@This()) void {
+            self.clearSessionArtifacts();
+            const runspace_config = self.runspace.config;
+            self.runspace.deinit();
+            self.runspace = Runspace.init(self.allocator, runspace_config);
+            self.handle = null;
+            self.state = .initialized;
+        }
+
+        pub fn initSession(self: *@This()) void {
+            if (self.installedRunShouldRefreshOnInit()) {
+                _ = self.refreshStatus();
+                return;
+            }
+            self.state = .initialized;
+            self.clearError();
+        }
+
+        fn installedRunShouldRefreshOnInit(self: *const @This()) bool {
+            const handle = self.handle orelse return false;
+            const summary = self.runspace.getSlotSummary(handle) catch return false;
+            return switch (summary.status) {
+                .parked_on_port, .parked_on_supervision, .completed, .failed, .exported => true,
+                else => false,
+            };
+        }
+
+        pub fn installMachineRun(self: *@This(), comptime Target: type, comptime Env: type, runtime: anytype, args: anytype, options: anytype) !void {
+            if (self.handle != null) return self.failStatus(.invalid_state, "guest core already has an installed run");
+            self.handle = try self.runspace.installMachineRun(Target, Env, runtime, args, options);
+            self.state = .initialized;
+            self.clearError();
+        }
+
+        pub fn installAdmitted(self: *@This(), admitted_run: Admission.AdmittedRun) !void {
+            if (self.handle != null) return self.failStatus(.invalid_state, "guest core already has an installed run");
+            self.handle = try self.runspace.installAdmitted(admitted_run);
+            _ = self.refreshStatus();
+        }
+
+        pub fn installRunImage(self: *@This(), image: RunImage) !void {
+            if (self.handle != null) return self.failStatus(.invalid_state, "guest core already has an installed run");
+            const image_status = image.current_state.status;
+            self.handle = try self.runspace.installRunImage(image);
+            switch (image_status) {
+                .parked_on_port, .parked_on_supervision, .completed, .failed => _ = self.refreshStatus(),
+                else => {
+                    self.state = .initialized;
+                    self.clearError();
+                },
+            }
+        }
+
+        pub fn tick(self: *@This()) Status {
+            if (self.handle == null) return self.setStatus(.invalid_state, "guest core has no installed run");
+            _ = self.runspace.tick() catch |err| return self.mapRunspaceError(err);
+            return self.refreshStatus();
+        }
+
+        pub fn status(self: *const @This()) Status {
+            return self.state;
+        }
+
+        pub fn pendingCount(self: *const @This()) usize {
+            if (self.installedRunParkedOnSupervision()) return 0;
+            return self.runspace.mailbox.pendingCount();
+        }
+
+        pub fn pendingRequestLen(self: *@This(), index: u32) usize {
+            const bytes = self.pendingRequestBytes(index) catch return 0;
+            defer self.allocator.free(bytes);
+            return bytes.len;
+        }
+
+        pub fn readPendingRequest(self: *@This(), index: u32, out: []u8) usize {
+            const bytes = self.pendingRequestBytes(index) catch return 0;
+            defer self.allocator.free(bytes);
+            return self.copyToGuestBuffer(bytes, out);
+        }
+
+        fn pendingRequestBytes(self: *@This(), index: u32) ![]const u8 {
+            const pending = self.pendingByIndex(index) catch |err| {
+                _ = self.mapPendingLookupError(err);
+                return err;
+            };
+            const request = pending.request_frame orelse {
+                _ = self.setStatus(.unknown_pending, "pending port has no request frame");
+                return error.InvalidPendingPortTransition;
+            };
+            const bytes = request.encode(self.allocator) catch |err| {
+                _ = self.mapRunspaceError(err);
+                return err;
+            };
+            errdefer self.allocator.free(bytes);
+            if (bytes.len > Buffer.max_request_bytes) {
+                _ = self.setStatus(.buffer_too_small, "pending request frame exceeds guest request byte cap");
+                return error.OutOfMemory;
+            }
+            _ = self.refreshStatus();
+            return bytes;
+        }
+
+        pub fn submitResponse(self: *@This(), bytes: []const u8) Status {
+            if (bytes.len > Buffer.max_response_bytes) return self.setStatus(.buffer_too_small, "response frame exceeds guest response byte cap");
+            if (self.handle == null) return self.setStatus(.invalid_state, "guest core has no installed run");
+            if (self.runspace.mailbox.pending.items.len == 0) return self.setStatus(.invalid_state, "guest core is not parked on a pending port");
+            var response = Frame.Response.decode(self.allocator, bytes) catch |err| switch (err) {
+                error.OutOfMemory => return self.mapRunspaceError(err),
+                else => return self.setStatus(.invalid_frame, "response bytes do not decode as Frame.Response"),
+            };
+            defer response.deinit(self.allocator);
+            const mailbox_id = self.matchPendingMailbox(response) catch |err| return self.mapPendingLookupError(err);
+            _ = self.runspace.respond(mailbox_id, response) catch |err| {
+                if (err == error.HandlerPending) return self.refreshStatus();
+                if (response.status == .responded and self.respondedDenialLeftPending(mailbox_id, err)) {
+                    return self.setStatus(.supervision_denied, "supervision denied response while pending request remains retryable");
+                }
+                if (self.mapDeniedResponseStatus(response.status, err)) |mapped_status| return mapped_status;
+                return self.mapRunspaceError(err);
+            };
+            return self.refreshStatus();
+        }
+
+        pub fn resultLen(self: *@This()) usize {
+            self.ensureResultBytes() catch |err| {
+                _ = self.mapResultReadError(err);
+                return 0;
+            };
+            return self.result_bytes.len;
+        }
+
+        pub fn readResult(self: *@This(), out: []u8) usize {
+            self.ensureResultBytes() catch |err| {
+                _ = self.mapResultReadError(err);
+                return 0;
+            };
+            return self.copyToGuestBuffer(self.result_bytes, out);
+        }
+
+        pub fn receiptLen(self: *@This()) usize {
+            self.ensureResultBytes() catch |err| {
+                _ = self.mapResultReadError(err);
+                return 0;
+            };
+            return self.receipt_len_value;
+        }
+
+        pub fn readReceipt(self: *@This(), out: []u8) usize {
+            self.ensureResultBytes() catch |err| {
+                _ = self.mapResultReadError(err);
+                return 0;
+            };
+            return self.copyToGuestBuffer(self.receipt_bytes[0..self.receipt_len_value], out);
+        }
+
+        pub fn transcriptLen(self: *@This()) usize {
+            self.ensureResultBytes() catch |err| {
+                _ = self.mapResultReadError(err);
+                return 0;
+            };
+            return self.transcript_bytes.len;
+        }
+
+        pub fn readTranscript(self: *@This(), out: []u8) usize {
+            self.ensureResultBytes() catch |err| {
+                _ = self.mapResultReadError(err);
+                return 0;
+            };
+            return self.copyToGuestBuffer(self.transcript_bytes, out);
+        }
+
+        pub fn lastErrorLen(self: *const @This()) usize {
+            return self.last_error_len_value;
+        }
+
+        pub fn readLastError(self: *@This(), out: []u8) usize {
+            return copyToGuestBufferNoStatus(self.last_error[0..self.last_error_len_value], out);
+        }
+
+        fn refreshStatus(self: *@This()) Status {
+            const report = self.runspace.report();
+            if (report.failed_count != 0) return self.setStatus(.failed, "guest run failed");
+            if (report.completed_count != 0) return self.setStatus(.done, "");
+            if (self.installedRunParkedOnSupervision()) return self.setStatus(.supervision_denied, "guest run parked on supervision");
+            if (report.pending_port_count != 0) return self.setStatus(.parked, "");
+            if (report.parked_count != 0) return self.setStatus(.supervision_denied, "guest run parked on supervision without a pending port");
+            if (report.runnable_count != 0) return self.setStatus(.running, "");
+            if (report.run_count != 0) return self.setStatus(.initialized, "");
+            return self.setStatus(.initialized, "");
+        }
+
+        fn ensureResultBytes(self: *@This()) !void {
+            if (self.result_bytes.len != 0) return;
+            if (self.state == .failed) return;
+            if (self.state != .done) {
+                if (self.state == .supervision_denied) return error.SupervisionDenied;
+                if (self.state == .buffer_too_small) return error.GuestBufferTooSmall;
+                return error.InvalidRunspaceTransition;
+            }
+            const handle = self.handle orelse return error.InvalidRunspaceTransition;
+            var preview = try self.runspace.previewResultRun(handle);
+            defer preview.deinit(self.allocator);
+            const encoded = try preview.encode(self.allocator);
+            var encoded_owned = true;
+            errdefer if (encoded_owned) self.allocator.free(encoded);
+            if (encoded.len > Buffer.max_result_bytes) return error.GuestBufferTooSmall;
+            var transcript_bytes: []const u8 = &.{};
+            var transcript_owned = false;
+            errdefer if (transcript_owned) self.allocator.free(transcript_bytes);
+            if (preview.transcript_image) |transcript| {
+                transcript_bytes = try transcript.encode(self.allocator);
+                transcript_owned = true;
+                if (transcript_bytes.len > Buffer.max_transcript_bytes) return error.GuestBufferTooSmall;
+            }
+            if (preview.prior_run_receipt_fingerprint) |receipt_fingerprint| {
+                std.mem.writeInt(u64, &self.receipt_bytes, receipt_fingerprint, .little);
+                self.receipt_len_value = 8;
+            }
+            self.transcript_bytes = transcript_bytes;
+            transcript_owned = false;
+            self.result_bytes = encoded;
+            encoded_owned = false;
+        }
+
+        fn pendingByIndex(self: *const @This(), index: u32) !PendingPort {
+            if (self.installedRunParkedOnSupervision()) return error.SupervisionDenied;
+            var current: u32 = 0;
+            for (self.runspace.mailbox.pending.items) |pending_port| {
+                if (pending_port.status != .pending) continue;
+                if (current == index) return pending_port.borrowed();
+                current += 1;
+            }
+            return error.InvalidPendingPortTransition;
+        }
+
+        fn matchPendingMailbox(self: *const @This(), response: Frame.Response) !u64 {
+            if (self.installedRunParkedOnSupervision()) return error.SupervisionDenied;
+            var stale = false;
+            for (self.runspace.mailbox.pending.items) |pending_port| {
+                if (pending_port.request_fingerprint != response.request_fingerprint) continue;
+                if (pending_port.status != .pending) {
+                    stale = true;
+                    continue;
+                }
+                pending_port.borrowed().validateResponse(response) catch |err| {
+                    if (err == error.PendingPortConsumed) stale = true;
+                    return err;
+                };
+                return pending_port.mailbox_id;
+            }
+            return if (stale) error.PendingPortConsumed else error.InvalidPendingPortTransition;
+        }
+
+        fn installedRunParkedOnSupervision(self: *const @This()) bool {
+            const handle = self.handle orelse return false;
+            for (self.runspace.slots.items) |slot| {
+                if (slot.handle.handle_fingerprint == handle.handle_fingerprint and slot.status == .parked_on_supervision) return true;
+            }
+            return false;
+        }
+
+        fn copyToGuestBuffer(self: *@This(), bytes: []const u8, out: []u8) usize {
+            if (out.len < bytes.len) {
+                _ = self.setStatus(.buffer_too_small, "guest buffer is too small");
+                return bytes.len;
+            }
+            @memcpy(out[0..bytes.len], bytes);
+            _ = self.refreshStatus();
+            return bytes.len;
+        }
+
+        fn copyToGuestBufferNoStatus(bytes: []const u8, out: []u8) usize {
+            if (out.len < bytes.len) return bytes.len;
+            @memcpy(out[0..bytes.len], bytes);
+            return bytes.len;
+        }
+
+        fn mapPendingLookupError(self: *@This(), err: anyerror) Status {
+            return switch (err) {
+                error.PendingPortConsumed => self.setStatus(.stale_pending, "pending request has already been consumed"),
+                error.StaleRunHandle => self.setStatus(.stale_pending, "pending request is stale for this run"),
+                error.SupervisionDenied => self.setStatus(.supervision_denied, "guest run parked on supervision"),
+                error.FrameSurfaceMismatch,
+                error.FrameTargetCertificateMismatch,
+                error.FramePortMismatch,
+                error.FrameRequestFingerprintMismatch,
+                error.FrameValueTableMismatch,
+                error.VerifyResponseKindMismatch,
+                error.ReplayMissing,
+                => self.setStatus(.invalid_frame, "response frame does not match pending request"),
+                else => self.setStatus(.unknown_pending, "pending request was not found"),
+            };
+        }
+
+        fn mapDeniedResponseStatus(self: *@This(), response_status: ResponseStatus, err: anyerror) ?Status {
+            if (!responseStatusDeniedError(response_status, err)) return null;
+            return switch (response_status) {
+                .pending => self.setStatus(.supervision_denied, "supervision denied pending response"),
+                .rejected => self.setStatus(.supervision_denied, "supervision denied rejected response"),
+                .failed => self.setStatus(.supervision_denied, "supervision denied failed response"),
+                .responded => unreachable,
+            };
+        }
+
+        fn mapResultReadError(self: *@This(), err: anyerror) Status {
+            if (err == error.SupervisionDenied and self.state == .supervision_denied) return self.state;
+            return self.mapRunspaceError(err);
+        }
+
+        fn respondedDenialLeftPending(self: *const @This(), mailbox_id: u64, err: anyerror) bool {
+            if (!retryableRespondedDenialError(err)) return false;
+            const pending = self.runspace.mailbox.get(mailbox_id) catch return false;
+            if (pending.status != .pending) return false;
+            const handle = self.handle orelse return false;
+            const summary = self.runspace.getSlotSummary(handle) catch return false;
+            return summary.status == .parked_on_port and summary.pending_mailbox_id == mailbox_id;
+        }
+
+        fn retryableRespondedDenialError(err: anyerror) bool {
+            return err == error.BudgetExceeded or err == Error.PortRuleDenied or err == error.SupervisionPortRuleDenied;
+        }
+
+        fn mapRunspaceError(self: *@This(), err: anyerror) Status {
+            return switch (err) {
+                error.SupervisionDenied,
+                error.HandoffDenied,
+                error.BudgetExceeded,
+                error.SupervisionBudgetExceeded,
+                error.SupervisionPortRuleDenied,
+                error.PortRuleDenied,
+                error.AdapterKindDenied,
+                error.AuthorityDenied,
+                error.PortableValueRequired,
+                error.NativeValueRejected,
+                error.FreshCallDenied,
+                error.ReplayCallDenied,
+                => self.setStatus(.supervision_denied, "supervision denied guest run"),
+                error.RunspaceAdmissionRequired, error.AdmissionRejected => self.setStatus(.admission_failed, "runspace admission failed"),
+                error.FrameSurfaceMismatch, error.FrameTargetCertificateMismatch => self.setStatus(.target_mismatch, "frame target does not match guest run"),
+                error.InvalidFrameEncoding, error.VerifyValueImageMismatch, error.FramePortMismatch, error.FrameRequestFingerprintMismatch, error.FrameValueTableMismatch => self.setStatus(.invalid_frame, "invalid canonical frame bytes"),
+                error.StaleRunHandle, error.PendingPortConsumed => self.setStatus(.stale_pending, "pending request is stale"),
+                error.InvalidRunspaceTransition, error.InvalidPendingPortTransition => self.setStatus(.invalid_state, "invalid guest state transition"),
+                error.GuestBufferTooSmall => self.setStatus(.buffer_too_small, "guest ABI byte cap exceeded"),
+                else => self.setStatus(.failed, @errorName(err)),
+            };
+        }
+
+        fn setStatus(self: *@This(), status_value: Status, message: []const u8) Status {
+            self.state = status_value;
+            if (message.len == 0) {
+                self.clearError();
+            } else {
+                const len = @min(message.len, self.last_error.len);
+                @memcpy(self.last_error[0..len], message[0..len]);
+                self.last_error_len_value = len;
+            }
+            return self.state;
+        }
+
+        fn failStatus(self: *@This(), status_value: Status, message: []const u8) !void {
+            _ = self.setStatus(status_value, message);
+            return error.InvalidRunspaceTransition;
+        }
+
+        fn clearError(self: *@This()) void {
+            self.last_error_len_value = 0;
+        }
+    };
+
+    pub const NativeGuest = struct {
+        core: Core,
+
+        pub fn init(allocator: std.mem.Allocator, config: Runspace.Config) @This() {
+            return .{ .core = Core.init(allocator, config) };
+        }
+
+        pub fn deinit(self: *@This()) void {
+            self.core.deinit();
+        }
+
+        pub fn world_abi_version(_: *@This()) u32 {
+            return Abi.version;
+        }
+
+        pub fn world_init(self: *@This()) u32 {
+            self.core.initSession();
+            return self.core.state.code();
+        }
+
+        pub fn installMachineRun(self: *@This(), comptime Target: type, comptime Env: type, runtime: anytype, args: anytype, options: anytype) !void {
+            return self.core.installMachineRun(Target, Env, runtime, args, options);
+        }
+
+        pub fn world_tick(self: *@This()) u32 {
+            return self.core.tick().code();
+        }
+
+        pub fn world_status(self: *const @This()) u32 {
+            return self.core.status().code();
+        }
+
+        pub fn world_pending_count(self: *const @This()) u32 {
+            return @intCast(self.core.pendingCount());
+        }
+
+        pub fn world_pending_request_len(self: *@This(), index: u32) usize {
+            return self.core.pendingRequestLen(index);
+        }
+
+        pub fn world_read_pending_request(self: *@This(), index: u32, out: []u8) usize {
+            return self.core.readPendingRequest(index, out);
+        }
+
+        pub fn world_submit_response(self: *@This(), bytes: []const u8) u32 {
+            return self.core.submitResponse(bytes).code();
+        }
+
+        pub fn world_result_len(self: *@This()) usize {
+            return self.core.resultLen();
+        }
+
+        pub fn world_read_result(self: *@This(), out: []u8) usize {
+            return self.core.readResult(out);
+        }
+
+        pub fn world_receipt_len(self: *@This()) usize {
+            return self.core.receiptLen();
+        }
+
+        pub fn world_read_receipt(self: *@This(), out: []u8) usize {
+            return self.core.readReceipt(out);
+        }
+
+        pub fn world_transcript_len(self: *@This()) usize {
+            return self.core.transcriptLen();
+        }
+
+        pub fn world_read_transcript(self: *@This(), out: []u8) usize {
+            return self.core.readTranscript(out);
+        }
+
+        pub fn world_last_error_len(self: *const @This()) usize {
+            return self.core.lastErrorLen();
+        }
+
+        pub fn world_read_last_error(self: *@This(), out: []u8) usize {
+            return self.core.readLastError(out);
+        }
+    };
+
+    pub const VectorKind = enum {
+        one_port,
+        agent,
+        supervised_denial,
+        parked_handoff,
+        replay,
+    };
+
+    pub const ConformanceVector = struct {
+        fingerprint_version: u32 = world_guest_conformance_vector_fingerprint_version,
+        vector_fingerprint: u64 = 0,
+        name: []const u8,
+        kind: VectorKind,
+        target_ref_fingerprint: u64,
+        admission_receipt_fingerprint: ?u64 = null,
+        run_permit_fingerprint: ?u64 = null,
+        input_fingerprints: []const u64 = &.{},
+        expected_pending_frame_fingerprints: []const u64 = &.{},
+        response_frame_fingerprints: []const u64 = &.{},
+        expected_final_result_fingerprint: ?u64 = null,
+        expected_transcript_fingerprint: ?u64 = null,
+        expected_receipt_fingerprint: ?u64 = null,
+        expected_status_sequence: []const Status = &.{},
+
+        pub fn init(args: struct {
+            name: []const u8,
+            kind: VectorKind,
+            target_ref_fingerprint: u64,
+            admission_receipt_fingerprint: ?u64 = null,
+            run_permit_fingerprint: ?u64 = null,
+            input_fingerprints: []const u64 = &.{},
+            expected_pending_frame_fingerprints: []const u64 = &.{},
+            response_frame_fingerprints: []const u64 = &.{},
+            expected_final_result_fingerprint: ?u64 = null,
+            expected_transcript_fingerprint: ?u64 = null,
+            expected_receipt_fingerprint: ?u64 = null,
+            expected_status_sequence: []const Status = &.{},
+        }) @This() {
+            var result = @This(){
+                .name = args.name,
+                .kind = args.kind,
+                .target_ref_fingerprint = args.target_ref_fingerprint,
+                .admission_receipt_fingerprint = args.admission_receipt_fingerprint,
+                .run_permit_fingerprint = args.run_permit_fingerprint,
+                .input_fingerprints = args.input_fingerprints,
+                .expected_pending_frame_fingerprints = args.expected_pending_frame_fingerprints,
+                .response_frame_fingerprints = args.response_frame_fingerprints,
+                .expected_final_result_fingerprint = args.expected_final_result_fingerprint,
+                .expected_transcript_fingerprint = args.expected_transcript_fingerprint,
+                .expected_receipt_fingerprint = args.expected_receipt_fingerprint,
+                .expected_status_sequence = args.expected_status_sequence,
+            };
+            result.vector_fingerprint = fingerprintVector(result);
+            return result;
+        }
+
+        pub fn fingerprint(self: @This()) u64 {
+            return fingerprintVector(self);
+        }
+    };
+
+    pub const RunResultSummary = struct {
+        status: Status,
+        result_fingerprint: ?u64 = null,
+        transcript_fingerprint: ?u64 = null,
+        receipt_fingerprint: ?u64 = null,
+        pending_frame_fingerprints: []const u64 = &.{},
+    };
+
+    pub const ConformanceReport = struct {
+        fingerprint_version: u32 = world_guest_conformance_report_fingerprint_version,
+        report_fingerprint: u64 = 0,
+        vector_fingerprint: u64,
+        native_run_result: RunResultSummary,
+        native_abi_result: RunResultSummary,
+        wasm_inspection_passed: bool = false,
+        wasm_runtime_result: ?RunResultSummary = null,
+        status_sequence_match: bool = false,
+        pending_frame_match: bool = false,
+        final_result_match: bool = false,
+        transcript_match: bool = false,
+        receipt_match: bool = false,
+        blockers: []const []const u8 = &.{},
+        warnings: []const []const u8 = &.{},
+
+        pub fn init(args: struct {
+            vector_fingerprint: u64,
+            native_run_result: RunResultSummary,
+            native_abi_result: RunResultSummary,
+            wasm_inspection_passed: bool = false,
+            wasm_runtime_result: ?RunResultSummary = null,
+            status_sequence_match: bool = false,
+            pending_frame_match: bool = false,
+            final_result_match: bool = false,
+            transcript_match: bool = false,
+            receipt_match: bool = false,
+            blockers: []const []const u8 = &.{},
+            warnings: []const []const u8 = &.{},
+        }) @This() {
+            var result = @This(){
+                .vector_fingerprint = args.vector_fingerprint,
+                .native_run_result = args.native_run_result,
+                .native_abi_result = args.native_abi_result,
+                .wasm_inspection_passed = args.wasm_inspection_passed,
+                .wasm_runtime_result = args.wasm_runtime_result,
+                .status_sequence_match = args.status_sequence_match,
+                .pending_frame_match = args.pending_frame_match,
+                .final_result_match = args.final_result_match,
+                .transcript_match = args.transcript_match,
+                .receipt_match = args.receipt_match,
+                .blockers = args.blockers,
+                .warnings = args.warnings,
+            };
+            result.report_fingerprint = fingerprintReport(result);
+            return result;
+        }
+    };
+
+    pub const Wasm = struct {
+        const ExpectedSignature = struct {
+            param_count: u32,
+            result_count: u32,
+        };
+
+        const wasm32_max_memory_pages: u32 = 65_536;
+
+        pub const Inspection = struct {
+            abi_version: u32 = 0,
+            export_count: usize = 0,
+            import_count: usize = 0,
+            function_import_count: u32 = 0,
+            forbidden_import_count: usize = 0,
+            required_exports_present: bool = false,
+            memory_export_present: bool = false,
+            alloc_export_present: bool = false,
+            free_export_present: bool = false,
+            optional_helper_exports_valid: bool = true,
+
+            pub fn passed(self: @This()) bool {
+                return self.abi_version == Abi.version and
+                    self.required_exports_present and
+                    self.memory_export_present and
+                    self.import_count == 0 and
+                    self.forbidden_import_count == 0 and
+                    self.optional_helper_exports_valid;
+            }
+        };
+
+        pub fn inspect(bytes: []const u8) !Inspection {
+            if (bytes.len < 8) return error.InvalidFrameEncoding;
+            if (!std.mem.eql(u8, bytes[0..4], "\x00asm")) return error.InvalidFrameEncoding;
+            if (std.mem.readInt(u32, bytes[4..8], .little) != 1) return error.InvalidFrameEncoding;
+            var inspection: Inspection = .{};
+            var required_mask: u64 = 0;
+            var type_section: []const u8 = &.{};
+            var function_section: []const u8 = &.{};
+            var code_section: []const u8 = &.{};
+            var global_section: []const u8 = &.{};
+            var table_section: []const u8 = &.{};
+            var element_section: []const u8 = &.{};
+            var data_section: []const u8 = &.{};
+            var table_types: [max_wasm_validator_values]u8 = undefined;
+            var element_types: [max_wasm_validator_values]u8 = undefined;
+            var function_refs = [_]bool{false} ** max_wasm_validator_values;
+            var table_count: u32 = 0;
+            var memory_count: u32 = 0;
+            var global_count: u32 = 0;
+            var element_count: u32 = 0;
+            var data_count_section: ?u32 = null;
+            var data_segment_count: ?u32 = null;
+            var abi_defined_function_index: ?u32 = null;
+            var last_non_custom_section_rank: u8 = 0;
+            var cursor: usize = 8;
+            while (cursor < bytes.len) {
+                const section_id = bytes[cursor];
+                cursor += 1;
+                const section_len = try readWasmU32(bytes, &cursor);
+                if (cursor + section_len > bytes.len) return error.InvalidFrameEncoding;
+                const section_end = cursor + section_len;
+                if (section_id != 0) {
+                    const section_rank = try wasmSectionOrderRank(section_id);
+                    if (section_rank <= last_non_custom_section_rank) return error.InvalidFrameEncoding;
+                    last_non_custom_section_rank = section_rank;
+                    if (section_id == 8) return error.InvalidFrameEncoding;
+                } else {
+                    try validateCustomSection(bytes[cursor..section_end]);
+                }
+                switch (section_id) {
+                    1 => type_section = bytes[cursor..section_end],
+                    2 => inspection.function_import_count = try inspectImportSection(bytes[cursor..section_end], &inspection),
+                    3 => function_section = bytes[cursor..section_end],
+                    4 => {
+                        table_section = bytes[cursor..section_end];
+                        table_count = try inspectTableSection(table_section, &table_types);
+                    },
+                    5 => memory_count = try inspectMemorySection(bytes[cursor..section_end]),
+                    6 => {
+                        global_section = bytes[cursor..section_end];
+                        global_count = try inspectGlobalSection(global_section, inspection.function_import_count + try functionCount(function_section));
+                    },
+                    7 => try inspectExportSection(bytes[cursor..section_end], type_section, function_section, table_count, memory_count, global_count, inspection.function_import_count, &inspection, &required_mask, &abi_defined_function_index),
+                    9 => {
+                        element_section = bytes[cursor..section_end];
+                        element_count = try inspectElementSection(element_section, table_section, table_count, inspection.function_import_count + try functionCount(function_section), global_section, global_count, &function_refs, &element_types);
+                    },
+                    10 => code_section = bytes[cursor..section_end],
+                    11 => {
+                        data_section = bytes[cursor..section_end];
+                        data_segment_count = try inspectDataSection(data_section, memory_count, inspection.function_import_count + try functionCount(function_section), global_section, global_count);
+                    },
+                    12 => data_count_section = try inspectDataCountSection(bytes[cursor..section_end]),
+                    else => {},
+                }
+                cursor = section_end;
+            }
+            if (data_count_section) |expected_data_segments| {
+                if (data_segment_count) |actual_data_segments| {
+                    if (actual_data_segments != expected_data_segments) return error.InvalidFrameEncoding;
+                } else if (expected_data_segments != 0) {
+                    return error.InvalidFrameEncoding;
+                }
+            }
+            try validateGlobalFunctionRefs(global_section, inspection.function_import_count + try functionCount(function_section), element_section, &function_refs);
+            const all_required = if (Abi.required_exports.len == 64)
+                std.math.maxInt(u64)
+            else
+                (@as(u64, 1) << @intCast(Abi.required_exports.len)) - 1;
+            inspection.required_exports_present = (required_mask & all_required) == all_required;
+            if (abi_defined_function_index) |defined_index| {
+                const defined_function_count = try functionCount(function_section);
+                const data_count = data_count_section orelse data_segment_count orelse 0;
+                inspection.abi_version = try inspectCodeSection(code_section, type_section, function_section, global_section, table_section, element_section, data_section, defined_index, defined_function_count, inspection.function_import_count, table_types[0..@min(table_count, max_wasm_validator_values)], table_count, global_count, element_types[0..@min(element_count, max_wasm_validator_values)], element_count, data_count, data_count_section != null, &function_refs);
+            }
+            return inspection;
+        }
+
+        fn wasmSectionOrderRank(section_id: u8) !u8 {
+            return switch (section_id) {
+                1 => 1,
+                2 => 2,
+                3 => 3,
+                4 => 4,
+                5 => 5,
+                6 => 6,
+                7 => 7,
+                8 => 8,
+                9 => 9,
+                12 => 10,
+                10 => 11,
+                11 => 12,
+                else => error.InvalidFrameEncoding,
+            };
+        }
+
+        fn inspectImportSection(section: []const u8, inspection: *Inspection) !u32 {
+            var cursor: usize = 0;
+            const count = try readWasmU32(section, &cursor);
+            var function_import_count: u32 = 0;
+            var index: u32 = 0;
+            while (index < count) : (index += 1) {
+                const module = try readWasmName(section, &cursor);
+                const name = try readWasmName(section, &cursor);
+                const kind = try readWasmU8(section, &cursor);
+                try skipWasmImportDesc(section, &cursor);
+                inspection.import_count += 1;
+                if (kind == 0) function_import_count += 1;
+                if (forbiddenImport(module) or forbiddenImport(name)) inspection.forbidden_import_count += 1;
+            }
+            if (cursor != section.len) return error.InvalidFrameEncoding;
+            return function_import_count;
+        }
+
+        fn inspectMemorySection(section: []const u8) !u32 {
+            var cursor: usize = 0;
+            const count = try readWasmU32(section, &cursor);
+            if (count > 1) return error.InvalidFrameEncoding;
+            var index: u32 = 0;
+            while (index < count) : (index += 1) try skipWasmLimits(section, &cursor, wasm32_max_memory_pages, false);
+            if (cursor != section.len) return error.InvalidFrameEncoding;
+            return count;
+        }
+
+        fn inspectTableSection(section: []const u8, table_types: *[max_wasm_validator_values]u8) !u32 {
+            var cursor: usize = 0;
+            const count = try readWasmU32(section, &cursor);
+            var index: u32 = 0;
+            while (index < count) : (index += 1) {
+                const element_type = try readWasmU8(section, &cursor);
+                if (element_type != 0x70 and element_type != 0x6f) return error.InvalidFrameEncoding;
+                if (index < max_wasm_validator_values) table_types[index] = element_type;
+                try skipWasmLimits(section, &cursor, null, false);
+            }
+            if (cursor != section.len) return error.InvalidFrameEncoding;
+            return count;
+        }
+
+        fn inspectGlobalSection(section: []const u8, function_count: u32) !u32 {
+            var cursor: usize = 0;
+            const count = try readWasmU32(section, &cursor);
+            var index: u32 = 0;
+            while (index < count) : (index += 1) {
+                const value_type = try readWasmU8(section, &cursor);
+                if (!validWasmValueType(value_type)) return error.InvalidFrameEncoding;
+                const mutable = try readWasmU8(section, &cursor);
+                if (mutable > 1) return error.InvalidFrameEncoding;
+                try skipWasmInitExpr(section, &cursor, function_count, section, index, value_type);
+            }
+            if (cursor != section.len) return error.InvalidFrameEncoding;
+            return count;
+        }
+
+        fn validateGlobalFunctionRefs(section: []const u8, function_count: u32, element_section: []const u8, function_refs: []const bool) !void {
+            if (section.len == 0) return;
+            var cursor: usize = 0;
+            const count = try readWasmU32(section, &cursor);
+            var index: u32 = 0;
+            while (index < count) : (index += 1) {
+                const value_type = try readWasmU8(section, &cursor);
+                if (!validWasmValueType(value_type)) return error.InvalidFrameEncoding;
+                const mutable = try readWasmU8(section, &cursor);
+                if (mutable > 1) return error.InvalidFrameEncoding;
+                const expr_start = cursor;
+                try skipWasmInitExpr(section, &cursor, function_count, section, index, value_type);
+                try validateWasmInitExprDeclaredRefs(section[expr_start..cursor], function_count, element_section, function_refs);
+            }
+            if (cursor != section.len) return error.InvalidFrameEncoding;
+        }
+
+        fn inspectExportSection(section: []const u8, type_section: []const u8, function_section: []const u8, table_count: u32, memory_count: u32, global_count: u32, function_import_count: u32, inspection: *Inspection, required_mask: *u64, abi_defined_function_index: *?u32) !void {
+            var cursor: usize = 0;
+            const count = try readWasmU32(section, &cursor);
+            const defined_function_count = try functionCount(function_section);
+            if (function_import_count > std.math.maxInt(u32) - defined_function_count) return error.InvalidFrameEncoding;
+            const function_count = function_import_count + defined_function_count;
+            var index: u32 = 0;
+            while (index < count) : (index += 1) {
+                const entry_start = cursor;
+                const name = try readWasmName(section, &cursor);
+                const kind = try readWasmU8(section, &cursor);
+                const export_index = try readWasmU32(section, &cursor);
+                if (try exportNameAppeared(section, entry_start, name)) return error.InvalidFrameEncoding;
+                try validateExportDescriptor(kind, export_index, function_count, table_count, memory_count, global_count);
+                inspection.export_count += 1;
+                if (kind == 2 and std.mem.eql(u8, name, "memory") and export_index < memory_count) inspection.memory_export_present = true;
+                if (std.mem.eql(u8, name, "world_alloc")) {
+                    if (kind == 0 and try functionSignatureMatches(type_section, function_section, function_import_count, export_index, .{ .param_count = 1, .result_count = 1 })) {
+                        inspection.alloc_export_present = true;
+                    } else {
+                        inspection.optional_helper_exports_valid = false;
+                    }
+                }
+                if (std.mem.eql(u8, name, "world_free")) {
+                    if (kind == 0 and try functionSignatureMatches(type_section, function_section, function_import_count, export_index, .{ .param_count = 2, .result_count = 0 })) {
+                        inspection.free_export_present = true;
+                    } else {
+                        inspection.optional_helper_exports_valid = false;
+                    }
+                }
+                for (Abi.required_exports, 0..) |required, required_index| {
+                    if (kind == 0 and std.mem.eql(u8, name, required) and try functionSignatureMatches(type_section, function_section, function_import_count, export_index, requiredSignature(required_index))) {
+                        required_mask.* |= @as(u64, 1) << @intCast(required_index);
+                        if (required_index == 0) abi_defined_function_index.* = export_index - function_import_count;
+                    }
+                }
+            }
+            if (cursor != section.len) return error.InvalidFrameEncoding;
+        }
+
+        fn inspectElementSection(section: []const u8, table_section: []const u8, table_count: u32, function_count: u32, global_section: []const u8, global_count: u32, function_refs: *[max_wasm_validator_values]bool, element_types: *[max_wasm_validator_values]u8) !u32 {
+            var cursor: usize = 0;
+            const count = try readWasmU32(section, &cursor);
+            var index: u32 = 0;
+            while (index < count) : (index += 1) {
+                const tag = try readWasmU32(section, &cursor);
+                var element_type: u8 = 0x70;
+                switch (tag) {
+                    0 => {
+                        if (table_count == 0 or try wasmTableSectionType(table_section, 0) != 0x70) return error.InvalidFrameEncoding;
+                        try skipWasmInitExpr(section, &cursor, function_count, global_section, global_count, 0x7f);
+                        try readWasmElementKind(section, &cursor);
+                        try skipWasmFunctionIndexVector(section, &cursor, function_count, function_refs);
+                    },
+                    1 => {
+                        try readWasmElementKind(section, &cursor);
+                        try skipWasmFunctionIndexVector(section, &cursor, function_count, function_refs);
+                    },
+                    2 => {
+                        const table_index = try readWasmU32(section, &cursor);
+                        if (table_index >= table_count or try wasmTableSectionType(table_section, table_index) != 0x70) return error.InvalidFrameEncoding;
+                        try skipWasmInitExpr(section, &cursor, function_count, global_section, global_count, 0x7f);
+                        try readWasmElementKind(section, &cursor);
+                        try skipWasmFunctionIndexVector(section, &cursor, function_count, function_refs);
+                    },
+                    3 => {
+                        try readWasmElementKind(section, &cursor);
+                        try skipWasmFunctionIndexVector(section, &cursor, function_count, function_refs);
+                    },
+                    4 => {
+                        if (table_count == 0 or try wasmTableSectionType(table_section, 0) != 0x70) return error.InvalidFrameEncoding;
+                        try skipWasmInitExpr(section, &cursor, function_count, global_section, global_count, 0x7f);
+                        try skipWasmInitExprVector(section, &cursor, function_count, global_section, global_count, 0x70, function_refs);
+                    },
+                    5 => {
+                        const ref_type = try readWasmRefType(section, &cursor);
+                        element_type = ref_type;
+                        try skipWasmInitExprVector(section, &cursor, function_count, global_section, global_count, ref_type, function_refs);
+                    },
+                    6 => {
+                        const table_index = try readWasmU32(section, &cursor);
+                        if (table_index >= table_count) return error.InvalidFrameEncoding;
+                        try skipWasmInitExpr(section, &cursor, function_count, global_section, global_count, 0x7f);
+                        const ref_type = try readWasmRefType(section, &cursor);
+                        element_type = ref_type;
+                        if (try wasmTableSectionType(table_section, table_index) != ref_type) return error.InvalidFrameEncoding;
+                        try skipWasmInitExprVector(section, &cursor, function_count, global_section, global_count, ref_type, function_refs);
+                    },
+                    7 => {
+                        const ref_type = try readWasmRefType(section, &cursor);
+                        element_type = ref_type;
+                        try skipWasmInitExprVector(section, &cursor, function_count, global_section, global_count, ref_type, function_refs);
+                    },
+                    else => return error.InvalidFrameEncoding,
+                }
+                if (index < max_wasm_validator_values) element_types[index] = element_type;
+            }
+            if (cursor != section.len) return error.InvalidFrameEncoding;
+            return count;
+        }
+
+        fn inspectDataCountSection(section: []const u8) !u32 {
+            var cursor: usize = 0;
+            const count = try readWasmU32(section, &cursor);
+            if (cursor != section.len) return error.InvalidFrameEncoding;
+            return count;
+        }
+
+        fn inspectDataSection(section: []const u8, memory_count: u32, function_count: u32, global_section: []const u8, global_count: u32) !u32 {
+            var cursor: usize = 0;
+            const count = try readWasmU32(section, &cursor);
+            var index: u32 = 0;
+            while (index < count) : (index += 1) {
+                const tag = try readWasmU32(section, &cursor);
+                switch (tag) {
+                    0 => {
+                        if (memory_count == 0) return error.InvalidFrameEncoding;
+                        try skipWasmInitExpr(section, &cursor, function_count, global_section, global_count, 0x7f);
+                        try skipWasmByteVector(section, &cursor);
+                    },
+                    1 => try skipWasmByteVector(section, &cursor),
+                    2 => {
+                        const memory_index = try readWasmU32(section, &cursor);
+                        if (memory_index >= memory_count) return error.InvalidFrameEncoding;
+                        try skipWasmInitExpr(section, &cursor, function_count, global_section, global_count, 0x7f);
+                        try skipWasmByteVector(section, &cursor);
+                    },
+                    else => return error.InvalidFrameEncoding,
+                }
+            }
+            if (cursor != section.len) return error.InvalidFrameEncoding;
+            return count;
+        }
+
+        fn validateExportDescriptor(kind: u8, export_index: u32, function_count: u32, table_count: u32, memory_count: u32, global_count: u32) !void {
+            const limit = switch (kind) {
+                0 => function_count,
+                1 => table_count,
+                2 => memory_count,
+                3 => global_count,
+                else => return error.InvalidFrameEncoding,
+            };
+            if (export_index >= limit) return error.InvalidFrameEncoding;
+        }
+
+        fn exportNameAppeared(section: []const u8, end: usize, name: []const u8) !bool {
+            var cursor: usize = 0;
+            _ = try readWasmU32(section, &cursor);
+            while (cursor < end) {
+                const previous = try readWasmName(section, &cursor);
+                _ = try readWasmU8(section, &cursor);
+                _ = try readWasmU32(section, &cursor);
+                if (std.mem.eql(u8, previous, name)) return true;
+            }
+            if (cursor != end) return error.InvalidFrameEncoding;
+            return false;
+        }
+
+        fn inspectCodeSection(section: []const u8, type_section: []const u8, function_section: []const u8, global_section: []const u8, table_section: []const u8, element_section: []const u8, data_section: []const u8, abi_defined_index: u32, expected_defined_function_count: u32, function_import_count: u32, table_types: []const u8, table_count: u32, global_count: u32, element_types: []const u8, element_count: u32, data_count: u32, data_count_present: bool, function_refs: []const bool) !u32 {
+            var cursor: usize = 0;
+            const count = try readWasmU32(section, &cursor);
+            if (count != expected_defined_function_count) return error.InvalidFrameEncoding;
+            if (abi_defined_index >= count) return error.InvalidFrameEncoding;
+            const function_count = function_import_count + expected_defined_function_count;
+            const type_count = try typeCount(type_section);
+            var abi_version: ?u32 = null;
+            var index: u32 = 0;
+            while (index < count) : (index += 1) {
+                const body_len = try readWasmU32(section, &cursor);
+                if (cursor + body_len > section.len) return error.InvalidFrameEncoding;
+                const body = section[cursor .. cursor + body_len];
+                cursor += body_len;
+                const type_index = try functionTypeIndex(function_section, index);
+                try validateWasmFunctionBody(body, type_section, function_section, global_section, table_section, element_section, data_section, type_index, function_import_count, function_count, type_count, table_types, table_count, global_count, element_types, element_count, data_count, data_count_present, function_refs);
+                if (index == abi_defined_index) abi_version = try inspectAbiVersionBody(body, global_section, global_count, function_count);
+            }
+            if (cursor != section.len) return error.InvalidFrameEncoding;
+            return abi_version orelse error.InvalidFrameEncoding;
+        }
+
+        fn functionCount(section: []const u8) !u32 {
+            if (section.len == 0) return 0;
+            var cursor: usize = 0;
+            const count = try readWasmU32(section, &cursor);
+            var index: u32 = 0;
+            while (index < count) : (index += 1) _ = try readWasmU32(section, &cursor);
+            if (cursor != section.len) return error.InvalidFrameEncoding;
+            return count;
+        }
+
+        fn typeCount(section: []const u8) !u32 {
+            if (section.len == 0) return 0;
+            var cursor: usize = 0;
+            const count = try readWasmU32(section, &cursor);
+            var index: u32 = 0;
+            while (index < count) : (index += 1) {
+                const tag = try readWasmU8(section, &cursor);
+                if (tag != 0x60) return error.InvalidFrameEncoding;
+                const param_count = try readWasmU32(section, &cursor);
+                var param_index: u32 = 0;
+                while (param_index < param_count) : (param_index += 1) {
+                    if (!validWasmValueType(try readWasmU8(section, &cursor))) return error.InvalidFrameEncoding;
+                }
+                const result_count = try readWasmU32(section, &cursor);
+                var result_index: u32 = 0;
+                while (result_index < result_count) : (result_index += 1) {
+                    if (!validWasmValueType(try readWasmU8(section, &cursor))) return error.InvalidFrameEncoding;
+                }
+            }
+            if (cursor != section.len) return error.InvalidFrameEncoding;
+            return count;
+        }
+
+        fn wasmFunctionShape(section: []const u8, type_index: u32) !WasmFunctionShape {
+            var cursor: usize = 0;
+            const count = try readWasmU32(section, &cursor);
+            if (type_index >= count) return error.InvalidFrameEncoding;
+            var result: WasmFunctionShape = .{};
+            var index: u32 = 0;
+            while (index < count) : (index += 1) {
+                const tag = try readWasmU8(section, &cursor);
+                if (tag != 0x60) return error.InvalidFrameEncoding;
+                const param_count = try readWasmU32(section, &cursor);
+                var param_index: u32 = 0;
+                while (param_index < param_count) : (param_index += 1) {
+                    const param_type = try readWasmU8(section, &cursor);
+                    if (!validWasmValueType(param_type)) return error.InvalidFrameEncoding;
+                    if (index == type_index and param_index < max_wasm_validator_values) result.params[param_index] = param_type;
+                }
+                const result_count = try readWasmU32(section, &cursor);
+                if (result_count > max_wasm_validator_values) return error.InvalidFrameEncoding;
+                var result_index: u32 = 0;
+                while (result_index < result_count) : (result_index += 1) {
+                    const result_type = try readWasmU8(section, &cursor);
+                    if (!validWasmValueType(result_type)) return error.InvalidFrameEncoding;
+                    if (index == type_index) result.results[result_index] = result_type;
+                }
+                if (index == type_index) {
+                    result.param_count = param_count;
+                    result.result_count = result_count;
+                }
+            }
+            if (cursor != section.len) return error.InvalidFrameEncoding;
+            return result;
+        }
+
+        const max_wasm_validator_values = 512;
+        const wasm_unknown_type = 0xff;
+        const WasmFunctionShape = struct {
+            params: [max_wasm_validator_values]u8 = undefined,
+            param_count: u32 = 0,
+            results: [max_wasm_validator_values]u8 = undefined,
+            result_count: u32 = 0,
+        };
+        const WasmElementSegment = struct {
+            element_type: u8,
+            is_passive: bool,
+        };
+        const WasmControlFrame = struct {
+            start_height: u32,
+            params: [max_wasm_validator_values]u8 = undefined,
+            param_count: u32 = 0,
+            results: [max_wasm_validator_values]u8 = undefined,
+            result_count: u32 = 0,
+            label_types: [max_wasm_validator_values]u8 = undefined,
+            label_count: u32 = 0,
+            is_unreachable: bool = false,
+            is_if: bool = false,
+            else_seen: bool = false,
+        };
+        const WasmBodyContext = struct {
+            type_section: []const u8,
+            function_section: []const u8,
+            global_section: []const u8,
+            table_section: []const u8,
+            element_section: []const u8,
+            data_section: []const u8,
+            body: []const u8,
+            type_index: u32,
+            function_import_count: u32,
+            function_count: u32,
+            type_count: u32,
+            table_types: []const u8,
+            table_count: u32,
+            global_count: u32,
+            element_types: []const u8,
+            element_count: u32,
+            data_count: u32,
+            data_count_present: bool,
+            function_refs: []const bool,
+            locals: [max_wasm_validator_values]u8 = undefined,
+            local_count: u32 = 0,
+            stack: [max_wasm_validator_values]u8 = undefined,
+            stack_len: u32 = 0,
+            controls: [max_wasm_validator_values]WasmControlFrame = undefined,
+            control_count: u32 = 0,
+        };
+
+        fn validateWasmFunctionBody(body: []const u8, type_section: []const u8, function_section: []const u8, global_section: []const u8, table_section: []const u8, element_section: []const u8, data_section: []const u8, type_index: u32, function_import_count: u32, function_count: u32, type_count: u32, table_types: []const u8, table_count: u32, global_count: u32, element_types: []const u8, element_count: u32, data_count: u32, data_count_present: bool, function_refs: []const bool) !void {
+            const shape = try wasmFunctionShape(type_section, type_index);
+            var context = WasmBodyContext{
+                .type_section = type_section,
+                .function_section = function_section,
+                .global_section = global_section,
+                .table_section = table_section,
+                .element_section = element_section,
+                .data_section = data_section,
+                .body = body,
+                .type_index = type_index,
+                .function_import_count = function_import_count,
+                .function_count = function_count,
+                .type_count = type_count,
+                .table_types = table_types,
+                .table_count = table_count,
+                .global_count = global_count,
+                .element_types = element_types,
+                .element_count = element_count,
+                .data_count = data_count,
+                .data_count_present = data_count_present,
+                .function_refs = function_refs,
+            };
+            while (context.local_count < shape.param_count) : (context.local_count += 1) {
+                if (context.local_count < max_wasm_validator_values) context.locals[context.local_count] = shape.params[context.local_count];
+            }
+            var cursor: usize = 0;
+            const local_decl_count = try readWasmU32(body, &cursor);
+            var local_decl_index: u32 = 0;
+            while (local_decl_index < local_decl_count) : (local_decl_index += 1) {
+                const local_count = try readWasmU32(body, &cursor);
+                const value_type = try readWasmU8(body, &cursor);
+                if (!validWasmValueType(value_type)) return error.InvalidFrameEncoding;
+                if (local_count > std.math.maxInt(u32) - context.local_count) return error.InvalidFrameEncoding;
+                const first_local = context.local_count;
+                context.local_count += local_count;
+                var index: u32 = 0;
+                while (index < local_count and first_local + index < max_wasm_validator_values) : (index += 1) {
+                    context.locals[first_local + index] = value_type;
+                }
+            }
+            try pushWasmControl(&context, .{ .start_height = 0, .results = shape.results, .result_count = shape.result_count, .label_types = shape.results, .label_count = shape.result_count });
+            while (cursor < body.len) {
+                const opcode = try readWasmU8(body, &cursor);
+                switch (opcode) {
+                    0x02, 0x03, 0x04 => {
+                        if (opcode == 0x04) try popWasmValue(&context, 0x7f);
+                        const block_shape = try readWasmBlockType(body, &cursor, type_section, type_count);
+                        if (block_shape.param_count > max_wasm_validator_values or block_shape.result_count > max_wasm_validator_values) return error.InvalidFrameEncoding;
+                        var param_index = block_shape.param_count;
+                        while (param_index > 0) {
+                            param_index -= 1;
+                            try popWasmValue(&context, block_shape.params[param_index]);
+                        }
+                        const start_height = context.stack_len;
+                        param_index = 0;
+                        while (param_index < block_shape.param_count) : (param_index += 1) try pushWasmValue(&context, block_shape.params[param_index]);
+                        const label_types = if (opcode == 0x03) block_shape.params else block_shape.results;
+                        const label_count = if (opcode == 0x03) block_shape.param_count else block_shape.result_count;
+                        try pushWasmControl(&context, .{ .start_height = start_height, .params = block_shape.params, .param_count = block_shape.param_count, .results = block_shape.results, .result_count = block_shape.result_count, .label_types = label_types, .label_count = label_count, .is_if = opcode == 0x04 });
+                    },
+                    0x05 => {
+                        if (context.control_count <= 1) return error.InvalidFrameEncoding;
+                        var frame = &context.controls[context.control_count - 1];
+                        if (!frame.is_if or frame.else_seen) return error.InvalidFrameEncoding;
+                        try finishWasmControlArm(&context, frame);
+                        context.stack_len = frame.start_height;
+                        var param_index: u32 = 0;
+                        while (param_index < frame.param_count) : (param_index += 1) try pushWasmValue(&context, frame.params[param_index]);
+                        frame.is_unreachable = false;
+                        frame.else_seen = true;
+                    },
+                    0x0c => try validateWasmBranch(&context, body, &cursor, false),
+                    0x0d => try validateWasmBranch(&context, body, &cursor, true),
+                    0x0e => try validateWasmBranchTable(&context, body, &cursor),
+                    0x0f => try validateWasmReturn(&context),
+                    0x10 => try validateWasmCall(&context, body, &cursor),
+                    0x11 => try validateWasmIndirectCall(&context, body, &cursor),
+                    0x0b => {
+                        const finished_function = context.control_count == 1;
+                        try finishWasmControl(&context);
+                        if (finished_function) {
+                            if (cursor != body.len) return error.InvalidFrameEncoding;
+                            return;
+                        }
+                    },
+                    else => try validateWasmInstruction(opcode, body, &cursor, &context),
+                }
+            }
+            return error.InvalidFrameEncoding;
+        }
+
+        fn pushWasmControl(context: *WasmBodyContext, frame: WasmControlFrame) !void {
+            if (context.control_count == max_wasm_validator_values) return error.InvalidFrameEncoding;
+            context.controls[context.control_count] = frame;
+            context.control_count += 1;
+        }
+
+        fn finishWasmControlArm(context: *WasmBodyContext, frame: *WasmControlFrame) !void {
+            if (frame.is_unreachable and context.stack_len == frame.start_height) return;
+            if (context.stack_len != frame.start_height + frame.result_count) return error.InvalidFrameEncoding;
+            var result_index: u32 = 0;
+            while (result_index < frame.result_count) : (result_index += 1) {
+                if (context.stack[frame.start_height + result_index] != frame.results[result_index]) return error.InvalidFrameEncoding;
+            }
+        }
+
+        fn finishWasmControl(context: *WasmBodyContext) !void {
+            if (context.control_count == 0) return error.InvalidFrameEncoding;
+            const frame_index = context.control_count - 1;
+            const frame = &context.controls[frame_index];
+            if (frame.is_if and frame.result_count != 0 and !frame.else_seen) return error.InvalidFrameEncoding;
+            try finishWasmControlArm(context, frame);
+            context.control_count = frame_index;
+            context.stack_len = frame.start_height;
+            var result_index: u32 = 0;
+            while (result_index < frame.result_count) : (result_index += 1) try pushWasmValue(context, frame.results[result_index]);
+        }
+
+        fn currentWasmFrame(context: *WasmBodyContext) *WasmControlFrame {
+            return &context.controls[context.control_count - 1];
+        }
+
+        fn markWasmUnreachable(context: *WasmBodyContext) void {
+            var frame = currentWasmFrame(context);
+            context.stack_len = frame.start_height;
+            frame.is_unreachable = true;
+        }
+
+        fn pushWasmValue(context: *WasmBodyContext, value_type: u8) !void {
+            if (context.stack_len == max_wasm_validator_values) return error.InvalidFrameEncoding;
+            context.stack[context.stack_len] = value_type;
+            context.stack_len += 1;
+        }
+
+        fn popWasmAny(context: *WasmBodyContext) !u8 {
+            if (context.stack_len == currentWasmFrame(context).start_height) {
+                if (currentWasmFrame(context).is_unreachable) return wasm_unknown_type;
+                return error.InvalidFrameEncoding;
+            }
+            context.stack_len -= 1;
+            return context.stack[context.stack_len];
+        }
+
+        fn popWasmValue(context: *WasmBodyContext, expected_type: u8) !void {
+            const actual = try popWasmAny(context);
+            if (actual != wasm_unknown_type and actual != expected_type) return error.InvalidFrameEncoding;
+        }
+
+        fn popWasmRef(context: *WasmBodyContext) !void {
+            const actual = try popWasmAny(context);
+            if (actual != wasm_unknown_type and actual != 0x70 and actual != 0x6f) return error.InvalidFrameEncoding;
+        }
+
+        fn wasmNumericType(value_type: u8) bool {
+            return switch (value_type) {
+                0x7f, 0x7e, 0x7d, 0x7c, wasm_unknown_type => true,
+                else => false,
+            };
+        }
+
+        fn validateWasmLabelValues(context: *WasmBodyContext, label_index: u32) !void {
+            if (label_index >= context.control_count) return error.InvalidFrameEncoding;
+            const target = context.controls[context.control_count - 1 - label_index];
+            var result_index = target.label_count;
+            while (result_index > 0) {
+                result_index -= 1;
+                try popWasmValue(context, target.label_types[result_index]);
+            }
+            var restore_index: u32 = 0;
+            while (restore_index < target.label_count) : (restore_index += 1) try pushWasmValue(context, target.label_types[restore_index]);
+        }
+
+        fn validateWasmBranch(context: *WasmBodyContext, bytes: []const u8, cursor: *usize, conditional: bool) !void {
+            const label_index = try readWasmU32(bytes, cursor);
+            if (conditional) try popWasmValue(context, 0x7f);
+            try validateWasmLabelValues(context, label_index);
+            if (!conditional) markWasmUnreachable(context);
+        }
+
+        fn validateWasmBranchTarget(bytes: []const u8, cursor: *usize, block_depth: u32) !void {
+            const label_index = try readWasmU32(bytes, cursor);
+            if (label_index > block_depth) return error.InvalidFrameEncoding;
+        }
+
+        fn validateWasmBranchTable(context: *WasmBodyContext, bytes: []const u8, cursor: *usize) !void {
+            const label_count = try readWasmU32(bytes, cursor);
+            var label_index: u32 = 0;
+            var reference_frame: ?WasmControlFrame = null;
+            while (label_index < label_count) : (label_index += 1) {
+                const target = try readWasmU32(bytes, cursor);
+                if (target >= context.control_count) return error.InvalidFrameEncoding;
+                const target_frame = context.controls[context.control_count - 1 - target];
+                if (reference_frame) |frame| {
+                    try validateWasmBranchTableTargetShape(frame, target_frame);
+                } else {
+                    reference_frame = target_frame;
+                }
+            }
+            const default_target = try readWasmU32(bytes, cursor);
+            if (default_target >= context.control_count) return error.InvalidFrameEncoding;
+            const default_frame = context.controls[context.control_count - 1 - default_target];
+            if (reference_frame) |frame| try validateWasmBranchTableTargetShape(default_frame, frame);
+            try popWasmValue(context, 0x7f);
+            try validateWasmLabelValues(context, default_target);
+            markWasmUnreachable(context);
+        }
+
+        fn validateWasmBranchTableTargetShape(default_frame: WasmControlFrame, target_frame: WasmControlFrame) !void {
+            if (target_frame.label_count != default_frame.label_count) return error.InvalidFrameEncoding;
+            var result_index: u32 = 0;
+            while (result_index < default_frame.label_count) : (result_index += 1) {
+                if (target_frame.label_types[result_index] != default_frame.label_types[result_index]) return error.InvalidFrameEncoding;
+            }
+        }
+
+        fn validateWasmReturn(context: *WasmBodyContext) !void {
+            if (context.control_count == 0) return error.InvalidFrameEncoding;
+            const function_frame = context.controls[0];
+            var result_index = function_frame.result_count;
+            while (result_index > 0) {
+                result_index -= 1;
+                try popWasmValue(context, function_frame.results[result_index]);
+            }
+            markWasmUnreachable(context);
+        }
+
+        fn validateWasmFunctionIndex(bytes: []const u8, cursor: *usize, function_count: u32) !void {
+            const function_index = try readWasmU32(bytes, cursor);
+            if (function_index >= function_count) return error.InvalidFrameEncoding;
+        }
+
+        fn validateWasmIndirectCall(context: *WasmBodyContext, bytes: []const u8, cursor: *usize) !void {
+            const type_index = try readWasmU32(bytes, cursor);
+            if (type_index >= context.type_count) return error.InvalidFrameEncoding;
+            const table_index = try readWasmU32(bytes, cursor);
+            if (try wasmTableType(context, table_index) != 0x70) return error.InvalidFrameEncoding;
+            try popWasmValue(context, 0x7f);
+            const shape = try wasmFunctionShape(context.type_section, type_index);
+            try popWasmFunctionParams(context, shape);
+            try pushWasmFunctionResults(context, shape);
+        }
+
+        fn validateWasmCall(context: *WasmBodyContext, bytes: []const u8, cursor: *usize) !void {
+            const function_index = try readWasmU32(bytes, cursor);
+            if (function_index >= context.function_count) return error.InvalidFrameEncoding;
+            if (function_index < context.function_import_count) return error.InvalidFrameEncoding;
+            const type_index = try functionTypeIndex(context.function_section, function_index - context.function_import_count);
+            const shape = try wasmFunctionShape(context.type_section, type_index);
+            try popWasmFunctionParams(context, shape);
+            try pushWasmFunctionResults(context, shape);
+        }
+
+        fn popWasmFunctionParams(context: *WasmBodyContext, shape: WasmFunctionShape) !void {
+            if (shape.param_count > max_wasm_validator_values) return error.InvalidFrameEncoding;
+            var param_index = shape.param_count;
+            while (param_index > 0) {
+                param_index -= 1;
+                try popWasmValue(context, shape.params[param_index]);
+            }
+        }
+
+        fn pushWasmFunctionResults(context: *WasmBodyContext, shape: WasmFunctionShape) !void {
+            if (shape.result_count > max_wasm_validator_values) return error.InvalidFrameEncoding;
+            var result_index: u32 = 0;
+            while (result_index < shape.result_count) : (result_index += 1) try pushWasmValue(context, shape.results[result_index]);
+        }
+
+        fn validateWasmInstruction(opcode: u8, bytes: []const u8, cursor: *usize, context: *WasmBodyContext) !void {
+            switch (opcode) {
+                0x00 => markWasmUnreachable(context),
+                0x01 => {},
+                0x10 => try validateWasmCall(context, bytes, cursor),
+                0x1a => _ = try popWasmAny(context),
+                0x1b => {
+                    try popWasmValue(context, 0x7f);
+                    const rhs = try popWasmAny(context);
+                    const lhs = try popWasmAny(context);
+                    if (lhs != wasm_unknown_type and rhs != wasm_unknown_type and lhs != rhs) return error.InvalidFrameEncoding;
+                    const result_type = if (lhs == wasm_unknown_type) rhs else lhs;
+                    if (!wasmNumericType(result_type)) return error.InvalidFrameEncoding;
+                    try pushWasmValue(context, result_type);
+                },
+                0x20 => {
+                    const local_index = try readWasmU32(bytes, cursor);
+                    try pushWasmValue(context, try wasmLocalType(context, local_index));
+                },
+                0x21 => {
+                    const local_index = try readWasmU32(bytes, cursor);
+                    try popWasmValue(context, try wasmLocalType(context, local_index));
+                },
+                0x22 => {
+                    const local_index = try readWasmU32(bytes, cursor);
+                    const local_type = try wasmLocalType(context, local_index);
+                    try popWasmValue(context, local_type);
+                    try pushWasmValue(context, local_type);
+                },
+                0x23 => {
+                    const global_index = try readWasmU32(bytes, cursor);
+                    if (global_index >= context.global_count) return error.InvalidFrameEncoding;
+                    try pushWasmValue(context, try wasmGlobalType(context.global_section, global_index, context.function_count));
+                },
+                0x24 => {
+                    const global_index = try readWasmU32(bytes, cursor);
+                    if (global_index >= context.global_count) return error.InvalidFrameEncoding;
+                    if (!try wasmGlobalMutable(context.global_section, global_index, context.function_count)) return error.InvalidFrameEncoding;
+                    try popWasmValue(context, try wasmGlobalType(context.global_section, global_index, context.function_count));
+                },
+                0x28...0x2f => {
+                    try skipWasmMemArg(bytes, cursor, wasmMemoryOpcodeMaxAlign(opcode));
+                    try popWasmValue(context, 0x7f);
+                    try pushWasmValue(context, switch (opcode) {
+                        0x29 => 0x7e,
+                        0x2a => 0x7d,
+                        0x2b => 0x7c,
+                        else => 0x7f,
+                    });
+                },
+                0x30...0x35 => {
+                    try skipWasmMemArg(bytes, cursor, wasmMemoryOpcodeMaxAlign(opcode));
+                    try popWasmValue(context, 0x7f);
+                    try pushWasmValue(context, 0x7e);
+                },
+                0x36...0x3e => {
+                    try skipWasmMemArg(bytes, cursor, wasmMemoryOpcodeMaxAlign(opcode));
+                    try popWasmValue(context, switch (opcode) {
+                        0x37, 0x3c...0x3e => 0x7e,
+                        0x38 => 0x7d,
+                        0x39 => 0x7c,
+                        else => 0x7f,
+                    });
+                    try popWasmValue(context, 0x7f);
+                },
+                0x3f => {
+                    if (try readWasmU32(bytes, cursor) != 0) return error.InvalidFrameEncoding;
+                    try pushWasmValue(context, 0x7f);
+                },
+                0x40 => {
+                    if (try readWasmU32(bytes, cursor) != 0) return error.InvalidFrameEncoding;
+                    try popWasmValue(context, 0x7f);
+                    try pushWasmValue(context, 0x7f);
+                },
+                0x41 => {
+                    try skipWasmSignedLeb128(bytes, cursor, 5, 4);
+                    try pushWasmValue(context, 0x7f);
+                },
+                0x42 => {
+                    try skipWasmSignedLeb128(bytes, cursor, 10, 1);
+                    try pushWasmValue(context, 0x7e);
+                },
+                0x43 => {
+                    try skipWasmBytes(bytes, cursor, 4);
+                    try pushWasmValue(context, 0x7d);
+                },
+                0x44 => {
+                    try skipWasmBytes(bytes, cursor, 8);
+                    try pushWasmValue(context, 0x7c);
+                },
+                0x45 => {
+                    try popWasmValue(context, 0x7f);
+                    try pushWasmValue(context, 0x7f);
+                },
+                0x46...0x4f => try validateWasmBinaryToI32(context, 0x7f),
+                0x50 => {
+                    try popWasmValue(context, 0x7e);
+                    try pushWasmValue(context, 0x7f);
+                },
+                0x51...0x5a => try validateWasmBinaryToI32(context, 0x7e),
+                0x5b...0x60 => try validateWasmBinaryToI32(context, 0x7d),
+                0x61...0x66 => try validateWasmBinaryToI32(context, 0x7c),
+                0x67...0x69 => try validateWasmUnary(context, 0x7f, 0x7f),
+                0x6a...0x78 => try validateWasmBinary(context, 0x7f, 0x7f),
+                0x79...0x7b => try validateWasmUnary(context, 0x7e, 0x7e),
+                0x7c...0x8a => try validateWasmBinary(context, 0x7e, 0x7e),
+                0x8b...0x91 => try validateWasmUnary(context, 0x7d, 0x7d),
+                0x92...0x98 => try validateWasmBinary(context, 0x7d, 0x7d),
+                0x99...0x9f => try validateWasmUnary(context, 0x7c, 0x7c),
+                0xa0...0xa6 => try validateWasmBinary(context, 0x7c, 0x7c),
+                0xa7 => try validateWasmUnary(context, 0x7e, 0x7f),
+                0xa8, 0xa9 => try validateWasmUnary(context, 0x7d, 0x7f),
+                0xaa, 0xab => try validateWasmUnary(context, 0x7c, 0x7f),
+                0xac, 0xad => try validateWasmUnary(context, 0x7f, 0x7e),
+                0xae, 0xaf => try validateWasmUnary(context, 0x7d, 0x7e),
+                0xb0, 0xb1 => try validateWasmUnary(context, 0x7c, 0x7e),
+                0xb2, 0xb3 => try validateWasmUnary(context, 0x7f, 0x7d),
+                0xb4, 0xb5 => try validateWasmUnary(context, 0x7e, 0x7d),
+                0xb6 => try validateWasmUnary(context, 0x7c, 0x7d),
+                0xb7, 0xb8 => try validateWasmUnary(context, 0x7f, 0x7c),
+                0xb9, 0xba => try validateWasmUnary(context, 0x7e, 0x7c),
+                0xbb => try validateWasmUnary(context, 0x7d, 0x7c),
+                0xbc => try validateWasmUnary(context, 0x7d, 0x7f),
+                0xbd => try validateWasmUnary(context, 0x7c, 0x7e),
+                0xbe => try validateWasmUnary(context, 0x7f, 0x7d),
+                0xbf => try validateWasmUnary(context, 0x7e, 0x7c),
+                0xc0, 0xc1 => try validateWasmUnary(context, 0x7f, 0x7f),
+                0xc2...0xc4 => try validateWasmUnary(context, 0x7e, 0x7e),
+                0xd0 => {
+                    const ref_type = try readWasmRefType(bytes, cursor);
+                    try pushWasmValue(context, ref_type);
+                },
+                0xd1 => {
+                    try popWasmRef(context);
+                    try pushWasmValue(context, 0x7f);
+                },
+                0xd2 => {
+                    const function_index = try readWasmU32(bytes, cursor);
+                    if (!try wasmFunctionRefDeclared(function_index, context.function_count, context.element_section, context.function_refs)) return error.InvalidFrameEncoding;
+                    try pushWasmValue(context, 0x70);
+                },
+                0x25 => {
+                    const table_index = try readWasmU32(bytes, cursor);
+                    const table_type = try wasmTableType(context, table_index);
+                    try popWasmValue(context, 0x7f);
+                    try pushWasmValue(context, table_type);
+                },
+                0x26 => {
+                    const table_index = try readWasmU32(bytes, cursor);
+                    const table_type = try wasmTableType(context, table_index);
+                    try popWasmValue(context, table_type);
+                    try popWasmValue(context, 0x7f);
+                },
+                0x1c => try validateWasmTypedSelect(context, bytes, cursor),
+                0xfc => try validateWasmMiscInstruction(bytes, cursor, context),
+                0xfd => return error.InvalidFrameEncoding,
+                0xfe => return error.InvalidFrameEncoding,
+                else => return error.InvalidFrameEncoding,
+            }
+        }
+
+        fn validateWasmTypedSelect(context: *WasmBodyContext, bytes: []const u8, cursor: *usize) !void {
+            const type_count = try readWasmU32(bytes, cursor);
+            if (type_count != 1) return error.InvalidFrameEncoding;
+            const value_type = try readWasmU8(bytes, cursor);
+            if (!validWasmValueType(value_type)) return error.InvalidFrameEncoding;
+            try popWasmValue(context, 0x7f);
+            try popWasmValue(context, value_type);
+            try popWasmValue(context, value_type);
+            try pushWasmValue(context, value_type);
+        }
+
+        fn wasmLocalType(context: *const WasmBodyContext, local_index: u32) !u8 {
+            if (local_index >= context.local_count) return error.InvalidFrameEncoding;
+            if (local_index >= max_wasm_validator_values) return try wasmFunctionBodyLocalType(context.type_section, context.type_index, context.body, local_index);
+            return context.locals[local_index];
+        }
+
+        fn wasmFunctionBodyLocalType(type_section: []const u8, type_index: u32, body: []const u8, local_index: u32) !u8 {
+            var type_cursor: usize = 0;
+            const type_count = try readWasmU32(type_section, &type_cursor);
+            if (type_index >= type_count) return error.InvalidFrameEncoding;
+            var current_type: u32 = 0;
+            while (current_type < type_count) : (current_type += 1) {
+                const tag = try readWasmU8(type_section, &type_cursor);
+                if (tag != 0x60) return error.InvalidFrameEncoding;
+                const param_count = try readWasmU32(type_section, &type_cursor);
+                var param_index: u32 = 0;
+                while (param_index < param_count) : (param_index += 1) {
+                    const param_type = try readWasmU8(type_section, &type_cursor);
+                    if (!validWasmValueType(param_type)) return error.InvalidFrameEncoding;
+                    if (current_type == type_index and local_index == param_index) return param_type;
+                }
+                const result_count = try readWasmU32(type_section, &type_cursor);
+                var result_index: u32 = 0;
+                while (result_index < result_count) : (result_index += 1) {
+                    if (!validWasmValueType(try readWasmU8(type_section, &type_cursor))) return error.InvalidFrameEncoding;
+                }
+                if (current_type == type_index) {
+                    var local_offset = local_index - param_count;
+                    var body_cursor: usize = 0;
+                    const local_decl_count = try readWasmU32(body, &body_cursor);
+                    var local_decl_index: u32 = 0;
+                    while (local_decl_index < local_decl_count) : (local_decl_index += 1) {
+                        const local_count = try readWasmU32(body, &body_cursor);
+                        const value_type = try readWasmU8(body, &body_cursor);
+                        if (!validWasmValueType(value_type)) return error.InvalidFrameEncoding;
+                        if (local_offset < local_count) return value_type;
+                        local_offset -= local_count;
+                    }
+                    return error.InvalidFrameEncoding;
+                }
+            }
+            return error.InvalidFrameEncoding;
+        }
+
+        fn wasmTableType(context: *const WasmBodyContext, table_index: u32) !u8 {
+            if (table_index >= context.table_count) return error.InvalidFrameEncoding;
+            if (table_index >= context.table_types.len) return try wasmTableSectionType(context.table_section, table_index);
+            return context.table_types[table_index];
+        }
+
+        fn wasmTableSectionType(section: []const u8, table_index: u32) anyerror!u8 {
+            var cursor: usize = 0;
+            const count = try readWasmU32(section, &cursor);
+            if (table_index >= count) return error.InvalidFrameEncoding;
+            var index: u32 = 0;
+            while (index < count) : (index += 1) {
+                const element_type = try readWasmU8(section, &cursor);
+                if (element_type != 0x70 and element_type != 0x6f) return error.InvalidFrameEncoding;
+                try skipWasmLimits(section, &cursor, null, false);
+                if (index == table_index) return element_type;
+            }
+            return error.InvalidFrameEncoding;
+        }
+
+        fn wasmElementType(context: *const WasmBodyContext, element_index: u32) !u8 {
+            if (element_index >= context.element_count) return error.InvalidFrameEncoding;
+            if (element_index >= context.element_types.len) return (try wasmElementSectionSegment(context.element_section, context.table_types, context.function_count, context.global_section, context.global_count, element_index)).element_type;
+            return context.element_types[element_index];
+        }
+
+        fn wasmElementPassive(context: *const WasmBodyContext, element_index: u32) !bool {
+            if (element_index >= context.element_count) return error.InvalidFrameEncoding;
+            return (try wasmElementSectionSegment(context.element_section, context.table_types, context.function_count, context.global_section, context.global_count, element_index)).is_passive;
+        }
+
+        fn wasmElementSectionSegment(section: []const u8, table_types: []const u8, function_count: u32, global_section: []const u8, global_count: u32, target_index: u32) anyerror!WasmElementSegment {
+            var cursor: usize = 0;
+            const count = try readWasmU32(section, &cursor);
+            if (target_index >= count) return error.InvalidFrameEncoding;
+            var function_refs = [_]bool{false} ** max_wasm_validator_values;
+            var index: u32 = 0;
+            while (index < count) : (index += 1) {
+                const tag = try readWasmU32(section, &cursor);
+                var element_type: u8 = 0x70;
+                switch (tag) {
+                    0 => {
+                        if (table_types.len == 0 or table_types[0] != 0x70) return error.InvalidFrameEncoding;
+                        try skipWasmInitExpr(section, &cursor, function_count, global_section, global_count, 0x7f);
+                        try readWasmElementKind(section, &cursor);
+                        try skipWasmFunctionIndexVector(section, &cursor, function_count, &function_refs);
+                    },
+                    1 => {
+                        try readWasmElementKind(section, &cursor);
+                        try skipWasmFunctionIndexVector(section, &cursor, function_count, &function_refs);
+                        if (index == target_index) return .{ .element_type = element_type, .is_passive = true };
+                    },
+                    2 => {
+                        const table_index = try readWasmU32(section, &cursor);
+                        if (table_index >= table_types.len or table_types[table_index] != 0x70) return error.InvalidFrameEncoding;
+                        try skipWasmInitExpr(section, &cursor, function_count, global_section, global_count, 0x7f);
+                        try readWasmElementKind(section, &cursor);
+                        try skipWasmFunctionIndexVector(section, &cursor, function_count, &function_refs);
+                    },
+                    3 => {
+                        try readWasmElementKind(section, &cursor);
+                        try skipWasmFunctionIndexVector(section, &cursor, function_count, &function_refs);
+                    },
+                    4 => {
+                        if (table_types.len == 0 or table_types[0] != 0x70) return error.InvalidFrameEncoding;
+                        try skipWasmInitExpr(section, &cursor, function_count, global_section, global_count, 0x7f);
+                        try skipWasmInitExprVector(section, &cursor, function_count, global_section, global_count, 0x70, &function_refs);
+                    },
+                    5 => {
+                        const ref_type = try readWasmRefType(section, &cursor);
+                        element_type = ref_type;
+                        try skipWasmInitExprVector(section, &cursor, function_count, global_section, global_count, ref_type, &function_refs);
+                        if (index == target_index) return .{ .element_type = element_type, .is_passive = true };
+                    },
+                    6 => {
+                        const table_index = try readWasmU32(section, &cursor);
+                        if (table_index >= table_types.len) return error.InvalidFrameEncoding;
+                        try skipWasmInitExpr(section, &cursor, function_count, global_section, global_count, 0x7f);
+                        const ref_type = try readWasmRefType(section, &cursor);
+                        element_type = ref_type;
+                        if (table_types[table_index] != ref_type) return error.InvalidFrameEncoding;
+                        try skipWasmInitExprVector(section, &cursor, function_count, global_section, global_count, ref_type, &function_refs);
+                    },
+                    7 => {
+                        const ref_type = try readWasmRefType(section, &cursor);
+                        element_type = ref_type;
+                        try skipWasmInitExprVector(section, &cursor, function_count, global_section, global_count, ref_type, &function_refs);
+                    },
+                    else => return error.InvalidFrameEncoding,
+                }
+                if (index == target_index) return .{ .element_type = element_type, .is_passive = false };
+            }
+            return error.InvalidFrameEncoding;
+        }
+
+        fn wasmDataSegmentPassive(context: *const WasmBodyContext, data_index: u32) !bool {
+            if (data_index >= context.data_count) return error.InvalidFrameEncoding;
+            var cursor: usize = 0;
+            const count = try readWasmU32(context.data_section, &cursor);
+            if (data_index >= count) return error.InvalidFrameEncoding;
+            var index: u32 = 0;
+            while (index < count) : (index += 1) {
+                const tag = try readWasmU32(context.data_section, &cursor);
+                switch (tag) {
+                    0 => {
+                        try skipWasmInitExpr(context.data_section, &cursor, context.function_count, context.global_section, context.global_count, 0x7f);
+                        try skipWasmByteVector(context.data_section, &cursor);
+                        if (index == data_index) return false;
+                    },
+                    1 => {
+                        try skipWasmByteVector(context.data_section, &cursor);
+                        if (index == data_index) return true;
+                    },
+                    2 => {
+                        _ = try readWasmU32(context.data_section, &cursor);
+                        try skipWasmInitExpr(context.data_section, &cursor, context.function_count, context.global_section, context.global_count, 0x7f);
+                        try skipWasmByteVector(context.data_section, &cursor);
+                        if (index == data_index) return false;
+                    },
+                    else => return error.InvalidFrameEncoding,
+                }
+            }
+            return error.InvalidFrameEncoding;
+        }
+
+        fn validateWasmMiscInstruction(bytes: []const u8, cursor: *usize, context: *WasmBodyContext) !void {
+            const subopcode = try readWasmU32(bytes, cursor);
+            switch (subopcode) {
+                0x00, 0x01 => try validateWasmUnary(context, 0x7d, 0x7f),
+                0x02, 0x03 => try validateWasmUnary(context, 0x7c, 0x7f),
+                0x04, 0x05 => try validateWasmUnary(context, 0x7d, 0x7e),
+                0x06, 0x07 => try validateWasmUnary(context, 0x7c, 0x7e),
+                0x08 => {
+                    const data_index = try readWasmU32(bytes, cursor);
+                    if (!context.data_count_present) return error.InvalidFrameEncoding;
+                    if (data_index >= context.data_count) return error.InvalidFrameEncoding;
+                    if (!try wasmDataSegmentPassive(context, data_index)) return error.InvalidFrameEncoding;
+                    if (try readWasmU32(bytes, cursor) != 0) return error.InvalidFrameEncoding;
+                    try popWasmValue(context, 0x7f);
+                    try popWasmValue(context, 0x7f);
+                    try popWasmValue(context, 0x7f);
+                },
+                0x09 => {
+                    const data_index = try readWasmU32(bytes, cursor);
+                    if (!context.data_count_present) return error.InvalidFrameEncoding;
+                    if (data_index >= context.data_count) return error.InvalidFrameEncoding;
+                    if (!try wasmDataSegmentPassive(context, data_index)) return error.InvalidFrameEncoding;
+                },
+                0x0a => {
+                    if (try readWasmU32(bytes, cursor) != 0) return error.InvalidFrameEncoding;
+                    if (try readWasmU32(bytes, cursor) != 0) return error.InvalidFrameEncoding;
+                    try popWasmValue(context, 0x7f);
+                    try popWasmValue(context, 0x7f);
+                    try popWasmValue(context, 0x7f);
+                },
+                0x0b => {
+                    if (try readWasmU32(bytes, cursor) != 0) return error.InvalidFrameEncoding;
+                    try popWasmValue(context, 0x7f);
+                    try popWasmValue(context, 0x7f);
+                    try popWasmValue(context, 0x7f);
+                },
+                0x0c => {
+                    const element_index = try readWasmU32(bytes, cursor);
+                    const element_type = try wasmElementType(context, element_index);
+                    if (!try wasmElementPassive(context, element_index)) return error.InvalidFrameEncoding;
+                    const table_type = try wasmTableType(context, try readWasmU32(bytes, cursor));
+                    if (element_type != table_type) return error.InvalidFrameEncoding;
+                    try popWasmValue(context, 0x7f);
+                    try popWasmValue(context, 0x7f);
+                    try popWasmValue(context, 0x7f);
+                },
+                0x0d => {
+                    const element_index = try readWasmU32(bytes, cursor);
+                    if (element_index >= context.element_count) return error.InvalidFrameEncoding;
+                    if (!try wasmElementPassive(context, element_index)) return error.InvalidFrameEncoding;
+                },
+                0x0e => {
+                    const destination_type = try wasmTableType(context, try readWasmU32(bytes, cursor));
+                    const source_type = try wasmTableType(context, try readWasmU32(bytes, cursor));
+                    if (destination_type != source_type) return error.InvalidFrameEncoding;
+                    try popWasmValue(context, 0x7f);
+                    try popWasmValue(context, 0x7f);
+                    try popWasmValue(context, 0x7f);
+                },
+                0x0f => {
+                    const table_type = try wasmTableType(context, try readWasmU32(bytes, cursor));
+                    try popWasmValue(context, 0x7f);
+                    try popWasmValue(context, table_type);
+                    try pushWasmValue(context, 0x7f);
+                },
+                0x10 => {
+                    _ = try wasmTableType(context, try readWasmU32(bytes, cursor));
+                    try pushWasmValue(context, 0x7f);
+                },
+                0x11 => {
+                    const table_type = try wasmTableType(context, try readWasmU32(bytes, cursor));
+                    try popWasmValue(context, 0x7f);
+                    try popWasmValue(context, table_type);
+                    try popWasmValue(context, 0x7f);
+                },
+                else => return error.InvalidFrameEncoding,
+            }
+        }
+
+        fn validateWasmUnary(context: *WasmBodyContext, param_type: u8, result_type: u8) !void {
+            try popWasmValue(context, param_type);
+            try pushWasmValue(context, result_type);
+        }
+
+        fn validateWasmBinary(context: *WasmBodyContext, param_type: u8, result_type: u8) !void {
+            try popWasmValue(context, param_type);
+            try popWasmValue(context, param_type);
+            try pushWasmValue(context, result_type);
+        }
+
+        fn validateWasmBinaryToI32(context: *WasmBodyContext, param_type: u8) !void {
+            try validateWasmBinary(context, param_type, 0x7f);
+        }
+
+        fn readWasmBlockType(bytes: []const u8, cursor: *usize, type_section: []const u8, type_count: u32) !WasmFunctionShape {
+            var result: WasmFunctionShape = .{};
+            const first = try readWasmU8(bytes, cursor);
+            if (first == 0x40) return result;
+            if (validWasmValueType(first)) {
+                result.results[0] = first;
+                result.result_count = 1;
+                return result;
+            }
+            const type_index = try readWasmSignedTypeIndexFromFirst(bytes, cursor, first);
+            if (type_index >= type_count) return error.InvalidFrameEncoding;
+            return wasmFunctionShape(type_section, type_index);
+        }
+
+        fn readWasmSignedTypeIndexFromFirst(bytes: []const u8, cursor: *usize, first: u8) !u32 {
+            var result: i64 = 0;
+            var shift: u6 = 0;
+            var byte = first;
+            var read_count: usize = 0;
+            while (true) {
+                result |= @as(i64, @intCast(byte & 0x7f)) << shift;
+                read_count += 1;
+                shift += 7;
+                if ((byte & 0x80) == 0) {
+                    if (shift < 64 and (byte & 0x40) != 0) result |= -(@as(i64, 1) << shift);
+                    if (result < 0 or result > std.math.maxInt(u32)) return error.InvalidFrameEncoding;
+                    return @intCast(result);
+                }
+                if (read_count == 5) return error.InvalidFrameEncoding;
+                byte = try readWasmU8(bytes, cursor);
+            }
+        }
+
+        fn wasmGlobalType(section: []const u8, global_index: u32, function_count: u32) anyerror!u8 {
+            var cursor: usize = 0;
+            const count = try readWasmU32(section, &cursor);
+            if (global_index >= count) return error.InvalidFrameEncoding;
+            var index: u32 = 0;
+            while (index < count) : (index += 1) {
+                const value_type = try readWasmU8(section, &cursor);
+                if (!validWasmValueType(value_type)) return error.InvalidFrameEncoding;
+                const mutable = try readWasmU8(section, &cursor);
+                if (mutable > 1) return error.InvalidFrameEncoding;
+                try skipWasmInitExpr(section, &cursor, function_count, section, index, null);
+                if (index == global_index) return value_type;
+            }
+            return error.InvalidFrameEncoding;
+        }
+
+        fn wasmGlobalMutable(section: []const u8, global_index: u32, function_count: u32) anyerror!bool {
+            var cursor: usize = 0;
+            const count = try readWasmU32(section, &cursor);
+            if (global_index >= count) return error.InvalidFrameEncoding;
+            var index: u32 = 0;
+            while (index < count) : (index += 1) {
+                const value_type = try readWasmU8(section, &cursor);
+                if (!validWasmValueType(value_type)) return error.InvalidFrameEncoding;
+                const mutable = try readWasmU8(section, &cursor);
+                if (mutable > 1) return error.InvalidFrameEncoding;
+                try skipWasmInitExpr(section, &cursor, function_count, section, index, null);
+                if (index == global_index) return mutable == 1;
+            }
+            return error.InvalidFrameEncoding;
+        }
+
+        fn validateCustomSection(section: []const u8) !void {
+            var cursor: usize = 0;
+            _ = try readWasmName(section, &cursor);
+        }
+
+        fn inspectAbiVersionBody(body: []const u8, global_section: []const u8, global_count: u32, function_count: u32) !u32 {
+            var cursor: usize = 0;
+            const local_decl_count = try readWasmU32(body, &cursor);
+            var local_values = [_]u32{0} ** max_wasm_validator_values;
+            var local_known = [_]bool{false} ** max_wasm_validator_values;
+            var local_total: u32 = 0;
+            var local_decl_index: u32 = 0;
+            while (local_decl_index < local_decl_count) : (local_decl_index += 1) {
+                const local_count = try readWasmU32(body, &cursor);
+                const value_type = try readWasmU8(body, &cursor);
+                if (!validWasmValueType(value_type)) return error.InvalidFrameEncoding;
+                if (local_count > std.math.maxInt(u32) - local_total) return error.InvalidFrameEncoding;
+                const first_local = local_total;
+                local_total += local_count;
+                if (local_total > max_wasm_validator_values) return error.InvalidFrameEncoding;
+                if (value_type == 0x7f) {
+                    var index: u32 = 0;
+                    while (index < local_count) : (index += 1) {
+                        local_known[first_local + index] = true;
+                        local_values[first_local + index] = 0;
+                    }
+                }
+            }
+            var stack_known = false;
+            var stack_value: u32 = 0;
+            while (cursor < body.len) {
+                const opcode = try readWasmU8(body, &cursor);
+                switch (opcode) {
+                    0x0b, 0x0f => {
+                        if (!stack_known) return error.InvalidFrameEncoding;
+                        return stack_value;
+                    },
+                    0x1a => stack_known = false,
+                    0x20 => {
+                        const local_index = try readWasmU32(body, &cursor);
+                        if (local_index >= local_total or !local_known[local_index]) return error.InvalidFrameEncoding;
+                        stack_known = true;
+                        stack_value = local_values[local_index];
+                    },
+                    0x21 => {
+                        const local_index = try readWasmU32(body, &cursor);
+                        if (local_index >= local_total or !stack_known) return error.InvalidFrameEncoding;
+                        local_known[local_index] = true;
+                        local_values[local_index] = stack_value;
+                        stack_known = false;
+                    },
+                    0x22 => {
+                        const local_index = try readWasmU32(body, &cursor);
+                        if (local_index >= local_total or !stack_known) return error.InvalidFrameEncoding;
+                        local_known[local_index] = true;
+                        local_values[local_index] = stack_value;
+                    },
+                    0x23 => {
+                        stack_value = try wasmI32GlobalConst(global_section, try readWasmU32(body, &cursor), global_count, function_count);
+                        stack_known = true;
+                    },
+                    0x41 => {
+                        stack_value = try readWasmI32NonNegative(body, &cursor);
+                        stack_known = true;
+                    },
+                    else => return error.InvalidFrameEncoding,
+                }
+            }
+            return error.InvalidFrameEncoding;
+        }
+
+        fn wasmI32GlobalConst(section: []const u8, global_index: u32, global_count: u32, function_count: u32) !u32 {
+            if (global_index >= global_count) return error.InvalidFrameEncoding;
+            var cursor: usize = 0;
+            const count = try readWasmU32(section, &cursor);
+            if (global_index >= count) return error.InvalidFrameEncoding;
+            var index: u32 = 0;
+            while (index < count) : (index += 1) {
+                const value_type = try readWasmU8(section, &cursor);
+                if (!validWasmValueType(value_type)) return error.InvalidFrameEncoding;
+                const mutable = try readWasmU8(section, &cursor);
+                if (mutable > 1) return error.InvalidFrameEncoding;
+                if (index == global_index) {
+                    if (value_type != 0x7f or mutable != 0) return error.InvalidFrameEncoding;
+                    if (try readWasmU8(section, &cursor) != 0x41) return error.InvalidFrameEncoding;
+                    const value = try readWasmI32NonNegative(section, &cursor);
+                    if (try readWasmU8(section, &cursor) != 0x0b) return error.InvalidFrameEncoding;
+                    return value;
+                }
+                try skipWasmInitExpr(section, &cursor, function_count, section, index, value_type);
+            }
+            return error.InvalidFrameEncoding;
+        }
+
+        fn forbiddenImport(name: []const u8) bool {
+            for (Abi.forbidden_import_fragments) |fragment| {
+                if (std.mem.indexOf(u8, name, fragment) != null) return true;
+            }
+            return false;
+        }
+
+        fn requiredSignature(required_index: usize) ExpectedSignature {
+            return switch (required_index) {
+                5 => .{ .param_count = 1, .result_count = 1 },
+                6 => .{ .param_count = 3, .result_count = 1 },
+                7 => .{ .param_count = 2, .result_count = 1 },
+                9, 11, 13, 15 => .{ .param_count = 2, .result_count = 1 },
+                else => .{ .param_count = 0, .result_count = 1 },
+            };
+        }
+
+        fn functionSignatureMatches(type_section: []const u8, function_section: []const u8, function_import_count: u32, function_index: u32, expected: ExpectedSignature) !bool {
+            if (function_index < function_import_count) return false;
+            const defined_index = function_index - function_import_count;
+            const type_index = try functionTypeIndex(function_section, defined_index);
+            return try typeSignatureMatches(type_section, type_index, expected);
+        }
+
+        fn functionTypeIndex(section: []const u8, defined_index: u32) !u32 {
+            var cursor: usize = 0;
+            const count = try readWasmU32(section, &cursor);
+            if (defined_index >= count) return error.InvalidFrameEncoding;
+            var index: u32 = 0;
+            while (index < count) : (index += 1) {
+                const type_index = try readWasmU32(section, &cursor);
+                if (index == defined_index) return type_index;
+            }
+            return error.InvalidFrameEncoding;
+        }
+
+        fn typeSignatureMatches(section: []const u8, type_index: u32, expected: ExpectedSignature) !bool {
+            var cursor: usize = 0;
+            const count = try readWasmU32(section, &cursor);
+            if (type_index >= count) return error.InvalidFrameEncoding;
+            var matched = false;
+            var index: u32 = 0;
+            while (index < count) : (index += 1) {
+                const tag = try readWasmU8(section, &cursor);
+                if (tag != 0x60) return error.InvalidFrameEncoding;
+                const param_count = try readWasmU32(section, &cursor);
+                var param_index: u32 = 0;
+                var params_i32 = true;
+                while (param_index < param_count) : (param_index += 1) {
+                    const param_type = try readWasmU8(section, &cursor);
+                    if (!validWasmValueType(param_type)) return error.InvalidFrameEncoding;
+                    if (param_type != 0x7f) params_i32 = false;
+                }
+                const result_count = try readWasmU32(section, &cursor);
+                var result_index: u32 = 0;
+                var results_i32 = true;
+                while (result_index < result_count) : (result_index += 1) {
+                    const result_type = try readWasmU8(section, &cursor);
+                    if (!validWasmValueType(result_type)) return error.InvalidFrameEncoding;
+                    if (result_type != 0x7f) results_i32 = false;
+                }
+                if (index == type_index) matched = params_i32 and results_i32 and param_count == expected.param_count and result_count == expected.result_count;
+            }
+            if (cursor != section.len) return error.InvalidFrameEncoding;
+            return matched;
+        }
+
+        fn skipWasmImportDesc(bytes: []const u8, cursor: *usize) !void {
+            const kind = bytes[cursor.* - 1];
+            switch (kind) {
+                0 => {
+                    _ = try readWasmU32(bytes, cursor);
+                },
+                1 => try skipWasmLimits(bytes, cursor, null, false),
+                2 => try skipWasmLimits(bytes, cursor, wasm32_max_memory_pages, false),
+                3 => {
+                    const value_type = try readWasmU8(bytes, cursor);
+                    if (!validWasmValueType(value_type)) return error.InvalidFrameEncoding;
+                    const mutable = try readWasmU8(bytes, cursor);
+                    if (mutable > 1) return error.InvalidFrameEncoding;
+                },
+                else => return error.InvalidFrameEncoding,
+            }
+        }
+
+        fn skipWasmLimits(bytes: []const u8, cursor: *usize, max_allowed: ?u32, allow_shared: bool) !void {
+            const tag = try readWasmU8(bytes, cursor);
+            if (tag == 2 or tag > 3) return error.InvalidFrameEncoding;
+            if (tag == 3 and !allow_shared) return error.InvalidFrameEncoding;
+            const min = try readWasmU32(bytes, cursor);
+            if (max_allowed) |limit| {
+                if (min > limit) return error.InvalidFrameEncoding;
+            }
+            if (tag == 1 or tag == 3) {
+                const max = try readWasmU32(bytes, cursor);
+                if (max < min) return error.InvalidFrameEncoding;
+                if (max_allowed) |limit| {
+                    if (max > limit) return error.InvalidFrameEncoding;
+                }
+            }
+        }
+
+        fn validWasmValueType(value: u8) bool {
+            return switch (value) {
+                0x7f, 0x7e, 0x7d, 0x7c, 0x70, 0x6f => true,
+                else => false,
+            };
+        }
+
+        fn skipWasmBlockType(bytes: []const u8, cursor: *usize) !void {
+            const first = try readWasmU8(bytes, cursor);
+            if (first == 0x40 or validWasmValueType(first)) return;
+            if ((first & 0x80) == 0) return;
+            var read_count: usize = 1;
+            var byte = first;
+            while ((byte & 0x80) != 0) {
+                if (read_count == 5) return error.InvalidFrameEncoding;
+                byte = try readWasmU8(bytes, cursor);
+                read_count += 1;
+            }
+        }
+
+        fn skipWasmInstructionImmediate(opcode: u8, bytes: []const u8, cursor: *usize) !void {
+            switch (opcode) {
+                0x00, 0x01, 0x0f, 0x1a, 0x1b, 0x45...0xc4, 0xd1 => {},
+                0x20...0x24 => _ = try readWasmU32(bytes, cursor),
+                0x11 => {
+                    _ = try readWasmU32(bytes, cursor);
+                    _ = try readWasmU32(bytes, cursor);
+                },
+                0x1c => {
+                    const type_count = try readWasmU32(bytes, cursor);
+                    var type_index: u32 = 0;
+                    while (type_index < type_count) : (type_index += 1) {
+                        const value_type = try readWasmU8(bytes, cursor);
+                        if (!validWasmValueType(value_type)) return error.InvalidFrameEncoding;
+                    }
+                },
+                0x28...0x3e => try skipWasmMemArg(bytes, cursor, null),
+                0x3f, 0x40 => _ = try readWasmU32(bytes, cursor),
+                0x41 => try skipWasmSignedLeb128(bytes, cursor, 5, 4),
+                0x42 => try skipWasmSignedLeb128(bytes, cursor, 10, 1),
+                0x43 => try skipWasmBytes(bytes, cursor, 4),
+                0x44 => try skipWasmBytes(bytes, cursor, 8),
+                0xd0 => _ = try readWasmRefType(bytes, cursor),
+                0xd2 => _ = try readWasmU32(bytes, cursor),
+                0xfc => try skipWasmMiscInstruction(bytes, cursor),
+                0xfd => return error.InvalidFrameEncoding,
+                0xfe => try skipWasmAtomicInstruction(bytes, cursor),
+                else => return error.InvalidFrameEncoding,
+            }
+        }
+
+        fn skipWasmMemArg(bytes: []const u8, cursor: *usize, max_align: ?u32) !void {
+            const alignment = try readWasmU32(bytes, cursor);
+            if (max_align) |limit| {
+                if (alignment > limit) return error.InvalidFrameEncoding;
+            }
+            _ = try readWasmU32(bytes, cursor);
+        }
+
+        fn wasmMemoryOpcodeMaxAlign(opcode: u8) u32 {
+            return switch (opcode) {
+                0x29, 0x2b, 0x37, 0x39 => 3,
+                0x28, 0x2a, 0x34, 0x35, 0x36, 0x38, 0x3e => 2,
+                0x2e, 0x2f, 0x32, 0x33, 0x3b, 0x3d => 1,
+                else => 0,
+            };
+        }
+
+        fn skipWasmMiscInstruction(bytes: []const u8, cursor: *usize) !void {
+            const subopcode = try readWasmU32(bytes, cursor);
+            switch (subopcode) {
+                0x00...0x07 => {},
+                0x08 => {
+                    _ = try readWasmU32(bytes, cursor);
+                    _ = try readWasmU32(bytes, cursor);
+                },
+                0x09, 0x0b, 0x0d, 0x0f, 0x10, 0x11 => _ = try readWasmU32(bytes, cursor),
+                0x0a, 0x0c, 0x0e => {
+                    _ = try readWasmU32(bytes, cursor);
+                    _ = try readWasmU32(bytes, cursor);
+                },
+                else => return error.InvalidFrameEncoding,
+            }
+        }
+
+        fn skipWasmAtomicInstruction(bytes: []const u8, cursor: *usize) !void {
+            const subopcode = try readWasmU32(bytes, cursor);
+            switch (subopcode) {
+                0x00...0x02, 0x10...0x4e => try skipWasmMemArg(bytes, cursor, null),
+                0x03 => _ = try readWasmU8(bytes, cursor),
+                else => return error.InvalidFrameEncoding,
+            }
+        }
+
+        fn readWasmElementKind(bytes: []const u8, cursor: *usize) !void {
+            if (try readWasmU8(bytes, cursor) != 0) return error.InvalidFrameEncoding;
+        }
+
+        fn readWasmRefType(bytes: []const u8, cursor: *usize) !u8 {
+            const ref_type = try readWasmU8(bytes, cursor);
+            if (ref_type != 0x70 and ref_type != 0x6f) return error.InvalidFrameEncoding;
+            return ref_type;
+        }
+
+        fn skipWasmFunctionIndexVector(bytes: []const u8, cursor: *usize, function_count: u32, function_refs: *[max_wasm_validator_values]bool) !void {
+            const count = try readWasmU32(bytes, cursor);
+            var index: u32 = 0;
+            while (index < count) : (index += 1) {
+                const function_index = try readWasmU32(bytes, cursor);
+                if (function_index >= function_count) return error.InvalidFrameEncoding;
+                if (function_index < max_wasm_validator_values) function_refs[function_index] = true;
+            }
+        }
+
+        fn skipWasmInitExprVector(bytes: []const u8, cursor: *usize, function_count: u32, global_section: []const u8, global_count: u32, expected_type: u8, function_refs: *[max_wasm_validator_values]bool) anyerror!void {
+            const count = try readWasmU32(bytes, cursor);
+            var index: u32 = 0;
+            while (index < count) : (index += 1) try skipWasmInitExprWithRefs(bytes, cursor, function_count, global_section, global_count, expected_type, function_refs);
+        }
+
+        fn skipWasmInitExprWithRefs(bytes: []const u8, cursor: *usize, function_count: u32, global_section: []const u8, global_count: u32, expected_type: ?u8, function_refs: *[max_wasm_validator_values]bool) anyerror!void {
+            const start = cursor.*;
+            try skipWasmInitExpr(bytes, cursor, function_count, global_section, global_count, expected_type);
+            try markWasmInitExprFunctionRefs(bytes[start..cursor.*], function_refs);
+        }
+
+        fn markWasmInitExprFunctionRefs(expr: []const u8, function_refs: *[max_wasm_validator_values]bool) !void {
+            var cursor: usize = 0;
+            while (cursor < expr.len) {
+                const opcode = try readWasmU8(expr, &cursor);
+                switch (opcode) {
+                    0x0b => return,
+                    0x23 => _ = try readWasmU32(expr, &cursor),
+                    0xd2 => {
+                        const function_index = try readWasmU32(expr, &cursor);
+                        if (function_index < max_wasm_validator_values) function_refs[function_index] = true;
+                    },
+                    0x41 => try skipWasmSignedLeb128(expr, &cursor, 5, 4),
+                    0x42 => try skipWasmSignedLeb128(expr, &cursor, 10, 1),
+                    0x43 => try skipWasmBytes(expr, &cursor, 4),
+                    0x44 => try skipWasmBytes(expr, &cursor, 8),
+                    0xd0 => _ = try readWasmRefType(expr, &cursor),
+                    else => return error.InvalidFrameEncoding,
+                }
+            }
+            return error.InvalidFrameEncoding;
+        }
+
+        fn validateWasmInitExprDeclaredRefs(expr: []const u8, function_count: u32, element_section: []const u8, function_refs: []const bool) !void {
+            var cursor: usize = 0;
+            while (cursor < expr.len) {
+                const opcode = try readWasmU8(expr, &cursor);
+                switch (opcode) {
+                    0x0b => return,
+                    0x23 => _ = try readWasmU32(expr, &cursor),
+                    0xd2 => {
+                        const function_index = try readWasmU32(expr, &cursor);
+                        if (!try wasmFunctionRefDeclared(function_index, function_count, element_section, function_refs)) return error.InvalidFrameEncoding;
+                    },
+                    0x41 => try skipWasmSignedLeb128(expr, &cursor, 5, 4),
+                    0x42 => try skipWasmSignedLeb128(expr, &cursor, 10, 1),
+                    0x43 => try skipWasmBytes(expr, &cursor, 4),
+                    0x44 => try skipWasmBytes(expr, &cursor, 8),
+                    0xd0 => _ = try readWasmRefType(expr, &cursor),
+                    else => return error.InvalidFrameEncoding,
+                }
+            }
+            return error.InvalidFrameEncoding;
+        }
+
+        fn wasmFunctionRefDeclared(function_index: u32, function_count: u32, element_section: []const u8, function_refs: []const bool) !bool {
+            if (function_index >= function_count) return error.InvalidFrameEncoding;
+            if (function_index < function_refs.len and function_refs[function_index]) return true;
+            return wasmElementSectionDeclaresFunction(element_section, function_count, function_index);
+        }
+
+        fn wasmElementSectionDeclaresFunction(section: []const u8, function_count: u32, target_function_index: u32) !bool {
+            if (section.len == 0) return false;
+            var cursor: usize = 0;
+            const count = try readWasmU32(section, &cursor);
+            var index: u32 = 0;
+            while (index < count) : (index += 1) {
+                const tag = try readWasmU32(section, &cursor);
+                switch (tag) {
+                    0 => {
+                        if (try skipWasmInitExprDeclaresFunction(section, &cursor, function_count, target_function_index)) return true;
+                        try readWasmElementKind(section, &cursor);
+                        if (try skipWasmFunctionIndexVectorDeclares(section, &cursor, function_count, target_function_index)) return true;
+                    },
+                    1 => {
+                        try readWasmElementKind(section, &cursor);
+                        if (try skipWasmFunctionIndexVectorDeclares(section, &cursor, function_count, target_function_index)) return true;
+                    },
+                    2 => {
+                        _ = try readWasmU32(section, &cursor);
+                        if (try skipWasmInitExprDeclaresFunction(section, &cursor, function_count, target_function_index)) return true;
+                        try readWasmElementKind(section, &cursor);
+                        if (try skipWasmFunctionIndexVectorDeclares(section, &cursor, function_count, target_function_index)) return true;
+                    },
+                    3 => {
+                        try readWasmElementKind(section, &cursor);
+                        if (try skipWasmFunctionIndexVectorDeclares(section, &cursor, function_count, target_function_index)) return true;
+                    },
+                    4 => {
+                        if (try skipWasmInitExprDeclaresFunction(section, &cursor, function_count, target_function_index)) return true;
+                        if (try skipWasmInitExprVectorDeclaresFunction(section, &cursor, function_count, target_function_index)) return true;
+                    },
+                    5 => {
+                        _ = try readWasmRefType(section, &cursor);
+                        if (try skipWasmInitExprVectorDeclaresFunction(section, &cursor, function_count, target_function_index)) return true;
+                    },
+                    6 => {
+                        _ = try readWasmU32(section, &cursor);
+                        if (try skipWasmInitExprDeclaresFunction(section, &cursor, function_count, target_function_index)) return true;
+                        _ = try readWasmRefType(section, &cursor);
+                        if (try skipWasmInitExprVectorDeclaresFunction(section, &cursor, function_count, target_function_index)) return true;
+                    },
+                    7 => {
+                        _ = try readWasmRefType(section, &cursor);
+                        if (try skipWasmInitExprVectorDeclaresFunction(section, &cursor, function_count, target_function_index)) return true;
+                    },
+                    else => return error.InvalidFrameEncoding,
+                }
+            }
+            if (cursor != section.len) return error.InvalidFrameEncoding;
+            return false;
+        }
+
+        fn skipWasmFunctionIndexVectorDeclares(bytes: []const u8, cursor: *usize, function_count: u32, target_function_index: u32) !bool {
+            const count = try readWasmU32(bytes, cursor);
+            var index: u32 = 0;
+            var found = false;
+            while (index < count) : (index += 1) {
+                const function_index = try readWasmU32(bytes, cursor);
+                if (function_index >= function_count) return error.InvalidFrameEncoding;
+                if (function_index == target_function_index) found = true;
+            }
+            return found;
+        }
+
+        fn skipWasmInitExprVectorDeclaresFunction(bytes: []const u8, cursor: *usize, function_count: u32, target_function_index: u32) !bool {
+            const count = try readWasmU32(bytes, cursor);
+            var index: u32 = 0;
+            var found = false;
+            while (index < count) : (index += 1) {
+                if (try skipWasmInitExprDeclaresFunction(bytes, cursor, function_count, target_function_index)) found = true;
+            }
+            return found;
+        }
+
+        fn skipWasmInitExprDeclaresFunction(bytes: []const u8, cursor: *usize, function_count: u32, target_function_index: u32) !bool {
+            var found = false;
+            while (true) {
+                const opcode = try readWasmU8(bytes, cursor);
+                switch (opcode) {
+                    0x0b => return found,
+                    0x23 => _ = try readWasmU32(bytes, cursor),
+                    0xd2 => {
+                        const function_index = try readWasmU32(bytes, cursor);
+                        if (function_index >= function_count) return error.InvalidFrameEncoding;
+                        if (function_index == target_function_index) found = true;
+                    },
+                    0x41 => try skipWasmSignedLeb128(bytes, cursor, 5, 4),
+                    0x42 => try skipWasmSignedLeb128(bytes, cursor, 10, 1),
+                    0x43 => try skipWasmBytes(bytes, cursor, 4),
+                    0x44 => try skipWasmBytes(bytes, cursor, 8),
+                    0xd0 => _ = try readWasmRefType(bytes, cursor),
+                    else => return error.InvalidFrameEncoding,
+                }
+            }
+        }
+
+        fn skipWasmInitExpr(bytes: []const u8, cursor: *usize, function_count: u32, global_section: []const u8, global_count: u32, expected_type: ?u8) anyerror!void {
+            var result_type: ?u8 = null;
+            var result_count: u32 = 0;
+            while (true) {
+                const opcode = try readWasmU8(bytes, cursor);
+                switch (opcode) {
+                    0x0b => {
+                        if (expected_type) |expected| {
+                            if (result_count != 1 or result_type == null or result_type.? != expected) return error.InvalidFrameEncoding;
+                        }
+                        return;
+                    },
+                    0x23 => {
+                        const global_index = try readWasmU32(bytes, cursor);
+                        if (global_index >= global_count) return error.InvalidFrameEncoding;
+                        if (try wasmGlobalMutable(global_section, global_index, function_count)) return error.InvalidFrameEncoding;
+                        const global_type = try wasmGlobalType(global_section, global_index, function_count);
+                        if (expected_type) |expected| {
+                            if (global_type != expected) return error.InvalidFrameEncoding;
+                        }
+                        result_type = global_type;
+                        result_count += 1;
+                    },
+                    0xd2 => {
+                        const function_index = try readWasmU32(bytes, cursor);
+                        if (function_index >= function_count) return error.InvalidFrameEncoding;
+                        result_type = 0x70;
+                        result_count += 1;
+                    },
+                    0x41 => {
+                        try skipWasmSignedLeb128(bytes, cursor, 5, 4);
+                        result_type = 0x7f;
+                        result_count += 1;
+                    },
+                    0x42 => {
+                        try skipWasmSignedLeb128(bytes, cursor, 10, 1);
+                        result_type = 0x7e;
+                        result_count += 1;
+                    },
+                    0x43 => {
+                        try skipWasmBytes(bytes, cursor, 4);
+                        result_type = 0x7d;
+                        result_count += 1;
+                    },
+                    0x44 => {
+                        try skipWasmBytes(bytes, cursor, 8);
+                        result_type = 0x7c;
+                        result_count += 1;
+                    },
+                    0xd0 => {
+                        result_type = try readWasmRefType(bytes, cursor);
+                        result_count += 1;
+                    },
+                    else => return error.InvalidFrameEncoding,
+                }
+                if (result_count > 1) return error.InvalidFrameEncoding;
+            }
+        }
+
+        fn skipWasmSignedLeb128(bytes: []const u8, cursor: *usize, max_bytes: usize, terminal_value_bits: u3) !void {
+            var read_count: usize = 0;
+            while (read_count < max_bytes) : (read_count += 1) {
+                const byte = try readWasmU8(bytes, cursor);
+                if ((byte & 0x80) == 0) {
+                    if (read_count + 1 == max_bytes) {
+                        const payload = byte & 0x7f;
+                        const sign_bit = @as(u8, 1) << (terminal_value_bits - 1);
+                        const unused_mask = (@as(u8, 0x7f) << terminal_value_bits) & 0x7f;
+                        const expected_unused = if ((payload & sign_bit) == 0) 0 else unused_mask;
+                        if ((payload & unused_mask) != expected_unused) return error.InvalidFrameEncoding;
+                    }
+                    return;
+                }
+            }
+            return error.InvalidFrameEncoding;
+        }
+
+        fn skipWasmByteVector(bytes: []const u8, cursor: *usize) !void {
+            const count = try readWasmU32(bytes, cursor);
+            try skipWasmBytes(bytes, cursor, count);
+        }
+
+        fn skipWasmBytes(bytes: []const u8, cursor: *usize, count: usize) !void {
+            if (cursor.* + count > bytes.len) return error.InvalidFrameEncoding;
+            cursor.* += count;
+        }
+
+        fn readWasmName(bytes: []const u8, cursor: *usize) ![]const u8 {
+            const len = try readWasmU32(bytes, cursor);
+            if (cursor.* + len > bytes.len) return error.InvalidFrameEncoding;
+            const value = bytes[cursor.* .. cursor.* + len];
+            if (!std.unicode.utf8ValidateSlice(value)) return error.InvalidFrameEncoding;
+            cursor.* += len;
+            return value;
+        }
+
+        fn readWasmU8(bytes: []const u8, cursor: *usize) !u8 {
+            if (cursor.* >= bytes.len) return error.InvalidFrameEncoding;
+            const value = bytes[cursor.*];
+            cursor.* += 1;
+            return value;
+        }
+
+        fn readWasmU32(bytes: []const u8, cursor: *usize) !u32 {
+            var result: u32 = 0;
+            var shift: u5 = 0;
+            while (true) {
+                if (cursor.* >= bytes.len) return error.InvalidFrameEncoding;
+                const byte = bytes[cursor.*];
+                cursor.* += 1;
+                const payload = byte & 0x7f;
+                if (shift == 28 and payload > 0x0f) return error.InvalidFrameEncoding;
+                result |= @as(u32, payload) << shift;
+                if ((byte & 0x80) == 0) return result;
+                if (shift == 28) return error.InvalidFrameEncoding;
+                shift += 7;
+            }
+        }
+
+        fn readWasmI32NonNegative(bytes: []const u8, cursor: *usize) !u32 {
+            const value = try readWasmU32(bytes, cursor);
+            if ((value & 0x8000_0000) != 0) return error.InvalidFrameEncoding;
+            return value;
+        }
+    };
+
+    fn fingerprintVector(vector: ConformanceVector) u64 {
+        var hasher = std.hash.Wyhash.init(0x6775_6573_745f_7665);
+        hashU64(&hasher, vector.fingerprint_version);
+        hashU64(&hasher, vector.name.len);
+        hashBytes(&hasher, vector.name);
+        hashU64(&hasher, @intFromEnum(vector.kind));
+        hashU64(&hasher, vector.target_ref_fingerprint);
+        hashOptionalU64(&hasher, vector.admission_receipt_fingerprint);
+        hashOptionalU64(&hasher, vector.run_permit_fingerprint);
+        hashU64Slice(&hasher, vector.input_fingerprints);
+        hashU64Slice(&hasher, vector.expected_pending_frame_fingerprints);
+        hashU64Slice(&hasher, vector.response_frame_fingerprints);
+        hashOptionalU64(&hasher, vector.expected_final_result_fingerprint);
+        hashOptionalU64(&hasher, vector.expected_transcript_fingerprint);
+        hashOptionalU64(&hasher, vector.expected_receipt_fingerprint);
+        for (vector.expected_status_sequence) |status_value| hashU64(&hasher, @intFromEnum(status_value));
+        return hasher.final();
+    }
+
+    fn fingerprintReport(report: ConformanceReport) u64 {
+        var hasher = std.hash.Wyhash.init(0x6775_6573_745f_7265);
+        hashU64(&hasher, report.fingerprint_version);
+        hashU64(&hasher, report.vector_fingerprint);
+        fingerprintResultSummary(&hasher, report.native_run_result);
+        fingerprintResultSummary(&hasher, report.native_abi_result);
+        hashBool(&hasher, report.wasm_inspection_passed);
+        hashBool(&hasher, report.wasm_runtime_result != null);
+        if (report.wasm_runtime_result) |summary| fingerprintResultSummary(&hasher, summary);
+        hashBool(&hasher, report.status_sequence_match);
+        hashBool(&hasher, report.pending_frame_match);
+        hashBool(&hasher, report.final_result_match);
+        hashBool(&hasher, report.transcript_match);
+        hashBool(&hasher, report.receipt_match);
+        hashStringSlice(&hasher, report.blockers);
+        hashStringSlice(&hasher, report.warnings);
+        return hasher.final();
+    }
+
+    fn fingerprintResultSummary(hasher: *std.hash.Wyhash, summary: RunResultSummary) void {
+        hashU64(hasher, @intFromEnum(summary.status));
+        hashOptionalU64(hasher, summary.result_fingerprint);
+        hashOptionalU64(hasher, summary.transcript_fingerprint);
+        hashOptionalU64(hasher, summary.receipt_fingerprint);
+        hashU64Slice(hasher, summary.pending_frame_fingerprints);
+    }
+
+    fn hashU64Slice(hasher: *std.hash.Wyhash, values: []const u64) void {
+        hashU64(hasher, values.len);
+        for (values) |value| hashU64(hasher, value);
+    }
+
+    fn hashStringSlice(hasher: *std.hash.Wyhash, values: []const []const u8) void {
+        hashU64(hasher, values.len);
+        for (values) |value| {
+            hashU64(hasher, value.len);
+            hashBytes(hasher, value);
+        }
     }
 };
 
