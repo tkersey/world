@@ -303,6 +303,19 @@ fn appendGuestWasmTypeSection(module: *std.ArrayList(u8)) !void {
     try appendWasmSection(module, 1, types.items);
 }
 
+fn appendGuestWasmTypeSectionWithStart(module: *std.ArrayList(u8)) !void {
+    var types: std.ArrayList(u8) = .empty;
+    defer types.deinit(std.testing.allocator);
+    try appendWasmU32(&types, 6);
+    try appendWasmFuncType(&types, 0, 1);
+    try appendWasmFuncType(&types, 1, 1);
+    try appendWasmFuncType(&types, 2, 1);
+    try appendWasmFuncType(&types, 3, 1);
+    try appendWasmFuncType(&types, 2, 0);
+    try appendWasmFuncType(&types, 0, 0);
+    try appendWasmSection(module, 1, types.items);
+}
+
 fn appendGuestWasmTypeSectionWithLargeHelper(module: *std.ArrayList(u8)) !void {
     var types: std.ArrayList(u8) = .empty;
     defer types.deinit(std.testing.allocator);
@@ -379,6 +392,17 @@ fn appendGuestWasmFunctionSection(module: *std.ArrayList(u8), wrong_signature: b
         const type_index: u32 = if (wrong_signature and index == 2) 2 else guestRequiredSignatureTypeIndex(index);
         try appendWasmU32(&functions, type_index);
     }
+    try appendWasmSection(module, 3, functions.items);
+}
+
+fn appendGuestWasmFunctionSectionWithStart(module: *std.ArrayList(u8)) !void {
+    var functions: std.ArrayList(u8) = .empty;
+    defer functions.deinit(std.testing.allocator);
+    try appendWasmU32(&functions, @intCast(world.Guest.Abi.required_exports.len + 1));
+    for (world.Guest.Abi.required_exports, 0..) |_, index| {
+        try appendWasmU32(&functions, guestRequiredSignatureTypeIndex(index));
+    }
+    try appendWasmU32(&functions, 5);
     try appendWasmSection(module, 3, functions.items);
 }
 
@@ -796,6 +820,30 @@ fn appendGuestWasmCodeSectionWithAbiEarlyReturnDeadCode(module: *std.ArrayList(u
 
 fn appendGuestWasmCodeSection(module: *std.ArrayList(u8), defined_function_count: usize, abi_version: u32) !void {
     return appendGuestWasmCodeSectionWithAbiReturn(module, defined_function_count, abi_version, false);
+}
+
+fn appendGuestWasmCodeSectionWithStart(module: *std.ArrayList(u8), abi_version: u32) !void {
+    const defined_function_count = world.Guest.Abi.required_exports.len + 1;
+    var code: std.ArrayList(u8) = .empty;
+    defer code.deinit(std.testing.allocator);
+    try appendWasmU32(&code, @intCast(defined_function_count));
+    var index: usize = 0;
+    while (index < defined_function_count) : (index += 1) {
+        var body: std.ArrayList(u8) = .empty;
+        defer body.deinit(std.testing.allocator);
+        try appendWasmU32(&body, 0);
+        if (index == 0) {
+            try body.append(std.testing.allocator, 0x41);
+            try appendWasmU32(&body, abi_version);
+        } else if (index < world.Guest.Abi.required_exports.len) {
+            try body.append(std.testing.allocator, 0x41);
+            try appendWasmU32(&body, 0);
+        }
+        try body.append(std.testing.allocator, 0x0b);
+        try appendWasmU32(&code, @intCast(body.items.len));
+        try code.appendSlice(std.testing.allocator, body.items);
+    }
+    try appendWasmSection(module, 10, code.items);
 }
 
 fn appendGuestWasmLargeCodeSection(module: *std.ArrayList(u8), defined_function_count: usize, abi_version: u32) !void {
@@ -1948,6 +1996,33 @@ fn syntheticDuplicateSectionGuestWasm(allocator: std.mem.Allocator) ![]u8 {
 }
 
 fn syntheticStartSectionGuestWasm(allocator: std.mem.Allocator) ![]u8 {
+    var module: std.ArrayList(u8) = .empty;
+    errdefer module.deinit(allocator);
+    try module.appendSlice(allocator, "\x00asm\x01\x00\x00\x00");
+    try appendGuestWasmTypeSectionWithStart(&module);
+    try appendGuestWasmFunctionSectionWithStart(&module);
+    try appendGuestWasmMemorySection(&module);
+    var exports: std.ArrayList(u8) = .empty;
+    defer exports.deinit(allocator);
+    try appendWasmU32(&exports, @intCast(world.Guest.Abi.required_exports.len + 1));
+    for (world.Guest.Abi.required_exports, 0..) |name, index| {
+        try appendWasmName(&exports, name);
+        try exports.append(allocator, 0);
+        try appendWasmU32(&exports, @intCast(index));
+    }
+    try appendWasmName(&exports, "memory");
+    try exports.append(allocator, 2);
+    try appendWasmU32(&exports, 0);
+    try appendWasmSection(&module, 7, exports.items);
+    var start: std.ArrayList(u8) = .empty;
+    defer start.deinit(allocator);
+    try appendWasmU32(&start, @intCast(world.Guest.Abi.required_exports.len));
+    try appendWasmSection(&module, 8, start.items);
+    try appendGuestWasmCodeSectionWithStart(&module, world.Guest.Abi.version);
+    return module.toOwnedSlice(allocator);
+}
+
+fn syntheticInvalidStartSectionGuestWasm(allocator: std.mem.Allocator) ![]u8 {
     var module: std.ArrayList(u8) = .empty;
     errdefer module.deinit(allocator);
     try module.appendSlice(allocator, "\x00asm\x01\x00\x00\x00");
@@ -3578,7 +3653,11 @@ test "wasm export inspector validates required exports and forbidden imports" {
 
     const start_section = try syntheticStartSectionGuestWasm(std.testing.allocator);
     defer std.testing.allocator.free(start_section);
-    try std.testing.expectError(error.InvalidFrameEncoding, world.Guest.Wasm.inspect(start_section));
+    try std.testing.expect((try world.Guest.Wasm.inspect(start_section)).passed());
+
+    const invalid_start_section = try syntheticInvalidStartSectionGuestWasm(std.testing.allocator);
+    defer std.testing.allocator.free(invalid_start_section);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Guest.Wasm.inspect(invalid_start_section));
 
     const overflowing_section_len = [_]u8{
         0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
