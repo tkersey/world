@@ -11109,6 +11109,7 @@ pub const Guest = struct {
                     0x02, 0x03, 0x04 => {
                         if (opcode == 0x04) try popWasmValue(&context, 0x7f);
                         const block_shape = try readWasmBlockType(body, &cursor, type_section, type_count);
+                        if (block_shape.param_count > max_wasm_validator_values or block_shape.result_count > max_wasm_validator_values) return error.InvalidFrameEncoding;
                         var param_index = block_shape.param_count;
                         while (param_index > 0) {
                             param_index -= 1;
@@ -11296,8 +11297,7 @@ pub const Guest = struct {
             const type_index = try readWasmU32(bytes, cursor);
             if (type_index >= context.type_count) return error.InvalidFrameEncoding;
             const table_index = try readWasmU32(bytes, cursor);
-            if (table_index >= context.table_types.len) return error.InvalidFrameEncoding;
-            if (context.table_types[table_index] != 0x70) return error.InvalidFrameEncoding;
+            if (try wasmTableType(context, table_index) != 0x70) return error.InvalidFrameEncoding;
             try popWasmValue(context, 0x7f);
             const shape = try wasmFunctionShape(context.type_section, type_index);
             try popWasmFunctionParams(context, shape);
@@ -11315,6 +11315,7 @@ pub const Guest = struct {
         }
 
         fn popWasmFunctionParams(context: *WasmBodyContext, shape: WasmFunctionShape) !void {
+            if (shape.param_count > max_wasm_validator_values) return error.InvalidFrameEncoding;
             var param_index = shape.param_count;
             while (param_index > 0) {
                 param_index -= 1;
@@ -11323,6 +11324,7 @@ pub const Guest = struct {
         }
 
         fn pushWasmFunctionResults(context: *WasmBodyContext, shape: WasmFunctionShape) !void {
+            if (shape.result_count > max_wasm_validator_values) return error.InvalidFrameEncoding;
             var result_index: u32 = 0;
             while (result_index < shape.result_count) : (result_index += 1) try pushWasmValue(context, shape.results[result_index]);
         }
