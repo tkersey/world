@@ -78,6 +78,23 @@ pub const Error = error{
     InvalidRunspaceTransition,
     InvalidPendingPortTransition,
     PendingPortConsumed,
+    FabricMissingRoute,
+    FabricCycle,
+    FabricDepthExceeded,
+    SameRunRecursion,
+    ProviderRunLimitExceeded,
+    FabricRejected,
+    UnsupportedSharedProviderRun,
+    ActiveFabricUnsupported,
+    FabricDenied,
+    ProviderRunDenied,
+    GuestRouteDenied,
+    ReplayRouteDenied,
+    PayloadRefMismatch,
+    ProviderArgMismatch,
+    ProviderResultMismatch,
+    UnsupportedMapping,
+    CrossTypeConversionRejected,
     OutOfMemory,
 };
 
@@ -245,6 +262,26 @@ pub const world_pending_port_format_version: u32 = 1;
 pub const world_pending_port_fingerprint_version: u32 = 1;
 pub const world_runspace_config_fingerprint_version: u32 = 1;
 pub const world_runspace_event_fingerprint_version: u32 = 1;
+pub const world_fabric_format_version: u32 = 1;
+pub const world_fabric_fingerprint_version: u32 = 1;
+pub const world_fabric_segment_format_version: u32 = 1;
+pub const world_fabric_segment_fingerprint_version: u32 = 1;
+pub const world_fabric_route_format_version: u32 = 1;
+pub const world_fabric_route_fingerprint_version: u32 = 1;
+pub const world_fabric_plan_format_version: u32 = 1;
+pub const world_fabric_plan_fingerprint_version: u32 = 1;
+pub const world_fabric_binding_format_version: u32 = 1;
+pub const world_fabric_binding_fingerprint_version: u32 = 1;
+pub const world_fabric_value_mapping_format_version: u32 = 1;
+pub const world_fabric_value_mapping_fingerprint_version: u32 = 1;
+pub const world_fabric_invocation_format_version: u32 = 1;
+pub const world_fabric_invocation_fingerprint_version: u32 = 1;
+pub const world_fabric_receipt_format_version: u32 = 1;
+pub const world_fabric_receipt_fingerprint_version: u32 = 1;
+pub const world_fabric_report_format_version: u32 = 1;
+pub const world_fabric_report_fingerprint_version: u32 = 1;
+pub const world_fabric_coverage_report_format_version: u32 = 1;
+pub const world_fabric_coverage_report_fingerprint_version: u32 = 1;
 pub const world_guest_abi_version: u32 = 1;
 pub const world_guest_abi_contract_fingerprint_version: u32 = 1;
 pub const world_guest_conformance_vector_fingerprint_version: u32 = 2;
@@ -889,6 +926,9 @@ pub const PortRule = Supervision.PortRule;
 pub const UsageLedger = Supervision.UsageLedger;
 pub const SupervisionCheck = Supervision.SupervisionCheck;
 pub const RunReceipt = Supervision.RunReceipt;
+
+pub const ConduitPlan = Fabric.Plan;
+pub const ConduitRoute = Fabric.Route;
 
 pub const Admission = struct {
     pub const PackageKind = enum {
@@ -2743,6 +2783,10 @@ pub const Supervision = struct {
         branch_denied,
         checkpoint_denied,
         handoff_denied,
+        fabric_denied,
+        provider_run_denied,
+        guest_route_denied,
+        replay_route_denied,
         transcript_image_required,
         environment_certificate_required,
         max_supervision_events_exceeded,
@@ -2768,6 +2812,9 @@ pub const Supervision = struct {
         branch_depth,
         handoff_exports,
         handoff_accepts,
+        fabric_invocations,
+        fabric_depth,
+        provider_runs,
         total_cost_units,
         per_port_requests,
         per_port_fresh_calls,
@@ -2794,6 +2841,11 @@ pub const Supervision = struct {
         allow_checkpoints: bool = false,
         allow_handoff_export: bool = false,
         allow_handoff_accept: bool = false,
+        allow_fabric_routes: bool = false,
+        allow_target_export_routes: bool = false,
+        allow_guest_routes: bool = false,
+        allow_replay_routes: bool = false,
+        allow_reject_routes: bool = false,
         require_portable_value_images: bool = false,
         reject_native_only_values: bool = false,
         require_environment_certificate: bool = true,
@@ -2833,12 +2885,17 @@ pub const Supervision = struct {
             .allow_fresh_calls = true,
             .allow_native_adapters = true,
             .allow_checkpoints = true,
+            .allow_fabric_routes = true,
+            .allow_target_export_routes = true,
+            .allow_reject_routes = true,
             .require_environment_certificate = true,
             .fail_on_budget_exceeded = true,
         });
         pub const strict_replay = init(.{
             .allow_replay_calls = true,
             .allow_replay_adapters = true,
+            .allow_fabric_routes = true,
+            .allow_replay_routes = true,
             .require_portable_value_images = true,
             .reject_native_only_values = true,
             .require_environment_certificate = true,
@@ -2850,6 +2907,10 @@ pub const Supervision = struct {
             .allow_verify_calls = true,
             .allow_native_adapters = true,
             .allow_replay_adapters = true,
+            .allow_fabric_routes = true,
+            .allow_target_export_routes = true,
+            .allow_replay_routes = true,
+            .allow_reject_routes = true,
             .require_portable_value_images = true,
             .reject_native_only_values = true,
             .require_environment_certificate = true,
@@ -2868,6 +2929,11 @@ pub const Supervision = struct {
             .allow_checkpoints = true,
             .allow_handoff_export = true,
             .allow_handoff_accept = true,
+            .allow_fabric_routes = true,
+            .allow_target_export_routes = true,
+            .allow_guest_routes = true,
+            .allow_replay_routes = true,
+            .allow_reject_routes = true,
             .require_environment_certificate = true,
         });
         pub const audit_only = init(.{
@@ -2885,6 +2951,11 @@ pub const Supervision = struct {
             .allow_checkpoints = true,
             .allow_handoff_export = true,
             .allow_handoff_accept = true,
+            .allow_fabric_routes = true,
+            .allow_target_export_routes = true,
+            .allow_guest_routes = true,
+            .allow_replay_routes = true,
+            .allow_reject_routes = true,
             .require_environment_certificate = false,
             .fail_on_budget_exceeded = false,
             .audit_only_on_budget_exceeded = true,
@@ -2896,6 +2967,9 @@ pub const Supervision = struct {
             .allow_native_adapters = true,
             .allow_replay_adapters = true,
             .allow_handoff_accept = true,
+            .allow_fabric_routes = true,
+            .allow_target_export_routes = true,
+            .allow_replay_routes = true,
             .require_environment_certificate = true,
             .require_transcript_image_for_replay = true,
         });
@@ -2904,6 +2978,8 @@ pub const Supervision = struct {
             .allow_native_adapters = true,
             .allow_branching = true,
             .allow_checkpoints = true,
+            .allow_fabric_routes = true,
+            .allow_target_export_routes = true,
             .require_environment_certificate = true,
         });
     };
@@ -2939,6 +3015,9 @@ pub const Supervision = struct {
         max_branch_depth: ?usize = null,
         max_handoff_exports: ?usize = null,
         max_handoff_accepts: ?usize = null,
+        max_fabric_invocations: ?usize = null,
+        max_fabric_depth: ?usize = null,
+        max_provider_runs: ?usize = null,
         max_total_cost_units: ?u64 = null,
         per_port_budgets: []const PerPortBudget = &.{},
 
@@ -3003,6 +3082,9 @@ pub const Supervision = struct {
         branch_cost: u64 = 1,
         handoff_export_cost: u64 = 1,
         handoff_accept_cost: u64 = 1,
+        fabric_invocation_cost: u64 = 1,
+        provider_run_cost: u64 = 1,
+        nested_port_call_cost: u64 = 1,
         per_port_costs: []const PerPortCost = &.{},
 
         pub fn init(args: anytype) @This() {
@@ -3310,6 +3392,9 @@ pub const Supervision = struct {
         total_branches: usize = 0,
         total_handoff_exports: usize = 0,
         total_handoff_accepts: usize = 0,
+        total_fabric_invocations: usize = 0,
+        max_fabric_depth_observed: usize = 0,
+        total_provider_runs: usize = 0,
         total_cost_units: u64 = 0,
         per_port_usage: []PerPortUsage = &.{},
         exceeded_budget: ?BudgetExceededKind = null,
@@ -3374,6 +3459,7 @@ pub const Supervision = struct {
             before_branch,
             before_handoff_export,
             before_handoff_accept,
+            before_fabric_invocation,
         };
 
         pub fn init(args: struct {
@@ -3436,6 +3522,9 @@ pub const Supervision = struct {
         checkpoint_count: usize = 0,
         handoff_export_count: usize = 0,
         handoff_accept_count: usize = 0,
+        fabric_invocation_count: usize = 0,
+        provider_run_count: usize = 0,
+        max_fabric_depth: usize = 0,
 
         pub const FinalStatus = enum {
             completed,
@@ -3485,6 +3574,9 @@ pub const Supervision = struct {
                 result.checkpoint_count = ledger.total_checkpoints;
                 result.handoff_export_count = ledger.total_handoff_exports;
                 result.handoff_accept_count = ledger.total_handoff_accepts;
+                result.fabric_invocation_count = ledger.total_fabric_invocations;
+                result.provider_run_count = ledger.total_provider_runs;
+                result.max_fabric_depth = ledger.max_fabric_depth_observed;
             }
             result.receipt_fingerprint = fingerprintRunReceipt(result);
             return result;
@@ -3931,6 +4023,34 @@ pub const Supervision = struct {
             try self.commitCheck(.before_handoff_accept, null, &next, null, null, "handoff accept");
         }
 
+        pub fn beforeFabricInvocation(self: *@This(), args: struct {
+            world_port_id: u32,
+            route_kind: Fabric.RouteKind,
+            depth: usize = 1,
+            provider_runs: usize = 0,
+        }) !void {
+            try self.validateWorldPortId(args.world_port_id);
+            const policy = self.permit.policy;
+            if (!policy.allow_fabric_routes) return self.deny(.before_fabric_invocation, args.world_port_id, .fabric_denied, null, "fabric denied");
+            switch (args.route_kind) {
+                .target_export, .admitted_run => if (!policy.allow_target_export_routes) return self.deny(.before_fabric_invocation, args.world_port_id, .provider_run_denied, null, "provider route denied"),
+                .guest => if (!policy.allow_guest_routes) return self.deny(.before_fabric_invocation, args.world_port_id, .guest_route_denied, null, "guest route denied"),
+                .replay => if (!policy.allow_replay_routes) return self.deny(.before_fabric_invocation, args.world_port_id, .replay_route_denied, null, "replay route denied"),
+                .reject => if (!policy.allow_reject_routes) return self.deny(.before_fabric_invocation, args.world_port_id, .fabric_denied, null, "reject route denied"),
+                .adapter, .unsupported => {},
+            }
+            var next = try self.ledger.clone(self.allocator);
+            defer next.deinit(self.allocator);
+            const depth_cost = mulSatUsizeU64(args.depth, self.permit.cost_model.nested_port_call_cost);
+            const provider_cost = mulSatUsizeU64(args.provider_runs, self.permit.cost_model.provider_run_cost);
+            const cost_delta = addSatU64Many(&.{ self.permit.cost_model.fabric_invocation_cost, depth_cost, provider_cost });
+            next.total_fabric_invocations = addSatUsize(next.total_fabric_invocations, 1);
+            next.total_provider_runs = addSatUsize(next.total_provider_runs, args.provider_runs);
+            next.max_fabric_depth_observed = @max(next.max_fabric_depth_observed, args.depth);
+            next.total_cost_units = addSatU64(next.total_cost_units, cost_delta);
+            try self.commitCheck(.before_fabric_invocation, args.world_port_id, &next, null, null, "fabric invocation");
+        }
+
         pub fn receipt(self: *@This(), final_status: Supervision.RunReceipt.FinalStatus, final_run_state_fingerprint: u64, transcript_image_fingerprint: ?u64, run_image_fingerprint: ?u64) Supervision.RunReceipt {
             self.ledger.refreshFingerprint();
             return Supervision.RunReceipt.init(.{
@@ -4146,6 +4266,9 @@ pub const Supervision = struct {
         if (budget.max_branches) |max| if (ledger.total_branches > max) return .branches;
         if (budget.max_handoff_exports) |max| if (ledger.total_handoff_exports > max) return .handoff_exports;
         if (budget.max_handoff_accepts) |max| if (ledger.total_handoff_accepts > max) return .handoff_accepts;
+        if (budget.max_fabric_invocations) |max| if (ledger.total_fabric_invocations > max) return .fabric_invocations;
+        if (budget.max_fabric_depth) |max| if (ledger.max_fabric_depth_observed > max) return .fabric_depth;
+        if (budget.max_provider_runs) |max| if (ledger.total_provider_runs > max) return .provider_runs;
         if (budget.max_total_cost_units) |max| if (ledger.total_cost_units > max) return .total_cost_units;
         if (world_port_id) |id| {
             if (budget.perPort(id)) |per_port_budget| {
@@ -4178,6 +4301,10 @@ pub const Supervision = struct {
             .branch_denied => Error.BranchDenied,
             .checkpoint_denied => Error.SupervisionDenied,
             .handoff_denied => Error.HandoffDenied,
+            .fabric_denied => Error.FabricDenied,
+            .provider_run_denied => Error.ProviderRunDenied,
+            .guest_route_denied => Error.GuestRouteDenied,
+            .replay_route_denied => Error.ReplayRouteDenied,
             .transcript_image_required => Error.TranscriptImageRequired,
             .environment_certificate_required => Error.SupervisionDenied,
             .none => Error.SupervisionDenied,
@@ -4202,6 +4329,29 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
 
         pub fn acceptanceReport(requested_mode: Mode, transcript_image_available: bool) AcceptanceReport {
             return acceptanceReportFor(Target, bindings, policy, requested_mode, transcript_image_available);
+        }
+
+        pub fn acceptanceReportWithFabricPlan(requested_mode: Mode, transcript_image_available: bool, plan: Fabric.Plan) AcceptanceReport {
+            const report = acceptanceReportFor(Target, bindings, policy, requested_mode, transcript_image_available);
+            if (report.accepted) return report;
+            if (!acceptanceReportHasOnlyMissingBinding(report)) return report;
+            plan.validate() catch return report;
+            plan.assertNoCycles() catch return report;
+            plan.assertDeterministicRouteOrder() catch return report;
+            const coverage = plan.coverage(target_ref, import_set);
+            if (!coverage.accepted) return report;
+            if (bindings.len + coverage.fabric_covered_port_count < Target.WorldPortTable.entries.len) return report;
+            var accepted = report;
+            accepted.accepted = true;
+            accepted.bound_port_count = bindings.len + coverage.fabric_covered_port_count;
+            accepted.missing_port_count = 0;
+            accepted.blockers = &.{};
+            accepted.summary = "accepted by fabric";
+            if (requested_mode == .fresh and !transcript_image_available and !policy.allow_fresh_without_transcript) return rejectedReport(accepted, &.{.TranscriptImageRequired});
+            if (requested_mode == .replay and !transcript_image_available and policy.require_frame_images_for_replay) return rejectedReport(accepted, &.{.TranscriptImageRequired});
+            if (requested_mode == .verify and !transcript_image_available and !policy.allow_verify_without_transcript) return rejectedReport(accepted, &.{.VerifyTranscriptMissing});
+            accepted.report_fingerprint = fingerprintAcceptanceReport(accepted);
+            return accepted;
         }
 
         pub fn acceptanceReportWithSupervision(requested_mode: Mode, transcript_image_available: bool, supervision_policy: SupervisionPolicy) AcceptanceReport {
@@ -4396,6 +4546,26 @@ pub const Frame = struct {
 
         fn cloneWithBoundaryValueFingerprint(self: @This(), allocator: std.mem.Allocator, boundary_value_fingerprint: u64) !@This() {
             var result = try self.clone(allocator);
+            result.boundary_value_fingerprint = boundary_value_fingerprint;
+            result.value_image_fingerprint = fingerprintValueImage(
+                result.value_table_id,
+                result.boundary_value_fingerprint,
+                result.codec_schema_descriptor_fingerprint,
+                result.dynamic_size,
+                result.diagnostic_type_label,
+                result.bytes,
+            );
+            return result;
+        }
+
+        fn cloneForValueContract(
+            self: @This(),
+            allocator: std.mem.Allocator,
+            value_table_id: ?u32,
+            boundary_value_fingerprint: ?u64,
+        ) !@This() {
+            var result = try self.clone(allocator);
+            result.value_table_id = value_table_id;
             result.boundary_value_fingerprint = boundary_value_fingerprint;
             result.value_image_fingerprint = fingerprintValueImage(
                 result.value_table_id,
@@ -6644,6 +6814,797 @@ pub const RunHandle = struct {
     }
 };
 
+pub const Fabric = struct {
+    format_version: u32 = world_fabric_format_version,
+    fingerprint_version: u32 = world_fabric_fingerprint_version,
+    fabric_digest: u64,
+    boundary_digest: u64,
+    module_fingerprint: u64,
+    target_ref_fingerprint: ?u64 = null,
+    metadata: []const u8 = "",
+
+    pub fn init(args: struct {
+        boundary_digest: u64,
+        module_fingerprint: u64,
+        target_ref_fingerprint: ?u64 = null,
+        metadata: []const u8 = "",
+    }) Fabric {
+        var result = Fabric{
+            .fabric_digest = 0,
+            .boundary_digest = args.boundary_digest,
+            .module_fingerprint = args.module_fingerprint,
+            .target_ref_fingerprint = args.target_ref_fingerprint,
+            .metadata = args.metadata,
+        };
+        result.fabric_digest = fingerprintFabric(result);
+        return result;
+    }
+
+    pub fn fromModuleRef(module_ref: Admission.ModuleRef) Fabric {
+        return Fabric.init(.{
+            .boundary_digest = module_ref.boundary_module_fingerprint,
+            .module_fingerprint = module_ref.module_ref_fingerprint,
+            .target_ref_fingerprint = module_ref.target_ref_fingerprint,
+        });
+    }
+
+    pub fn matchesModuleRef(self: Fabric, module_ref: Admission.ModuleRef) bool {
+        return self.boundary_digest == module_ref.boundary_module_fingerprint and
+            self.module_fingerprint == module_ref.module_ref_fingerprint and
+            self.target_ref_fingerprint == module_ref.target_ref_fingerprint and
+            self.fabric_digest == fingerprintFabric(self);
+    }
+
+    pub const RouteKind = enum {
+        adapter,
+        target_export,
+        admitted_run,
+        guest,
+        replay,
+        reject,
+        unsupported,
+    };
+
+    pub const ValueMappingKind = enum {
+        payload_to_provider_args,
+        unit_args,
+        provider_result_to_parent_response,
+    };
+
+    pub const InvocationStatus = enum {
+        planned,
+        started,
+        provider_installed,
+        provider_running,
+        provider_parked,
+        provider_completed,
+        parent_responded,
+        completed,
+        rejected,
+        failed,
+        unsupported,
+        denied,
+        cycle_blocked,
+        supervision_denied,
+    };
+
+    pub const Blocker = enum {
+        MissingRoute,
+        WrongWorldSurface,
+        WrongTargetCertificate,
+        WrongPortId,
+        PayloadRefMismatch,
+        ProviderArgMismatch,
+        ProviderResultMismatch,
+        UnsupportedMapping,
+        CrossTypeConversionRejected,
+        FabricCycle,
+        FabricDepthExceeded,
+        SameRunRecursion,
+        ProviderRunLimitExceeded,
+        FabricRejected,
+        UnsupportedSharedProviderRun,
+        ActiveFabricUnsupported,
+        FabricDenied,
+        ProviderRunDenied,
+        GuestRouteDenied,
+        ReplayRouteDenied,
+    };
+
+    pub const ValueMapping = struct {
+        format_version: u32 = world_fabric_value_mapping_format_version,
+        fingerprint_version: u32 = world_fabric_value_mapping_fingerprint_version,
+        mapping_fingerprint: u64,
+        fabric_digest: ?u64 = null,
+        kind: ValueMappingKind,
+        parent_value_table_id: ?u32 = null,
+        provider_value_table_id: ?u32 = null,
+        parent_payload_value_table_id: ?u32 = null,
+        parent_payload_value_fingerprint: ?u64 = null,
+        provider_argument_value_table_id: ?u32 = null,
+        provider_argument_value_fingerprint: ?u64 = null,
+        provider_result_value_table_id: ?u32 = null,
+        provider_result_value_fingerprint: ?u64 = null,
+        parent_response_value_table_id: ?u32 = null,
+        parent_response_value_fingerprint: ?u64 = null,
+        require_portable_images: bool = true,
+        allow_unit_args: bool = false,
+
+        pub fn init(args: struct {
+            fabric_digest: ?u64 = null,
+            kind: ValueMappingKind,
+            parent_value_table_id: ?u32 = null,
+            provider_value_table_id: ?u32 = null,
+            parent_payload_value_table_id: ?u32 = null,
+            parent_payload_value_fingerprint: ?u64 = null,
+            provider_argument_value_table_id: ?u32 = null,
+            provider_argument_value_fingerprint: ?u64 = null,
+            provider_result_value_table_id: ?u32 = null,
+            provider_result_value_fingerprint: ?u64 = null,
+            parent_response_value_table_id: ?u32 = null,
+            parent_response_value_fingerprint: ?u64 = null,
+            require_portable_images: bool = true,
+            allow_unit_args: bool = false,
+        }) Fabric.ValueMapping {
+            var result = Fabric.ValueMapping{
+                .mapping_fingerprint = 0,
+                .fabric_digest = args.fabric_digest,
+                .kind = args.kind,
+                .parent_value_table_id = args.parent_value_table_id,
+                .provider_value_table_id = args.provider_value_table_id,
+                .parent_payload_value_table_id = args.parent_payload_value_table_id orelse args.parent_value_table_id,
+                .parent_payload_value_fingerprint = args.parent_payload_value_fingerprint,
+                .provider_argument_value_table_id = args.provider_argument_value_table_id orelse args.provider_value_table_id,
+                .provider_argument_value_fingerprint = args.provider_argument_value_fingerprint,
+                .provider_result_value_table_id = args.provider_result_value_table_id orelse args.provider_value_table_id,
+                .provider_result_value_fingerprint = args.provider_result_value_fingerprint,
+                .parent_response_value_table_id = args.parent_response_value_table_id orelse args.parent_value_table_id,
+                .parent_response_value_fingerprint = args.parent_response_value_fingerprint,
+                .require_portable_images = args.require_portable_images,
+                .allow_unit_args = args.allow_unit_args,
+            };
+            result.mapping_fingerprint = fingerprintFabricValueMapping(result);
+            return result;
+        }
+
+        pub fn validate(self: Fabric.ValueMapping) !void {
+            if (self.format_version != world_fabric_value_mapping_format_version) return error.InvalidFrameEncoding;
+            if (self.fingerprint_version != world_fabric_value_mapping_fingerprint_version) return error.InvalidFrameEncoding;
+            if (fingerprintFabricValueMapping(self) != self.mapping_fingerprint) return error.InvalidFrameEncoding;
+            switch (self.kind) {
+                .payload_to_provider_args => {
+                    if (self.parent_payload_value_table_id == null or self.provider_argument_value_table_id == null) return error.UnsupportedMapping;
+                    if (self.provider_result_value_table_id != null or self.parent_response_value_table_id != null) return error.UnsupportedMapping;
+                },
+                .unit_args => {
+                    if (!self.allow_unit_args) return error.UnsupportedMapping;
+                    if (self.parent_payload_value_table_id != null or self.provider_argument_value_table_id != null) return error.UnsupportedMapping;
+                    if (self.provider_result_value_table_id != null or self.parent_response_value_table_id != null) return error.UnsupportedMapping;
+                },
+                .provider_result_to_parent_response => {
+                    if (self.provider_result_value_table_id == null or self.parent_response_value_table_id == null) return error.UnsupportedMapping;
+                    if (self.parent_payload_value_table_id != null or self.provider_argument_value_table_id != null) return error.UnsupportedMapping;
+                },
+            }
+        }
+
+        pub fn providerArgumentValueTableId(self: Fabric.ValueMapping, parent_request: Frame.Request) !?u32 {
+            try self.validate();
+            if (self.kind != .payload_to_provider_args) return error.UnsupportedMapping;
+            if (parent_request.payload_value_table_id != self.parent_payload_value_table_id) return error.PayloadRefMismatch;
+            if (self.parent_payload_value_fingerprint) |expected| {
+                if (parent_request.payload_value_fingerprint != expected) return error.PayloadRefMismatch;
+            }
+            if (parent_request.payload_image) |image| {
+                if (image.value_table_id != self.parent_payload_value_table_id) return error.PayloadRefMismatch;
+                if (self.parent_payload_value_fingerprint) |expected| {
+                    if (image.value_image_fingerprint != expected) return error.PayloadRefMismatch;
+                }
+            }
+            return self.provider_argument_value_table_id;
+        }
+
+        pub fn unitArgumentValueTableId(self: Fabric.ValueMapping) !?u32 {
+            try self.validate();
+            if (self.kind != .unit_args) return error.UnsupportedMapping;
+            return null;
+        }
+
+        pub fn assertExactValueTableMatch(self: Fabric.ValueMapping) !void {
+            try self.validate();
+            switch (self.kind) {
+                .payload_to_provider_args => {
+                    if (self.parent_payload_value_table_id != self.provider_argument_value_table_id) return error.CrossTypeConversionRejected;
+                },
+                .unit_args => {},
+                .provider_result_to_parent_response => {
+                    if (self.provider_result_value_table_id != self.parent_response_value_table_id) return error.CrossTypeConversionRejected;
+                },
+            }
+        }
+
+        pub fn parentResponseValueTableId(self: Fabric.ValueMapping, provider_response: Frame.Response) !?u32 {
+            try self.validate();
+            if (self.kind != .provider_result_to_parent_response) return error.UnsupportedMapping;
+            if (provider_response.response_value_table_id != self.provider_result_value_table_id) return error.ProviderResultMismatch;
+            if (self.provider_result_value_fingerprint) |expected| {
+                if (provider_response.response_value_fingerprint != expected and provider_response.response_fingerprint != expected) return error.ProviderResultMismatch;
+            }
+            if (provider_response.response_image) |image| {
+                if (image.value_table_id != self.provider_result_value_table_id) return error.ProviderResultMismatch;
+                if (self.provider_result_value_fingerprint) |expected| {
+                    if (image.value_image_fingerprint != expected and image.boundary_value_fingerprint != expected) return error.ProviderResultMismatch;
+                }
+            }
+            return self.parent_response_value_table_id;
+        }
+    };
+
+    pub const Route = struct {
+        format_version: u32 = world_fabric_route_format_version,
+        fingerprint_version: u32 = world_fabric_route_fingerprint_version,
+        route_fingerprint: u64,
+        route_id: u64,
+        fabric_digest: ?u64 = null,
+        kind: RouteKind,
+        world_port_id: u32,
+        parent_world_surface_fingerprint: u64,
+        parent_target_certificate_fingerprint: u64,
+        parent_world_port_id: u32,
+        provider_target_ref_fingerprint: ?u64 = null,
+        provider_module_fingerprint: ?u64 = null,
+        provider_world_surface_fingerprint: ?u64 = null,
+        provider_target_certificate_fingerprint: ?u64 = null,
+        provider_world_port_id: ?u32 = null,
+        provider_admission_receipt_fingerprint: ?u64 = null,
+        provider_run_image_fingerprint: ?u64 = null,
+        provider_transcript_image_fingerprint: ?u64 = null,
+        value_mapping_fingerprint: ?u64 = null,
+        response_status: ResponseStatus = .responded,
+        max_depth: ?usize = null,
+        metadata: []const u8 = "",
+
+        pub fn init(args: struct {
+            route_id: u64 = 0,
+            fabric_digest: ?u64 = null,
+            kind: RouteKind,
+            world_port_id: ?u32 = null,
+            parent_world_surface_fingerprint: u64 = 0,
+            parent_target_certificate_fingerprint: u64 = 0,
+            parent_world_port_id: ?u32 = null,
+            provider_target_ref_fingerprint: ?u64 = null,
+            provider_module_fingerprint: ?u64 = null,
+            provider_world_surface_fingerprint: ?u64 = null,
+            provider_target_certificate_fingerprint: ?u64 = null,
+            provider_world_port_id: ?u32 = null,
+            provider_admission_receipt_fingerprint: ?u64 = null,
+            provider_run_image_fingerprint: ?u64 = null,
+            provider_transcript_image_fingerprint: ?u64 = null,
+            value_mapping_fingerprint: ?u64 = null,
+            response_status: ResponseStatus = .responded,
+            max_depth: ?usize = null,
+            metadata: []const u8 = "",
+        }) Fabric.Route {
+            var result = Fabric.Route{
+                .route_fingerprint = 0,
+                .route_id = args.route_id,
+                .fabric_digest = args.fabric_digest,
+                .kind = args.kind,
+                .world_port_id = args.world_port_id orelse args.parent_world_port_id orelse 0,
+                .parent_world_surface_fingerprint = args.parent_world_surface_fingerprint,
+                .parent_target_certificate_fingerprint = args.parent_target_certificate_fingerprint,
+                .parent_world_port_id = args.parent_world_port_id orelse args.world_port_id orelse 0,
+                .provider_target_ref_fingerprint = args.provider_target_ref_fingerprint,
+                .provider_module_fingerprint = args.provider_module_fingerprint,
+                .provider_world_surface_fingerprint = args.provider_world_surface_fingerprint,
+                .provider_target_certificate_fingerprint = args.provider_target_certificate_fingerprint,
+                .provider_world_port_id = args.provider_world_port_id,
+                .provider_admission_receipt_fingerprint = args.provider_admission_receipt_fingerprint,
+                .provider_run_image_fingerprint = args.provider_run_image_fingerprint,
+                .provider_transcript_image_fingerprint = args.provider_transcript_image_fingerprint,
+                .value_mapping_fingerprint = args.value_mapping_fingerprint,
+                .response_status = args.response_status,
+                .max_depth = args.max_depth,
+                .metadata = args.metadata,
+            };
+            result.route_fingerprint = fingerprintFabricRoute(result);
+            return result;
+        }
+
+        pub fn validate(self: Fabric.Route) !void {
+            if (self.format_version != world_fabric_route_format_version) return error.InvalidFrameEncoding;
+            if (self.fingerprint_version != world_fabric_route_fingerprint_version) return error.InvalidFrameEncoding;
+            if (fingerprintFabricRoute(self) != self.route_fingerprint) return error.InvalidFrameEncoding;
+            if (self.world_port_id != self.parent_world_port_id) return error.WrongPortId;
+            switch (self.kind) {
+                .target_export, .admitted_run, .guest => {
+                    if (self.provider_target_ref_fingerprint == null and self.provider_module_fingerprint == null) return error.ProviderRunDenied;
+                },
+                .replay => {
+                    if (self.provider_transcript_image_fingerprint == null and self.fabric_digest == null) return error.ReplayRouteDenied;
+                },
+                .reject, .unsupported => {
+                    if (self.response_status == .responded) return error.UnsupportedMapping;
+                },
+                .adapter => {},
+            }
+        }
+    };
+
+    pub const Binding = struct {
+        format_version: u32 = world_fabric_binding_format_version,
+        fingerprint_version: u32 = world_fabric_binding_fingerprint_version,
+        binding_fingerprint: u64,
+        fabric_digest: ?u64 = null,
+        parent_target_ref_fingerprint: ?u64 = null,
+        parent_world_surface_fingerprint: u64,
+        parent_target_certificate_fingerprint: u64,
+        world_port_id: u32,
+        parent_world_port_id: u32,
+        import_requirement_fingerprint: ?u64 = null,
+        route_fingerprint: u64,
+        value_mapping_fingerprint: ?u64 = null,
+        required: bool = true,
+
+        pub fn init(args: struct {
+            fabric_digest: ?u64 = null,
+            parent_target_ref_fingerprint: ?u64 = null,
+            parent_world_surface_fingerprint: u64,
+            parent_target_certificate_fingerprint: u64,
+            world_port_id: ?u32 = null,
+            parent_world_port_id: ?u32 = null,
+            import_requirement_fingerprint: ?u64 = null,
+            route_fingerprint: u64,
+            value_mapping_fingerprint: ?u64 = null,
+            required: bool = true,
+        }) Fabric.Binding {
+            var result = Fabric.Binding{
+                .binding_fingerprint = 0,
+                .fabric_digest = args.fabric_digest,
+                .parent_target_ref_fingerprint = args.parent_target_ref_fingerprint,
+                .parent_world_surface_fingerprint = args.parent_world_surface_fingerprint,
+                .parent_target_certificate_fingerprint = args.parent_target_certificate_fingerprint,
+                .world_port_id = args.world_port_id orelse args.parent_world_port_id orelse 0,
+                .parent_world_port_id = args.parent_world_port_id orelse args.world_port_id orelse 0,
+                .import_requirement_fingerprint = args.import_requirement_fingerprint,
+                .route_fingerprint = args.route_fingerprint,
+                .value_mapping_fingerprint = args.value_mapping_fingerprint,
+                .required = args.required,
+            };
+            result.binding_fingerprint = fingerprintFabricBinding(result);
+            return result;
+        }
+
+        pub fn fromRoute(comptime Target: type, fabric: Fabric, route: Fabric.Route, mapping: ?Fabric.ValueMapping) Fabric.Binding {
+            const target_ref = TargetRef.fromTarget(Target);
+            const requirement = ImportRequirement.fromTargetPort(Target, route.world_port_id);
+            return Fabric.Binding.init(.{
+                .fabric_digest = fabric.fabric_digest,
+                .parent_target_ref_fingerprint = target_ref.target_ref_fingerprint,
+                .parent_world_surface_fingerprint = target_ref.world_surface_fingerprint,
+                .parent_target_certificate_fingerprint = target_ref.target_certificate_fingerprint,
+                .world_port_id = route.world_port_id,
+                .import_requirement_fingerprint = requirement.requirement_fingerprint,
+                .route_fingerprint = route.route_fingerprint,
+                .value_mapping_fingerprint = if (mapping) |value| value.mapping_fingerprint else route.value_mapping_fingerprint,
+            });
+        }
+
+        pub fn validate(self: Fabric.Binding) !void {
+            if (self.format_version != world_fabric_binding_format_version) return error.InvalidFrameEncoding;
+            if (self.fingerprint_version != world_fabric_binding_fingerprint_version) return error.InvalidFrameEncoding;
+            if (fingerprintFabricBinding(self) != self.binding_fingerprint) return error.InvalidFrameEncoding;
+        }
+    };
+
+    pub const Plan = struct {
+        format_version: u32 = world_fabric_plan_format_version,
+        fingerprint_version: u32 = world_fabric_plan_fingerprint_version,
+        plan_fingerprint: u64,
+        fabric_digest: ?u64 = null,
+        target_ref_fingerprint: u64,
+        module_fingerprint: ?u64 = null,
+        world_surface_fingerprint: u64,
+        target_certificate_fingerprint: u64,
+        import_set_fingerprint: ?u64 = null,
+        routes: []const Fabric.Route = &.{},
+        bindings: []const Fabric.Binding = &.{},
+        value_mappings: []const Fabric.ValueMapping = &.{},
+        max_depth: usize = 1,
+        max_provider_runs: usize = 1,
+        coverage_report_fingerprint: ?u64 = null,
+        metadata: []const u8 = "",
+
+        pub fn init(args: struct {
+            fabric_digest: ?u64 = null,
+            target_ref_fingerprint: u64,
+            module_fingerprint: ?u64 = null,
+            world_surface_fingerprint: u64,
+            target_certificate_fingerprint: u64,
+            import_set_fingerprint: ?u64 = null,
+            routes: []const Fabric.Route = &.{},
+            bindings: []const Fabric.Binding = &.{},
+            value_mappings: []const Fabric.ValueMapping = &.{},
+            max_depth: usize = 1,
+            max_provider_runs: usize = 1,
+            coverage_report_fingerprint: ?u64 = null,
+            metadata: []const u8 = "",
+        }) Fabric.Plan {
+            var result = Fabric.Plan{
+                .plan_fingerprint = 0,
+                .fabric_digest = args.fabric_digest,
+                .target_ref_fingerprint = args.target_ref_fingerprint,
+                .module_fingerprint = args.module_fingerprint,
+                .world_surface_fingerprint = args.world_surface_fingerprint,
+                .target_certificate_fingerprint = args.target_certificate_fingerprint,
+                .import_set_fingerprint = args.import_set_fingerprint,
+                .routes = args.routes,
+                .bindings = args.bindings,
+                .value_mappings = args.value_mappings,
+                .max_depth = args.max_depth,
+                .max_provider_runs = args.max_provider_runs,
+                .coverage_report_fingerprint = args.coverage_report_fingerprint,
+                .metadata = args.metadata,
+            };
+            result.plan_fingerprint = fingerprintFabricPlan(result);
+            return result;
+        }
+
+        pub fn validate(self: Fabric.Plan) !void {
+            if (self.format_version != world_fabric_plan_format_version) return error.InvalidFrameEncoding;
+            if (self.fingerprint_version != world_fabric_plan_fingerprint_version) return error.InvalidFrameEncoding;
+            if (fingerprintFabricPlan(self) != self.plan_fingerprint) return error.InvalidFrameEncoding;
+            for (self.value_mappings) |mapping| try mapping.validate();
+            for (self.routes) |route| {
+                try route.validate();
+                if (route.parent_world_surface_fingerprint != 0 and route.parent_world_surface_fingerprint != self.world_surface_fingerprint) return error.WrongWorldSurface;
+                if (route.parent_target_certificate_fingerprint != 0 and route.parent_target_certificate_fingerprint != self.target_certificate_fingerprint) return error.WrongTargetCertificate;
+            }
+            for (self.bindings) |binding| {
+                try binding.validate();
+                if (binding.parent_world_surface_fingerprint != self.world_surface_fingerprint) return error.WrongWorldSurface;
+                if (binding.parent_target_certificate_fingerprint != self.target_certificate_fingerprint) return error.WrongTargetCertificate;
+                _ = self.findRoute(binding.route_fingerprint) orelse return error.FabricMissingRoute;
+            }
+        }
+
+        pub fn findRouteForPort(self: Fabric.Plan, world_port_id: u32) ?Fabric.Route {
+            for (self.routes) |route| {
+                if (route.parent_world_port_id == world_port_id or route.world_port_id == world_port_id) return route;
+            }
+            return null;
+        }
+
+        pub fn routeForPort(self: Fabric.Plan, world_port_id: u32) ?Fabric.Route {
+            return self.findRouteForPort(world_port_id);
+        }
+
+        pub fn assertCoverage(self: Fabric.Plan, import_set: ImportSet) !void {
+            if (self.import_set_fingerprint) |fingerprint| {
+                if (fingerprint != import_set.import_set_fingerprint) return error.InvalidFrameEncoding;
+            }
+            var port_id: u32 = 0;
+            while (port_id < import_set.required_count) : (port_id += 1) {
+                const route = self.findRouteForPort(port_id) orelse return error.FabricMissingRoute;
+                if (route.kind == .unsupported) return error.FabricMissingRoute;
+            }
+        }
+
+        pub fn assertNoCycles(self: Fabric.Plan) !void {
+            if (self.max_depth == 0) return error.FabricDepthExceeded;
+            if (self.max_provider_runs == 0) return error.ProviderRunLimitExceeded;
+            for (self.routes) |route| {
+                if (route.max_depth) |route_depth| {
+                    if (route_depth > self.max_depth) return error.FabricDepthExceeded;
+                }
+                if (route.provider_target_ref_fingerprint) |provider_target| {
+                    if (provider_target == self.target_ref_fingerprint) return error.FabricCycle;
+                }
+                if (self.module_fingerprint) |parent_module| {
+                    if (route.provider_module_fingerprint) |provider_module| {
+                        if (provider_module == parent_module) return error.FabricCycle;
+                    }
+                }
+            }
+        }
+
+        pub fn assertDeterministicRouteOrder(self: Fabric.Plan) !void {
+            var last_port: ?u32 = null;
+            for (self.routes) |route| {
+                if (last_port) |last| {
+                    if (route.parent_world_port_id <= last) return error.InvalidFrameEncoding;
+                }
+                last_port = route.parent_world_port_id;
+            }
+        }
+
+        pub fn assertDepth(self: Fabric.Plan, depth: usize) !void {
+            if (depth > self.max_depth) return error.FabricDepthExceeded;
+        }
+
+        pub fn assertProviderRunLimit(self: Fabric.Plan, provider_run_count: usize) !void {
+            if (provider_run_count > self.max_provider_runs) return error.ProviderRunLimitExceeded;
+        }
+
+        pub fn summary(self: Fabric.Plan) Fabric.Report {
+            return Fabric.Report.init(.{
+                .plan_fingerprint = self.plan_fingerprint,
+                .invocation_count = 0,
+                .receipt_count = 0,
+                .blocker_count = 0,
+            });
+        }
+
+        pub fn findRoute(self: Fabric.Plan, route_fingerprint: u64) ?Fabric.Route {
+            for (self.routes) |route| {
+                if (route.route_fingerprint == route_fingerprint) return route;
+            }
+            return null;
+        }
+
+        pub fn lookupRoute(self: Fabric.Plan, world_port_id: u32) ?Fabric.Route {
+            return self.findRouteForPort(world_port_id);
+        }
+
+        pub fn coverage(self: Fabric.Plan, target_ref: TargetRef, import_set: ImportSet) Fabric.CoverageReport {
+            var covered_count: usize = 0;
+            var duplicate_route_count: usize = 0;
+            var unsupported_route_count: usize = 0;
+            for (self.routes, 0..) |route, index| {
+                if (route.parent_world_port_id >= import_set.required_count) continue;
+                if (route.kind == .unsupported) {
+                    unsupported_route_count += 1;
+                    continue;
+                }
+                var seen_before = false;
+                for (self.routes[0..index]) |prior| {
+                    if (prior.parent_world_port_id == route.parent_world_port_id) {
+                        seen_before = true;
+                        break;
+                    }
+                }
+                if (seen_before) {
+                    duplicate_route_count += 1;
+                } else {
+                    covered_count += 1;
+                }
+            }
+            const missing_count = if (covered_count >= import_set.required_count) 0 else import_set.required_count - covered_count;
+            const target_matches = self.target_ref_fingerprint == target_ref.target_ref_fingerprint and
+                import_set.target_ref_fingerprint == target_ref.target_ref_fingerprint;
+            return Fabric.CoverageReport.init(.{
+                .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+                .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+                .target_certificate_fingerprint = target_ref.target_certificate_fingerprint,
+                .required_port_count = import_set.required_count,
+                .route_count = self.routes.len,
+                .fabric_covered_port_count = covered_count,
+                .missing_port_count = missing_count,
+                .unsupported_port_count = unsupported_route_count,
+                .duplicate_route_count = duplicate_route_count,
+                .accepted = target_matches and missing_count == 0 and duplicate_route_count == 0 and unsupported_route_count == 0,
+            });
+        }
+    };
+
+    pub const Invocation = struct {
+        format_version: u32 = world_fabric_invocation_format_version,
+        fingerprint_version: u32 = world_fabric_invocation_fingerprint_version,
+        invocation_fingerprint: u64,
+        plan_fingerprint: u64,
+        route_fingerprint: u64,
+        parent_run_handle_fingerprint: u64,
+        parent_pending_port_fingerprint: u64,
+        parent_mailbox_id: u64,
+        request_frame_fingerprint: u64,
+        provider_run_handle_fingerprint: ?u64 = null,
+        mapped_request_frame_fingerprint: ?u64 = null,
+        mapped_response_frame_fingerprint: ?u64 = null,
+        run_permit_fingerprint: ?u64 = null,
+        depth: usize = 0,
+        sequence: u64 = 0,
+        status: InvocationStatus = .planned,
+
+        pub fn init(args: struct {
+            plan_fingerprint: u64,
+            route_fingerprint: u64,
+            parent_run_handle_fingerprint: u64,
+            parent_pending_port_fingerprint: u64,
+            parent_mailbox_id: u64,
+            request_frame_fingerprint: u64,
+            provider_run_handle_fingerprint: ?u64 = null,
+            mapped_request_frame_fingerprint: ?u64 = null,
+            mapped_response_frame_fingerprint: ?u64 = null,
+            run_permit_fingerprint: ?u64 = null,
+            depth: usize = 0,
+            sequence: u64 = 0,
+            status: InvocationStatus = .planned,
+        }) Fabric.Invocation {
+            var result = Fabric.Invocation{
+                .invocation_fingerprint = 0,
+                .plan_fingerprint = args.plan_fingerprint,
+                .route_fingerprint = args.route_fingerprint,
+                .parent_run_handle_fingerprint = args.parent_run_handle_fingerprint,
+                .parent_pending_port_fingerprint = args.parent_pending_port_fingerprint,
+                .parent_mailbox_id = args.parent_mailbox_id,
+                .request_frame_fingerprint = args.request_frame_fingerprint,
+                .provider_run_handle_fingerprint = args.provider_run_handle_fingerprint,
+                .mapped_request_frame_fingerprint = args.mapped_request_frame_fingerprint,
+                .mapped_response_frame_fingerprint = args.mapped_response_frame_fingerprint,
+                .run_permit_fingerprint = args.run_permit_fingerprint,
+                .depth = args.depth,
+                .sequence = args.sequence,
+                .status = args.status,
+            };
+            result.invocation_fingerprint = fingerprintFabricInvocation(result);
+            return result;
+        }
+
+        pub fn validate(self: Fabric.Invocation) !void {
+            if (self.format_version != world_fabric_invocation_format_version) return error.InvalidFrameEncoding;
+            if (self.fingerprint_version != world_fabric_invocation_fingerprint_version) return error.InvalidFrameEncoding;
+            if (fingerprintFabricInvocation(self) != self.invocation_fingerprint) return error.InvalidFrameEncoding;
+        }
+    };
+
+    pub const Receipt = struct {
+        format_version: u32 = world_fabric_receipt_format_version,
+        fingerprint_version: u32 = world_fabric_receipt_fingerprint_version,
+        receipt_fingerprint: u64,
+        invocation_fingerprint: u64,
+        route_fingerprint: u64,
+        parent_pending_port_fingerprint: u64,
+        parent_response_frame_fingerprint: ?u64 = null,
+        provider_run_handle_fingerprint: ?u64 = null,
+        provider_run_receipt_fingerprint: ?u64 = null,
+        status: InvocationStatus,
+        blocker: ?Blocker = null,
+        warning_count: usize = 0,
+
+        pub fn init(args: struct {
+            invocation_fingerprint: u64,
+            route_fingerprint: u64,
+            parent_pending_port_fingerprint: u64,
+            parent_response_frame_fingerprint: ?u64 = null,
+            provider_run_handle_fingerprint: ?u64 = null,
+            provider_run_receipt_fingerprint: ?u64 = null,
+            status: InvocationStatus,
+            blocker: ?Blocker = null,
+            warning_count: usize = 0,
+        }) Fabric.Receipt {
+            var result = Fabric.Receipt{
+                .receipt_fingerprint = 0,
+                .invocation_fingerprint = args.invocation_fingerprint,
+                .route_fingerprint = args.route_fingerprint,
+                .parent_pending_port_fingerprint = args.parent_pending_port_fingerprint,
+                .parent_response_frame_fingerprint = args.parent_response_frame_fingerprint,
+                .provider_run_handle_fingerprint = args.provider_run_handle_fingerprint,
+                .provider_run_receipt_fingerprint = args.provider_run_receipt_fingerprint,
+                .status = args.status,
+                .blocker = args.blocker,
+                .warning_count = args.warning_count,
+            };
+            result.receipt_fingerprint = fingerprintFabricReceipt(result);
+            return result;
+        }
+
+        pub fn validate(self: Fabric.Receipt) !void {
+            if (self.format_version != world_fabric_receipt_format_version) return error.InvalidFrameEncoding;
+            if (self.fingerprint_version != world_fabric_receipt_fingerprint_version) return error.InvalidFrameEncoding;
+            if (fingerprintFabricReceipt(self) != self.receipt_fingerprint) return error.InvalidFrameEncoding;
+            if (self.status == .completed and self.parent_response_frame_fingerprint == null) return error.InvalidFrameEncoding;
+            if (self.status != .completed and self.blocker == null and self.status != .provider_parked and self.status != .provider_installed and self.status != .planned) return error.InvalidFrameEncoding;
+        }
+    };
+
+    pub const Report = struct {
+        report_fingerprint: u64,
+        plan_fingerprint: u64,
+        invocation_count: usize = 0,
+        receipt_count: usize = 0,
+        completed_count: usize = 0,
+        provider_parked_count: usize = 0,
+        blocker_count: usize = 0,
+        warning_count: usize = 0,
+        latest_receipt_fingerprint: ?u64 = null,
+
+        pub fn init(args: struct {
+            plan_fingerprint: u64,
+            invocation_count: usize = 0,
+            receipt_count: usize = 0,
+            completed_count: usize = 0,
+            provider_parked_count: usize = 0,
+            blocker_count: usize = 0,
+            warning_count: usize = 0,
+            latest_receipt_fingerprint: ?u64 = null,
+        }) Fabric.Report {
+            var result = Fabric.Report{
+                .report_fingerprint = 0,
+                .plan_fingerprint = args.plan_fingerprint,
+                .invocation_count = args.invocation_count,
+                .receipt_count = args.receipt_count,
+                .completed_count = args.completed_count,
+                .provider_parked_count = args.provider_parked_count,
+                .blocker_count = args.blocker_count,
+                .warning_count = args.warning_count,
+                .latest_receipt_fingerprint = args.latest_receipt_fingerprint,
+            };
+            result.report_fingerprint = fingerprintFabricReport(result);
+            return result;
+        }
+    };
+
+    pub const CoverageReport = struct {
+        format_version: u32 = world_fabric_coverage_report_format_version,
+        fingerprint_version: u32 = world_fabric_coverage_report_fingerprint_version,
+        coverage_report_fingerprint: u64,
+        target_ref_fingerprint: u64,
+        world_surface_fingerprint: u64,
+        target_certificate_fingerprint: u64,
+        required_port_count: usize = 0,
+        route_count: usize = 0,
+        fabric_covered_port_count: usize = 0,
+        missing_port_count: usize = 0,
+        missing_count: usize = 0,
+        covered_count: usize = 0,
+        duplicate_route_count: usize = 0,
+        unsupported_port_count: usize = 0,
+        unsupported_route_count: usize = 0,
+        blocker_count: usize = 0,
+        warning_count: usize = 0,
+        accepted: bool = false,
+
+        pub fn init(args: struct {
+            target_ref_fingerprint: u64,
+            world_surface_fingerprint: u64,
+            target_certificate_fingerprint: u64,
+            required_port_count: usize = 0,
+            route_count: usize = 0,
+            fabric_covered_port_count: usize = 0,
+            missing_port_count: usize = 0,
+            missing_count: ?usize = null,
+            covered_count: ?usize = null,
+            duplicate_route_count: usize = 0,
+            unsupported_port_count: usize = 0,
+            unsupported_route_count: usize = 0,
+            blocker_count: usize = 0,
+            warning_count: usize = 0,
+            accepted: bool = false,
+        }) Fabric.CoverageReport {
+            const missing_count = args.missing_count orelse args.missing_port_count;
+            const covered_count = args.covered_count orelse args.fabric_covered_port_count;
+            const unsupported_count = if (args.unsupported_route_count != 0) args.unsupported_route_count else args.unsupported_port_count;
+            var result = Fabric.CoverageReport{
+                .coverage_report_fingerprint = 0,
+                .target_ref_fingerprint = args.target_ref_fingerprint,
+                .world_surface_fingerprint = args.world_surface_fingerprint,
+                .target_certificate_fingerprint = args.target_certificate_fingerprint,
+                .required_port_count = args.required_port_count,
+                .route_count = args.route_count,
+                .fabric_covered_port_count = covered_count,
+                .missing_port_count = missing_count,
+                .missing_count = missing_count,
+                .covered_count = covered_count,
+                .duplicate_route_count = args.duplicate_route_count,
+                .unsupported_port_count = unsupported_count,
+                .unsupported_route_count = unsupported_count,
+                .blocker_count = args.blocker_count,
+                .warning_count = args.warning_count,
+                .accepted = args.accepted,
+            };
+            result.coverage_report_fingerprint = fingerprintFabricCoverageReport(result);
+            return result;
+        }
+
+        pub fn validate(self: Fabric.CoverageReport) !void {
+            if (self.format_version != world_fabric_coverage_report_format_version) return error.InvalidFrameEncoding;
+            if (self.fingerprint_version != world_fabric_coverage_report_fingerprint_version) return error.InvalidFrameEncoding;
+            if (fingerprintFabricCoverageReport(self) != self.coverage_report_fingerprint) return error.InvalidFrameEncoding;
+            if (self.covered_count + self.missing_count > self.required_port_count) return error.InvalidFrameEncoding;
+        }
+    };
+};
+
 pub const Runspace = struct {
     allocator: std.mem.Allocator,
     config: Config,
@@ -6654,6 +7615,9 @@ pub const Runspace = struct {
     slots: std.ArrayList(@This().RunSlot) = .empty,
     events: std.ArrayList(@This().RunspaceEvent) = .empty,
     mailbox: @This().Mailbox,
+    fabric_plan_fingerprints: std.ArrayList(u64) = .empty,
+    fabric_invocations: std.ArrayList(Fabric.Invocation) = .empty,
+    fabric_receipts: std.ArrayList(Fabric.Receipt) = .empty,
 
     pub const Policy = enum {
         deterministic,
@@ -6711,6 +7675,14 @@ pub const Runspace = struct {
         run_branch_created,
         checkpoint_created,
         handoff_created,
+        fabric_route_selected,
+        fabric_invocation_started,
+        fabric_provider_installed,
+        fabric_provider_parked,
+        fabric_provider_completed,
+        fabric_response_emitted,
+        fabric_failed,
+        fabric_receipt_recorded,
     };
 
     const DriverStep = union(enum) {
@@ -7556,6 +8528,9 @@ pub const Runspace = struct {
         run_receipt_fingerprint: ?u64 = null,
         admission_receipt_fingerprint: ?u64 = null,
         run_permit_fingerprint: ?u64 = null,
+        fabric_invocation_fingerprint: ?u64 = null,
+        fabric_route_fingerprint: ?u64 = null,
+        fabric_receipt_fingerprint: ?u64 = null,
         summary: []const u8 = "",
         owns_summary: bool = false,
 
@@ -7572,6 +8547,9 @@ pub const Runspace = struct {
             run_receipt_fingerprint: ?u64 = null,
             admission_receipt_fingerprint: ?u64 = null,
             run_permit_fingerprint: ?u64 = null,
+            fabric_invocation_fingerprint: ?u64 = null,
+            fabric_route_fingerprint: ?u64 = null,
+            fabric_receipt_fingerprint: ?u64 = null,
             summary: []const u8 = "",
             owns_summary: bool = false,
         }) @This() {
@@ -7589,6 +8567,9 @@ pub const Runspace = struct {
                 .run_receipt_fingerprint = args.run_receipt_fingerprint,
                 .admission_receipt_fingerprint = args.admission_receipt_fingerprint,
                 .run_permit_fingerprint = args.run_permit_fingerprint,
+                .fabric_invocation_fingerprint = args.fabric_invocation_fingerprint,
+                .fabric_route_fingerprint = args.fabric_route_fingerprint,
+                .fabric_receipt_fingerprint = args.fabric_receipt_fingerprint,
                 .summary = args.summary,
                 .owns_summary = args.owns_summary,
             };
@@ -7620,6 +8601,8 @@ pub const Runspace = struct {
         emitted_events: []const Runspace.RunspaceEvent = &.{},
         blocker_count: usize = 0,
         warning_count: usize = 0,
+        fabric_invocation_count: usize = 0,
+        fabric_receipt_count: usize = 0,
     };
 
     pub fn init(allocator: std.mem.Allocator, config: Config) @This() {
@@ -7643,6 +8626,9 @@ pub const Runspace = struct {
         self.slots.deinit(self.allocator);
         self.events.deinit(self.allocator);
         self.mailbox.deinit();
+        self.fabric_plan_fingerprints.deinit(self.allocator);
+        self.fabric_invocations.deinit(self.allocator);
+        self.fabric_receipts.deinit(self.allocator);
         self.* = undefined;
     }
 
@@ -8073,6 +9059,15 @@ pub const Runspace = struct {
         run_ptr_owned = false;
         var driver_owned = true;
         errdefer if (driver_owned) driver.deinit(self.allocator);
+        var supervisor: ?Supervision.Supervisor = null;
+        var supervisor_owned = false;
+        errdefer if (supervisor_owned) {
+            if (supervisor) |*active| active.deinit();
+        };
+        if (maybe_permit) |permit| {
+            supervisor = try Supervision.Supervisor.init(self.allocator, permit, Target.WorldPortTable.entries.len);
+            supervisor_owned = true;
+        }
         const state = RunState.init(.{
             .target_ref_fingerprint = target_ref.target_ref_fingerprint,
             .status = .not_started,
@@ -8085,8 +9080,10 @@ pub const Runspace = struct {
             .run_permit_fingerprint = if (maybe_permit) |permit| permit.permit_fingerprint else null,
             .driver = driver,
             .driver_world_port_count = Target.WorldPortTable.entries.len,
+            .supervisor = supervisor,
         });
         driver_owned = false;
+        supervisor_owned = false;
         self.slots.appendAssumeCapacity(slot);
         _ = self.appendPreparedEventAssumeCapacity(.{
             .kind = .run_installed,
@@ -8500,6 +9497,512 @@ pub const Runspace = struct {
         return self.respond(mailbox_id, response);
     }
 
+    pub fn installFabricPlan(self: *@This(), parent_target_ref: TargetRef, plan: Fabric.Plan) !void {
+        try validateTargetRef(parent_target_ref);
+        if (plan.target_ref_fingerprint != parent_target_ref.target_ref_fingerprint) return error.HandoffTargetMismatch;
+        if (plan.world_surface_fingerprint != parent_target_ref.world_surface_fingerprint) return error.WrongWorldSurface;
+        if (plan.target_certificate_fingerprint != parent_target_ref.target_certificate_fingerprint) return error.WrongTargetCertificate;
+        try plan.validate();
+        try plan.assertNoCycles();
+        try plan.assertDeterministicRouteOrder();
+        try self.fabric_plan_fingerprints.append(self.allocator, plan.plan_fingerprint);
+    }
+
+    pub fn routePending(self: *@This(), mailbox_id: u64, plan: Fabric.Plan) !Fabric.Invocation {
+        const pending = try self.mailbox.get(mailbox_id);
+        const parent_index = try self.slotIndex(pending.handle);
+        const parent_slot = &self.slots.items[parent_index];
+        if (parent_slot.pending_mailbox_id != mailbox_id or parent_slot.status != .parked_on_port) return error.StaleRunHandle;
+        try self.validateFabricPlanForPending(plan, pending);
+        const route = plan.routeForPort(pending.world_port_id) orelse return error.FabricMissingRoute;
+        try route.validate();
+        try self.beforeFabricInvocationForSlot(parent_slot, pending.world_port_id, route.kind, 1, 0);
+        var invocation = Fabric.Invocation.init(.{
+            .plan_fingerprint = plan.plan_fingerprint,
+            .route_fingerprint = route.route_fingerprint,
+            .parent_run_handle_fingerprint = pending.handle.handle_fingerprint,
+            .parent_pending_port_fingerprint = pending.pending_port_fingerprint,
+            .parent_mailbox_id = mailbox_id,
+            .request_frame_fingerprint = pending.request_frame_fingerprint,
+            .run_permit_fingerprint = pending.run_permit_fingerprint,
+            .depth = 0,
+            .sequence = self.fabric_invocations.items.len,
+            .status = .started,
+        });
+        try self.recordFabricInvocation(parent_slot.*, invocation, route, .fabric_invocation_started, "fabric invocation started");
+        switch (route.kind) {
+            .replay => {
+                var response = try fabricResponseForPending(pending, .responded, route.route_fingerprint, "fabric replay response");
+                defer response.deinit(self.allocator);
+                invocation = Fabric.Invocation.init(.{
+                    .plan_fingerprint = invocation.plan_fingerprint,
+                    .route_fingerprint = invocation.route_fingerprint,
+                    .parent_run_handle_fingerprint = invocation.parent_run_handle_fingerprint,
+                    .parent_pending_port_fingerprint = invocation.parent_pending_port_fingerprint,
+                    .parent_mailbox_id = invocation.parent_mailbox_id,
+                    .request_frame_fingerprint = invocation.request_frame_fingerprint,
+                    .mapped_response_frame_fingerprint = response.frame_fingerprint,
+                    .run_permit_fingerprint = invocation.run_permit_fingerprint,
+                    .depth = invocation.depth,
+                    .sequence = invocation.sequence,
+                    .status = .completed,
+                });
+                try self.replaceFabricInvocation(invocation);
+                _ = try self.respond(mailbox_id, response);
+                try self.recordFabricReceipt(parent_slot.handle, invocation, route.route_fingerprint, pending, response.frame_fingerprint, null, .completed, null);
+                _ = try self.appendFabricEvent(.{
+                    .kind = .fabric_response_emitted,
+                    .run_handle = parent_slot.handle,
+                    .run_state_fingerprint = parent_slot.current_state.run_state_fingerprint,
+                    .fabric_invocation_fingerprint = invocation.invocation_fingerprint,
+                    .fabric_route_fingerprint = route.route_fingerprint,
+                    .response_frame_fingerprint = response.frame_fingerprint,
+                    .summary = "fabric response emitted",
+                });
+                return invocation;
+            },
+            .reject, .unsupported => {
+                const status: ResponseStatus = if (route.kind == .reject) .rejected else .failed;
+                var response = try fabricResponseForPending(pending, status, route.route_fingerprint, "fabric terminal response");
+                defer response.deinit(self.allocator);
+                invocation = Fabric.Invocation.init(.{
+                    .plan_fingerprint = invocation.plan_fingerprint,
+                    .route_fingerprint = invocation.route_fingerprint,
+                    .parent_run_handle_fingerprint = invocation.parent_run_handle_fingerprint,
+                    .parent_pending_port_fingerprint = invocation.parent_pending_port_fingerprint,
+                    .parent_mailbox_id = invocation.parent_mailbox_id,
+                    .request_frame_fingerprint = invocation.request_frame_fingerprint,
+                    .mapped_response_frame_fingerprint = response.frame_fingerprint,
+                    .run_permit_fingerprint = invocation.run_permit_fingerprint,
+                    .depth = invocation.depth,
+                    .sequence = invocation.sequence,
+                    .status = if (route.kind == .reject) .rejected else .unsupported,
+                });
+                try self.replaceFabricInvocation(invocation);
+                _ = try self.respond(mailbox_id, response);
+                try self.recordFabricReceipt(parent_slot.handle, invocation, route.route_fingerprint, pending, response.frame_fingerprint, null, invocation.status, if (route.kind == .reject) .FabricRejected else .UnsupportedMapping);
+                _ = try self.appendFabricEvent(.{
+                    .kind = .fabric_failed,
+                    .run_handle = parent_slot.handle,
+                    .run_state_fingerprint = parent_slot.current_state.run_state_fingerprint,
+                    .fabric_invocation_fingerprint = invocation.invocation_fingerprint,
+                    .fabric_route_fingerprint = route.route_fingerprint,
+                    .response_frame_fingerprint = response.frame_fingerprint,
+                    .summary = "fabric terminal route completed",
+                });
+                return invocation;
+            },
+            .target_export, .admitted_run, .guest => return error.ProviderRunDenied,
+            .adapter => return error.UnsupportedMapping,
+        }
+    }
+
+    pub fn routePendingToProviderRun(self: *@This(), mailbox_id: u64, plan: Fabric.Plan, provider_handle: RunHandle) !Fabric.Invocation {
+        const pending = try self.mailbox.get(mailbox_id);
+        const parent_index = try self.slotIndex(pending.handle);
+        const parent_slot = &self.slots.items[parent_index];
+        if (parent_slot.pending_mailbox_id != mailbox_id or parent_slot.status != .parked_on_port) return error.StaleRunHandle;
+        const provider_index = try self.slotIndex(provider_handle);
+        const provider_slot = self.slots.items[provider_index];
+        if (provider_handle.handle_fingerprint == pending.handle.handle_fingerprint) return error.SameRunRecursion;
+        try self.validateFabricPlanForPending(plan, pending);
+        const route = plan.routeForPort(pending.world_port_id) orelse return error.FabricMissingRoute;
+        try route.validate();
+        switch (route.kind) {
+            .target_export, .admitted_run, .guest => {},
+            else => return error.UnsupportedMapping,
+        }
+        if (route.provider_target_ref_fingerprint) |expected_target| {
+            if (provider_handle.target_ref_fingerprint != expected_target) return error.HandoffTargetMismatch;
+        }
+        try self.validateFabricProviderSlot(route, provider_slot);
+        try self.beforeFabricInvocationForSlot(parent_slot, pending.world_port_id, route.kind, 1, 1);
+        const status: Fabric.InvocationStatus = switch (provider_slot.status) {
+            .completed => .provider_completed,
+            .parked_on_port, .parked_on_supervision => .provider_parked,
+            .admitted => .provider_installed,
+            .runnable, .running => .provider_running,
+            .failed, .rejected => .failed,
+            .exported => if (provider_slot.current_state.status == .completed) .provider_completed else .failed,
+        };
+        const invocation = Fabric.Invocation.init(.{
+            .plan_fingerprint = plan.plan_fingerprint,
+            .route_fingerprint = route.route_fingerprint,
+            .parent_run_handle_fingerprint = pending.handle.handle_fingerprint,
+            .parent_pending_port_fingerprint = pending.pending_port_fingerprint,
+            .parent_mailbox_id = mailbox_id,
+            .request_frame_fingerprint = pending.request_frame_fingerprint,
+            .provider_run_handle_fingerprint = provider_handle.handle_fingerprint,
+            .mapped_response_frame_fingerprint = provider_slot.current_state.final_response_fingerprint,
+            .run_permit_fingerprint = pending.run_permit_fingerprint,
+            .depth = 1,
+            .sequence = self.fabric_invocations.items.len,
+            .status = status,
+        });
+        const event_kind: Runspace.EventKind = switch (status) {
+            .provider_installed, .provider_running => .fabric_provider_installed,
+            .provider_parked => .fabric_provider_parked,
+            .provider_completed => .fabric_provider_completed,
+            else => .fabric_failed,
+        };
+        try self.recordFabricInvocation(parent_slot.*, invocation, route, event_kind, "fabric provider route recorded");
+        return invocation;
+    }
+
+    pub fn routePendingFromReplay(self: *@This(), mailbox_id: u64, plan: Fabric.Plan, transcript_image: TranscriptImage) !Fabric.Invocation {
+        const pending = try self.mailbox.get(mailbox_id);
+        const parent_index = try self.slotIndex(pending.handle);
+        const parent_slot = &self.slots.items[parent_index];
+        if (parent_slot.pending_mailbox_id != mailbox_id or parent_slot.status != .parked_on_port) return error.StaleRunHandle;
+        try self.validateFabricPlanForPending(plan, pending);
+        const route = plan.routeForPort(pending.world_port_id) orelse return error.FabricMissingRoute;
+        try route.validate();
+        if (route.kind != .replay) return error.UnsupportedMapping;
+        if (route.provider_transcript_image_fingerprint) |expected| {
+            if (transcript_image.transcript_image_fingerprint != expected) return error.ReplayRouteDenied;
+        }
+        var replay_image = transcript_image;
+        try replay_image.validateReplayRun(pending.world_surface_fingerprint, pending.target_certificate_fingerprint);
+        try self.beforeFabricInvocationForSlot(parent_slot, pending.world_port_id, route.kind, 1, 0);
+        var invocation = Fabric.Invocation.init(.{
+            .plan_fingerprint = plan.plan_fingerprint,
+            .route_fingerprint = route.route_fingerprint,
+            .parent_run_handle_fingerprint = pending.handle.handle_fingerprint,
+            .parent_pending_port_fingerprint = pending.pending_port_fingerprint,
+            .parent_mailbox_id = mailbox_id,
+            .request_frame_fingerprint = pending.request_frame_fingerprint,
+            .run_permit_fingerprint = pending.run_permit_fingerprint,
+            .depth = 1,
+            .sequence = self.fabric_invocations.items.len,
+            .status = .started,
+        });
+        try self.recordFabricInvocation(parent_slot.*, invocation, route, .fabric_invocation_started, "fabric replay invocation started");
+        var transcript = try Transcript.fromImage(self.allocator, replay_image);
+        defer transcript.deinit();
+        const request = pending.request_frame orelse return error.InvalidPendingPortTransition;
+        const event = try transcript.nextResponse(request.replay_key_seed, request.target_certificate_fingerprint, pending.expected_response_kind);
+        const replay_response = event.response_frame orelse return error.ReplayMissing;
+        var response = try replay_response.clone(self.allocator);
+        defer response.deinit(self.allocator);
+        invocation = Fabric.Invocation.init(.{
+            .plan_fingerprint = invocation.plan_fingerprint,
+            .route_fingerprint = invocation.route_fingerprint,
+            .parent_run_handle_fingerprint = invocation.parent_run_handle_fingerprint,
+            .parent_pending_port_fingerprint = invocation.parent_pending_port_fingerprint,
+            .parent_mailbox_id = invocation.parent_mailbox_id,
+            .request_frame_fingerprint = invocation.request_frame_fingerprint,
+            .mapped_response_frame_fingerprint = response.frame_fingerprint,
+            .run_permit_fingerprint = invocation.run_permit_fingerprint,
+            .depth = invocation.depth,
+            .sequence = invocation.sequence,
+            .status = .completed,
+        });
+        try self.replaceFabricInvocation(invocation);
+        _ = try self.respond(mailbox_id, response);
+        try self.recordFabricReceipt(parent_slot.handle, invocation, route.route_fingerprint, pending, response.frame_fingerprint, null, .completed, null);
+        _ = try self.appendFabricEvent(.{
+            .kind = .fabric_response_emitted,
+            .run_handle = parent_slot.handle,
+            .pending_port_fingerprint = pending.pending_port_fingerprint,
+            .request_frame_fingerprint = pending.request_frame_fingerprint,
+            .response_frame_fingerprint = response.frame_fingerprint,
+            .run_state_fingerprint = parent_slot.current_state.run_state_fingerprint,
+            .fabric_invocation_fingerprint = invocation.invocation_fingerprint,
+            .fabric_route_fingerprint = route.route_fingerprint,
+            .summary = "fabric replay response emitted",
+        });
+        return invocation;
+    }
+
+    pub fn respondFromFabric(self: *@This(), invocation: Fabric.Invocation) !Runspace.RunspaceEvent {
+        try invocation.validate();
+        const pending = try self.mailbox.get(invocation.parent_mailbox_id);
+        if (pending.pending_port_fingerprint != invocation.parent_pending_port_fingerprint) return error.InvalidPendingPortTransition;
+        const parent_index = try self.slotIndex(pending.handle);
+        const parent_slot = &self.slots.items[parent_index];
+        var provider_image = try self.fabricProviderResultImage(invocation);
+        defer provider_image.deinit(self.allocator);
+        const provider_result = provider_image.final_result_image orelse return error.MissingValueImage;
+        var response_image = try provider_result.cloneForValueContract(self.allocator, pending.expected_response_value_table_id, null);
+        var response_image_owned = true;
+        errdefer if (response_image_owned) response_image.deinit(self.allocator);
+        var response = try fabricDeferredResponseForPending(pending, response_image);
+        response_image_owned = false;
+        defer response.deinit(self.allocator);
+        const event = try self.respond(invocation.parent_mailbox_id, response);
+        const parent_response_frame_fingerprint = event.response_frame_fingerprint orelse response.frame_fingerprint;
+        const completed = Fabric.Invocation.init(.{
+            .plan_fingerprint = invocation.plan_fingerprint,
+            .route_fingerprint = invocation.route_fingerprint,
+            .parent_run_handle_fingerprint = invocation.parent_run_handle_fingerprint,
+            .parent_pending_port_fingerprint = invocation.parent_pending_port_fingerprint,
+            .parent_mailbox_id = invocation.parent_mailbox_id,
+            .request_frame_fingerprint = invocation.request_frame_fingerprint,
+            .provider_run_handle_fingerprint = invocation.provider_run_handle_fingerprint,
+            .mapped_request_frame_fingerprint = invocation.mapped_request_frame_fingerprint,
+            .mapped_response_frame_fingerprint = parent_response_frame_fingerprint,
+            .run_permit_fingerprint = invocation.run_permit_fingerprint,
+            .depth = invocation.depth,
+            .sequence = invocation.sequence,
+            .status = .parent_responded,
+        });
+        try self.replaceFabricInvocation(completed);
+        try self.recordFabricReceipt(parent_slot.handle, completed, completed.route_fingerprint, pending, parent_response_frame_fingerprint, invocation.provider_run_handle_fingerprint, .completed, null);
+        _ = try self.appendFabricEvent(.{
+            .kind = .fabric_response_emitted,
+            .run_handle = parent_slot.handle,
+            .pending_port_fingerprint = pending.pending_port_fingerprint,
+            .request_frame_fingerprint = pending.request_frame_fingerprint,
+            .response_frame_fingerprint = parent_response_frame_fingerprint,
+            .run_state_fingerprint = parent_slot.current_state.run_state_fingerprint,
+            .fabric_invocation_fingerprint = completed.invocation_fingerprint,
+            .fabric_route_fingerprint = completed.route_fingerprint,
+            .summary = "fabric response emitted",
+        });
+        return event;
+    }
+
+    pub fn tickFabric(self: *@This()) !Runspace.RunspaceReport {
+        return self.report();
+    }
+
+    fn validateFabricPlanForPending(_: *@This(), plan: Fabric.Plan, pending: Runspace.PendingPort) !void {
+        if (plan.target_ref_fingerprint != pending.target_ref_fingerprint) return error.HandoffTargetMismatch;
+        if (plan.world_surface_fingerprint != pending.world_surface_fingerprint) return error.WrongWorldSurface;
+        if (plan.target_certificate_fingerprint != pending.target_certificate_fingerprint) return error.WrongTargetCertificate;
+        try plan.validate();
+        try plan.assertNoCycles();
+        try plan.assertDeterministicRouteOrder();
+        try plan.assertDepth(1);
+        try plan.assertProviderRunLimit(1);
+    }
+
+    fn validateFabricProviderSlot(_: *@This(), route: Fabric.Route, provider_slot: Runspace.RunSlot) !void {
+        if (route.provider_target_ref_fingerprint) |expected| {
+            if (provider_slot.target_ref.target_ref_fingerprint != expected) return error.HandoffTargetMismatch;
+        }
+        if (route.provider_world_surface_fingerprint) |expected| {
+            if (provider_slot.target_ref.world_surface_fingerprint != expected) return error.WrongWorldSurface;
+        }
+        if (route.provider_target_certificate_fingerprint) |expected| {
+            if (provider_slot.target_ref.target_certificate_fingerprint != expected) return error.WrongTargetCertificate;
+        }
+        if (route.provider_module_fingerprint) |expected| {
+            const actual = provider_slot.module_ref_fingerprint orelse provider_slot.target_ref.boundary_module_fingerprint orelse return error.HandoffTargetMismatch;
+            if (actual != expected) return error.HandoffTargetMismatch;
+        }
+        if (route.provider_admission_receipt_fingerprint) |expected| {
+            if (provider_slot.admission_receipt_fingerprint != expected) return error.InvalidFrameEncoding;
+        }
+        if (route.provider_run_image_fingerprint) |expected| {
+            const image = provider_slot.installed_run_image orelse return error.InvalidFrameEncoding;
+            if (image.run_image_fingerprint != expected) return error.InvalidFrameEncoding;
+        }
+    }
+
+    fn fabricResponseForPending(pending: Runspace.PendingPort, status: ResponseStatus, seed: u64, reason: []const u8) !Frame.Response {
+        return fabricResponseForPendingWithImage(pending, status, seed, reason, null);
+    }
+
+    fn fabricDeferredResponseForPending(pending: Runspace.PendingPort, response_image: Frame.ValueImage) !Frame.Response {
+        const request = pending.request_frame orelse return error.InvalidPendingPortTransition;
+        return Frame.Response.init(.{
+            .world_surface_fingerprint = request.world_surface_fingerprint,
+            .target_certificate_fingerprint = request.target_certificate_fingerprint,
+            .world_port_id = request.world_port_id,
+            .request_fingerprint = request.request_fingerprint,
+            .response_kind = pending.expected_response_kind,
+            .response_value_table_id = pending.expected_response_value_table_id,
+            .response_fingerprint = 0,
+            .response_image = response_image,
+            .replay_key = 0,
+            .status = .responded,
+            .flags = frame_response_deferred_fingerprint_flag,
+        });
+    }
+
+    fn fabricResponseForPendingWithImage(pending: Runspace.PendingPort, status: ResponseStatus, seed: u64, reason: []const u8, response_image: ?Frame.ValueImage) !Frame.Response {
+        const request = pending.request_frame orelse return error.InvalidPendingPortTransition;
+        const response_fingerprint = try fabricResponseFingerprintForPending(pending, seed);
+        return Frame.Response.init(.{
+            .world_surface_fingerprint = request.world_surface_fingerprint,
+            .target_certificate_fingerprint = request.target_certificate_fingerprint,
+            .world_port_id = request.world_port_id,
+            .request_fingerprint = request.request_fingerprint,
+            .response_kind = pending.expected_response_kind,
+            .response_value_table_id = pending.expected_response_value_table_id,
+            .response_fingerprint = response_fingerprint,
+            .response_image = response_image,
+            .replay_key = request.replay_key_seed.withResponse(response_fingerprint).fingerprint(),
+            .status = status,
+            .reason = if (status == .responded) null else reason,
+        });
+    }
+
+    fn fabricResponseFingerprintForPending(pending: Runspace.PendingPort, seed: u64) !u64 {
+        if (pending.request_frame == null) return error.InvalidPendingPortTransition;
+        return pending.request_fingerprint ^ pending.request_frame_fingerprint ^ seed;
+    }
+
+    fn fabricProviderResultImage(self: *@This(), invocation: Fabric.Invocation) !RunImage {
+        const provider_fingerprint = invocation.provider_run_handle_fingerprint orelse return error.InvalidRunspaceTransition;
+        for (self.slots.items) |slot| {
+            if (slot.handle.handle_fingerprint == provider_fingerprint) {
+                return try self.previewResultRun(slot.handle);
+            }
+        }
+        return error.StaleRunHandle;
+    }
+
+    fn beforeFabricInvocationForSlot(_: *@This(), slot: *Runspace.RunSlot, world_port_id: u32, route_kind: Fabric.RouteKind, depth: usize, provider_runs: usize) !void {
+        if (slot.supervisor) |*supervisor| {
+            return supervisor.beforeFabricInvocation(.{
+                .world_port_id = world_port_id,
+                .route_kind = route_kind,
+                .depth = depth,
+                .provider_runs = provider_runs,
+            });
+        }
+    }
+
+    fn hasActiveFabricInvocationForRun(self: *const @This(), handle: RunHandle) bool {
+        for (self.fabric_invocations.items) |invocation| {
+            const is_parent = invocation.parent_run_handle_fingerprint == handle.handle_fingerprint;
+            const is_provider = if (invocation.provider_run_handle_fingerprint) |provider|
+                provider == handle.handle_fingerprint
+            else
+                false;
+            if (!is_parent and !is_provider) continue;
+            switch (invocation.status) {
+                .started,
+                .provider_installed,
+                .provider_running,
+                .provider_parked,
+                .provider_completed,
+                => return true,
+                .planned,
+                .parent_responded,
+                .completed,
+                .rejected,
+                .failed,
+                .unsupported,
+                .denied,
+                .cycle_blocked,
+                .supervision_denied,
+                => {},
+            }
+        }
+        return false;
+    }
+
+    fn recordFabricInvocation(
+        self: *@This(),
+        parent_slot: Runspace.RunSlot,
+        invocation: Fabric.Invocation,
+        route: Fabric.Route,
+        event_kind: Runspace.EventKind,
+        event_summary: []const u8,
+    ) !void {
+        try invocation.validate();
+        try self.fabric_invocations.append(self.allocator, invocation);
+        _ = try self.appendFabricEvent(.{
+            .kind = .fabric_route_selected,
+            .run_handle = parent_slot.handle,
+            .pending_port_fingerprint = invocation.parent_pending_port_fingerprint,
+            .request_frame_fingerprint = invocation.request_frame_fingerprint,
+            .run_state_fingerprint = parent_slot.current_state.run_state_fingerprint,
+            .run_permit_fingerprint = parent_slot.run_permit_fingerprint,
+            .fabric_invocation_fingerprint = invocation.invocation_fingerprint,
+            .fabric_route_fingerprint = route.route_fingerprint,
+            .summary = "fabric route selected",
+        });
+        _ = try self.appendFabricEvent(.{
+            .kind = event_kind,
+            .run_handle = parent_slot.handle,
+            .pending_port_fingerprint = invocation.parent_pending_port_fingerprint,
+            .request_frame_fingerprint = invocation.request_frame_fingerprint,
+            .run_state_fingerprint = parent_slot.current_state.run_state_fingerprint,
+            .run_permit_fingerprint = parent_slot.run_permit_fingerprint,
+            .fabric_invocation_fingerprint = invocation.invocation_fingerprint,
+            .fabric_route_fingerprint = route.route_fingerprint,
+            .summary = event_summary,
+        });
+    }
+
+    fn replaceFabricInvocation(self: *@This(), invocation: Fabric.Invocation) !void {
+        if (invocation.sequence >= self.fabric_invocations.items.len) return error.InvalidRunspaceTransition;
+        const current = self.fabric_invocations.items[invocation.sequence];
+        if (current.parent_mailbox_id != invocation.parent_mailbox_id) return error.InvalidRunspaceTransition;
+        if (current.parent_pending_port_fingerprint != invocation.parent_pending_port_fingerprint) return error.InvalidRunspaceTransition;
+        if (current.route_fingerprint != invocation.route_fingerprint) return error.InvalidRunspaceTransition;
+        self.fabric_invocations.items[invocation.sequence] = invocation;
+    }
+
+    fn recordFabricReceipt(
+        self: *@This(),
+        parent_handle: RunHandle,
+        invocation: Fabric.Invocation,
+        route_fingerprint: u64,
+        pending: Runspace.PendingPort,
+        parent_response_frame_fingerprint: ?u64,
+        provider_run_handle_fingerprint: ?u64,
+        status: Fabric.InvocationStatus,
+        blocker: ?Fabric.Blocker,
+    ) !void {
+        const receipt = Fabric.Receipt.init(.{
+            .invocation_fingerprint = invocation.invocation_fingerprint,
+            .route_fingerprint = route_fingerprint,
+            .parent_pending_port_fingerprint = pending.pending_port_fingerprint,
+            .parent_response_frame_fingerprint = parent_response_frame_fingerprint,
+            .provider_run_handle_fingerprint = provider_run_handle_fingerprint,
+            .status = status,
+            .blocker = blocker,
+        });
+        try receipt.validate();
+        try self.fabric_receipts.append(self.allocator, receipt);
+        _ = try self.appendFabricEvent(.{
+            .kind = .fabric_receipt_recorded,
+            .run_handle = parent_handle,
+            .pending_port_fingerprint = pending.pending_port_fingerprint,
+            .request_frame_fingerprint = pending.request_frame_fingerprint,
+            .response_frame_fingerprint = parent_response_frame_fingerprint,
+            .run_state_fingerprint = if (self.slotIndex(parent_handle)) |index| self.slots.items[index].current_state.run_state_fingerprint else |_| 0,
+            .run_permit_fingerprint = pending.run_permit_fingerprint,
+            .fabric_invocation_fingerprint = invocation.invocation_fingerprint,
+            .fabric_route_fingerprint = route_fingerprint,
+            .fabric_receipt_fingerprint = receipt.receipt_fingerprint,
+            .summary = "fabric receipt recorded",
+        });
+    }
+
+    fn appendFabricEvent(self: *@This(), args: struct {
+        kind: Runspace.EventKind,
+        run_handle: RunHandle,
+        pending_port_fingerprint: ?u64 = null,
+        request_frame_fingerprint: ?u64 = null,
+        response_frame_fingerprint: ?u64 = null,
+        run_state_fingerprint: u64,
+        run_permit_fingerprint: ?u64 = null,
+        fabric_invocation_fingerprint: ?u64 = null,
+        fabric_route_fingerprint: ?u64 = null,
+        fabric_receipt_fingerprint: ?u64 = null,
+        summary: []const u8,
+    }) !Runspace.RunspaceEvent {
+        return self.appendEvent(.{
+            .kind = args.kind,
+            .run_handle = args.run_handle,
+            .pending_port_fingerprint = args.pending_port_fingerprint,
+            .request_frame_fingerprint = args.request_frame_fingerprint,
+            .response_frame_fingerprint = args.response_frame_fingerprint,
+            .run_state_fingerprint = args.run_state_fingerprint,
+            .run_permit_fingerprint = args.run_permit_fingerprint,
+            .fabric_invocation_fingerprint = args.fabric_invocation_fingerprint,
+            .fabric_route_fingerprint = args.fabric_route_fingerprint,
+            .fabric_receipt_fingerprint = args.fabric_receipt_fingerprint,
+            .summary = args.summary,
+        });
+    }
+
     fn failPendingPortAndSlot(
         self: *@This(),
         mailbox_id: u64,
@@ -8800,6 +10303,7 @@ pub const Runspace = struct {
         const index = try self.slotIndex(handle);
         var slot = &self.slots.items[index];
         if (!Runspace.canTransition(slot.status, .exported)) return error.InvalidRunspaceTransition;
+        if (self.hasActiveFabricInvocationForRun(handle)) return error.ActiveFabricUnsupported;
         const pending = if (slot.status == .parked_on_port) pending: {
             const mailbox_id = slot.pending_mailbox_id orelse return error.HandoffPendingFrameMismatch;
             const pending_port = try self.mailbox.get(mailbox_id);
@@ -8845,6 +10349,7 @@ pub const Runspace = struct {
         const index = try self.slotIndex(handle);
         const slot = &self.slots.items[index];
         if (!Runspace.canTransition(slot.status, .exported)) return error.InvalidRunspaceTransition;
+        if (self.hasActiveFabricInvocationForRun(handle)) return error.ActiveFabricUnsupported;
         if (slot.status == .parked_on_port) {
             const mailbox_id = slot.pending_mailbox_id orelse return error.HandoffPendingFrameMismatch;
             const pending_port = try self.mailbox.get(mailbox_id);
@@ -9242,6 +10747,8 @@ pub const Runspace = struct {
             .failed_count = 0,
             .pending_port_count = self.mailbox.pendingCount(),
             .emitted_events = self.events.items,
+            .fabric_invocation_count = self.fabric_invocations.items.len,
+            .fabric_receipt_count = self.fabric_receipts.items.len,
         };
         for (self.slots.items) |slot| {
             switch (slot.status) {
@@ -9351,6 +10858,9 @@ pub const Runspace = struct {
         run_receipt_fingerprint: ?u64 = null,
         admission_receipt_fingerprint: ?u64 = null,
         run_permit_fingerprint: ?u64 = null,
+        fabric_invocation_fingerprint: ?u64 = null,
+        fabric_route_fingerprint: ?u64 = null,
+        fabric_receipt_fingerprint: ?u64 = null,
         summary: []const u8 = "",
     }) !Runspace.RunspaceEvent {
         if (self.config.max_events) |max| {
@@ -9372,6 +10882,9 @@ pub const Runspace = struct {
             .run_receipt_fingerprint = args.run_receipt_fingerprint,
             .admission_receipt_fingerprint = args.admission_receipt_fingerprint,
             .run_permit_fingerprint = args.run_permit_fingerprint,
+            .fabric_invocation_fingerprint = args.fabric_invocation_fingerprint,
+            .fabric_route_fingerprint = args.fabric_route_fingerprint,
+            .fabric_receipt_fingerprint = args.fabric_receipt_fingerprint,
             .summary = summary_bytes,
             .owns_summary = true,
         });
@@ -9465,6 +10978,9 @@ pub const Runspace = struct {
         run_receipt_fingerprint: ?u64 = null,
         admission_receipt_fingerprint: ?u64 = null,
         run_permit_fingerprint: ?u64 = null,
+        fabric_invocation_fingerprint: ?u64 = null,
+        fabric_route_fingerprint: ?u64 = null,
+        fabric_receipt_fingerprint: ?u64 = null,
         summary: []u8,
     }) Runspace.RunspaceEvent {
         const event = Runspace.RunspaceEvent.init(.{
@@ -9480,6 +10996,9 @@ pub const Runspace = struct {
             .run_receipt_fingerprint = args.run_receipt_fingerprint,
             .admission_receipt_fingerprint = args.admission_receipt_fingerprint,
             .run_permit_fingerprint = args.run_permit_fingerprint,
+            .fabric_invocation_fingerprint = args.fabric_invocation_fingerprint,
+            .fabric_route_fingerprint = args.fabric_route_fingerprint,
+            .fabric_receipt_fingerprint = args.fabric_receipt_fingerprint,
             .summary = args.summary,
             .owns_summary = true,
         });
@@ -15087,6 +16606,12 @@ fn supervisionModeAcceptanceBlocker(requested_mode: Mode) AcceptanceBlocker {
     };
 }
 
+fn acceptanceReportHasOnlyMissingBinding(report: AcceptanceReport) bool {
+    if (report.accepted) return false;
+    if (report.blockers.len != 1) return false;
+    return report.blockers[0] == .MissingBinding;
+}
+
 fn rejectedReport(base: AcceptanceReport, blockers: []const AcceptanceBlocker) AcceptanceReport {
     var report = base;
     report.accepted = false;
@@ -17395,6 +18920,11 @@ fn fingerprintSupervisionPolicy(policy: SupervisionPolicy) u64 {
     hashBool(&hasher, policy.allow_checkpoints);
     hashBool(&hasher, policy.allow_handoff_export);
     hashBool(&hasher, policy.allow_handoff_accept);
+    hashBool(&hasher, policy.allow_fabric_routes);
+    hashBool(&hasher, policy.allow_target_export_routes);
+    hashBool(&hasher, policy.allow_guest_routes);
+    hashBool(&hasher, policy.allow_replay_routes);
+    hashBool(&hasher, policy.allow_reject_routes);
     hashBool(&hasher, policy.require_portable_value_images);
     hashBool(&hasher, policy.reject_native_only_values);
     hashBool(&hasher, policy.require_environment_certificate);
@@ -17429,6 +18959,9 @@ fn fingerprintBudget(budget: Budget) u64 {
     hashOptionalU64(&hasher, budget.max_branch_depth);
     hashOptionalU64(&hasher, budget.max_handoff_exports);
     hashOptionalU64(&hasher, budget.max_handoff_accepts);
+    hashOptionalU64(&hasher, budget.max_fabric_invocations);
+    hashOptionalU64(&hasher, budget.max_fabric_depth);
+    hashOptionalU64(&hasher, budget.max_provider_runs);
     hashOptionalU64(&hasher, budget.max_total_cost_units);
     hashU64(&hasher, budget.per_port_budgets.len);
     for (budget.per_port_budgets) |per_port| {
@@ -17462,6 +18995,9 @@ fn fingerprintCostModel(model: CostModel) u64 {
     hashU64(&hasher, model.branch_cost);
     hashU64(&hasher, model.handoff_export_cost);
     hashU64(&hasher, model.handoff_accept_cost);
+    hashU64(&hasher, model.fabric_invocation_cost);
+    hashU64(&hasher, model.provider_run_cost);
+    hashU64(&hasher, model.nested_port_call_cost);
     hashU64(&hasher, model.per_port_costs.len);
     for (model.per_port_costs) |cost| {
         hashU64(&hasher, cost.world_port_id);
@@ -17595,6 +19131,9 @@ fn fingerprintUsageLedger(ledger: UsageLedger) u64 {
     hashU64(&hasher, ledger.total_branches);
     hashU64(&hasher, ledger.total_handoff_exports);
     hashU64(&hasher, ledger.total_handoff_accepts);
+    hashU64(&hasher, ledger.total_fabric_invocations);
+    hashU64(&hasher, ledger.max_fabric_depth_observed);
+    hashU64(&hasher, ledger.total_provider_runs);
     hashU64(&hasher, ledger.total_cost_units);
     hashU64(&hasher, ledger.per_port_usage.len);
     for (ledger.per_port_usage) |usage| {
@@ -17690,6 +19229,9 @@ fn fingerprintRunReceipt(receipt: RunReceipt) u64 {
     hashU64(&hasher, receipt.checkpoint_count);
     hashU64(&hasher, receipt.handoff_export_count);
     hashU64(&hasher, receipt.handoff_accept_count);
+    hashU64(&hasher, receipt.fabric_invocation_count);
+    hashU64(&hasher, receipt.provider_run_count);
+    hashU64(&hasher, receipt.max_fabric_depth);
     return hasher.final();
 }
 
@@ -17766,6 +19308,185 @@ fn fingerprintPendingPort(pending_port: PendingPort) u64 {
     return hasher.final();
 }
 
+fn fingerprintFabric(fabric: Fabric) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.fabric.fingerprint");
+    hashU64(&hasher, world_fabric_fingerprint_version);
+    hashU64(&hasher, fabric.boundary_digest);
+    hashU64(&hasher, fabric.module_fingerprint);
+    hashOptionalU64(&hasher, fabric.target_ref_fingerprint);
+    hashU64(&hasher, fabric.metadata.len);
+    hashBytes(&hasher, fabric.metadata);
+    return hasher.final();
+}
+
+fn fingerprintFabricValueMapping(mapping: Fabric.ValueMapping) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.fabric.value_mapping.fingerprint");
+    hashU64(&hasher, world_fabric_value_mapping_fingerprint_version);
+    hashOptionalU64(&hasher, mapping.fabric_digest);
+    hashU64(&hasher, @intFromEnum(mapping.kind));
+    hashOptionalU32(&hasher, mapping.parent_value_table_id);
+    hashOptionalU32(&hasher, mapping.provider_value_table_id);
+    hashOptionalU32(&hasher, mapping.parent_payload_value_table_id);
+    hashOptionalU64(&hasher, mapping.parent_payload_value_fingerprint);
+    hashOptionalU32(&hasher, mapping.provider_argument_value_table_id);
+    hashOptionalU64(&hasher, mapping.provider_argument_value_fingerprint);
+    hashOptionalU32(&hasher, mapping.provider_result_value_table_id);
+    hashOptionalU64(&hasher, mapping.provider_result_value_fingerprint);
+    hashOptionalU32(&hasher, mapping.parent_response_value_table_id);
+    hashOptionalU64(&hasher, mapping.parent_response_value_fingerprint);
+    hashBool(&hasher, mapping.require_portable_images);
+    hashBool(&hasher, mapping.allow_unit_args);
+    return hasher.final();
+}
+
+fn fingerprintFabricRoute(route: Fabric.Route) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.fabric.route.fingerprint");
+    hashU64(&hasher, world_fabric_route_fingerprint_version);
+    hashU64(&hasher, route.route_id);
+    hashOptionalU64(&hasher, route.fabric_digest);
+    hashU64(&hasher, @intFromEnum(route.kind));
+    hashU64(&hasher, route.world_port_id);
+    hashU64(&hasher, route.parent_world_surface_fingerprint);
+    hashU64(&hasher, route.parent_target_certificate_fingerprint);
+    hashU64(&hasher, route.parent_world_port_id);
+    hashOptionalU64(&hasher, route.provider_target_ref_fingerprint);
+    hashOptionalU64(&hasher, route.provider_module_fingerprint);
+    hashOptionalU64(&hasher, route.provider_world_surface_fingerprint);
+    hashOptionalU64(&hasher, route.provider_target_certificate_fingerprint);
+    hashOptionalU32(&hasher, route.provider_world_port_id);
+    hashOptionalU64(&hasher, route.provider_admission_receipt_fingerprint);
+    hashOptionalU64(&hasher, route.provider_run_image_fingerprint);
+    hashOptionalU64(&hasher, route.provider_transcript_image_fingerprint);
+    hashOptionalU64(&hasher, route.value_mapping_fingerprint);
+    hashU64(&hasher, @intFromEnum(route.response_status));
+    hashOptionalU64(&hasher, route.max_depth);
+    hashU64(&hasher, route.metadata.len);
+    hashBytes(&hasher, route.metadata);
+    return hasher.final();
+}
+
+fn fingerprintFabricBinding(binding: Fabric.Binding) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.fabric.binding.fingerprint");
+    hashU64(&hasher, world_fabric_binding_fingerprint_version);
+    hashOptionalU64(&hasher, binding.fabric_digest);
+    hashOptionalU64(&hasher, binding.parent_target_ref_fingerprint);
+    hashU64(&hasher, binding.parent_world_surface_fingerprint);
+    hashU64(&hasher, binding.parent_target_certificate_fingerprint);
+    hashU64(&hasher, binding.world_port_id);
+    hashU64(&hasher, binding.parent_world_port_id);
+    hashOptionalU64(&hasher, binding.import_requirement_fingerprint);
+    hashU64(&hasher, binding.route_fingerprint);
+    hashOptionalU64(&hasher, binding.value_mapping_fingerprint);
+    hashBool(&hasher, binding.required);
+    return hasher.final();
+}
+
+fn fingerprintFabricPlan(plan: Fabric.Plan) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.fabric.plan.fingerprint");
+    hashU64(&hasher, world_fabric_plan_fingerprint_version);
+    hashOptionalU64(&hasher, plan.fabric_digest);
+    hashU64(&hasher, plan.target_ref_fingerprint);
+    hashOptionalU64(&hasher, plan.module_fingerprint);
+    hashU64(&hasher, plan.world_surface_fingerprint);
+    hashU64(&hasher, plan.target_certificate_fingerprint);
+    hashOptionalU64(&hasher, plan.import_set_fingerprint);
+    hashU64(&hasher, plan.value_mappings.len);
+    for (plan.value_mappings) |mapping| hashU64(&hasher, mapping.mapping_fingerprint);
+    hashU64(&hasher, plan.routes.len);
+    for (plan.routes) |route| hashU64(&hasher, route.route_fingerprint);
+    hashU64(&hasher, plan.bindings.len);
+    for (plan.bindings) |binding| hashU64(&hasher, binding.binding_fingerprint);
+    hashU64(&hasher, plan.max_depth);
+    hashU64(&hasher, plan.max_provider_runs);
+    hashOptionalU64(&hasher, plan.coverage_report_fingerprint);
+    hashU64(&hasher, plan.metadata.len);
+    hashBytes(&hasher, plan.metadata);
+    return hasher.final();
+}
+
+fn fingerprintFabricInvocation(invocation: Fabric.Invocation) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.fabric.invocation.fingerprint");
+    hashU64(&hasher, world_fabric_invocation_fingerprint_version);
+    hashU64(&hasher, invocation.plan_fingerprint);
+    hashU64(&hasher, invocation.route_fingerprint);
+    hashU64(&hasher, invocation.parent_run_handle_fingerprint);
+    hashU64(&hasher, invocation.parent_pending_port_fingerprint);
+    hashU64(&hasher, invocation.parent_mailbox_id);
+    hashU64(&hasher, invocation.request_frame_fingerprint);
+    hashOptionalU64(&hasher, invocation.provider_run_handle_fingerprint);
+    hashOptionalU64(&hasher, invocation.mapped_request_frame_fingerprint);
+    hashOptionalU64(&hasher, invocation.mapped_response_frame_fingerprint);
+    hashOptionalU64(&hasher, invocation.run_permit_fingerprint);
+    hashU64(&hasher, invocation.depth);
+    hashU64(&hasher, invocation.sequence);
+    hashU64(&hasher, @intFromEnum(invocation.status));
+    return hasher.final();
+}
+
+fn fingerprintFabricReceipt(receipt: Fabric.Receipt) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.fabric.receipt.fingerprint");
+    hashU64(&hasher, world_fabric_receipt_fingerprint_version);
+    hashU64(&hasher, receipt.invocation_fingerprint);
+    hashU64(&hasher, receipt.route_fingerprint);
+    hashU64(&hasher, receipt.parent_pending_port_fingerprint);
+    hashOptionalU64(&hasher, receipt.parent_response_frame_fingerprint);
+    hashOptionalU64(&hasher, receipt.provider_run_handle_fingerprint);
+    hashOptionalU64(&hasher, receipt.provider_run_receipt_fingerprint);
+    hashU64(&hasher, @intFromEnum(receipt.status));
+    if (receipt.blocker) |blocker| {
+        hashBool(&hasher, true);
+        hashU64(&hasher, @intFromEnum(blocker));
+    } else {
+        hashBool(&hasher, false);
+    }
+    hashU64(&hasher, receipt.warning_count);
+    return hasher.final();
+}
+
+fn fingerprintFabricReport(report: Fabric.Report) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.fabric.report.fingerprint");
+    hashU64(&hasher, world_fabric_report_fingerprint_version);
+    hashU64(&hasher, report.plan_fingerprint);
+    hashU64(&hasher, report.invocation_count);
+    hashU64(&hasher, report.receipt_count);
+    hashU64(&hasher, report.completed_count);
+    hashU64(&hasher, report.provider_parked_count);
+    hashU64(&hasher, report.blocker_count);
+    hashU64(&hasher, report.warning_count);
+    hashOptionalU64(&hasher, report.latest_receipt_fingerprint);
+    return hasher.final();
+}
+
+fn fingerprintFabricCoverageReport(report: Fabric.CoverageReport) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.fabric.coverage_report.fingerprint");
+    hashU64(&hasher, world_fabric_coverage_report_fingerprint_version);
+    hashU64(&hasher, report.target_ref_fingerprint);
+    hashU64(&hasher, report.world_surface_fingerprint);
+    hashU64(&hasher, report.target_certificate_fingerprint);
+    hashU64(&hasher, report.required_port_count);
+    hashU64(&hasher, report.route_count);
+    hashU64(&hasher, report.fabric_covered_port_count);
+    hashU64(&hasher, report.missing_port_count);
+    hashU64(&hasher, report.missing_count);
+    hashU64(&hasher, report.covered_count);
+    hashU64(&hasher, report.duplicate_route_count);
+    hashU64(&hasher, report.unsupported_port_count);
+    hashU64(&hasher, report.unsupported_route_count);
+    hashU64(&hasher, report.blocker_count);
+    hashU64(&hasher, report.warning_count);
+    hashBool(&hasher, report.accepted);
+    return hasher.final();
+}
+
 fn fingerprintRunspaceEvent(event: RunspaceEvent) u64 {
     var hasher = std.hash.Wyhash.init(0);
     hashBytes(&hasher, "world.runspace.event.fingerprint");
@@ -17782,6 +19503,9 @@ fn fingerprintRunspaceEvent(event: RunspaceEvent) u64 {
     hashOptionalU64(&hasher, event.run_receipt_fingerprint);
     hashOptionalU64(&hasher, event.admission_receipt_fingerprint);
     hashOptionalU64(&hasher, event.run_permit_fingerprint);
+    hashOptionalU64(&hasher, event.fabric_invocation_fingerprint);
+    hashOptionalU64(&hasher, event.fabric_route_fingerprint);
+    hashOptionalU64(&hasher, event.fabric_receipt_fingerprint);
     hashU64(&hasher, event.summary.len);
     hashBytes(&hasher, event.summary);
     return hasher.final();

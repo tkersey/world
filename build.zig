@@ -361,8 +361,8 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World admission parked handoff example.",
             .expected_stdout =
             \\package_fingerprint=91d0e487f35697a
-            \\admission_receipt_fingerprint=7778c076f25270ab
-            \\receiver_permit_fingerprint=3375ddcdc320bbf9
+            \\admission_receipt_fingerprint=67876bc108404bf9
+            \\receiver_permit_fingerprint=4832a9e8d0a835c7
             \\final_result=7
             \\
             ,
@@ -388,7 +388,7 @@ pub fn build(b: *std.Build) void {
             \\module_ref_fingerprint=8980705f83427fa6
             \\model_port_id=0
             \\tool_port_id=1
-            \\admission_receipt=50be22761d4a6cd2
+            \\admission_receipt=b37b25337b91a029
             \\final_result=final=actuate skeleton complete
             \\
             ,
@@ -424,8 +424,8 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-runspace-handoff",
             .desc = "Run the handoff World runspace example.",
             .expected_stdout =
-            \\admission_receipt=3fec963d52ca0d13
-            \\run_handle=7d49e74888e537a3
+            \\admission_receipt=e49ed5a91750e2b0
+            \\run_handle=62932ef5b9e662e3
             \\final_result=7
             \\
             ,
@@ -449,9 +449,9 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-runspace-supervised",
             .desc = "Run the supervised World runspace example.",
             .expected_stdout =
-            \\run_permit=802923ff46eb3109
+            \\run_permit=840a1b7cdf6d1953
             \\budget_exceeded=true
-            \\event_fingerprint=cea9dbf7ebf47c50
+            \\event_fingerprint=39b86fc24879491e
             \\
             ,
         },
@@ -493,13 +493,76 @@ pub fn build(b: *std.Build) void {
             ,
         },
         .{
+            .name = "world-fabric-target-provider",
+            .path = "examples/world_fabric_target_provider.zig",
+            .step = "run-world-fabric-target-provider",
+            .desc = "Run the World Fabric target provider example.",
+            .expected_stdout =
+            \\parent_run_handle=367cb72b9a8188ae
+            \\provider_run_handle=a53ebdcc0976217b
+            \\fabric_receipt_fingerprint=c7f1ce7d7b6bb544
+            \\final_result=7
+            \\native_handler_calls=0
+            \\
+            ,
+        },
+        .{
+            .name = "world-fabric-agent-tool",
+            .path = "examples/world_fabric_agent_tool.zig",
+            .step = "run-world-fabric-agent-tool",
+            .desc = "Run the World Fabric agent tool example.",
+            .expected_stdout =
+            \\tool_port_id=1
+            \\provider_target_ref=5fd6e98eae4c7db0
+            \\fabric_invocation_count=1
+            \\native_tool_calls=0
+            \\final_result=final=actuate skeleton complete
+            \\
+            ,
+        },
+        .{
+            .name = "world-fabric-nested",
+            .path = "examples/world_fabric_nested.zig",
+            .step = "run-world-fabric-nested",
+            .desc = "Run the World Fabric nested provider example.",
+            .expected_stdout =
+            \\fabric_depth=1
+            \\parent_result=final=actuate skeleton complete
+            \\provider_result=actuate
+            \\
+            ,
+        },
+        .{
+            .name = "world-fabric-supervised",
+            .path = "examples/world_fabric_supervised.zig",
+            .step = "run-world-fabric-supervised",
+            .desc = "Run the World Fabric supervised denial example.",
+            .expected_stdout =
+            \\fabric_invocation_count=1
+            \\budget_exceeded=true
+            \\run_receipt_fingerprint=ef36a3e3eb037258
+            \\
+            ,
+        },
+        .{
+            .name = "world-fabric-cycle-blocked",
+            .path = "examples/world_fabric_cycle_blocked.zig",
+            .step = "run-world-fabric-cycle-blocked",
+            .desc = "Run the World Fabric cycle rejection example.",
+            .expected_stdout =
+            \\cycle_blocked=true
+            \\report_fingerprint=6d79f4a5c08b55a8
+            \\
+            ,
+        },
+        .{
             .name = "world-supervised-budget",
             .path = "examples/world_supervised_budget.zig",
             .step = "run-world-supervised-budget",
             .desc = "Run the supervised budget World example.",
             .expected_stdout =
-            \\permit_fingerprint=be67c834a0d5ca6e
-            \\receipt_fingerprint=da5bdd2ea2d4e7ad
+            \\permit_fingerprint=3331cc397c5ca07a
+            \\receipt_fingerprint=499dea74ebadc24a
             \\budget_exceeded=false
             \\denied_budget_exceeded=true
             \\
@@ -524,9 +587,9 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-supervised-handoff",
             .desc = "Run the supervised handoff World example.",
             .expected_stdout =
-            \\received_run_image_fingerprint=2b11457c148f707f
-            \\receiver_permit_fingerprint=3375ddcdc320bbf9
-            \\receiver_receipt_fingerprint=6f68ceb099281ec0
+            \\received_run_image_fingerprint=d4a7a5419428ae25
+            \\receiver_permit_fingerprint=4832a9e8d0a835c7
+            \\receiver_receipt_fingerprint=211f11c71daf1310
             \\final_result=7
             \\
             ,
@@ -549,8 +612,8 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-supervised-replay-verify",
             .desc = "Run the supervised replay/verify World example.",
             .expected_stdout =
-            \\fresh_receipt=18c2f35d72d66171
-            \\replay_receipt=10dc84132ed1fe4a
+            \\fresh_receipt=e9eaa880e81cb676
+            \\replay_receipt=11eac0d49dbbf017
             \\verify_divergence_detected=true
             \\
             ,
