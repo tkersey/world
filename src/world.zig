@@ -4338,6 +4338,10 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
             plan.validate() catch return report;
             plan.assertNoCycles() catch return report;
             plan.assertDeterministicRouteOrder() catch return report;
+            if (plan.target_ref_fingerprint != target_ref.target_ref_fingerprint) return report;
+            if (plan.world_surface_fingerprint != target_ref.world_surface_fingerprint) return report;
+            if (plan.target_certificate_fingerprint != target_ref.target_certificate_fingerprint) return report;
+            if (plan.import_set_fingerprint != import_set.import_set_fingerprint) return report;
             const coverage = plan.coverage(target_ref, import_set);
             if (!fabricCoversMissingEnvironmentPorts(Target, bindings, coverage, plan)) return report;
             var accepted = report;
@@ -10000,6 +10004,14 @@ pub const Runspace = struct {
         event_summary: []const u8,
     ) !void {
         try invocation.validate();
+        const invocation_count_before = self.fabric_invocations.items.len;
+        const event_count_before = self.events.items.len;
+        var recorded = false;
+        errdefer if (!recorded) {
+            for (self.events.items[event_count_before..]) |*event| event.deinit(self.allocator);
+            self.events.shrinkRetainingCapacity(event_count_before);
+            self.fabric_invocations.shrinkRetainingCapacity(invocation_count_before);
+        };
         try self.fabric_invocations.append(self.allocator, invocation);
         _ = try self.appendFabricEvent(.{
             .kind = .fabric_route_selected,
@@ -10023,6 +10035,7 @@ pub const Runspace = struct {
             .fabric_route_fingerprint = route.route_fingerprint,
             .summary = event_summary,
         });
+        recorded = true;
     }
 
     fn replaceFabricInvocation(self: *@This(), invocation: Fabric.Invocation) !void {
@@ -10491,6 +10504,7 @@ pub const Runspace = struct {
         const index = try self.slotIndex(pending.handle);
         var slot = &self.slots.items[index];
         if (slot.pending_mailbox_id != mailbox_id or (slot.status != .parked_on_port and slot.status != .parked_on_supervision)) return error.StaleRunHandle;
+        if (self.hasActiveFabricInvocationForRun(pending.handle)) return error.ActiveFabricUnsupported;
         const event_summary = try self.prepareEventSummary("pending run exported");
         var summary_owned = true;
         errdefer if (summary_owned) self.allocator.free(event_summary);
