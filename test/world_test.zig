@@ -6469,6 +6469,43 @@ test "runspace strict terminal response budget failure consumes mailbox and fail
     try std.testing.expectEqual(@as(usize, 1), runspace.report().blocker_count);
 }
 
+test "runspace strict terminal response event-cap failure rolls back supervision" {
+    const strict_policy = world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .allow_native_adapters = true,
+        .allow_failed_responses = true,
+        .require_environment_certificate = true,
+    });
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = strict_policy,
+        .budget = world.Budget.init(.{ .max_frame_response_bytes = 0 }),
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{
+        .require_supervision = true,
+    });
+    defer runspace.deinit();
+
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .permit = permit,
+    });
+    _ = try runspace.tick();
+    runspace.config.max_events = runspace.events.items.len + 1;
+
+    try std.testing.expectError(error.BudgetExceeded, runspace.fail(0, "strict terminal event cap"));
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
+    const summary = try runspace.getSlotSummary(handle);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, summary.status);
+    try std.testing.expectEqual(@as(?u64, 0), summary.pending_mailbox_id);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().blocker_count);
+    try std.testing.expectEqual(runspace.config.max_events.? - 1, runspace.report().event_count);
+}
+
 test "runspace terminal response accounting charges allowed failure once" {
     const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
         .mode = .fresh,

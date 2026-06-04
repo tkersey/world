@@ -8543,6 +8543,8 @@ pub const Runspace = struct {
         try pending.validateResponse(response);
         const accounting = try self.responseFrameAccounting(response);
         if (slot.driver) |driver| {
+            var supervisor_snapshot = try self.snapshotSlotSupervisor(index);
+            defer supervisor_snapshot.deinit(self.allocator);
             driver.beforeTerminalResponse(pending.world_port_id, status, accounting.response_bytes, accounting.value_image_bytes) catch |err| {
                 if (responseStatusDeniedError(status, err)) {
                     _ = try self.parkPendingOnSupervision(index, pending, mailbox_id, "terminal response denied by supervision");
@@ -8552,20 +8554,26 @@ pub const Runspace = struct {
                     return try self.parkPendingOnSupervision(index, pending, mailbox_id, "terminal response parked on supervision");
                 }
                 if (err == error.BudgetExceeded) {
-                    var failed_event_pair = try self.prepareEventPair(
+                    var failed_event_pair = self.prepareEventPair(
                         2,
                         "terminal port response failed",
                         "run failed after terminal port response",
-                    );
+                    ) catch |prepare_err| {
+                        supervisor_snapshot.restore(self, index);
+                        return prepare_err;
+                    };
                     defer failed_event_pair.deinit(self.allocator);
-                    try self.failPendingPortAndSlot(
+                    self.failPendingPortAndSlot(
                         mailbox_id,
                         slot,
                         response,
                         "terminal response supervision failed",
                         failed_event_pair.takeFirst(),
                         failed_event_pair.takeSecond(),
-                    );
+                    ) catch |fail_err| {
+                        supervisor_snapshot.restore(self, index);
+                        return fail_err;
+                    };
                 }
                 return err;
             };
