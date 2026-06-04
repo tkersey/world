@@ -7041,6 +7041,54 @@ test "guest core maps strict supervised response status denial without failing r
     }
 }
 
+test "guest core keeps retryable responded policy denial visible as pending work" {
+    const response_image_rules = [_]world.PortRule{world.PortRule.init(.{
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .world_port_id = 0,
+        .max_response_image_bytes = 1,
+    })};
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+        .port_rules = &response_image_rules,
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var guest = world.Guest.Core.init(std.testing.allocator, .{ .require_supervision = true });
+    defer guest.deinit();
+
+    try guest.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .permit = permit,
+    });
+    try std.testing.expectEqual(world.Guest.Status.parked, guest.tick());
+    const request_len = guest.pendingRequestLen(0);
+    const request_bytes = try std.testing.allocator.alloc(u8, request_len);
+    defer std.testing.allocator.free(request_bytes);
+    _ = guest.readPendingRequest(0, request_bytes);
+    var request = try world.Frame.Request.decode(std.testing.allocator, request_bytes);
+    defer request.deinit(std.testing.allocator);
+    var denied_response = try world.Frame.Response.fromPortableValue(
+        std.testing.allocator,
+        request,
+        request.expected_response_value_table_id,
+        .@"resume",
+        @as(i32, 7),
+        .portable,
+    );
+    defer denied_response.deinit(std.testing.allocator);
+    const denied_response_bytes = try denied_response.encode(std.testing.allocator);
+    defer std.testing.allocator.free(denied_response_bytes);
+
+    try std.testing.expect(denied_response.response_image.?.bytes.len > 1);
+    try std.testing.expectEqual(world.Guest.Status.invalid_frame, guest.submitResponse(denied_response_bytes));
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try guest.runspace.getSlotSummary(guest.handle.?)).status);
+    try std.testing.expectEqual(@as(usize, 1), guest.pendingCount());
+    try std.testing.expect(guest.lastErrorLen() > 0);
+    try std.testing.expectEqual(@as(usize, request_len), guest.pendingRequestLen(0));
+}
+
 test "guest core reports supervision-only park without exposing pending request" {
     const policy = world.SupervisionPolicy.init(.{
         .allow_fresh_calls = true,

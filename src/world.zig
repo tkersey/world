@@ -10122,6 +10122,9 @@ pub const Guest = struct {
             const mailbox_id = self.matchPendingMailbox(response) catch |err| return self.mapPendingLookupError(err);
             _ = self.runspace.respond(mailbox_id, response) catch |err| {
                 if (err == error.HandlerPending) return self.refreshStatus();
+                if (response.status == .responded and self.respondedDenialLeftPending(mailbox_id, err)) {
+                    return self.setStatus(.invalid_frame, "response denied while pending request remains retryable");
+                }
                 if (self.mapDeniedResponseStatus(response.status, err)) |mapped_status| return mapped_status;
                 return self.mapRunspaceError(err);
             };
@@ -10305,6 +10308,19 @@ pub const Guest = struct {
                 .failed => self.setStatus(.supervision_denied, "supervision denied failed response"),
                 .responded => unreachable,
             };
+        }
+
+        fn respondedDenialLeftPending(self: *const @This(), mailbox_id: u64, err: anyerror) bool {
+            if (!retryableRespondedDenialError(err)) return false;
+            const pending = self.runspace.mailbox.get(mailbox_id) catch return false;
+            if (pending.status != .pending) return false;
+            const handle = self.handle orelse return false;
+            const summary = self.runspace.getSlotSummary(handle) catch return false;
+            return summary.status == .parked_on_port and summary.pending_mailbox_id == mailbox_id;
+        }
+
+        fn retryableRespondedDenialError(err: anyerror) bool {
+            return err == error.BudgetExceeded or err == Error.PortRuleDenied or err == error.SupervisionPortRuleDenied;
         }
 
         fn mapRunspaceError(self: *@This(), err: anyerror) Status {
