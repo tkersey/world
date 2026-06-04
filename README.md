@@ -235,7 +235,7 @@ Runspace makes execution local and deterministic. Guest Conformance proves that 
 
 `world.Guest.Core` wraps one manual-dispatch `Runspace` and exposes a byte-driven guest boundary: initialize, tick, read pending `Frame.Request` bytes, submit `Frame.Response` bytes, read result bytes, read receipt/transcript evidence where available, and read the last error. It does not call native handlers while parked, own storage, own transport, start scheduler threads, use wall-clock time, call TreatyResolver, call ProviderHarness, or dispatch by operation name.
 
-`world.Guest.Abi` is World-owned ABI v0. Boundary remains target-neutral and does not define a WASM ABI. The ABI payloads are canonical World frame bytes; model/tool/file/human calls are represented as pending frames, not imported functions.
+`world.Guest.Abi` is World-owned ABI v1. Boundary remains target-neutral and does not define a WASM ABI. The ABI payloads are canonical World frame bytes; model/tool/file/human calls are represented as pending frames, not imported functions.
 
 `world.Guest.NativeGuest` implements the same ABI shape in native Zig so default CI can prove native Runspace and guest-style byte driving match without a wasm runtime dependency.
 
