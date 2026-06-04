@@ -8872,7 +8872,13 @@ pub const Runspace = struct {
         const index = try self.slotIndex(handle);
         const slot = &self.slots.items[index];
         if (slot.status != .completed) return error.InvalidRunspaceTransition;
-        return self.snapshotSlotImage(index);
+        var supervisor_snapshot = try self.snapshotSlotSupervisor(index);
+        defer supervisor_snapshot.deinit(self.allocator);
+        errdefer supervisor_snapshot.restore(self, index);
+        try self.beforeSlotHandoffExport(index);
+        const image = try self.snapshotSlotImage(index);
+        supervisor_snapshot.restore(self, index);
+        return image;
     }
 
     pub fn exportPending(self: *@This(), mailbox_id: u64) !RunImage {
