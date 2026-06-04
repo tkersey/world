@@ -11834,8 +11834,7 @@ pub const Guest = struct {
             while (index < count) : (index += 1) {
                 const function_index = try readWasmU32(bytes, cursor);
                 if (function_index >= function_count) return error.InvalidFrameEncoding;
-                if (function_index >= max_wasm_validator_values) return error.InvalidFrameEncoding;
-                function_refs[function_index] = true;
+                if (function_index < max_wasm_validator_values) function_refs[function_index] = true;
             }
         }
 
@@ -11860,8 +11859,7 @@ pub const Guest = struct {
                     0x23 => _ = try readWasmU32(expr, &cursor),
                     0xd2 => {
                         const function_index = try readWasmU32(expr, &cursor);
-                        if (function_index >= max_wasm_validator_values) return error.InvalidFrameEncoding;
-                        function_refs[function_index] = true;
+                        if (function_index < max_wasm_validator_values) function_refs[function_index] = true;
                     },
                     0x41 => try skipWasmLeb128(expr, &cursor, 5),
                     0x42 => try skipWasmLeb128(expr, &cursor, 10),

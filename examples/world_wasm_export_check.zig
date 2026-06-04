@@ -10,7 +10,7 @@ pub fn main(init: std.process.Init) !void {
     var args = std.process.Args.Iterator.init(init.minimal.args);
     _ = args.next();
     const artifact_path = args.next() orelse return error.MissingWasmArtifactPath;
-    const bytes = try std.Io.Dir.cwd().readFileAlloc(init.io, artifact_path, allocator, .limited(1024 * 1024));
+    const bytes = try std.Io.Dir.cwd().readFileAlloc(init.io, artifact_path, allocator, .limited(world.world_max_decoded_byte_field_len));
     defer allocator.free(bytes);
 
     const inspection = try world.Guest.Wasm.inspect(bytes);
