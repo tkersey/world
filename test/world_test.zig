@@ -6724,6 +6724,51 @@ test "runspace strict terminal response event-cap failure rolls back supervision
     try std.testing.expectEqual(runspace.config.max_events.? - 1, runspace.report().event_count);
 }
 
+test "runspace terminal event-cap failure does not charge retryable supervision" {
+    const strict_policy = world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .allow_native_adapters = true,
+        .allow_failed_responses = true,
+        .require_environment_certificate = true,
+    });
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = strict_policy,
+        .budget = world.Budget.init(.{ .max_failed_calls = 1 }),
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{
+        .require_supervision = true,
+    });
+    defer runspace.deinit();
+
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .permit = permit,
+    });
+    _ = try runspace.tick();
+    runspace.config.max_events = runspace.events.items.len + 1;
+
+    try std.testing.expectError(error.BudgetExceeded, runspace.fail(0, "strict terminal event cap"));
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
+    var summary = try runspace.getSlotSummary(handle);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, summary.status);
+    try std.testing.expectEqual(@as(?u64, 0), summary.pending_mailbox_id);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().blocker_count);
+
+    runspace.config.max_events = null;
+    const event = try runspace.fail(0, "strict terminal retry after event cap");
+    try std.testing.expectEqual(world.Runspace.EventKind.run_failed, event.kind);
+    try std.testing.expectEqual(world.Runspace.PendingStatus.failed, (try runspace.mailbox.get(0)).status);
+    summary = try runspace.getSlotSummary(handle);
+    try std.testing.expectEqual(world.Runspace.RunStatus.failed, summary.status);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().blocker_count);
+}
+
 test "runspace terminal response accounting charges allowed failure once" {
     const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
         .mode = .fresh,
