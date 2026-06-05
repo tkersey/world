@@ -312,6 +312,13 @@ test "fabric value mapping enforces exact supported conversions" {
         .parent_response_value_table_id = 1,
     });
     try std.testing.expectError(error.UnsupportedMapping, constrained_result_mapping.validate());
+    const unwitnessed_parent_response = world.Fabric.ValueMapping.init(.{
+        .kind = .provider_result_to_parent_response,
+        .provider_result_value_table_id = 1,
+        .parent_response_value_table_id = 1,
+        .parent_response_value_fingerprint = response.response_fingerprint,
+    });
+    try std.testing.expectError(error.UnsupportedMapping, unwitnessed_parent_response.validate());
     const generic_result = world.Fabric.ValueMapping.init(.{
         .kind = .provider_result_to_parent_response,
         .parent_value_table_id = 1,
