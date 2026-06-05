@@ -9648,8 +9648,9 @@ pub const Runspace = struct {
                 });
                 const invocation_count_before = self.fabric_invocations.items.len;
                 const event_count_before = self.events.items.len;
+                const next_event_index_before = self.next_event_index;
                 var invocation_recorded = false;
-                errdefer if (!fabric_charge_committed and invocation_recorded) self.rollbackFabricInvocationRecord(invocation_count_before, event_count_before);
+                errdefer if (!fabric_charge_committed and invocation_recorded) self.rollbackFabricInvocationRecord(invocation_count_before, event_count_before, next_event_index_before);
                 try self.recordFabricInvocation(parent_slot.*, invocation, route, .fabric_failed, "fabric terminal route recorded");
                 invocation_recorded = true;
                 _ = try self.respondWithFabricOwnership(mailbox_id, response, true);
@@ -9789,8 +9790,9 @@ pub const Runspace = struct {
         });
         const invocation_count_before = self.fabric_invocations.items.len;
         const event_count_before = self.events.items.len;
+        const next_event_index_before = self.next_event_index;
         var invocation_recorded = false;
-        errdefer if (!fabric_charge_committed and invocation_recorded) self.rollbackFabricInvocationRecord(invocation_count_before, event_count_before);
+        errdefer if (!fabric_charge_committed and invocation_recorded) self.rollbackFabricInvocationRecord(invocation_count_before, event_count_before, next_event_index_before);
         try self.recordFabricInvocation(parent_slot.*, invocation, route, .fabric_invocation_started, "fabric replay invocation recorded");
         invocation_recorded = true;
         _ = try self.respondWithFabricOwnership(mailbox_id, response, true);
@@ -9807,7 +9809,13 @@ pub const Runspace = struct {
         const parent_index = try self.slotIndex(pending.handle);
         const parent_slot = &self.slots.items[parent_index];
         const route = try self.installedFabricRoute(recorded.route_fingerprint);
-        var provider_image = try self.fabricProviderResultImage(recorded);
+        var provider_image = self.fabricProviderResultImage(recorded) catch |err| {
+            switch (err) {
+                error.InvalidRunspaceTransition, error.StaleRunHandle => try self.retireFabricInvocation(recorded, .failed),
+                else => {},
+            }
+            return err;
+        };
         defer provider_image.deinit(self.allocator);
         const provider_result = provider_image.final_result_image orelse {
             try self.retireFabricInvocation(recorded, .failed);
@@ -10180,11 +10188,13 @@ pub const Runspace = struct {
         try invocation.validate();
         const invocation_count_before = self.fabric_invocations.items.len;
         const event_count_before = self.events.items.len;
+        const next_event_index_before = self.next_event_index;
         var recorded = false;
         errdefer if (!recorded) {
             for (self.events.items[event_count_before..]) |*event| event.deinit(self.allocator);
             self.events.shrinkRetainingCapacity(event_count_before);
             self.fabric_invocations.shrinkRetainingCapacity(invocation_count_before);
+            self.next_event_index = next_event_index_before;
         };
         try self.fabric_invocations.append(self.allocator, invocation);
         _ = try self.appendFabricEvent(.{
@@ -10254,11 +10264,13 @@ pub const Runspace = struct {
         try receipt.validate();
         const receipt_count_before = self.fabric_receipts.items.len;
         const event_count_before = self.events.items.len;
+        const next_event_index_before = self.next_event_index;
         var recorded = false;
         errdefer if (!recorded) {
             for (self.events.items[event_count_before..]) |*event| event.deinit(self.allocator);
             self.events.shrinkRetainingCapacity(event_count_before);
             self.fabric_receipts.shrinkRetainingCapacity(receipt_count_before);
+            self.next_event_index = next_event_index_before;
         };
         self.fabric_receipts.appendAssumeCapacity(receipt);
         _ = self.appendPreparedEventAssumeCapacity(.{
@@ -10278,10 +10290,11 @@ pub const Runspace = struct {
         recorded = true;
     }
 
-    fn rollbackFabricInvocationRecord(self: *@This(), invocation_count: usize, event_count: usize) void {
+    fn rollbackFabricInvocationRecord(self: *@This(), invocation_count: usize, event_count: usize, next_event_index: u64) void {
         for (self.events.items[event_count..]) |*event| event.deinit(self.allocator);
         self.events.shrinkRetainingCapacity(event_count);
         self.fabric_invocations.shrinkRetainingCapacity(invocation_count);
+        self.next_event_index = next_event_index;
     }
 
     fn reserveFabricResponseEvidenceEvents(self: *@This(), additional_events: usize) !void {

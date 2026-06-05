@@ -5533,6 +5533,8 @@ test "runspace fabric terminal route reserves audit evidence before parent respo
     try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_receipt_count);
     try std.testing.expectEqual(event_count_before, runspace.report().event_count);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+    _ = try runspace.respondValue(0, @as(i32, 7));
+    try std.testing.expectEqual(@as(u64, event_count_before), runspace.events.items[event_count_before].event_index);
 }
 
 test "runspace fabric receipt rolls back when event recording fails" {
@@ -6101,6 +6103,68 @@ test "runspace active fabric handoff export fails closed until parent responds" 
     var image = try runspace.exportRun(parent_handle);
     defer image.deinit(std.testing.allocator);
     try std.testing.expectEqual(world.RunImage.Kind.completed_run, image.kind);
+}
+
+test "runspace fabric provider failure retires active parent invocation" {
+    var parent_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer parent_runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+
+    _ = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &parent_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    _ = try runspace.tick();
+
+    const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    var provider_final_image = try world.Frame.ValueImage.fromValue(std.testing.allocator, 1, 0x5150_0006, null, @as(i32, 1), world.ValuePolicy.portable);
+    defer provider_final_image.deinit(std.testing.allocator);
+    const provider_handle = try runspace.installRunImage(world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = provider_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Strict.Target).import_set_fingerprint,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+            .final_response_fingerprint = 0x5150_0006,
+            .final_value_image_fingerprint = provider_final_image.value_image_fingerprint,
+            .status = .completed,
+        }),
+        .final_result_image = provider_final_image,
+    }));
+
+    const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const route = world.Fabric.Route.init(.{
+        .route_id = 53,
+        .kind = .target_export,
+        .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .parent_world_port_id = 0,
+        .provider_target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+        .provider_world_surface_fingerprint = provider_ref.world_surface_fingerprint,
+        .provider_target_certificate_fingerprint = provider_ref.target_certificate_fingerprint,
+    });
+    const plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .routes = &.{route},
+    });
+    try runspace.installFabricPlan(parent_ref, plan);
+    const invocation = try runspace.routePendingToProviderRun(0, plan, provider_handle);
+
+    for (runspace.slots.items) |*slot| {
+        if (slot.handle.handle_fingerprint == provider_handle.handle_fingerprint) {
+            slot.status = .failed;
+            slot.current_state.status = .failed;
+            break;
+        }
+    }
+
+    try std.testing.expectError(error.InvalidRunspaceTransition, runspace.respondFromFabric(invocation));
+    _ = try runspace.respondValue(0, @as(i32, 7));
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
 }
 
 test "runspace active fabric provider handle cannot be shared by another parent" {
