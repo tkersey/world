@@ -6949,19 +6949,35 @@ pub const Fabric = struct {
             require_portable_images: bool = true,
             allow_unit_args: bool = false,
         }) Fabric.ValueMapping {
+            const parent_payload_value_table_id: ?u32 = switch (args.kind) {
+                .payload_to_provider_args => args.parent_payload_value_table_id orelse args.parent_value_table_id,
+                .unit_args, .provider_result_to_parent_response => args.parent_payload_value_table_id,
+            };
+            const provider_argument_value_table_id: ?u32 = switch (args.kind) {
+                .payload_to_provider_args => args.provider_argument_value_table_id orelse args.provider_value_table_id,
+                .unit_args, .provider_result_to_parent_response => args.provider_argument_value_table_id,
+            };
+            const provider_result_value_table_id: ?u32 = switch (args.kind) {
+                .provider_result_to_parent_response => args.provider_result_value_table_id orelse args.provider_value_table_id,
+                .payload_to_provider_args, .unit_args => args.provider_result_value_table_id,
+            };
+            const parent_response_value_table_id: ?u32 = switch (args.kind) {
+                .provider_result_to_parent_response => args.parent_response_value_table_id orelse args.parent_value_table_id,
+                .payload_to_provider_args, .unit_args => args.parent_response_value_table_id,
+            };
             var result = Fabric.ValueMapping{
                 .mapping_fingerprint = 0,
                 .fabric_digest = args.fabric_digest,
                 .kind = args.kind,
                 .parent_value_table_id = args.parent_value_table_id,
                 .provider_value_table_id = args.provider_value_table_id,
-                .parent_payload_value_table_id = args.parent_payload_value_table_id orelse args.parent_value_table_id,
+                .parent_payload_value_table_id = parent_payload_value_table_id,
                 .parent_payload_value_fingerprint = args.parent_payload_value_fingerprint,
-                .provider_argument_value_table_id = args.provider_argument_value_table_id orelse args.provider_value_table_id,
+                .provider_argument_value_table_id = provider_argument_value_table_id,
                 .provider_argument_value_fingerprint = args.provider_argument_value_fingerprint,
-                .provider_result_value_table_id = args.provider_result_value_table_id orelse args.provider_value_table_id,
+                .provider_result_value_table_id = provider_result_value_table_id,
                 .provider_result_value_fingerprint = args.provider_result_value_fingerprint,
-                .parent_response_value_table_id = args.parent_response_value_table_id orelse args.parent_value_table_id,
+                .parent_response_value_table_id = parent_response_value_table_id,
                 .parent_response_value_fingerprint = args.parent_response_value_fingerprint,
                 .require_portable_images = args.require_portable_images,
                 .allow_unit_args = args.allow_unit_args,
@@ -9587,6 +9603,11 @@ pub const Runspace = struct {
         const depth = try self.fabricDepthForParent(parent_slot.handle);
         try plan.assertDepth(depth);
         try assertFabricRouteDepth(route, depth);
+        try self.reserveFabricResponseEvidenceEvents(5);
+        var supervisor_snapshot = try self.snapshotSlotSupervisor(parent_index);
+        defer supervisor_snapshot.deinit(self.allocator);
+        var fabric_charge_committed = false;
+        errdefer if (!fabric_charge_committed) supervisor_snapshot.restore(self, parent_index);
         try self.beforeFabricInvocationForSlot(parent_slot, pending.world_port_id, route.kind, depth, 0);
         var invocation = Fabric.Invocation.init(.{
             .plan_fingerprint = plan.plan_fingerprint,
@@ -9618,10 +9639,10 @@ pub const Runspace = struct {
                     .sequence = invocation.sequence,
                     .status = if (route.kind == .reject) .rejected else .unsupported,
                 });
-                try self.reserveFabricResponseEvidenceEvents(5);
                 _ = try self.respondWithFabricOwnership(mailbox_id, response, true);
                 try self.recordFabricInvocation(parent_slot.*, invocation, route, .fabric_failed, "fabric terminal route recorded");
                 try self.recordFabricReceipt(parent_slot.handle, invocation, route.route_fingerprint, pending, response.frame_fingerprint, null, invocation.status, if (route.kind == .reject) .FabricRejected else .UnsupportedMapping);
+                fabric_charge_committed = true;
                 return invocation;
             },
             .target_export, .admitted_run, .guest => return error.ProviderRunDenied,
@@ -9655,6 +9676,11 @@ pub const Runspace = struct {
         try plan.assertDepth(depth);
         try assertFabricRouteDepth(route, depth);
         try plan.assertProviderRunLimit(provider_run_count);
+        try self.reserveFabricResponseEvidenceEvents(2);
+        var supervisor_snapshot = try self.snapshotSlotSupervisor(parent_index);
+        defer supervisor_snapshot.deinit(self.allocator);
+        var fabric_charge_committed = false;
+        errdefer if (!fabric_charge_committed) supervisor_snapshot.restore(self, parent_index);
         try self.beforeFabricInvocationForSlot(parent_slot, pending.world_port_id, route.kind, depth, 1);
         const status: Fabric.InvocationStatus = switch (provider_slot.status) {
             .completed => .provider_completed,
@@ -9685,6 +9711,7 @@ pub const Runspace = struct {
             else => .fabric_failed,
         };
         try self.recordFabricInvocation(parent_slot.*, invocation, route, event_kind, "fabric provider route recorded");
+        fabric_charge_committed = true;
         return invocation;
     }
 
@@ -9706,6 +9733,11 @@ pub const Runspace = struct {
         const depth = try self.fabricDepthForParent(parent_slot.handle);
         try plan.assertDepth(depth);
         try assertFabricRouteDepth(route, depth);
+        try self.reserveFabricResponseEvidenceEvents(5);
+        var supervisor_snapshot = try self.snapshotSlotSupervisor(parent_index);
+        defer supervisor_snapshot.deinit(self.allocator);
+        var fabric_charge_committed = false;
+        errdefer if (!fabric_charge_committed) supervisor_snapshot.restore(self, parent_index);
         try self.beforeFabricInvocationForSlot(parent_slot, pending.world_port_id, route.kind, depth, 0);
         var invocation = Fabric.Invocation.init(.{
             .plan_fingerprint = plan.plan_fingerprint,
@@ -9739,10 +9771,10 @@ pub const Runspace = struct {
             .sequence = invocation.sequence,
             .status = .completed,
         });
-        try self.reserveFabricResponseEvidenceEvents(5);
         _ = try self.respondWithFabricOwnership(mailbox_id, response, true);
         try self.recordFabricInvocation(parent_slot.*, invocation, route, .fabric_invocation_started, "fabric replay invocation recorded");
         try self.recordFabricReceipt(parent_slot.handle, invocation, route.route_fingerprint, pending, response.frame_fingerprint, null, .completed, null);
+        fabric_charge_committed = true;
         return invocation;
     }
 
@@ -9767,7 +9799,7 @@ pub const Runspace = struct {
         var response_image = try provider_result.cloneForValueContract(self.allocator, mapped_contract.value_table_id, mapped_contract.boundary_value_fingerprint);
         var response_image_owned = true;
         errdefer if (response_image_owned) response_image.deinit(self.allocator);
-        var response = try fabricDeferredResponseForPending(pending, response_image);
+        var response = try fabricMappedResponseForPending(pending, response_image, mapped_contract.boundary_value_fingerprint);
         response_image_owned = false;
         defer response.deinit(self.allocator);
         try self.reserveFabricResponseEvidenceEvents(3);
@@ -9941,6 +9973,26 @@ pub const Runspace = struct {
             .status = .responded,
             .flags = frame_response_deferred_fingerprint_flag,
         });
+    }
+
+    fn fabricMappedResponseForPending(pending: Runspace.PendingPort, response_image: Frame.ValueImage, response_fingerprint: ?u64) !Frame.Response {
+        if (response_fingerprint) |fingerprint| {
+            const request = pending.request_frame orelse return error.InvalidPendingPortTransition;
+            if (response_image.boundary_value_fingerprint != fingerprint) return error.InvalidFrameEncoding;
+            return Frame.Response.init(.{
+                .world_surface_fingerprint = request.world_surface_fingerprint,
+                .target_certificate_fingerprint = request.target_certificate_fingerprint,
+                .world_port_id = request.world_port_id,
+                .request_fingerprint = request.request_fingerprint,
+                .response_kind = pending.expected_response_kind,
+                .response_value_table_id = pending.expected_response_value_table_id,
+                .response_fingerprint = fingerprint,
+                .response_image = response_image,
+                .replay_key = request.replay_key_seed.withResponse(fingerprint).fingerprint(),
+                .status = .responded,
+            });
+        }
+        return fabricDeferredResponseForPending(pending, response_image);
     }
 
     fn fabricResponseForPendingWithImage(pending: Runspace.PendingPort, status: ResponseStatus, seed: u64, reason: []const u8, response_image: ?Frame.ValueImage) !Frame.Response {
