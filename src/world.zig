@@ -9679,7 +9679,8 @@ pub const Runspace = struct {
         const route = plan.routeForPort(pending.world_port_id) orelse return error.FabricMissingRoute;
         try route.validate();
         switch (route.kind) {
-            .target_export, .admitted_run, .guest => {},
+            .target_export, .admitted_run => {},
+            .guest => return error.GuestRouteDenied,
             else => return error.UnsupportedMapping,
         }
         if (route.provider_target_ref_fingerprint) |expected_target| {
@@ -9974,7 +9975,7 @@ pub const Runspace = struct {
         return depth;
     }
 
-    fn validateFabricProviderSlot(_: *@This(), route: Fabric.Route, provider_slot: Runspace.RunSlot) !void {
+    fn validateFabricProviderSlot(self: *@This(), route: Fabric.Route, provider_slot: Runspace.RunSlot) !void {
         if (route.provider_target_ref_fingerprint) |expected| {
             if (provider_slot.target_ref.target_ref_fingerprint != expected) return error.HandoffTargetMismatch;
         }
@@ -9990,6 +9991,16 @@ pub const Runspace = struct {
         }
         if (route.provider_admission_receipt_fingerprint) |expected| {
             if (provider_slot.admission_receipt_fingerprint != expected) return error.InvalidFrameEncoding;
+        }
+        if (route.provider_world_port_id) |expected| {
+            switch (provider_slot.status) {
+                .parked_on_port, .parked_on_supervision => {
+                    const mailbox_id = provider_slot.pending_mailbox_id orelse return error.StaleRunHandle;
+                    const provider_pending = try self.mailbox.get(mailbox_id);
+                    if (provider_pending.world_port_id != expected) return error.WrongPortId;
+                },
+                else => {},
+            }
         }
         if (route.provider_run_image_fingerprint) |expected| {
             const image = provider_slot.installed_run_image orelse return error.InvalidFrameEncoding;
