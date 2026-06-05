@@ -9800,8 +9800,11 @@ pub const Runspace = struct {
                 }
                 return err;
             }
-        else
-            return error.InvalidRunspaceTransition;
+        else if (allow_active_fabric) Runspace.ResponseEvidence{
+            .response_fingerprint = response.response_fingerprint,
+            .response_frame_fingerprint = response.frame_fingerprint,
+            .response_value_image_fingerprint = response.response_value_fingerprint,
+        } else return error.InvalidRunspaceTransition;
         if (response.status == .pending) return error.HandlerPending;
         const effective_response_frame_fingerprint = response_evidence.response_frame_fingerprint orelse response_evidence.response_fingerprint;
         try slot.resumeFromPort(mailbox_id, effective_response_frame_fingerprint, response_evidence.response_value_image_fingerprint);
@@ -11278,8 +11281,8 @@ pub const Runspace = struct {
             if (route.parent_target_certificate_fingerprint != 0 and route.parent_target_certificate_fingerprint != pending.target_certificate_fingerprint) continue;
             if (route.parent_world_port_id != pending.world_port_id) continue;
             return switch (route.kind) {
-                .adapter, .unsupported => false,
-                .target_export, .admitted_run, .guest, .replay, .reject => true,
+                .adapter => false,
+                .target_export, .admitted_run, .guest, .replay, .reject, .unsupported => true,
             };
         }
         return false;
