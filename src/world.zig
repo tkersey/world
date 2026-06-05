@@ -10241,6 +10241,9 @@ pub const Runspace = struct {
 
     fn assertNoFabricAncestorTargetCycle(self: *const @This(), parent_handle: RunHandle, provider_slot: Runspace.RunSlot) !void {
         const provider_target_fingerprint = provider_slot.target_ref.target_ref_fingerprint;
+        const immediate_parent_index = try self.slotIndex(parent_handle);
+        const immediate_parent_slot = self.slots.items[immediate_parent_index];
+        if (immediate_parent_slot.target_ref.target_ref_fingerprint == provider_target_fingerprint) return error.FabricCycle;
         var current_handle_fingerprint = parent_handle.handle_fingerprint;
         var guard: usize = 0;
         while (true) {

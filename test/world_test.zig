@@ -5066,6 +5066,52 @@ test "runspace fabric provider result resumes exactly one parent pending port" {
     try std.testing.expectError(error.WrongTargetCertificate, runspace.routePendingToProviderRun(0, forged_provider_plan, provider_handle));
     try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_invocation_count);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+
+    var same_target_final_image = try world.Frame.ValueImage.fromValue(
+        std.testing.allocator,
+        1,
+        0x5150_0002,
+        null,
+        @as(i32, 2),
+        world.ValuePolicy.portable,
+    );
+    defer same_target_final_image.deinit(std.testing.allocator);
+    const same_target_module: u64 = 0xfab1_c001;
+    const same_target_provider_handle = try runspace.installRunImage(world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = parent_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+            .final_response_fingerprint = 0x5150_0002,
+            .final_value_image_fingerprint = same_target_final_image.value_image_fingerprint,
+            .status = .completed,
+        }),
+        .final_result_image = same_target_final_image,
+        .module_ref_fingerprint = same_target_module,
+    }));
+    const same_target_route = world.Fabric.Route.init(.{
+        .route_id = 421,
+        .kind = .target_export,
+        .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .parent_world_port_id = 0,
+        .provider_module_fingerprint = same_target_module,
+        .response_value_mapping_fingerprint = response_mapping.mapping_fingerprint,
+    });
+    const same_target_plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .routes = &.{same_target_route},
+        .value_mappings = &.{response_mapping},
+    });
+    try runspace.installFabricPlan(parent_ref, same_target_plan);
+    try std.testing.expectError(error.FabricCycle, runspace.routePendingToProviderRun(0, same_target_plan, same_target_provider_handle));
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_invocation_count);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+
     try runspace.installFabricPlan(parent_ref, plan);
 
     const invocation = try runspace.routePendingToProviderRun(0, plan, provider_handle);
@@ -5088,7 +5134,7 @@ test "runspace fabric provider result resumes exactly one parent pending port" {
     try std.testing.expectEqual(@as(?u64, provider_run_receipt_fingerprint), receipt.provider_run_receipt_fingerprint);
 
     report = try runspace.tick();
-    try std.testing.expectEqual(@as(usize, 2), report.completed_count);
+    try std.testing.expectEqual(@as(usize, 3), report.completed_count);
     var exported = try runspace.exportRun(parent_handle);
     defer exported.deinit(std.testing.allocator);
     try std.testing.expect(exported.current_state.final_response_fingerprint != null);
