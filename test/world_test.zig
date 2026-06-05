@@ -5459,6 +5459,31 @@ test "runspace install consumes explicit fabric plan for missing environment bin
     try std.testing.expectEqual(world.Fabric.InvocationStatus.unsupported, live_unsupported_invocation.status);
     try std.testing.expectEqual(@as(usize, 1), live_unsupported_receiver.report().fabric_receipt_count);
 
+    const bound_fabric_no_native_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .fabric_plan_fingerprint = live_unsupported_plan.plan_fingerprint,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_native_adapters = true,
+            .allow_fabric_routes = true,
+            .allow_failed_responses = true,
+        }),
+        .budget = world.Budget.init(.{ .max_fresh_calls = 0 }),
+    });
+    var bound_fabric_no_native_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer bound_fabric_no_native_runtime.deinit();
+    var bound_fabric_no_native_receiver = world.Runspace.init(std.testing.allocator, .{});
+    defer bound_fabric_no_native_receiver.deinit();
+    const bound_fabric_no_native_handle = try bound_fabric_no_native_receiver.installMachineRun(fixtures.Ports.Target, PortsEnv, &bound_fabric_no_native_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .fabric_plan = live_unsupported_plan,
+        .permit = bound_fabric_no_native_permit,
+    });
+    _ = try bound_fabric_no_native_receiver.tick();
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try bound_fabric_no_native_receiver.getSlotSummary(bound_fabric_no_native_handle)).status);
+    try std.testing.expectEqual(@as(usize, 1), bound_fabric_no_native_receiver.report().pending_port_count);
+
     const alternate_route = world.Fabric.Route.init(.{
         .route_id = 0x51ace_fab9,
         .kind = .reject,

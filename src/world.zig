@@ -17159,12 +17159,12 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     if (Target.WorldPortTable.entries.len == 0) return Error.UnknownWorldPort;
                     switch (world_port_id) {
                         inline 0...Target.WorldPortTable.entries.len - 1 => |id| {
+                            if (self.fabricPlanCoversWorldPort(world_port_id)) return;
                             const Handler = comptime handlerForWorldPortId(Target, Config, @intCast(id));
                             if (Handler) |Decl| {
                                 try self.accountPendingAdapterCallDecl(Decl);
                                 return;
                             }
-                            if (self.fabricPlanCoversWorldPort(world_port_id)) return;
                             return Error.MissingHandler;
                         },
                         else => return Error.UnknownWorldPort,
