@@ -409,6 +409,14 @@ test "fabric binding invocation receipt and coverage fingerprints are stable" {
         .local_run_id = 1,
         .target_ref_fingerprint = world.TargetRef.fromTarget(fixtures.Ports.Target).target_ref_fingerprint,
     });
+    const fabric = world.Fabric.init(.{
+        .boundary_digest = 0xb0c,
+        .module_fingerprint = 0xfab,
+        .target_ref_fingerprint = handle.target_ref_fingerprint,
+    });
+    const route_binding = world.Fabric.Binding.fromRoute(fixtures.Ports.Target, 0, fabric, route, null);
+    try std.testing.expectEqual(@as(u32, 0), route_binding.world_port_id);
+    try std.testing.expectEqual(route.route_fingerprint, route_binding.route_fingerprint);
     const invocation = world.Fabric.Invocation.init(.{
         .plan_fingerprint = 0xaaaa,
         .route_fingerprint = route.route_fingerprint,
@@ -431,6 +439,7 @@ test "fabric binding invocation receipt and coverage fingerprints are stable" {
         .status = .completed,
     });
     try std.testing.expectEqual(invocation.invocation_fingerprint, progressed.invocation_fingerprint);
+    try std.testing.expect(progressed.invocation_state_fingerprint != invocation.invocation_state_fingerprint);
 
     const receipt = world.Fabric.Receipt.init(.{
         .invocation_fingerprint = invocation.invocation_fingerprint,
@@ -4950,6 +4959,7 @@ test "runspace fabric provider result resumes exactly one parent pending port" {
     const stored_invocation = runspace.fabric_invocations.items[invocation.sequence];
     try std.testing.expectEqual(world.Fabric.InvocationStatus.parent_responded, stored_invocation.status);
     try std.testing.expectEqual(invocation.invocation_fingerprint, stored_invocation.invocation_fingerprint);
+    try std.testing.expect(stored_invocation.invocation_state_fingerprint != invocation.invocation_state_fingerprint);
     const receipt = runspace.fabric_receipts.items[0];
     try std.testing.expectEqual(invocation.invocation_fingerprint, receipt.invocation_fingerprint);
     try std.testing.expectEqual(@as(?u64, provider_handle.handle_fingerprint), receipt.provider_run_handle_fingerprint);

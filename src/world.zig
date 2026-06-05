@@ -7200,15 +7200,15 @@ pub const Fabric = struct {
             return result;
         }
 
-        pub fn fromRoute(comptime Target: type, fabric: Fabric, route: Fabric.Route, mapping: ?Fabric.ValueMapping) Fabric.Binding {
+        pub fn fromRoute(comptime Target: type, comptime world_port_id: u32, fabric: Fabric, route: Fabric.Route, mapping: ?Fabric.ValueMapping) Fabric.Binding {
             const target_ref = TargetRef.fromTarget(Target);
-            const requirement = ImportRequirement.fromTargetPort(Target, route.world_port_id);
+            const requirement = ImportRequirement.fromTargetPort(Target, world_port_id);
             return Fabric.Binding.init(.{
                 .fabric_digest = fabric.fabric_digest,
                 .parent_target_ref_fingerprint = target_ref.target_ref_fingerprint,
                 .parent_world_surface_fingerprint = target_ref.world_surface_fingerprint,
                 .parent_target_certificate_fingerprint = target_ref.target_certificate_fingerprint,
-                .world_port_id = route.world_port_id,
+                .world_port_id = world_port_id,
                 .import_requirement_fingerprint = requirement.requirement_fingerprint,
                 .route_fingerprint = route.route_fingerprint,
                 .value_mapping_fingerprint = if (mapping) |value| value.mapping_fingerprint else route.value_mapping_fingerprint,
@@ -7476,6 +7476,7 @@ pub const Fabric = struct {
         format_version: u32 = world_fabric_invocation_format_version,
         fingerprint_version: u32 = world_fabric_invocation_fingerprint_version,
         invocation_fingerprint: u64,
+        invocation_state_fingerprint: u64,
         plan_fingerprint: u64,
         route_fingerprint: u64,
         parent_run_handle_fingerprint: u64,
@@ -7507,6 +7508,7 @@ pub const Fabric = struct {
         }) Fabric.Invocation {
             var result = Fabric.Invocation{
                 .invocation_fingerprint = 0,
+                .invocation_state_fingerprint = 0,
                 .plan_fingerprint = args.plan_fingerprint,
                 .route_fingerprint = args.route_fingerprint,
                 .parent_run_handle_fingerprint = args.parent_run_handle_fingerprint,
@@ -7522,6 +7524,7 @@ pub const Fabric = struct {
                 .status = args.status,
             };
             result.invocation_fingerprint = fingerprintFabricInvocation(result);
+            result.invocation_state_fingerprint = fingerprintFabricInvocationState(result);
             return result;
         }
 
@@ -7529,6 +7532,7 @@ pub const Fabric = struct {
             if (self.format_version != world_fabric_invocation_format_version) return error.InvalidFrameEncoding;
             if (self.fingerprint_version != world_fabric_invocation_fingerprint_version) return error.InvalidFrameEncoding;
             if (fingerprintFabricInvocation(self) != self.invocation_fingerprint) return error.InvalidFrameEncoding;
+            if (fingerprintFabricInvocationState(self) != self.invocation_state_fingerprint) return error.InvalidFrameEncoding;
         }
     };
 
@@ -19890,6 +19894,16 @@ fn fingerprintFabricInvocation(invocation: Fabric.Invocation) u64 {
     hashOptionalU64(&hasher, invocation.run_permit_fingerprint);
     hashU64(&hasher, invocation.depth);
     hashU64(&hasher, invocation.sequence);
+    return hasher.final();
+}
+
+fn fingerprintFabricInvocationState(invocation: Fabric.Invocation) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.fabric.invocation.state.fingerprint");
+    hashU64(&hasher, world_fabric_invocation_fingerprint_version);
+    hashU64(&hasher, invocation.invocation_fingerprint);
+    hashOptionalU64(&hasher, invocation.mapped_response_frame_fingerprint);
+    hashU64(&hasher, @intFromEnum(invocation.status));
     return hasher.final();
 }
 
