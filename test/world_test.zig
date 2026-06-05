@@ -22784,4 +22784,33 @@ test "fabric-covered replay admission requires transcript evidence" {
 
     const bound_with_transcript = PortsEnv.acceptanceReportWithFabricPlan(.fresh, true, replay_plan);
     try std.testing.expect(bound_with_transcript.accepted);
+
+    var source_transcript = world.Transcript.init(std.testing.allocator);
+    defer source_transcript.deinit();
+    try recordPortsTranscript(&source_transcript);
+    var source_image = try source_transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer source_image.deinit(std.testing.allocator);
+    const registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Ports.Target)});
+    const package = world.Admission.TransferPackage.init(.{
+        .kind = .target_reference_only,
+        .target_ref = parent_ref,
+        .transcript_image = source_image,
+        .requested_mode = .continue_fresh,
+    });
+    var result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, PortsMissingEnv, package, .{
+        .fabric_plan = replay_plan,
+    });
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(result.report.accepted);
+    var admitted = result.admitted_run orelse return error.ExpectedAdmittedRun;
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var run = try admitted.start(fixtures.Ports.Target, PortsMissingEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    defer run.deinit();
 }

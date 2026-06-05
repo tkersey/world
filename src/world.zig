@@ -2204,7 +2204,8 @@ pub const Admission = struct {
                 validateTranscriptImageFingerprint(candidate.*) catch return Error.HandoffDenied;
                 if (candidate.transcript_image_fingerprint != fingerprint) return Error.HandoffDenied;
             }
-            const use_stored_transcript = modeConsumesTranscript(requested_mode) and
+            const fabric_replay_requires_stored_transcript = if (self.fabric_plan) |plan| fabricPlanHasReplayRoute(plan) else false;
+            const use_stored_transcript = (modeConsumesTranscript(requested_mode) or fabric_replay_requires_stored_transcript) and
                 supplied_transcript_image == null and
                 stored_transcript_image != null;
             if (use_stored_transcript) {
@@ -2310,8 +2311,9 @@ pub const Admission = struct {
             const package_transcript_available = package.transcript_image != null or
                 (package.run_image != null and package.run_image.?.transcript_image != null);
             const fresh_transcript_sink_available = args.fresh_transcript_sink_available and Env.policy_decl.allow_native_adapters;
+            const fabric_replay_requires_transcript = if (args.fabric_plan) |plan| fabricPlanHasReplayRoute(plan) else false;
             const transcript_available = switch (mode) {
-                .continue_fresh => fresh_transcript_sink_available,
+                .continue_fresh => fresh_transcript_sink_available or (fabric_replay_requires_transcript and package_transcript_available),
                 .resume_parked, .branch_resume => package_transcript_available or fresh_transcript_sink_available,
                 else => package_transcript_available,
             };
