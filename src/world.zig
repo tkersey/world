@@ -4416,36 +4416,38 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
 
         pub fn acceptanceReportWithSupervision(requested_mode: Mode, transcript_image_available: bool, supervision_policy: SupervisionPolicy) AcceptanceReport {
             const report = acceptanceReportFor(Target, bindings, policy, requested_mode, transcript_image_available);
-            return acceptanceReportWithSupervisionFromReport(report, requested_mode, transcript_image_available, supervision_policy);
+            return acceptanceReportWithSupervisionFromReport(report, requested_mode, transcript_image_available, supervision_policy, null);
         }
 
-        fn acceptanceReportWithSupervisionFromReport(report: AcceptanceReport, requested_mode: Mode, transcript_image_available: bool, supervision_policy: SupervisionPolicy) AcceptanceReport {
+        fn acceptanceReportWithSupervisionFromReport(report: AcceptanceReport, requested_mode: Mode, transcript_image_available: bool, supervision_policy: SupervisionPolicy, admitted_fabric_plan: ?Fabric.Plan) AcceptanceReport {
             if (!report.accepted) return report;
             if (!Supervision.modeAllowedByPolicy(supervision_policy, requested_mode)) return rejectedReport(report, &.{supervisionModeAcceptanceBlocker(requested_mode)});
             if (supervision_policy.require_transcript_image_for_replay and modeConsumesTranscript(requested_mode) and !transcript_image_available) {
                 return rejectedReport(report, &.{.TranscriptImageRequired});
             }
             inline for (dense_binding_entries) |entry| {
-                if (!Supervision.adapterAllowedByPolicy(supervision_policy, entry.adapter_kind)) {
-                    return rejectedReport(report, &.{.SupervisionPolicyMismatch});
-                }
-                if (supervision_policy.require_portable_value_images and !entry.value_policy.require_portable_values) {
-                    return rejectedReport(report, &.{.PortableValuesRequired});
-                }
-                if (supervision_policy.reject_native_only_values and entry.value_policy.allow_native_only_values) {
-                    return rejectedReport(report, &.{.NativeOnlyValueRejected});
+                if (!fabricPlanCoversPort(admitted_fabric_plan, entry.world_port_id)) {
+                    if (!Supervision.adapterAllowedByPolicy(supervision_policy, entry.adapter_kind)) {
+                        return rejectedReport(report, &.{.SupervisionPolicyMismatch});
+                    }
+                    if (supervision_policy.require_portable_value_images and !entry.value_policy.require_portable_values) {
+                        return rejectedReport(report, &.{.PortableValuesRequired});
+                    }
+                    if (supervision_policy.reject_native_only_values and entry.value_policy.allow_native_only_values) {
+                        return rejectedReport(report, &.{.NativeOnlyValueRejected});
+                    }
                 }
             }
             return report;
         }
 
         pub fn acceptanceReportWithPermit(requested_mode: Mode, transcript_image_available: bool, permit: RunPermit) AcceptanceReport {
-            return acceptanceReportWithPermitFromReport(acceptanceReportFor(Target, bindings, policy, requested_mode, transcript_image_available), requested_mode, transcript_image_available, permit);
+            return acceptanceReportWithPermitFromReport(acceptanceReportFor(Target, bindings, policy, requested_mode, transcript_image_available), requested_mode, transcript_image_available, permit, null);
         }
 
         pub fn acceptanceReportWithFabricPlanAndPermit(requested_mode: Mode, transcript_image_available: bool, plan: Fabric.Plan, permit: RunPermit) AcceptanceReport {
             const base_report = acceptanceReportWithFabricPlan(requested_mode, transcript_image_available, plan);
-            const report = acceptanceReportWithPermitFromReport(base_report, requested_mode, transcript_image_available, permit);
+            const report = acceptanceReportWithPermitFromReport(base_report, requested_mode, transcript_image_available, permit, plan);
             if (!report.accepted) return report;
             for (plan.routes) |route| {
                 if (route.parent_world_surface_fingerprint != 0 and route.parent_world_surface_fingerprint != target_ref.world_surface_fingerprint) return rejectedReport(report, &.{.SupervisionPolicyMismatch});
@@ -4464,7 +4466,7 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
             return report;
         }
 
-        fn acceptanceReportWithPermitFromReport(base_report: AcceptanceReport, requested_mode: Mode, transcript_image_available: bool, permit: RunPermit) AcceptanceReport {
+        fn acceptanceReportWithPermitFromReport(base_report: AcceptanceReport, requested_mode: Mode, transcript_image_available: bool, permit: RunPermit, admitted_fabric_plan: ?Fabric.Plan) AcceptanceReport {
             const environment_target_ref = TargetRef.fromTarget(Target);
             if (permit.mode != requested_mode) {
                 return rejectedAcceptance(environment_target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
@@ -4488,7 +4490,7 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
             if (base_report.fabric_plan_fingerprint != permit.fabric_plan_fingerprint) {
                 return rejectedAcceptance(environment_target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
             }
-            const report = acceptanceReportWithSupervisionFromReport(base_report, requested_mode, transcript_image_available, permit.policy);
+            const report = acceptanceReportWithSupervisionFromReport(base_report, requested_mode, transcript_image_available, permit.policy, admitted_fabric_plan);
             if (!report.accepted) return report;
             Supervision.Supervisor.validatePermitForRun(permit, Target.WorldPortTable.entries.len) catch |err| {
                 return rejectedAcceptance(environment_target_ref, requested_mode, &.{supervisionPreflightBlocker(err)});
@@ -4496,17 +4498,19 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
             inline for (bindings) |BindingDecl| {
                 if (BindingDecl.TargetType != Target) continue;
                 if (BindingDecl.world_port_id >= Target.WorldPortTable.entries.len) continue;
-                if (permit.ruleFor(BindingDecl.world_port_id)) |rule| {
-                    if (!rule.permitsMode(requested_mode)) return rejectedReport(report, &.{.SupervisionPortRuleDenied});
-                    const adapter_kind: AdapterKind = if (@hasDecl(BindingDecl, "adapter_kind")) BindingDecl.adapter_kind else .native;
-                    if (!rule.allowed_adapter_kinds.allows(adapter_kind)) return rejectedReport(report, &.{.SupervisionPortRuleDenied});
-                    const value_policy: ValuePolicy = if (@hasDecl(BindingDecl, "value_policy")) BindingDecl.value_policy else .native_compatible;
-                    if (rule.require_portable_values and !value_policy.require_portable_values) return rejectedReport(report, &.{.SupervisionPortRuleDenied});
-                    const authority_kind = comptime authorityKindForDecl(BindingDecl);
-                    if (authority_kind) |kind| {
-                        if (!rule.allowed_authority_kinds.allows(kind)) return rejectedReport(report, &.{.SupervisionPortRuleDenied});
-                    } else if (!std.meta.eql(rule.allowed_authority_kinds, Supervision.AllowedAuthorityKinds.all)) {
-                        return rejectedReport(report, &.{.SupervisionPortRuleDenied});
+                if (!fabricPlanCoversPort(admitted_fabric_plan, BindingDecl.world_port_id)) {
+                    if (permit.ruleFor(BindingDecl.world_port_id)) |rule| {
+                        if (!rule.permitsMode(requested_mode)) return rejectedReport(report, &.{.SupervisionPortRuleDenied});
+                        const adapter_kind: AdapterKind = if (@hasDecl(BindingDecl, "adapter_kind")) BindingDecl.adapter_kind else .native;
+                        if (!rule.allowed_adapter_kinds.allows(adapter_kind)) return rejectedReport(report, &.{.SupervisionPortRuleDenied});
+                        const value_policy: ValuePolicy = if (@hasDecl(BindingDecl, "value_policy")) BindingDecl.value_policy else .native_compatible;
+                        if (rule.require_portable_values and !value_policy.require_portable_values) return rejectedReport(report, &.{.SupervisionPortRuleDenied});
+                        const authority_kind = comptime authorityKindForDecl(BindingDecl);
+                        if (authority_kind) |kind| {
+                            if (!rule.allowed_authority_kinds.allows(kind)) return rejectedReport(report, &.{.SupervisionPortRuleDenied});
+                        } else if (!std.meta.eql(rule.allowed_authority_kinds, Supervision.AllowedAuthorityKinds.all)) {
+                            return rejectedReport(report, &.{.SupervisionPortRuleDenied});
+                        }
                     }
                 }
             }
@@ -10333,15 +10337,15 @@ pub const Runspace = struct {
         };
         defer provider_image.deinit(self.allocator);
         const provider_result = provider_image.final_result_image orelse {
-            try self.retireFabricInvocation(recorded, .failed);
+            try self.failProviderFabricInvocation(parent_slot.handle, recorded, pending, provider_image.prior_run_receipt_fingerprint, null, .ProviderResultMismatch, receipt_evidence.takeReceiptSummary());
             return error.MissingValueImage;
         };
         self.validateFabricParentResponseValue(parent_slot.*, pending.world_port_id, provider_result) catch |err| {
-            try self.retireFabricInvocation(recorded, .failed);
+            try self.failProviderFabricInvocation(parent_slot.handle, recorded, pending, provider_image.prior_run_receipt_fingerprint, null, fabricResponseBlocker(err), receipt_evidence.takeReceiptSummary());
             return err;
         };
         const mapped_contract = self.fabricParentResponseContract(route, provider_result, pending.expected_response_value_table_id) catch |err| {
-            try self.retireFabricInvocation(recorded, .failed);
+            try self.failProviderFabricInvocation(parent_slot.handle, recorded, pending, provider_image.prior_run_receipt_fingerprint, null, fabricResponseBlocker(err), receipt_evidence.takeReceiptSummary());
             return err;
         };
         var response_image = try provider_result.cloneForValueContract(self.allocator, mapped_contract.value_table_id, mapped_contract.boundary_value_fingerprint);
@@ -10404,6 +10408,44 @@ pub const Runspace = struct {
         try self.replaceFabricInvocation(completed);
         try self.recordFabricReceipt(parent_slot.handle, completed, completed.route_fingerprint, pending, parent_response_frame_fingerprint, recorded.provider_run_handle_fingerprint, provider_image.prior_run_receipt_fingerprint, .completed, null, receipt_evidence.takeReceiptSummary());
         return event;
+    }
+
+    fn failProviderFabricInvocation(
+        self: *@This(),
+        parent_handle: RunHandle,
+        recorded: Fabric.Invocation,
+        pending: Runspace.PendingPort,
+        provider_run_receipt_fingerprint: ?u64,
+        parent_response_frame_fingerprint: ?u64,
+        blocker: Fabric.Blocker,
+        receipt_summary: []u8,
+    ) !void {
+        const failed = Fabric.Invocation.init(.{
+            .plan_fingerprint = recorded.plan_fingerprint,
+            .route_fingerprint = recorded.route_fingerprint,
+            .parent_run_handle_fingerprint = recorded.parent_run_handle_fingerprint,
+            .parent_pending_port_fingerprint = recorded.parent_pending_port_fingerprint,
+            .parent_mailbox_id = recorded.parent_mailbox_id,
+            .request_frame_fingerprint = recorded.request_frame_fingerprint,
+            .provider_run_handle_fingerprint = recorded.provider_run_handle_fingerprint,
+            .mapped_request_frame_fingerprint = recorded.mapped_request_frame_fingerprint,
+            .mapped_response_frame_fingerprint = parent_response_frame_fingerprint,
+            .run_permit_fingerprint = recorded.run_permit_fingerprint,
+            .depth = recorded.depth,
+            .sequence = recorded.sequence,
+            .status = .failed,
+        });
+        try self.replaceFabricInvocation(failed);
+        try self.recordFabricReceipt(parent_handle, failed, failed.route_fingerprint, pending, parent_response_frame_fingerprint, recorded.provider_run_handle_fingerprint, provider_run_receipt_fingerprint, .failed, blocker, receipt_summary);
+    }
+
+    fn fabricResponseBlocker(err: anyerror) Fabric.Blocker {
+        return switch (err) {
+            error.UnsupportedMapping => .UnsupportedMapping,
+            error.CrossTypeConversionRejected => .CrossTypeConversionRejected,
+            error.ProviderResultMismatch, error.MissingValueImage => .ProviderResultMismatch,
+            else => .FabricDenied,
+        };
     }
 
     pub fn tickFabric(self: *@This()) !Runspace.RunspaceReport {
@@ -15529,7 +15571,7 @@ pub const Handoff = struct {
         const image = if (self.run_image.transcript_image) |*image| image else {
             if (pending_frame.turn_index != 0) return error.TranscriptImageRequired;
             try self.preflightRequestFrameWithSupervisor(supervisor, pending_frame);
-            if (!environmentHasBindingForPort(Env, pending_frame.world_port_id) and fabricPlanCoversPort(admitted_fabric_plan, pending_frame.world_port_id)) return;
+            if (fabricPlanCoversPort(admitted_fabric_plan, pending_frame.world_port_id)) return;
             try supervisor.beforeAdapterCall(.{
                 .world_port_id = pending_frame.world_port_id,
                 .mode = .fresh,
@@ -15581,7 +15623,7 @@ pub const Handoff = struct {
             }
         }
         try self.preflightRequestFrameWithSupervisor(supervisor, pending_frame);
-        if (!environmentHasBindingForPort(Env, pending_frame.world_port_id) and fabricPlanCoversPort(admitted_fabric_plan, pending_frame.world_port_id)) return;
+        if (fabricPlanCoversPort(admitted_fabric_plan, pending_frame.world_port_id)) return;
         try supervisor.beforeAdapterCall(.{
             .world_port_id = pending_frame.world_port_id,
             .mode = .fresh,
@@ -15608,7 +15650,7 @@ pub const Handoff = struct {
                 => {
                     const request_frame = event.request_frame orelse return error.ReplayMissing;
                     try self.preflightRequestFrameWithSupervisor(supervisor, request_frame);
-                    if (!environmentHasBindingForPort(Env, request_frame.world_port_id) and fabricPlanCoversPort(admitted_fabric_plan, request_frame.world_port_id)) continue;
+                    if (fabricPlanCoversPort(admitted_fabric_plan, request_frame.world_port_id)) continue;
                     try supervisor.beforeAdapterCall(.{
                         .world_port_id = request_frame.world_port_id,
                         .mode = run_mode,
@@ -15792,8 +15834,7 @@ pub const Handoff = struct {
                                         run.audit.replay_mismatch_count += 1;
                                         return replay_err;
                                     };
-                                    const fabric_covered_handoff_pending = !environmentHasBindingForPort(Env, request.world_port_id) and fabricPlanCoversPort(admitted_fabric_plan, request.world_port_id);
-                                    if (!fabric_covered_handoff_pending) {
+                                    if (!fabricPlanCoversPort(admitted_fabric_plan, request.world_port_id)) {
                                         try run.accountPendingAdapterCall(request.world_port_id);
                                     }
                                     run.handoff_pending_frame_fingerprint = null;
@@ -15854,8 +15895,7 @@ pub const Handoff = struct {
                             };
                         }
                         try self.validatePendingFrame(request);
-                        const fabric_covered_handoff_pending = !environmentHasBindingForPort(Env, request.world_port_id) and fabricPlanCoversPort(admitted_fabric_plan, request.world_port_id);
-                        if (!fabric_covered_handoff_pending) {
+                        if (!fabricPlanCoversPort(admitted_fabric_plan, request.world_port_id)) {
                             try run.accountPendingAdapterCall(request.world_port_id);
                         }
                         run.handoff_pending_frame_fingerprint = null;
@@ -18040,7 +18080,7 @@ fn fabricCoveredMissingEnvironmentPortCount(comptime Target: type, comptime bind
     if (coverage.target_ref_fingerprint != target_ref.target_ref_fingerprint) return null;
     if (coverage.world_surface_fingerprint != target_ref.world_surface_fingerprint) return null;
     if (coverage.target_certificate_fingerprint != target_ref.target_certificate_fingerprint) return null;
-    if (coverage.duplicate_route_count != 0 or coverage.unsupported_route_count != 0) return null;
+    if (coverage.duplicate_route_count != 0) return null;
     var fabric_covered_missing: usize = 0;
     inline for (0..Target.WorldPortTable.entries.len) |world_port_id| {
         comptime var host_bound = false;
