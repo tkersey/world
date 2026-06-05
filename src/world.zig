@@ -19908,9 +19908,12 @@ fn fingerprintRunspaceEvent(event: RunspaceEvent) u64 {
     hashOptionalU64(&hasher, event.run_receipt_fingerprint);
     hashOptionalU64(&hasher, event.admission_receipt_fingerprint);
     hashOptionalU64(&hasher, event.run_permit_fingerprint);
-    hashOptionalU64(&hasher, event.fabric_invocation_fingerprint);
-    hashOptionalU64(&hasher, event.fabric_route_fingerprint);
-    hashOptionalU64(&hasher, event.fabric_receipt_fingerprint);
+    if (event.fabric_invocation_fingerprint != null or event.fabric_route_fingerprint != null or event.fabric_receipt_fingerprint != null) {
+        hashBytes(&hasher, "fabric");
+        hashOptionalU64(&hasher, event.fabric_invocation_fingerprint);
+        hashOptionalU64(&hasher, event.fabric_route_fingerprint);
+        hashOptionalU64(&hasher, event.fabric_receipt_fingerprint);
+    }
     hashU64(&hasher, event.summary.len);
     hashBytes(&hasher, event.summary);
     return hasher.final();
