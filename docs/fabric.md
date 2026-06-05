@@ -59,7 +59,7 @@ This is separate from Environment binding. Environment binds host adapters. Fabr
 - `unit_args`
 - `provider_result_to_parent_response`
 
-Executable Fabric plans currently reject `payload_to_provider_args` until provider argument identity has a concrete witness. Provider routes must use `unit_args` for request routing and an explicit `provider_result_to_parent_response` mapping for response synthesis.
+Executable Fabric plans currently reject provider request mappings (`payload_to_provider_args` and `unit_args`) until provider argument identity has a concrete witness. Provider routes use an explicit `provider_result_to_parent_response` mapping for response synthesis.
 
 Mappings require exact value references where possible. Same-table compatibility is accepted only when already represented by Boundary/World metadata. Fabric rejects arbitrary host conversion, string conversion, JSON conversion, dynamic schema mapping, and host callback mappers.
 

@@ -7001,6 +7001,12 @@ pub const Fabric = struct {
                 },
                 .provider_result_to_parent_response => {
                     if (self.provider_result_value_table_id == null or self.parent_response_value_table_id == null) return error.UnsupportedMapping;
+                    if (self.provider_value_table_id) |generic| {
+                        if (generic != self.provider_result_value_table_id.?) return error.UnsupportedMapping;
+                    }
+                    if (self.parent_value_table_id) |generic| {
+                        if (generic != self.parent_response_value_table_id.?) return error.UnsupportedMapping;
+                    }
                     if (self.parent_payload_value_table_id != null or self.provider_argument_value_table_id != null) return error.UnsupportedMapping;
                     if (self.parent_payload_value_fingerprint != null or self.provider_argument_value_fingerprint != null) return error.UnsupportedMapping;
                     if (self.parent_response_value_fingerprint) |parent| {
@@ -7316,9 +7322,11 @@ pub const Fabric = struct {
                 try binding.validate();
                 if (binding.parent_world_surface_fingerprint != self.world_surface_fingerprint) return error.WrongWorldSurface;
                 if (binding.parent_target_certificate_fingerprint != self.target_certificate_fingerprint) return error.WrongTargetCertificate;
-                _ = self.findRoute(binding.route_fingerprint) orelse return error.FabricMissingRoute;
+                const route = self.findRoute(binding.route_fingerprint) orelse return error.FabricMissingRoute;
+                if (binding.world_port_id != route.world_port_id or binding.parent_world_port_id != route.parent_world_port_id) return error.WrongPortId;
                 if (binding.value_mapping_fingerprint) |mapping_fingerprint| {
                     _ = self.findValueMapping(mapping_fingerprint) orelse return error.UnsupportedMapping;
+                    if (route.value_mapping_fingerprint != mapping_fingerprint and route.response_value_mapping_fingerprint != mapping_fingerprint) return error.UnsupportedMapping;
                 }
             }
         }
@@ -7343,6 +7351,7 @@ pub const Fabric = struct {
                 }
                 if (request_mapping) |mapping| {
                     _ = try mapping.unitArgumentValueTableId();
+                    return error.UnsupportedMapping;
                 }
                 if (response_mapping) |mapping| {
                     try mapping.assertExactValueTableMatch();
@@ -10116,7 +10125,7 @@ pub const Runspace = struct {
             .payload_to_provider_args => return error.UnsupportedMapping,
             .unit_args => {
                 _ = try mapping.unitArgumentValueTableId();
-                return null;
+                return error.UnsupportedMapping;
             },
             .provider_result_to_parent_response => {
                 if (route.response_value_mapping_fingerprint != null) return error.UnsupportedMapping;
@@ -10196,6 +10205,7 @@ pub const Runspace = struct {
     }
 
     fn validateFabricProviderSlot(self: *@This(), route: Fabric.Route, provider_slot: Runspace.RunSlot) !void {
+        if (provider_slot.status == .admitted and provider_slot.driver == null and provider_slot.installed_run_image == null) return error.InvalidRunspaceTransition;
         if (route.provider_target_ref_fingerprint) |expected| {
             if (provider_slot.target_ref.target_ref_fingerprint != expected) return error.HandoffTargetMismatch;
         }

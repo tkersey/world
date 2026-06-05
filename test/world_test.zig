@@ -189,6 +189,23 @@ test "fabric plan lookup coverage and cycle checks are deterministic" {
     try std.testing.expectEqual(route.route_fingerprint, plan.routeForPort(0).?.route_fingerprint);
     try plan.assertCoverage(import_set);
     try plan.assertNoCycles();
+    const wrong_port_binding = world.Fabric.Binding.init(.{
+        .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .parent_world_port_id = 1,
+        .route_fingerprint = route.route_fingerprint,
+        .value_mapping_fingerprint = route.value_mapping_fingerprint,
+    });
+    const wrong_port_binding_plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = import_set.import_set_fingerprint,
+        .routes = &routes,
+        .bindings = &.{wrong_port_binding},
+        .value_mappings = &mappings,
+    });
+    try std.testing.expectError(error.WrongPortId, wrong_port_binding_plan.validate());
     const wrong_surface_plan = world.Fabric.Plan.init(.{
         .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
         .world_surface_fingerprint = parent_ref.world_surface_fingerprint + 1,
@@ -327,6 +344,14 @@ test "fabric value mapping enforces exact supported conversions" {
         .parent_response_value_fingerprint = response.response_fingerprint +% 1,
     });
     try std.testing.expectError(error.UnsupportedMapping, mismatched_parent_response.validate());
+    const conflicting_response_alias = world.Fabric.ValueMapping.init(.{
+        .kind = .provider_result_to_parent_response,
+        .provider_value_table_id = 7,
+        .provider_result_value_table_id = 1,
+        .parent_value_table_id = 1,
+        .parent_response_value_table_id = 1,
+    });
+    try std.testing.expectError(error.UnsupportedMapping, conflicting_response_alias.validate());
     const generic_result = world.Fabric.ValueMapping.init(.{
         .kind = .provider_result_to_parent_response,
         .parent_value_table_id = 1,
@@ -4993,7 +5018,6 @@ test "runspace fabric provider result resumes exactly one parent pending port" {
     try std.testing.expectEqual(@as(usize, 1), report.pending_port_count);
 
     const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
-    const request_mapping = fabricTestMapping(.unit_args);
     const response_mapping = fabricTestMapping(.provider_result_to_parent_response);
     const route = world.Fabric.Route.init(.{
         .route_id = 42,
@@ -5005,7 +5029,6 @@ test "runspace fabric provider result resumes exactly one parent pending port" {
         .provider_module_fingerprint = provider_ref.boundary_module_fingerprint,
         .provider_world_surface_fingerprint = provider_ref.world_surface_fingerprint,
         .provider_target_certificate_fingerprint = provider_ref.target_certificate_fingerprint,
-        .value_mapping_fingerprint = request_mapping.mapping_fingerprint,
         .response_value_mapping_fingerprint = response_mapping.mapping_fingerprint,
         .max_depth = 2,
         .metadata = "fabric-provider",
@@ -5016,7 +5039,7 @@ test "runspace fabric provider result resumes exactly one parent pending port" {
         .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
         .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
         .routes = &.{route},
-        .value_mappings = &.{ request_mapping, response_mapping },
+        .value_mappings = &.{response_mapping},
         .max_depth = 2,
         .max_provider_runs = 1,
     });
@@ -5295,7 +5318,7 @@ test "runspace fabric provider result does not require handoff export" {
     try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
 }
 
-test "runspace fabric payload mapping is rejected without provider argument witness" {
+test "runspace fabric request mappings are rejected without provider argument witness" {
     var parent_runtime = boundary.Runtime.init(std.testing.allocator);
     defer parent_runtime.deinit();
     var runspace = world.Runspace.init(std.testing.allocator, .{});
@@ -5349,9 +5372,33 @@ test "runspace fabric payload mapping is rejected without provider argument witn
     try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_receipt_count);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
     _ = provider_handle;
+
+    const unit_mapping = fabricTestMapping(.unit_args);
+    const response_mapping = fabricTestMapping(.provider_result_to_parent_response);
+    const unit_route = world.Fabric.Route.init(.{
+        .route_id = 57,
+        .kind = .target_export,
+        .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .parent_world_port_id = 0,
+        .provider_target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+        .provider_world_surface_fingerprint = provider_ref.world_surface_fingerprint,
+        .provider_target_certificate_fingerprint = provider_ref.target_certificate_fingerprint,
+        .value_mapping_fingerprint = unit_mapping.mapping_fingerprint,
+        .response_value_mapping_fingerprint = response_mapping.mapping_fingerprint,
+    });
+    const unit_plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .routes = &.{unit_route},
+        .value_mappings = &.{ unit_mapping, response_mapping },
+    });
+    try std.testing.expectError(error.UnsupportedMapping, runspace.installFabricPlan(parent_ref, unit_plan));
 }
 
-test "runspace fabric unfinished provider invocation remains active" {
+test "runspace fabric inert provider handle is rejected before invocation record" {
     var parent_runtime = boundary.Runtime.init(std.testing.allocator);
     defer parent_runtime.deinit();
     var runspace = world.Runspace.init(std.testing.allocator, .{});
@@ -5388,11 +5435,8 @@ test "runspace fabric unfinished provider invocation remains active" {
     });
 
     try runspace.installFabricPlan(parent_ref, plan);
-    const invocation = try runspace.routePendingToProviderRun(0, plan, provider_handle);
-    try std.testing.expectEqual(world.Fabric.InvocationStatus.provider_installed, invocation.status);
-    try std.testing.expectError(error.InvalidRunspaceTransition, runspace.respondFromFabric(invocation));
-    try std.testing.expectError(error.ActiveFabricUnsupported, runspace.respondValue(0, @as(i32, 7)));
-    try std.testing.expectEqual(@as(usize, 1), runspace.report().fabric_invocation_count);
+    try std.testing.expectError(error.InvalidRunspaceTransition, runspace.routePendingToProviderRun(0, plan, provider_handle));
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_invocation_count);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
 }
 
