@@ -5172,6 +5172,51 @@ test "runspace install consumes explicit fabric plan for missing environment bin
     try std.testing.expect(!disallowed_fabric_report.accepted);
     try std.testing.expectEqual(world.AcceptanceBlocker.SupervisionPolicyMismatch, disallowed_fabric_report.blockers[0]);
 
+    const fabric_mode_denied_rules = [_]world.PortRule{world.PortRule.init(.{
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .world_port_id = 0,
+        .allow_fresh = false,
+    })};
+    const fabric_mode_denied_permit = world.Supervision.issue(fixtures.Ports.Target, PortsMissingEnv, .{
+        .mode = .fresh,
+        .fabric_plan_fingerprint = fabric_plan.plan_fingerprint,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_fabric_routes = true,
+            .allow_reject_routes = true,
+            .allow_rejected_responses = true,
+        }),
+        .port_rules = &fabric_mode_denied_rules,
+    });
+    const fabric_mode_denied_report = PortsMissingEnv.acceptanceReportWithFabricPlanAndPermit(.fresh, false, fabric_plan, fabric_mode_denied_permit);
+    try std.testing.expect(!fabric_mode_denied_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.SupervisionPortRuleDenied, fabric_mode_denied_report.blockers[0]);
+
+    const fabric_cost_denied_rules = [_]world.PortRule{world.PortRule.init(.{
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .world_port_id = 0,
+        .max_cost_units = 0,
+    })};
+    const fabric_cost_denied_permit = world.Supervision.issue(fixtures.Ports.Target, PortsMissingEnv, .{
+        .mode = .fresh,
+        .fabric_plan_fingerprint = fabric_plan.plan_fingerprint,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_fabric_routes = true,
+            .allow_reject_routes = true,
+            .allow_rejected_responses = true,
+        }),
+        .port_rules = &fabric_cost_denied_rules,
+    });
+    const fabric_cost_denied_report = PortsMissingEnv.acceptanceReportWithFabricPlanAndPermit(.fresh, false, fabric_plan, fabric_cost_denied_permit);
+    try std.testing.expect(!fabric_cost_denied_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.SupervisionPortRuleDenied, fabric_cost_denied_report.blockers[0]);
+    var fabric_cost_supervisor = try world.Supervisor.init(std.testing.allocator, fabric_cost_denied_permit, fixtures.Ports.Target.WorldPortTable.entries.len);
+    defer fabric_cost_supervisor.deinit();
+    const fabric_cost_ledger = fabric_cost_supervisor.ledger.ledger_fingerprint;
+    try std.testing.expectError(error.PortRuleDenied, fabric_cost_supervisor.beforeFabricInvocation(.{ .world_port_id = 0, .route_kind = .reject }));
+    try std.testing.expectEqual(fabric_cost_ledger, fabric_cost_supervisor.ledger.ledger_fingerprint);
+
     const payload_budget = [_]world.Supervision.PerPortBudget{.{
         .world_port_id = 0,
         .max_value_image_bytes = 1,

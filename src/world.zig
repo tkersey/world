@@ -4067,11 +4067,19 @@ pub const Supervision = struct {
             const depth_cost = mulSatUsizeU64(args.depth, self.permit.cost_model.nested_port_call_cost);
             const provider_cost = mulSatUsizeU64(args.provider_runs, self.permit.cost_model.provider_run_cost);
             const cost_delta = addSatU64Many(&.{ self.permit.cost_model.fabric_invocation_cost, depth_cost, provider_cost });
+            const rule = self.permit.ruleFor(args.world_port_id);
+            if (rule) |port_rule| {
+                if (!port_rule.permitsMode(self.permit.mode)) return self.deny(.before_fabric_invocation, args.world_port_id, .port_rule_denied, port_rule.rule_fingerprint, "rule mode denied");
+                if (port_rule.max_cost_units) |max| {
+                    const current_usage = next.per_port_usage[args.world_port_id];
+                    if (addSatU64(current_usage.cost_units, cost_delta) > max) return self.deny(.before_fabric_invocation, args.world_port_id, .port_rule_denied, port_rule.rule_fingerprint, "rule cost cap");
+                }
+            }
             next.total_fabric_invocations = addSatUsize(next.total_fabric_invocations, 1);
             next.total_provider_runs = addSatUsize(next.total_provider_runs, args.provider_runs);
             next.max_fabric_depth_observed = @max(next.max_fabric_depth_observed, args.depth);
             next.total_cost_units = addSatU64(next.total_cost_units, cost_delta);
-            try self.commitCheck(.before_fabric_invocation, args.world_port_id, &next, null, null, "fabric invocation");
+            try self.commitCheck(.before_fabric_invocation, args.world_port_id, &next, null, rule, "fabric invocation");
         }
 
         pub fn receipt(self: *@This(), final_status: Supervision.RunReceipt.FinalStatus, final_run_state_fingerprint: u64, transcript_image_fingerprint: ?u64, run_image_fingerprint: ?u64) Supervision.RunReceipt {
@@ -4427,6 +4435,12 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
                 if (route.parent_world_surface_fingerprint != target_ref.world_surface_fingerprint) return rejectedReport(report, &.{.SupervisionPolicyMismatch});
                 if (route.parent_target_certificate_fingerprint != target_ref.target_certificate_fingerprint) return rejectedReport(report, &.{.SupervisionPolicyMismatch});
                 if (fabricRouteSupervisionBlocker(permit.policy, route.kind) != null) return rejectedReport(report, &.{.SupervisionPolicyMismatch});
+                if (permit.ruleFor(route.parent_world_port_id)) |rule| {
+                    if (!rule.permitsMode(requested_mode)) return rejectedReport(report, &.{.SupervisionPortRuleDenied});
+                    if (rule.max_cost_units) |max| {
+                        if (fabricRouteMinimumInvocationCost(permit.cost_model, route.kind) > max) return rejectedReport(report, &.{.SupervisionPortRuleDenied});
+                    }
+                }
             }
             return report;
         }
@@ -17633,6 +17647,18 @@ fn fabricRouteSupervisionBlocker(policy: SupervisionPolicy, route_kind: Fabric.R
         .reject => if (policy.allow_reject_routes and policy.allow_rejected_responses) null else .fabric_denied,
         .adapter => null,
         .unsupported => if (policy.allow_failed_responses) null else .fabric_denied,
+    };
+}
+
+fn fabricRouteMinimumInvocationCost(cost_model: Supervision.CostModel, route_kind: Fabric.RouteKind) u64 {
+    const provider_cost = if (fabricRouteRequiresProviderRun(route_kind)) cost_model.provider_run_cost else 0;
+    return cost_model.fabric_invocation_cost +| cost_model.nested_port_call_cost +| provider_cost;
+}
+
+fn fabricRouteRequiresProviderRun(route_kind: Fabric.RouteKind) bool {
+    return switch (route_kind) {
+        .target_export, .admitted_run, .guest => true,
+        .adapter, .replay, .reject, .unsupported => false,
     };
 }
 
