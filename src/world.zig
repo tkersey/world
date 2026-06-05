@@ -9879,7 +9879,12 @@ pub const Runspace = struct {
         defer supervisor_snapshot.deinit(self.allocator);
         var fabric_charge_committed = false;
         errdefer if (!fabric_charge_committed) supervisor_snapshot.restore(self, parent_index);
-        try self.beforeFabricInvocationForSlot(parent_slot, pending.world_port_id, route.kind, depth, 0);
+        self.beforeFabricInvocationForSlot(parent_slot, pending.world_port_id, route.kind, depth, 0) catch |err| {
+            if (err == error.BudgetExceeded and slotSupervisionInterrupted(parent_slot.*)) {
+                self.parkPendingOnFabricPreflightSupervision(parent_index, pending, mailbox_id, &supervisor_snapshot, &fabric_charge_committed, "fabric route parked on supervision") catch |park_err| return park_err;
+            }
+            return err;
+        };
         var invocation = Fabric.Invocation.init(.{
             .plan_fingerprint = plan.plan_fingerprint,
             .route_fingerprint = route.route_fingerprint,
@@ -10019,7 +10024,12 @@ pub const Runspace = struct {
         defer supervisor_snapshot.deinit(self.allocator);
         var fabric_charge_committed = false;
         errdefer if (!fabric_charge_committed) supervisor_snapshot.restore(self, parent_index);
-        try self.beforeFabricInvocationForSlot(parent_slot, pending.world_port_id, route.kind, depth, 1);
+        self.beforeFabricInvocationForSlot(parent_slot, pending.world_port_id, route.kind, depth, 1) catch |err| {
+            if (err == error.BudgetExceeded and slotSupervisionInterrupted(parent_slot.*)) {
+                self.parkPendingOnFabricPreflightSupervision(parent_index, pending, mailbox_id, &supervisor_snapshot, &fabric_charge_committed, "fabric provider route parked on supervision") catch |park_err| return park_err;
+            }
+            return err;
+        };
         const status: Fabric.InvocationStatus = .provider_completed;
         const invocation = Fabric.Invocation.init(.{
             .plan_fingerprint = plan.plan_fingerprint,
@@ -10077,7 +10087,12 @@ pub const Runspace = struct {
         defer supervisor_snapshot.deinit(self.allocator);
         var fabric_charge_committed = false;
         errdefer if (!fabric_charge_committed) supervisor_snapshot.restore(self, parent_index);
-        try self.beforeFabricInvocationForSlot(parent_slot, pending.world_port_id, route.kind, depth, 0);
+        self.beforeFabricInvocationForSlot(parent_slot, pending.world_port_id, route.kind, depth, 0) catch |err| {
+            if (err == error.BudgetExceeded and slotSupervisionInterrupted(parent_slot.*)) {
+                self.parkPendingOnFabricPreflightSupervision(parent_index, pending, mailbox_id, &supervisor_snapshot, &fabric_charge_committed, "fabric replay route parked on supervision") catch |park_err| return park_err;
+            }
+            return err;
+        };
         var invocation = Fabric.Invocation.init(.{
             .plan_fingerprint = plan.plan_fingerprint,
             .route_fingerprint = route.route_fingerprint,
@@ -10667,6 +10682,28 @@ pub const Runspace = struct {
                 .provider_runs = provider_runs,
             });
         }
+    }
+
+    fn slotSupervisionInterrupted(slot: Runspace.RunSlot) bool {
+        if (slot.driver) |driver| return driver.supervisionInterrupted();
+        if (slot.supervisor) |supervisor| return supervisor.interrupted;
+        return false;
+    }
+
+    fn parkPendingOnFabricPreflightSupervision(
+        self: *@This(),
+        parent_index: usize,
+        pending: Runspace.PendingPort,
+        mailbox_id: u64,
+        supervisor_snapshot: *SlotSupervisorSnapshot,
+        fabric_charge_committed: *bool,
+        event_summary: []const u8,
+    ) !void {
+        _ = self.parkPendingOnSupervision(parent_index, pending, mailbox_id, event_summary) catch |park_err| {
+            supervisor_snapshot.restore(self, parent_index);
+            return park_err;
+        };
+        fabric_charge_committed.* = true;
     }
 
     fn retireFabricInvocation(self: *@This(), recorded: Fabric.Invocation, status: Fabric.InvocationStatus) !void {
