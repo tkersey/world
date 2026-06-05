@@ -287,6 +287,16 @@ test "fabric plan lookup coverage and cycle checks are deterministic" {
         .routes = &module_cyclic_routes,
     });
     try std.testing.expectError(error.FabricCycle, module_cyclic_without_plan_module.assertNoCyclesForTargetRef(parent_ref));
+
+    const module_cyclic_with_wrong_plan_module = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .module_fingerprint = parent_module +% 1,
+        .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = import_set.import_set_fingerprint,
+        .routes = &module_cyclic_routes,
+    });
+    try std.testing.expectError(error.HandoffTargetMismatch, module_cyclic_with_wrong_plan_module.assertNoCyclesForTargetRef(parent_ref));
 }
 
 test "fabric value mapping enforces exact supported conversions" {
@@ -22868,23 +22878,36 @@ test "fabric-covered replay admission requires transcript evidence" {
         .transcript_image = completed_source_image,
         .requested_mode = .continue_fresh,
     });
-    const stored_replay_only = world.Admission.Admitter.init(.{
+    var stored_replay_only = world.Admission.Admitter.init(.{
         .registry = registry,
         .policy = world.Admission.AdmissionPolicy.test_fixture,
     }).admitForTarget(fixtures.Ports.Target, TranscriptRequiredPortsMissingEnv, stored_replay_only_package, .{
         .fabric_plan = replay_plan,
     });
-    try std.testing.expect(!stored_replay_only.report.accepted);
-    try std.testing.expectEqual(world.Admission.AdmissionBlocker.EnvironmentRejected, stored_replay_only.report.blockers[0]);
-    var stored_replay_with_sink = world.Admission.Admitter.init(.{
+    defer stored_replay_only.deinit(std.testing.allocator);
+    try std.testing.expect(stored_replay_only.report.accepted);
+    const missing_stored_replay_package = world.Admission.TransferPackage.init(.{
+        .kind = .target_reference_only,
+        .target_ref = parent_ref,
+        .requested_mode = .continue_fresh,
+    });
+    const missing_stored_replay = world.Admission.Admitter.init(.{
         .registry = registry,
         .policy = world.Admission.AdmissionPolicy.test_fixture,
-    }).admitForTarget(fixtures.Ports.Target, TranscriptRequiredPortsMissingEnv, stored_replay_only_package, .{
+    }).admitForTarget(fixtures.Ports.Target, TranscriptRequiredPortsMissingEnv, missing_stored_replay_package, .{
+        .fabric_plan = replay_plan,
+    });
+    try std.testing.expect(!missing_stored_replay.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.EnvironmentRejected, missing_stored_replay.report.blockers[0]);
+    var missing_stored_replay_with_sink = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, TranscriptRequiredPortsMissingEnv, missing_stored_replay_package, .{
         .fabric_plan = replay_plan,
         .fresh_transcript_sink_available = true,
     });
-    defer stored_replay_with_sink.deinit(std.testing.allocator);
-    try std.testing.expect(stored_replay_with_sink.report.accepted);
+    defer missing_stored_replay_with_sink.deinit(std.testing.allocator);
+    try std.testing.expect(missing_stored_replay_with_sink.report.accepted);
 
     const package = world.Admission.TransferPackage.init(.{
         .kind = .target_reference_only,

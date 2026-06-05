@@ -2186,7 +2186,7 @@ pub const Admission = struct {
             const transcript_sink_available = comptime @hasField(Options, "transcript") and Env.policy_decl.allow_native_adapters;
             const fabric_replay_requires_stored_transcript = if (self.fabric_plan) |plan| fabricPlanHasReplayRoute(plan) else false;
             const transcript_available = if (requested_mode == .fresh)
-                transcript_sink_available or (fabric_replay_requires_stored_transcript and stored_transcript_image != null and Env.policy_decl.allow_fresh_without_transcript)
+                transcript_sink_available or (fabric_replay_requires_stored_transcript and stored_transcript_image != null)
             else
                 supplied_transcript_image != null or stored_transcript_image != null or transcript_sink_available;
             if (self.environment_certificate_fingerprint) |fingerprint| {
@@ -2313,7 +2313,7 @@ pub const Admission = struct {
             const fresh_transcript_sink_available = args.fresh_transcript_sink_available and Env.policy_decl.allow_native_adapters;
             const fabric_replay_requires_transcript = if (args.fabric_plan) |plan| fabricPlanHasReplayRoute(plan) else false;
             const transcript_available = switch (mode) {
-                .continue_fresh => fresh_transcript_sink_available or (fabric_replay_requires_transcript and package_transcript_available and Env.policy_decl.allow_fresh_without_transcript),
+                .continue_fresh => fresh_transcript_sink_available or (fabric_replay_requires_transcript and package_transcript_available),
                 .resume_parked, .branch_resume => package_transcript_available or fresh_transcript_sink_available,
                 else => package_transcript_available,
             };
@@ -2335,7 +2335,7 @@ pub const Admission = struct {
             if (package.kind == .target_reference_only and package.target_ref == null and package.run_image == null) {
                 return rejectedResult(request, package, null, null, null, &.{.TargetRefMissing}, "target reference package is missing target ref");
             }
-            if (mode == .continue_fresh and fabric_replay_requires_transcript and !package_transcript_available) {
+            if (mode == .continue_fresh and fabric_replay_requires_transcript and !package_transcript_available and !fresh_transcript_sink_available) {
                 return rejectedResult(request, package, null, null, null, &.{.EnvironmentRejected}, "fabric replay admission requires transcript evidence");
             }
             if (package.transcript_image != null and package.target_ref == null and package.run_image == null and package.module_ref == null) {
@@ -7497,7 +7497,10 @@ pub const Fabric = struct {
 
         pub fn assertNoCyclesForTargetRef(self: Fabric.Plan, parent_target_ref: TargetRef) !void {
             try self.assertNoCycles();
-            const parent_module = self.module_fingerprint orelse parent_target_ref.boundary_module_fingerprint orelse return;
+            const parent_module = parent_target_ref.boundary_module_fingerprint orelse return;
+            if (self.module_fingerprint) |plan_module| {
+                if (plan_module != parent_module) return error.HandoffTargetMismatch;
+            }
             for (self.routes) |route| {
                 if (route.provider_module_fingerprint) |provider_module| {
                     if (provider_module == parent_module) return error.FabricCycle;
