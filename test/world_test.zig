@@ -5034,6 +5034,19 @@ test "runspace install consumes explicit fabric plan for missing environment bin
     try std.testing.expect(accepted.admitted_run.?.fabric_plan != null);
     try std.testing.expectEqual(fabric_plan.plan_fingerprint, accepted.admitted_run.?.fabric_plan.?.plan_fingerprint);
 
+    var direct_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer direct_runtime.deinit();
+    var direct_admitted = accepted.admitted_run.?;
+    var direct_run = try direct_admitted.start(fixtures.Ports.Target, PortsMissingEnv, &direct_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    defer direct_run.deinit();
+    switch (try direct_run.next()) {
+        .port_required => {},
+        else => return error.ExpectedPortRequired,
+    }
+
     const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
     const response_mapping = fabricTestMapping(.provider_result_to_parent_response);
     const provider_route = world.Fabric.Route.init(.{
@@ -5078,6 +5091,19 @@ test "runspace install consumes explicit fabric plan for missing environment bin
     _ = try native_runspace.tick();
     try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try native_runspace.getSlotSummary(native_handle)).status);
 
+    const native_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .fabric_plan_fingerprint = fabric_plan.plan_fingerprint,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_native_adapters = true,
+            .allow_fabric_routes = true,
+        }),
+    });
+    const native_permit_report = PortsEnv.acceptanceReportWithFabricPlanAndPermit(.fresh, false, fabric_plan, native_permit);
+    try std.testing.expect(native_permit_report.accepted);
+    try std.testing.expectEqual(@as(?u64, fabric_plan.plan_fingerprint), native_permit_report.fabric_plan_fingerprint);
+
     var runtime = boundary.Runtime.init(std.testing.allocator);
     defer runtime.deinit();
     var runspace = world.Runspace.init(std.testing.allocator, .{});
@@ -5090,6 +5116,12 @@ test "runspace install consumes explicit fabric plan for missing environment bin
     try std.testing.expectEqual(@as(usize, 1), runspace.fabric_plan_fingerprints.items.len);
     _ = try runspace.tick();
     try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try runspace.getSlotSummary(handle)).status);
+    const pending = try runspace.mailbox.get(0);
+    const pending_request = pending.request_frame orelse return error.ExpectedPendingRequestFrame;
+    try std.testing.expect(pending_request.payload_image != null);
+    const pending_payload = try pending_request.payload_image.?.decodeValue(std.testing.allocator, []const u8);
+    defer std.testing.allocator.free(pending_payload);
+    try std.testing.expectEqualStrings("deploy-prod", pending_payload);
 
     const invocation = try runspace.routePending(0, fabric_plan);
     try std.testing.expectEqual(world.Fabric.InvocationStatus.rejected, invocation.status);
