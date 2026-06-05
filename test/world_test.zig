@@ -5118,11 +5118,17 @@ test "runspace install consumes explicit fabric plan for missing environment bin
         .fabric_plan = fabric_plan,
     });
     _ = try native_runspace.tick();
-    try std.testing.expectEqual(@as(usize, 1), native_ctx.calls);
+    try std.testing.expectEqual(@as(usize, 0), native_ctx.calls);
+    try std.testing.expectEqual(@as(usize, 1), native_runspace.report().pending_port_count);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try native_runspace.getSlotSummary(native_handle)).status);
+    const native_pending = try native_runspace.mailbox.get(0);
+    const native_response = testRunspaceResponseFrame(native_pending.request_frame orelse return error.ExpectedPendingRequestFrame);
+    try std.testing.expectError(error.ActiveFabricUnsupported, native_runspace.respond(0, native_response));
+    try std.testing.expectError(error.ActiveFabricUnsupported, native_runspace.exportRun(native_handle));
+    try std.testing.expectError(error.ActiveFabricUnsupported, native_runspace.exportPending(0));
+    const native_invocation = try native_runspace.routePending(0, fabric_plan);
+    try std.testing.expectEqual(world.Fabric.InvocationStatus.rejected, native_invocation.status);
     try std.testing.expectEqual(@as(usize, 0), native_runspace.report().pending_port_count);
-    try std.testing.expectEqual(world.Runspace.RunStatus.runnable, (try native_runspace.getSlotSummary(native_handle)).status);
-    _ = try native_runspace.tick();
-    try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try native_runspace.getSlotSummary(native_handle)).status);
 
     const native_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
         .mode = .fresh,
@@ -5251,9 +5257,32 @@ test "runspace install consumes explicit fabric plan for missing environment bin
     try std.testing.expect(!fabric_mode_denied_report.accepted);
     try std.testing.expectEqual(world.AcceptanceBlocker.SupervisionPortRuleDenied, fabric_mode_denied_report.blockers[0]);
 
+    const fabric_terminal_status_denied_rules = [_]world.PortRule{world.PortRule.init(.{
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .world_port_id = 0,
+    })};
+    const fabric_terminal_status_denied_permit = world.Supervision.issue(fixtures.Ports.Target, PortsMissingEnv, .{
+        .mode = .fresh,
+        .fabric_plan_fingerprint = fabric_plan.plan_fingerprint,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_fabric_routes = true,
+            .allow_reject_routes = true,
+            .allow_rejected_responses = true,
+        }),
+        .port_rules = &fabric_terminal_status_denied_rules,
+    });
+    const fabric_terminal_status_denied_report = PortsMissingEnv.acceptanceReportWithFabricPlanAndPermit(.fresh, false, fabric_plan, fabric_terminal_status_denied_permit);
+    try std.testing.expect(!fabric_terminal_status_denied_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.SupervisionPortRuleDenied, fabric_terminal_status_denied_report.blockers[0]);
+    var fabric_terminal_status_denied_supervisor = try world.Supervisor.init(std.testing.allocator, fabric_terminal_status_denied_permit, fixtures.Ports.Target.WorldPortTable.entries.len);
+    defer fabric_terminal_status_denied_supervisor.deinit();
+    try std.testing.expectError(error.PortRuleDenied, fabric_terminal_status_denied_supervisor.beforeFabricInvocation(.{ .world_port_id = 0, .route_kind = .reject }));
+
     const fabric_cost_denied_rules = [_]world.PortRule{world.PortRule.init(.{
         .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
         .world_port_id = 0,
+        .allow_reject = true,
         .max_cost_units = 0,
     })};
     const fabric_cost_denied_permit = world.Supervision.issue(fixtures.Ports.Target, PortsMissingEnv, .{
@@ -5279,6 +5308,7 @@ test "runspace install consumes explicit fabric plan for missing environment bin
     const fabric_cost_accumulating_rules = [_]world.PortRule{world.PortRule.init(.{
         .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
         .world_port_id = 0,
+        .allow_reject = true,
         .max_cost_units = 3,
     })};
     const fabric_cost_accumulating_permit = world.Supervision.issue(fixtures.Ports.Target, PortsMissingEnv, .{
@@ -5427,15 +5457,15 @@ test "runspace install consumes explicit fabric plan for missing environment bin
     defer source_runtime.deinit();
     var source = world.Runspace.init(std.testing.allocator, .{});
     defer source.deinit();
-    const source_handle = try source.installMachineRun(fixtures.Ports.Target, PortsMissingEnv, &source_runtime, .{}, .{
+    var source_ctx: PortsCtx = .{};
+    const source_handle = try source.installMachineRun(fixtures.Ports.Target, PortsEnv, &source_runtime, .{}, .{
         .allocator = std.testing.allocator,
         .mode = world.Mode.fresh,
-        .fabric_plan = fabric_plan,
+        .ctx = &source_ctx,
     });
     _ = try source.tick();
     var source_image = try source.exportRun(source_handle);
     defer source_image.deinit(std.testing.allocator);
-    try std.testing.expectEqual(reject_accepted.report_fingerprint, source_image.acceptance_report_fingerprint.?);
     const parked_package = world.Admission.TransferPackage.init(.{
         .kind = .parked_run,
         .target_ref = parent_ref,

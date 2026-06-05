@@ -4076,6 +4076,9 @@ pub const Supervision = struct {
             const rule = self.permit.ruleFor(args.world_port_id);
             if (rule) |port_rule| {
                 if (!port_rule.permitsMode(self.permit.mode)) return self.deny(.before_fabric_invocation, args.world_port_id, .port_rule_denied, port_rule.rule_fingerprint, "rule mode denied");
+                if (fabricRouteTerminalResponseStatus(args.route_kind)) |status| {
+                    if (!portRuleAllowsResponseStatus(port_rule, status)) return self.deny(.before_fabric_invocation, args.world_port_id, .port_rule_denied, port_rule.rule_fingerprint, "rule response denied");
+                }
                 if (port_rule.max_cost_units) |max| {
                     const current_usage = next.per_port_usage[args.world_port_id];
                     if (addSatU64(current_usage.cost_units, cost_delta) > max) return self.deny(.before_fabric_invocation, args.world_port_id, .port_rule_denied, port_rule.rule_fingerprint, "rule cost cap");
@@ -4450,6 +4453,9 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
                 if (fabricRouteSupervisionBlocker(permit.policy, route.kind) != null) return rejectedReport(report, &.{.SupervisionPolicyMismatch});
                 if (permit.ruleFor(route.parent_world_port_id)) |rule| {
                     if (!rule.permitsMode(requested_mode)) return rejectedReport(report, &.{.SupervisionPortRuleDenied});
+                    if (fabricRouteTerminalResponseStatus(route.kind)) |status| {
+                        if (!portRuleAllowsResponseStatus(rule, status)) return rejectedReport(report, &.{.SupervisionPortRuleDenied});
+                    }
                     if (rule.max_cost_units) |max| {
                         if (fabricRouteMinimumInvocationCost(permit.cost_model, route.kind) > max) return rejectedReport(report, &.{.SupervisionPortRuleDenied});
                     }
@@ -11259,7 +11265,7 @@ pub const Runspace = struct {
 
     fn pendingRequiresFabricRoute(self: *@This(), slot: Runspace.RunSlot, pending: Runspace.PendingPort) bool {
         if (slot.driver) |driver| {
-            return driver.fabricPlanCoversHandlerlessWorldPort(pending.world_port_id);
+            return driver.fabricPlanCoversWorldPort(pending.world_port_id);
         }
         const plan_fingerprint = fabricPlanFingerprintForSlot(slot) orelse return false;
         return self.installedFabricRouteCoversPending(plan_fingerprint, pending);
@@ -11296,7 +11302,7 @@ pub const Runspace = struct {
             break :pending pending_port;
         } else null;
         if (pending) |pending_port| {
-            if (slot.driver == null and self.pendingRequiresFabricRoute(slot.*, pending_port)) return error.ActiveFabricUnsupported;
+            if (self.pendingRequiresFabricRoute(slot.*, pending_port)) return error.ActiveFabricUnsupported;
         }
         const event_summary = try self.prepareEventSummary("run exported");
         var summary_owned = true;
@@ -11337,12 +11343,12 @@ pub const Runspace = struct {
             const mailbox_id = slot.pending_mailbox_id orelse return error.HandoffPendingFrameMismatch;
             const pending_port = try self.mailbox.get(mailbox_id);
             if (pending_port.request_frame == null) return error.HandoffPendingFrameMismatch;
-            if (slot.driver == null and self.pendingRequiresFabricRoute(slot.*, pending_port)) return error.ActiveFabricUnsupported;
+            if (self.pendingRequiresFabricRoute(slot.*, pending_port)) return error.ActiveFabricUnsupported;
         } else if (slot.status == .parked_on_supervision) {
             if (slot.pending_mailbox_id) |mailbox_id| {
                 const pending_port = try self.mailbox.get(mailbox_id);
                 if (pending_port.request_frame == null) return error.HandoffPendingFrameMismatch;
-                if (slot.driver == null and self.pendingRequiresFabricRoute(slot.*, pending_port)) return error.ActiveFabricUnsupported;
+                if (self.pendingRequiresFabricRoute(slot.*, pending_port)) return error.ActiveFabricUnsupported;
             }
         }
         var supervisor_snapshot = try self.snapshotSlotSupervisor(index);
@@ -11374,7 +11380,7 @@ pub const Runspace = struct {
         var slot = &self.slots.items[index];
         if (slot.pending_mailbox_id != mailbox_id or (slot.status != .parked_on_port and slot.status != .parked_on_supervision)) return error.StaleRunHandle;
         if (self.hasActiveFabricInvocationForRun(pending.handle)) return error.ActiveFabricUnsupported;
-        if (slot.driver == null and self.pendingRequiresFabricRoute(slot.*, pending)) return error.ActiveFabricUnsupported;
+        if (self.pendingRequiresFabricRoute(slot.*, pending)) return error.ActiveFabricUnsupported;
         const event_summary = try self.prepareEventSummary("pending run exported");
         var summary_owned = true;
         errdefer if (summary_owned) self.allocator.free(event_summary);
@@ -12258,7 +12264,7 @@ pub const Runspace = struct {
                     .run_permit_fingerprint = slot.run_permit_fingerprint,
                     .summary = event_pair.takeSecond(),
                 });
-                if (self.config.auto_dispatch and !driver.fabricPlanCoversHandlerlessWorldPort(pending.world_port_id)) return self.autoDispatchPending(index, pending, mailbox_id, &auto_events.?);
+                if (self.config.auto_dispatch and !driver.fabricPlanCoversWorldPort(pending.world_port_id)) return self.autoDispatchPending(index, pending, mailbox_id, &auto_events.?);
                 return parked_event;
             },
         }
@@ -17823,6 +17829,23 @@ fn fabricRouteSupervisionBlocker(policy: SupervisionPolicy, route_kind: Fabric.R
         .reject => if (policy.allow_reject_routes and policy.allow_rejected_responses) null else .fabric_denied,
         .adapter => null,
         .unsupported => if (policy.allow_failed_responses) null else .fabric_denied,
+    };
+}
+
+fn fabricRouteTerminalResponseStatus(route_kind: Fabric.RouteKind) ?ResponseStatus {
+    return switch (route_kind) {
+        .reject => .rejected,
+        .unsupported => .failed,
+        else => null,
+    };
+}
+
+fn portRuleAllowsResponseStatus(rule: Supervision.PortRule, status: ResponseStatus) bool {
+    return switch (status) {
+        .responded => true,
+        .pending => rule.allow_pending,
+        .rejected => rule.allow_reject,
+        .failed => rule.allow_fail,
     };
 }
 
