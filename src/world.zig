@@ -10077,6 +10077,9 @@ pub const Runspace = struct {
         const replay_response = try transcript_image.nextResponse(request.replay_key_seed, request.target_certificate_fingerprint, pending.expected_response_kind);
         var response = try replay_response.clone(self.allocator);
         defer response.deinit(self.allocator);
+        if (response.response_image) |image| {
+            try self.validateFabricParentResponseValue(parent_slot.*, pending.world_port_id, image);
+        }
         const started = Fabric.Invocation.init(.{
             .plan_fingerprint = invocation.plan_fingerprint,
             .route_fingerprint = invocation.route_fingerprint,
