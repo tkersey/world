@@ -4423,15 +4423,10 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
             const base_report = acceptanceReportWithFabricPlan(requested_mode, transcript_image_available, plan);
             const report = acceptanceReportWithPermitFromReport(base_report, requested_mode, transcript_image_available, permit);
             if (!report.accepted) return report;
-            inline for (0..Target.WorldPortTable.entries.len) |world_port_id| {
-                comptime var host_bound = false;
-                inline for (bindings) |BindingDecl| {
-                    if (BindingDecl.TargetType == Target and BindingDecl.world_port_id == world_port_id) host_bound = true;
-                }
-                if (!host_bound) {
-                    const route = plan.findRouteForPort(@intCast(world_port_id)) orelse return rejectedReport(report, &.{.SupervisionPolicyMismatch});
-                    if (fabricRouteSupervisionBlocker(permit.policy, route.kind) != null) return rejectedReport(report, &.{.SupervisionPolicyMismatch});
-                }
+            for (plan.routes) |route| {
+                if (route.parent_world_surface_fingerprint != target_ref.world_surface_fingerprint) return rejectedReport(report, &.{.SupervisionPolicyMismatch});
+                if (route.parent_target_certificate_fingerprint != target_ref.target_certificate_fingerprint) return rejectedReport(report, &.{.SupervisionPolicyMismatch});
+                if (fabricRouteSupervisionBlocker(permit.policy, route.kind) != null) return rejectedReport(report, &.{.SupervisionPolicyMismatch});
             }
             return report;
         }
@@ -9591,7 +9586,10 @@ pub const Runspace = struct {
         try pending.validateResponse(response);
         const index = try self.slotIndex(pending.handle);
         const slot = &self.slots.items[index];
-        if (slot.pending_mailbox_id != mailbox_id or slot.status != .parked_on_port) return error.StaleRunHandle;
+        const fabric_owned_supervision_park = allow_active_fabric and
+            slot.status == .parked_on_supervision and
+            self.hasActiveFabricInvocationForMailbox(mailbox_id);
+        if (slot.pending_mailbox_id != mailbox_id or (slot.status != .parked_on_port and !fabric_owned_supervision_park)) return error.StaleRunHandle;
         if (!allow_active_fabric and self.hasActiveFabricInvocationForMailbox(mailbox_id)) return error.ActiveFabricUnsupported;
         var responded_summary: []u8 = "";
         var responded_summary_owned = false;
@@ -17622,7 +17620,8 @@ fn fabricRouteSupervisionBlocker(policy: SupervisionPolicy, route_kind: Fabric.R
         .guest => if (policy.allow_guest_routes) null else .guest_route_denied,
         .replay => if (policy.allow_replay_routes) null else .replay_route_denied,
         .reject => if (policy.allow_reject_routes and policy.allow_rejected_responses) null else .fabric_denied,
-        .adapter, .unsupported => null,
+        .adapter => null,
+        .unsupported => if (policy.allow_failed_responses) null else .fabric_denied,
     };
 }
 

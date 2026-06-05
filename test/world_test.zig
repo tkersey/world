@@ -5098,11 +5098,67 @@ test "runspace install consumes explicit fabric plan for missing environment bin
             .allow_fresh_calls = true,
             .allow_native_adapters = true,
             .allow_fabric_routes = true,
+            .allow_reject_routes = true,
+            .allow_rejected_responses = true,
         }),
     });
     const native_permit_report = PortsEnv.acceptanceReportWithFabricPlanAndPermit(.fresh, false, fabric_plan, native_permit);
     try std.testing.expect(native_permit_report.accepted);
     try std.testing.expectEqual(@as(?u64, fabric_plan.plan_fingerprint), native_permit_report.fabric_plan_fingerprint);
+
+    const bound_fabric_denied_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .fabric_plan_fingerprint = fabric_plan.plan_fingerprint,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_native_adapters = true,
+            .allow_fabric_routes = false,
+        }),
+    });
+    const bound_fabric_denied_report = PortsEnv.acceptanceReportWithFabricPlanAndPermit(.fresh, false, fabric_plan, bound_fabric_denied_permit);
+    try std.testing.expect(!bound_fabric_denied_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.SupervisionPolicyMismatch, bound_fabric_denied_report.blockers[0]);
+
+    const unsupported_route = world.Fabric.Route.init(.{
+        .route_id = 0x51ace_fab4,
+        .kind = .unsupported,
+        .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .parent_world_port_id = 0,
+        .response_status = .failed,
+    });
+    const unsupported_plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .routes = &.{unsupported_route},
+    });
+    const unsupported_fails_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .fabric_plan_fingerprint = unsupported_plan.plan_fingerprint,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_native_adapters = true,
+            .allow_fabric_routes = true,
+        }),
+    });
+    const unsupported_fails_report = PortsEnv.acceptanceReportWithFabricPlanAndPermit(.fresh, false, unsupported_plan, unsupported_fails_permit);
+    try std.testing.expect(!unsupported_fails_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.SupervisionPolicyMismatch, unsupported_fails_report.blockers[0]);
+
+    const unsupported_allowed_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .fabric_plan_fingerprint = unsupported_plan.plan_fingerprint,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_native_adapters = true,
+            .allow_failed_responses = true,
+            .allow_fabric_routes = true,
+        }),
+    });
+    const unsupported_allowed_report = PortsEnv.acceptanceReportWithFabricPlanAndPermit(.fresh, false, unsupported_plan, unsupported_allowed_permit);
+    try std.testing.expect(unsupported_allowed_report.accepted);
 
     const disallowed_fabric_permit = world.Supervision.issue(fixtures.Ports.Target, PortsMissingEnv, .{
         .mode = .fresh,
@@ -5528,6 +5584,10 @@ test "runspace fabric parked provider response remains active" {
     try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_receipt_count);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
     try std.testing.expectError(error.ActiveFabricUnsupported, runspace.exportPending(0));
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_supervision, (try runspace.getSlotSummary(parent_handle)).status);
+    const retry_event = try runspace.respondFromFabric(invocation);
+    try std.testing.expectEqual(world.Runspace.EventKind.run_parked_on_supervision, retry_event.kind);
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
     try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_supervision, (try runspace.getSlotSummary(parent_handle)).status);
 }
 
