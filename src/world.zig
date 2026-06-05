@@ -9712,7 +9712,7 @@ pub const Runspace = struct {
             .parked_on_port, .parked_on_supervision => .provider_parked,
             .admitted => .provider_installed,
             .runnable, .running => .provider_running,
-            .failed, .rejected => .failed,
+            .failed, .rejected => return error.InvalidRunspaceTransition,
             .exported => return error.InvalidRunspaceTransition,
         };
         const invocation = Fabric.Invocation.init(.{
