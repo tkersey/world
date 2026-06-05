@@ -4855,11 +4855,13 @@ test "runspace fabric provider result resumes exactly one parent pending port" {
         .final_value_image_fingerprint = provider_final_image.value_image_fingerprint,
         .status = .completed,
     });
+    const provider_run_receipt_fingerprint: u64 = 0x5eed_5150;
     const provider_image = world.RunImage.init(.{
         .kind = .completed_run,
         .target_ref = provider_ref,
         .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Strict.Target).import_set_fingerprint,
         .current_state = provider_state,
+        .prior_run_receipt_fingerprint = provider_run_receipt_fingerprint,
         .final_result_image = provider_final_image,
     });
     const provider_handle = try runspace.installRunImage(provider_image);
@@ -4931,6 +4933,9 @@ test "runspace fabric provider result resumes exactly one parent pending port" {
     try std.testing.expectEqual(world.Runspace.EventKind.run_resumed, event.kind);
     try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().fabric_receipt_count);
+    const receipt = runspace.fabric_receipts.items[0];
+    try std.testing.expectEqual(@as(?u64, provider_handle.handle_fingerprint), receipt.provider_run_handle_fingerprint);
+    try std.testing.expectEqual(@as(?u64, provider_run_receipt_fingerprint), receipt.provider_run_receipt_fingerprint);
 
     report = try runspace.tick();
     try std.testing.expectEqual(@as(usize, 2), report.completed_count);

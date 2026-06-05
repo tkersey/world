@@ -9690,7 +9690,7 @@ pub const Runspace = struct {
                 const event = try self.respondWithFabricOwnership(mailbox_id, response, true);
                 if (event.kind == .run_parked_on_supervision) return invocation;
                 const parent_response_frame_fingerprint = event.response_frame_fingerprint orelse response.frame_fingerprint;
-                try self.recordFabricReceipt(parent_slot.handle, invocation, route.route_fingerprint, pending, parent_response_frame_fingerprint, null, invocation.status, if (route.kind == .reject) .FabricRejected else .UnsupportedMapping, receipt_evidence.takeReceiptSummary());
+                try self.recordFabricReceipt(parent_slot.handle, invocation, route.route_fingerprint, pending, parent_response_frame_fingerprint, null, null, invocation.status, if (route.kind == .reject) .FabricRejected else .UnsupportedMapping, receipt_evidence.takeReceiptSummary());
                 fabric_charge_committed = true;
                 return invocation;
             },
@@ -9832,7 +9832,7 @@ pub const Runspace = struct {
         const event = try self.respondWithFabricOwnership(mailbox_id, response, true);
         if (event.kind == .run_parked_on_supervision) return invocation;
         const parent_response_frame_fingerprint = event.response_frame_fingerprint orelse response.frame_fingerprint;
-        try self.recordFabricReceipt(parent_slot.handle, invocation, route.route_fingerprint, pending, parent_response_frame_fingerprint, null, .completed, null, receipt_evidence.takeReceiptSummary());
+        try self.recordFabricReceipt(parent_slot.handle, invocation, route.route_fingerprint, pending, parent_response_frame_fingerprint, null, null, .completed, null, receipt_evidence.takeReceiptSummary());
         fabric_charge_committed = true;
         return invocation;
     }
@@ -9904,7 +9904,7 @@ pub const Runspace = struct {
             .status = .parent_responded,
         });
         try self.replaceFabricInvocation(completed);
-        try self.recordFabricReceipt(parent_slot.handle, completed, completed.route_fingerprint, pending, parent_response_frame_fingerprint, recorded.provider_run_handle_fingerprint, .completed, null, receipt_evidence.takeReceiptSummary());
+        try self.recordFabricReceipt(parent_slot.handle, completed, completed.route_fingerprint, pending, parent_response_frame_fingerprint, recorded.provider_run_handle_fingerprint, provider_image.prior_run_receipt_fingerprint, .completed, null, receipt_evidence.takeReceiptSummary());
         return event;
     }
 
@@ -10322,6 +10322,7 @@ pub const Runspace = struct {
         pending: Runspace.PendingPort,
         parent_response_frame_fingerprint: ?u64,
         provider_run_handle_fingerprint: ?u64,
+        provider_run_receipt_fingerprint: ?u64,
         status: Fabric.InvocationStatus,
         blocker: ?Fabric.Blocker,
         receipt_summary: []u8,
@@ -10334,6 +10335,7 @@ pub const Runspace = struct {
             .parent_pending_port_fingerprint = pending.pending_port_fingerprint,
             .parent_response_frame_fingerprint = parent_response_frame_fingerprint,
             .provider_run_handle_fingerprint = provider_run_handle_fingerprint,
+            .provider_run_receipt_fingerprint = provider_run_receipt_fingerprint,
             .status = status,
             .blocker = blocker,
         });
