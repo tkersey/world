@@ -9869,8 +9869,29 @@ pub const Runspace = struct {
         } else return error.InvalidRunspaceTransition;
         if (response.status == .pending) return error.HandlerPending;
         const effective_response_frame_fingerprint = response_evidence.response_frame_fingerprint orelse response_evidence.response_fingerprint;
+        var driverless_final_image: ?Frame.ValueImage = null;
+        var driverless_final_image_owned = false;
+        defer if (driverless_final_image_owned) {
+            if (driverless_final_image) |*image| image.deinit(self.allocator);
+        };
+        if (fabric_completes_driverless_parent) {
+            const response_image = response.response_image orelse return error.MissingValueImage;
+            driverless_final_image = try response_image.clone(self.allocator);
+            driverless_final_image_owned = true;
+        }
         if (fabric_completes_driverless_parent) {
             try slot.completeFromPort(mailbox_id, effective_response_frame_fingerprint, response_evidence.response_value_image_fingerprint);
+            if (slot.installed_run_image) |*image| {
+                if (image.owns_final_result_image) {
+                    if (image.final_result_image) |*previous| previous.deinit(self.allocator);
+                }
+                image.kind = .completed_run;
+                image.current_state = slot.current_state;
+                image.final_result_image = driverless_final_image;
+                image.owns_final_result_image = true;
+                refreshRunImageFingerprint(image);
+                driverless_final_image_owned = false;
+            }
         } else {
             try slot.resumeFromPort(mailbox_id, effective_response_frame_fingerprint, response_evidence.response_value_image_fingerprint);
         }
@@ -10357,6 +10378,7 @@ pub const Runspace = struct {
             return err;
         };
         if (event.kind == .run_parked_on_supervision) {
+            try self.retireFabricInvocation(recorded, .supervision_denied);
             return event;
         }
         if (event.kind != .run_resumed and event.kind != .run_completed) {
