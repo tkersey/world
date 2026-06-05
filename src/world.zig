@@ -4333,6 +4333,7 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
             plan.validate() catch return report;
             plan.assertNoCyclesForTargetRef(target_ref) catch return report;
             plan.assertDeterministicRouteOrder() catch return report;
+            plan.assertExecutableMappings() catch return report;
             if (plan.target_ref_fingerprint != target_ref.target_ref_fingerprint) return report;
             if (plan.world_surface_fingerprint != target_ref.world_surface_fingerprint) return report;
             if (plan.target_certificate_fingerprint != target_ref.target_certificate_fingerprint) return report;
@@ -7301,6 +7302,37 @@ pub const Fabric = struct {
             }
         }
 
+        pub fn assertExecutableMappings(self: Fabric.Plan) !void {
+            for (self.routes) |route| {
+                var request_mapping: ?Fabric.ValueMapping = null;
+                var response_mapping: ?Fabric.ValueMapping = null;
+                if (route.value_mapping_fingerprint) |mapping_fingerprint| {
+                    const mapping = self.findValueMapping(mapping_fingerprint) orelse return error.UnsupportedMapping;
+                    switch (mapping.kind) {
+                        .payload_to_provider_args => return error.UnsupportedMapping,
+                        .unit_args => request_mapping = mapping,
+                        .provider_result_to_parent_response => response_mapping = mapping,
+                    }
+                }
+                if (route.response_value_mapping_fingerprint) |mapping_fingerprint| {
+                    if (response_mapping != null) return error.UnsupportedMapping;
+                    const mapping = self.findValueMapping(mapping_fingerprint) orelse return error.UnsupportedMapping;
+                    if (mapping.kind != .provider_result_to_parent_response) return error.UnsupportedMapping;
+                    response_mapping = mapping;
+                }
+                if (request_mapping) |mapping| {
+                    _ = try mapping.unitArgumentValueTableId();
+                }
+                if (response_mapping) |mapping| {
+                    try mapping.assertExactValueTableMatch();
+                }
+                switch (route.kind) {
+                    .target_export, .admitted_run => if (response_mapping == null) return error.UnsupportedMapping,
+                    .adapter, .guest, .replay, .reject, .unsupported => {},
+                }
+            }
+        }
+
         pub fn findRouteForPort(self: Fabric.Plan, world_port_id: u32) ?Fabric.Route {
             for (self.routes) |route| {
                 if (route.parent_world_port_id == world_port_id or route.world_port_id == world_port_id) return route;
@@ -9592,6 +9624,7 @@ pub const Runspace = struct {
         try plan.validate();
         try plan.assertNoCyclesForTargetRef(parent_target_ref);
         try plan.assertDeterministicRouteOrder();
+        try plan.assertExecutableMappings();
         if (self.hasInstalledFabricPlan(plan.plan_fingerprint)) return;
         try self.fabric_plan_fingerprints.ensureUnusedCapacity(self.allocator, 1);
         try self.fabric_routes.ensureUnusedCapacity(self.allocator, plan.routes.len);

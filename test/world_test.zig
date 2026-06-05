@@ -4969,11 +4969,11 @@ test "runspace fabric payload mapping is rejected without provider argument witn
         .routes = &.{route},
         .value_mappings = &.{request_mapping},
     });
-    try runspace.installFabricPlan(parent_ref, plan);
-    try std.testing.expectError(error.UnsupportedMapping, runspace.routePendingToProviderRun(0, plan, provider_handle));
+    try std.testing.expectError(error.UnsupportedMapping, runspace.installFabricPlan(parent_ref, plan));
     try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_invocation_count);
     try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_receipt_count);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+    _ = provider_handle;
 }
 
 test "runspace fabric routing requires installed plans before mutation" {
@@ -5392,6 +5392,7 @@ test "runspace fabric plan provider-run limit counts recorded invocations" {
     }));
 
     const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const response_mapping = fabricTestMapping(.provider_result_to_parent_response);
     const route = world.Fabric.Route.init(.{
         .route_id = 423,
         .kind = .target_export,
@@ -5401,6 +5402,7 @@ test "runspace fabric plan provider-run limit counts recorded invocations" {
         .provider_target_ref_fingerprint = provider_ref.target_ref_fingerprint,
         .provider_world_surface_fingerprint = provider_ref.world_surface_fingerprint,
         .provider_target_certificate_fingerprint = provider_ref.target_certificate_fingerprint,
+        .response_value_mapping_fingerprint = response_mapping.mapping_fingerprint,
     });
     const plan = world.Fabric.Plan.init(.{
         .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
@@ -5408,6 +5410,7 @@ test "runspace fabric plan provider-run limit counts recorded invocations" {
         .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
         .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
         .routes = &.{route},
+        .value_mappings = &.{response_mapping},
         .max_provider_runs = 1,
     });
 
@@ -5439,6 +5442,7 @@ test "runspace fabric generic routing rejects provider routes before supervision
 
     const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    const response_mapping = fabricTestMapping(.provider_result_to_parent_response);
     const provider_route = world.Fabric.Route.init(.{
         .route_id = 432,
         .kind = .target_export,
@@ -5448,6 +5452,7 @@ test "runspace fabric generic routing rejects provider routes before supervision
         .provider_target_ref_fingerprint = provider_ref.target_ref_fingerprint,
         .provider_world_surface_fingerprint = provider_ref.world_surface_fingerprint,
         .provider_target_certificate_fingerprint = provider_ref.target_certificate_fingerprint,
+        .response_value_mapping_fingerprint = response_mapping.mapping_fingerprint,
     });
     const provider_plan = world.Fabric.Plan.init(.{
         .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
@@ -5455,6 +5460,7 @@ test "runspace fabric generic routing rejects provider routes before supervision
         .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
         .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
         .routes = &.{provider_route},
+        .value_mappings = &.{response_mapping},
     });
     try runspace.installFabricPlan(parent_ref, provider_plan);
     try std.testing.expectError(error.ProviderRunDenied, runspace.routePending(0, provider_plan));
@@ -5530,6 +5536,7 @@ test "runspace fabric local provider routing enforces pinned provider port id" {
 
     const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const provider_ref = world.TargetRef.fromTarget(fixtures.Agent.Target);
+    const response_mapping = fabricTestMapping(.provider_result_to_parent_response);
     const route = world.Fabric.Route.init(.{
         .route_id = 435,
         .kind = .target_export,
@@ -5538,6 +5545,7 @@ test "runspace fabric local provider routing enforces pinned provider port id" {
         .parent_world_port_id = 0,
         .provider_target_ref_fingerprint = provider_ref.target_ref_fingerprint,
         .provider_world_port_id = 1,
+        .response_value_mapping_fingerprint = response_mapping.mapping_fingerprint,
     });
     const plan = world.Fabric.Plan.init(.{
         .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
@@ -5545,6 +5553,7 @@ test "runspace fabric local provider routing enforces pinned provider port id" {
         .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
         .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
         .routes = &.{route},
+        .value_mappings = &.{response_mapping},
     });
     try runspace.installFabricPlan(parent_ref, plan);
     try std.testing.expectError(error.WrongPortId, runspace.routePendingToProviderRun(0, plan, provider_handle));
@@ -5581,6 +5590,7 @@ test "runspace fabric routing rolls back invocation when event recording fails" 
     }));
 
     const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const response_mapping = fabricTestMapping(.provider_result_to_parent_response);
     const route = world.Fabric.Route.init(.{
         .route_id = 428,
         .kind = .target_export,
@@ -5590,6 +5600,7 @@ test "runspace fabric routing rolls back invocation when event recording fails" 
         .provider_target_ref_fingerprint = provider_ref.target_ref_fingerprint,
         .provider_world_surface_fingerprint = provider_ref.world_surface_fingerprint,
         .provider_target_certificate_fingerprint = provider_ref.target_certificate_fingerprint,
+        .response_value_mapping_fingerprint = response_mapping.mapping_fingerprint,
     });
     const plan = world.Fabric.Plan.init(.{
         .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
@@ -5597,6 +5608,7 @@ test "runspace fabric routing rolls back invocation when event recording fails" 
         .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
         .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
         .routes = &.{route},
+        .value_mappings = &.{response_mapping},
     });
 
     try runspace.installFabricPlan(parent_ref, plan);
@@ -5720,6 +5732,7 @@ test "runspace fabric receipt rolls back when event recording fails" {
     }));
 
     const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const response_mapping = fabricTestMapping(.provider_result_to_parent_response);
     const route = world.Fabric.Route.init(.{
         .route_id = 430,
         .kind = .target_export,
@@ -5729,6 +5742,7 @@ test "runspace fabric receipt rolls back when event recording fails" {
         .provider_target_ref_fingerprint = provider_ref.target_ref_fingerprint,
         .provider_world_surface_fingerprint = provider_ref.world_surface_fingerprint,
         .provider_target_certificate_fingerprint = provider_ref.target_certificate_fingerprint,
+        .response_value_mapping_fingerprint = response_mapping.mapping_fingerprint,
     });
     const plan = world.Fabric.Plan.init(.{
         .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
@@ -5736,6 +5750,7 @@ test "runspace fabric receipt rolls back when event recording fails" {
         .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
         .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
         .routes = &.{route},
+        .value_mappings = &.{response_mapping},
     });
 
     try runspace.installFabricPlan(parent_ref, plan);
@@ -5912,6 +5927,7 @@ test "runspace fabric supervision denies before invocation mutation" {
     }));
 
     const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const response_mapping = fabricTestMapping(.provider_result_to_parent_response);
     const route = world.Fabric.Route.init(.{
         .route_id = 44,
         .kind = .target_export,
@@ -5921,6 +5937,7 @@ test "runspace fabric supervision denies before invocation mutation" {
         .provider_target_ref_fingerprint = provider_ref.target_ref_fingerprint,
         .provider_world_surface_fingerprint = provider_ref.world_surface_fingerprint,
         .provider_target_certificate_fingerprint = provider_ref.target_certificate_fingerprint,
+        .response_value_mapping_fingerprint = response_mapping.mapping_fingerprint,
     });
     const plan = world.Fabric.Plan.init(.{
         .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
@@ -5928,6 +5945,7 @@ test "runspace fabric supervision denies before invocation mutation" {
         .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
         .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
         .routes = &.{route},
+        .value_mappings = &.{response_mapping},
     });
     try runspace.installFabricPlan(parent_ref, plan);
     try std.testing.expectError(error.FabricDenied, runspace.routePendingToProviderRun(0, plan, provider_handle));
@@ -5973,6 +5991,7 @@ test "runspace fabric supervision counts provider run budget" {
     }));
 
     const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const response_mapping = fabricTestMapping(.provider_result_to_parent_response);
     const route = world.Fabric.Route.init(.{
         .route_id = 45,
         .kind = .target_export,
@@ -5982,6 +6001,7 @@ test "runspace fabric supervision counts provider run budget" {
         .provider_target_ref_fingerprint = provider_ref.target_ref_fingerprint,
         .provider_world_surface_fingerprint = provider_ref.world_surface_fingerprint,
         .provider_target_certificate_fingerprint = provider_ref.target_certificate_fingerprint,
+        .response_value_mapping_fingerprint = response_mapping.mapping_fingerprint,
     });
     const plan = world.Fabric.Plan.init(.{
         .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
@@ -5989,6 +6009,7 @@ test "runspace fabric supervision counts provider run budget" {
         .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
         .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
         .routes = &.{route},
+        .value_mappings = &.{response_mapping},
     });
     try runspace.installFabricPlan(parent_ref, plan);
     try std.testing.expectError(error.BudgetExceeded, runspace.routePendingToProviderRun(0, plan, provider_handle));
@@ -6280,6 +6301,7 @@ test "runspace active fabric handoff export fails closed until parent responds" 
     }));
 
     const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const response_mapping = fabricTestMapping(.provider_result_to_parent_response);
     const route = world.Fabric.Route.init(.{
         .route_id = 49,
         .kind = .target_export,
@@ -6289,6 +6311,7 @@ test "runspace active fabric handoff export fails closed until parent responds" 
         .provider_target_ref_fingerprint = provider_ref.target_ref_fingerprint,
         .provider_world_surface_fingerprint = provider_ref.world_surface_fingerprint,
         .provider_target_certificate_fingerprint = provider_ref.target_certificate_fingerprint,
+        .response_value_mapping_fingerprint = response_mapping.mapping_fingerprint,
     });
     const plan = world.Fabric.Plan.init(.{
         .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
@@ -6296,6 +6319,7 @@ test "runspace active fabric handoff export fails closed until parent responds" 
         .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
         .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
         .routes = &.{route},
+        .value_mappings = &.{response_mapping},
     });
     try runspace.installFabricPlan(parent_ref, plan);
     const invocation = try runspace.routePendingToProviderRun(0, plan, provider_handle);
@@ -6344,6 +6368,7 @@ test "runspace fabric exported provider is not accepted as completed provider" {
     defer exported_provider.deinit(std.testing.allocator);
 
     const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const response_mapping = fabricTestMapping(.provider_result_to_parent_response);
     const route = world.Fabric.Route.init(.{
         .route_id = 55,
         .kind = .target_export,
@@ -6353,6 +6378,7 @@ test "runspace fabric exported provider is not accepted as completed provider" {
         .provider_target_ref_fingerprint = provider_ref.target_ref_fingerprint,
         .provider_world_surface_fingerprint = provider_ref.world_surface_fingerprint,
         .provider_target_certificate_fingerprint = provider_ref.target_certificate_fingerprint,
+        .response_value_mapping_fingerprint = response_mapping.mapping_fingerprint,
     });
     const plan = world.Fabric.Plan.init(.{
         .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
@@ -6360,6 +6386,7 @@ test "runspace fabric exported provider is not accepted as completed provider" {
         .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
         .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
         .routes = &.{route},
+        .value_mappings = &.{response_mapping},
     });
     try runspace.installFabricPlan(parent_ref, plan);
     try std.testing.expectError(error.InvalidRunspaceTransition, runspace.routePendingToProviderRun(0, plan, provider_handle));
@@ -6402,6 +6429,7 @@ test "runspace fabric failed provider is rejected before invocation record" {
     }
 
     const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const response_mapping = fabricTestMapping(.provider_result_to_parent_response);
     const route = world.Fabric.Route.init(.{
         .route_id = 57,
         .kind = .target_export,
@@ -6411,6 +6439,7 @@ test "runspace fabric failed provider is rejected before invocation record" {
         .provider_target_ref_fingerprint = provider_ref.target_ref_fingerprint,
         .provider_world_surface_fingerprint = provider_ref.world_surface_fingerprint,
         .provider_target_certificate_fingerprint = provider_ref.target_certificate_fingerprint,
+        .response_value_mapping_fingerprint = response_mapping.mapping_fingerprint,
     });
     const plan = world.Fabric.Plan.init(.{
         .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
@@ -6418,6 +6447,7 @@ test "runspace fabric failed provider is rejected before invocation record" {
         .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
         .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
         .routes = &.{route},
+        .value_mappings = &.{response_mapping},
     });
     try runspace.installFabricPlan(parent_ref, plan);
     try std.testing.expectError(error.InvalidRunspaceTransition, runspace.routePendingToProviderRun(0, plan, provider_handle));
@@ -6455,6 +6485,7 @@ test "runspace fabric provider failure retires active parent invocation" {
     }));
 
     const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const response_mapping = fabricTestMapping(.provider_result_to_parent_response);
     const route = world.Fabric.Route.init(.{
         .route_id = 53,
         .kind = .target_export,
@@ -6464,6 +6495,7 @@ test "runspace fabric provider failure retires active parent invocation" {
         .provider_target_ref_fingerprint = provider_ref.target_ref_fingerprint,
         .provider_world_surface_fingerprint = provider_ref.world_surface_fingerprint,
         .provider_target_certificate_fingerprint = provider_ref.target_certificate_fingerprint,
+        .response_value_mapping_fingerprint = response_mapping.mapping_fingerprint,
     });
     const plan = world.Fabric.Plan.init(.{
         .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
@@ -6471,6 +6503,7 @@ test "runspace fabric provider failure retires active parent invocation" {
         .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
         .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
         .routes = &.{route},
+        .value_mappings = &.{response_mapping},
     });
     try runspace.installFabricPlan(parent_ref, plan);
     const invocation = try runspace.routePendingToProviderRun(0, plan, provider_handle);
@@ -6522,6 +6555,7 @@ test "runspace active fabric provider handle cannot be shared by another parent"
     }));
 
     const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const response_mapping = fabricTestMapping(.provider_result_to_parent_response);
     const route = world.Fabric.Route.init(.{
         .route_id = 50,
         .kind = .target_export,
@@ -6531,6 +6565,7 @@ test "runspace active fabric provider handle cannot be shared by another parent"
         .provider_target_ref_fingerprint = provider_ref.target_ref_fingerprint,
         .provider_world_surface_fingerprint = provider_ref.world_surface_fingerprint,
         .provider_target_certificate_fingerprint = provider_ref.target_certificate_fingerprint,
+        .response_value_mapping_fingerprint = response_mapping.mapping_fingerprint,
     });
     const plan = world.Fabric.Plan.init(.{
         .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
@@ -6538,6 +6573,7 @@ test "runspace active fabric provider handle cannot be shared by another parent"
         .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
         .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
         .routes = &.{route},
+        .value_mappings = &.{response_mapping},
     });
 
     try runspace.installFabricPlan(parent_ref, plan);
@@ -6567,6 +6603,12 @@ test "runspace fabric provider routing enforces route depth cap" {
 
     const ports_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const agent_ref = world.TargetRef.fromTarget(fixtures.Agent.Target);
+    const ports_response_mapping = fabricTestMapping(.provider_result_to_parent_response);
+    const agent_response_mapping = world.Fabric.ValueMapping.init(.{
+        .kind = .provider_result_to_parent_response,
+        .provider_result_value_table_id = 1,
+        .parent_response_value_table_id = 1,
+    });
     var provider_final_image = try world.Frame.ValueImage.fromValue(std.testing.allocator, 1, 0x5150_00f7, null, @as(i32, 7), world.ValuePolicy.portable);
     defer provider_final_image.deinit(std.testing.allocator);
     const completed_provider = try runspace.installRunImage(world.RunImage.init(.{
@@ -6591,6 +6633,7 @@ test "runspace fabric provider routing enforces route depth cap" {
         .provider_target_ref_fingerprint = agent_ref.target_ref_fingerprint,
         .provider_world_surface_fingerprint = agent_ref.world_surface_fingerprint,
         .provider_target_certificate_fingerprint = agent_ref.target_certificate_fingerprint,
+        .response_value_mapping_fingerprint = ports_response_mapping.mapping_fingerprint,
     });
     const first_plan = world.Fabric.Plan.init(.{
         .target_ref_fingerprint = ports_ref.target_ref_fingerprint,
@@ -6598,6 +6641,7 @@ test "runspace fabric provider routing enforces route depth cap" {
         .target_certificate_fingerprint = ports_ref.target_certificate_fingerprint,
         .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
         .routes = &.{first_route},
+        .value_mappings = &.{ports_response_mapping},
         .max_depth = 2,
         .max_provider_runs = 2,
     });
@@ -6612,6 +6656,7 @@ test "runspace fabric provider routing enforces route depth cap" {
         .provider_target_ref_fingerprint = ports_ref.target_ref_fingerprint,
         .provider_world_surface_fingerprint = ports_ref.world_surface_fingerprint,
         .provider_target_certificate_fingerprint = ports_ref.target_certificate_fingerprint,
+        .response_value_mapping_fingerprint = agent_response_mapping.mapping_fingerprint,
         .max_depth = 1,
     });
     const nested_plan = world.Fabric.Plan.init(.{
@@ -6620,6 +6665,7 @@ test "runspace fabric provider routing enforces route depth cap" {
         .target_certificate_fingerprint = agent_ref.target_certificate_fingerprint,
         .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Agent.Target).import_set_fingerprint,
         .routes = &.{nested_route},
+        .value_mappings = &.{agent_response_mapping},
         .max_depth = 2,
         .max_provider_runs = 2,
     });
