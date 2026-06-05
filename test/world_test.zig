@@ -5060,6 +5060,24 @@ test "runspace install consumes explicit fabric plan for missing environment bin
     try std.testing.expectEqual(@as(?u64, provider_plan.plan_fingerprint), provider_accepted.fabric_plan_fingerprint);
     try std.testing.expect(reject_accepted.report_fingerprint != provider_accepted.report_fingerprint);
 
+    var native_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer native_runtime.deinit();
+    var native_ctx: PortsCtx = .{};
+    var native_runspace = world.Runspace.init(std.testing.allocator, .{ .auto_dispatch = true });
+    defer native_runspace.deinit();
+    const native_handle = try native_runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &native_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &native_ctx,
+        .fabric_plan = fabric_plan,
+    });
+    _ = try native_runspace.tick();
+    try std.testing.expectEqual(@as(usize, 1), native_ctx.calls);
+    try std.testing.expectEqual(@as(usize, 0), native_runspace.report().pending_port_count);
+    try std.testing.expectEqual(world.Runspace.RunStatus.runnable, (try native_runspace.getSlotSummary(native_handle)).status);
+    _ = try native_runspace.tick();
+    try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try native_runspace.getSlotSummary(native_handle)).status);
+
     var runtime = boundary.Runtime.init(std.testing.allocator);
     defer runtime.deinit();
     var runspace = world.Runspace.init(std.testing.allocator, .{});

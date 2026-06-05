@@ -223,7 +223,7 @@ pub const world_binding_fingerprint_version: u32 = 1;
 pub const world_port_authority_fingerprint_version: u32 = 1;
 pub const world_environment_policy_fingerprint_version: u32 = 1;
 pub const world_binding_plan_fingerprint_version: u32 = 1;
-pub const world_acceptance_report_fingerprint_version: u32 = 1;
+pub const world_acceptance_report_fingerprint_version: u32 = 2;
 pub const world_environment_certificate_format_version: u32 = 1;
 pub const world_environment_certificate_fingerprint_version: u32 = 1;
 pub const world_adapter_descriptor_fingerprint_version: u32 = 1;
@@ -231,15 +231,15 @@ pub const world_run_state_fingerprint_version: u32 = 1;
 pub const world_run_image_format_version: u32 = 3;
 pub const world_run_image_fingerprint_version: u32 = 1;
 pub const world_run_permit_format_version: u32 = 1;
-pub const world_run_permit_fingerprint_version: u32 = 1;
-pub const world_supervision_policy_fingerprint_version: u32 = 1;
-pub const world_budget_fingerprint_version: u32 = 1;
-pub const world_cost_model_fingerprint_version: u32 = 1;
+pub const world_run_permit_fingerprint_version: u32 = 2;
+pub const world_supervision_policy_fingerprint_version: u32 = 2;
+pub const world_budget_fingerprint_version: u32 = 2;
+pub const world_cost_model_fingerprint_version: u32 = 2;
 pub const world_port_rule_fingerprint_version: u32 = 1;
-pub const world_usage_ledger_fingerprint_version: u32 = 1;
-pub const world_supervision_check_fingerprint_version: u32 = 1;
+pub const world_usage_ledger_fingerprint_version: u32 = 2;
+pub const world_supervision_check_fingerprint_version: u32 = 2;
 pub const world_run_receipt_format_version: u32 = 1;
-pub const world_run_receipt_fingerprint_version: u32 = 1;
+pub const world_run_receipt_fingerprint_version: u32 = 2;
 pub const world_transfer_package_format_version: u32 = 1;
 pub const world_transfer_package_fingerprint_version: u32 = 1;
 pub const world_package_manifest_format_version: u32 = 1;
@@ -261,7 +261,7 @@ pub const world_run_handle_fingerprint_version: u32 = 1;
 pub const world_pending_port_format_version: u32 = 1;
 pub const world_pending_port_fingerprint_version: u32 = 1;
 pub const world_runspace_config_fingerprint_version: u32 = 1;
-pub const world_runspace_event_fingerprint_version: u32 = 1;
+pub const world_runspace_event_fingerprint_version: u32 = 2;
 pub const world_fabric_format_version: u32 = 1;
 pub const world_fabric_fingerprint_version: u32 = 1;
 pub const world_fabric_segment_format_version: u32 = 1;
@@ -7871,6 +7871,7 @@ pub const Runspace = struct {
             beforeFabricInvocation: *const fn (*anyopaque, u32, Fabric.RouteKind, usize, usize) anyerror!void,
             validateFabricResponseValue: *const fn (*anyopaque, u32, Frame.ValueImage) anyerror!void,
             fabricPlanCoversWorldPort: *const fn (*anyopaque, u32) bool,
+            fabricPlanCoversHandlerlessWorldPort: *const fn (*anyopaque, u32) bool,
             resumeTerminalFrame: *const fn (*anyopaque, Frame.Response) anyerror!void,
             dispatch: *const fn (*anyopaque) anyerror!?ResponseEvidence,
             snapshotRunImage: *const fn (*anyopaque) anyerror!RunImage,
@@ -7914,6 +7915,10 @@ pub const Runspace = struct {
 
         fn fabricPlanCoversWorldPort(self: @This(), world_port_id: u32) bool {
             return self.vtable.fabricPlanCoversWorldPort(self.ptr, world_port_id);
+        }
+
+        fn fabricPlanCoversHandlerlessWorldPort(self: @This(), world_port_id: u32) bool {
+            return self.vtable.fabricPlanCoversHandlerlessWorldPort(self.ptr, world_port_id);
         }
 
         fn resumeTerminalFrame(self: @This(), response: Frame.Response) !void {
@@ -8160,6 +8165,11 @@ pub const Runspace = struct {
                     return false;
                 }
 
+                fn runFabricPlanCoversHandlerlessWorldPort(ptr: *anyopaque, world_port_id: u32) bool {
+                    const active: *RunType = @ptrCast(@alignCast(ptr));
+                    return active.fabricPlanCoversHandlerlessWorldPort(world_port_id);
+                }
+
                 fn runDeinit(ptr: *anyopaque, allocator: std.mem.Allocator) void {
                     const active: *RunType = @ptrCast(@alignCast(ptr));
                     active.deinit();
@@ -8174,6 +8184,7 @@ pub const Runspace = struct {
                     .beforeFabricInvocation = runBeforeFabricInvocation,
                     .validateFabricResponseValue = runValidateFabricResponseValue,
                     .fabricPlanCoversWorldPort = runFabricPlanCoversWorldPort,
+                    .fabricPlanCoversHandlerlessWorldPort = runFabricPlanCoversHandlerlessWorldPort,
                     .resumeTerminalFrame = runResumeTerminalFrame,
                     .dispatch = runDispatch,
                     .snapshotRunImage = runSnapshotRunImage,
@@ -12028,7 +12039,7 @@ pub const Runspace = struct {
                     .run_permit_fingerprint = slot.run_permit_fingerprint,
                     .summary = event_pair.takeSecond(),
                 });
-                if (self.config.auto_dispatch and !driver.fabricPlanCoversWorldPort(pending.world_port_id)) return self.autoDispatchPending(index, pending, mailbox_id, &auto_events.?);
+                if (self.config.auto_dispatch and !driver.fabricPlanCoversHandlerlessWorldPort(pending.world_port_id)) return self.autoDispatchPending(index, pending, mailbox_id, &auto_events.?);
                 return parked_event;
             },
         }
@@ -16561,6 +16572,18 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         .adapter, .unsupported => false,
                         .target_export, .admitted_run, .guest, .replay, .reject => true,
                     };
+                }
+
+                fn fabricPlanCoversHandlerlessWorldPort(self: *Self, world_port_id: u32) bool {
+                    if (!self.fabricPlanCoversWorldPort(world_port_id)) return false;
+                    if (Target.WorldPortTable.entries.len == 0) return true;
+                    switch (world_port_id) {
+                        inline 0...Target.WorldPortTable.entries.len - 1 => |id| {
+                            const Handler = comptime handlerForWorldPortId(Target, Config, @intCast(id));
+                            return Handler == null;
+                        },
+                        else => return false,
+                    }
                 }
 
                 fn pendingRequestFrameDecl(self: *Self, comptime Decl: type, request: Request, world_port_id: u32, record_event: bool) !Frame.Request {
