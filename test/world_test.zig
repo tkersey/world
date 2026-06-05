@@ -6065,15 +6065,19 @@ test "runspace fabric provider result resumes exactly one parent pending port" {
     const invocation = try runspace.routePendingToProviderRun(0, plan, provider_handle);
     try std.testing.expectEqual(world.Fabric.InvocationStatus.provider_completed, invocation.status);
     try std.testing.expectEqual(@as(?u64, null), invocation.mapped_request_frame_fingerprint);
+    try std.testing.expectEqual(@as(?u64, null), invocation.mapped_response_frame_fingerprint);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().fabric_invocation_count);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
 
     const event = try runspace.respondFromFabric(invocation);
     try std.testing.expectEqual(world.Runspace.EventKind.run_resumed, event.kind);
+    const parent_response_frame_fingerprint = event.response_frame_fingerprint orelse return error.ExpectedResponseFrame;
+    try std.testing.expect(parent_response_frame_fingerprint != provider_state.final_response_fingerprint.?);
     try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().fabric_receipt_count);
     const stored_invocation = runspace.fabric_invocations.items[invocation.sequence];
     try std.testing.expectEqual(world.Fabric.InvocationStatus.parent_responded, stored_invocation.status);
+    try std.testing.expectEqual(@as(?u64, parent_response_frame_fingerprint), stored_invocation.mapped_response_frame_fingerprint);
     try std.testing.expectEqual(invocation.invocation_fingerprint, stored_invocation.invocation_fingerprint);
     try std.testing.expect(stored_invocation.invocation_state_fingerprint != invocation.invocation_state_fingerprint);
     const receipt = runspace.fabric_receipts.items[0];

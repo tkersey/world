@@ -10070,7 +10070,6 @@ pub const Runspace = struct {
             .request_frame_fingerprint = pending.request_frame_fingerprint,
             .provider_run_handle_fingerprint = provider_handle.handle_fingerprint,
             .mapped_request_frame_fingerprint = mapped_request_frame_fingerprint,
-            .mapped_response_frame_fingerprint = provider_slot.current_state.final_response_fingerprint,
             .run_permit_fingerprint = pending.run_permit_fingerprint,
             .depth = depth,
             .sequence = self.fabric_invocations.items.len,
@@ -10860,6 +10859,9 @@ pub const Runspace = struct {
         if (current.route_fingerprint != invocation.route_fingerprint) return error.InvalidRunspaceTransition;
         if (current.provider_run_handle_fingerprint != invocation.provider_run_handle_fingerprint) return error.InvalidRunspaceTransition;
         if (current.mapped_request_frame_fingerprint != invocation.mapped_request_frame_fingerprint) return error.InvalidRunspaceTransition;
+        if (current.mapped_response_frame_fingerprint) |fingerprint| {
+            if (invocation.mapped_response_frame_fingerprint != fingerprint) return error.InvalidRunspaceTransition;
+        }
         if (current.run_permit_fingerprint != invocation.run_permit_fingerprint) return error.InvalidRunspaceTransition;
         if (current.depth != invocation.depth) return error.InvalidRunspaceTransition;
         self.fabric_invocations.items[invocation.sequence] = invocation;
