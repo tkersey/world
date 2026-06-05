@@ -10051,6 +10051,7 @@ pub const Runspace = struct {
             }
             return err;
         };
+        if (event.kind == .run_parked_on_supervision) return event;
         if (event.kind != .run_resumed) {
             try self.retireFabricInvocation(recorded, .supervision_denied);
             return event;
