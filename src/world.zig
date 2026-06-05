@@ -10384,10 +10384,9 @@ pub const Runspace = struct {
     }
 
     fn assertNoFabricAncestorTargetCycle(self: *const @This(), parent_handle: RunHandle, provider_slot: Runspace.RunSlot) !void {
-        const provider_target_fingerprint = provider_slot.target_ref.target_ref_fingerprint;
         const immediate_parent_index = try self.slotIndex(parent_handle);
         const immediate_parent_slot = self.slots.items[immediate_parent_index];
-        if (immediate_parent_slot.target_ref.target_ref_fingerprint == provider_target_fingerprint) return error.FabricCycle;
+        if (fabricSlotsShareTargetOrModule(immediate_parent_slot, provider_slot)) return error.FabricCycle;
         var current_handle_fingerprint = parent_handle.handle_fingerprint;
         var guard: usize = 0;
         while (true) {
@@ -10419,11 +10418,22 @@ pub const Runspace = struct {
             const parent_fingerprint = ancestor_parent_fingerprint orelse return;
             const parent_index = self.slotIndexByHandleFingerprint(parent_fingerprint) orelse return error.StaleRunHandle;
             const parent_slot = self.slots.items[parent_index];
-            if (parent_slot.target_ref.target_ref_fingerprint == provider_target_fingerprint) return error.FabricCycle;
+            if (fabricSlotsShareTargetOrModule(parent_slot, provider_slot)) return error.FabricCycle;
             current_handle_fingerprint = parent_fingerprint;
             guard += 1;
             if (guard > self.fabric_invocations.items.len) return error.InvalidRunspaceTransition;
         }
+    }
+
+    fn fabricSlotsShareTargetOrModule(parent_slot: Runspace.RunSlot, provider_slot: Runspace.RunSlot) bool {
+        if (parent_slot.target_ref.target_ref_fingerprint == provider_slot.target_ref.target_ref_fingerprint) return true;
+        const parent_module = fabricSlotModuleFingerprint(parent_slot) orelse return false;
+        const provider_module = fabricSlotModuleFingerprint(provider_slot) orelse return false;
+        return parent_module == provider_module;
+    }
+
+    fn fabricSlotModuleFingerprint(slot: Runspace.RunSlot) ?u64 {
+        return slot.module_ref_fingerprint orelse slot.target_ref.boundary_module_fingerprint;
     }
 
     fn fabricResponseForPending(pending: Runspace.PendingPort, status: ResponseStatus, seed: u64, reason: []const u8) !Frame.Response {

@@ -7738,6 +7738,7 @@ test "runspace fabric provider routing enforces route depth cap" {
 
     const ports_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const agent_ref = world.TargetRef.fromTarget(fixtures.Agent.Target);
+    const strict_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
     const ports_response_mapping = fabricTestMapping(.provider_result_to_parent_response);
     const agent_response_mapping = world.Fabric.ValueMapping.init(.{
         .kind = .provider_result_to_parent_response,
@@ -7833,6 +7834,46 @@ test "runspace fabric provider routing enforces route depth cap" {
     });
     try runspace.installFabricPlan(agent_ref, cycle_plan);
     try std.testing.expectError(error.FabricCycle, runspace.routePendingToProviderRun(1, cycle_plan, completed_provider));
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().fabric_invocation_count);
+
+    var same_module_final_image = try world.Frame.ValueImage.fromValue(std.testing.allocator, 1, 0x5150_00f8, null, @as(i32, 8), world.ValuePolicy.portable);
+    defer same_module_final_image.deinit(std.testing.allocator);
+    const ancestor_module = ports_ref.boundary_module_fingerprint orelse return error.ExpectedBoundaryModuleFingerprint;
+    const same_module_provider = try runspace.installRunImage(world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = strict_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Strict.Target).import_set_fingerprint,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = strict_ref.target_ref_fingerprint,
+            .final_response_fingerprint = 0x5150_00f8,
+            .final_value_image_fingerprint = same_module_final_image.value_image_fingerprint,
+            .status = .completed,
+        }),
+        .final_result_image = same_module_final_image,
+        .module_ref_fingerprint = ancestor_module,
+    }));
+    const module_cycle_route = world.Fabric.Route.init(.{
+        .route_id = 438,
+        .kind = .target_export,
+        .parent_world_surface_fingerprint = agent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = agent_ref.target_certificate_fingerprint,
+        .parent_world_port_id = AgentDecideDecl.world_port_id,
+        .provider_module_fingerprint = ancestor_module,
+        .response_value_mapping_fingerprint = agent_response_mapping.mapping_fingerprint,
+        .max_depth = 2,
+    });
+    const module_cycle_plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = agent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = agent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = agent_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Agent.Target).import_set_fingerprint,
+        .routes = &.{module_cycle_route},
+        .value_mappings = &.{agent_response_mapping},
+        .max_depth = 2,
+        .max_provider_runs = 2,
+    });
+    try runspace.installFabricPlan(agent_ref, module_cycle_plan);
+    try std.testing.expectError(error.FabricCycle, runspace.routePendingToProviderRun(1, module_cycle_plan, same_module_provider));
     try std.testing.expectEqual(@as(usize, 1), runspace.report().fabric_invocation_count);
 }
 
