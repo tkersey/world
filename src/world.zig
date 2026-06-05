@@ -2562,9 +2562,9 @@ pub const Admission = struct {
                     }
                     var handoff = Handoff{ .allocator = args.allocator, .run_image = handoff_run_image };
                     const handoff_report = if (args.permit) |permit|
-                        handoff.preflightWithPermitFreshTranscriptSink(Target, Env, handoff_mode, permit, fresh_transcript_sink_available, null)
+                        handoff.preflightWithPermitFreshTranscriptSink(Target, Env, handoff_mode, permit, fresh_transcript_sink_available, args.fabric_plan)
                     else
-                        handoff.preflightWithFreshTranscriptSink(Target, Env, handoff_mode, fresh_transcript_sink_available, null);
+                        handoff.preflightWithFreshTranscriptSink(Target, Env, handoff_mode, fresh_transcript_sink_available, args.fabric_plan);
                     if (!handoff_report.accepted) {
                         return rejectedResult(request, package, target_ref, module_ref, match, handoffPreflightBlockers(args.permit != null), "handoff preflight rejected admission");
                     }
@@ -15060,7 +15060,7 @@ pub const Handoff = struct {
         }
         if (mode == .accept_fresh and !interrupted_export) {
             const pending_frame = self.run_image.pending_request_frame.?;
-            const pending_policy = valuePolicyForEnvironmentPort(Env, pending_frame.world_port_id, .request) catch |err| {
+            const pending_policy = valuePolicyForHandoffRequestFrame(Target, Env, pending_frame.world_port_id, admitted_fabric_plan) catch |err| {
                 return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{environmentValidationBlocker(err)});
             };
             validateTransferredRequestFramePolicy(pending_frame, pending_policy) catch |err| {
@@ -19430,6 +19430,29 @@ fn replayImageValuePolicyForEnvironmentPort(comptime Env: type, world_port_id: u
     var policy = try valuePolicyForEnvironmentPort(Env, world_port_id, .response);
     policy.require_response_images_for_replay = true;
     return policy;
+}
+
+fn valuePolicyForHandoffRequestFrame(comptime Target: type, comptime Env: type, world_port_id: u32, admitted_fabric_plan: ?Fabric.Plan) !ValuePolicy {
+    if (Target != Env.TargetType) return error.HandoffTargetMismatch;
+    if (environmentHasBindingForPort(Env, world_port_id)) {
+        return valuePolicyForEnvironmentPort(Env, world_port_id, .request);
+    }
+    if (world_port_id >= Target.WorldPortTable.entries.len) return error.WrongPortId;
+    const plan = admitted_fabric_plan orelse return error.MissingBinding;
+    const route = plan.findRouteForPort(world_port_id) orelse return error.MissingBinding;
+    return switch (route.kind) {
+        .target_export, .admitted_run, .guest, .replay, .reject => ValuePolicy.portable,
+        .adapter, .unsupported => error.MissingBinding,
+    };
+}
+
+fn environmentHasBindingForPort(comptime Env: type, world_port_id: u32) bool {
+    inline for (Env.bindings_decl) |BindingDecl| {
+        if (comptime BindingDecl.TargetType == Env.TargetType) {
+            if (BindingDecl.world_port_id == world_port_id) return true;
+        }
+    }
+    return false;
 }
 
 fn valuePolicyForEnvironmentPort(comptime Env: type, world_port_id: u32, comptime kind: FrameValuePolicyKind) !ValuePolicy {

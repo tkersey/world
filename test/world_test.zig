@@ -5139,6 +5139,21 @@ test "runspace install consumes explicit fabric plan for missing environment bin
     _ = try source.tick();
     var source_image = try source.exportRun(source_handle);
     defer source_image.deinit(std.testing.allocator);
+    const parked_package = world.Admission.TransferPackage.init(.{
+        .kind = .parked_run,
+        .target_ref = parent_ref,
+        .run_image = source_image,
+        .requested_mode = .resume_parked,
+    });
+    var handoff_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, PortsMissingEnv, parked_package, .{ .fabric_plan = fabric_plan });
+    defer handoff_result.deinit(std.testing.allocator);
+    try std.testing.expect(handoff_result.report.accepted);
+    try std.testing.expect(handoff_result.admitted_run.?.fabric_plan != null);
+    try std.testing.expectEqual(fabric_plan.plan_fingerprint, handoff_result.admitted_run.?.fabric_plan.?.plan_fingerprint);
+
     const fabric_admitted = world.Admission.AdmittedRun.init(.{
         .admission_receipt_fingerprint = 0xadd1_fab1,
         .target_ref = parent_ref,
