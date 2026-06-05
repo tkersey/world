@@ -376,6 +376,19 @@ test "fabric plan coverage ordering depth and provider limits fail closed" {
     try std.testing.expectEqual(@as(usize, 0), coverage.fabric_covered_port_count);
     try std.testing.expectEqual(@as(usize, 1), coverage.missing_port_count);
     try std.testing.expectEqual(@as(usize, 1), coverage.unsupported_port_count);
+    const adapter_plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .routes = &.{fabricTestRoute(.adapter, null)},
+    });
+    try std.testing.expectError(error.FabricMissingRoute, adapter_plan.assertCoverage(import_set));
+    try std.testing.expectError(error.UnsupportedMapping, adapter_plan.assertExecutableMappings());
+    const adapter_coverage = adapter_plan.coverage(parent_ref, import_set);
+    try std.testing.expect(!adapter_coverage.accepted);
+    try std.testing.expectEqual(@as(usize, 0), adapter_coverage.fabric_covered_port_count);
+    try std.testing.expectEqual(@as(usize, 1), adapter_coverage.missing_port_count);
+    try std.testing.expectEqual(@as(usize, 1), adapter_coverage.unsupported_port_count);
 }
 
 test "fabric binding invocation receipt and coverage fingerprints are stable" {
@@ -6411,10 +6424,9 @@ test "environment preflight accepts host and fabric complement coverage" {
         .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Agent.Target).import_set_fingerprint,
         .routes = &.{ host_adapter_route, route },
     });
-    const dense_accepted = AgentDecideOnlyEnv.acceptanceReportWithFabricPlan(.fresh, false, dense_covered);
-    try std.testing.expect(dense_accepted.accepted);
-    try std.testing.expectEqual(fixtures.Agent.Target.WorldPortTable.entries.len, dense_accepted.bound_port_count);
-    try std.testing.expectEqual(@as(usize, 0), dense_accepted.missing_port_count);
+    const dense_rejected = AgentDecideOnlyEnv.acceptanceReportWithFabricPlan(.fresh, false, dense_covered);
+    try std.testing.expect(!dense_rejected.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.MissingBinding, dense_rejected.blockers[0]);
 
     const wrong_port_route = world.Fabric.Route.init(.{
         .route_id = 425,

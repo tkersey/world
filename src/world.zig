@@ -7328,7 +7328,8 @@ pub const Fabric = struct {
                 }
                 switch (route.kind) {
                     .target_export, .admitted_run => if (response_mapping == null) return error.UnsupportedMapping,
-                    .adapter, .guest, .replay, .reject, .unsupported => {},
+                    .adapter => return error.UnsupportedMapping,
+                    .guest, .replay, .reject, .unsupported => {},
                 }
             }
         }
@@ -7351,7 +7352,7 @@ pub const Fabric = struct {
             var port_id: u32 = 0;
             while (port_id < import_set.required_count) : (port_id += 1) {
                 const route = self.findRouteForPort(port_id) orelse return error.FabricMissingRoute;
-                if (route.kind == .unsupported) return error.FabricMissingRoute;
+                if (route.kind == .unsupported or route.kind == .adapter) return error.FabricMissingRoute;
             }
         }
 
@@ -7434,7 +7435,7 @@ pub const Fabric = struct {
             var unsupported_route_count: usize = 0;
             for (self.routes, 0..) |route, index| {
                 if (route.parent_world_port_id >= import_set.required_count) continue;
-                if (route.kind == .unsupported) {
+                if (route.kind == .unsupported or route.kind == .adapter) {
                     unsupported_route_count += 1;
                     continue;
                 }
