@@ -500,7 +500,7 @@ pub fn build(b: *std.Build) void {
             .expected_stdout =
             \\parent_run_handle=367cb72b9a8188ae
             \\provider_run_handle=a53ebdcc0976217b
-            \\fabric_receipt_fingerprint=32a6c97f77e9856c
+            \\fabric_receipt_fingerprint=271db8a6e0670c1f
             \\final_result=7
             \\native_handler_calls=0
             \\
@@ -540,7 +540,7 @@ pub fn build(b: *std.Build) void {
             .expected_stdout =
             \\fabric_invocation_count=1
             \\budget_exceeded=true
-            \\run_receipt_fingerprint=e96e219fb7fe4420
+            \\run_receipt_fingerprint=50ada13a66e46f31
             \\
             ,
         },
