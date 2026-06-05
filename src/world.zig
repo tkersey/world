@@ -4059,14 +4059,8 @@ pub const Supervision = struct {
             provider_runs: usize = 0,
         }) !void {
             try self.validateWorldPortId(args.world_port_id);
-            const policy = self.permit.policy;
-            if (!policy.allow_fabric_routes) return self.deny(.before_fabric_invocation, args.world_port_id, .fabric_denied, null, "fabric denied");
-            switch (args.route_kind) {
-                .target_export, .admitted_run => if (!policy.allow_target_export_routes) return self.deny(.before_fabric_invocation, args.world_port_id, .provider_run_denied, null, "provider route denied"),
-                .guest => if (!policy.allow_guest_routes) return self.deny(.before_fabric_invocation, args.world_port_id, .guest_route_denied, null, "guest route denied"),
-                .replay => if (!policy.allow_replay_routes) return self.deny(.before_fabric_invocation, args.world_port_id, .replay_route_denied, null, "replay route denied"),
-                .reject => if (!policy.allow_reject_routes or !policy.allow_rejected_responses) return self.deny(.before_fabric_invocation, args.world_port_id, .fabric_denied, null, "reject route denied"),
-                .adapter, .unsupported => {},
+            if (fabricRouteSupervisionBlocker(self.permit.policy, args.route_kind)) |blocker| {
+                return self.deny(.before_fabric_invocation, args.world_port_id, blocker, null, "fabric route denied");
             }
             var next = try self.ledger.clone(self.allocator);
             defer next.deinit(self.allocator);
@@ -4426,7 +4420,20 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
         }
 
         pub fn acceptanceReportWithFabricPlanAndPermit(requested_mode: Mode, transcript_image_available: bool, plan: Fabric.Plan, permit: RunPermit) AcceptanceReport {
-            return acceptanceReportWithPermitFromReport(acceptanceReportWithFabricPlan(requested_mode, transcript_image_available, plan), requested_mode, transcript_image_available, permit);
+            const base_report = acceptanceReportWithFabricPlan(requested_mode, transcript_image_available, plan);
+            const report = acceptanceReportWithPermitFromReport(base_report, requested_mode, transcript_image_available, permit);
+            if (!report.accepted) return report;
+            inline for (0..Target.WorldPortTable.entries.len) |world_port_id| {
+                comptime var host_bound = false;
+                inline for (bindings) |BindingDecl| {
+                    if (BindingDecl.TargetType == Target and BindingDecl.world_port_id == world_port_id) host_bound = true;
+                }
+                if (!host_bound) {
+                    const route = plan.findRouteForPort(@intCast(world_port_id)) orelse return rejectedReport(report, &.{.SupervisionPolicyMismatch});
+                    if (fabricRouteSupervisionBlocker(permit.policy, route.kind) != null) return rejectedReport(report, &.{.SupervisionPolicyMismatch});
+                }
+            }
+            return report;
         }
 
         fn acceptanceReportWithPermitFromReport(base_report: AcceptanceReport, requested_mode: Mode, transcript_image_available: bool, permit: RunPermit) AcceptanceReport {
@@ -17605,6 +17612,17 @@ fn supervisionModeAcceptanceBlocker(requested_mode: Mode) AcceptanceBlocker {
         .fresh, .audit => .FreshCallDenied,
         .replay => .ReplayCallDenied,
         .verify => .VerifyCallDenied,
+    };
+}
+
+fn fabricRouteSupervisionBlocker(policy: SupervisionPolicy, route_kind: Fabric.RouteKind) ?Supervision.Blocker {
+    if (!policy.allow_fabric_routes) return .fabric_denied;
+    return switch (route_kind) {
+        .target_export, .admitted_run => if (policy.allow_target_export_routes) null else .provider_run_denied,
+        .guest => if (policy.allow_guest_routes) null else .guest_route_denied,
+        .replay => if (policy.allow_replay_routes) null else .replay_route_denied,
+        .reject => if (policy.allow_reject_routes and policy.allow_rejected_responses) null else .fabric_denied,
+        .adapter, .unsupported => null,
     };
 }
 

@@ -5104,6 +5104,18 @@ test "runspace install consumes explicit fabric plan for missing environment bin
     try std.testing.expect(native_permit_report.accepted);
     try std.testing.expectEqual(@as(?u64, fabric_plan.plan_fingerprint), native_permit_report.fabric_plan_fingerprint);
 
+    const disallowed_fabric_permit = world.Supervision.issue(fixtures.Ports.Target, PortsMissingEnv, .{
+        .mode = .fresh,
+        .fabric_plan_fingerprint = fabric_plan.plan_fingerprint,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_fabric_routes = true,
+        }),
+    });
+    const disallowed_fabric_report = PortsMissingEnv.acceptanceReportWithFabricPlanAndPermit(.fresh, false, fabric_plan, disallowed_fabric_permit);
+    try std.testing.expect(!disallowed_fabric_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.SupervisionPolicyMismatch, disallowed_fabric_report.blockers[0]);
+
     var runtime = boundary.Runtime.init(std.testing.allocator);
     defer runtime.deinit();
     var runspace = world.Runspace.init(std.testing.allocator, .{});
