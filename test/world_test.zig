@@ -102,18 +102,22 @@ fn fabricTestRoute(kind: world.Fabric.RouteKind, provider_target_ref_fingerprint
     const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
     const mapping = fabricTestMapping(.payload_to_provider_args);
+    const provider_target_fingerprint: ?u64 = switch (kind) {
+        .target_export, .admitted_run, .guest => provider_target_ref_fingerprint orelse provider_ref.target_ref_fingerprint,
+        else => null,
+    };
     return world.Fabric.Route.init(.{
         .route_id = @intFromEnum(kind) + 1,
         .kind = kind,
         .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
         .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
         .parent_world_port_id = 0,
-        .provider_target_ref_fingerprint = provider_target_ref_fingerprint orelse provider_ref.target_ref_fingerprint,
-        .provider_world_surface_fingerprint = provider_ref.world_surface_fingerprint,
-        .provider_target_certificate_fingerprint = provider_ref.target_certificate_fingerprint,
+        .provider_target_ref_fingerprint = provider_target_fingerprint,
+        .provider_world_surface_fingerprint = if (provider_target_fingerprint != null) provider_ref.world_surface_fingerprint else null,
+        .provider_target_certificate_fingerprint = if (provider_target_fingerprint != null) provider_ref.target_certificate_fingerprint else null,
         .provider_admission_receipt_fingerprint = if (kind == .admitted_run) 0xadd1_7001 else null,
         .provider_transcript_image_fingerprint = if (kind == .replay) 0x7777 else null,
-        .value_mapping_fingerprint = mapping.mapping_fingerprint,
+        .value_mapping_fingerprint = if (provider_target_fingerprint != null) mapping.mapping_fingerprint else null,
         .response_status = switch (kind) {
             .reject => .rejected,
             .unsupported => .failed,
@@ -285,6 +289,12 @@ test "fabric value mapping enforces exact supported conversions" {
 
     const unit_mapping = fabricTestMapping(.unit_args);
     try std.testing.expectEqual(@as(?u32, null), try unit_mapping.unitArgumentValueTableId());
+    const constrained_unit_mapping = world.Fabric.ValueMapping.init(.{
+        .kind = .unit_args,
+        .parent_payload_value_fingerprint = 0x1234,
+        .allow_unit_args = true,
+    });
+    try std.testing.expectError(error.UnsupportedMapping, constrained_unit_mapping.validate());
 
     const response = testRunspaceResponseFrame(request);
     const result_mapping = world.Fabric.ValueMapping.init(.{
@@ -4689,6 +4699,17 @@ test "fabric core validation rejects unsupported mappings and missing routes" {
     });
     try std.testing.expectError(error.UnsupportedMapping, bad_unsupported_status.validate());
 
+    const constrained_terminal_route = world.Fabric.Route.init(.{
+        .route_id = 24,
+        .kind = .reject,
+        .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .parent_world_port_id = 0,
+        .provider_target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .response_status = .rejected,
+    });
+    try std.testing.expectError(error.ProviderRunDenied, constrained_terminal_route.validate());
+
     const witnessless_admitted = world.Fabric.Route.init(.{
         .route_id = 23,
         .kind = .admitted_run,
@@ -4708,6 +4729,27 @@ test "fabric core validation rejects unsupported mappings and missing routes" {
         .parent_world_port_id = 0,
     });
     try std.testing.expectError(error.ReplayRouteDenied, unpinned_replay.validate());
+
+    const ignored_replay_mapping = fabricTestMapping(.provider_result_to_parent_response);
+    const mapped_replay = world.Fabric.Route.init(.{
+        .route_id = 25,
+        .fabric_digest = 0xfeed_9999,
+        .kind = .replay,
+        .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .parent_world_port_id = 0,
+        .provider_transcript_image_fingerprint = 0x7777,
+        .response_value_mapping_fingerprint = ignored_replay_mapping.mapping_fingerprint,
+    });
+    const mapped_replay_plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .routes = &.{mapped_replay},
+        .value_mappings = &.{ignored_replay_mapping},
+    });
+    try std.testing.expectError(error.UnsupportedMapping, mapped_replay_plan.assertExecutableMappings());
 
     const missing_route_binding = world.Fabric.Binding.init(.{
         .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
@@ -5903,6 +5945,23 @@ test "runspace fabric local provider routing enforces pinned provider port id" {
     try std.testing.expectError(error.WrongPortId, runspace.routePendingToProviderRun(0, plan, provider_handle));
     try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_invocation_count);
     try std.testing.expectEqual(@as(usize, 2), runspace.report().pending_port_count);
+
+    var completed_image = try world.Frame.ValueImage.fromValue(std.testing.allocator, 1, 0x5150_0abc, null, @as(i32, 7), world.ValuePolicy.portable);
+    defer completed_image.deinit(std.testing.allocator);
+    const completed_provider = try runspace.installRunImage(world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = provider_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Agent.Target).import_set_fingerprint,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+            .final_response_fingerprint = 0x5150_0abc,
+            .final_value_image_fingerprint = completed_image.value_image_fingerprint,
+            .status = .completed,
+        }),
+        .final_result_image = completed_image,
+    }));
+    try std.testing.expectError(error.WrongPortId, runspace.routePendingToProviderRun(0, plan, completed_provider));
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_invocation_count);
 }
 
 test "runspace fabric routing rolls back invocation when event recording fails" {
@@ -7183,6 +7242,30 @@ test "runspace fabric provider routing enforces route depth cap" {
     const first = try runspace.routePendingToProviderRun(0, first_plan, nested_parent_handle);
     try std.testing.expectEqual(@as(usize, 1), first.depth);
     try std.testing.expectError(error.FabricDepthExceeded, runspace.routePendingToProviderRun(1, nested_plan, completed_provider));
+    const cycle_route = world.Fabric.Route.init(.{
+        .route_id = 437,
+        .kind = .target_export,
+        .parent_world_surface_fingerprint = agent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = agent_ref.target_certificate_fingerprint,
+        .parent_world_port_id = AgentDecideDecl.world_port_id,
+        .provider_target_ref_fingerprint = ports_ref.target_ref_fingerprint,
+        .provider_world_surface_fingerprint = ports_ref.world_surface_fingerprint,
+        .provider_target_certificate_fingerprint = ports_ref.target_certificate_fingerprint,
+        .response_value_mapping_fingerprint = agent_response_mapping.mapping_fingerprint,
+        .max_depth = 2,
+    });
+    const cycle_plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = agent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = agent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = agent_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Agent.Target).import_set_fingerprint,
+        .routes = &.{cycle_route},
+        .value_mappings = &.{agent_response_mapping},
+        .max_depth = 2,
+        .max_provider_runs = 2,
+    });
+    try runspace.installFabricPlan(agent_ref, cycle_plan);
+    try std.testing.expectError(error.FabricCycle, runspace.routePendingToProviderRun(1, cycle_plan, completed_provider));
     try std.testing.expectEqual(@as(usize, 1), runspace.report().fabric_invocation_count);
 }
 

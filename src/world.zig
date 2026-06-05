@@ -6993,8 +6993,11 @@ pub const Fabric = struct {
                 },
                 .unit_args => {
                     if (!self.allow_unit_args) return error.UnsupportedMapping;
+                    if (self.parent_value_table_id != null or self.provider_value_table_id != null) return error.UnsupportedMapping;
                     if (self.parent_payload_value_table_id != null or self.provider_argument_value_table_id != null) return error.UnsupportedMapping;
                     if (self.provider_result_value_table_id != null or self.parent_response_value_table_id != null) return error.UnsupportedMapping;
+                    if (self.parent_payload_value_fingerprint != null or self.provider_argument_value_fingerprint != null) return error.UnsupportedMapping;
+                    if (self.provider_result_value_fingerprint != null or self.parent_response_value_fingerprint != null) return error.UnsupportedMapping;
                 },
                 .provider_result_to_parent_response => {
                     if (self.provider_result_value_table_id == null or self.parent_response_value_table_id == null) return error.UnsupportedMapping;
@@ -7150,6 +7153,10 @@ pub const Fabric = struct {
                     if (self.response_status == .responded) return error.UnsupportedMapping;
                     if (self.kind == .reject and self.response_status != .rejected) return error.UnsupportedMapping;
                     if (self.kind == .unsupported and self.response_status != .failed) return error.UnsupportedMapping;
+                    if (self.provider_target_ref_fingerprint != null or self.provider_module_fingerprint != null) return error.ProviderRunDenied;
+                    if (self.provider_world_surface_fingerprint != null or self.provider_target_certificate_fingerprint != null) return error.ProviderRunDenied;
+                    if (self.provider_world_port_id != null or self.provider_admission_receipt_fingerprint != null) return error.ProviderRunDenied;
+                    if (self.provider_run_image_fingerprint != null or self.provider_transcript_image_fingerprint != null) return error.ProviderRunDenied;
                 },
                 .adapter => {},
             }
@@ -7329,7 +7336,9 @@ pub const Fabric = struct {
                 switch (route.kind) {
                     .target_export, .admitted_run => if (response_mapping == null) return error.UnsupportedMapping,
                     .adapter => return error.UnsupportedMapping,
-                    .guest, .replay, .reject, .unsupported => {},
+                    .guest, .replay, .reject, .unsupported => {
+                        if (request_mapping != null or response_mapping != null) return error.UnsupportedMapping;
+                    },
                 }
             }
         }
@@ -9738,6 +9747,7 @@ pub const Runspace = struct {
         try plan.assertDepth(depth);
         try assertFabricRouteDepth(route, depth);
         try plan.assertProviderRunLimit(provider_run_count);
+        try self.assertNoFabricAncestorTargetCycle(parent_slot.handle, provider_slot);
         try self.reserveFabricResponseEvidenceEvents(2);
         var supervisor_snapshot = try self.snapshotSlotSupervisor(parent_index);
         defer supervisor_snapshot.deinit(self.allocator);
@@ -10093,12 +10103,52 @@ pub const Runspace = struct {
                     const provider_pending = try self.mailbox.get(mailbox_id);
                     if (provider_pending.world_port_id != expected) return error.WrongPortId;
                 },
-                else => {},
+                else => return error.WrongPortId,
             }
         }
         if (route.provider_run_image_fingerprint) |expected| {
             const image = provider_slot.installed_run_image orelse return error.InvalidFrameEncoding;
             if (image.run_image_fingerprint != expected) return error.InvalidFrameEncoding;
+        }
+    }
+
+    fn assertNoFabricAncestorTargetCycle(self: *const @This(), parent_handle: RunHandle, provider_slot: Runspace.RunSlot) !void {
+        const provider_target_fingerprint = provider_slot.target_ref.target_ref_fingerprint;
+        var current_handle_fingerprint = parent_handle.handle_fingerprint;
+        var guard: usize = 0;
+        while (true) {
+            var ancestor_parent_fingerprint: ?u64 = null;
+            for (self.fabric_invocations.items) |invocation| {
+                const provider_fingerprint = invocation.provider_run_handle_fingerprint orelse continue;
+                if (provider_fingerprint != current_handle_fingerprint) continue;
+                switch (invocation.status) {
+                    .started,
+                    .provider_installed,
+                    .provider_running,
+                    .provider_parked,
+                    .provider_completed,
+                    => {},
+                    .planned,
+                    .parent_responded,
+                    .completed,
+                    .rejected,
+                    .failed,
+                    .unsupported,
+                    .denied,
+                    .cycle_blocked,
+                    .supervision_denied,
+                    => continue,
+                }
+                ancestor_parent_fingerprint = invocation.parent_run_handle_fingerprint;
+                break;
+            }
+            const parent_fingerprint = ancestor_parent_fingerprint orelse return;
+            const parent_index = self.slotIndexByHandleFingerprint(parent_fingerprint) orelse return error.StaleRunHandle;
+            const parent_slot = self.slots.items[parent_index];
+            if (parent_slot.target_ref.target_ref_fingerprint == provider_target_fingerprint) return error.FabricCycle;
+            current_handle_fingerprint = parent_fingerprint;
+            guard += 1;
+            if (guard > self.fabric_invocations.items.len) return error.InvalidRunspaceTransition;
         }
     }
 
