@@ -388,7 +388,7 @@ pub fn build(b: *std.Build) void {
             \\module_ref_fingerprint=8980705f83427fa6
             \\model_port_id=0
             \\tool_port_id=1
-            \\admission_receipt=b37b25337b91a029
+            \\admission_receipt=6272b0bb2571394
             \\final_result=final=actuate skeleton complete
             \\
             ,
@@ -449,9 +449,9 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-runspace-supervised",
             .desc = "Run the supervised World runspace example.",
             .expected_stdout =
-            \\run_permit=840a1b7cdf6d1953
+            \\run_permit=e8a531a47c159144
             \\budget_exceeded=true
-            \\event_fingerprint=39b86fc24879491e
+            \\event_fingerprint=6b4afbfbc26681b4
             \\
             ,
         },
@@ -540,7 +540,7 @@ pub fn build(b: *std.Build) void {
             .expected_stdout =
             \\fabric_invocation_count=1
             \\budget_exceeded=true
-            \\run_receipt_fingerprint=7eeb8a20866a0773
+            \\run_receipt_fingerprint=e96e219fb7fe4420
             \\
             ,
         },
@@ -561,8 +561,8 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-supervised-budget",
             .desc = "Run the supervised budget World example.",
             .expected_stdout =
-            \\permit_fingerprint=3331cc397c5ca07a
-            \\receipt_fingerprint=499dea74ebadc24a
+            \\permit_fingerprint=7cdb44185d71e13d
+            \\receipt_fingerprint=1eef6ba0fa2ead3c
             \\budget_exceeded=false
             \\denied_budget_exceeded=true
             \\
@@ -587,7 +587,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-supervised-handoff",
             .desc = "Run the supervised handoff World example.",
             .expected_stdout =
-            \\received_run_image_fingerprint=d4a7a5419428ae25
+            \\received_run_image_fingerprint=2ca8f315f2fad19f
             \\receiver_permit_fingerprint=4832a9e8d0a835c7
             \\receiver_receipt_fingerprint=211f11c71daf1310
             \\final_result=7
@@ -612,7 +612,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-supervised-replay-verify",
             .desc = "Run the supervised replay/verify World example.",
             .expected_stdout =
-            \\fresh_receipt=e9eaa880e81cb676
+            \\fresh_receipt=1047293e13ba178
             \\replay_receipt=11eac0d49dbbf017
             \\verify_divergence_detected=true
             \\

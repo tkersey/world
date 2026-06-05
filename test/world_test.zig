@@ -133,11 +133,14 @@ test "fabric route fingerprint stable and route kinds represented" {
     const changed = fabricTestRoute(.target_export, world.TargetRef.fromTarget(fixtures.Ports.Target).target_ref_fingerprint);
     try std.testing.expect(route.route_fingerprint != changed.route_fingerprint);
 
-    inline for (.{ .adapter, .target_export, .admitted_run, .guest, .replay, .reject, .unsupported }) |kind| {
+    inline for (.{ .adapter, .target_export, .admitted_run, .replay, .reject, .unsupported }) |kind| {
         const represented = fabricTestRoute(kind, provider_ref.target_ref_fingerprint);
         try represented.validate();
         try std.testing.expectEqual(kind, represented.kind);
     }
+    const guest = fabricTestRoute(.guest, provider_ref.target_ref_fingerprint);
+    try std.testing.expectError(error.GuestRouteDenied, guest.validate());
+    try std.testing.expectEqual(world.Fabric.RouteKind.guest, guest.kind);
 }
 
 test "fabric route rejects split parent port identity" {
@@ -5304,7 +5307,7 @@ test "runspace fabric generic routing rejects provider routes before supervision
     try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_invocation_count);
 }
 
-test "runspace fabric local provider routing rejects guest routes" {
+test "runspace fabric plan validation rejects guest routes without a guest executor" {
     var parent_runtime = boundary.Runtime.init(std.testing.allocator);
     defer parent_runtime.deinit();
     var runspace = world.Runspace.init(std.testing.allocator, .{});
@@ -5348,10 +5351,10 @@ test "runspace fabric local provider routing rejects guest routes" {
         .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
         .routes = &.{route},
     });
-    try runspace.installFabricPlan(parent_ref, plan);
-    try std.testing.expectError(error.GuestRouteDenied, runspace.routePendingToProviderRun(0, plan, provider_handle));
+    try std.testing.expectError(error.GuestRouteDenied, runspace.installFabricPlan(parent_ref, plan));
     try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_invocation_count);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+    _ = provider_handle;
 }
 
 test "runspace fabric local provider routing enforces pinned provider port id" {
@@ -5634,6 +5637,46 @@ test "runspace fabric reject route records failed receipt" {
     report = runspace.poll();
     try std.testing.expectEqual(@as(usize, 1), report.failed_count);
     try std.testing.expectEqual(world.Runspace.RunStatus.failed, (try runspace.getSlotSummary(parent_handle)).status);
+}
+
+test "runspace fabric strict fresh denies reject route before terminal response" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+    });
+    const parent_handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .permit = permit,
+    });
+    _ = try runspace.tick();
+
+    const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const route = world.Fabric.Route.init(.{
+        .route_id = 52,
+        .kind = .reject,
+        .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .parent_world_port_id = 0,
+        .response_status = .rejected,
+    });
+    const plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .routes = &.{route},
+    });
+    try runspace.installFabricPlan(parent_ref, plan);
+    try std.testing.expectError(error.FabricDenied, runspace.routePending(0, plan));
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_receipt_count);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try runspace.getSlotSummary(parent_handle)).status);
 }
 
 test "runspace fabric supervision denies before invocation mutation" {
@@ -6287,10 +6330,10 @@ test "runspace fabric guest route is not local provider route" {
         .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
         .routes = &.{route},
     });
-    try runspace.installFabricPlan(parent_ref, plan);
-    try std.testing.expectError(error.GuestRouteDenied, runspace.routePendingToProviderRun(0, plan, provider_handle));
+    try std.testing.expectError(error.GuestRouteDenied, runspace.installFabricPlan(parent_ref, plan));
     try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try runspace.getSlotSummary(parent_handle)).status);
     try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_invocation_count);
+    _ = provider_handle;
 }
 
 test "runspace handle identity binds runspace target and generation" {

@@ -2887,7 +2887,6 @@ pub const Supervision = struct {
             .allow_checkpoints = true,
             .allow_fabric_routes = true,
             .allow_target_export_routes = true,
-            .allow_reject_routes = true,
             .require_environment_certificate = true,
             .fail_on_budget_exceeded = true,
         });
@@ -2910,7 +2909,6 @@ pub const Supervision = struct {
             .allow_fabric_routes = true,
             .allow_target_export_routes = true,
             .allow_replay_routes = true,
-            .allow_reject_routes = true,
             .require_portable_value_images = true,
             .reject_native_only_values = true,
             .require_environment_certificate = true,
@@ -2931,9 +2929,7 @@ pub const Supervision = struct {
             .allow_handoff_accept = true,
             .allow_fabric_routes = true,
             .allow_target_export_routes = true,
-            .allow_guest_routes = true,
             .allow_replay_routes = true,
-            .allow_reject_routes = true,
             .require_environment_certificate = true,
         });
         pub const audit_only = init(.{
@@ -2953,7 +2949,6 @@ pub const Supervision = struct {
             .allow_handoff_accept = true,
             .allow_fabric_routes = true,
             .allow_target_export_routes = true,
-            .allow_guest_routes = true,
             .allow_replay_routes = true,
             .allow_reject_routes = true,
             .require_environment_certificate = false,
@@ -4036,7 +4031,7 @@ pub const Supervision = struct {
                 .target_export, .admitted_run => if (!policy.allow_target_export_routes) return self.deny(.before_fabric_invocation, args.world_port_id, .provider_run_denied, null, "provider route denied"),
                 .guest => if (!policy.allow_guest_routes) return self.deny(.before_fabric_invocation, args.world_port_id, .guest_route_denied, null, "guest route denied"),
                 .replay => if (!policy.allow_replay_routes) return self.deny(.before_fabric_invocation, args.world_port_id, .replay_route_denied, null, "replay route denied"),
-                .reject => if (!policy.allow_reject_routes) return self.deny(.before_fabric_invocation, args.world_port_id, .fabric_denied, null, "reject route denied"),
+                .reject => if (!policy.allow_reject_routes or !policy.allow_rejected_responses) return self.deny(.before_fabric_invocation, args.world_port_id, .fabric_denied, null, "reject route denied"),
                 .adapter, .unsupported => {},
             }
             var next = try self.ledger.clone(self.allocator);
@@ -7139,9 +7134,10 @@ pub const Fabric = struct {
             if (fingerprintFabricRoute(self) != self.route_fingerprint) return error.InvalidFrameEncoding;
             if (self.world_port_id != self.parent_world_port_id) return error.WrongPortId;
             switch (self.kind) {
-                .target_export, .guest => {
+                .target_export => {
                     if (self.provider_target_ref_fingerprint == null and self.provider_module_fingerprint == null) return error.ProviderRunDenied;
                 },
+                .guest => return error.GuestRouteDenied,
                 .admitted_run => {
                     if (self.provider_target_ref_fingerprint == null and self.provider_module_fingerprint == null) return error.ProviderRunDenied;
                     if (self.provider_admission_receipt_fingerprint == null) return error.ProviderRunDenied;

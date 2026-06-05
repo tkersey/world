@@ -89,7 +89,7 @@ Nested routes use the same mailbox and deterministic tick model. The route stack
 
 ## Guest fabric routes
 
-Guest routes use the existing guest boundary. NativeGuest conformance can prove that a provider route driven through guest-shaped frame bytes produces the same parent final result as native Runspace driving. Actual wasm execution remains optional behind configured runtime support.
+Guest execution uses the existing guest boundary. Fabric v1 does not admit `.guest` routes into a plan until a dedicated guest route executor is present; provider routes that need guest-shaped evidence must use an executable provider route kind and keep guest conformance as the witness.
 
 ## Replay fabric routes
 
