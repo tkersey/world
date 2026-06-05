@@ -11358,6 +11358,22 @@ pub const Runspace = struct {
         return self.installedFabricRouteCoversPending(plan_fingerprint, pending);
     }
 
+    fn pendingSuppressesAutoDispatch(self: *@This(), slot: Runspace.RunSlot, pending: Runspace.PendingPort) bool {
+        if (self.pendingRequiresFabricRoute(slot, pending)) return true;
+        if (!self.installedFabricRouteCoversAnyPending(pending)) return false;
+        var owner_count: usize = 0;
+        for (self.slots.items) |candidate| {
+            if (candidate.target_ref.target_ref_fingerprint != slot.target_ref.target_ref_fingerprint) continue;
+            switch (candidate.status) {
+                .admitted, .runnable, .running, .parked_on_port, .parked_on_supervision => {},
+                else => continue,
+            }
+            owner_count += 1;
+            if (owner_count > 1) return false;
+        }
+        return owner_count == 1;
+    }
+
     fn slotHasFabricRoutablePending(slot: Runspace.RunSlot, mailbox_id: u64) bool {
         if (slot.pending_mailbox_id != mailbox_id) return false;
         return switch (slot.status) {
@@ -12374,7 +12390,7 @@ pub const Runspace = struct {
                     .run_permit_fingerprint = slot.run_permit_fingerprint,
                     .summary = event_pair.takeSecond(),
                 });
-                if (self.config.auto_dispatch and !driver.fabricPlanCoversWorldPort(pending.world_port_id) and !self.installedFabricRouteCoversAnyPending(pending)) return self.autoDispatchPending(index, pending, mailbox_id, &auto_events.?);
+                if (self.config.auto_dispatch and !self.pendingSuppressesAutoDispatch(slot.*, pending)) return self.autoDispatchPending(index, pending, mailbox_id, &auto_events.?);
                 return parked_event;
             },
         }

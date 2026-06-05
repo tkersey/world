@@ -14365,6 +14365,50 @@ test "runspace auto dispatch honors installed fabric plans" {
     try std.testing.expectEqual(world.Runspace.PendingStatus.cancelled, (try runspace.mailbox.get(0)).status);
 }
 
+test "runspace auto dispatch does not globally apply ambiguous fabric plans" {
+    var first_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer first_runtime.deinit();
+    var second_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer second_runtime.deinit();
+    var first_ctx: PortsCtx = .{};
+    var second_ctx: PortsCtx = .{};
+    var runspace = world.Runspace.init(std.testing.allocator, .{ .auto_dispatch = true });
+    defer runspace.deinit();
+
+    const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const route = world.Fabric.Route.init(.{
+        .route_id = 0x51ace_fadd,
+        .kind = .reject,
+        .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .parent_world_port_id = 0,
+        .response_status = .rejected,
+    });
+    const plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .routes = &.{route},
+    });
+
+    _ = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &first_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &first_ctx,
+    });
+    _ = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &second_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &second_ctx,
+    });
+    try runspace.installFabricPlan(parent_ref, plan);
+    const report = try runspace.tick();
+    try std.testing.expectEqual(@as(usize, 1), first_ctx.calls);
+    try std.testing.expectEqual(@as(usize, 1), second_ctx.calls);
+    try std.testing.expectEqual(@as(usize, 0), report.pending_port_count);
+}
+
 test "runspace auto dispatch handler failure consumes mailbox and fails slot" {
     var runtime = boundary.Runtime.init(std.testing.allocator);
     defer runtime.deinit();
