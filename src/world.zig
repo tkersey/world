@@ -2563,10 +2563,11 @@ pub const Admission = struct {
                         };
                     }
                     var handoff = Handoff{ .allocator = args.allocator, .run_image = handoff_run_image };
+                    const detached_transcript_available = package.transcript_image != null;
                     const handoff_report = if (args.permit) |permit|
-                        handoff.preflightWithPermitFreshTranscriptSink(Target, Env, handoff_mode, permit, fresh_transcript_sink_available, args.fabric_plan)
+                        handoff.preflightWithPermitFreshTranscriptSink(Target, Env, handoff_mode, permit, fresh_transcript_sink_available, detached_transcript_available, args.fabric_plan)
                     else
-                        handoff.preflightWithFreshTranscriptSink(Target, Env, handoff_mode, fresh_transcript_sink_available, args.fabric_plan);
+                        handoff.preflightWithFreshTranscriptSink(Target, Env, handoff_mode, fresh_transcript_sink_available, detached_transcript_available, args.fabric_plan);
                     if (!handoff_report.accepted) {
                         return rejectedResult(request, package, target_ref, module_ref, match, handoffPreflightBlockers(args.permit != null), "handoff preflight rejected admission");
                     }
@@ -15147,22 +15148,22 @@ pub const Handoff = struct {
         self.* = undefined;
     }
 
-    fn transcriptAvailableForFreshHandoff(self: *@This(), mode: HandoffMode, fresh_transcript_sink_available: bool) bool {
-        return self.run_image.transcript_image != null or (mode == .accept_fresh and fresh_transcript_sink_available);
+    fn transcriptAvailableForFreshHandoff(self: *@This(), mode: HandoffMode, fresh_transcript_sink_available: bool, detached_transcript_available: bool) bool {
+        return self.run_image.transcript_image != null or detached_transcript_available or (mode == .accept_fresh and fresh_transcript_sink_available);
     }
 
     pub fn preflight(self: *@This(), comptime Target: type, comptime Env: type, mode: HandoffMode) AcceptanceReport {
-        return self.preflightWithFreshTranscriptSink(Target, Env, mode, false, null);
+        return self.preflightWithFreshTranscriptSink(Target, Env, mode, false, false, null);
     }
 
-    fn preflightWithFreshTranscriptSink(self: *@This(), comptime Target: type, comptime Env: type, mode: HandoffMode, fresh_transcript_sink_available: bool, admitted_fabric_plan: ?Fabric.Plan) AcceptanceReport {
+    fn preflightWithFreshTranscriptSink(self: *@This(), comptime Target: type, comptime Env: type, mode: HandoffMode, fresh_transcript_sink_available: bool, detached_transcript_available: bool, admitted_fabric_plan: ?Fabric.Plan) AcceptanceReport {
         if (!self.run_image.target_ref.matchesTarget(Target)) {
             return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.HandoffTargetMismatch});
         }
         if (self.run_image.import_set_fingerprint != Env.import_set.import_set_fingerprint) {
             return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.HandoffTargetMismatch});
         }
-        const has_transcript = self.transcriptAvailableForFreshHandoff(mode, fresh_transcript_sink_available);
+        const has_transcript = self.transcriptAvailableForFreshHandoff(mode, fresh_transcript_sink_available, detached_transcript_available);
         const report = if (admitted_fabric_plan) |plan|
             Env.acceptanceReportWithFabricPlan(modeToRunMode(mode), has_transcript, plan)
         else
@@ -15174,7 +15175,7 @@ pub const Handoff = struct {
                 image
             else
                 return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.TranscriptImageRequired});
-            validateTranscriptImageForEnvironment(Env, image) catch |err| {
+            validateTranscriptImageForHandoffEnvironment(Target, Env, image, admitted_fabric_plan) catch |err| {
                 return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{environmentValidationBlocker(err)});
             };
             image.prepareReplayPrefixForInterruptedRun(
@@ -15201,7 +15202,7 @@ pub const Handoff = struct {
                 return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{environmentValidationBlocker(err)});
             };
             if (self.run_image.transcript_image) |*image| {
-                validateTranscriptImageForEnvironment(Env, image) catch |err| {
+                validateTranscriptImageForHandoffEnvironment(Target, Env, image, admitted_fabric_plan) catch |err| {
                     return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{environmentValidationBlocker(err)});
                 };
                 image.prepareReplayPrefixForPendingRequest(
@@ -15222,7 +15223,7 @@ pub const Handoff = struct {
                 image
             else
                 return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.TranscriptImageRequired});
-            validateTranscriptImageForEnvironment(Env, image) catch |err| {
+            validateTranscriptImageForHandoffEnvironment(Target, Env, image, admitted_fabric_plan) catch |err| {
                 return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{environmentValidationBlocker(err)});
             };
             image.resetReplay();
@@ -15239,12 +15240,12 @@ pub const Handoff = struct {
     }
 
     pub fn preflightWithPermit(self: *@This(), comptime Target: type, comptime Env: type, mode: HandoffMode, permit: RunPermit) AcceptanceReport {
-        return self.preflightWithPermitFreshTranscriptSink(Target, Env, mode, permit, false, null);
+        return self.preflightWithPermitFreshTranscriptSink(Target, Env, mode, permit, false, false, null);
     }
 
-    fn preflightWithPermitFreshTranscriptSink(self: *@This(), comptime Target: type, comptime Env: type, mode: HandoffMode, permit: RunPermit, fresh_transcript_sink_available: bool, admitted_fabric_plan: ?Fabric.Plan) AcceptanceReport {
+    fn preflightWithPermitFreshTranscriptSink(self: *@This(), comptime Target: type, comptime Env: type, mode: HandoffMode, permit: RunPermit, fresh_transcript_sink_available: bool, detached_transcript_available: bool, admitted_fabric_plan: ?Fabric.Plan) AcceptanceReport {
         const accepting = mode != .inspect_only;
-        const has_transcript = self.transcriptAvailableForFreshHandoff(mode, fresh_transcript_sink_available);
+        const has_transcript = self.transcriptAvailableForFreshHandoff(mode, fresh_transcript_sink_available, detached_transcript_available);
         if (permit.mode != modeToRunMode(mode)) {
             return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.SupervisionPolicyMismatch});
         }
@@ -15293,7 +15294,7 @@ pub const Handoff = struct {
         else
             Env.acceptanceReportWithPermit(modeToRunMode(mode), has_transcript, permit);
         if (!supervision_report.accepted) return supervision_report;
-        const report = self.preflightWithFreshTranscriptSink(Target, Env, mode, fresh_transcript_sink_available, admitted_fabric_plan);
+        const report = self.preflightWithFreshTranscriptSink(Target, Env, mode, fresh_transcript_sink_available, detached_transcript_available, admitted_fabric_plan);
         if (!report.accepted) return report;
         if (!accepting) return report;
         var supervisor = Supervision.Supervisor.init(self.allocator, permit, Target.WorldPortTable.entries.len) catch {
@@ -15543,9 +15544,9 @@ pub const Handoff = struct {
         const effective_permit = permit_override orelse options_permit;
         const fresh_transcript_sink_available = comptime @hasField(Options, "transcript") and Env.policy_decl.allow_native_adapters;
         const report = if (effective_permit) |permit|
-            self.preflightWithPermitFreshTranscriptSink(Target, Env, mode, permit, fresh_transcript_sink_available, admitted_fabric_plan)
+            self.preflightWithPermitFreshTranscriptSink(Target, Env, mode, permit, fresh_transcript_sink_available, false, admitted_fabric_plan)
         else
-            self.preflightWithFreshTranscriptSink(Target, Env, mode, fresh_transcript_sink_available, admitted_fabric_plan);
+            self.preflightWithFreshTranscriptSink(Target, Env, mode, fresh_transcript_sink_available, false, admitted_fabric_plan);
         if (!report.accepted) return acceptanceError(report);
         const MachineType = Machine(Target, Env.machine_config);
         const interrupted_export = runImageIsInterruptedSupervisionExport(self.run_image);
@@ -16155,10 +16156,10 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         if (!report.accepted) return acceptanceError(report);
                         if (modeConsumesTranscript(effective)) {
                             if (comptime @hasField(Options, "transcript_image")) {
-                                try validateTranscriptImageForEnvironment(Config.environment, @field(options, "transcript_image"));
+                                try validateTranscriptImageForHandoffEnvironment(Target, Config.environment, @field(options, "transcript_image"), maybe_fabric_plan);
                             }
                             if (admitted_transcript_image) |image| {
-                                try validateTranscriptImageForEnvironment(Config.environment, image);
+                                try validateTranscriptImageForHandoffEnvironment(Target, Config.environment, image, maybe_fabric_plan);
                             }
                             if (comptime @hasField(Options, "transcript")) {
                                 try validateTranscriptForEnvironment(Config.environment, @field(options, "transcript"));
@@ -19600,6 +19601,17 @@ fn validateTranscriptImageForEnvironment(comptime Env: type, image: *const Trans
     }
 }
 
+fn validateTranscriptImageForHandoffEnvironment(comptime Target: type, comptime Env: type, image: *const TranscriptImage, admitted_fabric_plan: ?Fabric.Plan) !void {
+    for (image.events) |event| {
+        if (event.request_frame) |frame| {
+            try validateRequestFramePolicy(frame, try valuePolicyForHandoffRequestFrame(Target, Env, frame.world_port_id, admitted_fabric_plan));
+        }
+        if (event.response_frame) |frame| {
+            try validateResponseFramePolicy(frame, try replayImageValuePolicyForHandoffResponseFrame(Target, Env, frame.world_port_id, admitted_fabric_plan));
+        }
+    }
+}
+
 const FrameValuePolicyKind = enum { request, response };
 
 fn replayImageValuePolicyForEnvironmentPort(comptime Env: type, world_port_id: u32) !ValuePolicy {
@@ -19618,6 +19630,24 @@ fn valuePolicyForHandoffRequestFrame(comptime Target: type, comptime Env: type, 
     const route = plan.findRouteForPort(world_port_id) orelse return error.MissingBinding;
     return switch (route.kind) {
         .target_export, .admitted_run, .guest, .replay, .reject => ValuePolicy.portable,
+        .adapter, .unsupported => error.MissingBinding,
+    };
+}
+
+fn replayImageValuePolicyForHandoffResponseFrame(comptime Target: type, comptime Env: type, world_port_id: u32, admitted_fabric_plan: ?Fabric.Plan) !ValuePolicy {
+    if (Target != Env.TargetType) return error.HandoffTargetMismatch;
+    if (environmentHasBindingForPort(Env, world_port_id)) {
+        return replayImageValuePolicyForEnvironmentPort(Env, world_port_id);
+    }
+    if (world_port_id >= Target.WorldPortTable.entries.len) return error.WrongPortId;
+    const plan = admitted_fabric_plan orelse return error.MissingBinding;
+    const route = plan.findRouteForPort(world_port_id) orelse return error.MissingBinding;
+    return switch (route.kind) {
+        .target_export, .admitted_run, .guest, .replay, .reject => replay_image_policy: {
+            var policy = ValuePolicy.portable;
+            policy.require_response_images_for_replay = true;
+            break :replay_image_policy policy;
+        },
         .adapter, .unsupported => error.MissingBinding,
     };
 }

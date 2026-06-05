@@ -22789,14 +22789,100 @@ test "fabric-covered replay admission requires transcript evidence" {
 
     var source_transcript = world.Transcript.init(std.testing.allocator);
     defer source_transcript.deinit();
-    try recordPortsTranscript(&source_transcript);
+    const pending_payload = try world.Frame.ValueImage.fromValue(std.testing.allocator, 0, null, null, @as([]const u8, "deploy-prod"), .portable);
+    var pending_request = world.Frame.Request.init(.{
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .world_surface_replay_scope_fingerprint = fixtures.Ports.Target.WorldSurface.replayScopeRef().fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .world_port_id = 0,
+        .residual_site_index = fixtures.Ports.ApprovalRequest.index,
+        .residual_site_fingerprint = fixtures.Ports.ApprovalRequest.fingerprint,
+        .request_fingerprint = 0x1234_5678,
+        .turn_index = 3,
+        .payload_value_table_id = 0,
+        .expected_response_value_table_id = 1,
+        .payload_image = pending_payload,
+    });
+    defer pending_request.deinit(std.testing.allocator);
+    try source_transcript.append(.{
+        .kind = .run_started,
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .source_run = true,
+    });
+    try source_transcript.append(.{
+        .kind = .port_requested,
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .world_surface_replay_scope_fingerprint = fixtures.Ports.Target.WorldSurface.replayScopeRef().fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .world_port_id = pending_request.world_port_id,
+        .request_fingerprint = pending_request.request_fingerprint,
+        .turn_index = pending_request.turn_index,
+        .residual_site_index = pending_request.residual_site_index,
+        .residual_site_fingerprint = pending_request.residual_site_fingerprint,
+        .request_frame = pending_request,
+        .source_run = true,
+    });
     var source_image = try source_transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
     defer source_image.deinit(std.testing.allocator);
     const registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Ports.Target)});
+    const detached_state = world.RunState.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .transcript_image_fingerprint = source_image.transcript_image_fingerprint,
+        .pending_request_fingerprint = pending_request.frame_fingerprint,
+        .turn_index = pending_request.turn_index,
+        .status = .parked_on_port,
+    });
+    const parked_image = world.RunImage.init(.{
+        .kind = .parked_run,
+        .target_ref = parent_ref,
+        .import_set_fingerprint = PortsMissingEnv.import_set.import_set_fingerprint,
+        .current_state = detached_state,
+        .pending_request_frame = pending_request,
+        .environment_certificate_fingerprint = PortsMissingEnv.certificate(.fresh, true).certificate_fingerprint,
+        .acceptance_report_fingerprint = PortsMissingEnv.acceptanceReportWithFabricPlan(.fresh, true, replay_plan).report_fingerprint,
+    });
+    const parked_package = world.Admission.TransferPackage.init(.{
+        .kind = .parked_run,
+        .target_ref = parent_ref,
+        .run_image = parked_image,
+        .transcript_image = source_image,
+        .requested_mode = .resume_parked,
+    });
+    var handoff_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, PortsMissingEnv, parked_package, .{
+        .fabric_plan = replay_plan,
+    });
+    defer handoff_result.deinit(std.testing.allocator);
+    try std.testing.expect(handoff_result.report.accepted);
+
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsMissingEnv, .{
+        .mode = .fresh,
+        .fabric_plan_fingerprint = replay_plan.plan_fingerprint,
+        .transcript_image_available = true,
+        .policy = world.SupervisionPolicy.handoff_receiver,
+    });
+    var permit_handoff_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, PortsMissingEnv, parked_package, .{
+        .fabric_plan = replay_plan,
+        .permit = permit,
+    });
+    defer permit_handoff_result.deinit(std.testing.allocator);
+    try std.testing.expect(permit_handoff_result.report.accepted);
+
+    var completed_source_transcript = world.Transcript.init(std.testing.allocator);
+    defer completed_source_transcript.deinit();
+    try recordPortsTranscript(&completed_source_transcript);
+    var completed_source_image = try completed_source_transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer completed_source_image.deinit(std.testing.allocator);
     const package = world.Admission.TransferPackage.init(.{
         .kind = .target_reference_only,
         .target_ref = parent_ref,
-        .transcript_image = source_image,
+        .transcript_image = completed_source_image,
         .requested_mode = .continue_fresh,
     });
     var result = world.Admission.Admitter.init(.{
