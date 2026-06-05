@@ -4837,7 +4837,8 @@ test "runspace fabric provider result resumes exactly one parent pending port" {
     try std.testing.expectEqual(@as(usize, 1), report.pending_port_count);
 
     const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
-    const mapping = fabricTestMapping(.provider_result_to_parent_response);
+    const request_mapping = fabricTestMapping(.payload_to_provider_args);
+    const response_mapping = fabricTestMapping(.provider_result_to_parent_response);
     const route = world.Fabric.Route.init(.{
         .route_id = 42,
         .kind = .target_export,
@@ -4848,7 +4849,8 @@ test "runspace fabric provider result resumes exactly one parent pending port" {
         .provider_module_fingerprint = provider_ref.boundary_module_fingerprint,
         .provider_world_surface_fingerprint = provider_ref.world_surface_fingerprint,
         .provider_target_certificate_fingerprint = provider_ref.target_certificate_fingerprint,
-        .value_mapping_fingerprint = mapping.mapping_fingerprint,
+        .value_mapping_fingerprint = request_mapping.mapping_fingerprint,
+        .response_value_mapping_fingerprint = response_mapping.mapping_fingerprint,
         .max_depth = 2,
         .metadata = "fabric-provider",
     });
@@ -4858,7 +4860,7 @@ test "runspace fabric provider result resumes exactly one parent pending port" {
         .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
         .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
         .routes = &.{route},
-        .value_mappings = &.{mapping},
+        .value_mappings = &.{ request_mapping, response_mapping },
         .max_depth = 2,
         .max_provider_runs = 1,
     });
@@ -4871,7 +4873,7 @@ test "runspace fabric provider result resumes exactly one parent pending port" {
         .provider_target_ref_fingerprint = provider_ref.target_ref_fingerprint,
         .provider_world_surface_fingerprint = provider_ref.world_surface_fingerprint,
         .provider_target_certificate_fingerprint = provider_ref.target_certificate_fingerprint + 1,
-        .value_mapping_fingerprint = mapping.mapping_fingerprint,
+        .response_value_mapping_fingerprint = response_mapping.mapping_fingerprint,
     });
     const forged_provider_plan = world.Fabric.Plan.init(.{
         .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
@@ -4879,7 +4881,7 @@ test "runspace fabric provider result resumes exactly one parent pending port" {
         .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
         .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
         .routes = &.{forged_provider_route},
-        .value_mappings = &.{mapping},
+        .value_mappings = &.{response_mapping},
     });
     try runspace.installFabricPlan(parent_ref, forged_provider_plan);
     try std.testing.expectError(error.WrongTargetCertificate, runspace.routePendingToProviderRun(0, forged_provider_plan, provider_handle));
@@ -4889,6 +4891,7 @@ test "runspace fabric provider result resumes exactly one parent pending port" {
 
     const invocation = try runspace.routePendingToProviderRun(0, plan, provider_handle);
     try std.testing.expectEqual(world.Fabric.InvocationStatus.provider_completed, invocation.status);
+    try std.testing.expect(invocation.mapped_request_frame_fingerprint != null);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().fabric_invocation_count);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
 
@@ -5528,6 +5531,13 @@ test "runspace fabric reject route records failed receipt" {
     try runspace.installFabricPlan(parent_ref, plan);
     const invocation = try runspace.routePending(0, plan);
     try std.testing.expectEqual(world.Fabric.InvocationStatus.rejected, invocation.status);
+    var route_event_index: ?usize = null;
+    var port_event_index: ?usize = null;
+    for (runspace.events.items, 0..) |event, index| {
+        if (event.kind == .fabric_route_selected and event.fabric_invocation_fingerprint == invocation.invocation_fingerprint) route_event_index = index;
+        if (event.kind == .port_rejected and event.response_frame_fingerprint == invocation.mapped_response_frame_fingerprint) port_event_index = index;
+    }
+    try std.testing.expect((route_event_index orelse return error.ReplayMissing) < (port_event_index orelse return error.ReplayMissing));
     try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().fabric_receipt_count);
     report = runspace.poll();

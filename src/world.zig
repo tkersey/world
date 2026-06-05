@@ -7079,6 +7079,7 @@ pub const Fabric = struct {
         provider_run_image_fingerprint: ?u64 = null,
         provider_transcript_image_fingerprint: ?u64 = null,
         value_mapping_fingerprint: ?u64 = null,
+        response_value_mapping_fingerprint: ?u64 = null,
         response_status: ResponseStatus = .responded,
         max_depth: ?usize = null,
         metadata: []const u8 = "",
@@ -7100,6 +7101,7 @@ pub const Fabric = struct {
             provider_run_image_fingerprint: ?u64 = null,
             provider_transcript_image_fingerprint: ?u64 = null,
             value_mapping_fingerprint: ?u64 = null,
+            response_value_mapping_fingerprint: ?u64 = null,
             response_status: ResponseStatus = .responded,
             max_depth: ?usize = null,
             metadata: []const u8 = "",
@@ -7122,6 +7124,7 @@ pub const Fabric = struct {
                 .provider_run_image_fingerprint = args.provider_run_image_fingerprint,
                 .provider_transcript_image_fingerprint = args.provider_transcript_image_fingerprint,
                 .value_mapping_fingerprint = args.value_mapping_fingerprint,
+                .response_value_mapping_fingerprint = args.response_value_mapping_fingerprint,
                 .response_status = args.response_status,
                 .max_depth = args.max_depth,
                 .metadata = args.metadata,
@@ -7285,6 +7288,9 @@ pub const Fabric = struct {
                 if (route.parent_world_surface_fingerprint != 0 and route.parent_world_surface_fingerprint != self.world_surface_fingerprint) return error.WrongWorldSurface;
                 if (route.parent_target_certificate_fingerprint != 0 and route.parent_target_certificate_fingerprint != self.target_certificate_fingerprint) return error.WrongTargetCertificate;
                 if (route.value_mapping_fingerprint) |mapping_fingerprint| {
+                    _ = self.findValueMapping(mapping_fingerprint) orelse return error.UnsupportedMapping;
+                }
+                if (route.response_value_mapping_fingerprint) |mapping_fingerprint| {
                     _ = self.findValueMapping(mapping_fingerprint) orelse return error.UnsupportedMapping;
                 }
             }
@@ -9643,8 +9649,13 @@ pub const Runspace = struct {
                     .sequence = invocation.sequence,
                     .status = if (route.kind == .reject) .rejected else .unsupported,
                 });
-                _ = try self.respondWithFabricOwnership(mailbox_id, response, true);
+                const invocation_count_before = self.fabric_invocations.items.len;
+                const event_count_before = self.events.items.len;
+                var invocation_recorded = false;
+                errdefer if (!fabric_charge_committed and invocation_recorded) self.rollbackFabricInvocationRecord(invocation_count_before, event_count_before);
                 try self.recordFabricInvocation(parent_slot.*, invocation, route, .fabric_failed, "fabric terminal route recorded");
+                invocation_recorded = true;
+                _ = try self.respondWithFabricOwnership(mailbox_id, response, true);
                 try self.recordFabricReceipt(parent_slot.handle, invocation, route.route_fingerprint, pending, response.frame_fingerprint, null, invocation.status, if (route.kind == .reject) .FabricRejected else .UnsupportedMapping);
                 fabric_charge_committed = true;
                 return invocation;
@@ -9674,6 +9685,7 @@ pub const Runspace = struct {
         if (route.provider_target_ref_fingerprint) |expected_target| {
             if (provider_handle.target_ref_fingerprint != expected_target) return error.HandoffTargetMismatch;
         }
+        const mapped_request_frame_fingerprint = try self.fabricRequestMappingFrame(route, pending);
         try self.validateFabricProviderSlot(route, provider_slot);
         const depth = try self.fabricDepthForParent(parent_slot.handle);
         const provider_run_count = self.fabricProviderRunCount(plan.plan_fingerprint) + 1;
@@ -9702,6 +9714,7 @@ pub const Runspace = struct {
             .parent_mailbox_id = mailbox_id,
             .request_frame_fingerprint = pending.request_frame_fingerprint,
             .provider_run_handle_fingerprint = provider_handle.handle_fingerprint,
+            .mapped_request_frame_fingerprint = mapped_request_frame_fingerprint,
             .mapped_response_frame_fingerprint = provider_slot.current_state.final_response_fingerprint,
             .run_permit_fingerprint = pending.run_permit_fingerprint,
             .depth = depth,
@@ -9775,8 +9788,13 @@ pub const Runspace = struct {
             .sequence = invocation.sequence,
             .status = .completed,
         });
-        _ = try self.respondWithFabricOwnership(mailbox_id, response, true);
+        const invocation_count_before = self.fabric_invocations.items.len;
+        const event_count_before = self.events.items.len;
+        var invocation_recorded = false;
+        errdefer if (!fabric_charge_committed and invocation_recorded) self.rollbackFabricInvocationRecord(invocation_count_before, event_count_before);
         try self.recordFabricInvocation(parent_slot.*, invocation, route, .fabric_invocation_started, "fabric replay invocation recorded");
+        invocation_recorded = true;
+        _ = try self.respondWithFabricOwnership(mailbox_id, response, true);
         try self.recordFabricReceipt(parent_slot.handle, invocation, route.route_fingerprint, pending, response.frame_fingerprint, null, .completed, null);
         fabric_charge_committed = true;
         return invocation;
@@ -9871,13 +9889,34 @@ pub const Runspace = struct {
         return recorded;
     }
 
+    fn fabricRequestMappingFrame(self: *const @This(), route: Fabric.Route, pending: Runspace.PendingPort) !?u64 {
+        const mapping_fingerprint = route.value_mapping_fingerprint orelse return null;
+        const mapping = try self.installedFabricValueMapping(mapping_fingerprint);
+        switch (mapping.kind) {
+            .payload_to_provider_args => {
+                const request = pending.request_frame orelse return error.InvalidPendingPortTransition;
+                _ = try mapping.providerArgumentValueTableId(request);
+                return pending.request_frame_fingerprint;
+            },
+            .unit_args => {
+                _ = try mapping.unitArgumentValueTableId();
+                return null;
+            },
+            .provider_result_to_parent_response => {
+                if (route.response_value_mapping_fingerprint != null) return error.UnsupportedMapping;
+                return null;
+            },
+        }
+    }
+
     fn fabricParentResponseContract(
         self: *const @This(),
         route: Fabric.Route,
         provider_result: Frame.ValueImage,
         expected_response_value_table_id: ?u32,
     ) !struct { value_table_id: ?u32, boundary_value_fingerprint: ?u64 } {
-        if (route.value_mapping_fingerprint) |mapping_fingerprint| {
+        const response_mapping_fingerprint = route.response_value_mapping_fingerprint orelse route.value_mapping_fingerprint;
+        if (response_mapping_fingerprint) |mapping_fingerprint| {
             const mapping = try self.installedFabricValueMapping(mapping_fingerprint);
             if (mapping.kind != .provider_result_to_parent_response) return error.UnsupportedMapping;
             try mapping.assertExactValueTableMatch();
@@ -10223,6 +10262,12 @@ pub const Runspace = struct {
             .summary = "fabric receipt recorded",
         });
         recorded = true;
+    }
+
+    fn rollbackFabricInvocationRecord(self: *@This(), invocation_count: usize, event_count: usize) void {
+        for (self.events.items[event_count..]) |*event| event.deinit(self.allocator);
+        self.events.shrinkRetainingCapacity(event_count);
+        self.fabric_invocations.shrinkRetainingCapacity(invocation_count);
     }
 
     fn reserveFabricResponseEvidenceEvents(self: *@This(), additional_events: usize) !void {
@@ -19647,6 +19692,7 @@ fn fingerprintFabricRoute(route: Fabric.Route) u64 {
     hashOptionalU64(&hasher, route.provider_run_image_fingerprint);
     hashOptionalU64(&hasher, route.provider_transcript_image_fingerprint);
     hashOptionalU64(&hasher, route.value_mapping_fingerprint);
+    hashOptionalU64(&hasher, route.response_value_mapping_fingerprint);
     hashU64(&hasher, @intFromEnum(route.response_status));
     hashOptionalU64(&hasher, route.max_depth);
     hashU64(&hasher, route.metadata.len);
