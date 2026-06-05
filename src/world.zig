@@ -9618,6 +9618,7 @@ pub const Runspace = struct {
                     .sequence = invocation.sequence,
                     .status = if (route.kind == .reject) .rejected else .unsupported,
                 });
+                try self.reserveFabricResponseEvidenceEvents(5);
                 _ = try self.respondWithFabricOwnership(mailbox_id, response, true);
                 try self.recordFabricInvocation(parent_slot.*, invocation, route, .fabric_failed, "fabric terminal route recorded");
                 try self.recordFabricReceipt(parent_slot.handle, invocation, route.route_fingerprint, pending, response.frame_fingerprint, null, invocation.status, if (route.kind == .reject) .FabricRejected else .UnsupportedMapping);
@@ -9637,6 +9638,7 @@ pub const Runspace = struct {
         const provider_index = try self.slotIndex(provider_handle);
         const provider_slot = self.slots.items[provider_index];
         if (provider_handle.handle_fingerprint == pending.handle.handle_fingerprint) return error.SameRunRecursion;
+        if (self.hasActiveFabricInvocationForRun(provider_handle)) return error.UnsupportedSharedProviderRun;
         try self.validateFabricPlanForPending(plan, pending);
         const route = plan.routeForPort(pending.world_port_id) orelse return error.FabricMissingRoute;
         try route.validate();
@@ -9737,6 +9739,7 @@ pub const Runspace = struct {
             .sequence = invocation.sequence,
             .status = .completed,
         });
+        try self.reserveFabricResponseEvidenceEvents(5);
         _ = try self.respondWithFabricOwnership(mailbox_id, response, true);
         try self.recordFabricInvocation(parent_slot.*, invocation, route, .fabric_invocation_started, "fabric replay invocation recorded");
         try self.recordFabricReceipt(parent_slot.handle, invocation, route.route_fingerprint, pending, response.frame_fingerprint, null, .completed, null);
@@ -9767,6 +9770,7 @@ pub const Runspace = struct {
         var response = try fabricDeferredResponseForPending(pending, response_image);
         response_image_owned = false;
         defer response.deinit(self.allocator);
+        try self.reserveFabricResponseEvidenceEvents(3);
         const event = try self.respondWithFabricOwnership(invocation.parent_mailbox_id, response, true);
         const parent_response_frame_fingerprint = event.response_frame_fingerprint orelse response.frame_fingerprint;
         const completed = Fabric.Invocation.init(.{
@@ -10163,6 +10167,11 @@ pub const Runspace = struct {
             .summary = "fabric receipt recorded",
         });
         recorded = true;
+    }
+
+    fn reserveFabricResponseEvidenceEvents(self: *@This(), additional_events: usize) !void {
+        try self.ensureEventCapacity(additional_events);
+        try self.events.ensureUnusedCapacity(self.allocator, additional_events);
     }
 
     fn appendFabricEvent(self: *@This(), args: struct {
