@@ -9694,7 +9694,7 @@ pub const Runspace = struct {
         if (route.provider_target_ref_fingerprint) |expected_target| {
             if (provider_handle.target_ref_fingerprint != expected_target) return error.HandoffTargetMismatch;
         }
-        const mapped_request_frame_fingerprint = try self.fabricRequestMappingFrame(route, pending);
+        const mapped_request_frame_fingerprint = try self.fabricRequestMappingFrame(route);
         try self.validateFabricProviderSlot(route, provider_slot);
         const depth = try self.fabricDepthForParent(parent_slot.handle);
         const provider_run_count = self.fabricProviderRunCount(plan.plan_fingerprint) + 1;
@@ -9778,11 +9778,8 @@ pub const Runspace = struct {
             .sequence = self.fabric_invocations.items.len,
             .status = .started,
         });
-        var transcript = try Transcript.fromImage(self.allocator, replay_image);
-        defer transcript.deinit();
         const request = pending.request_frame orelse return error.InvalidPendingPortTransition;
-        const event = try transcript.nextResponse(request.replay_key_seed, request.target_certificate_fingerprint, pending.expected_response_kind);
-        const replay_response = event.response_frame orelse return error.ReplayMissing;
+        const replay_response = try replay_image.nextResponse(request.replay_key_seed, request.target_certificate_fingerprint, pending.expected_response_kind);
         var response = try replay_response.clone(self.allocator);
         defer response.deinit(self.allocator);
         invocation = Fabric.Invocation.init(.{
@@ -9916,15 +9913,11 @@ pub const Runspace = struct {
         return recorded;
     }
 
-    fn fabricRequestMappingFrame(self: *const @This(), route: Fabric.Route, pending: Runspace.PendingPort) !?u64 {
+    fn fabricRequestMappingFrame(self: *const @This(), route: Fabric.Route) !?u64 {
         const mapping_fingerprint = route.value_mapping_fingerprint orelse return null;
         const mapping = try self.installedFabricValueMapping(mapping_fingerprint);
         switch (mapping.kind) {
-            .payload_to_provider_args => {
-                const request = pending.request_frame orelse return error.InvalidPendingPortTransition;
-                _ = try mapping.providerArgumentValueTableId(request);
-                return pending.request_frame_fingerprint;
-            },
+            .payload_to_provider_args => return error.UnsupportedMapping,
             .unit_args => {
                 _ = try mapping.unitArgumentValueTableId();
                 return null;

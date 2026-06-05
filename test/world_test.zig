@@ -4849,7 +4849,7 @@ test "runspace fabric provider result resumes exactly one parent pending port" {
     try std.testing.expectEqual(@as(usize, 1), report.pending_port_count);
 
     const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
-    const request_mapping = fabricTestMapping(.payload_to_provider_args);
+    const request_mapping = fabricTestMapping(.unit_args);
     const response_mapping = fabricTestMapping(.provider_result_to_parent_response);
     const route = world.Fabric.Route.init(.{
         .route_id = 42,
@@ -4903,7 +4903,7 @@ test "runspace fabric provider result resumes exactly one parent pending port" {
 
     const invocation = try runspace.routePendingToProviderRun(0, plan, provider_handle);
     try std.testing.expectEqual(world.Fabric.InvocationStatus.provider_completed, invocation.status);
-    try std.testing.expect(invocation.mapped_request_frame_fingerprint != null);
+    try std.testing.expectEqual(@as(?u64, null), invocation.mapped_request_frame_fingerprint);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().fabric_invocation_count);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
 
@@ -4920,7 +4920,7 @@ test "runspace fabric provider result resumes exactly one parent pending port" {
     try std.testing.expect(exported.current_state.final_value_image_fingerprint != null);
 }
 
-test "runspace fabric request-only mapping leaves matching provider result as response" {
+test "runspace fabric payload mapping is rejected without provider argument witness" {
     var parent_runtime = boundary.Runtime.init(std.testing.allocator);
     defer parent_runtime.deinit();
     var runspace = world.Runspace.init(std.testing.allocator, .{});
@@ -4970,12 +4970,10 @@ test "runspace fabric request-only mapping leaves matching provider result as re
         .value_mappings = &.{request_mapping},
     });
     try runspace.installFabricPlan(parent_ref, plan);
-    const invocation = try runspace.routePendingToProviderRun(0, plan, provider_handle);
-    try std.testing.expect(invocation.mapped_request_frame_fingerprint != null);
-    const event = try runspace.respondFromFabric(invocation);
-    try std.testing.expectEqual(world.Runspace.EventKind.run_resumed, event.kind);
-    try std.testing.expectEqual(@as(usize, 1), runspace.report().fabric_receipt_count);
-    try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
+    try std.testing.expectError(error.UnsupportedMapping, runspace.routePendingToProviderRun(0, plan, provider_handle));
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_invocation_count);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_receipt_count);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
 }
 
 test "runspace fabric routing requires installed plans before mutation" {
