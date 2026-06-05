@@ -5034,6 +5034,17 @@ test "runspace install consumes explicit fabric plan for missing environment bin
     try std.testing.expect(accepted.admitted_run.?.fabric_plan != null);
     try std.testing.expectEqual(fabric_plan.plan_fingerprint, accepted.admitted_run.?.fabric_plan.?.plan_fingerprint);
 
+    const unpinned_import_plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .routes = &.{reject_route},
+        .bindings = &.{reject_binding},
+    });
+    const unpinned_import_report = PortsMissingEnv.acceptanceReportWithFabricPlan(.fresh, false, unpinned_import_plan);
+    try std.testing.expect(unpinned_import_report.accepted);
+    try std.testing.expectEqual(@as(?u64, unpinned_import_plan.plan_fingerprint), unpinned_import_report.fabric_plan_fingerprint);
+
     var direct_runtime = boundary.Runtime.init(std.testing.allocator);
     defer direct_runtime.deinit();
     var direct_admitted = accepted.admitted_run.?;
@@ -5105,6 +5116,32 @@ test "runspace install consumes explicit fabric plan for missing environment bin
     const native_permit_report = PortsEnv.acceptanceReportWithFabricPlanAndPermit(.fresh, false, fabric_plan, native_permit);
     try std.testing.expect(native_permit_report.accepted);
     try std.testing.expectEqual(@as(?u64, fabric_plan.plan_fingerprint), native_permit_report.fabric_plan_fingerprint);
+
+    const wildcard_route = world.Fabric.Route.init(.{
+        .route_id = 0x51ace_fab9,
+        .kind = .reject,
+        .parent_world_port_id = 0,
+        .response_status = .rejected,
+    });
+    const wildcard_plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .routes = &.{wildcard_route},
+    });
+    const wildcard_permit = world.Supervision.issue(fixtures.Ports.Target, PortsMissingEnv, .{
+        .mode = .fresh,
+        .fabric_plan_fingerprint = wildcard_plan.plan_fingerprint,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_fabric_routes = true,
+            .allow_reject_routes = true,
+            .allow_rejected_responses = true,
+        }),
+    });
+    const wildcard_permit_report = PortsMissingEnv.acceptanceReportWithFabricPlanAndPermit(.fresh, false, wildcard_plan, wildcard_permit);
+    try std.testing.expect(wildcard_permit_report.accepted);
+    try std.testing.expectEqual(@as(?u64, wildcard_plan.plan_fingerprint), wildcard_permit_report.fabric_plan_fingerprint);
 
     const bound_fabric_denied_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
         .mode = .fresh,
@@ -22605,4 +22642,11 @@ test "fabric-covered replay admission requires transcript evidence" {
 
     const with_transcript = PortsMissingEnv.acceptanceReportWithFabricPlan(.fresh, true, replay_plan);
     try std.testing.expect(with_transcript.accepted);
+
+    const bound_missing_transcript = PortsEnv.acceptanceReportWithFabricPlan(.fresh, false, replay_plan);
+    try std.testing.expect(!bound_missing_transcript.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.TranscriptImageRequired, bound_missing_transcript.blockers[0]);
+
+    const bound_with_transcript = PortsEnv.acceptanceReportWithFabricPlan(.fresh, true, replay_plan);
+    try std.testing.expect(bound_with_transcript.accepted);
 }

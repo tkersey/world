@@ -4373,10 +4373,15 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
             if (plan.target_ref_fingerprint != target_ref.target_ref_fingerprint) return report;
             if (plan.world_surface_fingerprint != target_ref.world_surface_fingerprint) return report;
             if (plan.target_certificate_fingerprint != target_ref.target_certificate_fingerprint) return report;
-            if (plan.import_set_fingerprint != import_set.import_set_fingerprint) return report;
+            if (plan.import_set_fingerprint) |fingerprint| {
+                if (fingerprint != import_set.import_set_fingerprint) return report;
+            }
             if (report.accepted) {
                 var accepted = report;
                 accepted.fabric_plan_fingerprint = plan.plan_fingerprint;
+                if (!transcript_image_available and fabricPlanHasReplayRoute(plan)) {
+                    return rejectedReport(accepted, &.{.TranscriptImageRequired});
+                }
                 accepted.report_fingerprint = fingerprintAcceptanceReport(accepted);
                 return accepted;
             }
@@ -4434,8 +4439,8 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
             const report = acceptanceReportWithPermitFromReport(base_report, requested_mode, transcript_image_available, permit);
             if (!report.accepted) return report;
             for (plan.routes) |route| {
-                if (route.parent_world_surface_fingerprint != target_ref.world_surface_fingerprint) return rejectedReport(report, &.{.SupervisionPolicyMismatch});
-                if (route.parent_target_certificate_fingerprint != target_ref.target_certificate_fingerprint) return rejectedReport(report, &.{.SupervisionPolicyMismatch});
+                if (route.parent_world_surface_fingerprint != 0 and route.parent_world_surface_fingerprint != target_ref.world_surface_fingerprint) return rejectedReport(report, &.{.SupervisionPolicyMismatch});
+                if (route.parent_target_certificate_fingerprint != 0 and route.parent_target_certificate_fingerprint != target_ref.target_certificate_fingerprint) return rejectedReport(report, &.{.SupervisionPolicyMismatch});
                 if (fabricRouteSupervisionBlocker(permit.policy, route.kind) != null) return rejectedReport(report, &.{.SupervisionPolicyMismatch});
                 if (permit.ruleFor(route.parent_world_port_id)) |rule| {
                     if (!rule.permitsMode(requested_mode)) return rejectedReport(report, &.{.SupervisionPortRuleDenied});
@@ -17784,6 +17789,13 @@ fn fabricCoveredMissingEnvironmentHasReplayRoute(comptime Target: type, comptime
                 if (route.kind == .replay) return true;
             }
         }
+    }
+    return false;
+}
+
+fn fabricPlanHasReplayRoute(plan: Fabric.Plan) bool {
+    for (plan.routes) |route| {
+        if (route.kind == .replay) return true;
     }
     return false;
 }
