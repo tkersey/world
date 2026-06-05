@@ -2526,7 +2526,10 @@ pub const Admission = struct {
                     }
                 }
                 const permit_report = if (args.fabric_plan) |plan|
-                    Env.acceptanceReportWithFabricPlanAndPermit(admissionModeToRunMode(mode), transcript_available, plan, permit)
+                    if (mode == .resume_parked or mode == .branch_resume)
+                        Env.acceptanceReportWithFabricPlanAndPermitForHandoff(admissionModeToRunMode(mode), transcript_available, plan, permit)
+                    else
+                        Env.acceptanceReportWithFabricPlanAndPermit(admissionModeToRunMode(mode), transcript_available, plan, permit)
                 else
                     Env.acceptanceReportWithPermit(admissionModeToRunMode(mode), transcript_available, permit);
                 if (!permit_report.accepted) {
@@ -4447,7 +4450,17 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
 
         pub fn acceptanceReportWithFabricPlanAndPermit(requested_mode: Mode, transcript_image_available: bool, plan: Fabric.Plan, permit: RunPermit) AcceptanceReport {
             const base_report = acceptanceReportWithFabricPlan(requested_mode, transcript_image_available, plan);
+            const report = acceptanceReportWithPermitFromReport(base_report, requested_mode, transcript_image_available, permit, null);
+            return acceptanceReportWithFabricPlanPermitRoutes(report, requested_mode, plan, permit);
+        }
+
+        pub fn acceptanceReportWithFabricPlanAndPermitForHandoff(requested_mode: Mode, transcript_image_available: bool, plan: Fabric.Plan, permit: RunPermit) AcceptanceReport {
+            const base_report = acceptanceReportWithFabricPlan(requested_mode, transcript_image_available, plan);
             const report = acceptanceReportWithPermitFromReport(base_report, requested_mode, transcript_image_available, permit, plan);
+            return acceptanceReportWithFabricPlanPermitRoutes(report, requested_mode, plan, permit);
+        }
+
+        fn acceptanceReportWithFabricPlanPermitRoutes(report: AcceptanceReport, requested_mode: Mode, plan: Fabric.Plan, permit: RunPermit) AcceptanceReport {
             if (!report.accepted) return report;
             for (plan.routes) |route| {
                 if (route.parent_world_surface_fingerprint != 0 and route.parent_world_surface_fingerprint != target_ref.world_surface_fingerprint) return rejectedReport(report, &.{.SupervisionPolicyMismatch});
@@ -15519,7 +15532,7 @@ pub const Handoff = struct {
             }
         }
         const supervision_report = if (admitted_fabric_plan) |plan|
-            Env.acceptanceReportWithFabricPlanAndPermit(modeToRunMode(mode), has_transcript, plan, permit)
+            Env.acceptanceReportWithFabricPlanAndPermitForHandoff(modeToRunMode(mode), has_transcript, plan, permit)
         else
             Env.acceptanceReportWithPermit(modeToRunMode(mode), has_transcript, permit);
         if (!supervision_report.accepted) return supervision_report;
@@ -16431,7 +16444,10 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                                 transcript_available;
                             if (permit.policy.require_transcript_image_for_replay and modeConsumesTranscript(effective) and !supervision_transcript_available) return Error.TranscriptImageRequired;
                             const supervision_report = if (maybe_fabric_plan) |plan|
-                                Config.environment.acceptanceReportWithFabricPlanAndPermit(mode_value, supervision_transcript_available, plan, permit)
+                                if (handoff_transcript_available)
+                                    Config.environment.acceptanceReportWithFabricPlanAndPermitForHandoff(mode_value, supervision_transcript_available, plan, permit)
+                                else
+                                    Config.environment.acceptanceReportWithFabricPlanAndPermit(mode_value, supervision_transcript_available, plan, permit)
                             else
                                 Config.environment.acceptanceReportWithPermit(mode_value, supervision_transcript_available, permit);
                             if (!supervision_report.accepted) return acceptanceError(supervision_report);
