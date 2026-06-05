@@ -2535,7 +2535,7 @@ pub const Admission = struct {
             }
             if ((mode == .replay_only or mode == .verify_only) and package.run_image == null) {
                 var transcript_image = package.transcript_image.?;
-                validateTranscriptImageForEnvironment(Env, &transcript_image) catch {
+                validateTranscriptImageForHandoffEnvironment(Target, Env, &transcript_image, args.fabric_plan) catch {
                     return rejectedResult(request, package, target_ref, module_ref, match, &.{.TranscriptImageInvalid}, "transcript image failed environment preflight");
                 };
                 transcript_image.validateReplayRun(target_ref.world_surface_fingerprint, target_ref.target_certificate_fingerprint) catch {
@@ -2545,7 +2545,7 @@ pub const Admission = struct {
                     var handoff_run_image = RunImage.fromTranscriptImage(Target, transcript_image, .replay_only_run);
                     attachPackageModuleWitnessToRunImage(&handoff_run_image, package, module_ref);
                     var transcript_handoff = Handoff{ .allocator = args.allocator, .run_image = handoff_run_image };
-                    const handoff_report = transcript_handoff.preflightWithPermit(Target, Env, admissionModeToHandoffMode(mode).?, permit);
+                    const handoff_report = transcript_handoff.preflightWithPermitFreshTranscriptSink(Target, Env, admissionModeToHandoffMode(mode).?, permit, false, package.transcript_image != null, args.fabric_plan);
                     if (!handoff_report.accepted) {
                         return rejectedResult(request, package, target_ref, module_ref, match, &.{.PermitRejected}, "permit preflight rejected transcript-only admission");
                     }
@@ -15375,7 +15375,7 @@ pub const Handoff = struct {
                     return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{supervisionPreflightBlocker(err)});
                 };
             },
-            .accept_replay, .accept_verify => self.preflightReplayRunWithSupervisor(Target, Env, modeToRunMode(mode), &supervisor) catch |err| {
+            .accept_replay, .accept_verify => self.preflightReplayRunWithSupervisor(Target, Env, modeToRunMode(mode), &supervisor, admitted_fabric_plan) catch |err| {
                 return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{supervisionPreflightBlocker(err)});
             },
             .inspect_only => {},
@@ -15465,7 +15465,7 @@ pub const Handoff = struct {
         });
     }
 
-    fn preflightReplayRunWithSupervisor(self: *@This(), comptime Target: type, comptime Env: type, run_mode: Mode, supervisor: *Supervision.Supervisor) !void {
+    fn preflightReplayRunWithSupervisor(self: *@This(), comptime Target: type, comptime Env: type, run_mode: Mode, supervisor: *Supervision.Supervisor, admitted_fabric_plan: ?Fabric.Plan) !void {
         const image = if (self.run_image.transcript_image) |*image| image else return error.TranscriptImageRequired;
         try image.validateReplayRun(
             Target.WorldSurface.surface_fingerprint,
@@ -15482,6 +15482,7 @@ pub const Handoff = struct {
                 => {
                     const request_frame = event.request_frame orelse return error.ReplayMissing;
                     try self.preflightRequestFrameWithSupervisor(supervisor, request_frame);
+                    if (!environmentHasBindingForPort(Env, request_frame.world_port_id) and fabricPlanCoversPort(admitted_fabric_plan, request_frame.world_port_id)) continue;
                     try supervisor.beforeAdapterCall(.{
                         .world_port_id = request_frame.world_port_id,
                         .mode = run_mode,

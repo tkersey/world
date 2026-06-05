@@ -22973,6 +22973,41 @@ test "fabric-covered replay admission requires transcript evidence" {
     try recordPortsTranscript(&completed_source_transcript);
     var completed_source_image = try completed_source_transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
     defer completed_source_image.deinit(std.testing.allocator);
+    const replay_only_package = world.Admission.TransferPackage.init(.{
+        .kind = .target_reference_only,
+        .target_ref = parent_ref,
+        .transcript_image = completed_source_image,
+        .requested_mode = .replay_only,
+    });
+    var replay_only_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, PortsMissingEnv, replay_only_package, .{
+        .fabric_plan = replay_plan,
+    });
+    defer replay_only_result.deinit(std.testing.allocator);
+    try std.testing.expect(replay_only_result.report.accepted);
+    const replay_only_permit = world.Supervision.issue(fixtures.Ports.Target, PortsMissingEnv, .{
+        .mode = .replay,
+        .fabric_plan_fingerprint = replay_plan.plan_fingerprint,
+        .transcript_image_available = true,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_replay_calls = true,
+            .allow_handoff_accept = true,
+            .allow_fabric_routes = true,
+            .allow_replay_routes = true,
+        }),
+    });
+    var supervised_replay_only_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, PortsMissingEnv, replay_only_package, .{
+        .fabric_plan = replay_plan,
+        .permit = replay_only_permit,
+    });
+    defer supervised_replay_only_result.deinit(std.testing.allocator);
+    try std.testing.expect(supervised_replay_only_result.report.accepted);
+
     const TranscriptRequiredPortsMissingEnv = world.Environment(fixtures.Ports.Target, .{
         .bindings = .{},
         .policy = world.EnvironmentPolicy.init(.{ .allow_fresh_without_transcript = false }),
