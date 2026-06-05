@@ -11239,6 +11239,9 @@ pub const Runspace = struct {
             if (pending_port.request_frame == null) return error.HandoffPendingFrameMismatch;
             break :pending pending_port;
         } else null;
+        if (pending) |pending_port| {
+            if (slot.driver == null and self.pendingRequiresFabricRoute(slot.*, pending_port)) return error.ActiveFabricUnsupported;
+        }
         const event_summary = try self.prepareEventSummary("run exported");
         var summary_owned = true;
         errdefer if (summary_owned) self.allocator.free(event_summary);
@@ -11278,10 +11281,12 @@ pub const Runspace = struct {
             const mailbox_id = slot.pending_mailbox_id orelse return error.HandoffPendingFrameMismatch;
             const pending_port = try self.mailbox.get(mailbox_id);
             if (pending_port.request_frame == null) return error.HandoffPendingFrameMismatch;
+            if (slot.driver == null and self.pendingRequiresFabricRoute(slot.*, pending_port)) return error.ActiveFabricUnsupported;
         } else if (slot.status == .parked_on_supervision) {
             if (slot.pending_mailbox_id) |mailbox_id| {
                 const pending_port = try self.mailbox.get(mailbox_id);
                 if (pending_port.request_frame == null) return error.HandoffPendingFrameMismatch;
+                if (slot.driver == null and self.pendingRequiresFabricRoute(slot.*, pending_port)) return error.ActiveFabricUnsupported;
             }
         }
         var supervisor_snapshot = try self.snapshotSlotSupervisor(index);
@@ -11313,6 +11318,7 @@ pub const Runspace = struct {
         var slot = &self.slots.items[index];
         if (slot.pending_mailbox_id != mailbox_id or (slot.status != .parked_on_port and slot.status != .parked_on_supervision)) return error.StaleRunHandle;
         if (self.hasActiveFabricInvocationForRun(pending.handle)) return error.ActiveFabricUnsupported;
+        if (slot.driver == null and self.pendingRequiresFabricRoute(slot.*, pending)) return error.ActiveFabricUnsupported;
         const event_summary = try self.prepareEventSummary("pending run exported");
         var summary_owned = true;
         errdefer if (summary_owned) self.allocator.free(event_summary);

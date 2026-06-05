@@ -5489,6 +5489,8 @@ test "runspace install consumes explicit fabric plan for missing environment bin
     try std.testing.expectError(error.ActiveFabricUnsupported, wildcard_receiver.respond(0, wildcard_manual_response));
     try std.testing.expectError(error.ActiveFabricUnsupported, wildcard_receiver.reject(0, "manual fabric bypass"));
     try std.testing.expectError(error.ActiveFabricUnsupported, wildcard_receiver.fail(0, "manual fabric bypass"));
+    try std.testing.expectError(error.ActiveFabricUnsupported, wildcard_receiver.exportRun(wildcard_handle));
+    try std.testing.expectError(error.ActiveFabricUnsupported, wildcard_receiver.exportPending(0));
     try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try wildcard_receiver.mailbox.get(0)).status);
     const wildcard_invocation = try wildcard_receiver.routePending(0, wildcard_plan);
     try std.testing.expectEqual(world.Fabric.InvocationStatus.rejected, wildcard_invocation.status);
