@@ -7136,8 +7136,12 @@ pub const Fabric = struct {
             if (fingerprintFabricRoute(self) != self.route_fingerprint) return error.InvalidFrameEncoding;
             if (self.world_port_id != self.parent_world_port_id) return error.WrongPortId;
             switch (self.kind) {
-                .target_export, .admitted_run, .guest => {
+                .target_export, .guest => {
                     if (self.provider_target_ref_fingerprint == null and self.provider_module_fingerprint == null) return error.ProviderRunDenied;
+                },
+                .admitted_run => {
+                    if (self.provider_target_ref_fingerprint == null and self.provider_module_fingerprint == null) return error.ProviderRunDenied;
+                    if (self.provider_admission_receipt_fingerprint == null) return error.ProviderRunDenied;
                 },
                 .replay => {
                     if (self.provider_transcript_image_fingerprint == null) return error.ReplayRouteDenied;

@@ -111,6 +111,7 @@ fn fabricTestRoute(kind: world.Fabric.RouteKind, provider_target_ref_fingerprint
         .provider_target_ref_fingerprint = provider_target_ref_fingerprint orelse provider_ref.target_ref_fingerprint,
         .provider_world_surface_fingerprint = provider_ref.world_surface_fingerprint,
         .provider_target_certificate_fingerprint = provider_ref.target_certificate_fingerprint,
+        .provider_admission_receipt_fingerprint = if (kind == .admitted_run) 0xadd1_7001 else null,
         .provider_transcript_image_fingerprint = if (kind == .replay) 0x7777 else null,
         .value_mapping_fingerprint = mapping.mapping_fingerprint,
         .response_status = switch (kind) {
@@ -4632,6 +4633,16 @@ test "fabric core validation rejects unsupported mappings and missing routes" {
         .response_status = .rejected,
     });
     try std.testing.expectError(error.UnsupportedMapping, bad_unsupported_status.validate());
+
+    const witnessless_admitted = world.Fabric.Route.init(.{
+        .route_id = 23,
+        .kind = .admitted_run,
+        .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .parent_world_port_id = 0,
+        .provider_target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+    });
+    try std.testing.expectError(error.ProviderRunDenied, witnessless_admitted.validate());
 
     const unpinned_replay = world.Fabric.Route.init(.{
         .route_id = 22,
