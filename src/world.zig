@@ -9549,7 +9549,12 @@ pub const Runspace = struct {
         try self.validateFabricPlanForPending(plan, pending);
         const route = plan.routeForPort(pending.world_port_id) orelse return error.FabricMissingRoute;
         try route.validate();
-        if (route.kind == .replay) return error.ReplayRouteDenied;
+        switch (route.kind) {
+            .reject, .unsupported => {},
+            .replay => return error.ReplayRouteDenied,
+            .target_export, .admitted_run, .guest => return error.ProviderRunDenied,
+            .adapter => return error.UnsupportedMapping,
+        }
         const depth = try self.fabricDepthForParent(parent_slot.handle);
         try plan.assertDepth(depth);
         try self.beforeFabricInvocationForSlot(parent_slot, pending.world_port_id, route.kind, depth, 0);
@@ -9796,6 +9801,7 @@ pub const Runspace = struct {
             const mapping = try self.installedFabricValueMapping(mapping_fingerprint);
             if (mapping.kind != .provider_result_to_parent_response) return error.UnsupportedMapping;
             try mapping.assertExactValueTableMatch();
+            if (mapping.require_portable_images) try validateValueImagePolicy(provider_result, ValuePolicy.portable);
             if (provider_result.value_table_id != mapping.provider_result_value_table_id) return error.ProviderResultMismatch;
             if (mapping.provider_result_value_fingerprint) |expected| {
                 if (provider_result.value_image_fingerprint != expected and provider_result.boundary_value_fingerprint != expected) return error.ProviderResultMismatch;
@@ -16751,7 +16757,7 @@ fn fabricCoversMissingEnvironmentPorts(comptime Target: type, comptime bindings:
         }
         if (!host_bound) {
             const route = plan.findRouteForPort(@intCast(world_port_id)) orelse return false;
-            if (route.kind == .unsupported) return false;
+            if (route.kind == .unsupported or route.kind == .adapter) return false;
             fabric_covered_missing += 1;
         }
     }
