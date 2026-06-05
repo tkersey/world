@@ -16433,6 +16433,11 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         if (permit.world_surface_fingerprint != Target.WorldSurface.surface_fingerprint) return Error.SupervisionDenied;
                         if (permit.target_certificate_fingerprint != Target.Certificate.certificate_fingerprint) return Error.SupervisionDenied;
                         if (permit.mode != mode_value) return Error.SupervisionDenied;
+                        if (maybe_fabric_plan) |plan| {
+                            if (permit.fabric_plan_fingerprint != plan.plan_fingerprint) return Error.SupervisionDenied;
+                        } else if (permit.fabric_plan_fingerprint != null) {
+                            return Error.SupervisionDenied;
+                        }
                         if (comptime @hasField(@TypeOf(Config), "environment")) {
                             const transcript_available = handoff_transcript_available or
                                 admitted_transcript_image != null or

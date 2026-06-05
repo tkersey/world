@@ -5559,6 +5559,26 @@ test "runspace install consumes explicit fabric plan for missing environment bin
     const pinned_invocation = try pinned_runspace.routePending(0, fabric_plan);
     try std.testing.expectEqual(world.Fabric.InvocationStatus.rejected, pinned_invocation.status);
 
+    const no_env_pinned_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .fabric_plan_fingerprint = fabric_plan.plan_fingerprint,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_native_adapters = true,
+            .allow_fabric_routes = true,
+            .allow_reject_routes = true,
+            .allow_rejected_responses = true,
+        }),
+    });
+    var no_env_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer no_env_runtime.deinit();
+    try std.testing.expectError(error.SupervisionDenied, PortsMachine.start(&no_env_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .permit = no_env_pinned_permit,
+        .fabric_plan = alternate_plan,
+    }));
+
     var source_runtime = boundary.Runtime.init(std.testing.allocator);
     defer source_runtime.deinit();
     var source = world.Runspace.init(std.testing.allocator, .{});
