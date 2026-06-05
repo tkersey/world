@@ -19880,11 +19880,9 @@ fn fingerprintFabricInvocation(invocation: Fabric.Invocation) u64 {
     hashU64(&hasher, invocation.request_frame_fingerprint);
     hashOptionalU64(&hasher, invocation.provider_run_handle_fingerprint);
     hashOptionalU64(&hasher, invocation.mapped_request_frame_fingerprint);
-    hashOptionalU64(&hasher, invocation.mapped_response_frame_fingerprint);
     hashOptionalU64(&hasher, invocation.run_permit_fingerprint);
     hashU64(&hasher, invocation.depth);
     hashU64(&hasher, invocation.sequence);
-    hashU64(&hasher, @intFromEnum(invocation.status));
     return hasher.final();
 }
 

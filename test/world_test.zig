@@ -413,10 +413,11 @@ test "fabric binding invocation receipt and coverage fingerprints are stable" {
         .parent_pending_port_fingerprint = invocation.parent_pending_port_fingerprint,
         .parent_mailbox_id = invocation.parent_mailbox_id,
         .request_frame_fingerprint = invocation.request_frame_fingerprint,
+        .mapped_response_frame_fingerprint = 0xdddd,
         .depth = invocation.depth,
         .status = .completed,
     });
-    try std.testing.expect(progressed.invocation_fingerprint != invocation.invocation_fingerprint);
+    try std.testing.expectEqual(invocation.invocation_fingerprint, progressed.invocation_fingerprint);
 
     const receipt = world.Fabric.Receipt.init(.{
         .invocation_fingerprint = invocation.invocation_fingerprint,
@@ -4933,7 +4934,11 @@ test "runspace fabric provider result resumes exactly one parent pending port" {
     try std.testing.expectEqual(world.Runspace.EventKind.run_resumed, event.kind);
     try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().fabric_receipt_count);
+    const stored_invocation = runspace.fabric_invocations.items[invocation.sequence];
+    try std.testing.expectEqual(world.Fabric.InvocationStatus.parent_responded, stored_invocation.status);
+    try std.testing.expectEqual(invocation.invocation_fingerprint, stored_invocation.invocation_fingerprint);
     const receipt = runspace.fabric_receipts.items[0];
+    try std.testing.expectEqual(invocation.invocation_fingerprint, receipt.invocation_fingerprint);
     try std.testing.expectEqual(@as(?u64, provider_handle.handle_fingerprint), receipt.provider_run_handle_fingerprint);
     try std.testing.expectEqual(@as(?u64, provider_run_receipt_fingerprint), receipt.provider_run_receipt_fingerprint);
 
