@@ -6881,6 +6881,58 @@ test "runspace fabric local provider routing rejects pinned completed-provider r
     try std.testing.expectError(error.ProviderRunDenied, runspace.installFabricPlan(parent_ref, plan));
 }
 
+test "runspace fabric provider routing records parked provider invocation" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+
+    _ = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    _ = try runspace.tick();
+    const provider_handle = try runspace.installMachineRun(fixtures.Agent.Target, AgentEnv, &runtime, AgentArgs{ @as(usize, 3), fixtures.Agent.initialObservation(.skeleton) }, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    _ = try runspace.tick();
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try runspace.getSlotSummary(provider_handle)).status);
+
+    const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const provider_ref = world.TargetRef.fromTarget(fixtures.Agent.Target);
+    const response_mapping = fabricTestMapping(.provider_result_to_parent_response);
+    const route = world.Fabric.Route.init(.{
+        .route_id = 436,
+        .kind = .target_export,
+        .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .parent_world_port_id = 0,
+        .provider_target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+        .provider_world_surface_fingerprint = provider_ref.world_surface_fingerprint,
+        .provider_target_certificate_fingerprint = provider_ref.target_certificate_fingerprint,
+        .response_value_mapping_fingerprint = response_mapping.mapping_fingerprint,
+    });
+    const plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .routes = &.{route},
+        .value_mappings = &.{response_mapping},
+    });
+    try runspace.installFabricPlan(parent_ref, plan);
+
+    const invocation = try runspace.routePendingToProviderRun(0, plan, provider_handle);
+    try std.testing.expectEqual(world.Fabric.InvocationStatus.provider_parked, invocation.status);
+    try std.testing.expectEqual(@as(?u64, null), invocation.mapped_response_frame_fingerprint);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().fabric_invocation_count);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_receipt_count);
+    try std.testing.expectEqual(@as(usize, 2), runspace.report().pending_port_count);
+    try std.testing.expectError(error.ActiveFabricUnsupported, runspace.exportPending(0));
+    try std.testing.expectError(error.ActiveFabricUnsupported, runspace.exportRun(provider_handle));
+}
+
 test "runspace fabric routing rolls back invocation when event recording fails" {
     var parent_runtime = boundary.Runtime.init(std.testing.allocator);
     defer parent_runtime.deinit();
@@ -8367,13 +8419,13 @@ test "runspace active fabric provider handle cannot be shared by another parent"
     _ = try runspace.respondFromFabric(invocation);
 }
 
-test "runspace fabric provider routing rejects live nested provider before invocation record" {
+test "runspace fabric provider routing rejects active parent reuse as provider" {
     var runtime = boundary.Runtime.init(std.testing.allocator);
     defer runtime.deinit();
     var runspace = world.Runspace.init(std.testing.allocator, .{});
     defer runspace.deinit();
 
-    _ = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+    const parent_handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
         .allocator = std.testing.allocator,
         .mode = world.Mode.fresh,
     });
@@ -8383,6 +8435,7 @@ test "runspace fabric provider routing rejects live nested provider before invoc
         .mode = world.Mode.fresh,
     });
     _ = try runspace.tick();
+    const nested_parent_summary = try runspace.getSlotSummary(nested_parent_handle);
 
     const ports_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const agent_ref = world.TargetRef.fromTarget(fixtures.Agent.Target);
@@ -8411,8 +8464,35 @@ test "runspace fabric provider routing rejects live nested provider before invoc
     });
     try runspace.installFabricPlan(ports_ref, plan);
 
-    try std.testing.expectError(error.InvalidRunspaceTransition, runspace.routePendingToProviderRun(0, plan, nested_parent_handle));
-    try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_invocation_count);
+    const invocation = try runspace.routePendingToProviderRun(0, plan, nested_parent_handle);
+    try std.testing.expectEqual(world.Fabric.InvocationStatus.provider_parked, invocation.status);
+
+    const reuse_response_mapping = fabricTestMapping(.provider_result_to_parent_response);
+    const reuse_route = world.Fabric.Route.init(.{
+        .route_id = 437,
+        .kind = .target_export,
+        .parent_world_surface_fingerprint = agent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = agent_ref.target_certificate_fingerprint,
+        .parent_world_port_id = 0,
+        .provider_target_ref_fingerprint = ports_ref.target_ref_fingerprint,
+        .provider_world_surface_fingerprint = ports_ref.world_surface_fingerprint,
+        .provider_target_certificate_fingerprint = ports_ref.target_certificate_fingerprint,
+        .response_value_mapping_fingerprint = reuse_response_mapping.mapping_fingerprint,
+    });
+    const reuse_plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = agent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = agent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = agent_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Agent.Target).import_set_fingerprint,
+        .routes = &.{reuse_route},
+        .value_mappings = &.{reuse_response_mapping},
+        .max_depth = 2,
+        .max_provider_runs = 2,
+    });
+    try runspace.installFabricPlan(agent_ref, reuse_plan);
+
+    try std.testing.expectError(error.UnsupportedSharedProviderRun, runspace.routePendingToProviderRun(nested_parent_summary.pending_mailbox_id.?, reuse_plan, parent_handle));
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().fabric_invocation_count);
     try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_receipt_count);
     try std.testing.expectEqual(@as(usize, 2), runspace.report().pending_port_count);
 }
