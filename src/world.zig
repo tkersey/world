@@ -9703,7 +9703,7 @@ pub const Runspace = struct {
             .admitted => .provider_installed,
             .runnable, .running => .provider_running,
             .failed, .rejected => .failed,
-            .exported => if (provider_slot.current_state.status == .completed) .provider_completed else .failed,
+            .exported => return error.InvalidRunspaceTransition,
         };
         const invocation = Fabric.Invocation.init(.{
             .plan_fingerprint = plan.plan_fingerprint,
@@ -9804,6 +9804,15 @@ pub const Runspace = struct {
     pub fn respondFromFabric(self: *@This(), invocation: Fabric.Invocation) !Runspace.RunspaceEvent {
         try invocation.validate();
         const recorded = try self.recordedFabricInvocation(invocation);
+        if (recorded.provider_run_handle_fingerprint == null) return error.InvalidRunspaceTransition;
+        switch (recorded.status) {
+            .provider_installed,
+            .provider_running,
+            .provider_parked,
+            .provider_completed,
+            => {},
+            else => return error.InvalidRunspaceTransition,
+        }
         const pending = try self.mailbox.get(invocation.parent_mailbox_id);
         if (pending.pending_port_fingerprint != invocation.parent_pending_port_fingerprint) return error.InvalidPendingPortTransition;
         const parent_index = try self.slotIndex(pending.handle);
