@@ -16681,6 +16681,39 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     return plan.plan_fingerprint;
                 }
 
+                pub fn validateRunspaceFabricResponseValue(self: *Self, world_port_id: u32, image: Frame.ValueImage) !void {
+                    if (self.supervisor) |supervisor| {
+                        return validateFabricParentResponseValuePolicy(image, supervisor.permit, world_port_id);
+                    }
+                    const policy = try self.runspaceFabricReplayResponseValuePolicy(world_port_id);
+                    try validateValueImagePolicy(image, policy);
+                }
+
+                fn runspaceFabricReplayResponseValuePolicy(self: *Self, world_port_id: u32) !ValuePolicy {
+                    if (comptime @hasField(@TypeOf(Config), "environment")) {
+                        const Env = Config.environment;
+                        if (environmentHasBindingForPort(Env, world_port_id)) {
+                            return replayImageValuePolicyForEnvironmentPort(Env, world_port_id);
+                        }
+                        if (self.fabricPlanCoversWorldPort(world_port_id)) return ValuePolicy.portable;
+                        return Error.MissingHandler;
+                    }
+
+                    switch (world_port_id) {
+                        inline 0...Target.WorldPortTable.entries.len - 1 => |id| {
+                            const Handler = comptime handlerForWorldPortId(Target, Config, @intCast(id));
+                            if (Handler) |Decl| {
+                                var policy: ValuePolicy = if (comptime @hasDecl(Decl, "value_policy")) Decl.value_policy else .native_compatible;
+                                policy.require_response_images_for_replay = true;
+                                return policy;
+                            }
+                            if (self.fabricPlanCoversWorldPort(world_port_id)) return ValuePolicy.portable;
+                            return Error.MissingHandler;
+                        },
+                        else => return Error.UnknownWorldPort,
+                    }
+                }
+
                 fn activeFabricPlan(self: *Self) ?Fabric.Plan {
                     if (self.admitted_fabric_plan) |plan| return plan;
                     if (comptime @hasField(Options, "fabric_plan")) return @field(self.options, "fabric_plan");
