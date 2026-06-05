@@ -7138,6 +7138,9 @@ test "runspace fabric provider failure retires active parent invocation" {
     }
 
     try std.testing.expectError(error.InvalidRunspaceTransition, runspace.respondFromFabric(invocation));
+    try std.testing.expectEqual(world.Fabric.InvocationStatus.failed, runspace.fabric_invocations.items[invocation.sequence].status);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().fabric_receipt_count);
+    try std.testing.expectEqual(world.Fabric.Blocker.ProviderRunDenied, runspace.fabric_receipts.items[0].blocker.?);
     _ = try runspace.respondValue(0, @as(i32, 7));
     try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
 }

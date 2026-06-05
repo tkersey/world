@@ -9969,10 +9969,30 @@ pub const Runspace = struct {
         const parent_index = try self.slotIndex(pending.handle);
         const parent_slot = &self.slots.items[parent_index];
         const route = try self.installedFabricRoute(recorded.route_fingerprint);
+        var receipt_evidence = try self.prepareFabricReceiptEvidence(3);
+        defer receipt_evidence.deinit(self.allocator);
         var provider_image = self.fabricProviderResultImage(recorded) catch |err| {
             if (err == error.InvalidRunspaceTransition and self.fabricProviderRunStillActive(recorded)) return err;
             switch (err) {
-                error.InvalidRunspaceTransition, error.StaleRunHandle => try self.retireFabricInvocation(recorded, .failed),
+                error.InvalidRunspaceTransition, error.StaleRunHandle => {
+                    const failed = Fabric.Invocation.init(.{
+                        .plan_fingerprint = recorded.plan_fingerprint,
+                        .route_fingerprint = recorded.route_fingerprint,
+                        .parent_run_handle_fingerprint = recorded.parent_run_handle_fingerprint,
+                        .parent_pending_port_fingerprint = recorded.parent_pending_port_fingerprint,
+                        .parent_mailbox_id = recorded.parent_mailbox_id,
+                        .request_frame_fingerprint = recorded.request_frame_fingerprint,
+                        .provider_run_handle_fingerprint = recorded.provider_run_handle_fingerprint,
+                        .mapped_request_frame_fingerprint = recorded.mapped_request_frame_fingerprint,
+                        .mapped_response_frame_fingerprint = recorded.mapped_response_frame_fingerprint,
+                        .run_permit_fingerprint = recorded.run_permit_fingerprint,
+                        .depth = recorded.depth,
+                        .sequence = recorded.sequence,
+                        .status = .failed,
+                    });
+                    try self.replaceFabricInvocation(failed);
+                    try self.recordFabricReceipt(parent_slot.handle, failed, failed.route_fingerprint, pending, null, recorded.provider_run_handle_fingerprint, null, .failed, .ProviderRunDenied, receipt_evidence.takeReceiptSummary());
+                },
                 else => {},
             }
             return err;
@@ -9992,8 +10012,6 @@ pub const Runspace = struct {
         var response = try fabricMappedResponseForPending(pending, response_image, mapped_contract.boundary_value_fingerprint);
         response_image_owned = false;
         defer response.deinit(self.allocator);
-        var receipt_evidence = try self.prepareFabricReceiptEvidence(3);
-        defer receipt_evidence.deinit(self.allocator);
         const event = self.respondWithFabricOwnership(invocation.parent_mailbox_id, response, true) catch |err| {
             try self.retireFabricInvocation(recorded, .failed);
             return err;
