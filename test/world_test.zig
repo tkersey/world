@@ -5217,6 +5217,54 @@ test "runspace install consumes explicit fabric plan for missing environment bin
     try std.testing.expectError(error.PortRuleDenied, fabric_cost_supervisor.beforeFabricInvocation(.{ .world_port_id = 0, .route_kind = .reject }));
     try std.testing.expectEqual(fabric_cost_ledger, fabric_cost_supervisor.ledger.ledger_fingerprint);
 
+    const fabric_cost_accumulating_rules = [_]world.PortRule{world.PortRule.init(.{
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .world_port_id = 0,
+        .max_cost_units = 3,
+    })};
+    const fabric_cost_accumulating_permit = world.Supervision.issue(fixtures.Ports.Target, PortsMissingEnv, .{
+        .mode = .fresh,
+        .fabric_plan_fingerprint = fabric_plan.plan_fingerprint,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_fabric_routes = true,
+            .allow_reject_routes = true,
+            .allow_rejected_responses = true,
+        }),
+        .port_rules = &fabric_cost_accumulating_rules,
+    });
+    const fabric_cost_accumulating_report = PortsMissingEnv.acceptanceReportWithFabricPlanAndPermit(.fresh, false, fabric_plan, fabric_cost_accumulating_permit);
+    try std.testing.expect(fabric_cost_accumulating_report.accepted);
+    var fabric_cost_accumulating_supervisor = try world.Supervisor.init(std.testing.allocator, fabric_cost_accumulating_permit, fixtures.Ports.Target.WorldPortTable.entries.len);
+    defer fabric_cost_accumulating_supervisor.deinit();
+    try fabric_cost_accumulating_supervisor.beforeFabricInvocation(.{ .world_port_id = 0, .route_kind = .reject });
+    try std.testing.expectEqual(@as(u64, 2), fabric_cost_accumulating_supervisor.ledger.per_port_usage[0].cost_units);
+    try std.testing.expectError(error.PortRuleDenied, fabric_cost_accumulating_supervisor.beforeFabricInvocation(.{ .world_port_id = 0, .route_kind = .reject }));
+    try std.testing.expectEqual(@as(u64, 2), fabric_cost_accumulating_supervisor.ledger.per_port_usage[0].cost_units);
+
+    const fabric_per_port_budget = [_]world.Supervision.PerPortBudget{.{
+        .world_port_id = 0,
+        .max_cost_units = 3,
+    }};
+    const fabric_budget_permit = world.Supervision.issue(fixtures.Ports.Target, PortsMissingEnv, .{
+        .mode = .fresh,
+        .fabric_plan_fingerprint = fabric_plan.plan_fingerprint,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_fabric_routes = true,
+            .allow_reject_routes = true,
+            .allow_rejected_responses = true,
+        }),
+        .budget = world.Budget.init(.{ .per_port_budgets = &fabric_per_port_budget }),
+    });
+    var fabric_budget_supervisor = try world.Supervisor.init(std.testing.allocator, fabric_budget_permit, fixtures.Ports.Target.WorldPortTable.entries.len);
+    defer fabric_budget_supervisor.deinit();
+    try fabric_budget_supervisor.beforeFabricInvocation(.{ .world_port_id = 0, .route_kind = .reject });
+    try std.testing.expectEqual(@as(u64, 2), fabric_budget_supervisor.ledger.per_port_usage[0].cost_units);
+    try std.testing.expectError(error.BudgetExceeded, fabric_budget_supervisor.beforeFabricInvocation(.{ .world_port_id = 0, .route_kind = .reject }));
+    try std.testing.expectEqual(@as(u64, 4), fabric_budget_supervisor.ledger.per_port_usage[0].cost_units);
+    try std.testing.expectEqual(world.Supervision.BudgetExceededKind.per_port_cost_units, fabric_budget_supervisor.last_check.?.budget_exceeded.?);
+
     const payload_budget = [_]world.Supervision.PerPortBudget{.{
         .world_port_id = 0,
         .max_value_image_bytes = 1,

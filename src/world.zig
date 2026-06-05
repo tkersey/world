@@ -4079,6 +4079,8 @@ pub const Supervision = struct {
             next.total_provider_runs = addSatUsize(next.total_provider_runs, args.provider_runs);
             next.max_fabric_depth_observed = @max(next.max_fabric_depth_observed, args.depth);
             next.total_cost_units = addSatU64(next.total_cost_units, cost_delta);
+            const usage = &next.per_port_usage[args.world_port_id];
+            usage.cost_units = addSatU64(usage.cost_units, cost_delta);
             try self.commitCheck(.before_fabric_invocation, args.world_port_id, &next, null, rule, "fabric invocation");
         }
 
