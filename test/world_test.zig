@@ -5191,6 +5191,11 @@ test "runspace install consumes explicit fabric plan for missing environment bin
     defer std.testing.allocator.free(pending_payload);
     try std.testing.expectEqualStrings("deploy-prod", pending_payload);
 
+    const manual_response = testRunspaceResponseFrame(pending_request);
+    try std.testing.expectError(error.ActiveFabricUnsupported, runspace.respond(0, manual_response));
+    try std.testing.expectError(error.ActiveFabricUnsupported, runspace.fail(0, "manual fabric bypass"));
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
+
     const invocation = try runspace.routePending(0, fabric_plan);
     try std.testing.expectEqual(world.Fabric.InvocationStatus.rejected, invocation.status);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().fabric_receipt_count);

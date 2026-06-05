@@ -9591,6 +9591,7 @@ pub const Runspace = struct {
             self.hasActiveFabricInvocationForMailbox(mailbox_id);
         if (slot.pending_mailbox_id != mailbox_id or (slot.status != .parked_on_port and !fabric_owned_supervision_park)) return error.StaleRunHandle;
         if (!allow_active_fabric and self.hasActiveFabricInvocationForMailbox(mailbox_id)) return error.ActiveFabricUnsupported;
+        if (!allow_active_fabric and self.pendingRequiresFabricRoute(slot.*, pending)) return error.ActiveFabricUnsupported;
         var responded_summary: []u8 = "";
         var responded_summary_owned = false;
         defer if (responded_summary_owned) self.allocator.free(responded_summary);
@@ -11083,6 +11084,7 @@ pub const Runspace = struct {
         const slot = &self.slots.items[index];
         if (slot.pending_mailbox_id != mailbox_id or slot.status != .parked_on_port) return error.StaleRunHandle;
         if (self.hasActiveFabricInvocationForMailbox(mailbox_id)) return error.ActiveFabricUnsupported;
+        if (self.pendingRequiresFabricRoute(slot.*, pending)) return error.ActiveFabricUnsupported;
         var response = try terminalResponseForPending(pending, .rejected, reason);
         defer response.deinit(self.allocator);
         return self.finishTerminalResponse(index, mailbox_id, pending, slot, response, .rejected);
@@ -11095,9 +11097,18 @@ pub const Runspace = struct {
         const slot = &self.slots.items[index];
         if (slot.pending_mailbox_id != mailbox_id or slot.status != .parked_on_port) return error.StaleRunHandle;
         if (self.hasActiveFabricInvocationForMailbox(mailbox_id)) return error.ActiveFabricUnsupported;
+        if (self.pendingRequiresFabricRoute(slot.*, pending)) return error.ActiveFabricUnsupported;
         var response = try terminalResponseForPending(pending, .failed, reason);
         defer response.deinit(self.allocator);
         return self.finishTerminalResponse(index, mailbox_id, pending, slot, response, .failed);
+    }
+
+    fn pendingRequiresFabricRoute(self: *@This(), slot: Runspace.RunSlot, pending: Runspace.PendingPort) bool {
+        _ = self;
+        if (slot.driver) |driver| {
+            return driver.fabricPlanCoversHandlerlessWorldPort(pending.world_port_id);
+        }
+        return false;
     }
 
     pub fn exportRun(self: *@This(), handle: RunHandle) !RunImage {
