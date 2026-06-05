@@ -9800,10 +9800,31 @@ pub const Runspace = struct {
                 }
                 return err;
             }
-        else if (allow_active_fabric) Runspace.ResponseEvidence{
-            .response_fingerprint = response.response_fingerprint,
-            .response_frame_fingerprint = response.frame_fingerprint,
-            .response_value_image_fingerprint = response.response_value_fingerprint,
+        else if (allow_active_fabric) evidence: {
+            if (slot.supervisor) |*supervisor| {
+                const accounting = try self.responseFrameAccounting(response);
+                var supervisor_snapshot = try self.snapshotSlotSupervisor(index);
+                defer supervisor_snapshot.deinit(self.allocator);
+                supervisor.afterAdapterResponse(.{
+                    .world_port_id = pending.world_port_id,
+                    .status = .responded,
+                    .response_bytes = accounting.response_bytes,
+                    .value_image_bytes = accounting.value_image_bytes,
+                }) catch |err| {
+                    if ((err == error.HandlerPending or err == error.BudgetExceeded) and supervisor.interrupted) {
+                        return self.parkPendingOnSupervision(index, pending, mailbox_id, "fabric response parked on supervision") catch |park_err| {
+                            supervisor_snapshot.restore(self, index);
+                            return park_err;
+                        };
+                    }
+                    return err;
+                };
+            }
+            break :evidence Runspace.ResponseEvidence{
+                .response_fingerprint = response.response_fingerprint,
+                .response_frame_fingerprint = response.frame_fingerprint,
+                .response_value_image_fingerprint = response.response_value_fingerprint,
+            };
         } else return error.InvalidRunspaceTransition;
         if (response.status == .pending) return error.HandlerPending;
         const effective_response_frame_fingerprint = response_evidence.response_frame_fingerprint orelse response_evidence.response_fingerprint;
@@ -9868,7 +9889,7 @@ pub const Runspace = struct {
         const pending = try self.mailbox.get(mailbox_id);
         const parent_index = try self.slotIndex(pending.handle);
         const parent_slot = &self.slots.items[parent_index];
-        if (parent_slot.pending_mailbox_id != mailbox_id or parent_slot.status != .parked_on_port) return error.StaleRunHandle;
+        if (!slotHasFabricRoutablePending(parent_slot.*, mailbox_id)) return error.StaleRunHandle;
         if (self.hasActiveFabricInvocationForMailbox(mailbox_id)) return error.ActiveFabricUnsupported;
         try self.validateFabricPlanForPending(plan, pending);
         const route = plan.routeForPort(pending.world_port_id) orelse return error.FabricMissingRoute;
@@ -10002,7 +10023,7 @@ pub const Runspace = struct {
         const pending = try self.mailbox.get(mailbox_id);
         const parent_index = try self.slotIndex(pending.handle);
         const parent_slot = &self.slots.items[parent_index];
-        if (parent_slot.pending_mailbox_id != mailbox_id or parent_slot.status != .parked_on_port) return error.StaleRunHandle;
+        if (!slotHasFabricRoutablePending(parent_slot.*, mailbox_id)) return error.StaleRunHandle;
         if (self.hasActiveFabricInvocationForMailbox(mailbox_id)) return error.ActiveFabricUnsupported;
         const provider_index = try self.slotIndex(provider_handle);
         const provider_slot = self.slots.items[provider_index];
@@ -10064,7 +10085,7 @@ pub const Runspace = struct {
         const pending = try self.mailbox.get(mailbox_id);
         const parent_index = try self.slotIndex(pending.handle);
         const parent_slot = &self.slots.items[parent_index];
-        if (parent_slot.pending_mailbox_id != mailbox_id or parent_slot.status != .parked_on_port) return error.StaleRunHandle;
+        if (!slotHasFabricRoutablePending(parent_slot.*, mailbox_id)) return error.StaleRunHandle;
         if (self.hasActiveFabricInvocationForMailbox(mailbox_id)) return error.ActiveFabricUnsupported;
         try self.validateFabricPlanForPending(plan, pending);
         const route = plan.routeForPort(pending.world_port_id) orelse return error.FabricMissingRoute;
@@ -11271,6 +11292,14 @@ pub const Runspace = struct {
         }
         const plan_fingerprint = fabricPlanFingerprintForSlot(slot) orelse return false;
         return self.installedFabricRouteCoversPending(plan_fingerprint, pending);
+    }
+
+    fn slotHasFabricRoutablePending(slot: Runspace.RunSlot, mailbox_id: u64) bool {
+        if (slot.pending_mailbox_id != mailbox_id) return false;
+        return switch (slot.status) {
+            .parked_on_port, .parked_on_supervision => true,
+            else => false,
+        };
     }
 
     fn installedFabricRouteCoversPending(self: *const @This(), plan_fingerprint: u64, pending: Runspace.PendingPort) bool {
@@ -16855,8 +16884,8 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     const plan = self.activeFabricPlan() orelse return false;
                     const route = plan.findRouteForPort(world_port_id) orelse return false;
                     return switch (route.kind) {
-                        .adapter, .unsupported => false,
-                        .target_export, .admitted_run, .guest, .replay, .reject => true,
+                        .adapter => false,
+                        .target_export, .admitted_run, .guest, .replay, .reject, .unsupported => true,
                     };
                 }
 
