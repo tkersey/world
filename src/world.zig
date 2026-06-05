@@ -16688,8 +16688,9 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 }
 
                 pub fn runspaceFabricPlanFingerprint(self: *Self) ?u64 {
-                    const plan = self.activeFabricPlan() orelse return null;
-                    return plan.plan_fingerprint;
+                    if (self.activeFabricPlan()) |plan| return plan.plan_fingerprint;
+                    if (self.supervisor) |supervisor| return supervisor.permit.fabric_plan_fingerprint;
+                    return null;
                 }
 
                 pub fn validateRunspaceFabricResponseValue(self: *Self, world_port_id: u32, image: Frame.ValueImage) !void {
