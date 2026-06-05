@@ -6583,8 +6583,9 @@ test "runspace fabric replay route uses transcript response image" {
         .routes = &.{route},
     });
     try runspace.installFabricPlan(parent_ref, plan);
-    const invocation = try runspace.routePendingFromReplay(0, plan, replay_image);
+    const invocation = try runspace.routePendingFromReplay(0, plan, &replay_image);
     try std.testing.expectEqual(world.Fabric.InvocationStatus.completed, invocation.status);
+    try std.testing.expect(replay_image.replay_cursor > 0);
     try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().fabric_receipt_count);
     _ = try runspace.tick();
@@ -6643,7 +6644,7 @@ test "runspace fabric replay route parks without receipt" {
     });
     try runspace.installFabricPlan(parent_ref, plan);
 
-    const invocation = try runspace.routePendingFromReplay(0, plan, replay_image);
+    const invocation = try runspace.routePendingFromReplay(0, plan, &replay_image);
     try std.testing.expectEqual(world.Fabric.InvocationStatus.completed, invocation.status);
     try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_supervision, (try runspace.getSlotSummary(handle)).status);
     try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
@@ -6725,7 +6726,7 @@ test "runspace fabric replay route rejects transcript fingerprint mismatch" {
         .routes = &.{route},
     });
     try runspace.installFabricPlan(parent_ref, plan);
-    try std.testing.expectError(error.ReplayRouteDenied, runspace.routePendingFromReplay(0, plan, replay_image));
+    try std.testing.expectError(error.ReplayRouteDenied, runspace.routePendingFromReplay(0, plan, &replay_image));
     try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_invocation_count);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
 }
@@ -6772,7 +6773,7 @@ test "runspace fabric replay route validates transcript image fingerprint" {
     });
     try runspace.installFabricPlan(parent_ref, plan);
 
-    try std.testing.expectError(error.InvalidFrameEncoding, runspace.routePendingFromReplay(0, plan, forged_image));
+    try std.testing.expectError(error.InvalidFrameEncoding, runspace.routePendingFromReplay(0, plan, &forged_image));
     try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_invocation_count);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
 }

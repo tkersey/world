@@ -9778,7 +9778,7 @@ pub const Runspace = struct {
         return invocation;
     }
 
-    pub fn routePendingFromReplay(self: *@This(), mailbox_id: u64, plan: Fabric.Plan, transcript_image: TranscriptImage) !Fabric.Invocation {
+    pub fn routePendingFromReplay(self: *@This(), mailbox_id: u64, plan: Fabric.Plan, transcript_image: *TranscriptImage) !Fabric.Invocation {
         const pending = try self.mailbox.get(mailbox_id);
         const parent_index = try self.slotIndex(pending.handle);
         const parent_slot = &self.slots.items[parent_index];
@@ -9788,12 +9788,16 @@ pub const Runspace = struct {
         const route = plan.routeForPort(pending.world_port_id) orelse return error.FabricMissingRoute;
         try route.validate();
         if (route.kind != .replay) return error.UnsupportedMapping;
-        try validateTranscriptImageFingerprint(transcript_image);
+        try validateTranscriptImageFingerprint(transcript_image.*);
         if (route.provider_transcript_image_fingerprint) |expected| {
             if (transcript_image.transcript_image_fingerprint != expected) return error.ReplayRouteDenied;
         }
-        var replay_image = transcript_image;
-        try replay_image.validateReplayRun(pending.world_surface_fingerprint, pending.target_certificate_fingerprint);
+        if (transcript_image.replay_cursor == 0 and transcript_image.replay_limit == null) {
+            try transcript_image.validateReplayRun(pending.world_surface_fingerprint, pending.target_certificate_fingerprint);
+        } else {
+            if (transcript_image.world_surface_fingerprint != pending.world_surface_fingerprint) return error.ReplaySurfaceMismatch;
+            if (transcript_image.target_certificate_fingerprint != pending.target_certificate_fingerprint) return error.ReplayTargetCertificateMismatch;
+        }
         const depth = try self.fabricDepthForParent(parent_slot.handle);
         try plan.assertDepth(depth);
         try assertFabricRouteDepth(route, depth);
@@ -9817,7 +9821,7 @@ pub const Runspace = struct {
             .status = .started,
         });
         const request = pending.request_frame orelse return error.InvalidPendingPortTransition;
-        const replay_response = try replay_image.nextResponse(request.replay_key_seed, request.target_certificate_fingerprint, pending.expected_response_kind);
+        const replay_response = try transcript_image.nextResponse(request.replay_key_seed, request.target_certificate_fingerprint, pending.expected_response_kind);
         var response = try replay_response.clone(self.allocator);
         defer response.deinit(self.allocator);
         invocation = Fabric.Invocation.init(.{
@@ -9840,7 +9844,13 @@ pub const Runspace = struct {
         errdefer if (!fabric_charge_committed and invocation_recorded) self.rollbackFabricInvocationRecord(invocation_count_before, event_count_before, next_event_index_before);
         try self.recordFabricInvocation(parent_slot.*, invocation, route, .fabric_invocation_started, "fabric replay invocation recorded");
         invocation_recorded = true;
-        const event = try self.respondWithFabricOwnership(mailbox_id, response, true);
+        const event = self.respondWithFabricOwnership(mailbox_id, response, true) catch |err| {
+            const parent_moved = parent_slot.status != .parked_on_port or parent_slot.pending_mailbox_id != mailbox_id;
+            const pending_after = self.mailbox.get(mailbox_id) catch null;
+            const pending_consumed = if (pending_after) |after| after.status != .pending else true;
+            if (parent_moved or pending_consumed) fabric_charge_committed = true;
+            return err;
+        };
         if (event.kind == .run_parked_on_supervision) return invocation;
         const parent_response_frame_fingerprint = event.response_frame_fingerprint orelse response.frame_fingerprint;
         try self.recordFabricReceipt(parent_slot.handle, invocation, route.route_fingerprint, pending, parent_response_frame_fingerprint, null, null, .completed, null, receipt_evidence.takeReceiptSummary());
