@@ -4338,10 +4338,10 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
             if (plan.target_certificate_fingerprint != target_ref.target_certificate_fingerprint) return report;
             if (plan.import_set_fingerprint != import_set.import_set_fingerprint) return report;
             const coverage = plan.coverage(target_ref, import_set);
-            if (!fabricCoversMissingEnvironmentPorts(Target, bindings, coverage, plan)) return report;
+            const fabric_covered_missing = fabricCoveredMissingEnvironmentPortCount(Target, bindings, coverage, plan) orelse return report;
             var accepted = report;
             accepted.accepted = true;
-            accepted.bound_port_count = bindings.len + coverage.fabric_covered_port_count;
+            accepted.bound_port_count = bindings.len + fabric_covered_missing;
             accepted.missing_port_count = 0;
             accepted.blockers = &.{};
             accepted.summary = "accepted by fabric";
@@ -9849,7 +9849,10 @@ pub const Runspace = struct {
         defer response.deinit(self.allocator);
         var receipt_evidence = try self.prepareFabricReceiptEvidence(3);
         defer receipt_evidence.deinit(self.allocator);
-        const event = try self.respondWithFabricOwnership(invocation.parent_mailbox_id, response, true);
+        const event = self.respondWithFabricOwnership(invocation.parent_mailbox_id, response, true) catch |err| {
+            try self.retireFabricInvocation(recorded, .failed);
+            return err;
+        };
         const parent_response_frame_fingerprint = event.response_frame_fingerprint orelse response.frame_fingerprint;
         const completed = Fabric.Invocation.init(.{
             .plan_fingerprint = recorded.plan_fingerprint,
@@ -16981,12 +16984,12 @@ fn acceptanceReportHasOnlyMissingBinding(report: AcceptanceReport) bool {
     return report.blockers[0] == .MissingBinding;
 }
 
-fn fabricCoversMissingEnvironmentPorts(comptime Target: type, comptime bindings: anytype, coverage: Fabric.CoverageReport, plan: Fabric.Plan) bool {
+fn fabricCoveredMissingEnvironmentPortCount(comptime Target: type, comptime bindings: anytype, coverage: Fabric.CoverageReport, plan: Fabric.Plan) ?usize {
     const target_ref = TargetRef.fromTarget(Target);
-    if (coverage.target_ref_fingerprint != target_ref.target_ref_fingerprint) return false;
-    if (coverage.world_surface_fingerprint != target_ref.world_surface_fingerprint) return false;
-    if (coverage.target_certificate_fingerprint != target_ref.target_certificate_fingerprint) return false;
-    if (coverage.duplicate_route_count != 0 or coverage.unsupported_route_count != 0) return false;
+    if (coverage.target_ref_fingerprint != target_ref.target_ref_fingerprint) return null;
+    if (coverage.world_surface_fingerprint != target_ref.world_surface_fingerprint) return null;
+    if (coverage.target_certificate_fingerprint != target_ref.target_certificate_fingerprint) return null;
+    if (coverage.duplicate_route_count != 0 or coverage.unsupported_route_count != 0) return null;
     var fabric_covered_missing: usize = 0;
     inline for (0..Target.WorldPortTable.entries.len) |world_port_id| {
         comptime var host_bound = false;
@@ -16994,13 +16997,13 @@ fn fabricCoversMissingEnvironmentPorts(comptime Target: type, comptime bindings:
             if (BindingDecl.TargetType == Target and BindingDecl.world_port_id == world_port_id) host_bound = true;
         }
         if (!host_bound) {
-            const route = plan.findRouteForPort(@intCast(world_port_id)) orelse return false;
-            if (route.kind == .unsupported or route.kind == .adapter) return false;
+            const route = plan.findRouteForPort(@intCast(world_port_id)) orelse return null;
+            if (route.kind == .unsupported or route.kind == .adapter) return null;
             fabric_covered_missing += 1;
         }
     }
-    return fabric_covered_missing == coverage.fabric_covered_port_count and
-        bindings.len + fabric_covered_missing >= Target.WorldPortTable.entries.len;
+    if (bindings.len + fabric_covered_missing < Target.WorldPortTable.entries.len) return null;
+    return fabric_covered_missing;
 }
 
 fn assertFabricRouteDepth(route: Fabric.Route, depth: usize) !void {
