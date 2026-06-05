@@ -4375,15 +4375,15 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
 
         pub fn acceptanceReportWithFabricPlan(requested_mode: Mode, transcript_image_available: bool, plan: Fabric.Plan) AcceptanceReport {
             const report = acceptanceReportFor(Target, bindings, policy, requested_mode, transcript_image_available);
-            plan.validate() catch return report;
-            plan.assertNoCyclesForTargetRef(target_ref) catch return report;
-            plan.assertDeterministicRouteOrder() catch return report;
-            plan.assertExecutableMappings() catch return report;
-            if (plan.target_ref_fingerprint != target_ref.target_ref_fingerprint) return report;
-            if (plan.world_surface_fingerprint != target_ref.world_surface_fingerprint) return report;
-            if (plan.target_certificate_fingerprint != target_ref.target_certificate_fingerprint) return report;
+            plan.validate() catch return rejectedReport(report, &.{.SupervisionPolicyMismatch});
+            plan.assertNoCyclesForTargetRef(target_ref) catch return rejectedReport(report, &.{.SupervisionPolicyMismatch});
+            plan.assertDeterministicRouteOrder() catch return rejectedReport(report, &.{.SupervisionPolicyMismatch});
+            plan.assertExecutableMappings() catch return rejectedReport(report, &.{.SupervisionPolicyMismatch});
+            if (plan.target_ref_fingerprint != target_ref.target_ref_fingerprint) return rejectedReport(report, &.{.SupervisionPolicyMismatch});
+            if (plan.world_surface_fingerprint != target_ref.world_surface_fingerprint) return rejectedReport(report, &.{.SupervisionPolicyMismatch});
+            if (plan.target_certificate_fingerprint != target_ref.target_certificate_fingerprint) return rejectedReport(report, &.{.SupervisionPolicyMismatch});
             if (plan.import_set_fingerprint) |fingerprint| {
-                if (fingerprint != import_set.import_set_fingerprint) return report;
+                if (fingerprint != import_set.import_set_fingerprint) return rejectedReport(report, &.{.SupervisionPolicyMismatch});
             }
             if (report.accepted) {
                 var accepted = report;

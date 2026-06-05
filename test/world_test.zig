@@ -7998,7 +7998,7 @@ test "environment preflight accepts host and fabric complement coverage" {
     });
     const dense_rejected = AgentDecideOnlyEnv.acceptanceReportWithFabricPlan(.fresh, false, dense_covered);
     try std.testing.expect(!dense_rejected.accepted);
-    try std.testing.expectEqual(world.AcceptanceBlocker.MissingBinding, dense_rejected.blockers[0]);
+    try std.testing.expectEqual(world.AcceptanceBlocker.SupervisionPolicyMismatch, dense_rejected.blockers[0]);
 
     const wrong_port_route = world.Fabric.Route.init(.{
         .route_id = 425,
@@ -8034,7 +8034,7 @@ test "environment preflight accepts host and fabric complement coverage" {
     });
     const wrong_tuple_rejected = AgentDecideOnlyEnv.acceptanceReportWithFabricPlan(.fresh, false, wrong_tuple_plan);
     try std.testing.expect(!wrong_tuple_rejected.accepted);
-    try std.testing.expectEqual(world.AcceptanceBlocker.MissingBinding, wrong_tuple_rejected.blockers[0]);
+    try std.testing.expectEqual(world.AcceptanceBlocker.SupervisionPolicyMismatch, wrong_tuple_rejected.blockers[0]);
 
     const adapter_route = world.Fabric.Route.init(.{
         .route_id = 434,
@@ -8052,7 +8052,7 @@ test "environment preflight accepts host and fabric complement coverage" {
     });
     const adapter_rejected = AgentDecideOnlyEnv.acceptanceReportWithFabricPlan(.fresh, false, adapter_plan);
     try std.testing.expect(!adapter_rejected.accepted);
-    try std.testing.expectEqual(world.AcceptanceBlocker.MissingBinding, adapter_rejected.blockers[0]);
+    try std.testing.expectEqual(world.AcceptanceBlocker.SupervisionPolicyMismatch, adapter_rejected.blockers[0]);
 }
 
 test "runspace fabric replay route uses transcript response image" {
