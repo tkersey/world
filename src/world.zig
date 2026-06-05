@@ -7909,6 +7909,7 @@ pub const Runspace = struct {
             validateFabricResponseValue: *const fn (*anyopaque, u32, Frame.ValueImage) anyerror!void,
             fabricPlanCoversWorldPort: *const fn (*anyopaque, u32) bool,
             fabricPlanCoversHandlerlessWorldPort: *const fn (*anyopaque, u32) bool,
+            fabricPlanFingerprint: *const fn (*anyopaque) ?u64,
             resumeTerminalFrame: *const fn (*anyopaque, Frame.Response) anyerror!void,
             dispatch: *const fn (*anyopaque) anyerror!?ResponseEvidence,
             snapshotRunImage: *const fn (*anyopaque) anyerror!RunImage,
@@ -7956,6 +7957,10 @@ pub const Runspace = struct {
 
         fn fabricPlanCoversHandlerlessWorldPort(self: @This(), world_port_id: u32) bool {
             return self.vtable.fabricPlanCoversHandlerlessWorldPort(self.ptr, world_port_id);
+        }
+
+        fn fabricPlanFingerprint(self: @This()) ?u64 {
+            return self.vtable.fabricPlanFingerprint(self.ptr);
         }
 
         fn resumeTerminalFrame(self: @This(), response: Frame.Response) !void {
@@ -8107,6 +8112,14 @@ pub const Runspace = struct {
                     return false;
                 }
 
+                fn runFabricPlanFingerprint(ptr: *anyopaque) ?u64 {
+                    const active: *RunType = @ptrCast(@alignCast(ptr));
+                    if (@hasDecl(RunType, "runspaceFabricPlanFingerprint")) {
+                        return active.runspaceFabricPlanFingerprint();
+                    }
+                    return null;
+                }
+
                 fn runResumeTerminalFrame(ptr: *anyopaque, response: Frame.Response) anyerror!void {
                     const active: *RunType = @ptrCast(@alignCast(ptr));
                     if (@hasDecl(RunType, "runspaceResumeTerminalFrame")) return active.runspaceResumeTerminalFrame(response);
@@ -8222,6 +8235,7 @@ pub const Runspace = struct {
                     .validateFabricResponseValue = runValidateFabricResponseValue,
                     .fabricPlanCoversWorldPort = runFabricPlanCoversWorldPort,
                     .fabricPlanCoversHandlerlessWorldPort = runFabricPlanCoversHandlerlessWorldPort,
+                    .fabricPlanFingerprint = runFabricPlanFingerprint,
                     .resumeTerminalFrame = runResumeTerminalFrame,
                     .dispatch = runDispatch,
                     .snapshotRunImage = runSnapshotRunImage,
@@ -10274,9 +10288,23 @@ pub const Runspace = struct {
         if (plan.target_ref_fingerprint != pending.target_ref_fingerprint) return error.HandoffTargetMismatch;
         if (plan.world_surface_fingerprint != pending.world_surface_fingerprint) return error.WrongWorldSurface;
         if (plan.target_certificate_fingerprint != pending.target_certificate_fingerprint) return error.WrongTargetCertificate;
+        const parent_slot = self.slots.items[try self.slotIndex(pending.handle)];
+        if (fabricPlanFingerprintForSlot(parent_slot)) |expected_fingerprint| {
+            if (plan.plan_fingerprint != expected_fingerprint) return error.SupervisionDenied;
+        }
         try plan.validate();
         try plan.assertNoCycles();
         try plan.assertDeterministicRouteOrder();
+    }
+
+    fn fabricPlanFingerprintForSlot(slot: Runspace.RunSlot) ?u64 {
+        if (slot.driver) |driver| {
+            if (driver.fabricPlanFingerprint()) |fingerprint| return fingerprint;
+        }
+        if (slot.supervisor) |supervisor| {
+            if (supervisor.permit.fabric_plan_fingerprint) |fingerprint| return fingerprint;
+        }
+        return null;
     }
 
     fn hasInstalledFabricPlan(self: *const @This(), plan_fingerprint: u64) bool {
@@ -16446,6 +16474,11 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
 
                 pub fn runspaceFabricPlanCoversWorldPort(self: *Self, world_port_id: u32) bool {
                     return self.fabricPlanCoversWorldPort(world_port_id);
+                }
+
+                pub fn runspaceFabricPlanFingerprint(self: *Self) ?u64 {
+                    const plan = self.activeFabricPlan() orelse return null;
+                    return plan.plan_fingerprint;
                 }
 
                 fn activeFabricPlan(self: *Self) ?Fabric.Plan {

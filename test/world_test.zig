@@ -5322,6 +5322,48 @@ test "runspace install consumes explicit fabric plan for missing environment bin
     try std.testing.expectEqual(world.Fabric.InvocationStatus.rejected, invocation.status);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().fabric_receipt_count);
 
+    const alternate_route = world.Fabric.Route.init(.{
+        .route_id = 0x51ace_fab9,
+        .kind = .reject,
+        .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .parent_world_port_id = 0,
+        .response_status = .rejected,
+    });
+    const alternate_plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .routes = &.{alternate_route},
+    });
+    const pinned_permit = world.Supervision.issue(fixtures.Ports.Target, PortsMissingEnv, .{
+        .mode = .fresh,
+        .fabric_plan_fingerprint = fabric_plan.plan_fingerprint,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_fabric_routes = true,
+            .allow_reject_routes = true,
+            .allow_rejected_responses = true,
+        }),
+    });
+    var pinned_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer pinned_runtime.deinit();
+    var pinned_runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer pinned_runspace.deinit();
+    _ = try pinned_runspace.installMachineRun(fixtures.Ports.Target, PortsMissingEnv, &pinned_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .fabric_plan = fabric_plan,
+        .permit = pinned_permit,
+    });
+    _ = try pinned_runspace.tick();
+    try pinned_runspace.installFabricPlan(parent_ref, alternate_plan);
+    try std.testing.expectError(error.SupervisionDenied, pinned_runspace.routePending(0, alternate_plan));
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try pinned_runspace.mailbox.get(0)).status);
+    const pinned_invocation = try pinned_runspace.routePending(0, fabric_plan);
+    try std.testing.expectEqual(world.Fabric.InvocationStatus.rejected, pinned_invocation.status);
+
     var source_runtime = boundary.Runtime.init(std.testing.allocator);
     defer source_runtime.deinit();
     var source = world.Runspace.init(std.testing.allocator, .{});
