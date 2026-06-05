@@ -9859,6 +9859,7 @@ pub const Runspace = struct {
         const parent_slot = &self.slots.items[parent_index];
         const route = try self.installedFabricRoute(recorded.route_fingerprint);
         var provider_image = self.fabricProviderResultImage(recorded) catch |err| {
+            if (err == error.InvalidRunspaceTransition and self.fabricProviderRunStillActive(recorded)) return err;
             switch (err) {
                 error.InvalidRunspaceTransition, error.StaleRunHandle => try self.retireFabricInvocation(recorded, .failed),
                 else => {},
@@ -10140,6 +10141,27 @@ pub const Runspace = struct {
             }
         }
         return error.StaleRunHandle;
+    }
+
+    fn fabricProviderRunStillActive(self: *const @This(), invocation: Fabric.Invocation) bool {
+        const provider_fingerprint = invocation.provider_run_handle_fingerprint orelse return false;
+        for (self.slots.items) |slot| {
+            if (slot.handle.handle_fingerprint != provider_fingerprint) continue;
+            return switch (slot.status) {
+                .admitted,
+                .runnable,
+                .running,
+                .parked_on_port,
+                .parked_on_supervision,
+                => true,
+                .completed,
+                .failed,
+                .exported,
+                .rejected,
+                => false,
+            };
+        }
+        return false;
     }
 
     fn beforeFabricInvocationForSlot(_: *@This(), slot: *Runspace.RunSlot, world_port_id: u32, route_kind: Fabric.RouteKind, depth: usize, provider_runs: usize) !void {
