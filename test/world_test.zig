@@ -5953,7 +5953,7 @@ test "runspace fabric provider result resumes exactly one parent pending port" {
     try std.testing.expect(exported.current_state.final_value_image_fingerprint != null);
 }
 
-test "runspace fabric parked provider response retires invocation" {
+test "runspace fabric parked provider response remains retryable" {
     const park_policy = world.SupervisionPolicy.init(.{
         .allow_fresh_calls = true,
         .allow_native_adapters = true,
@@ -6033,13 +6033,14 @@ test "runspace fabric parked provider response retires invocation" {
     try std.testing.expectEqual(world.Runspace.EventKind.run_parked_on_supervision, event.kind);
     try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_supervision, (try runspace.getSlotSummary(parent_handle)).status);
     try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
-    try std.testing.expectEqual(world.Fabric.InvocationStatus.supervision_denied, runspace.fabric_invocations.items[invocation.sequence].status);
+    try std.testing.expectEqual(world.Fabric.InvocationStatus.provider_completed, runspace.fabric_invocations.items[invocation.sequence].status);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().fabric_invocation_count);
     try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_receipt_count);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
-    var exported = try runspace.exportPending(0);
-    defer exported.deinit(std.testing.allocator);
-    try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
+    try std.testing.expectError(error.ActiveFabricUnsupported, runspace.exportPending(0));
+    const retry_event = try runspace.respondFromFabric(invocation);
+    try std.testing.expectEqual(world.Runspace.EventKind.run_parked_on_supervision, retry_event.kind);
+    try std.testing.expectEqual(world.Fabric.InvocationStatus.provider_completed, runspace.fabric_invocations.items[invocation.sequence].status);
 }
 
 test "runspace fabric terminal route parks without receipt" {
