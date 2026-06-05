@@ -6646,6 +6646,8 @@ test "runspace fabric replay route parks without receipt" {
 
     const invocation = try runspace.routePendingFromReplay(0, plan, &replay_image);
     try std.testing.expectEqual(world.Fabric.InvocationStatus.completed, invocation.status);
+    try std.testing.expectEqual(@as(usize, 0), replay_image.replay_cursor);
+    try std.testing.expectEqual(@as(?usize, null), replay_image.replay_limit);
     try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_supervision, (try runspace.getSlotSummary(handle)).status);
     try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
     try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_receipt_count);

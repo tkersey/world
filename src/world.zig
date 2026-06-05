@@ -9792,6 +9792,13 @@ pub const Runspace = struct {
         if (route.provider_transcript_image_fingerprint) |expected| {
             if (transcript_image.transcript_image_fingerprint != expected) return error.ReplayRouteDenied;
         }
+        const replay_cursor_before = transcript_image.replay_cursor;
+        const replay_limit_before = transcript_image.replay_limit;
+        var replay_cursor_committed = false;
+        errdefer if (!replay_cursor_committed) {
+            transcript_image.replay_cursor = replay_cursor_before;
+            transcript_image.replay_limit = replay_limit_before;
+        };
         if (transcript_image.replay_cursor == 0 and transcript_image.replay_limit == null) {
             try transcript_image.validateReplayRun(pending.world_surface_fingerprint, pending.target_certificate_fingerprint);
         } else {
@@ -9851,9 +9858,14 @@ pub const Runspace = struct {
             if (parent_moved or pending_consumed) fabric_charge_committed = true;
             return err;
         };
-        if (event.kind == .run_parked_on_supervision) return invocation;
+        if (event.kind == .run_parked_on_supervision) {
+            transcript_image.replay_cursor = replay_cursor_before;
+            transcript_image.replay_limit = replay_limit_before;
+            return invocation;
+        }
         const parent_response_frame_fingerprint = event.response_frame_fingerprint orelse response.frame_fingerprint;
         try self.recordFabricReceipt(parent_slot.handle, invocation, route.route_fingerprint, pending, parent_response_frame_fingerprint, null, null, .completed, null, receipt_evidence.takeReceiptSummary());
+        replay_cursor_committed = true;
         fabric_charge_committed = true;
         return invocation;
     }
