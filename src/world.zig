@@ -10102,12 +10102,7 @@ pub const Runspace = struct {
             transcript_image.replay_cursor = replay_cursor_before;
             transcript_image.replay_limit = replay_limit_before;
         };
-        if (transcript_image.replay_cursor == 0 and transcript_image.replay_limit == null) {
-            try transcript_image.validateReplayRun(pending.world_surface_fingerprint, pending.target_certificate_fingerprint);
-        } else {
-            if (transcript_image.world_surface_fingerprint != pending.world_surface_fingerprint) return error.ReplaySurfaceMismatch;
-            if (transcript_image.target_certificate_fingerprint != pending.target_certificate_fingerprint) return error.ReplayTargetCertificateMismatch;
-        }
+        try transcript_image.validateReplayRun(pending.world_surface_fingerprint, pending.target_certificate_fingerprint);
         const depth = try self.fabricDepthForParent(parent_slot.handle);
         try plan.assertDepth(depth);
         try assertFabricRouteDepth(route, depth);

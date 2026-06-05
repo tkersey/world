@@ -8085,9 +8085,12 @@ test "runspace fabric replay route uses transcript response image" {
         .routes = &.{route},
     });
     try runspace.installFabricPlan(parent_ref, plan);
+    replay_image.replay_cursor = replay_image.events.len;
+    replay_image.replay_limit = replay_image.events.len;
     const invocation = try runspace.routePendingFromReplay(0, plan, &replay_image);
     try std.testing.expectEqual(world.Fabric.InvocationStatus.completed, invocation.status);
     try std.testing.expect(replay_image.replay_cursor > 0);
+    try std.testing.expect(replay_image.replay_cursor < replay_image.events.len);
     try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().fabric_receipt_count);
     _ = try runspace.tick();
