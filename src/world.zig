@@ -11369,15 +11369,26 @@ pub const Runspace = struct {
     fn installedFabricRouteCoversPending(self: *const @This(), plan_fingerprint: u64, pending: Runspace.PendingPort) bool {
         for (self.fabric_routes.items, self.fabric_route_plan_fingerprints.items) |route, route_plan_fingerprint| {
             if (route_plan_fingerprint != plan_fingerprint) continue;
-            if (route.parent_world_surface_fingerprint != 0 and route.parent_world_surface_fingerprint != pending.world_surface_fingerprint) continue;
-            if (route.parent_target_certificate_fingerprint != 0 and route.parent_target_certificate_fingerprint != pending.target_certificate_fingerprint) continue;
-            if (route.parent_world_port_id != pending.world_port_id) continue;
-            return switch (route.kind) {
-                .adapter => false,
-                .target_export, .admitted_run, .guest, .replay, .reject, .unsupported => true,
-            };
+            if (fabricRouteCoversPending(route, pending)) return true;
         }
         return false;
+    }
+
+    fn installedFabricRouteCoversAnyPending(self: *const @This(), pending: Runspace.PendingPort) bool {
+        for (self.fabric_routes.items) |route| {
+            if (fabricRouteCoversPending(route, pending)) return true;
+        }
+        return false;
+    }
+
+    fn fabricRouteCoversPending(route: Fabric.Route, pending: Runspace.PendingPort) bool {
+        if (route.parent_world_surface_fingerprint != 0 and route.parent_world_surface_fingerprint != pending.world_surface_fingerprint) return false;
+        if (route.parent_target_certificate_fingerprint != 0 and route.parent_target_certificate_fingerprint != pending.target_certificate_fingerprint) return false;
+        if (route.parent_world_port_id != pending.world_port_id) return false;
+        return switch (route.kind) {
+            .adapter => false,
+            .target_export, .admitted_run, .guest, .replay, .reject, .unsupported => true,
+        };
     }
 
     pub fn exportRun(self: *@This(), handle: RunHandle) !RunImage {
@@ -12363,7 +12374,7 @@ pub const Runspace = struct {
                     .run_permit_fingerprint = slot.run_permit_fingerprint,
                     .summary = event_pair.takeSecond(),
                 });
-                if (self.config.auto_dispatch and !driver.fabricPlanCoversWorldPort(pending.world_port_id)) return self.autoDispatchPending(index, pending, mailbox_id, &auto_events.?);
+                if (self.config.auto_dispatch and !driver.fabricPlanCoversWorldPort(pending.world_port_id) and !self.installedFabricRouteCoversAnyPending(pending)) return self.autoDispatchPending(index, pending, mailbox_id, &auto_events.?);
                 return parked_event;
             },
         }
