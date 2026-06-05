@@ -255,7 +255,7 @@ pub const world_admission_request_fingerprint_version: u32 = 1;
 pub const world_admission_report_fingerprint_version: u32 = 1;
 pub const world_admission_receipt_format_version: u32 = 1;
 pub const world_admission_receipt_fingerprint_version: u32 = 3;
-pub const world_admitted_run_fingerprint_version: u32 = 5;
+pub const world_admitted_run_fingerprint_version: u32 = 6;
 pub const world_run_handle_format_version: u32 = 1;
 pub const world_run_handle_fingerprint_version: u32 = 1;
 pub const world_pending_port_format_version: u32 = 1;
@@ -2113,6 +2113,7 @@ pub const Admission = struct {
         import_set_fingerprint: ?u64 = null,
         environment_certificate_fingerprint: ?u64 = null,
         run_permit: ?RunPermit = null,
+        fabric_plan: ?Fabric.Plan = null,
         run_image: ?RunImage = null,
         owns_run_image: bool = false,
         transcript_image: ?TranscriptImage = null,
@@ -2129,6 +2130,7 @@ pub const Admission = struct {
             import_set_fingerprint: ?u64 = null,
             environment_certificate_fingerprint: ?u64 = null,
             run_permit: ?RunPermit = null,
+            fabric_plan: ?Fabric.Plan = null,
             run_image: ?RunImage = null,
             owns_run_image: bool = false,
             transcript_image: ?TranscriptImage = null,
@@ -2146,6 +2148,7 @@ pub const Admission = struct {
                 .import_set_fingerprint = args.import_set_fingerprint,
                 .environment_certificate_fingerprint = args.environment_certificate_fingerprint,
                 .run_permit = args.run_permit,
+                .fabric_plan = args.fabric_plan,
                 .run_image = args.run_image,
                 .owns_run_image = args.owns_run_image,
                 .transcript_image = args.transcript_image,
@@ -2617,6 +2620,7 @@ pub const Admission = struct {
                 .import_set_fingerprint = ImportSet.fromTarget(Target).import_set_fingerprint,
                 .environment_certificate_fingerprint = cert.certificate_fingerprint,
                 .run_permit = args.permit,
+                .fabric_plan = args.fabric_plan,
                 .run_image = admitted_run_image,
                 .owns_run_image = admitted_owns_run_image,
                 .transcript_image = admitted_transcript_image,
@@ -8872,6 +8876,7 @@ pub const Runspace = struct {
         if (permit.world_surface_fingerprint != target_ref.world_surface_fingerprint) return error.SupervisionDenied;
         if (permit.target_certificate_fingerprint != target_ref.target_certificate_fingerprint) return error.SupervisionDenied;
         if (permit.mode != admissionModeToRunMode(admitted_run.mode)) return error.SupervisionDenied;
+        if (permit.fabric_plan_fingerprint != if (admitted_run.fabric_plan) |plan| plan.plan_fingerprint else null) return error.SupervisionDenied;
         if (permit.admission_receipt_fingerprint) |receipt_fingerprint| {
             if (receipt_fingerprint != admitted_run.admission_receipt_fingerprint) return error.SupervisionDenied;
         }
@@ -8949,6 +8954,15 @@ pub const Runspace = struct {
         if (self.config.require_supervision and admitted_run.run_permit == null) return error.SupervisionDenied;
         const target_ref = admitted_run.target_ref;
         try validateTargetRef(target_ref);
+        if (admitted_run.fabric_plan) |plan| {
+            if (plan.target_ref_fingerprint != target_ref.target_ref_fingerprint) return error.HandoffTargetMismatch;
+            if (plan.world_surface_fingerprint != target_ref.world_surface_fingerprint) return error.WrongWorldSurface;
+            if (plan.target_certificate_fingerprint != target_ref.target_certificate_fingerprint) return error.WrongTargetCertificate;
+            try plan.validate();
+            try plan.assertNoCyclesForTargetRef(target_ref);
+            try plan.assertDeterministicRouteOrder();
+            try plan.assertExecutableMappings();
+        }
         if (admissionModeNeedsRunImage(admitted_run.mode)) {
             _ = admitted_run.run_image orelse return error.InvalidFrameEncoding;
         }
@@ -9103,11 +9117,20 @@ pub const Runspace = struct {
         const slot_count_before = self.slots.items.len;
         const event_count_before = self.events.items.len;
         const mailbox_count_before = self.mailbox.pending.items.len;
+        const fabric_plan_count_before = self.fabric_plan_fingerprints.items.len;
+        const fabric_route_count_before = self.fabric_routes.items.len;
+        const fabric_value_mapping_count_before = self.fabric_value_mappings.items.len;
         const next_mailbox_id_before = self.next_mailbox_id;
         const next_event_index_before = self.next_event_index;
         var installed = false;
-        errdefer if (!installed) self.rollbackRunspaceMutation(slot_count_before, event_count_before, mailbox_count_before, next_run_id_before, next_mailbox_id_before, next_event_index_before);
+        errdefer if (!installed) {
+            self.fabric_plan_fingerprints.shrinkRetainingCapacity(fabric_plan_count_before);
+            self.fabric_routes.shrinkRetainingCapacity(fabric_route_count_before);
+            self.fabric_value_mappings.shrinkRetainingCapacity(fabric_value_mapping_count_before);
+            self.rollbackRunspaceMutation(slot_count_before, event_count_before, mailbox_count_before, next_run_id_before, next_mailbox_id_before, next_event_index_before);
+        };
         try self.prepareInstallSlot();
+        if (admitted_run.fabric_plan) |plan| try self.installFabricPlan(target_ref, plan);
         installed_image_owned = false;
         supervisor_owned = false;
         try self.installPreparedSlot(slot, .run_admitted, "admitted run installed");
@@ -9230,7 +9253,7 @@ pub const Runspace = struct {
         if (permit.world_surface_fingerprint != Target.WorldSurface.surface_fingerprint) return error.SupervisionDenied;
         if (permit.target_certificate_fingerprint != Target.Certificate.certificate_fingerprint) return error.SupervisionDenied;
         if (permit.mode != expected_mode) return error.SupervisionDenied;
-        if (permit.admission_receipt_fingerprint != null or permit.module_ref_fingerprint != null) return error.SupervisionDenied;
+        if (permit.admission_receipt_fingerprint != null or permit.module_ref_fingerprint != null or permit.fabric_plan_fingerprint != null) return error.SupervisionDenied;
         const transcript_available: bool = if (@hasField(Args, "transcript_image_available")) @field(args, "transcript_image_available") else false;
         const Env = if (@TypeOf(env) == type) env else @TypeOf(env);
         if (@hasDecl(Env, "certificate")) {
@@ -9375,7 +9398,7 @@ pub const Runspace = struct {
         if (permit.world_surface_fingerprint != Target.WorldSurface.surface_fingerprint) return error.SupervisionDenied;
         if (permit.target_certificate_fingerprint != Target.Certificate.certificate_fingerprint) return error.SupervisionDenied;
         if (permit.mode != .replay) return error.SupervisionDenied;
-        if (permit.admission_receipt_fingerprint != null or permit.module_ref_fingerprint != null) return error.SupervisionDenied;
+        if (permit.admission_receipt_fingerprint != null or permit.module_ref_fingerprint != null or permit.fabric_plan_fingerprint != null) return error.SupervisionDenied;
         if (permit.policy.require_environment_certificate) return error.SupervisionDenied;
         if (!permit.transcript_image_available) {
             if (permit.policy.require_transcript_image_for_replay) return error.TranscriptImageRequired;
@@ -20747,6 +20770,7 @@ fn fingerprintAdmittedRun(run: Admission.AdmittedRun) u64 {
     hashOptionalU64(&hasher, run.import_set_fingerprint);
     hashOptionalU64(&hasher, run.environment_certificate_fingerprint);
     hashOptionalU64(&hasher, if (run.run_permit) |permit| permit.permit_fingerprint else null);
+    hashOptionalU64(&hasher, if (run.fabric_plan) |plan| plan.plan_fingerprint else null);
     hashOptionalU64(&hasher, if (run.run_image) |image| image.run_image_fingerprint else null);
     hashOptionalU64(&hasher, if (run.transcript_image) |image| image.transcript_image_fingerprint else null);
     hashOptionalU64(&hasher, run.selected_branch_id);

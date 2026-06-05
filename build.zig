@@ -336,7 +336,7 @@ pub fn build(b: *std.Build) void {
             .expected_stdout =
             \\package_fingerprint=5a5e606018190afc
             \\target_match_fingerprint=c4108ddb5ef704d9
-            \\admission_receipt_fingerprint=9425e37822ccb82d
+            \\admission_receipt_fingerprint=d2e8e11ad2d960b5
             \\final_result=7
             \\
             ,
@@ -361,7 +361,7 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World admission parked handoff example.",
             .expected_stdout =
             \\package_fingerprint=91d0e487f35697a
-            \\admission_receipt_fingerprint=67876bc108404bf9
+            \\admission_receipt_fingerprint=b5cdabd214e5c786
             \\receiver_permit_fingerprint=4832a9e8d0a835c7
             \\final_result=7
             \\
@@ -373,8 +373,8 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-admission-replay-verify",
             .desc = "Run the World admission replay/verify example.",
             .expected_stdout =
-            \\replay_admission_receipt=f7ee708df7f6786
-            \\verify_admission_receipt=29df70f7ec255752
+            \\replay_admission_receipt=5ee6da6456216ece
+            \\verify_admission_receipt=c09c980a7eed7b8d
             \\divergence_detected=true
             \\
             ,
@@ -388,7 +388,7 @@ pub fn build(b: *std.Build) void {
             \\module_ref_fingerprint=8980705f83427fa6
             \\model_port_id=0
             \\tool_port_id=1
-            \\admission_receipt=6272b0bb2571394
+            \\admission_receipt=acfc0bd5591d0e55
             \\final_result=final=actuate skeleton complete
             \\
             ,
@@ -424,8 +424,8 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-runspace-handoff",
             .desc = "Run the handoff World runspace example.",
             .expected_stdout =
-            \\admission_receipt=e49ed5a91750e2b0
-            \\run_handle=62932ef5b9e662e3
+            \\admission_receipt=7d136eb1d9e64e39
+            \\run_handle=9a390ab340defc08
             \\final_result=7
             \\
             ,

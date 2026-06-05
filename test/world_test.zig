@@ -5031,6 +5031,8 @@ test "runspace install consumes explicit fabric plan for missing environment bin
     try std.testing.expect(reject_accepted.accepted);
     try std.testing.expectEqual(@as(?u64, fabric_plan.plan_fingerprint), reject_accepted.fabric_plan_fingerprint);
     try std.testing.expectEqual(reject_accepted.report_fingerprint, accepted.report.environment_acceptance_report_fingerprint.?);
+    try std.testing.expect(accepted.admitted_run.?.fabric_plan != null);
+    try std.testing.expectEqual(fabric_plan.plan_fingerprint, accepted.admitted_run.?.fabric_plan.?.plan_fingerprint);
 
     const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
     const response_mapping = fabricTestMapping(.provider_result_to_parent_response);
@@ -5074,6 +5076,34 @@ test "runspace install consumes explicit fabric plan for missing environment bin
     const invocation = try runspace.routePending(0, fabric_plan);
     try std.testing.expectEqual(world.Fabric.InvocationStatus.rejected, invocation.status);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().fabric_receipt_count);
+
+    var source_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer source_runtime.deinit();
+    var source = world.Runspace.init(std.testing.allocator, .{});
+    defer source.deinit();
+    const source_handle = try source.installMachineRun(fixtures.Ports.Target, PortsMissingEnv, &source_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .fabric_plan = fabric_plan,
+    });
+    _ = try source.tick();
+    var source_image = try source.exportRun(source_handle);
+    defer source_image.deinit(std.testing.allocator);
+    const fabric_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_fab1,
+        .target_ref = parent_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .fabric_plan = fabric_plan,
+        .run_image = source_image,
+        .mode = .resume_parked,
+    });
+    var receiver = world.Runspace.init(std.testing.allocator, .{});
+    defer receiver.deinit();
+    const admitted_handle = try receiver.installAdmitted(fabric_admitted);
+    try std.testing.expectEqual(@as(usize, 1), receiver.fabric_plan_fingerprints.items.len);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try receiver.getSlotSummary(admitted_handle)).status);
+    const admitted_invocation = try receiver.routePending(0, fabric_plan);
+    try std.testing.expectEqual(world.Fabric.InvocationStatus.rejected, admitted_invocation.status);
 }
 
 test "runspace fabric provider route resumes fabric-only missing environment port" {
@@ -11271,6 +11301,13 @@ test "runspace install admitted and replay records receipts summaries and events
         .module_ref_fingerprint = world.Admission.ModuleRef.fromTarget(fixtures.Strict.Target).module_ref_fingerprint,
     });
     try std.testing.expectError(error.SupervisionDenied, supervised_replay_runspace.installReplay(fixtures.Strict.Target, image, module_scoped_replay_permit));
+    const fabric_scoped_replay_permit = world.Supervision.issue(fixtures.Strict.Target, StrictReplayEnv, .{
+        .mode = .replay,
+        .policy = world.SupervisionPolicy.strict_replay,
+        .transcript_image_available = true,
+        .fabric_plan_fingerprint = 0xfab1_c501,
+    });
+    try std.testing.expectError(error.SupervisionDenied, supervised_replay_runspace.installReplay(fixtures.Strict.Target, image, fabric_scoped_replay_permit));
     const embedded_transcript_unavailable_permit = world.Supervision.issue(fixtures.Strict.Target, StrictReplayEnv, .{
         .mode = .replay,
         .policy = world.SupervisionPolicy.strict_replay,
@@ -14176,6 +14213,11 @@ test "runspace enforces lifecycle supervision for direct and imported slots" {
     try std.testing.expectError(error.SupervisionDenied, direct.installTarget(fixtures.Strict.Target, StrictEnv, world.Supervision.issue(fixtures.Strict.Target, StrictEnv, .{
         .mode = .fresh,
         .admission_receipt_fingerprint = 0xadd1_5001,
+        .policy = world.SupervisionPolicy.strict_fresh,
+    }), .{}));
+    try std.testing.expectError(error.SupervisionDenied, direct.installTarget(fixtures.Strict.Target, StrictEnv, world.Supervision.issue(fixtures.Strict.Target, StrictEnv, .{
+        .mode = .fresh,
+        .fabric_plan_fingerprint = 0xfab1_c500,
         .policy = world.SupervisionPolicy.strict_fresh,
     }), .{}));
     const direct_handle = try direct.installTarget(fixtures.Strict.Target, StrictEnv, branch_denied_permit, .{});
