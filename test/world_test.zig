@@ -4720,6 +4720,17 @@ test "fabric core validation rejects unsupported mappings and missing routes" {
     });
     try std.testing.expectError(error.ProviderRunDenied, witnessless_admitted.validate());
 
+    const terminal_provider_route = world.Fabric.Route.init(.{
+        .route_id = 26,
+        .kind = .target_export,
+        .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .parent_world_port_id = 0,
+        .provider_target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .response_status = .failed,
+    });
+    try std.testing.expectError(error.UnsupportedMapping, terminal_provider_route.validate());
+
     const unpinned_replay = world.Fabric.Route.init(.{
         .route_id = 22,
         .fabric_digest = 0xfeed_9999,
@@ -4729,6 +4740,30 @@ test "fabric core validation rejects unsupported mappings and missing routes" {
         .parent_world_port_id = 0,
     });
     try std.testing.expectError(error.ReplayRouteDenied, unpinned_replay.validate());
+
+    const constrained_replay = world.Fabric.Route.init(.{
+        .route_id = 27,
+        .fabric_digest = 0xfeed_9999,
+        .kind = .replay,
+        .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .parent_world_port_id = 0,
+        .provider_target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .provider_transcript_image_fingerprint = 0x7777,
+    });
+    try std.testing.expectError(error.ProviderRunDenied, constrained_replay.validate());
+
+    const terminal_replay = world.Fabric.Route.init(.{
+        .route_id = 28,
+        .fabric_digest = 0xfeed_9999,
+        .kind = .replay,
+        .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .parent_world_port_id = 0,
+        .provider_transcript_image_fingerprint = 0x7777,
+        .response_status = .failed,
+    });
+    try std.testing.expectError(error.UnsupportedMapping, terminal_replay.validate());
 
     const ignored_replay_mapping = fabricTestMapping(.provider_result_to_parent_response);
     const mapped_replay = world.Fabric.Route.init(.{

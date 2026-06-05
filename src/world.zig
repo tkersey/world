@@ -7139,15 +7139,24 @@ pub const Fabric = struct {
             if (self.world_port_id != self.parent_world_port_id) return error.WrongPortId;
             switch (self.kind) {
                 .target_export => {
+                    if (self.response_status != .responded) return error.UnsupportedMapping;
                     if (self.provider_target_ref_fingerprint == null and self.provider_module_fingerprint == null) return error.ProviderRunDenied;
+                    if (self.provider_transcript_image_fingerprint != null) return error.ProviderRunDenied;
                 },
                 .guest => return error.GuestRouteDenied,
                 .admitted_run => {
+                    if (self.response_status != .responded) return error.UnsupportedMapping;
                     if (self.provider_target_ref_fingerprint == null and self.provider_module_fingerprint == null) return error.ProviderRunDenied;
                     if (self.provider_admission_receipt_fingerprint == null) return error.ProviderRunDenied;
+                    if (self.provider_transcript_image_fingerprint != null) return error.ProviderRunDenied;
                 },
                 .replay => {
+                    if (self.response_status != .responded) return error.UnsupportedMapping;
                     if (self.provider_transcript_image_fingerprint == null) return error.ReplayRouteDenied;
+                    if (self.provider_target_ref_fingerprint != null or self.provider_module_fingerprint != null) return error.ProviderRunDenied;
+                    if (self.provider_world_surface_fingerprint != null or self.provider_target_certificate_fingerprint != null) return error.ProviderRunDenied;
+                    if (self.provider_world_port_id != null or self.provider_admission_receipt_fingerprint != null) return error.ProviderRunDenied;
+                    if (self.provider_run_image_fingerprint != null) return error.ProviderRunDenied;
                 },
                 .reject, .unsupported => {
                     if (self.response_status == .responded) return error.UnsupportedMapping;
