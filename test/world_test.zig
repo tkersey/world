@@ -5429,6 +5429,70 @@ test "runspace install consumes explicit fabric plan for missing environment bin
     try std.testing.expect(handoff_result.admitted_run.?.fabric_plan != null);
     try std.testing.expectEqual(fabric_plan.plan_fingerprint, handoff_result.admitted_run.?.fabric_plan.?.plan_fingerprint);
 
+    const wildcard_handoff_permit = world.Supervision.issue(fixtures.Ports.Target, PortsMissingEnv, .{
+        .mode = .fresh,
+        .fabric_plan_fingerprint = wildcard_plan.plan_fingerprint,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_handoff_accept = true,
+            .allow_fabric_routes = true,
+            .allow_reject_routes = true,
+            .allow_rejected_responses = true,
+        }),
+    });
+    var supervised_wildcard_handoff = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, PortsMissingEnv, parked_package, .{
+        .fabric_plan = wildcard_plan,
+        .permit = wildcard_handoff_permit,
+    });
+    defer supervised_wildcard_handoff.deinit(std.testing.allocator);
+    try std.testing.expect(supervised_wildcard_handoff.report.accepted);
+    try std.testing.expect(supervised_wildcard_handoff.admitted_run.?.fabric_plan != null);
+    try std.testing.expectEqual(wildcard_plan.plan_fingerprint, supervised_wildcard_handoff.admitted_run.?.fabric_plan.?.plan_fingerprint);
+
+    const unowned_route_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_fab3,
+        .target_ref = parent_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .run_image = source_image,
+        .mode = .resume_parked,
+    });
+    var unowned_route_receiver = world.Runspace.init(std.testing.allocator, .{});
+    defer unowned_route_receiver.deinit();
+    try unowned_route_receiver.installFabricPlan(parent_ref, alternate_plan);
+    const unowned_route_handle = try unowned_route_receiver.installAdmitted(unowned_route_admitted);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try unowned_route_receiver.getSlotSummary(unowned_route_handle)).status);
+    _ = try unowned_route_receiver.reject(0, "manual terminal owner");
+    try std.testing.expectEqual(world.Runspace.PendingStatus.cancelled, (try unowned_route_receiver.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.failed, (try unowned_route_receiver.getSlotSummary(unowned_route_handle)).status);
+
+    const wildcard_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_fab4,
+        .target_ref = parent_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .fabric_plan = wildcard_plan,
+        .run_image = source_image,
+        .mode = .resume_parked,
+    });
+    var wildcard_receiver = world.Runspace.init(std.testing.allocator, .{});
+    defer wildcard_receiver.deinit();
+    const wildcard_handle = try wildcard_receiver.installAdmitted(wildcard_admitted);
+    try std.testing.expectEqual(@as(usize, 1), wildcard_receiver.fabric_plan_fingerprints.items.len);
+    try std.testing.expectEqual(@as(usize, 1), wildcard_receiver.fabric_route_plan_fingerprints.items.len);
+    try std.testing.expectEqual(wildcard_plan.plan_fingerprint, wildcard_receiver.fabric_route_plan_fingerprints.items[0]);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try wildcard_receiver.getSlotSummary(wildcard_handle)).status);
+    const wildcard_pending = try wildcard_receiver.mailbox.get(0);
+    const wildcard_request = wildcard_pending.request_frame orelse return error.ExpectedPendingRequestFrame;
+    const wildcard_manual_response = testRunspaceResponseFrame(wildcard_request);
+    try std.testing.expectError(error.ActiveFabricUnsupported, wildcard_receiver.respond(0, wildcard_manual_response));
+    try std.testing.expectError(error.ActiveFabricUnsupported, wildcard_receiver.reject(0, "manual fabric bypass"));
+    try std.testing.expectError(error.ActiveFabricUnsupported, wildcard_receiver.fail(0, "manual fabric bypass"));
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try wildcard_receiver.mailbox.get(0)).status);
+    const wildcard_invocation = try wildcard_receiver.routePending(0, wildcard_plan);
+    try std.testing.expectEqual(world.Fabric.InvocationStatus.rejected, wildcard_invocation.status);
+
     const fabric_admitted = world.Admission.AdmittedRun.init(.{
         .admission_receipt_fingerprint = 0xadd1_fab1,
         .target_ref = parent_ref,

@@ -7819,6 +7819,7 @@ pub const Runspace = struct {
     mailbox: @This().Mailbox,
     fabric_plan_fingerprints: std.ArrayList(u64) = .empty,
     fabric_routes: std.ArrayList(Fabric.Route) = .empty,
+    fabric_route_plan_fingerprints: std.ArrayList(u64) = .empty,
     fabric_value_mappings: std.ArrayList(Fabric.ValueMapping) = .empty,
     fabric_invocations: std.ArrayList(Fabric.Invocation) = .empty,
     fabric_receipts: std.ArrayList(Fabric.Receipt) = .empty,
@@ -8295,6 +8296,7 @@ pub const Runspace = struct {
         status: RunStatus,
         admission_receipt_fingerprint: ?u64 = null,
         run_permit_fingerprint: ?u64 = null,
+        fabric_plan_fingerprint: ?u64 = null,
         run_receipt_fingerprint: ?u64 = null,
         pending_mailbox_id: ?u64 = null,
         branch_id: ?u64 = null,
@@ -8347,6 +8349,7 @@ pub const Runspace = struct {
             status: RunStatus = .admitted,
             admission_receipt_fingerprint: ?u64 = null,
             run_permit_fingerprint: ?u64 = null,
+            fabric_plan_fingerprint: ?u64 = null,
             run_receipt_fingerprint: ?u64 = null,
             pending_mailbox_id: ?u64 = null,
             branch_id: ?u64 = null,
@@ -8367,6 +8370,7 @@ pub const Runspace = struct {
                 .status = args.status,
                 .admission_receipt_fingerprint = args.admission_receipt_fingerprint,
                 .run_permit_fingerprint = args.run_permit_fingerprint,
+                .fabric_plan_fingerprint = args.fabric_plan_fingerprint,
                 .run_receipt_fingerprint = args.run_receipt_fingerprint,
                 .pending_mailbox_id = args.pending_mailbox_id,
                 .branch_id = args.branch_id,
@@ -8917,6 +8921,7 @@ pub const Runspace = struct {
         self.mailbox.deinit();
         self.fabric_plan_fingerprints.deinit(self.allocator);
         self.fabric_routes.deinit(self.allocator);
+        self.fabric_route_plan_fingerprints.deinit(self.allocator);
         self.fabric_value_mappings.deinit(self.allocator);
         self.fabric_invocations.deinit(self.allocator);
         self.fabric_receipts.deinit(self.allocator);
@@ -9172,6 +9177,7 @@ pub const Runspace = struct {
             .status = if (installed_image == null) .admitted else try statusFromInstallableRunImageState(slot_current_state),
             .admission_receipt_fingerprint = admitted_run.admission_receipt_fingerprint,
             .run_permit_fingerprint = installed_permit_fingerprint,
+            .fabric_plan_fingerprint = if (admitted_run.fabric_plan) |plan| plan.plan_fingerprint else null,
             .run_receipt_fingerprint = if (installed_image) |image| image.prior_run_receipt_fingerprint else null,
             .pending_mailbox_id = null,
             .branch_id = slot_branch_id,
@@ -9186,6 +9192,7 @@ pub const Runspace = struct {
         const mailbox_count_before = self.mailbox.pending.items.len;
         const fabric_plan_count_before = self.fabric_plan_fingerprints.items.len;
         const fabric_route_count_before = self.fabric_routes.items.len;
+        const fabric_route_plan_count_before = self.fabric_route_plan_fingerprints.items.len;
         const fabric_value_mapping_count_before = self.fabric_value_mappings.items.len;
         const next_mailbox_id_before = self.next_mailbox_id;
         const next_event_index_before = self.next_event_index;
@@ -9193,6 +9200,7 @@ pub const Runspace = struct {
         errdefer if (!installed) {
             self.fabric_plan_fingerprints.shrinkRetainingCapacity(fabric_plan_count_before);
             self.fabric_routes.shrinkRetainingCapacity(fabric_route_count_before);
+            self.fabric_route_plan_fingerprints.shrinkRetainingCapacity(fabric_route_plan_count_before);
             self.fabric_value_mappings.shrinkRetainingCapacity(fabric_value_mapping_count_before);
             self.rollbackRunspaceMutation(slot_count_before, event_count_before, mailbox_count_before, next_run_id_before, next_mailbox_id_before, next_event_index_before);
         };
@@ -9826,9 +9834,13 @@ pub const Runspace = struct {
         if (self.hasInstalledFabricPlan(plan.plan_fingerprint)) return;
         try self.fabric_plan_fingerprints.ensureUnusedCapacity(self.allocator, 1);
         try self.fabric_routes.ensureUnusedCapacity(self.allocator, plan.routes.len);
+        try self.fabric_route_plan_fingerprints.ensureUnusedCapacity(self.allocator, plan.routes.len);
         try self.fabric_value_mappings.ensureUnusedCapacity(self.allocator, plan.value_mappings.len);
         self.fabric_plan_fingerprints.appendAssumeCapacity(plan.plan_fingerprint);
-        for (plan.routes) |route| self.fabric_routes.appendAssumeCapacity(route);
+        for (plan.routes) |route| {
+            self.fabric_routes.appendAssumeCapacity(route);
+            self.fabric_route_plan_fingerprints.appendAssumeCapacity(plan.plan_fingerprint);
+        }
         for (plan.value_mappings) |mapping| self.fabric_value_mappings.appendAssumeCapacity(mapping);
     }
 
@@ -10302,6 +10314,7 @@ pub const Runspace = struct {
         if (slot.driver) |driver| {
             if (driver.fabricPlanFingerprint()) |fingerprint| return fingerprint;
         }
+        if (slot.fabric_plan_fingerprint) |fingerprint| return fingerprint;
         if (slot.supervisor) |supervisor| {
             if (supervisor.permit.fabric_plan_fingerprint) |fingerprint| return fingerprint;
         }
@@ -11190,13 +11203,15 @@ pub const Runspace = struct {
         if (slot.driver) |driver| {
             return driver.fabricPlanCoversHandlerlessWorldPort(pending.world_port_id);
         }
-        return self.installedFabricRouteCoversPending(pending);
+        const plan_fingerprint = fabricPlanFingerprintForSlot(slot) orelse return false;
+        return self.installedFabricRouteCoversPending(plan_fingerprint, pending);
     }
 
-    fn installedFabricRouteCoversPending(self: *const @This(), pending: Runspace.PendingPort) bool {
-        for (self.fabric_routes.items) |route| {
-            if (route.parent_world_surface_fingerprint != pending.world_surface_fingerprint) continue;
-            if (route.parent_target_certificate_fingerprint != pending.target_certificate_fingerprint) continue;
+    fn installedFabricRouteCoversPending(self: *const @This(), plan_fingerprint: u64, pending: Runspace.PendingPort) bool {
+        for (self.fabric_routes.items, self.fabric_route_plan_fingerprints.items) |route, route_plan_fingerprint| {
+            if (route_plan_fingerprint != plan_fingerprint) continue;
+            if (route.parent_world_surface_fingerprint != 0 and route.parent_world_surface_fingerprint != pending.world_surface_fingerprint) continue;
+            if (route.parent_target_certificate_fingerprint != 0 and route.parent_target_certificate_fingerprint != pending.target_certificate_fingerprint) continue;
             if (route.parent_world_port_id != pending.world_port_id) continue;
             return switch (route.kind) {
                 .adapter, .unsupported => false,
@@ -15286,7 +15301,7 @@ pub const Handoff = struct {
                     return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{supervisionPreflightBlocker(err)});
                 };
             } else {
-                self.preflightReplayPrefixWithSupervisor(Target, Env, &supervisor) catch |err| {
+                self.preflightReplayPrefixWithSupervisor(Target, Env, &supervisor, admitted_fabric_plan) catch |err| {
                     return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{supervisionPreflightBlocker(err)});
                 };
             },
@@ -15313,11 +15328,12 @@ pub const Handoff = struct {
         );
     }
 
-    fn preflightReplayPrefixWithSupervisor(self: *@This(), comptime Target: type, comptime Env: type, supervisor: *Supervision.Supervisor) !void {
+    fn preflightReplayPrefixWithSupervisor(self: *@This(), comptime Target: type, comptime Env: type, supervisor: *Supervision.Supervisor, admitted_fabric_plan: ?Fabric.Plan) !void {
         const pending_frame = self.run_image.pending_request_frame orelse return error.HandoffPendingFrameMismatch;
         const image = if (self.run_image.transcript_image) |*image| image else {
             if (pending_frame.turn_index != 0) return error.TranscriptImageRequired;
             try self.preflightRequestFrameWithSupervisor(supervisor, pending_frame);
+            if (!environmentHasBindingForPort(Env, pending_frame.world_port_id) and fabricPlanCoversPort(admitted_fabric_plan, pending_frame.world_port_id)) return;
             try supervisor.beforeAdapterCall(.{
                 .world_port_id = pending_frame.world_port_id,
                 .mode = .fresh,
@@ -15369,6 +15385,7 @@ pub const Handoff = struct {
             }
         }
         try self.preflightRequestFrameWithSupervisor(supervisor, pending_frame);
+        if (!environmentHasBindingForPort(Env, pending_frame.world_port_id) and fabricPlanCoversPort(admitted_fabric_plan, pending_frame.world_port_id)) return;
         try supervisor.beforeAdapterCall(.{
             .world_port_id = pending_frame.world_port_id,
             .mode = .fresh,
@@ -19594,6 +19611,15 @@ fn valuePolicyForHandoffRequestFrame(comptime Target: type, comptime Env: type, 
     return switch (route.kind) {
         .target_export, .admitted_run, .guest, .replay, .reject => ValuePolicy.portable,
         .adapter, .unsupported => error.MissingBinding,
+    };
+}
+
+fn fabricPlanCoversPort(admitted_fabric_plan: ?Fabric.Plan, world_port_id: u32) bool {
+    const plan = admitted_fabric_plan orelse return false;
+    const route = plan.findRouteForPort(world_port_id) orelse return false;
+    return switch (route.kind) {
+        .adapter, .unsupported => false,
+        .target_export, .admitted_run, .guest, .replay, .reject => true,
     };
 }
 
