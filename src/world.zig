@@ -10925,6 +10925,14 @@ pub const Runspace = struct {
         return false;
     }
 
+    fn hasSupervisionDeniedFabricInvocationForMailbox(self: *const @This(), mailbox_id: u64) bool {
+        for (self.fabric_invocations.items) |invocation| {
+            if (invocation.parent_mailbox_id != mailbox_id) continue;
+            if (invocation.status == .supervision_denied) return true;
+        }
+        return false;
+    }
+
     fn recordFabricInvocation(
         self: *@This(),
         parent_slot: Runspace.RunSlot,
@@ -11479,7 +11487,7 @@ pub const Runspace = struct {
             break :pending pending_port;
         } else null;
         if (pending) |pending_port| {
-            if (self.pendingRequiresFabricRoute(slot.*, pending_port)) return error.ActiveFabricUnsupported;
+            if (self.pendingRequiresFabricRoute(slot.*, pending_port) and !self.hasSupervisionDeniedFabricInvocationForMailbox(pending_port.mailbox_id)) return error.ActiveFabricUnsupported;
         }
         const event_summary = try self.prepareEventSummary("run exported");
         var summary_owned = true;
@@ -11520,12 +11528,12 @@ pub const Runspace = struct {
             const mailbox_id = slot.pending_mailbox_id orelse return error.HandoffPendingFrameMismatch;
             const pending_port = try self.mailbox.get(mailbox_id);
             if (pending_port.request_frame == null) return error.HandoffPendingFrameMismatch;
-            if (self.pendingRequiresFabricRoute(slot.*, pending_port)) return error.ActiveFabricUnsupported;
+            if (self.pendingRequiresFabricRoute(slot.*, pending_port) and !self.hasSupervisionDeniedFabricInvocationForMailbox(pending_port.mailbox_id)) return error.ActiveFabricUnsupported;
         } else if (slot.status == .parked_on_supervision) {
             if (slot.pending_mailbox_id) |mailbox_id| {
                 const pending_port = try self.mailbox.get(mailbox_id);
                 if (pending_port.request_frame == null) return error.HandoffPendingFrameMismatch;
-                if (self.pendingRequiresFabricRoute(slot.*, pending_port)) return error.ActiveFabricUnsupported;
+                if (self.pendingRequiresFabricRoute(slot.*, pending_port) and !self.hasSupervisionDeniedFabricInvocationForMailbox(pending_port.mailbox_id)) return error.ActiveFabricUnsupported;
             }
         }
         var supervisor_snapshot = try self.snapshotSlotSupervisor(index);
@@ -11557,7 +11565,7 @@ pub const Runspace = struct {
         var slot = &self.slots.items[index];
         if (slot.pending_mailbox_id != mailbox_id or (slot.status != .parked_on_port and slot.status != .parked_on_supervision)) return error.StaleRunHandle;
         if (self.hasActiveFabricInvocationForRun(pending.handle)) return error.ActiveFabricUnsupported;
-        if (self.pendingRequiresFabricRoute(slot.*, pending)) return error.ActiveFabricUnsupported;
+        if (self.pendingRequiresFabricRoute(slot.*, pending) and !self.hasSupervisionDeniedFabricInvocationForMailbox(mailbox_id)) return error.ActiveFabricUnsupported;
         const event_summary = try self.prepareEventSummary("pending run exported");
         var summary_owned = true;
         errdefer if (summary_owned) self.allocator.free(event_summary);
