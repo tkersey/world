@@ -9688,7 +9688,13 @@ pub const Runspace = struct {
                 errdefer if (!fabric_charge_committed and invocation_recorded) self.rollbackFabricInvocationRecord(invocation_count_before, event_count_before, next_event_index_before);
                 try self.recordFabricInvocation(parent_slot.*, invocation, route, .fabric_failed, "fabric terminal route recorded");
                 invocation_recorded = true;
-                const event = try self.respondWithFabricOwnership(mailbox_id, response, true);
+                const event = self.respondWithFabricOwnership(mailbox_id, response, true) catch |err| {
+                    const parent_moved = parent_slot.status != .parked_on_port or parent_slot.pending_mailbox_id != mailbox_id;
+                    const pending_after = self.mailbox.get(mailbox_id) catch null;
+                    const pending_consumed = if (pending_after) |after| after.status != .pending else true;
+                    if (parent_moved or pending_consumed) fabric_charge_committed = true;
+                    return err;
+                };
                 if (event.kind == .run_parked_on_supervision) return invocation;
                 const parent_response_frame_fingerprint = event.response_frame_fingerprint orelse response.frame_fingerprint;
                 try self.recordFabricReceipt(parent_slot.handle, invocation, route.route_fingerprint, pending, parent_response_frame_fingerprint, null, null, invocation.status, if (route.kind == .reject) .FabricRejected else .UnsupportedMapping, receipt_evidence.takeReceiptSummary());

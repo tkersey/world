@@ -5996,6 +5996,62 @@ test "runspace fabric terminal route does not finalize when parent response fail
     try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
 }
 
+test "runspace fabric terminal route preserves evidence when parent response failure mutates state" {
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_native_adapters = true,
+            .allow_failed_responses = true,
+            .allow_fabric_routes = true,
+            .allow_reject_routes = true,
+            .park_on_budget_exceeded = false,
+            .require_environment_certificate = true,
+        }),
+        .budget = world.Budget.init(.{ .max_failed_calls = 0 }),
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .permit = permit,
+    });
+    _ = try runspace.tick();
+
+    const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const route = world.Fabric.Route.init(.{
+        .route_id = 430,
+        .kind = .unsupported,
+        .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .parent_world_port_id = 0,
+        .response_status = .failed,
+    });
+    const plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .routes = &.{route},
+    });
+
+    try runspace.installFabricPlan(parent_ref, plan);
+    try std.testing.expectError(error.BudgetExceeded, runspace.routePending(0, plan));
+    try std.testing.expectEqual(world.Runspace.PendingStatus.failed, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.failed, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().fabric_invocation_count);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_receipt_count);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().failed_count);
+    try std.testing.expectEqual(world.Runspace.EventKind.fabric_failed, runspace.events.items[runspace.events.items.len - 3].kind);
+    try std.testing.expectEqual(world.Runspace.EventKind.port_failed, runspace.events.items[runspace.events.items.len - 2].kind);
+    try std.testing.expectEqual(world.Runspace.EventKind.run_failed, runspace.events.items[runspace.events.items.len - 1].kind);
+}
+
 test "runspace fabric terminal route reserves audit evidence before parent response" {
     var runtime = boundary.Runtime.init(std.testing.allocator);
     defer runtime.deinit();
