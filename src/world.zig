@@ -8436,7 +8436,7 @@ pub const Runspace = struct {
             });
         }
 
-        fn resumeFromPortState(self: @This(), response_frame_fingerprint: u64, response_value_image_fingerprint: ?u64) RunState {
+        fn responseState(self: @This(), status: RunState.Status, response_frame_fingerprint: u64, response_value_image_fingerprint: ?u64) RunState {
             return RunState.init(.{
                 .target_ref_fingerprint = self.handle.target_ref_fingerprint,
                 .transcript_image_fingerprint = self.current_state.transcript_image_fingerprint,
@@ -8445,8 +8445,16 @@ pub const Runspace = struct {
                 .final_response_fingerprint = response_frame_fingerprint,
                 .final_value_image_fingerprint = response_value_image_fingerprint,
                 .turn_index = self.current_state.turn_index + 1,
-                .status = .running,
+                .status = status,
             });
+        }
+
+        fn resumeFromPortState(self: @This(), response_frame_fingerprint: u64, response_value_image_fingerprint: ?u64) RunState {
+            return self.responseState(.running, response_frame_fingerprint, response_value_image_fingerprint);
+        }
+
+        fn completeFromPortState(self: @This(), response_frame_fingerprint: u64, response_value_image_fingerprint: ?u64) RunState {
+            return self.responseState(.completed, response_frame_fingerprint, response_value_image_fingerprint);
         }
 
         pub fn transition(self: *@This(), transition_kind: Transition, mailbox_id: ?u64) !void {
@@ -8514,13 +8522,27 @@ pub const Runspace = struct {
 
         pub fn resumeFromPort(self: *@This(), mailbox_id: ?u64, response_frame_fingerprint: u64, response_value_image_fingerprint: ?u64) !void {
             switch (self.status) {
-                .parked_on_port => {
+                .parked_on_port, .parked_on_supervision => {
                     if (mailbox_id) |expected| {
                         if (self.pending_mailbox_id != expected) return error.StaleRunHandle;
                     }
                     self.status = .runnable;
                     self.pending_mailbox_id = null;
                     self.current_state = self.resumeFromPortState(response_frame_fingerprint, response_value_image_fingerprint);
+                },
+                else => return error.InvalidRunspaceTransition,
+            }
+        }
+
+        pub fn completeFromPort(self: *@This(), mailbox_id: ?u64, response_frame_fingerprint: u64, response_value_image_fingerprint: ?u64) !void {
+            switch (self.status) {
+                .parked_on_port, .parked_on_supervision => {
+                    if (mailbox_id) |expected| {
+                        if (self.pending_mailbox_id != expected) return error.StaleRunHandle;
+                    }
+                    self.status = .completed;
+                    self.pending_mailbox_id = null;
+                    self.current_state = self.completeFromPortState(response_frame_fingerprint, response_value_image_fingerprint);
                 },
                 else => return error.InvalidRunspaceTransition,
             }
@@ -9652,6 +9674,7 @@ pub const Runspace = struct {
         if (slot.pending_mailbox_id != mailbox_id or (slot.status != .parked_on_port and !fabric_owned_supervision_park)) return error.StaleRunHandle;
         if (!allow_active_fabric and self.hasActiveFabricInvocationForMailbox(mailbox_id)) return error.ActiveFabricUnsupported;
         if (!allow_active_fabric and self.pendingRequiresFabricRoute(slot.*, pending)) return error.ActiveFabricUnsupported;
+        const fabric_completes_driverless_parent = allow_active_fabric and slot.driver == null and slot.installed_run_image != null;
         var responded_summary: []u8 = "";
         var responded_summary_owned = false;
         defer if (responded_summary_owned) self.allocator.free(responded_summary);
@@ -9670,7 +9693,7 @@ pub const Runspace = struct {
                 try self.events.ensureUnusedCapacity(self.allocator, 2);
                 responded_summary = try self.allocator.dupe(u8, "port responded");
                 responded_summary_owned = true;
-                resumed_summary = try self.allocator.dupe(u8, "run resumed");
+                resumed_summary = try self.allocator.dupe(u8, if (fabric_completes_driverless_parent) "run completed" else "run resumed");
                 resumed_summary_owned = true;
                 failed_response_summary = try self.allocator.dupe(u8, "port response failed");
                 failed_response_summary_owned = true;
@@ -9801,6 +9824,7 @@ pub const Runspace = struct {
                 return err;
             }
         else if (allow_active_fabric) evidence: {
+            if (slot.installed_run_image == null) return error.InvalidRunspaceTransition;
             if (slot.supervisor) |*supervisor| {
                 const accounting = try self.responseFrameAccounting(response);
                 var supervisor_snapshot = try self.snapshotSlotSupervisor(index);
@@ -9828,7 +9852,11 @@ pub const Runspace = struct {
         } else return error.InvalidRunspaceTransition;
         if (response.status == .pending) return error.HandlerPending;
         const effective_response_frame_fingerprint = response_evidence.response_frame_fingerprint orelse response_evidence.response_fingerprint;
-        try slot.resumeFromPort(mailbox_id, effective_response_frame_fingerprint, response_evidence.response_value_image_fingerprint);
+        if (fabric_completes_driverless_parent) {
+            try slot.completeFromPort(mailbox_id, effective_response_frame_fingerprint, response_evidence.response_value_image_fingerprint);
+        } else {
+            try slot.resumeFromPort(mailbox_id, effective_response_frame_fingerprint, response_evidence.response_value_image_fingerprint);
+        }
         const responded = try self.mailbox.markResponded(mailbox_id);
         _ = self.appendPreparedEventAssumeCapacity(.{
             .kind = .port_responded,
@@ -9842,7 +9870,7 @@ pub const Runspace = struct {
         });
         responded_summary_owned = false;
         const event = self.appendPreparedEventAssumeCapacity(.{
-            .kind = .run_resumed,
+            .kind = if (fabric_completes_driverless_parent) .run_completed else .run_resumed,
             .run_handle = slot.handle,
             .pending_port_fingerprint = responded.pending_port_fingerprint,
             .request_frame_fingerprint = responded.request_frame_fingerprint,
@@ -10314,7 +10342,7 @@ pub const Runspace = struct {
         if (event.kind == .run_parked_on_supervision) {
             return event;
         }
-        if (event.kind != .run_resumed) {
+        if (event.kind != .run_resumed and event.kind != .run_completed) {
             try self.retireFabricInvocation(recorded, .supervision_denied);
             return event;
         }
@@ -12068,6 +12096,10 @@ pub const Runspace = struct {
             slot.run_receipt_fingerprint;
         if (slot.installed_run_image) |installed_image| {
             var image = try cloneRunImage(self.allocator, installed_image);
+            image.kind = switch (slot.status) {
+                .completed, .exported => if (installed_image.kind == .parked_run) .completed_run else installed_image.kind,
+                else => installed_image.kind,
+            };
             image.current_state = slot.current_state;
             image.prior_run_permit_fingerprint = slot.run_permit_fingerprint;
             image.prior_run_receipt_fingerprint = run_receipt_fingerprint;

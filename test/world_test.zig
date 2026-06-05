@@ -5750,7 +5750,7 @@ test "runspace fabric provider route resumes fabric-only missing environment por
     try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try runspace.getSlotSummary(parent_handle)).status);
 }
 
-test "runspace fabric provider response resumes admitted parked handoff without driver" {
+test "runspace fabric provider response completes admitted parked handoff without driver" {
     const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
     const response_mapping = fabricTestMapping(.provider_result_to_parent_response);
@@ -5823,9 +5823,9 @@ test "runspace fabric provider response resumes admitted parked handoff without 
 
     const invocation = try runspace.routePendingToProviderRun(0, plan, provider_handle);
     const event = try runspace.respondFromFabric(invocation);
-    try std.testing.expectEqual(world.Runspace.EventKind.run_resumed, event.kind);
+    try std.testing.expectEqual(world.Runspace.EventKind.run_completed, event.kind);
     try std.testing.expectEqual(world.Runspace.PendingStatus.responded, (try runspace.mailbox.get(0)).status);
-    try std.testing.expectEqual(world.Runspace.RunStatus.runnable, (try runspace.getSlotSummary(parent_handle)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try runspace.getSlotSummary(parent_handle)).status);
     try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().fabric_receipt_count);
     try std.testing.expectEqual(world.Fabric.InvocationStatus.parent_responded, runspace.fabric_invocations.items[0].status);
@@ -5874,6 +5874,7 @@ test "runspace driverless fabric provider response accounts supervision" {
         .policy = world.SupervisionPolicy.init(.{
             .allow_fresh_calls = true,
             .allow_handoff_accept = true,
+            .allow_handoff_export = true,
             .allow_fabric_routes = true,
             .allow_target_export_routes = true,
             .require_environment_certificate = true,
@@ -5918,6 +5919,117 @@ test "runspace driverless fabric provider response accounts supervision" {
     try std.testing.expectEqual(world.Fabric.InvocationStatus.provider_completed, runspace.fabric_invocations.items[invocation.sequence].status);
     try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_receipt_count);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+
+    for (runspace.slots.items) |*slot| {
+        if (slot.handle.handle_fingerprint != parent_handle.handle_fingerprint) continue;
+        const reopened_budget = world.Budget.unlimited;
+        slot.supervisor.?.permit.budget = reopened_budget;
+        slot.supervisor.?.permit.budget_fingerprint = reopened_budget.budget_fingerprint;
+        slot.supervisor.?.interrupted = false;
+        slot.supervisor.?.blocker = null;
+        slot.supervisor.?.ledger.exceeded_budget = null;
+        slot.supervisor.?.ledger.refreshFingerprint();
+        break;
+    }
+    const retry_event = try runspace.respondFromFabric(invocation);
+    try std.testing.expectEqual(world.Runspace.EventKind.run_completed, retry_event.kind);
+    try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try runspace.getSlotSummary(parent_handle)).status);
+    try std.testing.expectEqual(world.Runspace.PendingStatus.responded, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Fabric.InvocationStatus.parent_responded, runspace.fabric_invocations.items[invocation.sequence].status);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().fabric_receipt_count);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
+}
+
+test "runspace driverless fabric provider response completes admitted parent" {
+    const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    const response_mapping = fabricTestMapping(.provider_result_to_parent_response);
+    const route = world.Fabric.Route.init(.{
+        .route_id = 0x51ace_fb21,
+        .kind = .target_export,
+        .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .parent_world_port_id = 0,
+        .provider_target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+        .provider_world_surface_fingerprint = provider_ref.world_surface_fingerprint,
+        .provider_target_certificate_fingerprint = provider_ref.target_certificate_fingerprint,
+        .response_value_mapping_fingerprint = response_mapping.mapping_fingerprint,
+    });
+    const plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .routes = &.{route},
+        .value_mappings = &.{response_mapping},
+    });
+
+    var source_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer source_runtime.deinit();
+    var source = world.Runspace.init(std.testing.allocator, .{});
+    defer source.deinit();
+    const source_handle = try source.installMachineRun(fixtures.Ports.Target, PortsEnv, &source_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    _ = try source.tick();
+    var source_image = try source.exportRun(source_handle);
+    defer source_image.deinit(std.testing.allocator);
+
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .fabric_plan_fingerprint = plan.plan_fingerprint,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_handoff_accept = true,
+            .allow_handoff_export = true,
+            .allow_fabric_routes = true,
+            .allow_target_export_routes = true,
+            .require_environment_certificate = true,
+        }),
+    });
+    const admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_fb21,
+        .target_ref = parent_ref,
+        .environment_certificate_fingerprint = PortsEnv.certificate(.fresh, false).certificate_fingerprint,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .fabric_plan = plan,
+        .run_image = source_image,
+        .run_permit = permit,
+        .mode = .resume_parked,
+    });
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+    const parent_handle = try runspace.installAdmitted(admitted);
+
+    var provider_final_image = try world.Frame.ValueImage.fromValue(std.testing.allocator, 1, 0x5150_fb21, null, @as(i32, 21), world.ValuePolicy.portable);
+    defer provider_final_image.deinit(std.testing.allocator);
+    const provider_handle = try runspace.installRunImage(world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = provider_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Strict.Target).import_set_fingerprint,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+            .final_response_fingerprint = 0x5150_fb21,
+            .final_value_image_fingerprint = provider_final_image.value_image_fingerprint,
+            .status = .completed,
+        }),
+        .final_result_image = provider_final_image,
+    }));
+
+    const invocation = try runspace.routePendingToProviderRun(0, plan, provider_handle);
+    const event = try runspace.respondFromFabric(invocation);
+    try std.testing.expectEqual(world.Runspace.EventKind.run_completed, event.kind);
+    try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try runspace.getSlotSummary(parent_handle)).status);
+    try std.testing.expectEqual(world.Runspace.PendingStatus.responded, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Fabric.InvocationStatus.parent_responded, runspace.fabric_invocations.items[invocation.sequence].status);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().fabric_receipt_count);
+    var completed = try runspace.exportRun(parent_handle);
+    defer completed.deinit(std.testing.allocator);
+    try std.testing.expectEqual(world.RunImage.Kind.completed_run, completed.kind);
+    try std.testing.expectEqual(event.response_frame_fingerprint, completed.current_state.final_response_fingerprint);
+    try std.testing.expect(completed.current_state.final_value_image_fingerprint != null);
 }
 
 test "runspace fabric provider result resumes exactly one parent pending port" {
