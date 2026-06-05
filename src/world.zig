@@ -9882,7 +9882,7 @@ pub const Runspace = struct {
         const replay_response = try transcript_image.nextResponse(request.replay_key_seed, request.target_certificate_fingerprint, pending.expected_response_kind);
         var response = try replay_response.clone(self.allocator);
         defer response.deinit(self.allocator);
-        invocation = Fabric.Invocation.init(.{
+        const started = Fabric.Invocation.init(.{
             .plan_fingerprint = invocation.plan_fingerprint,
             .route_fingerprint = invocation.route_fingerprint,
             .parent_run_handle_fingerprint = invocation.parent_run_handle_fingerprint,
@@ -9893,28 +9893,58 @@ pub const Runspace = struct {
             .run_permit_fingerprint = invocation.run_permit_fingerprint,
             .depth = invocation.depth,
             .sequence = invocation.sequence,
-            .status = .completed,
+            .status = .started,
         });
         const invocation_count_before = self.fabric_invocations.items.len;
         const event_count_before = self.events.items.len;
         const next_event_index_before = self.next_event_index;
         var invocation_recorded = false;
         errdefer if (!fabric_charge_committed and invocation_recorded) self.rollbackFabricInvocationRecord(invocation_count_before, event_count_before, next_event_index_before);
-        try self.recordFabricInvocation(parent_slot.*, invocation, route, .fabric_invocation_started, "fabric replay invocation recorded");
+        try self.recordFabricInvocation(parent_slot.*, started, route, .fabric_invocation_started, "fabric replay invocation recorded");
         invocation_recorded = true;
         const event = self.respondWithFabricOwnership(mailbox_id, response, true) catch |err| {
             const parent_moved = parent_slot.status != .parked_on_port or parent_slot.pending_mailbox_id != mailbox_id;
             const pending_after = self.mailbox.get(mailbox_id) catch null;
             const pending_consumed = if (pending_after) |after| after.status != .pending else true;
-            if (parent_moved or pending_consumed) fabric_charge_committed = true;
+            if (parent_moved or pending_consumed) {
+                invocation = Fabric.Invocation.init(.{
+                    .plan_fingerprint = started.plan_fingerprint,
+                    .route_fingerprint = started.route_fingerprint,
+                    .parent_run_handle_fingerprint = started.parent_run_handle_fingerprint,
+                    .parent_pending_port_fingerprint = started.parent_pending_port_fingerprint,
+                    .parent_mailbox_id = started.parent_mailbox_id,
+                    .request_frame_fingerprint = started.request_frame_fingerprint,
+                    .mapped_response_frame_fingerprint = started.mapped_response_frame_fingerprint,
+                    .run_permit_fingerprint = started.run_permit_fingerprint,
+                    .depth = started.depth,
+                    .sequence = started.sequence,
+                    .status = .completed,
+                });
+                try self.replaceFabricInvocation(invocation);
+                fabric_charge_committed = true;
+            }
             return err;
         };
         if (event.kind == .run_parked_on_supervision) {
             transcript_image.replay_cursor = replay_cursor_before;
             transcript_image.replay_limit = replay_limit_before;
-            return invocation;
+            return started;
         }
         const parent_response_frame_fingerprint = event.response_frame_fingerprint orelse response.frame_fingerprint;
+        invocation = Fabric.Invocation.init(.{
+            .plan_fingerprint = started.plan_fingerprint,
+            .route_fingerprint = started.route_fingerprint,
+            .parent_run_handle_fingerprint = started.parent_run_handle_fingerprint,
+            .parent_pending_port_fingerprint = started.parent_pending_port_fingerprint,
+            .parent_mailbox_id = started.parent_mailbox_id,
+            .request_frame_fingerprint = started.request_frame_fingerprint,
+            .mapped_response_frame_fingerprint = started.mapped_response_frame_fingerprint,
+            .run_permit_fingerprint = started.run_permit_fingerprint,
+            .depth = started.depth,
+            .sequence = started.sequence,
+            .status = .completed,
+        });
+        try self.replaceFabricInvocation(invocation);
         try self.recordFabricReceipt(parent_slot.handle, invocation, route.route_fingerprint, pending, parent_response_frame_fingerprint, null, null, .completed, null, receipt_evidence.takeReceiptSummary());
         replay_cursor_committed = true;
         fabric_charge_committed = true;
