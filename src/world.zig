@@ -16640,7 +16640,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         if (self.supervisor) |*supervisor| {
                             const encoded = try frame.encode(self.allocator);
                             defer self.allocator.free(encoded);
-                            supervisor.accountPortRequestBytes(world_port_id, encoded.len, 0) catch |err| {
+                            supervisor.accountPortRequestBytes(world_port_id, encoded.len, if (frame.payload_image) |image| image.bytes.len else 0) catch |err| {
                                 try self.handleSupervisionError(err);
                                 return Error.HandlerPending;
                             };

@@ -5172,6 +5172,35 @@ test "runspace install consumes explicit fabric plan for missing environment bin
     try std.testing.expect(!disallowed_fabric_report.accepted);
     try std.testing.expectEqual(world.AcceptanceBlocker.SupervisionPolicyMismatch, disallowed_fabric_report.blockers[0]);
 
+    const payload_budget = [_]world.Supervision.PerPortBudget{.{
+        .world_port_id = 0,
+        .max_value_image_bytes = 1,
+    }};
+    const payload_cap_permit = world.Supervision.issue(fixtures.Ports.Target, PortsMissingEnv, .{
+        .mode = .fresh,
+        .fabric_plan_fingerprint = fabric_plan.plan_fingerprint,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_fabric_routes = true,
+            .allow_reject_routes = true,
+            .allow_rejected_responses = true,
+        }),
+        .budget = world.Budget.init(.{ .per_port_budgets = &payload_budget }),
+    });
+    var payload_cap_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer payload_cap_runtime.deinit();
+    var payload_cap_runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer payload_cap_runspace.deinit();
+    const payload_cap_handle = try payload_cap_runspace.installMachineRun(fixtures.Ports.Target, PortsMissingEnv, &payload_cap_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .fabric_plan = fabric_plan,
+        .permit = payload_cap_permit,
+    });
+    try std.testing.expectError(error.BudgetExceeded, payload_cap_runspace.tick());
+    try std.testing.expectEqual(world.Runspace.RunStatus.failed, (try payload_cap_runspace.getSlotSummary(payload_cap_handle)).status);
+    try std.testing.expectEqual(@as(usize, 0), payload_cap_runspace.report().pending_port_count);
+
     var runtime = boundary.Runtime.init(std.testing.allocator);
     defer runtime.deinit();
     var runspace = world.Runspace.init(std.testing.allocator, .{});
