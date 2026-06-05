@@ -8094,6 +8094,27 @@ test "environment preflight accepts host and fabric complement coverage" {
     try std.testing.expectEqual(fixtures.Agent.Target.WorldPortTable.entries.len, accepted.bound_port_count);
     try std.testing.expectEqual(@as(usize, 0), accepted.missing_port_count);
 
+    const bound_replay_route = world.Fabric.Route.init(.{
+        .route_id = 428,
+        .kind = .replay,
+        .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .parent_world_port_id = AgentDecideDecl.world_port_id,
+        .provider_transcript_image_fingerprint = 0x7777_aaaa,
+    });
+    const mixed_replay_plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Agent.Target).import_set_fingerprint,
+        .routes = &.{ bound_replay_route, route },
+    });
+    const mixed_replay_missing_transcript = AgentDecideOnlyEnv.acceptanceReportWithFabricPlan(.fresh, false, mixed_replay_plan);
+    try std.testing.expect(!mixed_replay_missing_transcript.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.TranscriptImageRequired, mixed_replay_missing_transcript.blockers[0]);
+    const mixed_replay_with_transcript = AgentDecideOnlyEnv.acceptanceReportWithFabricPlan(.fresh, true, mixed_replay_plan);
+    try std.testing.expect(mixed_replay_with_transcript.accepted);
+
     const host_adapter_route = world.Fabric.Route.init(.{
         .route_id = 426,
         .kind = .adapter,

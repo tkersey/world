@@ -4404,7 +4404,7 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
             accepted.blockers = &.{};
             accepted.summary = "accepted by fabric";
             accepted.fabric_plan_fingerprint = plan.plan_fingerprint;
-            if (!transcript_image_available and fabricCoveredMissingEnvironmentHasReplayRoute(Target, bindings, plan)) {
+            if (!transcript_image_available and fabricPlanHasReplayRoute(plan)) {
                 return rejectedReport(accepted, &.{.TranscriptImageRequired});
             }
             if (requested_mode == .fresh and !transcript_image_available and !policy.allow_fresh_without_transcript) return rejectedReport(accepted, &.{.TranscriptImageRequired});
@@ -17948,21 +17948,6 @@ fn fabricCoveredMissingEnvironmentPortCount(comptime Target: type, comptime bind
     }
     if (bindings.len + fabric_covered_missing < Target.WorldPortTable.entries.len) return null;
     return fabric_covered_missing;
-}
-
-fn fabricCoveredMissingEnvironmentHasReplayRoute(comptime Target: type, comptime bindings: anytype, plan: Fabric.Plan) bool {
-    inline for (0..Target.WorldPortTable.entries.len) |world_port_id| {
-        comptime var host_bound = false;
-        inline for (bindings) |BindingDecl| {
-            if (BindingDecl.TargetType == Target and BindingDecl.world_port_id == world_port_id) host_bound = true;
-        }
-        if (!host_bound) {
-            if (plan.findRouteForPort(@intCast(world_port_id))) |route| {
-                if (route.kind == .replay) return true;
-            }
-        }
-    }
-    return false;
 }
 
 fn fabricPlanHasReplayRoute(plan: Fabric.Plan) bool {
