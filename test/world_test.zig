@@ -175,6 +175,26 @@ test "fabric route rejects split parent port identity" {
     try std.testing.expectError(error.WrongPortId, route.validate());
 }
 
+test "fabric route rejects omitted parent port identity" {
+    const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const route = world.Fabric.Route.init(.{
+        .route_id = 701,
+        .kind = .reject,
+        .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .response_status = .rejected,
+    });
+
+    try std.testing.expectError(error.WrongPortId, route.validate());
+    const plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .routes = &.{route},
+    });
+    try std.testing.expectError(error.WrongPortId, plan.validate());
+}
+
 test "fabric plan lookup coverage and cycle checks are deterministic" {
     const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const import_set = world.ImportSet.fromTarget(fixtures.Ports.Target);
@@ -5483,6 +5503,19 @@ test "runspace install consumes explicit fabric plan for missing environment bin
     _ = try bound_fabric_no_native_receiver.tick();
     try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try bound_fabric_no_native_receiver.getSlotSummary(bound_fabric_no_native_handle)).status);
     try std.testing.expectEqual(@as(usize, 1), bound_fabric_no_native_receiver.report().pending_port_count);
+
+    var public_frame_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer public_frame_runtime.deinit();
+    var public_frame_ctx: PortsCtx = .{};
+    var public_frame_run = try PortsMachineEnv.start(&public_frame_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &public_frame_ctx,
+        .fabric_plan = live_unsupported_plan,
+        .permit = bound_fabric_no_native_permit,
+    });
+    defer public_frame_run.deinit();
+    try std.testing.expectError(error.BudgetExceeded, public_frame_run.nextFrame());
 
     const alternate_route = world.Fabric.Route.init(.{
         .route_id = 0x51ace_fab9,

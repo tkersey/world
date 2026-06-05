@@ -7163,6 +7163,8 @@ pub const Fabric = struct {
     };
 
     pub const Route = struct {
+        const unspecified_world_port_id: u32 = std.math.maxInt(u32);
+
         format_version: u32 = world_fabric_route_format_version,
         fingerprint_version: u32 = world_fabric_route_fingerprint_version,
         route_fingerprint: u64,
@@ -7214,10 +7216,10 @@ pub const Fabric = struct {
                 .route_id = args.route_id,
                 .fabric_digest = args.fabric_digest,
                 .kind = args.kind,
-                .world_port_id = args.world_port_id orelse args.parent_world_port_id orelse 0,
+                .world_port_id = args.world_port_id orelse args.parent_world_port_id orelse unspecified_world_port_id,
                 .parent_world_surface_fingerprint = args.parent_world_surface_fingerprint,
                 .parent_target_certificate_fingerprint = args.parent_target_certificate_fingerprint,
-                .parent_world_port_id = args.parent_world_port_id orelse args.world_port_id orelse 0,
+                .parent_world_port_id = args.parent_world_port_id orelse args.world_port_id orelse unspecified_world_port_id,
                 .provider_target_ref_fingerprint = args.provider_target_ref_fingerprint,
                 .provider_module_fingerprint = args.provider_module_fingerprint,
                 .provider_world_surface_fingerprint = args.provider_world_surface_fingerprint,
@@ -7240,6 +7242,7 @@ pub const Fabric = struct {
             if (self.format_version != world_fabric_route_format_version) return error.InvalidFrameEncoding;
             if (self.fingerprint_version != world_fabric_route_fingerprint_version) return error.InvalidFrameEncoding;
             if (fingerprintFabricRoute(self) != self.route_fingerprint) return error.InvalidFrameEncoding;
+            if (self.world_port_id == unspecified_world_port_id and self.parent_world_port_id == unspecified_world_port_id) return error.WrongPortId;
             if (self.world_port_id != self.parent_world_port_id) return error.WrongPortId;
             switch (self.kind) {
                 .target_export => {
@@ -8050,6 +8053,20 @@ pub const Runspace = struct {
             const Impl = struct {
                 fn runNextFrame(ptr: *anyopaque) anyerror!DriverStep {
                     const active: *RunType = @ptrCast(@alignCast(ptr));
+                    if (@hasField(RunType, "runspace_fabric_route_frame_request")) {
+                        const previous = active.runspace_fabric_route_frame_request;
+                        active.runspace_fabric_route_frame_request = true;
+                        defer active.runspace_fabric_route_frame_request = previous;
+                        const frame_step = try active.nextFrame();
+                        return switch (frame_step) {
+                            .done => |value| {
+                                discardRunspaceDoneValue(RunType, active, value);
+                                return .done;
+                            },
+                            .port_request => |request| .{ .port_request = request },
+                            .failed => .failed,
+                        };
+                    }
                     const frame_step = try active.nextFrame();
                     return switch (frame_step) {
                         .done => |value| {
@@ -16043,6 +16060,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 handoff_pending_frame_fingerprint: ?u64 = null,
                 admitted_transcript_image: ?*TranscriptImage = null,
                 admitted_fabric_plan: ?Fabric.Plan = null,
+                runspace_fabric_route_frame_request: bool = false,
                 pending_adapter_call_accounted: bool = false,
                 retained_values: std.ArrayList(StoredValue) = .empty,
                 last_response_evidence: ?Runspace.ResponseEvidence = null,
@@ -17159,7 +17177,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     if (Target.WorldPortTable.entries.len == 0) return Error.UnknownWorldPort;
                     switch (world_port_id) {
                         inline 0...Target.WorldPortTable.entries.len - 1 => |id| {
-                            if (self.fabricPlanCoversWorldPort(world_port_id)) return;
+                            if (self.runspace_fabric_route_frame_request and self.fabricPlanCoversWorldPort(world_port_id)) return;
                             const Handler = comptime handlerForWorldPortId(Target, Config, @intCast(id));
                             if (Handler) |Decl| {
                                 try self.accountPendingAdapterCallDecl(Decl);
