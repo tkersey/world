@@ -5586,6 +5586,20 @@ test "runspace install consumes explicit fabric plan for missing environment bin
     try std.testing.expect(handoff_result.report.accepted);
     try std.testing.expect(handoff_result.admitted_run.?.fabric_plan != null);
     try std.testing.expectEqual(fabric_plan.plan_fingerprint, handoff_result.admitted_run.?.fabric_plan.?.plan_fingerprint);
+    if (handoff_result.admitted_run) |*admitted_handoff| {
+        var handoff_runtime = boundary.Runtime.init(std.testing.allocator);
+        defer handoff_runtime.deinit();
+        var resumed_handoff = try admitted_handoff.@"resume"(std.testing.allocator, fixtures.Ports.Target, PortsMissingEnv, &handoff_runtime, .{}, .{
+            .allocator = std.testing.allocator,
+            .mode = world.Mode.fresh,
+        });
+        defer resumed_handoff.deinit();
+        var resumed_image = try resumed_handoff.snapshotRunImage();
+        defer resumed_image.deinit(std.testing.allocator);
+        try std.testing.expectEqual(world.RunState.Status.parked_on_port, resumed_image.current_state.status);
+        try std.testing.expect(resumed_image.pending_request_frame != null);
+        try std.testing.expectEqual(@as(u32, 0), resumed_image.pending_request_frame.?.world_port_id);
+    } else return error.ExpectedAdmittedRun;
 
     const wildcard_handoff_permit = world.Supervision.issue(fixtures.Ports.Target, PortsMissingEnv, .{
         .mode = .fresh,

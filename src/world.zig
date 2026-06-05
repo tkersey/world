@@ -15792,7 +15792,10 @@ pub const Handoff = struct {
                                         run.audit.replay_mismatch_count += 1;
                                         return replay_err;
                                     };
-                                    try run.accountPendingAdapterCall(request.world_port_id);
+                                    const fabric_covered_handoff_pending = !environmentHasBindingForPort(Env, request.world_port_id) and fabricPlanCoversPort(admitted_fabric_plan, request.world_port_id);
+                                    if (!fabric_covered_handoff_pending) {
+                                        try run.accountPendingAdapterCall(request.world_port_id);
+                                    }
                                     run.handoff_pending_frame_fingerprint = null;
                                     break :replay_prefix;
                                 }
@@ -15851,7 +15854,10 @@ pub const Handoff = struct {
                             };
                         }
                         try self.validatePendingFrame(request);
-                        try run.accountPendingAdapterCall(request.world_port_id);
+                        const fabric_covered_handoff_pending = !environmentHasBindingForPort(Env, request.world_port_id) and fabricPlanCoversPort(admitted_fabric_plan, request.world_port_id);
+                        if (!fabric_covered_handoff_pending) {
+                            try run.accountPendingAdapterCall(request.world_port_id);
+                        }
                         run.handoff_pending_frame_fingerprint = null;
                         break;
                     }
