@@ -103,7 +103,7 @@ Default policy rejects same-run recursion, same-target cycles, excess depth, and
 
 ## Supervision
 
-Supervision policies can allow or deny Fabric routes, target-export routes, guest routes, replay routes, and reject routes. Budgets can cap Fabric invocations, provider runs, nested depth, and deterministic provider costs.
+Supervision policies can allow or deny Fabric routes, target-export routes, replay routes, and reject routes. The guest-route policy bit is reserved until Fabric has a dedicated guest route executor. Budgets can cap Fabric invocations, provider runs, nested depth, and deterministic provider costs.
 
 The supervisor checks Fabric work before provider installation or parent response emission. Usage ledgers count Fabric invocation count, provider run count, nested depth, provider cost, and parent response cost.
 

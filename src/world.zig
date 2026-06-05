@@ -9609,7 +9609,8 @@ pub const Runspace = struct {
         const depth = try self.fabricDepthForParent(parent_slot.handle);
         try plan.assertDepth(depth);
         try assertFabricRouteDepth(route, depth);
-        try self.reserveFabricResponseEvidenceEvents(5);
+        var receipt_evidence = try self.prepareFabricReceiptEvidence(5);
+        defer receipt_evidence.deinit(self.allocator);
         var supervisor_snapshot = try self.snapshotSlotSupervisor(parent_index);
         defer supervisor_snapshot.deinit(self.allocator);
         var fabric_charge_committed = false;
@@ -9652,7 +9653,7 @@ pub const Runspace = struct {
                 try self.recordFabricInvocation(parent_slot.*, invocation, route, .fabric_failed, "fabric terminal route recorded");
                 invocation_recorded = true;
                 _ = try self.respondWithFabricOwnership(mailbox_id, response, true);
-                try self.recordFabricReceipt(parent_slot.handle, invocation, route.route_fingerprint, pending, response.frame_fingerprint, null, invocation.status, if (route.kind == .reject) .FabricRejected else .UnsupportedMapping);
+                try self.recordFabricReceipt(parent_slot.handle, invocation, route.route_fingerprint, pending, response.frame_fingerprint, null, invocation.status, if (route.kind == .reject) .FabricRejected else .UnsupportedMapping, receipt_evidence.takeReceiptSummary());
                 fabric_charge_committed = true;
                 return invocation;
             },
@@ -9747,7 +9748,8 @@ pub const Runspace = struct {
         const depth = try self.fabricDepthForParent(parent_slot.handle);
         try plan.assertDepth(depth);
         try assertFabricRouteDepth(route, depth);
-        try self.reserveFabricResponseEvidenceEvents(5);
+        var receipt_evidence = try self.prepareFabricReceiptEvidence(5);
+        defer receipt_evidence.deinit(self.allocator);
         var supervisor_snapshot = try self.snapshotSlotSupervisor(parent_index);
         defer supervisor_snapshot.deinit(self.allocator);
         var fabric_charge_committed = false;
@@ -9792,7 +9794,7 @@ pub const Runspace = struct {
         try self.recordFabricInvocation(parent_slot.*, invocation, route, .fabric_invocation_started, "fabric replay invocation recorded");
         invocation_recorded = true;
         _ = try self.respondWithFabricOwnership(mailbox_id, response, true);
-        try self.recordFabricReceipt(parent_slot.handle, invocation, route.route_fingerprint, pending, response.frame_fingerprint, null, .completed, null);
+        try self.recordFabricReceipt(parent_slot.handle, invocation, route.route_fingerprint, pending, response.frame_fingerprint, null, .completed, null, receipt_evidence.takeReceiptSummary());
         fabric_charge_committed = true;
         return invocation;
     }
@@ -9821,7 +9823,8 @@ pub const Runspace = struct {
         var response = try fabricMappedResponseForPending(pending, response_image, mapped_contract.boundary_value_fingerprint);
         response_image_owned = false;
         defer response.deinit(self.allocator);
-        try self.reserveFabricResponseEvidenceEvents(3);
+        var receipt_evidence = try self.prepareFabricReceiptEvidence(3);
+        defer receipt_evidence.deinit(self.allocator);
         const event = try self.respondWithFabricOwnership(invocation.parent_mailbox_id, response, true);
         const parent_response_frame_fingerprint = event.response_frame_fingerprint orelse response.frame_fingerprint;
         const completed = Fabric.Invocation.init(.{
@@ -9840,7 +9843,7 @@ pub const Runspace = struct {
             .status = .parent_responded,
         });
         try self.replaceFabricInvocation(completed);
-        try self.recordFabricReceipt(parent_slot.handle, completed, completed.route_fingerprint, pending, parent_response_frame_fingerprint, recorded.provider_run_handle_fingerprint, .completed, null);
+        try self.recordFabricReceipt(parent_slot.handle, completed, completed.route_fingerprint, pending, parent_response_frame_fingerprint, recorded.provider_run_handle_fingerprint, .completed, null, receipt_evidence.takeReceiptSummary());
         return event;
     }
 
@@ -10235,7 +10238,10 @@ pub const Runspace = struct {
         provider_run_handle_fingerprint: ?u64,
         status: Fabric.InvocationStatus,
         blocker: ?Fabric.Blocker,
+        receipt_summary: []u8,
     ) !void {
+        var summary_owned = true;
+        errdefer if (summary_owned) self.allocator.free(receipt_summary);
         const receipt = Fabric.Receipt.init(.{
             .invocation_fingerprint = invocation.invocation_fingerprint,
             .route_fingerprint = route_fingerprint,
@@ -10254,8 +10260,8 @@ pub const Runspace = struct {
             self.events.shrinkRetainingCapacity(event_count_before);
             self.fabric_receipts.shrinkRetainingCapacity(receipt_count_before);
         };
-        try self.fabric_receipts.append(self.allocator, receipt);
-        _ = try self.appendFabricEvent(.{
+        self.fabric_receipts.appendAssumeCapacity(receipt);
+        _ = self.appendPreparedEventAssumeCapacity(.{
             .kind = .fabric_receipt_recorded,
             .run_handle = parent_handle,
             .pending_port_fingerprint = pending.pending_port_fingerprint,
@@ -10266,8 +10272,9 @@ pub const Runspace = struct {
             .fabric_invocation_fingerprint = invocation.invocation_fingerprint,
             .fabric_route_fingerprint = route_fingerprint,
             .fabric_receipt_fingerprint = receipt.receipt_fingerprint,
-            .summary = "fabric receipt recorded",
+            .summary = receipt_summary,
         });
+        summary_owned = false;
         recorded = true;
     }
 
@@ -10280,6 +10287,28 @@ pub const Runspace = struct {
     fn reserveFabricResponseEvidenceEvents(self: *@This(), additional_events: usize) !void {
         try self.ensureEventCapacity(additional_events);
         try self.events.ensureUnusedCapacity(self.allocator, additional_events);
+    }
+
+    const PreparedFabricReceiptEvidence = struct {
+        receipt_summary: []u8,
+        owns_receipt_summary: bool = true,
+
+        fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+            if (self.owns_receipt_summary) allocator.free(self.receipt_summary);
+        }
+
+        fn takeReceiptSummary(self: *@This()) []u8 {
+            self.owns_receipt_summary = false;
+            return self.receipt_summary;
+        }
+    };
+
+    fn prepareFabricReceiptEvidence(self: *@This(), additional_events: usize) !PreparedFabricReceiptEvidence {
+        try self.reserveFabricResponseEvidenceEvents(additional_events);
+        try self.fabric_receipts.ensureUnusedCapacity(self.allocator, 1);
+        return .{
+            .receipt_summary = try self.allocator.dupe(u8, "fabric receipt recorded"),
+        };
     }
 
     fn appendFabricEvent(self: *@This(), args: struct {
