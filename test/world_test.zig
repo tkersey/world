@@ -185,6 +185,26 @@ test "fabric plan lookup coverage and cycle checks are deterministic" {
     try std.testing.expectEqual(route.route_fingerprint, plan.routeForPort(0).?.route_fingerprint);
     try plan.assertCoverage(import_set);
     try plan.assertNoCycles();
+    const wrong_surface_plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = parent_ref.world_surface_fingerprint + 1,
+        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = import_set.import_set_fingerprint,
+        .routes = &routes,
+        .bindings = &bindings,
+        .value_mappings = &mappings,
+    });
+    try std.testing.expect(!wrong_surface_plan.coverage(parent_ref, import_set).accepted);
+    const wrong_certificate_plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint + 1,
+        .import_set_fingerprint = import_set.import_set_fingerprint,
+        .routes = &routes,
+        .bindings = &bindings,
+        .value_mappings = &mappings,
+    });
+    try std.testing.expect(!wrong_certificate_plan.coverage(parent_ref, import_set).accepted);
 
     const missing = world.Fabric.Plan.init(.{
         .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
@@ -6618,6 +6638,53 @@ test "runspace fabric replay route rejects transcript fingerprint mismatch" {
     });
     try runspace.installFabricPlan(parent_ref, plan);
     try std.testing.expectError(error.ReplayRouteDenied, runspace.routePendingFromReplay(0, plan, replay_image));
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_invocation_count);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+}
+
+test "runspace fabric replay route validates transcript image fingerprint" {
+    var source_transcript = world.Transcript.init(std.testing.allocator);
+    defer source_transcript.deinit();
+    try recordPortsTranscript(&source_transcript);
+    var replay_image = try source_transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer replay_image.deinit(std.testing.allocator);
+
+    const encoded = try replay_image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(encoded);
+    var forged_image = try world.TranscriptImage.decode(std.testing.allocator, encoded);
+    defer forged_image.deinit(std.testing.allocator);
+    forged_image.events[0].source_run = !forged_image.events[0].source_run;
+    try std.testing.expectEqual(replay_image.transcript_image_fingerprint, forged_image.transcript_image_fingerprint);
+
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+    _ = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    _ = try runspace.tick();
+
+    const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const route = world.Fabric.Route.init(.{
+        .route_id = 437,
+        .kind = .replay,
+        .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .parent_world_port_id = 0,
+        .provider_transcript_image_fingerprint = replay_image.transcript_image_fingerprint,
+    });
+    const plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .routes = &.{route},
+    });
+    try runspace.installFabricPlan(parent_ref, plan);
+
+    try std.testing.expectError(error.InvalidFrameEncoding, runspace.routePendingFromReplay(0, plan, forged_image));
     try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_invocation_count);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
 }

@@ -7453,6 +7453,8 @@ pub const Fabric = struct {
             }
             const missing_count = if (covered_count >= import_set.required_count) 0 else import_set.required_count - covered_count;
             const target_matches = self.target_ref_fingerprint == target_ref.target_ref_fingerprint and
+                self.world_surface_fingerprint == target_ref.world_surface_fingerprint and
+                self.target_certificate_fingerprint == target_ref.target_certificate_fingerprint and
                 import_set.target_ref_fingerprint == target_ref.target_ref_fingerprint;
             return Fabric.CoverageReport.init(.{
                 .target_ref_fingerprint = target_ref.target_ref_fingerprint,
@@ -9775,6 +9777,7 @@ pub const Runspace = struct {
         const route = plan.routeForPort(pending.world_port_id) orelse return error.FabricMissingRoute;
         try route.validate();
         if (route.kind != .replay) return error.UnsupportedMapping;
+        try validateTranscriptImageFingerprint(transcript_image);
         if (route.provider_transcript_image_fingerprint) |expected| {
             if (transcript_image.transcript_image_fingerprint != expected) return error.ReplayRouteDenied;
         }
