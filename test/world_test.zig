@@ -4780,6 +4780,18 @@ test "fabric core validation rejects unsupported mappings and missing routes" {
     });
     try std.testing.expectError(error.ProviderRunDenied, witnessless_admitted.validate());
 
+    const pinned_admitted = world.Fabric.Route.init(.{
+        .route_id = 25,
+        .kind = .admitted_run,
+        .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .parent_world_port_id = 0,
+        .provider_target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .provider_admission_receipt_fingerprint = 0xadd1_7001,
+        .provider_world_port_id = 1,
+    });
+    try std.testing.expectError(error.ProviderRunDenied, pinned_admitted.validate());
+
     const terminal_provider_route = world.Fabric.Route.init(.{
         .route_id = 26,
         .kind = .target_export,
@@ -6801,23 +6813,7 @@ test "runspace fabric plan validation rejects guest routes without a guest execu
     _ = provider_handle;
 }
 
-test "runspace fabric local provider routing enforces pinned provider port id" {
-    var runtime = boundary.Runtime.init(std.testing.allocator);
-    defer runtime.deinit();
-    var runspace = world.Runspace.init(std.testing.allocator, .{});
-    defer runspace.deinit();
-
-    _ = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
-        .allocator = std.testing.allocator,
-        .mode = world.Mode.fresh,
-    });
-    _ = try runspace.tick();
-    const provider_handle = try runspace.installMachineRun(fixtures.Agent.Target, AgentEnv, &runtime, AgentArgs{ @as(usize, 3), fixtures.Agent.initialObservation(.skeleton) }, .{
-        .allocator = std.testing.allocator,
-        .mode = world.Mode.fresh,
-    });
-    _ = try runspace.tick();
-
+test "runspace fabric local provider routing rejects pinned completed-provider routes" {
     const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const provider_ref = world.TargetRef.fromTarget(fixtures.Agent.Target);
     const response_mapping = fabricTestMapping(.provider_result_to_parent_response);
@@ -6831,6 +6827,7 @@ test "runspace fabric local provider routing enforces pinned provider port id" {
         .provider_world_port_id = 1,
         .response_value_mapping_fingerprint = response_mapping.mapping_fingerprint,
     });
+    try std.testing.expectError(error.ProviderRunDenied, route.validate());
     const plan = world.Fabric.Plan.init(.{
         .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
         .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
@@ -6839,27 +6836,9 @@ test "runspace fabric local provider routing enforces pinned provider port id" {
         .routes = &.{route},
         .value_mappings = &.{response_mapping},
     });
-    try runspace.installFabricPlan(parent_ref, plan);
-    try std.testing.expectError(error.WrongPortId, runspace.routePendingToProviderRun(0, plan, provider_handle));
-    try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_invocation_count);
-    try std.testing.expectEqual(@as(usize, 2), runspace.report().pending_port_count);
-
-    var completed_image = try world.Frame.ValueImage.fromValue(std.testing.allocator, 1, 0x5150_0abc, null, @as(i32, 7), world.ValuePolicy.portable);
-    defer completed_image.deinit(std.testing.allocator);
-    const completed_provider = try runspace.installRunImage(world.RunImage.init(.{
-        .kind = .completed_run,
-        .target_ref = provider_ref,
-        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Agent.Target).import_set_fingerprint,
-        .current_state = world.RunState.init(.{
-            .target_ref_fingerprint = provider_ref.target_ref_fingerprint,
-            .final_response_fingerprint = 0x5150_0abc,
-            .final_value_image_fingerprint = completed_image.value_image_fingerprint,
-            .status = .completed,
-        }),
-        .final_result_image = completed_image,
-    }));
-    try std.testing.expectError(error.WrongPortId, runspace.routePendingToProviderRun(0, plan, completed_provider));
-    try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_invocation_count);
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+    try std.testing.expectError(error.ProviderRunDenied, runspace.installFabricPlan(parent_ref, plan));
 }
 
 test "runspace fabric routing rolls back invocation when event recording fails" {
@@ -22879,6 +22858,34 @@ test "fabric-covered replay admission requires transcript evidence" {
     try recordPortsTranscript(&completed_source_transcript);
     var completed_source_image = try completed_source_transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
     defer completed_source_image.deinit(std.testing.allocator);
+    const TranscriptRequiredPortsMissingEnv = world.Environment(fixtures.Ports.Target, .{
+        .bindings = .{},
+        .policy = world.EnvironmentPolicy.init(.{ .allow_fresh_without_transcript = false }),
+    });
+    const stored_replay_only_package = world.Admission.TransferPackage.init(.{
+        .kind = .target_reference_only,
+        .target_ref = parent_ref,
+        .transcript_image = completed_source_image,
+        .requested_mode = .continue_fresh,
+    });
+    const stored_replay_only = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, TranscriptRequiredPortsMissingEnv, stored_replay_only_package, .{
+        .fabric_plan = replay_plan,
+    });
+    try std.testing.expect(!stored_replay_only.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.EnvironmentRejected, stored_replay_only.report.blockers[0]);
+    var stored_replay_with_sink = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, TranscriptRequiredPortsMissingEnv, stored_replay_only_package, .{
+        .fabric_plan = replay_plan,
+        .fresh_transcript_sink_available = true,
+    });
+    defer stored_replay_with_sink.deinit(std.testing.allocator);
+    try std.testing.expect(stored_replay_with_sink.report.accepted);
+
     const package = world.Admission.TransferPackage.init(.{
         .kind = .target_reference_only,
         .target_ref = parent_ref,
