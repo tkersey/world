@@ -11152,9 +11152,21 @@ pub const Runspace = struct {
     }
 
     fn pendingRequiresFabricRoute(self: *@This(), slot: Runspace.RunSlot, pending: Runspace.PendingPort) bool {
-        _ = self;
         if (slot.driver) |driver| {
             return driver.fabricPlanCoversHandlerlessWorldPort(pending.world_port_id);
+        }
+        return self.installedFabricRouteCoversPending(pending);
+    }
+
+    fn installedFabricRouteCoversPending(self: *const @This(), pending: Runspace.PendingPort) bool {
+        for (self.fabric_routes.items) |route| {
+            if (route.parent_world_surface_fingerprint != pending.world_surface_fingerprint) continue;
+            if (route.parent_target_certificate_fingerprint != pending.target_certificate_fingerprint) continue;
+            if (route.parent_world_port_id != pending.world_port_id) continue;
+            return switch (route.kind) {
+                .adapter, .unsupported => false,
+                .target_export, .admitted_run, .guest, .replay, .reject => true,
+            };
         }
         return false;
     }
@@ -16493,6 +16505,13 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     if (transcript_image) |image| {
                         state = runStateWithTranscriptEvidence(state, image);
                     }
+                    const acceptance_report_fingerprint = if (comptime @hasField(@TypeOf(Config), "environment"))
+                        if (self.activeFabricPlan()) |plan|
+                            Config.environment.acceptanceReportWithFabricPlan(self.mode, transcript_image != null, plan).report_fingerprint
+                        else
+                            Config.environment.acceptanceReport(self.mode, transcript_image != null).report_fingerprint
+                    else
+                        null;
                     var image = RunImage.init(.{
                         .kind = switch (status) {
                             .parked_on_port => .parked_run,
@@ -16509,10 +16528,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             Config.environment.certificate(self.mode, transcript_image != null).certificate_fingerprint
                         else
                             null,
-                        .acceptance_report_fingerprint = if (comptime @hasField(@TypeOf(Config), "environment"))
-                            Config.environment.acceptanceReport(self.mode, transcript_image != null).report_fingerprint
-                        else
-                            null,
+                        .acceptance_report_fingerprint = acceptance_report_fingerprint,
                         .audit_image_fingerprint = AuditImage.fromReport(self.audit, transcript_image).audit_fingerprint,
                         .prior_run_permit_fingerprint = if (self.supervisor) |supervisor| supervisor.permit.permit_fingerprint else null,
                         .prior_run_receipt_fingerprint = if (self.supervisor) |*supervisor| blk: {

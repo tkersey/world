@@ -5334,6 +5334,7 @@ test "runspace install consumes explicit fabric plan for missing environment bin
     _ = try source.tick();
     var source_image = try source.exportRun(source_handle);
     defer source_image.deinit(std.testing.allocator);
+    try std.testing.expectEqual(reject_accepted.report_fingerprint, source_image.acceptance_report_fingerprint.?);
     const parked_package = world.Admission.TransferPackage.init(.{
         .kind = .parked_run,
         .target_ref = parent_ref,
@@ -5362,6 +5363,13 @@ test "runspace install consumes explicit fabric plan for missing environment bin
     const admitted_handle = try receiver.installAdmitted(fabric_admitted);
     try std.testing.expectEqual(@as(usize, 1), receiver.fabric_plan_fingerprints.items.len);
     try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try receiver.getSlotSummary(admitted_handle)).status);
+    const admitted_pending = try receiver.mailbox.get(0);
+    const admitted_request = admitted_pending.request_frame orelse return error.ExpectedPendingRequestFrame;
+    const admitted_manual_response = testRunspaceResponseFrame(admitted_request);
+    try std.testing.expectError(error.ActiveFabricUnsupported, receiver.respond(0, admitted_manual_response));
+    try std.testing.expectError(error.ActiveFabricUnsupported, receiver.reject(0, "manual fabric bypass"));
+    try std.testing.expectError(error.ActiveFabricUnsupported, receiver.fail(0, "manual fabric bypass"));
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try receiver.mailbox.get(0)).status);
     const admitted_invocation = try receiver.routePending(0, fabric_plan);
     try std.testing.expectEqual(world.Fabric.InvocationStatus.rejected, admitted_invocation.status);
 }
