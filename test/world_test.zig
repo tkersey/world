@@ -305,6 +305,13 @@ test "fabric value mapping enforces exact supported conversions" {
     });
     try std.testing.expectEqual(@as(?u32, 1), try result_mapping.parentResponseValueTableId(response));
     try result_mapping.assertExactValueTableMatch();
+    const constrained_result_mapping = world.Fabric.ValueMapping.init(.{
+        .kind = .provider_result_to_parent_response,
+        .parent_payload_value_fingerprint = request.payload_value_fingerprint orelse 0x1234,
+        .provider_result_value_table_id = 1,
+        .parent_response_value_table_id = 1,
+    });
+    try std.testing.expectError(error.UnsupportedMapping, constrained_result_mapping.validate());
     const generic_result = world.Fabric.ValueMapping.init(.{
         .kind = .provider_result_to_parent_response,
         .parent_value_table_id = 1,
@@ -5188,11 +5195,13 @@ test "runspace fabric terminal route parks without receipt" {
     try runspace.installFabricPlan(parent_ref, plan);
 
     const invocation = try runspace.routePending(0, plan);
-    try std.testing.expectEqual(world.Fabric.InvocationStatus.rejected, invocation.status);
+    try std.testing.expectEqual(world.Fabric.InvocationStatus.started, invocation.status);
     try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_supervision, (try runspace.getSlotSummary(parent_handle)).status);
     try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Fabric.InvocationStatus.started, runspace.fabric_invocations.items[invocation.sequence].status);
     try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_receipt_count);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+    try std.testing.expectError(error.ActiveFabricUnsupported, runspace.exportPending(0));
 }
 
 test "runspace fabric provider result does not require handoff export" {
