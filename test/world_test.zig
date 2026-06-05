@@ -6945,12 +6945,18 @@ test "runspace fabric terminal route preserves evidence when parent response fai
     try std.testing.expectEqual(world.Runspace.PendingStatus.failed, (try runspace.mailbox.get(0)).status);
     try std.testing.expectEqual(world.Runspace.RunStatus.failed, (try runspace.getSlotSummary(handle)).status);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().fabric_invocation_count);
-    try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_receipt_count);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().fabric_receipt_count);
     try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().failed_count);
-    try std.testing.expectEqual(world.Runspace.EventKind.fabric_failed, runspace.events.items[runspace.events.items.len - 3].kind);
-    try std.testing.expectEqual(world.Runspace.EventKind.port_failed, runspace.events.items[runspace.events.items.len - 2].kind);
-    try std.testing.expectEqual(world.Runspace.EventKind.run_failed, runspace.events.items[runspace.events.items.len - 1].kind);
+    try std.testing.expectEqual(world.Fabric.InvocationStatus.failed, runspace.fabric_invocations.items[0].status);
+    const receipt = runspace.fabric_receipts.items[0];
+    try std.testing.expectEqual(world.Fabric.InvocationStatus.failed, receipt.status);
+    try std.testing.expectEqual(@as(?world.Fabric.Blocker, .FabricDenied), receipt.blocker);
+    try std.testing.expect(receipt.parent_response_frame_fingerprint != null);
+    try std.testing.expectEqual(world.Runspace.EventKind.fabric_failed, runspace.events.items[runspace.events.items.len - 4].kind);
+    try std.testing.expectEqual(world.Runspace.EventKind.port_failed, runspace.events.items[runspace.events.items.len - 3].kind);
+    try std.testing.expectEqual(world.Runspace.EventKind.run_failed, runspace.events.items[runspace.events.items.len - 2].kind);
+    try std.testing.expectEqual(world.Runspace.EventKind.fabric_receipt_recorded, runspace.events.items[runspace.events.items.len - 1].kind);
 }
 
 test "runspace fabric terminal route reserves audit evidence before parent response" {
@@ -7626,6 +7632,71 @@ test "runspace fabric replay route enforces parent response value policy" {
     try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_invocation_count);
     try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_receipt_count);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+}
+
+test "runspace fabric replay response failure records failed receipt" {
+    var source_transcript = world.Transcript.init(std.testing.allocator);
+    defer source_transcript.deinit();
+    try recordPortsTranscript(&source_transcript);
+    var replay_image = try source_transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer replay_image.deinit(std.testing.allocator);
+
+    const policy = world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .allow_native_adapters = true,
+        .allow_fabric_routes = true,
+        .allow_replay_routes = true,
+        .park_on_budget_exceeded = false,
+        .require_environment_certificate = true,
+    });
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = policy,
+        .budget = world.Budget.init(.{ .max_port_responses = 0 }),
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .permit = permit,
+    });
+    _ = try runspace.tick();
+
+    const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const route = world.Fabric.Route.init(.{
+        .route_id = 440,
+        .kind = .replay,
+        .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .parent_world_port_id = 0,
+        .provider_transcript_image_fingerprint = replay_image.transcript_image_fingerprint,
+    });
+    const plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .routes = &.{route},
+    });
+    try runspace.installFabricPlan(parent_ref, plan);
+
+    try std.testing.expectError(error.BudgetExceeded, runspace.routePendingFromReplay(0, plan, &replay_image));
+    try std.testing.expect(replay_image.replay_cursor > 0);
+    try std.testing.expectEqual(world.Runspace.PendingStatus.failed, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.failed, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().fabric_invocation_count);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().fabric_receipt_count);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
+    const invocation = runspace.fabric_invocations.items[0];
+    try std.testing.expectEqual(world.Fabric.InvocationStatus.failed, invocation.status);
+    const receipt = runspace.fabric_receipts.items[0];
+    try std.testing.expectEqual(invocation.invocation_fingerprint, receipt.invocation_fingerprint);
+    try std.testing.expectEqual(world.Fabric.InvocationStatus.failed, receipt.status);
+    try std.testing.expectEqual(@as(?world.Fabric.Blocker, .FabricDenied), receipt.blocker);
+    try std.testing.expect(receipt.parent_response_frame_fingerprint != null);
 }
 
 test "runspace fabric replay route parks without receipt" {

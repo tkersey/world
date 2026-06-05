@@ -9911,9 +9911,10 @@ pub const Runspace = struct {
                             .run_permit_fingerprint = started.run_permit_fingerprint,
                             .depth = started.depth,
                             .sequence = started.sequence,
-                            .status = terminal_status,
+                            .status = .failed,
                         });
                         try self.replaceFabricInvocation(invocation);
+                        try self.recordFabricReceipt(parent_slot.handle, invocation, route.route_fingerprint, pending, response.frame_fingerprint, null, null, .failed, .FabricDenied, receipt_evidence.takeReceiptSummary());
                         fabric_charge_committed = true;
                     }
                     return err;
@@ -10109,9 +10110,10 @@ pub const Runspace = struct {
                     .run_permit_fingerprint = started.run_permit_fingerprint,
                     .depth = started.depth,
                     .sequence = started.sequence,
-                    .status = .completed,
+                    .status = .failed,
                 });
                 try self.replaceFabricInvocation(invocation);
+                try self.recordFabricReceipt(parent_slot.handle, invocation, route.route_fingerprint, pending, response.frame_fingerprint, null, null, .failed, .FabricDenied, receipt_evidence.takeReceiptSummary());
                 replay_cursor_committed = true;
                 fabric_charge_committed = true;
             }
