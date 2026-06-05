@@ -10018,8 +10018,8 @@ pub const Runspace = struct {
         }
         const mapped_request_frame_fingerprint = try self.fabricRequestMappingFrame(route);
         try self.validateFabricProviderSlot(route, provider_slot);
-        const status = try fabricProviderInvocationStatus(provider_slot);
-        if (status == .provider_completed) try validateFabricProviderResultSlot(provider_slot);
+        try validateFabricProviderResultSlot(provider_slot);
+        const status: Fabric.InvocationStatus = .provider_completed;
         const depth = try self.fabricDepthForParent(parent_slot.handle);
         const provider_run_count = self.fabricProviderRunCount(plan.plan_fingerprint) + 1;
         try plan.assertDepth(depth);
@@ -10046,19 +10046,13 @@ pub const Runspace = struct {
             .request_frame_fingerprint = pending.request_frame_fingerprint,
             .provider_run_handle_fingerprint = provider_handle.handle_fingerprint,
             .mapped_request_frame_fingerprint = mapped_request_frame_fingerprint,
-            .mapped_response_frame_fingerprint = if (status == .provider_completed) provider_slot.current_state.final_response_fingerprint else null,
+            .mapped_response_frame_fingerprint = provider_slot.current_state.final_response_fingerprint,
             .run_permit_fingerprint = pending.run_permit_fingerprint,
             .depth = depth,
             .sequence = self.fabric_invocations.items.len,
             .status = status,
         });
-        const event_kind: Runspace.EventKind = switch (status) {
-            .provider_completed => .fabric_provider_completed,
-            .provider_parked => .fabric_provider_parked,
-            .provider_running, .provider_installed => .fabric_provider_installed,
-            else => unreachable,
-        };
-        try self.recordFabricInvocation(parent_slot.*, invocation, route, event_kind, "fabric provider route recorded");
+        try self.recordFabricInvocation(parent_slot.*, invocation, route, .fabric_provider_completed, "fabric provider route recorded");
         fabric_charge_committed = true;
         return invocation;
     }
@@ -10509,16 +10503,6 @@ pub const Runspace = struct {
         if (provider_slot.status != .completed) return error.InvalidRunspaceTransition;
         const image = provider_slot.installed_run_image orelse return error.InvalidRunspaceTransition;
         if (image.final_result_image == null) return error.MissingValueImage;
-    }
-
-    fn fabricProviderInvocationStatus(provider_slot: Runspace.RunSlot) !Fabric.InvocationStatus {
-        return switch (provider_slot.status) {
-            .completed => .provider_completed,
-            .parked_on_port, .parked_on_supervision => .provider_parked,
-            .running, .runnable => .provider_running,
-            .admitted => .provider_installed,
-            else => error.InvalidRunspaceTransition,
-        };
     }
 
     fn validateFabricParentResponseValue(self: *@This(), parent_slot: Runspace.RunSlot, world_port_id: u32, image: Frame.ValueImage) !void {
