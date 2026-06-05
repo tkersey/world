@@ -9173,15 +9173,6 @@ pub const Runspace = struct {
         run_ptr_owned = false;
         var driver_owned = true;
         errdefer if (driver_owned) driver.deinit(self.allocator);
-        var supervisor: ?Supervision.Supervisor = null;
-        var supervisor_owned = false;
-        errdefer if (supervisor_owned) {
-            if (supervisor) |*active| active.deinit();
-        };
-        if (maybe_permit) |permit| {
-            supervisor = try Supervision.Supervisor.init(self.allocator, permit, Target.WorldPortTable.entries.len);
-            supervisor_owned = true;
-        }
         const state = RunState.init(.{
             .target_ref_fingerprint = target_ref.target_ref_fingerprint,
             .status = .not_started,
@@ -9194,10 +9185,8 @@ pub const Runspace = struct {
             .run_permit_fingerprint = if (maybe_permit) |permit| permit.permit_fingerprint else null,
             .driver = driver,
             .driver_world_port_count = Target.WorldPortTable.entries.len,
-            .supervisor = supervisor,
         });
         driver_owned = false;
-        supervisor_owned = false;
         self.slots.appendAssumeCapacity(slot);
         _ = self.appendPreparedEventAssumeCapacity(.{
             .kind = .run_installed,

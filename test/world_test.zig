@@ -5021,6 +5021,31 @@ test "runspace fabric unfinished provider invocation remains active" {
     try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
 }
 
+test "runspace supervised machine run keeps supervisor in driver" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+    });
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .permit = permit,
+    });
+    for (runspace.slots.items) |slot| {
+        if (slot.handle.handle_fingerprint == handle.handle_fingerprint) {
+            try std.testing.expect(slot.driver != null);
+            try std.testing.expect(slot.supervisor == null);
+            return;
+        }
+    }
+    return error.StaleRunHandle;
+}
+
 test "runspace fabric routing requires installed plans before mutation" {
     var runtime = boundary.Runtime.init(std.testing.allocator);
     defer runtime.deinit();
