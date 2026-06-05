@@ -7003,7 +7003,10 @@ pub const Fabric = struct {
                     if (self.provider_result_value_table_id == null or self.parent_response_value_table_id == null) return error.UnsupportedMapping;
                     if (self.parent_payload_value_table_id != null or self.provider_argument_value_table_id != null) return error.UnsupportedMapping;
                     if (self.parent_payload_value_fingerprint != null or self.provider_argument_value_fingerprint != null) return error.UnsupportedMapping;
-                    if (self.parent_response_value_fingerprint != null and self.provider_result_value_fingerprint == null) return error.UnsupportedMapping;
+                    if (self.parent_response_value_fingerprint) |parent| {
+                        const provider = self.provider_result_value_fingerprint orelse return error.UnsupportedMapping;
+                        if (provider != parent) return error.UnsupportedMapping;
+                    }
                 },
             }
         }
@@ -10013,7 +10016,30 @@ pub const Runspace = struct {
         response_image_owned = false;
         defer response.deinit(self.allocator);
         const event = self.respondWithFabricOwnership(invocation.parent_mailbox_id, response, true) catch |err| {
-            try self.retireFabricInvocation(recorded, .failed);
+            const parent_moved = parent_slot.status != .parked_on_port or parent_slot.pending_mailbox_id != invocation.parent_mailbox_id;
+            const pending_after = self.mailbox.get(invocation.parent_mailbox_id) catch null;
+            const pending_consumed = if (pending_after) |after| after.status != .pending else true;
+            if (parent_moved or pending_consumed) {
+                const failed = Fabric.Invocation.init(.{
+                    .plan_fingerprint = recorded.plan_fingerprint,
+                    .route_fingerprint = recorded.route_fingerprint,
+                    .parent_run_handle_fingerprint = recorded.parent_run_handle_fingerprint,
+                    .parent_pending_port_fingerprint = recorded.parent_pending_port_fingerprint,
+                    .parent_mailbox_id = recorded.parent_mailbox_id,
+                    .request_frame_fingerprint = recorded.request_frame_fingerprint,
+                    .provider_run_handle_fingerprint = recorded.provider_run_handle_fingerprint,
+                    .mapped_request_frame_fingerprint = recorded.mapped_request_frame_fingerprint,
+                    .mapped_response_frame_fingerprint = response.frame_fingerprint,
+                    .run_permit_fingerprint = recorded.run_permit_fingerprint,
+                    .depth = recorded.depth,
+                    .sequence = recorded.sequence,
+                    .status = .failed,
+                });
+                try self.replaceFabricInvocation(failed);
+                try self.recordFabricReceipt(parent_slot.handle, failed, failed.route_fingerprint, pending, response.frame_fingerprint, recorded.provider_run_handle_fingerprint, provider_image.prior_run_receipt_fingerprint, .failed, .FabricDenied, receipt_evidence.takeReceiptSummary());
+            } else {
+                try self.retireFabricInvocation(recorded, .failed);
+            }
             return err;
         };
         if (event.kind != .run_resumed) {
