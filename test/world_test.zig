@@ -4617,6 +4617,16 @@ test "fabric core validation rejects unsupported mappings and missing routes" {
     });
     try std.testing.expectError(error.UnsupportedMapping, bad_unsupported_status.validate());
 
+    const unpinned_replay = world.Fabric.Route.init(.{
+        .route_id = 22,
+        .fabric_digest = 0xfeed_9999,
+        .kind = .replay,
+        .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .parent_world_port_id = 0,
+    });
+    try std.testing.expectError(error.ReplayRouteDenied, unpinned_replay.validate());
+
     const missing_route_binding = world.Fabric.Binding.init(.{
         .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
         .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
@@ -5784,6 +5794,89 @@ test "runspace active fabric handoff export fails closed until parent responds" 
     var image = try runspace.exportRun(parent_handle);
     defer image.deinit(std.testing.allocator);
     try std.testing.expectEqual(world.RunImage.Kind.completed_run, image.kind);
+}
+
+test "runspace fabric provider routing enforces route depth cap" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+
+    _ = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    _ = try runspace.tick();
+    const nested_parent_handle = try runspace.installMachineRun(fixtures.Agent.Target, AgentEnv, &runtime, AgentArgs{ @as(usize, 3), fixtures.Agent.initialObservation(.skeleton) }, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    _ = try runspace.tick();
+
+    const ports_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const agent_ref = world.TargetRef.fromTarget(fixtures.Agent.Target);
+    var provider_final_image = try world.Frame.ValueImage.fromValue(std.testing.allocator, 1, 0x5150_00f7, null, @as(i32, 7), world.ValuePolicy.portable);
+    defer provider_final_image.deinit(std.testing.allocator);
+    const completed_provider = try runspace.installRunImage(world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = ports_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = ports_ref.target_ref_fingerprint,
+            .final_response_fingerprint = 0x5150_00f7,
+            .final_value_image_fingerprint = provider_final_image.value_image_fingerprint,
+            .status = .completed,
+        }),
+        .final_result_image = provider_final_image,
+    }));
+
+    const first_route = world.Fabric.Route.init(.{
+        .route_id = 435,
+        .kind = .target_export,
+        .parent_world_surface_fingerprint = ports_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = ports_ref.target_certificate_fingerprint,
+        .parent_world_port_id = 0,
+        .provider_target_ref_fingerprint = agent_ref.target_ref_fingerprint,
+        .provider_world_surface_fingerprint = agent_ref.world_surface_fingerprint,
+        .provider_target_certificate_fingerprint = agent_ref.target_certificate_fingerprint,
+    });
+    const first_plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = ports_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = ports_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = ports_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .routes = &.{first_route},
+        .max_depth = 2,
+        .max_provider_runs = 2,
+    });
+    try runspace.installFabricPlan(ports_ref, first_plan);
+
+    const nested_route = world.Fabric.Route.init(.{
+        .route_id = 436,
+        .kind = .target_export,
+        .parent_world_surface_fingerprint = agent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = agent_ref.target_certificate_fingerprint,
+        .parent_world_port_id = AgentDecideDecl.world_port_id,
+        .provider_target_ref_fingerprint = ports_ref.target_ref_fingerprint,
+        .provider_world_surface_fingerprint = ports_ref.world_surface_fingerprint,
+        .provider_target_certificate_fingerprint = ports_ref.target_certificate_fingerprint,
+        .max_depth = 1,
+    });
+    const nested_plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = agent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = agent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = agent_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Agent.Target).import_set_fingerprint,
+        .routes = &.{nested_route},
+        .max_depth = 2,
+        .max_provider_runs = 2,
+    });
+    try runspace.installFabricPlan(agent_ref, nested_plan);
+
+    const first = try runspace.routePendingToProviderRun(0, first_plan, nested_parent_handle);
+    try std.testing.expectEqual(@as(usize, 1), first.depth);
+    try std.testing.expectError(error.FabricDepthExceeded, runspace.routePendingToProviderRun(1, nested_plan, completed_provider));
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().fabric_invocation_count);
 }
 
 test "runspace fabric event fingerprints are stable" {

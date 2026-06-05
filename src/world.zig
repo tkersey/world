@@ -7124,7 +7124,7 @@ pub const Fabric = struct {
                     if (self.provider_target_ref_fingerprint == null and self.provider_module_fingerprint == null) return error.ProviderRunDenied;
                 },
                 .replay => {
-                    if (self.provider_transcript_image_fingerprint == null and self.fabric_digest == null) return error.ReplayRouteDenied;
+                    if (self.provider_transcript_image_fingerprint == null) return error.ReplayRouteDenied;
                 },
                 .reject, .unsupported => {
                     if (self.response_status == .responded) return error.UnsupportedMapping;
@@ -9586,6 +9586,7 @@ pub const Runspace = struct {
         }
         const depth = try self.fabricDepthForParent(parent_slot.handle);
         try plan.assertDepth(depth);
+        try assertFabricRouteDepth(route, depth);
         try self.beforeFabricInvocationForSlot(parent_slot, pending.world_port_id, route.kind, depth, 0);
         var invocation = Fabric.Invocation.init(.{
             .plan_fingerprint = plan.plan_fingerprint,
@@ -9650,6 +9651,7 @@ pub const Runspace = struct {
         const depth = try self.fabricDepthForParent(parent_slot.handle);
         const provider_run_count = self.fabricProviderRunCount(plan.plan_fingerprint) + 1;
         try plan.assertDepth(depth);
+        try assertFabricRouteDepth(route, depth);
         try plan.assertProviderRunLimit(provider_run_count);
         try self.beforeFabricInvocationForSlot(parent_slot, pending.world_port_id, route.kind, depth, 1);
         const status: Fabric.InvocationStatus = switch (provider_slot.status) {
@@ -9701,6 +9703,7 @@ pub const Runspace = struct {
         try replay_image.validateReplayRun(pending.world_surface_fingerprint, pending.target_certificate_fingerprint);
         const depth = try self.fabricDepthForParent(parent_slot.handle);
         try plan.assertDepth(depth);
+        try assertFabricRouteDepth(route, depth);
         try self.beforeFabricInvocationForSlot(parent_slot, pending.world_port_id, route.kind, depth, 0);
         var invocation = Fabric.Invocation.init(.{
             .plan_fingerprint = plan.plan_fingerprint,
@@ -16822,6 +16825,12 @@ fn fabricCoversMissingEnvironmentPorts(comptime Target: type, comptime bindings:
     }
     return fabric_covered_missing == coverage.fabric_covered_port_count and
         bindings.len + fabric_covered_missing >= Target.WorldPortTable.entries.len;
+}
+
+fn assertFabricRouteDepth(route: Fabric.Route, depth: usize) !void {
+    if (route.max_depth) |max_depth| {
+        if (depth > max_depth) return error.FabricDepthExceeded;
+    }
 }
 
 fn rejectedReport(base: AcceptanceReport, blockers: []const AcceptanceBlocker) AcceptanceReport {
