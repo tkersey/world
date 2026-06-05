@@ -7726,6 +7726,7 @@ pub const Runspace = struct {
             resumeFrame: *const fn (*anyopaque, Frame.Response) anyerror!ResponseEvidence,
             beforeResponse: *const fn (*anyopaque, u32, ResponseStatus, usize, usize) anyerror!void,
             beforeTerminalResponse: *const fn (*anyopaque, u32, ResponseStatus, usize, usize) anyerror!void,
+            beforeFabricInvocation: *const fn (*anyopaque, u32, Fabric.RouteKind, usize, usize) anyerror!void,
             resumeTerminalFrame: *const fn (*anyopaque, Frame.Response) anyerror!void,
             dispatch: *const fn (*anyopaque) anyerror!?ResponseEvidence,
             snapshotRunImage: *const fn (*anyopaque) anyerror!RunImage,
@@ -7757,6 +7758,10 @@ pub const Runspace = struct {
 
         fn beforeTerminalResponse(self: @This(), world_port_id: u32, status: ResponseStatus, response_bytes: usize, value_image_bytes: usize) !void {
             return self.vtable.beforeTerminalResponse(self.ptr, world_port_id, status, response_bytes, value_image_bytes);
+        }
+
+        fn beforeFabricInvocation(self: @This(), world_port_id: u32, route_kind: Fabric.RouteKind, depth: usize, provider_runs: usize) !void {
+            return self.vtable.beforeFabricInvocation(self.ptr, world_port_id, route_kind, depth, provider_runs);
         }
 
         fn resumeTerminalFrame(self: @This(), response: Frame.Response) !void {
@@ -7866,6 +7871,28 @@ pub const Runspace = struct {
                     if (@hasDecl(RunType, "beforeRunspaceTerminalResponse")) return active.beforeRunspaceTerminalResponse(world_port_id, status, response_bytes, value_image_bytes);
                 }
 
+                fn runBeforeFabricInvocation(ptr: *anyopaque, world_port_id: u32, route_kind: Fabric.RouteKind, depth: usize, provider_runs: usize) anyerror!void {
+                    const active: *RunType = @ptrCast(@alignCast(ptr));
+                    if (@hasDecl(RunType, "beforeRunspaceFabricInvocation")) {
+                        return active.beforeRunspaceFabricInvocation(.{
+                            .world_port_id = world_port_id,
+                            .route_kind = route_kind,
+                            .depth = depth,
+                            .provider_runs = provider_runs,
+                        });
+                    }
+                    if (@hasField(RunType, "supervisor")) {
+                        if (active.supervisor) |*supervisor| {
+                            return supervisor.beforeFabricInvocation(.{
+                                .world_port_id = world_port_id,
+                                .route_kind = route_kind,
+                                .depth = depth,
+                                .provider_runs = provider_runs,
+                            });
+                        }
+                    }
+                }
+
                 fn runResumeTerminalFrame(ptr: *anyopaque, response: Frame.Response) anyerror!void {
                     const active: *RunType = @ptrCast(@alignCast(ptr));
                     if (@hasDecl(RunType, "runspaceResumeTerminalFrame")) return active.runspaceResumeTerminalFrame(response);
@@ -7972,6 +7999,7 @@ pub const Runspace = struct {
                     .resumeFrame = runResumeFrame,
                     .beforeResponse = runBeforeResponse,
                     .beforeTerminalResponse = runBeforeTerminalResponse,
+                    .beforeFabricInvocation = runBeforeFabricInvocation,
                     .resumeTerminalFrame = runResumeTerminalFrame,
                     .dispatch = runDispatch,
                     .snapshotRunImage = runSnapshotRunImage,
@@ -9546,6 +9574,7 @@ pub const Runspace = struct {
         const parent_index = try self.slotIndex(pending.handle);
         const parent_slot = &self.slots.items[parent_index];
         if (parent_slot.pending_mailbox_id != mailbox_id or parent_slot.status != .parked_on_port) return error.StaleRunHandle;
+        if (self.hasActiveFabricInvocationForMailbox(mailbox_id)) return error.ActiveFabricUnsupported;
         try self.validateFabricPlanForPending(plan, pending);
         const route = plan.routeForPort(pending.world_port_id) orelse return error.FabricMissingRoute;
         try route.validate();
@@ -9603,6 +9632,7 @@ pub const Runspace = struct {
         const parent_index = try self.slotIndex(pending.handle);
         const parent_slot = &self.slots.items[parent_index];
         if (parent_slot.pending_mailbox_id != mailbox_id or parent_slot.status != .parked_on_port) return error.StaleRunHandle;
+        if (self.hasActiveFabricInvocationForMailbox(mailbox_id)) return error.ActiveFabricUnsupported;
         const provider_index = try self.slotIndex(provider_handle);
         const provider_slot = self.slots.items[provider_index];
         if (provider_handle.handle_fingerprint == pending.handle.handle_fingerprint) return error.SameRunRecursion;
@@ -9659,6 +9689,7 @@ pub const Runspace = struct {
         const parent_index = try self.slotIndex(pending.handle);
         const parent_slot = &self.slots.items[parent_index];
         if (parent_slot.pending_mailbox_id != mailbox_id or parent_slot.status != .parked_on_port) return error.StaleRunHandle;
+        if (self.hasActiveFabricInvocationForMailbox(mailbox_id)) return error.ActiveFabricUnsupported;
         try self.validateFabricPlanForPending(plan, pending);
         const route = plan.routeForPort(pending.world_port_id) orelse return error.FabricMissingRoute;
         try route.validate();
@@ -9719,8 +9750,14 @@ pub const Runspace = struct {
         const route = try self.installedFabricRoute(recorded.route_fingerprint);
         var provider_image = try self.fabricProviderResultImage(recorded);
         defer provider_image.deinit(self.allocator);
-        const provider_result = provider_image.final_result_image orelse return error.MissingValueImage;
-        const mapped_contract = try self.fabricParentResponseContract(route, provider_result, pending.expected_response_value_table_id);
+        const provider_result = provider_image.final_result_image orelse {
+            try self.retireFabricInvocation(recorded, .failed);
+            return error.MissingValueImage;
+        };
+        const mapped_contract = self.fabricParentResponseContract(route, provider_result, pending.expected_response_value_table_id) catch |err| {
+            try self.retireFabricInvocation(recorded, .failed);
+            return err;
+        };
         var response_image = try provider_result.cloneForValueContract(self.allocator, mapped_contract.value_table_id, mapped_contract.boundary_value_fingerprint);
         var response_image_owned = true;
         errdefer if (response_image_owned) response_image.deinit(self.allocator);
@@ -9933,6 +9970,9 @@ pub const Runspace = struct {
     }
 
     fn beforeFabricInvocationForSlot(_: *@This(), slot: *Runspace.RunSlot, world_port_id: u32, route_kind: Fabric.RouteKind, depth: usize, provider_runs: usize) !void {
+        if (slot.driver) |driver| {
+            return driver.beforeFabricInvocation(world_port_id, route_kind, depth, provider_runs);
+        }
         if (slot.supervisor) |*supervisor| {
             return supervisor.beforeFabricInvocation(.{
                 .world_port_id = world_port_id,
@@ -9941,6 +9981,25 @@ pub const Runspace = struct {
                 .provider_runs = provider_runs,
             });
         }
+    }
+
+    fn retireFabricInvocation(self: *@This(), recorded: Fabric.Invocation, status: Fabric.InvocationStatus) !void {
+        const retired = Fabric.Invocation.init(.{
+            .plan_fingerprint = recorded.plan_fingerprint,
+            .route_fingerprint = recorded.route_fingerprint,
+            .parent_run_handle_fingerprint = recorded.parent_run_handle_fingerprint,
+            .parent_pending_port_fingerprint = recorded.parent_pending_port_fingerprint,
+            .parent_mailbox_id = recorded.parent_mailbox_id,
+            .request_frame_fingerprint = recorded.request_frame_fingerprint,
+            .provider_run_handle_fingerprint = recorded.provider_run_handle_fingerprint,
+            .mapped_request_frame_fingerprint = recorded.mapped_request_frame_fingerprint,
+            .mapped_response_frame_fingerprint = recorded.mapped_response_frame_fingerprint,
+            .run_permit_fingerprint = recorded.run_permit_fingerprint,
+            .depth = recorded.depth,
+            .sequence = recorded.sequence,
+            .status = status,
+        });
+        try self.replaceFabricInvocation(retired);
     }
 
     fn hasActiveFabricInvocationForRun(self: *const @This(), handle: RunHandle) bool {

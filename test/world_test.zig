@@ -5008,6 +5008,8 @@ test "runspace fabric response enforces provider result value mapping" {
     try std.testing.expectError(error.ProviderResultMismatch, runspace.respondFromFabric(invocation));
     try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
     try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_receipt_count);
+    _ = try runspace.respondValue(0, @as(i32, 7));
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
 }
 
 test "runspace fabric response enforces portable provider result mapping" {
@@ -5084,7 +5086,7 @@ test "runspace fabric plan provider-run limit counts recorded invocations" {
     _ = try runspace.tick();
 
     const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
-    var provider_final_image = try world.Frame.ValueImage.fromValue(std.testing.allocator, 1, 0x5150_00f3, null, @as(i32, 1), world.ValuePolicy.portable);
+    var provider_final_image = try world.Frame.ValueImage.fromValue(std.testing.allocator, 0, 0x5150_00f3, null, @as(i32, 1), world.ValuePolicy.portable);
     defer provider_final_image.deinit(std.testing.allocator);
     const provider_handle = try runspace.installRunImage(world.RunImage.init(.{
         .kind = .completed_run,
@@ -5120,7 +5122,8 @@ test "runspace fabric plan provider-run limit counts recorded invocations" {
     });
 
     try runspace.installFabricPlan(parent_ref, plan);
-    _ = try runspace.routePendingToProviderRun(0, plan, provider_handle);
+    const invocation = try runspace.routePendingToProviderRun(0, plan, provider_handle);
+    try std.testing.expectError(error.ProviderResultMismatch, runspace.respondFromFabric(invocation));
     try std.testing.expectError(error.ProviderRunLimitExceeded, runspace.routePendingToProviderRun(0, plan, provider_handle));
     try std.testing.expectEqual(@as(usize, 1), runspace.report().fabric_invocation_count);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
@@ -5769,6 +5772,7 @@ test "runspace active fabric handoff export fails closed until parent responds" 
     });
     try runspace.installFabricPlan(parent_ref, plan);
     const invocation = try runspace.routePendingToProviderRun(0, plan, provider_handle);
+    try std.testing.expectError(error.ActiveFabricUnsupported, runspace.routePendingToProviderRun(0, plan, provider_handle));
     try std.testing.expectError(error.ActiveFabricUnsupported, runspace.exportRun(parent_handle));
     try std.testing.expectError(error.ActiveFabricUnsupported, runspace.exportRun(provider_handle));
     try std.testing.expectError(error.ActiveFabricUnsupported, runspace.exportPending(0));
