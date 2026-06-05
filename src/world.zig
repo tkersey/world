@@ -9685,8 +9685,10 @@ pub const Runspace = struct {
                 errdefer if (!fabric_charge_committed and invocation_recorded) self.rollbackFabricInvocationRecord(invocation_count_before, event_count_before, next_event_index_before);
                 try self.recordFabricInvocation(parent_slot.*, invocation, route, .fabric_failed, "fabric terminal route recorded");
                 invocation_recorded = true;
-                _ = try self.respondWithFabricOwnership(mailbox_id, response, true);
-                try self.recordFabricReceipt(parent_slot.handle, invocation, route.route_fingerprint, pending, response.frame_fingerprint, null, invocation.status, if (route.kind == .reject) .FabricRejected else .UnsupportedMapping, receipt_evidence.takeReceiptSummary());
+                const event = try self.respondWithFabricOwnership(mailbox_id, response, true);
+                if (event.kind == .run_parked_on_supervision) return invocation;
+                const parent_response_frame_fingerprint = event.response_frame_fingerprint orelse response.frame_fingerprint;
+                try self.recordFabricReceipt(parent_slot.handle, invocation, route.route_fingerprint, pending, parent_response_frame_fingerprint, null, invocation.status, if (route.kind == .reject) .FabricRejected else .UnsupportedMapping, receipt_evidence.takeReceiptSummary());
                 fabric_charge_committed = true;
                 return invocation;
             },
@@ -9824,8 +9826,10 @@ pub const Runspace = struct {
         errdefer if (!fabric_charge_committed and invocation_recorded) self.rollbackFabricInvocationRecord(invocation_count_before, event_count_before, next_event_index_before);
         try self.recordFabricInvocation(parent_slot.*, invocation, route, .fabric_invocation_started, "fabric replay invocation recorded");
         invocation_recorded = true;
-        _ = try self.respondWithFabricOwnership(mailbox_id, response, true);
-        try self.recordFabricReceipt(parent_slot.handle, invocation, route.route_fingerprint, pending, response.frame_fingerprint, null, .completed, null, receipt_evidence.takeReceiptSummary());
+        const event = try self.respondWithFabricOwnership(mailbox_id, response, true);
+        if (event.kind == .run_parked_on_supervision) return invocation;
+        const parent_response_frame_fingerprint = event.response_frame_fingerprint orelse response.frame_fingerprint;
+        try self.recordFabricReceipt(parent_slot.handle, invocation, route.route_fingerprint, pending, parent_response_frame_fingerprint, null, .completed, null, receipt_evidence.takeReceiptSummary());
         fabric_charge_committed = true;
         return invocation;
     }
@@ -10125,9 +10129,10 @@ pub const Runspace = struct {
 
     fn fabricProviderResultImage(self: *@This(), invocation: Fabric.Invocation) !RunImage {
         const provider_fingerprint = invocation.provider_run_handle_fingerprint orelse return error.InvalidRunspaceTransition;
-        for (self.slots.items) |slot| {
+        for (self.slots.items, 0..) |slot, index| {
             if (slot.handle.handle_fingerprint == provider_fingerprint) {
-                return try self.previewResultRun(slot.handle);
+                if (slot.status != .completed) return error.InvalidRunspaceTransition;
+                return try self.snapshotSlotImage(index);
             }
         }
         return error.StaleRunHandle;
