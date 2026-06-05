@@ -4331,7 +4331,7 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
             if (report.accepted) return report;
             if (!acceptanceReportHasOnlyMissingBinding(report)) return report;
             plan.validate() catch return report;
-            plan.assertNoCycles() catch return report;
+            plan.assertNoCyclesForTargetRef(target_ref) catch return report;
             plan.assertDeterministicRouteOrder() catch return report;
             if (plan.target_ref_fingerprint != target_ref.target_ref_fingerprint) return report;
             if (plan.world_surface_fingerprint != target_ref.world_surface_fingerprint) return report;
@@ -7341,6 +7341,16 @@ pub const Fabric = struct {
             }
         }
 
+        pub fn assertNoCyclesForTargetRef(self: Fabric.Plan, parent_target_ref: TargetRef) !void {
+            try self.assertNoCycles();
+            const parent_module = self.module_fingerprint orelse parent_target_ref.boundary_module_fingerprint orelse return;
+            for (self.routes) |route| {
+                if (route.provider_module_fingerprint) |provider_module| {
+                    if (provider_module == parent_module) return error.FabricCycle;
+                }
+            }
+        }
+
         pub fn assertDeterministicRouteOrder(self: Fabric.Plan) !void {
             var last_port: ?u32 = null;
             for (self.routes) |route| {
@@ -9580,7 +9590,7 @@ pub const Runspace = struct {
         if (plan.world_surface_fingerprint != parent_target_ref.world_surface_fingerprint) return error.WrongWorldSurface;
         if (plan.target_certificate_fingerprint != parent_target_ref.target_certificate_fingerprint) return error.WrongTargetCertificate;
         try plan.validate();
-        try plan.assertNoCycles();
+        try plan.assertNoCyclesForTargetRef(parent_target_ref);
         try plan.assertDeterministicRouteOrder();
         if (self.hasInstalledFabricPlan(plan.plan_fingerprint)) return;
         try self.fabric_plan_fingerprints.ensureUnusedCapacity(self.allocator, 1);
@@ -9932,7 +9942,12 @@ pub const Runspace = struct {
         provider_result: Frame.ValueImage,
         expected_response_value_table_id: ?u32,
     ) !struct { value_table_id: ?u32, boundary_value_fingerprint: ?u64 } {
-        const response_mapping_fingerprint = route.response_value_mapping_fingerprint orelse route.value_mapping_fingerprint;
+        const response_mapping_fingerprint = route.response_value_mapping_fingerprint orelse response_mapping: {
+            const mapping_fingerprint = route.value_mapping_fingerprint orelse break :response_mapping null;
+            const mapping = try self.installedFabricValueMapping(mapping_fingerprint);
+            if (mapping.kind != .provider_result_to_parent_response) break :response_mapping null;
+            break :response_mapping mapping_fingerprint;
+        };
         if (response_mapping_fingerprint) |mapping_fingerprint| {
             const mapping = try self.installedFabricValueMapping(mapping_fingerprint);
             if (mapping.kind != .provider_result_to_parent_response) return error.UnsupportedMapping;

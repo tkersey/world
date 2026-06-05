@@ -224,6 +224,15 @@ test "fabric plan lookup coverage and cycle checks are deterministic" {
         .routes = &module_cyclic_routes,
     });
     try std.testing.expectError(error.FabricCycle, module_cyclic.assertNoCycles());
+
+    const module_cyclic_without_plan_module = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = import_set.import_set_fingerprint,
+        .routes = &module_cyclic_routes,
+    });
+    try std.testing.expectError(error.FabricCycle, module_cyclic_without_plan_module.assertNoCyclesForTargetRef(parent_ref));
 }
 
 test "fabric value mapping enforces exact supported conversions" {
@@ -4909,6 +4918,64 @@ test "runspace fabric provider result resumes exactly one parent pending port" {
     defer exported.deinit(std.testing.allocator);
     try std.testing.expect(exported.current_state.final_response_fingerprint != null);
     try std.testing.expect(exported.current_state.final_value_image_fingerprint != null);
+}
+
+test "runspace fabric request-only mapping leaves matching provider result as response" {
+    var parent_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer parent_runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+
+    _ = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &parent_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    _ = try runspace.tick();
+
+    const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    var provider_final_image = try world.Frame.ValueImage.fromValue(std.testing.allocator, 1, 0x5150_0008, null, @as(i32, 1), world.ValuePolicy.portable);
+    defer provider_final_image.deinit(std.testing.allocator);
+    const provider_handle = try runspace.installRunImage(world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = provider_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Strict.Target).import_set_fingerprint,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+            .final_response_fingerprint = 0x5150_0008,
+            .final_value_image_fingerprint = provider_final_image.value_image_fingerprint,
+            .status = .completed,
+        }),
+        .final_result_image = provider_final_image,
+    }));
+
+    const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const request_mapping = fabricTestMapping(.payload_to_provider_args);
+    const route = world.Fabric.Route.init(.{
+        .route_id = 56,
+        .kind = .target_export,
+        .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .parent_world_port_id = 0,
+        .provider_target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+        .provider_world_surface_fingerprint = provider_ref.world_surface_fingerprint,
+        .provider_target_certificate_fingerprint = provider_ref.target_certificate_fingerprint,
+        .value_mapping_fingerprint = request_mapping.mapping_fingerprint,
+    });
+    const plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .routes = &.{route},
+        .value_mappings = &.{request_mapping},
+    });
+    try runspace.installFabricPlan(parent_ref, plan);
+    const invocation = try runspace.routePendingToProviderRun(0, plan, provider_handle);
+    try std.testing.expect(invocation.mapped_request_frame_fingerprint != null);
+    const event = try runspace.respondFromFabric(invocation);
+    try std.testing.expectEqual(world.Runspace.EventKind.run_resumed, event.kind);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().fabric_receipt_count);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
 }
 
 test "runspace fabric routing requires installed plans before mutation" {
