@@ -9899,7 +9899,24 @@ pub const Runspace = struct {
                     }
                     return err;
                 };
-                if (event.kind == .run_parked_on_supervision) return started;
+                if (event.kind == .run_parked_on_supervision) {
+                    invocation = Fabric.Invocation.init(.{
+                        .plan_fingerprint = started.plan_fingerprint,
+                        .route_fingerprint = started.route_fingerprint,
+                        .parent_run_handle_fingerprint = started.parent_run_handle_fingerprint,
+                        .parent_pending_port_fingerprint = started.parent_pending_port_fingerprint,
+                        .parent_mailbox_id = started.parent_mailbox_id,
+                        .request_frame_fingerprint = started.request_frame_fingerprint,
+                        .mapped_response_frame_fingerprint = started.mapped_response_frame_fingerprint,
+                        .run_permit_fingerprint = started.run_permit_fingerprint,
+                        .depth = started.depth,
+                        .sequence = started.sequence,
+                        .status = .supervision_denied,
+                    });
+                    try self.replaceFabricInvocation(invocation);
+                    fabric_charge_committed = true;
+                    return invocation;
+                }
                 const parent_response_frame_fingerprint = event.response_frame_fingerprint orelse response.frame_fingerprint;
                 invocation = Fabric.Invocation.init(.{
                     .plan_fingerprint = started.plan_fingerprint,
@@ -10093,7 +10110,22 @@ pub const Runspace = struct {
         if (event.kind == .run_parked_on_supervision) {
             transcript_image.replay_cursor = replay_cursor_before;
             transcript_image.replay_limit = replay_limit_before;
-            return started;
+            invocation = Fabric.Invocation.init(.{
+                .plan_fingerprint = started.plan_fingerprint,
+                .route_fingerprint = started.route_fingerprint,
+                .parent_run_handle_fingerprint = started.parent_run_handle_fingerprint,
+                .parent_pending_port_fingerprint = started.parent_pending_port_fingerprint,
+                .parent_mailbox_id = started.parent_mailbox_id,
+                .request_frame_fingerprint = started.request_frame_fingerprint,
+                .mapped_response_frame_fingerprint = started.mapped_response_frame_fingerprint,
+                .run_permit_fingerprint = started.run_permit_fingerprint,
+                .depth = started.depth,
+                .sequence = started.sequence,
+                .status = .supervision_denied,
+            });
+            try self.replaceFabricInvocation(invocation);
+            fabric_charge_committed = true;
+            return invocation;
         }
         const parent_response_frame_fingerprint = event.response_frame_fingerprint orelse response.frame_fingerprint;
         invocation = Fabric.Invocation.init(.{
