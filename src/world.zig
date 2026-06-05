@@ -9876,6 +9876,7 @@ pub const Runspace = struct {
             try self.retireFabricInvocation(recorded, .failed);
             return err;
         };
+        if (event.kind != .run_resumed) return event;
         const parent_response_frame_fingerprint = event.response_frame_fingerprint orelse response.frame_fingerprint;
         const completed = Fabric.Invocation.init(.{
             .plan_fingerprint = recorded.plan_fingerprint,
