@@ -282,6 +282,21 @@ pub const world_fabric_report_format_version: u32 = 1;
 pub const world_fabric_report_fingerprint_version: u32 = 1;
 pub const world_fabric_coverage_report_format_version: u32 = 1;
 pub const world_fabric_coverage_report_fingerprint_version: u32 = 1;
+pub const world_linker_policy_fingerprint_version: u32 = 1;
+pub const world_linker_catalog_fingerprint_version: u32 = 1;
+pub const world_linker_catalog_entry_fingerprint_version: u32 = 1;
+pub const world_linker_import_index_fingerprint_version: u32 = 1;
+pub const world_linker_export_index_fingerprint_version: u32 = 1;
+pub const world_linker_match_fingerprint_version: u32 = 1;
+pub const world_linker_hint_fingerprint_version: u32 = 1;
+pub const world_linker_route_synthesis_fingerprint_version: u32 = 1;
+pub const world_linker_graph_fingerprint_version: u32 = 1;
+pub const world_linker_plan_format_version: u32 = 1;
+pub const world_linker_plan_fingerprint_version: u32 = 1;
+pub const world_linker_report_fingerprint_version: u32 = 1;
+pub const world_linker_certificate_format_version: u32 = 1;
+pub const world_linker_certificate_fingerprint_version: u32 = 1;
+pub const world_assembly_fingerprint_version: u32 = 1;
 pub const world_guest_abi_version: u32 = 1;
 pub const world_guest_abi_contract_fingerprint_version: u32 = 1;
 pub const world_guest_conformance_vector_fingerprint_version: u32 = 2;
@@ -874,6 +889,9 @@ pub const AcceptanceReport = struct {
     world_surface_fingerprint: u64,
     target_certificate_fingerprint: u64,
     fabric_plan_fingerprint: ?u64 = null,
+    link_plan_fingerprint: ?u64 = null,
+    linker_certificate_fingerprint: ?u64 = null,
+    assembly_fingerprint: ?u64 = null,
     requested_mode: Mode,
     accepted: bool,
     required_port_count: usize = 0,
@@ -930,6 +948,24 @@ pub const RunReceipt = Supervision.RunReceipt;
 
 pub const ConduitPlan = Fabric.Plan;
 pub const ConduitRoute = Fabric.Route;
+pub const Linker = @import("linker.zig").Linker(@This());
+pub const Assembly = Linker.Assembly;
+
+test "linker kernel boundary source guard rejects forbidden hot path imports" {
+    const source = @embedFile("linker.zig");
+    inline for (.{
+        "Treaty" ++ "Resolver",
+        "Provider" ++ "Harness",
+        "provider_" ++ "catalog",
+        "morphism_" ++ "catalog",
+        "closure_" ++ "graph",
+        "string_match_" ++ "dispatch",
+        "request_" ++ "token",
+        "thread_" ++ "id",
+    }) |forbidden| {
+        try std.testing.expect(std.mem.indexOf(u8, source, forbidden) == null);
+    }
+}
 
 pub const Admission = struct {
     pub const PackageKind = enum {
@@ -1933,6 +1969,9 @@ pub const Admission = struct {
         environment_certificate_fingerprint: ?u64 = null,
         run_permit_fingerprint: ?u64 = null,
         fabric_plan_fingerprint: ?u64 = null,
+        link_plan_fingerprint: ?u64 = null,
+        linker_certificate_fingerprint: ?u64 = null,
+        assembly_fingerprint: ?u64 = null,
         requested_branch_id: ?u64 = null,
         requested_checkpoint_ref: ?u64 = null,
         metadata: []const u8 = "",
@@ -1945,6 +1984,9 @@ pub const Admission = struct {
             environment_certificate_fingerprint: ?u64 = null,
             run_permit_fingerprint: ?u64 = null,
             fabric_plan_fingerprint: ?u64 = null,
+            link_plan_fingerprint: ?u64 = null,
+            linker_certificate_fingerprint: ?u64 = null,
+            assembly_fingerprint: ?u64 = null,
             requested_branch_id: ?u64 = null,
             requested_checkpoint_ref: ?u64 = null,
             metadata: []const u8 = "",
@@ -1958,6 +2000,9 @@ pub const Admission = struct {
                 .environment_certificate_fingerprint = args.environment_certificate_fingerprint,
                 .run_permit_fingerprint = args.run_permit_fingerprint,
                 .fabric_plan_fingerprint = args.fabric_plan_fingerprint,
+                .link_plan_fingerprint = args.link_plan_fingerprint,
+                .linker_certificate_fingerprint = args.linker_certificate_fingerprint,
+                .assembly_fingerprint = args.assembly_fingerprint,
                 .requested_branch_id = args.requested_branch_id,
                 .requested_checkpoint_ref = args.requested_checkpoint_ref,
                 .metadata = args.metadata,
@@ -1979,6 +2024,9 @@ pub const Admission = struct {
         import_set_fingerprint: ?u64 = null,
         environment_acceptance_report_fingerprint: ?u64 = null,
         run_permit_fingerprint: ?u64 = null,
+        link_plan_fingerprint: ?u64 = null,
+        linker_certificate_fingerprint: ?u64 = null,
+        assembly_fingerprint: ?u64 = null,
         handoff_preflight_report_fingerprint: ?u64 = null,
         blockers: []const AdmissionBlocker = &.{},
         warnings: []const AdmissionBlocker = &.{},
@@ -1994,6 +2042,9 @@ pub const Admission = struct {
             import_set_fingerprint: ?u64 = null,
             environment_acceptance_report_fingerprint: ?u64 = null,
             run_permit_fingerprint: ?u64 = null,
+            link_plan_fingerprint: ?u64 = null,
+            linker_certificate_fingerprint: ?u64 = null,
+            assembly_fingerprint: ?u64 = null,
             handoff_preflight_report_fingerprint: ?u64 = null,
             warnings: []const AdmissionBlocker = &.{},
             summary: []const u8 = "admission accepted",
@@ -2010,6 +2061,9 @@ pub const Admission = struct {
                 .import_set_fingerprint = args.import_set_fingerprint,
                 .environment_acceptance_report_fingerprint = args.environment_acceptance_report_fingerprint,
                 .run_permit_fingerprint = args.run_permit_fingerprint,
+                .link_plan_fingerprint = args.link_plan_fingerprint,
+                .linker_certificate_fingerprint = args.linker_certificate_fingerprint,
+                .assembly_fingerprint = args.assembly_fingerprint,
                 .handoff_preflight_report_fingerprint = args.handoff_preflight_report_fingerprint,
                 .warnings = args.warnings,
                 .summary = args.summary,
@@ -2028,6 +2082,9 @@ pub const Admission = struct {
             import_set_fingerprint: ?u64 = null,
             environment_acceptance_report_fingerprint: ?u64 = null,
             run_permit_fingerprint: ?u64 = null,
+            link_plan_fingerprint: ?u64 = null,
+            linker_certificate_fingerprint: ?u64 = null,
+            assembly_fingerprint: ?u64 = null,
             handoff_preflight_report_fingerprint: ?u64 = null,
             blockers: []const AdmissionBlocker,
             warnings: []const AdmissionBlocker = &.{},
@@ -2045,6 +2102,9 @@ pub const Admission = struct {
                 .import_set_fingerprint = args.import_set_fingerprint,
                 .environment_acceptance_report_fingerprint = args.environment_acceptance_report_fingerprint,
                 .run_permit_fingerprint = args.run_permit_fingerprint,
+                .link_plan_fingerprint = args.link_plan_fingerprint,
+                .linker_certificate_fingerprint = args.linker_certificate_fingerprint,
+                .assembly_fingerprint = args.assembly_fingerprint,
                 .handoff_preflight_report_fingerprint = args.handoff_preflight_report_fingerprint,
                 .blockers = args.blockers,
                 .warnings = args.warnings,
@@ -2068,6 +2128,9 @@ pub const Admission = struct {
         target_match_fingerprint: ?u64 = null,
         environment_certificate_fingerprint: ?u64 = null,
         run_permit_fingerprint: ?u64 = null,
+        link_plan_fingerprint: ?u64 = null,
+        linker_certificate_fingerprint: ?u64 = null,
+        assembly_fingerprint: ?u64 = null,
         admitted_run_fingerprint: ?u64 = null,
         accepted_mode: Admission.AdmissionMode,
         warnings: []const AdmissionBlocker = &.{},
@@ -2082,6 +2145,9 @@ pub const Admission = struct {
             target_match_fingerprint: ?u64 = null,
             environment_certificate_fingerprint: ?u64 = null,
             run_permit_fingerprint: ?u64 = null,
+            link_plan_fingerprint: ?u64 = null,
+            linker_certificate_fingerprint: ?u64 = null,
+            assembly_fingerprint: ?u64 = null,
             admitted_run_fingerprint: ?u64 = null,
             warnings: []const AdmissionBlocker = &.{},
             metadata: []const u8 = "",
@@ -2097,6 +2163,9 @@ pub const Admission = struct {
                 .target_match_fingerprint = args.target_match_fingerprint,
                 .environment_certificate_fingerprint = args.environment_certificate_fingerprint,
                 .run_permit_fingerprint = args.run_permit_fingerprint,
+                .link_plan_fingerprint = args.link_plan_fingerprint,
+                .linker_certificate_fingerprint = args.linker_certificate_fingerprint,
+                .assembly_fingerprint = args.assembly_fingerprint,
                 .admitted_run_fingerprint = args.admitted_run_fingerprint,
                 .accepted_mode = args.request.mode,
                 .warnings = args.warnings,
@@ -2117,6 +2186,9 @@ pub const Admission = struct {
         environment_certificate_fingerprint: ?u64 = null,
         environment_acceptance_report_fingerprint: ?u64 = null,
         run_permit: ?RunPermit = null,
+        link_plan_fingerprint: ?u64 = null,
+        linker_certificate_fingerprint: ?u64 = null,
+        assembly_fingerprint: ?u64 = null,
         fabric_plan: ?Fabric.Plan = null,
         run_image: ?RunImage = null,
         owns_run_image: bool = false,
@@ -2135,6 +2207,9 @@ pub const Admission = struct {
             environment_certificate_fingerprint: ?u64 = null,
             environment_acceptance_report_fingerprint: ?u64 = null,
             run_permit: ?RunPermit = null,
+            link_plan_fingerprint: ?u64 = null,
+            linker_certificate_fingerprint: ?u64 = null,
+            assembly_fingerprint: ?u64 = null,
             fabric_plan: ?Fabric.Plan = null,
             run_image: ?RunImage = null,
             owns_run_image: bool = false,
@@ -2154,6 +2229,9 @@ pub const Admission = struct {
                 .environment_certificate_fingerprint = args.environment_certificate_fingerprint,
                 .environment_acceptance_report_fingerprint = args.environment_acceptance_report_fingerprint,
                 .run_permit = args.run_permit,
+                .link_plan_fingerprint = args.link_plan_fingerprint,
+                .linker_certificate_fingerprint = args.linker_certificate_fingerprint,
+                .assembly_fingerprint = args.assembly_fingerprint,
                 .fabric_plan = args.fabric_plan,
                 .run_image = args.run_image,
                 .owns_run_image = args.owns_run_image,
@@ -2307,6 +2385,9 @@ pub const Admission = struct {
             mode: ?Admission.AdmissionMode = null,
             permit: ?RunPermit = null,
             fabric_plan: ?Fabric.Plan = null,
+            link_plan_fingerprint: ?u64 = null,
+            linker_certificate_fingerprint: ?u64 = null,
+            assembly_fingerprint: ?u64 = null,
             requested_branch_id: ?u64 = null,
             requested_checkpoint_ref: ?u64 = null,
             fresh_transcript_sink_available: bool = false,
@@ -2337,6 +2418,9 @@ pub const Admission = struct {
                 .environment_certificate_fingerprint = environment_certificate_fingerprint,
                 .run_permit_fingerprint = if (args.permit) |permit| permit.permit_fingerprint else null,
                 .fabric_plan_fingerprint = if (args.fabric_plan) |plan| plan.plan_fingerprint else null,
+                .link_plan_fingerprint = args.link_plan_fingerprint,
+                .linker_certificate_fingerprint = args.linker_certificate_fingerprint,
+                .assembly_fingerprint = args.assembly_fingerprint,
                 .requested_branch_id = args.requested_branch_id,
                 .requested_checkpoint_ref = args.requested_checkpoint_ref,
                 .metadata = args.metadata,
@@ -2604,6 +2688,9 @@ pub const Admission = struct {
                 else
                     Env.acceptanceReport(admissionModeToRunMode(mode), transcript_available).report_fingerprint,
                 .run_permit_fingerprint = if (args.permit) |permit| permit.permit_fingerprint else null,
+                .link_plan_fingerprint = args.link_plan_fingerprint,
+                .linker_certificate_fingerprint = args.linker_certificate_fingerprint,
+                .assembly_fingerprint = args.assembly_fingerprint,
                 .handoff_preflight_report_fingerprint = handoff_preflight_report_fingerprint,
                 .summary = "admission accepted for local execution",
             });
@@ -2616,6 +2703,9 @@ pub const Admission = struct {
                 .target_match_fingerprint = match.match_fingerprint,
                 .environment_certificate_fingerprint = cert.certificate_fingerprint,
                 .run_permit_fingerprint = if (args.permit) |permit| permit.permit_fingerprint else null,
+                .link_plan_fingerprint = args.link_plan_fingerprint,
+                .linker_certificate_fingerprint = args.linker_certificate_fingerprint,
+                .assembly_fingerprint = args.assembly_fingerprint,
             });
             var admitted_run_image: ?RunImage = null;
             var admitted_owns_run_image = false;
@@ -2653,6 +2743,9 @@ pub const Admission = struct {
                 .environment_certificate_fingerprint = cert.certificate_fingerprint,
                 .environment_acceptance_report_fingerprint = report.environment_acceptance_report_fingerprint,
                 .run_permit = args.permit,
+                .link_plan_fingerprint = args.link_plan_fingerprint,
+                .linker_certificate_fingerprint = args.linker_certificate_fingerprint,
+                .assembly_fingerprint = args.assembly_fingerprint,
                 .fabric_plan = args.fabric_plan,
                 .run_image = admitted_run_image,
                 .owns_run_image = admitted_owns_run_image,
@@ -3290,6 +3383,9 @@ pub const Supervision = struct {
         mode: Mode,
         transcript_image_available: bool = false,
         fabric_plan_fingerprint: ?u64 = null,
+        link_plan_fingerprint: ?u64 = null,
+        linker_certificate_fingerprint: ?u64 = null,
+        assembly_fingerprint: ?u64 = null,
         admission_receipt_fingerprint: ?u64 = null,
         module_ref_fingerprint: ?u64 = null,
         supervision_policy_fingerprint: u64,
@@ -3313,6 +3409,9 @@ pub const Supervision = struct {
             mode: Mode,
             transcript_image_available: bool = false,
             fabric_plan_fingerprint: ?u64 = null,
+            link_plan_fingerprint: ?u64 = null,
+            linker_certificate_fingerprint: ?u64 = null,
+            assembly_fingerprint: ?u64 = null,
             admission_receipt_fingerprint: ?u64 = null,
             module_ref_fingerprint: ?u64 = null,
             policy: Supervision.SupervisionPolicy = Supervision.SupervisionPolicy.strict_fresh,
@@ -3337,6 +3436,9 @@ pub const Supervision = struct {
                 .mode = args.mode,
                 .transcript_image_available = args.transcript_image_available,
                 .fabric_plan_fingerprint = args.fabric_plan_fingerprint,
+                .link_plan_fingerprint = args.link_plan_fingerprint,
+                .linker_certificate_fingerprint = args.linker_certificate_fingerprint,
+                .assembly_fingerprint = args.assembly_fingerprint,
                 .admission_receipt_fingerprint = args.admission_receipt_fingerprint,
                 .module_ref_fingerprint = args.module_ref_fingerprint,
                 .supervision_policy_fingerprint = policy.policy_fingerprint,
@@ -3375,6 +3477,9 @@ pub const Supervision = struct {
         const branch_policy: PermitBranchPolicy = if (@hasField(Args, "branch_policy")) args.branch_policy else .inherit;
         const handoff_policy: PermitHandoffPolicy = if (@hasField(Args, "handoff_policy")) args.handoff_policy else .require_new_permit;
         const fabric_plan_fingerprint: ?u64 = if (@hasField(Args, "fabric_plan_fingerprint")) args.fabric_plan_fingerprint else null;
+        const link_plan_fingerprint: ?u64 = if (@hasField(Args, "link_plan_fingerprint")) args.link_plan_fingerprint else null;
+        const linker_certificate_fingerprint: ?u64 = if (@hasField(Args, "linker_certificate_fingerprint")) args.linker_certificate_fingerprint else null;
+        const assembly_fingerprint: ?u64 = if (@hasField(Args, "assembly_fingerprint")) args.assembly_fingerprint else null;
         const admission_receipt_fingerprint: ?u64 = if (@hasField(Args, "admission_receipt_fingerprint")) args.admission_receipt_fingerprint else null;
         const module_ref_fingerprint: ?u64 = if (@hasField(Args, "module_ref_fingerprint")) args.module_ref_fingerprint else null;
         const metadata: []const u8 = if (@hasField(Args, "metadata")) args.metadata else "";
@@ -3389,6 +3494,9 @@ pub const Supervision = struct {
             .mode = mode,
             .transcript_image_available = transcript_available,
             .fabric_plan_fingerprint = fabric_plan_fingerprint,
+            .link_plan_fingerprint = link_plan_fingerprint,
+            .linker_certificate_fingerprint = linker_certificate_fingerprint,
+            .assembly_fingerprint = assembly_fingerprint,
             .admission_receipt_fingerprint = admission_receipt_fingerprint,
             .module_ref_fingerprint = module_ref_fingerprint,
             .policy = policy,
@@ -4431,6 +4539,27 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
             return accepted;
         }
 
+        pub fn preflightAssembly(requested_mode: Mode, transcript_image_available: bool, assembly: Assembly) AcceptanceReport {
+            return preflightAssemblyEvidence(requested_mode, transcript_image_available, transcript_image_available, assembly);
+        }
+
+        pub fn preflightAssemblyEvidence(requested_mode: Mode, transcript_image_available: bool, fabric_replay_transcript_available: bool, assembly: Assembly) AcceptanceReport {
+            if (assembly.root_target_ref.target_ref_fingerprint != target_ref.target_ref_fingerprint) {
+                return rejectedAcceptance(target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
+            }
+            if (assembly.root_target_ref.world_surface_fingerprint != target_ref.world_surface_fingerprint) {
+                return rejectedAcceptance(target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
+            }
+            if (assembly.root_target_ref.target_certificate_fingerprint != target_ref.target_certificate_fingerprint) {
+                return rejectedAcceptance(target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
+            }
+            const report = if (assemblyFabricPlanForTarget(assembly)) |plan|
+                acceptanceReportWithFabricPlanEvidence(requested_mode, transcript_image_available, fabric_replay_transcript_available, plan)
+            else
+                acceptanceReport(requested_mode, transcript_image_available);
+            return reportWithAssemblyEvidence(report, assembly);
+        }
+
         pub fn acceptanceReportWithSupervision(requested_mode: Mode, transcript_image_available: bool, supervision_policy: SupervisionPolicy) AcceptanceReport {
             const report = acceptanceReportFor(Target, bindings, policy, requested_mode, transcript_image_available);
             return acceptanceReportWithSupervisionFromReport(report, requested_mode, transcript_image_available, supervision_policy, null, false);
@@ -4473,6 +4602,20 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
             return acceptanceReportWithFabricPlanPermitRoutes(report, requested_mode, plan, permit);
         }
 
+        pub fn preflightAssemblyWithPermit(requested_mode: Mode, transcript_image_available: bool, assembly: Assembly, permit: RunPermit) AcceptanceReport {
+            if (permit.link_plan_fingerprint != null and permit.link_plan_fingerprint.? != assembly.link_plan_fingerprint) return rejectedAcceptance(target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
+            if (permit.linker_certificate_fingerprint != null and permit.linker_certificate_fingerprint.? != assembly.linker_certificate_fingerprint) return rejectedAcceptance(target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
+            if (permit.assembly_fingerprint != null and permit.assembly_fingerprint.? != assembly.assembly_fingerprint) return rejectedAcceptance(target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
+            const base_report = preflightAssembly(requested_mode, transcript_image_available, assembly);
+            if (!base_report.accepted) return base_report;
+            const maybe_plan = assemblyFabricPlanForTarget(assembly);
+            const permit_report = acceptanceReportWithPermitFromReport(base_report, requested_mode, transcript_image_available, permit, maybe_plan, false);
+            if (maybe_plan) |plan| {
+                return reportWithAssemblyEvidence(acceptanceReportWithFabricPlanPermitRoutes(permit_report, requested_mode, plan, permit), assembly);
+            }
+            return reportWithAssemblyEvidence(permit_report, assembly);
+        }
+
         pub fn acceptanceReportWithFabricPlanAndPermitForHandoff(requested_mode: Mode, transcript_image_available: bool, plan: Fabric.Plan, permit: RunPermit) AcceptanceReport {
             return acceptanceReportWithFabricPlanAndPermitForHandoffEvidence(requested_mode, transcript_image_available, transcript_image_available, plan, permit);
         }
@@ -4500,6 +4643,34 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
                 }
             }
             return report;
+        }
+
+        fn assemblyFabricPlanForTarget(assembly: Assembly) ?Fabric.Plan {
+            for (assembly.fabric_plans) |plan| {
+                if (plan.target_ref_fingerprint == target_ref.target_ref_fingerprint and
+                    plan.world_surface_fingerprint == target_ref.world_surface_fingerprint and
+                    plan.target_certificate_fingerprint == target_ref.target_certificate_fingerprint)
+                {
+                    return plan;
+                }
+            }
+            return null;
+        }
+
+        fn reportWithLinkerCertificate(report: AcceptanceReport, linker_certificate_fingerprint: u64) AcceptanceReport {
+            var result = report;
+            result.linker_certificate_fingerprint = linker_certificate_fingerprint;
+            result.report_fingerprint = fingerprintAcceptanceReport(result);
+            return result;
+        }
+
+        fn reportWithAssemblyEvidence(report: AcceptanceReport, assembly: Assembly) AcceptanceReport {
+            var result = report;
+            result.link_plan_fingerprint = assembly.link_plan_fingerprint;
+            result.linker_certificate_fingerprint = assembly.linker_certificate_fingerprint;
+            result.assembly_fingerprint = assembly.assembly_fingerprint;
+            result.report_fingerprint = fingerprintAcceptanceReport(result);
+            return result;
         }
 
         fn acceptanceReportWithPermitFromReport(base_report: AcceptanceReport, requested_mode: Mode, transcript_image_available: bool, permit: RunPermit, fabric_plan: ?Fabric.Plan, comptime fabric_owns_bound_ports: bool) AcceptanceReport {
@@ -9149,6 +9320,9 @@ pub const Runspace = struct {
         if (receipt.module_ref_fingerprint != admitted_run.module_ref_fingerprint) return error.InvalidFrameEncoding;
         if (receipt.environment_certificate_fingerprint != admitted_run.environment_certificate_fingerprint) return error.InvalidFrameEncoding;
         if (receipt.run_permit_fingerprint != if (admitted_run.run_permit) |permit| permit.permit_fingerprint else null) return error.InvalidFrameEncoding;
+        if (receipt.link_plan_fingerprint != admitted_run.link_plan_fingerprint) return error.InvalidFrameEncoding;
+        if (receipt.linker_certificate_fingerprint != admitted_run.linker_certificate_fingerprint) return error.InvalidFrameEncoding;
+        if (receipt.assembly_fingerprint != admitted_run.assembly_fingerprint) return error.InvalidFrameEncoding;
         if (receipt.accepted_mode != admitted_run.mode) return error.InvalidFrameEncoding;
     }
 
@@ -10046,6 +10220,11 @@ pub const Runspace = struct {
             self.fabric_route_plan_fingerprints.appendAssumeCapacity(plan.plan_fingerprint);
         }
         for (plan.value_mappings) |mapping| self.fabric_value_mappings.appendAssumeCapacity(mapping);
+    }
+
+    pub fn installAssembly(self: *@This(), assembly: Assembly) !void {
+        try validateTargetRef(assembly.root_target_ref);
+        try assembly.installIntoRunspace(self);
     }
 
     pub fn routePending(self: *@This(), mailbox_id: u64, plan: Fabric.Plan) !Fabric.Invocation {
@@ -20823,6 +21002,9 @@ fn fingerprintAcceptanceReport(report: AcceptanceReport) u64 {
     hashU64(&hasher, report.world_surface_fingerprint);
     hashU64(&hasher, report.target_certificate_fingerprint);
     if (report.fabric_plan_fingerprint) |fingerprint| hashU64(&hasher, fingerprint);
+    if (report.link_plan_fingerprint) |fingerprint| hashU64(&hasher, fingerprint);
+    if (report.linker_certificate_fingerprint) |fingerprint| hashU64(&hasher, fingerprint);
+    if (report.assembly_fingerprint) |fingerprint| hashU64(&hasher, fingerprint);
     hashU64(&hasher, @intFromEnum(report.requested_mode));
     hashBool(&hasher, report.accepted);
     hashU64(&hasher, report.required_port_count);
@@ -21045,6 +21227,18 @@ fn fingerprintRunPermit(permit: RunPermit) u64 {
     hashBool(&hasher, permit.transcript_image_available);
     if (permit.fabric_plan_fingerprint) |fingerprint| {
         hashBytes(&hasher, "fabric_plan_fingerprint");
+        hashU64(&hasher, fingerprint);
+    }
+    if (permit.link_plan_fingerprint) |fingerprint| {
+        hashBytes(&hasher, "link_plan_fingerprint");
+        hashU64(&hasher, fingerprint);
+    }
+    if (permit.linker_certificate_fingerprint) |fingerprint| {
+        hashBytes(&hasher, "linker_certificate_fingerprint");
+        hashU64(&hasher, fingerprint);
+    }
+    if (permit.assembly_fingerprint) |fingerprint| {
+        hashBytes(&hasher, "assembly_fingerprint");
         hashU64(&hasher, fingerprint);
     }
     if (permit.admission_receipt_fingerprint) |fingerprint| {
@@ -21704,6 +21898,7 @@ fn fingerprintAdmissionRequest(request: Admission.AdmissionRequest) u64 {
     hashOptionalU64(&hasher, request.environment_certificate_fingerprint);
     hashOptionalU64(&hasher, request.run_permit_fingerprint);
     hashOptionalU64(&hasher, request.fabric_plan_fingerprint);
+    hashLinkerMetadataIfPresent(&hasher, request.link_plan_fingerprint, request.linker_certificate_fingerprint, request.assembly_fingerprint);
     hashOptionalU64(&hasher, request.requested_branch_id);
     hashOptionalU64(&hasher, request.requested_checkpoint_ref);
     hashU64(&hasher, request.metadata.len);
@@ -21725,6 +21920,7 @@ fn fingerprintAdmissionReport(report: Admission.AdmissionReport) u64 {
     hashOptionalU64(&hasher, report.import_set_fingerprint);
     hashOptionalU64(&hasher, report.environment_acceptance_report_fingerprint);
     hashOptionalU64(&hasher, report.run_permit_fingerprint);
+    hashLinkerMetadataIfPresent(&hasher, report.link_plan_fingerprint, report.linker_certificate_fingerprint, report.assembly_fingerprint);
     hashOptionalU64(&hasher, report.handoff_preflight_report_fingerprint);
     hashU64(&hasher, report.blockers.len);
     for (report.blockers) |blocker| hashU64(&hasher, @intFromEnum(blocker));
@@ -21748,6 +21944,7 @@ fn fingerprintAdmissionReceipt(receipt: Admission.AdmissionReceipt) u64 {
     hashOptionalU64(&hasher, receipt.target_match_fingerprint);
     hashOptionalU64(&hasher, receipt.environment_certificate_fingerprint);
     hashOptionalU64(&hasher, receipt.run_permit_fingerprint);
+    hashLinkerMetadataIfPresent(&hasher, receipt.link_plan_fingerprint, receipt.linker_certificate_fingerprint, receipt.assembly_fingerprint);
     hashOptionalU64(&hasher, receipt.admitted_run_fingerprint);
     hashU64(&hasher, @intFromEnum(receipt.accepted_mode));
     hashU64(&hasher, receipt.warnings.len);
@@ -21767,6 +21964,7 @@ fn fingerprintAdmittedRun(run: Admission.AdmittedRun) u64 {
     hashOptionalU64(&hasher, run.environment_certificate_fingerprint);
     hashOptionalU64(&hasher, run.environment_acceptance_report_fingerprint);
     hashOptionalU64(&hasher, if (run.run_permit) |permit| permit.permit_fingerprint else null);
+    hashLinkerMetadataIfPresent(&hasher, run.link_plan_fingerprint, run.linker_certificate_fingerprint, run.assembly_fingerprint);
     hashOptionalU64(&hasher, if (run.fabric_plan) |plan| plan.plan_fingerprint else null);
     hashOptionalU64(&hasher, if (run.run_image) |image| image.run_image_fingerprint else null);
     hashOptionalU64(&hasher, if (run.transcript_image) |image| image.transcript_image_fingerprint else null);
@@ -21774,6 +21972,14 @@ fn fingerprintAdmittedRun(run: Admission.AdmittedRun) u64 {
     hashOptionalU64(&hasher, run.selected_checkpoint_ref);
     hashU64(&hasher, @intFromEnum(run.mode));
     return hasher.final();
+}
+
+fn hashLinkerMetadataIfPresent(hasher: *std.hash.Wyhash, link_plan_fingerprint: ?u64, linker_certificate_fingerprint: ?u64, assembly_fingerprint: ?u64) void {
+    if (link_plan_fingerprint == null and linker_certificate_fingerprint == null and assembly_fingerprint == null) return;
+    hashBytes(hasher, "world.linker.metadata");
+    hashOptionalU64(hasher, link_plan_fingerprint);
+    hashOptionalU64(hasher, linker_certificate_fingerprint);
+    hashOptionalU64(hasher, assembly_fingerprint);
 }
 
 fn fingerprintValueImage(

@@ -1,63 +1,62 @@
 <proposed_plan>
-Iteration: 7
+Iteration: 1
 
-# World Fabric Kernel Execution Plan
+# World Assembly Linker Kernel Execution Plan
 
 ## Round Delta
-- Converted the Fabric milestone into a dependency-ordered implementation campaign with durable tasks, proof gates, and explicit non-goal boundaries.
-- Hardened the governing invariant: a parent residual WorldPort may be satisfied by Fabric only through an explicit deterministic route whose provider identity, value mapping, supervision check, causal invocation, receipt, and parent response evidence are fingerprinted in the same Runspace.
-- Split declarative Fabric model, Runspace execution, supervision/admission integration, guest/replay/handoff behavior, examples/docs, and final proof into separate gates so route execution cannot precede coverage/cycle/value witnesses.
+- Converted the Linker milestone into a dependency-ordered implementation campaign with durable tasks, proof gates, explicit non-goals, and kernel-boundary checks.
+- Selected a separate `src/linker.zig` kernel as the canonical owner of closed-world graph reasoning and route synthesis; `src/world.zig` remains the public facade and integration owner for Runspace, Admission, Environment, Supervision, Guest, Handoff, and Fabric execution APIs.
+- Hardened the governing invariant: Fabric executes explicit witnessed routes; Linker only synthesizes those routes from a closed local catalog, and every accepted route must carry provider identity, compatible value refs, explicit mappings, policy, match, graph, and certificate witnesses without handler calls or mailbox mutation.
 
 ## Summary
-Add World Fabric as a local deterministic composition layer for admitted Boundary runs. Environment says what the host can provide; Fabric says how admitted Boundary runs can provide for each other. The implementation must add `world.Fabric` types for routes, plans, bindings, value mappings, invocations, receipts, reports, and coverage; integrate Fabric into Runspace mailbox routing; supervise nested provider work under the caller's permit; preserve timeline and receipt causality; fail closed for cycles, depth, active handoff, unsupported shared-provider semantics, and unsupported value conversions; and demonstrate target-provider, agent-tool, nested, supervised-denial, cycle-blocked, and guest-provider scenarios.
+Add World Linker as a deterministic closed-world assembly kernel. Linker takes a root target/module/import set plus an explicit local catalog of candidate providers, admitted runs, guest providers, replay sources, reject routes, environment adapter coverage, and hints. It indexes imports/exports, matches by stable value refs, detects ambiguity, unresolved imports, cycles, depth/provider limits, and policy blockers, synthesizes ordinary `Fabric.Route` / `Fabric.Plan` records, emits `LinkGraph`, `LinkPlan`, `LinkReport`, `LinkCertificate`, and creates executable `Assembly` values that can be preflighted, installed into Runspace, guest-checked, replayed, and handed off with metadata.
 
 ## Non-Goals/Out of Scope
-No Boundary provider linking, Boundary normalization, TreatyResolver or ProviderHarness hot path, service discovery, network transport, storage backend, xitdb, scheduler thread, async runtime, real model/tool/file/human integration, provider lifecycle manager, WASM host package, Boundary LoadedModule.Session execution, package manager, artifact registry, signing/encryption, cryptographic security claims, or agent framework.
+No Boundary provider linking, Boundary normalization, TreatyResolver or ProviderHarness hot path, service discovery, package manager, artifact registry, network transport, storage backend, xitdb, scheduler thread, async runtime, real model/tool/file/human integration, provider lifecycle manager, WASM host package, Boundary LoadedModule.Session execution, cryptographic signing/encryption, cryptographic security claims, or agent framework.
 
 ## Interfaces/Types/APIs Impacted
-- Add `world.Fabric`, with `Route`, `Plan`, `Binding`, `ValueMapping`, `Invocation`, `Receipt`, `Report`, and `CoverageReport`.
-- Add route kinds: `adapter`, `target_export`, `admitted_run`, `guest`, `replay`, `reject`, and `unsupported`.
-- Add version constants for Fabric route, plan, value mapping, invocation, receipt, and coverage report format/fingerprint versions.
-- Extend Runspace with Fabric plan installation, deterministic route execution for pending mailbox entries, provider parking/completion handling, Fabric receipts, and Fabric event kinds.
-- Extend supervision with Fabric invocation/provider/depth accounting and deny-before-provider-install checks.
-- Extend admission/environment preflight with Fabric coverage.
-- Extend handoff to preserve completed Fabric history and fail closed on active Fabric exports unless explicitly supported.
-- Add examples and build steps for target-provider, agent-tool, nested, supervised denial, cycle rejection, and optional guest provider.
+- Add `src/linker.zig`, `world.Linker`, and ergonomic `world.Assembly` alias only if it does not bloat the root surface.
+- Add Linker constants for policy, catalog, entry, indexes, matches, hints, route synthesis, graph, plan, report, certificate, and assembly fingerprint/format versions.
+- Add `Linker.Input`, `Policy`, `Catalog`, `ImportIndex`, `ExportIndex`, `Match`, `RouteSynthesis`, `Graph`, `Plan`, `Report`, `Certificate`, and `Assembly`.
+- Extend Fabric integration with `Linker.assertFabricInvariant(plan)` and synthesized ordinary Fabric routes only.
+- Add additive hooks for Runspace assembly installation, Environment residual preflight, Admission assembly provenance, Supervision optional link/assembly fingerprints, Guest linked conformance metadata, and Handoff linked metadata/fail-closed active export behavior.
+- Add examples, docs, build steps, tests, and lint boundary guards.
 
 ## Data Flow
-1. Parent run parks on a `PendingPort`; Runspace records the mailbox entry and pending request as today.
-2. Fabric plan lookup uses dense `world_port_id`, not operation-name string dispatch, and selects an explicit route.
-3. Route creates or adopts a deterministic provider path in the same Runspace: target export, admitted run when safe, guest, replay source, reject, adapter, or unsupported fail-closed route.
-4. Value mapping converts only supported canonical value-image relationships: payload-to-provider-args, unit-args, and provider-result-to-parent-response.
-5. Provider run executes under nested supervision; if it parks, its pending port remains visible in the same mailbox while the parent invocation stays `provider_parked`.
-6. Provider completion maps its final result into one parent `Frame.Response`, resumes exactly one parent mailbox entry, and records invocation, receipt, and timeline causality.
-7. Replay and verify use transcript-backed images; active Fabric handoff fails closed in v1; completed Fabric history is exported as summary evidence where available.
+1. Caller supplies a root target/module/import set and a closed local catalog; Linker does not fetch, scan, discover, or resolve externally.
+2. Linker builds import/export indexes by target/module refs and stable value refs.
+3. Each required import is matched against explicit candidate exports, hints, guest/replay/reject/adapter entries, and policy.
+4. Ambiguous, mismatched, unresolved, cyclic, depth-exceeding, provider-limit-exceeding, inadmissible, unsupervised, or guest-unconformant candidates become deterministic blockers.
+5. Accepted matches become ordinary Fabric routes with explicit value mappings, witnesses, provider identity refs, and parent response mapping.
+6. LinkGraph records route/import/provider/environment/replay/guest/unresolved dependencies and blockers.
+7. LinkPlan emits per-target Fabric plans, residual external environment requirements, provider usage, warnings, blockers, report, certificate, and optional executable Assembly.
+8. Assembly installs the explicit Fabric plans through Runspace APIs only, and preflights residual environment/supervision/admission/guest/handoff metadata without executing handlers during linking.
 
 ## Tests/Acceptance
-- Unit: route/plan/binding/value-mapping/invocation/receipt fingerprints, route representation, missing coverage, deterministic ordering, cycle/depth/provider-run-limit blockers, blocker/warning stability.
-- Runspace: parent pending port routes to provider target run, provider parked state remains visible, provider completion resumes exactly one parent request, nested routes complete, replay route satisfies parent response, reject route is deterministic.
-- Supervision: Fabric invocation/provider/depth accounting, deny-before-provider-run, depth budget, provider-run budget, and receipt blockers.
-- Timeline/handoff/admission/environment: Fabric events, completed history summary, active handoff fail-closed, fabric-covered preflight accept, missing/mismatched route reject, stable coverage report.
-- Guest: NativeGuest route works and conformance vector passes; actual wasm provider execution remains optional behind existing runtime config.
-- Agent/examples: tool provider Fabric route works without native tool handler, nested provider Fabric works, final outputs match fixtures.
-- Regression: existing Machine, Timeline, Handoff, Supervision, Admission, Runspace, and Guest tests and examples remain green.
+- Catalog: stable fingerprints, target/module/admitted-run/guest/replay/reject/environment entries, no pointer identity in fingerprints.
+- Indexes: root/provider imports and exports are indexed deterministically and fingerprints are stable.
+- Match and hints: exact value-ref matches pass; payload/response/count mismatches fail; ambiguity rejects under strict policy; hints resolve ambiguity without bypassing value, cycle, depth, supervision, admission, or guest policy.
+- Route synthesis and invariant: target/export, replay, reject, guest/audit, and adapter coverage routes synthesize as ordinary Fabric routes; witnesses are complete; Fabric invariant check passes.
+- Graph/Plan/Report/Certificate: unresolved/external/cycle/depth/provider-limit blockers are deterministic; closed, external, and partial plans are distinguished; certificates bind plan/graph/routes/matches/hints/policy.
+- Assembly/integrations: assembly fingerprints are stable, residual ImportSet is correct, Environment preflight only requires residual imports, Runspace installs plans through public APIs, supervision budgets bind linked work, no handler calls occur during creation.
+- Executable examples: one-provider, agent-tool residual environment, nested provider, ambiguity + hint, cycle rejection, and linked guest conformance.
+- Regression: Fabric, Guest, Runspace, Admission, Supervision, Handoff, Timeline, Machine tests and examples remain green.
 
 ## Rollback/Abort Criteria
-- Abort or split if Fabric requires a scheduler thread, async runtime, service discovery, network/storage backend, or provider lifecycle manager.
-- Abort if target-export routing needs Boundary provider linking, Boundary normalization, TreatyResolver, ProviderHarness, or Boundary LoadedModule.Session execution on the hot path.
-- Abort if route fingerprints need runtime pointers, request tokens, credentials, handles, allocator identities, thread ids, or external service clients.
-- Abort if value mapping requires host callbacks, JSON conversion, dynamic schema mapping, stringly conversion, or cross-type coercion.
-- Abort if supervision cannot deny before provider installation or active handoff cannot fail closed.
+- Abort or split if Linker needs service discovery, package registry, artifact registry, network/storage/xitdb, scheduler, async runtime, provider lifecycle, real integrations, Boundary normalization/linking, TreatyResolver, ProviderHarness, Boundary LoadedModule execution, or cryptographic claims.
+- Abort if route matching needs operation-name string dispatch, runtime handler pointer identity, allocator/thread/request-token identity, host callbacks, or cross-type coercion.
+- Abort if Assembly installation requires direct Runspace mailbox mutation, parent resume bypass, or handler invocation during linking.
+- Abort if Admission, Environment, Supervision, Guest, or Handoff invariants cannot be preserved through additive preflight/provenance hooks.
 
 ## Implementation Brief
-1. step=fabric-core-model; owner=implementation; success_criteria=version constants, `world.Fabric` namespace, route/plan/binding/value-mapping/invocation/receipt/report/coverage structs, deterministic fingerprints, and focused core model tests compile and pass.
-2. step=value-coverage-cycle; owner=implementation; success_criteria=value mappings enforce exact supported conversions, coverage report accounts for fabric-covered imports, plan ordering/lookup/missing-route/cycle/depth/provider-limit checks pass.
-3. step=runspace-fabric-routing; owner=implementation; success_criteria=Runspace installs Fabric plans, routes pending mailboxes to target-export/provider/replay/reject routes, records invocations/receipts/events, resumes exactly one parent request, and exposes provider parked state.
-4. step=supervision-admission-environment; owner=implementation; success_criteria=Fabric invocation/provider/depth budgets and policy flags deny before provider installation; admission/environment preflight accepts fabric-covered ports and rejects missing/mismatched routes.
-5. step=guest-replay-handoff-timeline; owner=implementation; success_criteria=NativeGuest and replay routes work, Fabric timeline events are stable, completed Fabric history exports in summaries, and active Fabric handoff fails closed with `ActiveFabricUnsupported`.
-6. step=examples-docs-build; owner=implementation; success_criteria=Fabric examples and build steps are added; README and `docs/fabric.md` explain route kinds, value mapping, cycle/depth, supervision, Runspace, handoff, guest/replay, and non-goals.
-7. step=fixed-point-review; owner=verification; success_criteria=no duplicate truth owner, no additive scaffold, no unresolved adversarial/ablation veto, no no-goal leak, and one-change challenge produces no further required code change.
-8. step=proof-closeout-ship; owner=verification; success_criteria=all listed format, diff, build, check, wasm, example, filtered-test, full-test, and lint commands pass; `$st` projection is clean; `$ship` opens or updates a PR with proof.
+1. step=linker-kernel-boundary; owner=implementation; success_criteria=`src/linker.zig`, `world.Linker`, version constants, root aliases, and kernel-boundary lint/test scaffolding compile and keep `src/world.zig` as facade.
+2. step=policy-catalog-indexes; owner=implementation; success_criteria=Policy presets/fingerprints, Catalog entries/fingerprints, ImportIndex, ExportIndex, explicit provider descriptors, and stable value-ref compatibility tests pass.
+3. step=matching-graph-blockers; owner=implementation; success_criteria=Match, Hint, blockers/warnings, ambiguity resolution, unresolved/external classification, graph nodes/edges, cycle/depth/provider-limit detection, and deterministic graph fingerprints pass focused tests.
+4. step=route-plan-certificate; owner=implementation; success_criteria=RouteSynthesis emits ordinary Fabric routes/plans, mandatory Fabric invariant check passes, LinkPlan/Report/Certificate fingerprints bind policy/catalog/graph/routes/matches/hints and focused tests pass.
+5. step=assembly-integrations; owner=implementation; success_criteria=Assembly residual import derivation, Runspace installation delegation, Environment preflight, Admission provenance, Supervision fingerprints/budget hooks, Guest linked conformance metadata, and Handoff metadata/fail-closed behavior pass focused tests.
+6. step=examples-docs-build; owner=implementation; success_criteria=six linker examples, build run steps, README update, `docs/linker.md`, and check-step wiring compile and demonstrate one-provider, agent-tool, nested, ambiguity, cycle, and guest-conformance scenarios.
+7. step=fixed-point-review; owner=verification; success_criteria=no duplicate truth owner, no unretired additive scaffold, no unresolved adversarial/ablation veto, no non-goal leak, no kernel-boundary breach, and one-change challenge produces no further required code change.
+8. step=proof-closeout-ship; owner=verification; success_criteria=all requested format, diff, build, check, wasm, linker examples, existing examples, focused filters, full tests, and lint commands pass; `$st` projection is clean; `$ship` opens or updates a PR with proof.
 
-Iteration: 7
+Iteration: 1
 </proposed_plan>

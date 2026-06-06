@@ -162,6 +162,385 @@ test "fabric route fingerprint stable and route kinds represented" {
     try std.testing.expectEqual(world.Fabric.RouteKind.guest, guest.kind);
 }
 
+test "linker namespace exposes kernel boundary and stable policy fingerprint" {
+    try std.testing.expectEqual(@as(u32, 1), world.world_linker_policy_fingerprint_version);
+    try std.testing.expectEqual(@as(u32, 1), world.world_linker_catalog_fingerprint_version);
+    try std.testing.expectEqual(@as(u32, 1), world.world_assembly_fingerprint_version);
+    try std.testing.expect(world.Linker.Boundary.owns_algebra);
+    try std.testing.expect(!world.Linker.Boundary.linker_calls_handlers);
+    try std.testing.expect(!world.Linker.Boundary.linker_mutates_runspace_mailbox);
+    try std.testing.expect(!world.Linker.Boundary.linker_resumes_parent_requests);
+    try std.testing.expect(!world.Linker.Boundary.linker_discovers_providers);
+
+    const strict = world.Linker.Policy.strict_closed;
+    const same = world.Linker.Policy.strict_closed;
+    try std.testing.expectEqual(strict.fingerprint(), same.fingerprint());
+
+    const external = world.Linker.Policy.allow_external_ports;
+    try std.testing.expect(strict.fingerprint() != external.fingerprint());
+}
+
+test "link catalog entry fingerprint is stable and excludes pointer identity" {
+    const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    const result_ref = world.Linker.ValueRef{ .value_table_id = 1, .value_ref_fingerprint = 0x1234 };
+    const export_descriptor = world.Linker.ExportDescriptor.init(.{
+        .target_ref = provider_ref,
+        .result_ref = result_ref,
+        .label = "strict",
+    });
+    const summary = world.Admission.ExportSummary.init(.{
+        .target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+        .result_value_ref_fingerprint = result_ref.fingerprint(),
+        .target_label = "strict",
+    });
+    const entry = world.Linker.Catalog.Entry.init(.{
+        .provider_kind = .target,
+        .target_ref = provider_ref,
+        .export_summary = summary,
+        .export_descriptor = export_descriptor,
+        .import_set = world.ImportSet.fromTarget(fixtures.Strict.Target),
+        .label = "strict",
+    });
+    const same = world.Linker.Catalog.Entry.init(.{
+        .provider_kind = .target,
+        .target_ref = provider_ref,
+        .export_summary = summary,
+        .export_descriptor = export_descriptor,
+        .import_set = world.ImportSet.fromTarget(fixtures.Strict.Target),
+        .label = "strict",
+    });
+    try std.testing.expectEqual(entry.entry_fingerprint, same.entry_fingerprint);
+
+    const entries = [_]world.Linker.Catalog.Entry{entry};
+    const catalog = world.Linker.Catalog.init(&entries);
+    const same_catalog = world.Linker.Catalog.init(&entries);
+    try std.testing.expectEqual(catalog.catalog_fingerprint, same_catalog.catalog_fingerprint);
+}
+
+test "import index and export index expose closed catalog requirements" {
+    const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const provider_ref = world.TargetRef.fromTarget(fixtures.ProviderPorts.Target);
+    const strict_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
+    const provider_import = world.ImportRequirement.fromTargetPort(fixtures.ProviderPorts.Target, 0);
+    const provider_result_ref = world.Linker.ValueRef{ .value_table_id = 1 };
+    const strict_result_ref = world.Linker.ValueRef{ .value_table_id = 1 };
+    const provider_export = world.Linker.ExportDescriptor.init(.{
+        .target_ref = provider_ref,
+        .result_ref = provider_result_ref,
+        .label = "provider",
+    });
+    const strict_export = world.Linker.ExportDescriptor.init(.{
+        .target_ref = strict_ref,
+        .result_ref = strict_result_ref,
+        .label = "strict",
+    });
+    const entries = [_]world.Linker.Catalog.Entry{
+        world.Linker.Catalog.Entry.init(.{
+            .provider_kind = .target,
+            .target_ref = provider_ref,
+            .export_descriptor = provider_export,
+            .import_set = world.ImportSet.fromTarget(fixtures.ProviderPorts.Target),
+            .imports = &.{provider_import},
+            .label = "provider",
+        }),
+        world.Linker.Catalog.Entry.init(.{
+            .provider_kind = .target,
+            .target_ref = strict_ref,
+            .export_descriptor = strict_export,
+            .import_set = world.ImportSet.fromTarget(fixtures.Strict.Target),
+            .label = "strict",
+        }),
+    };
+    const catalog = world.Linker.Catalog.init(&entries);
+    const input = world.Linker.Input{
+        .root_target_ref = root_ref,
+        .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
+        .root_imports = &.{root_import},
+        .catalog = catalog,
+    };
+    const import_index = world.Linker.ImportIndex.init(input);
+    const same_import_index = world.Linker.ImportIndex.init(input);
+    try std.testing.expectEqual(import_index.index_fingerprint, same_import_index.index_fingerprint);
+    try std.testing.expectEqual(@as(usize, 1), import_index.importsFor(root_ref).len);
+    try std.testing.expectEqual(@as(usize, 1), import_index.importsFor(provider_ref).len);
+    try std.testing.expectEqual(provider_import.requirement_fingerprint, import_index.importsFor(provider_ref)[0].requirement_fingerprint);
+
+    const export_index = world.Linker.ExportIndex.init(catalog);
+    const same_export_index = world.Linker.ExportIndex.init(catalog);
+    try std.testing.expectEqual(export_index.index_fingerprint, same_export_index.index_fingerprint);
+
+    const provider_exports = try export_index.exportsFor(std.testing.allocator, provider_ref);
+    defer std.testing.allocator.free(provider_exports);
+    try std.testing.expectEqual(@as(usize, 1), provider_exports.len);
+    try std.testing.expectEqual(provider_export.export_fingerprint, provider_exports[0].export_fingerprint);
+
+    const candidates = try export_index.candidateProvidersFor(std.testing.allocator, root_import);
+    defer std.testing.allocator.free(candidates);
+    try std.testing.expectEqual(@as(usize, 2), candidates.len);
+}
+
+test "link match accepts exact value refs and rejects mismatches" {
+    const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
+    const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    const exact_export = world.Linker.ExportDescriptor.init(.{
+        .target_ref = provider_ref,
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id },
+        .label = "strict",
+    });
+    const exact_entry = world.Linker.Catalog.Entry.init(.{
+        .provider_kind = .target,
+        .target_ref = provider_ref,
+        .export_descriptor = exact_export,
+        .label = "strict",
+    });
+    const exact = try world.Linker.matchEntry(std.testing.allocator, .strict_closed, root_import, exact_entry, null);
+    defer std.testing.allocator.free(exact.blockers);
+    defer std.testing.allocator.free(exact.warnings);
+    try std.testing.expect(exact.accepted());
+    try std.testing.expectEqual(world.Linker.MatchKind.exact_value_refs, exact.kind);
+
+    const mismatch_export = world.Linker.ExportDescriptor.init(.{
+        .target_ref = provider_ref,
+        .result_ref = .{ .value_table_id = 99 },
+        .label = "mismatch",
+    });
+    const mismatch_entry = world.Linker.Catalog.Entry.init(.{
+        .provider_kind = .target,
+        .target_ref = provider_ref,
+        .export_descriptor = mismatch_export,
+        .label = "mismatch",
+    });
+    const mismatch = try world.Linker.matchEntry(std.testing.allocator, .strict_closed, root_import, mismatch_entry, null);
+    defer std.testing.allocator.free(mismatch.blockers);
+    defer std.testing.allocator.free(mismatch.warnings);
+    try std.testing.expect(!mismatch.accepted());
+    try std.testing.expectEqual(world.Linker.Blocker.ResponseRefMismatch, mismatch.blockers[0]);
+}
+
+test "link hint resolves ambiguity without bypassing value compatibility" {
+    const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
+    const provider_ref = world.TargetRef.fromTarget(fixtures.ProviderPorts.Target);
+    const strict_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    const provider_export = world.Linker.ExportDescriptor.init(.{
+        .target_ref = provider_ref,
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id },
+        .label = "provider",
+    });
+    const strict_export = world.Linker.ExportDescriptor.init(.{
+        .target_ref = strict_ref,
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id },
+        .label = "strict",
+    });
+    const candidates = [_]world.Linker.Catalog.Entry{
+        world.Linker.Catalog.Entry.init(.{
+            .provider_kind = .target,
+            .target_ref = provider_ref,
+            .export_descriptor = provider_export,
+            .label = "provider",
+        }),
+        world.Linker.Catalog.Entry.init(.{
+            .provider_kind = .target,
+            .target_ref = strict_ref,
+            .export_descriptor = strict_export,
+            .label = "strict",
+        }),
+    };
+    const ambiguous = try world.Linker.chooseProviderMatch(std.testing.allocator, .strict_closed, root_import, &candidates, null);
+    defer std.testing.allocator.free(ambiguous.blockers);
+    defer std.testing.allocator.free(ambiguous.warnings);
+    try std.testing.expect(!ambiguous.accepted());
+    try std.testing.expectEqual(world.Linker.Blocker.AmbiguousProvider, ambiguous.blockers[0]);
+
+    const hint = world.Linker.Hint.init(.{
+        .parent_target_ref_fingerprint = root_ref.target_ref_fingerprint,
+        .parent_world_port_id = 0,
+        .provider_target_ref_fingerprint = strict_ref.target_ref_fingerprint,
+        .route_kind = .target_export,
+        .label = "strict",
+    });
+    const hinted = try world.Linker.chooseProviderMatch(std.testing.allocator, .strict_closed, root_import, &candidates, hint);
+    defer std.testing.allocator.free(hinted.blockers);
+    defer std.testing.allocator.free(hinted.warnings);
+    try std.testing.expect(hinted.accepted());
+    try std.testing.expectEqual(world.Linker.MatchKind.explicit_hint, hinted.kind);
+    try std.testing.expectEqual(strict_export.export_fingerprint, hinted.provider_export_fingerprint.?);
+}
+
+test "link graph fingerprint stable with blockers" {
+    const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
+    const target_node = world.Linker.Graph.Node.init(.{
+        .kind = .target_module,
+        .target_ref_fingerprint = root_ref.target_ref_fingerprint,
+        .label = "root",
+    });
+    const import_node = world.Linker.Graph.Node.init(.{
+        .kind = .import_requirement,
+        .import_requirement_fingerprint = root_import.requirement_fingerprint,
+        .label = "approval",
+    });
+    const edge = world.Linker.Graph.Edge.init(.target_requires_import, target_node.fingerprint, import_node.fingerprint);
+    const blockers = [_]world.Linker.Blocker{.MissingProvider};
+    const graph = world.Linker.Graph.init(.{
+        .root_target_ref_fingerprint = root_ref.target_ref_fingerprint,
+        .nodes = &.{ target_node, import_node },
+        .edges = &.{edge},
+        .blockers = &blockers,
+        .unresolved_required_count = 1,
+    });
+    const same = world.Linker.Graph.init(.{
+        .root_target_ref_fingerprint = root_ref.target_ref_fingerprint,
+        .nodes = &.{ target_node, import_node },
+        .edges = &.{edge},
+        .blockers = &blockers,
+        .unresolved_required_count = 1,
+    });
+    try std.testing.expectEqual(graph.graph_fingerprint, same.graph_fingerprint);
+    try std.testing.expect(graph.hasBlocker(.MissingProvider));
+}
+
+test "route synthesis emits Fabric plan and certificate binds witnesses" {
+    const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target);
+    const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
+    const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    const provider_export = world.Linker.ExportDescriptor.init(.{
+        .target_ref = provider_ref,
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id },
+        .label = "strict",
+    });
+    const entries = [_]world.Linker.Catalog.Entry{
+        world.Linker.Catalog.Entry.init(.{
+            .provider_kind = .target,
+            .target_ref = provider_ref,
+            .export_descriptor = provider_export,
+            .import_set = world.ImportSet.fromTarget(fixtures.Strict.Target),
+            .label = "strict",
+        }),
+    };
+    const catalog = world.Linker.Catalog.init(&entries);
+    const hint = world.Linker.Hint.init(.{
+        .parent_target_ref_fingerprint = root_ref.target_ref_fingerprint,
+        .parent_world_port_id = root_import.world_port_id,
+        .provider_target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+        .route_kind = .target_export,
+        .label = "strict",
+    });
+    var linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = root_import_set,
+        .root_imports = &.{root_import},
+        .catalog = catalog,
+        .hints = &.{hint},
+        .policy = .strict_closed,
+    });
+    defer linked.deinit();
+
+    try std.testing.expect(linked.plan.accepted());
+    try std.testing.expectEqual(world.Linker.NormalForm.closed_fabric, linked.plan.normal_form);
+    try std.testing.expectEqual(@as(usize, 1), linked.plan.fabric_plans.len);
+    try std.testing.expectEqual(@as(usize, 1), linked.plan.route_syntheses.len);
+    try std.testing.expectEqual(@as(usize, 1), linked.report.route_count);
+    try std.testing.expectEqual(@as(usize, 1), linked.certificate.route_fingerprints.len);
+    try std.testing.expectEqual(@as(usize, 1), linked.certificate.match_fingerprints.len);
+    try std.testing.expectEqual(@as(usize, 1), linked.certificate.hint_fingerprints.len);
+    try std.testing.expectEqual(linked.plan.plan_fingerprint, linked.certificate.link_plan_fingerprint);
+    try std.testing.expectEqual(linked.graph.graph_fingerprint, linked.certificate.link_graph_fingerprint);
+    try world.Linker.assertFabricInvariant(linked.plan.fabric_plans[0]);
+    try std.testing.expectEqual(world.Fabric.RouteKind.target_export, linked.plan.fabric_plans[0].routes[0].kind);
+    try std.testing.expectEqual(provider_ref.target_ref_fingerprint, linked.plan.fabric_plans[0].routes[0].provider_target_ref_fingerprint.?);
+
+    var relinked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = root_import_set,
+        .root_imports = &.{root_import},
+        .catalog = catalog,
+        .hints = &.{hint},
+        .policy = .strict_closed,
+    });
+    defer relinked.deinit();
+    try std.testing.expectEqual(linked.plan.plan_fingerprint, relinked.plan.plan_fingerprint);
+    try std.testing.expectEqual(linked.certificate.certificate_fingerprint, relinked.certificate.certificate_fingerprint);
+}
+
+test "link plan reports residual external environment imports" {
+    const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
+    var linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
+        .root_imports = &.{root_import},
+        .catalog = world.Linker.Catalog.init(&.{}),
+        .policy = .allow_external_ports,
+    });
+    defer linked.deinit();
+
+    try std.testing.expect(linked.plan.accepted());
+    try std.testing.expectEqual(world.Linker.NormalForm.fabric_with_external_ports, linked.plan.normal_form);
+    try std.testing.expectEqual(@as(usize, 0), linked.plan.fabric_plans.len);
+    try std.testing.expectEqual(@as(usize, 1), linked.report.external_import_count);
+    try std.testing.expectEqual(@as(usize, 1), linked.plan.externalImportSet().required_count);
+    try std.testing.expectEqual(root_import.requirement_fingerprint, linked.plan.externalImportSet().requirements[0].requirement_fingerprint);
+}
+
+test "assembly preflights environment and installs into Runspace through Fabric API" {
+    const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
+    const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    const provider_export = world.Linker.ExportDescriptor.init(.{
+        .target_ref = provider_ref,
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id },
+        .label = "strict",
+    });
+    const entries = [_]world.Linker.Catalog.Entry{
+        world.Linker.Catalog.Entry.init(.{
+            .provider_kind = .target,
+            .target_ref = provider_ref,
+            .export_descriptor = provider_export,
+            .import_set = world.ImportSet.fromTarget(fixtures.Strict.Target),
+            .label = "strict",
+        }),
+    };
+    var linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
+        .root_imports = &.{root_import},
+        .catalog = world.Linker.Catalog.init(&entries),
+        .policy = .strict_closed,
+    });
+    defer linked.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), linked.assembly.residualImportSet().required_count);
+    const missing_env_report = PortsMissingEnv.preflightAssembly(.fresh, true, linked.assembly);
+    try std.testing.expect(missing_env_report.accepted);
+    try std.testing.expectEqual(linked.plan.plan_fingerprint, missing_env_report.link_plan_fingerprint.?);
+    try std.testing.expectEqual(linked.certificate.certificate_fingerprint, missing_env_report.linker_certificate_fingerprint.?);
+    try std.testing.expectEqual(linked.assembly.assembly_fingerprint, missing_env_report.assembly_fingerprint.?);
+    try std.testing.expectEqual(linked.plan.fabric_plans[0].plan_fingerprint, missing_env_report.fabric_plan_fingerprint.?);
+
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsMissingEnv, .{
+        .mode = .fresh,
+        .transcript_image_available = true,
+        .fabric_plan_fingerprint = linked.plan.fabric_plans[0].plan_fingerprint,
+        .link_plan_fingerprint = linked.plan.plan_fingerprint,
+        .linker_certificate_fingerprint = linked.certificate.certificate_fingerprint,
+        .assembly_fingerprint = linked.assembly.assembly_fingerprint,
+        .policy = world.SupervisionPolicy.strict_fresh,
+    });
+    try std.testing.expectEqual(linked.plan.plan_fingerprint, permit.link_plan_fingerprint.?);
+    try std.testing.expectEqual(linked.certificate.certificate_fingerprint, permit.linker_certificate_fingerprint.?);
+    try std.testing.expectEqual(linked.assembly.assembly_fingerprint, permit.assembly_fingerprint.?);
+    const permit_report = PortsMissingEnv.preflightAssemblyWithPermit(.fresh, true, linked.assembly, permit);
+    try std.testing.expect(permit_report.accepted);
+
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+    try runspace.installAssembly(linked.assembly);
+    try runspace.installAssembly(linked.assembly);
+}
+
 test "fabric route rejects split parent port identity" {
     const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const route = world.Fabric.Route.init(.{

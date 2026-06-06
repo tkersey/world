@@ -556,6 +556,81 @@ pub fn build(b: *std.Build) void {
             ,
         },
         .{
+            .name = "world-linker-one-provider",
+            .path = "examples/world_linker_one_provider.zig",
+            .step = "run-world-linker-one-provider",
+            .desc = "Run the World Linker one-provider example.",
+            .expected_stdout =
+            \\link_plan_fingerprint=f71f872fd8212bc0
+            \\fabric_route_count=1
+            \\assembly_fingerprint=3bad616e20663752
+            \\final_result=7
+            \\native_handler_calls=0
+            \\
+            ,
+        },
+        .{
+            .name = "world-linker-agent-tool",
+            .path = "examples/world_linker_agent_tool.zig",
+            .step = "run-world-linker-agent-tool",
+            .desc = "Run the World Linker agent tool example.",
+            .expected_stdout =
+            \\resolved_import_count=1
+            \\residual_import_count=1
+            \\tool_provider_target_ref=eba3f3808cffc694
+            \\native_tool_calls=0
+            \\final_result=final=actuate skeleton complete
+            \\
+            ,
+        },
+        .{
+            .name = "world-linker-nested-provider",
+            .path = "examples/world_linker_nested_provider.zig",
+            .step = "run-world-linker-nested-provider",
+            .desc = "Run the World Linker nested provider example.",
+            .expected_stdout =
+            \\link_depth=2
+            \\route_count=2
+            \\final_result=7
+            \\native_handler_calls=0
+            \\
+            ,
+        },
+        .{
+            .name = "world-linker-ambiguity",
+            .path = "examples/world_linker_ambiguity.zig",
+            .step = "run-world-linker-ambiguity",
+            .desc = "Run the World Linker ambiguity example.",
+            .expected_stdout =
+            \\ambiguous_rejected=true
+            \\hinted_accepted=true
+            \\
+            ,
+        },
+        .{
+            .name = "world-linker-cycle-blocked",
+            .path = "examples/world_linker_cycle_blocked.zig",
+            .step = "run-world-linker-cycle-blocked",
+            .desc = "Run the World Linker cycle rejection example.",
+            .expected_stdout =
+            \\cycle_blocked=true
+            \\report_fingerprint=5147d66427118ec5
+            \\
+            ,
+        },
+        .{
+            .name = "world-linker-guest-conformance",
+            .path = "examples/world_linker_guest_conformance.zig",
+            .step = "run-world-linker-guest-conformance",
+            .desc = "Run the World Linker guest conformance example.",
+            .expected_stdout =
+            \\assembly_fingerprint=e5a4e5c54f9fc9ee
+            \\conformance_report_fingerprint=6cf534c32303347a
+            \\conformance=true
+            \\
+            ,
+        },
+        .{
             .name = "world-supervised-budget",
             .path = "examples/world_supervised_budget.zig",
             .step = "run-world-supervised-budget",
