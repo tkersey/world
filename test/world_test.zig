@@ -5195,8 +5195,8 @@ test "runspace install consumes explicit fabric plan for missing environment bin
         }),
     });
     const overlapping_fabric_only_report = PortsEnv.acceptanceReportWithFabricPlanAndPermit(.fresh, false, fabric_plan, overlapping_fabric_only_permit);
-    try std.testing.expect(!overlapping_fabric_only_report.accepted);
-    try std.testing.expectEqual(world.AcceptanceBlocker.SupervisionPolicyMismatch, overlapping_fabric_only_report.blockers[0]);
+    try std.testing.expect(overlapping_fabric_only_report.accepted);
+    try std.testing.expectEqual(@as(?u64, fabric_plan.plan_fingerprint), overlapping_fabric_only_report.fabric_plan_fingerprint);
 
     const wildcard_route = world.Fabric.Route.init(.{
         .route_id = 0x51ace_fab9,
@@ -5639,6 +5639,45 @@ test "runspace install consumes explicit fabric plan for missing environment bin
     try std.testing.expect(handoff_result.report.accepted);
     try std.testing.expect(handoff_result.admitted_run.?.fabric_plan != null);
     try std.testing.expectEqual(fabric_plan.plan_fingerprint, handoff_result.admitted_run.?.fabric_plan.?.plan_fingerprint);
+    var provenance_runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer provenance_runspace.deinit();
+    _ = try provenance_runspace.installAdmitted(handoff_result.admitted_run.?);
+    const expected_acceptance = handoff_result.report.environment_acceptance_report_fingerprint orelse return error.ExpectedAcceptanceReport;
+    const installed_provenance = provenance_runspace.slots.items[0].installed_run_image orelse return error.ExpectedRunImage;
+    try std.testing.expectEqual(expected_acceptance, installed_provenance.acceptance_report_fingerprint.?);
+    const provenance_invocation = try provenance_runspace.routePending(0, fabric_plan);
+    try std.testing.expectEqual(world.Fabric.InvocationStatus.rejected, provenance_invocation.status);
+
+    var provider_handoff_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, PortsMissingEnv, parked_package, .{ .fabric_plan = provider_plan });
+    defer provider_handoff_result.deinit(std.testing.allocator);
+    try std.testing.expect(provider_handoff_result.report.accepted);
+    var provider_provenance_runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer provider_provenance_runspace.deinit();
+    const provider_parent_handle = try provider_provenance_runspace.installAdmitted(provider_handoff_result.admitted_run.?);
+    const provider_expected_acceptance = provider_handoff_result.report.environment_acceptance_report_fingerprint orelse return error.ExpectedAcceptanceReport;
+    var provider_final_image = try world.Frame.ValueImage.fromValue(std.testing.allocator, 1, 0x5150_0021, null, @as(i32, 1), world.ValuePolicy.portable);
+    defer provider_final_image.deinit(std.testing.allocator);
+    const provider_handle = try provider_provenance_runspace.installRunImage(world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = provider_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Strict.Target).import_set_fingerprint,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+            .final_response_fingerprint = 0x5150_0021,
+            .final_value_image_fingerprint = provider_final_image.value_image_fingerprint,
+            .status = .completed,
+        }),
+        .final_result_image = provider_final_image,
+    }));
+    const provider_invocation = try provider_provenance_runspace.routePendingToProviderRun(0, provider_plan, provider_handle);
+    try std.testing.expectEqual(world.Fabric.InvocationStatus.provider_completed, provider_invocation.status);
+    _ = try provider_provenance_runspace.respondFromFabric(provider_invocation);
+    var provider_exported = try provider_provenance_runspace.exportRun(provider_parent_handle);
+    defer provider_exported.deinit(std.testing.allocator);
+    try std.testing.expectEqual(provider_expected_acceptance, provider_exported.acceptance_report_fingerprint.?);
     if (handoff_result.admitted_run) |*admitted_handoff| {
         var handoff_runtime = boundary.Runtime.init(std.testing.allocator);
         defer handoff_runtime.deinit();
@@ -5702,21 +5741,21 @@ test "runspace install consumes explicit fabric plan for missing environment bin
         }),
     });
     const bound_fabric_machine_report = PortsEnv.acceptanceReportWithFabricPlanAndPermit(.fresh, false, fabric_plan, bound_fabric_handoff_permit);
-    try std.testing.expect(!bound_fabric_machine_report.accepted);
-    try std.testing.expectEqual(world.AcceptanceBlocker.SupervisionPolicyMismatch, bound_fabric_machine_report.blockers[0]);
+    try std.testing.expect(bound_fabric_machine_report.accepted);
+    try std.testing.expectEqual(@as(?u64, fabric_plan.plan_fingerprint), bound_fabric_machine_report.fabric_plan_fingerprint);
     const bound_fabric_handoff_report = PortsEnv.acceptanceReportWithFabricPlanAndPermitForHandoff(.fresh, false, fabric_plan, bound_fabric_handoff_permit);
-    try std.testing.expect(!bound_fabric_handoff_report.accepted);
-    try std.testing.expectEqual(world.AcceptanceBlocker.SupervisionPolicyMismatch, bound_fabric_handoff_report.blockers[0]);
-    var denied_bound_fabric_handoff = world.Admission.Admitter.init(.{
+    try std.testing.expect(bound_fabric_handoff_report.accepted);
+    try std.testing.expectEqual(@as(?u64, fabric_plan.plan_fingerprint), bound_fabric_handoff_report.fabric_plan_fingerprint);
+    var admitted_bound_fabric_handoff = world.Admission.Admitter.init(.{
         .registry = registry,
         .policy = world.Admission.AdmissionPolicy.test_fixture,
     }).admitForTarget(fixtures.Ports.Target, PortsEnv, parked_package, .{
         .fabric_plan = fabric_plan,
         .permit = bound_fabric_handoff_permit,
     });
-    defer denied_bound_fabric_handoff.deinit(std.testing.allocator);
-    try std.testing.expect(!denied_bound_fabric_handoff.report.accepted);
-    try std.testing.expect(denied_bound_fabric_handoff.admitted_run == null);
+    defer admitted_bound_fabric_handoff.deinit(std.testing.allocator);
+    try std.testing.expect(admitted_bound_fabric_handoff.report.accepted);
+    try std.testing.expect(admitted_bound_fabric_handoff.admitted_run != null);
 
     const wildcard_handoff_permit = world.Supervision.issue(fixtures.Ports.Target, PortsMissingEnv, .{
         .mode = .fresh,

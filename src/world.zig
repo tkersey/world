@@ -2115,6 +2115,7 @@ pub const Admission = struct {
         module_ref_fingerprint: ?u64 = null,
         import_set_fingerprint: ?u64 = null,
         environment_certificate_fingerprint: ?u64 = null,
+        environment_acceptance_report_fingerprint: ?u64 = null,
         run_permit: ?RunPermit = null,
         fabric_plan: ?Fabric.Plan = null,
         run_image: ?RunImage = null,
@@ -2132,6 +2133,7 @@ pub const Admission = struct {
             module_ref_fingerprint: ?u64 = null,
             import_set_fingerprint: ?u64 = null,
             environment_certificate_fingerprint: ?u64 = null,
+            environment_acceptance_report_fingerprint: ?u64 = null,
             run_permit: ?RunPermit = null,
             fabric_plan: ?Fabric.Plan = null,
             run_image: ?RunImage = null,
@@ -2150,6 +2152,7 @@ pub const Admission = struct {
                 .module_ref_fingerprint = args.module_ref_fingerprint,
                 .import_set_fingerprint = args.import_set_fingerprint,
                 .environment_certificate_fingerprint = args.environment_certificate_fingerprint,
+                .environment_acceptance_report_fingerprint = args.environment_acceptance_report_fingerprint,
                 .run_permit = args.run_permit,
                 .fabric_plan = args.fabric_plan,
                 .run_image = args.run_image,
@@ -2646,6 +2649,7 @@ pub const Admission = struct {
                 .module_ref_fingerprint = if (module_ref) |module| module.module_ref_fingerprint else null,
                 .import_set_fingerprint = ImportSet.fromTarget(Target).import_set_fingerprint,
                 .environment_certificate_fingerprint = cert.certificate_fingerprint,
+                .environment_acceptance_report_fingerprint = report.environment_acceptance_report_fingerprint,
                 .run_permit = args.permit,
                 .fabric_plan = args.fabric_plan,
                 .run_image = admitted_run_image,
@@ -4423,42 +4427,44 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
 
         pub fn acceptanceReportWithSupervision(requested_mode: Mode, transcript_image_available: bool, supervision_policy: SupervisionPolicy) AcceptanceReport {
             const report = acceptanceReportFor(Target, bindings, policy, requested_mode, transcript_image_available);
-            return acceptanceReportWithSupervisionFromReport(report, requested_mode, transcript_image_available, supervision_policy);
+            return acceptanceReportWithSupervisionFromReport(report, requested_mode, transcript_image_available, supervision_policy, null);
         }
 
-        fn acceptanceReportWithSupervisionFromReport(report: AcceptanceReport, requested_mode: Mode, transcript_image_available: bool, supervision_policy: SupervisionPolicy) AcceptanceReport {
+        fn acceptanceReportWithSupervisionFromReport(report: AcceptanceReport, requested_mode: Mode, transcript_image_available: bool, supervision_policy: SupervisionPolicy, fabric_plan: ?Fabric.Plan) AcceptanceReport {
             if (!report.accepted) return report;
             if (!Supervision.modeAllowedByPolicy(supervision_policy, requested_mode)) return rejectedReport(report, &.{supervisionModeAcceptanceBlocker(requested_mode)});
             if (supervision_policy.require_transcript_image_for_replay and modeConsumesTranscript(requested_mode) and !transcript_image_available) {
                 return rejectedReport(report, &.{.TranscriptImageRequired});
             }
             inline for (dense_binding_entries) |entry| {
-                if (!Supervision.adapterAllowedByPolicy(supervision_policy, entry.adapter_kind)) {
-                    return rejectedReport(report, &.{.SupervisionPolicyMismatch});
-                }
-                if (supervision_policy.require_portable_value_images and !entry.value_policy.require_portable_values) {
-                    return rejectedReport(report, &.{.PortableValuesRequired});
-                }
-                if (supervision_policy.reject_native_only_values and entry.value_policy.allow_native_only_values) {
-                    return rejectedReport(report, &.{.NativeOnlyValueRejected});
+                if (!fabricPlanCoversPort(fabric_plan, entry.world_port_id)) {
+                    if (!Supervision.adapterAllowedByPolicy(supervision_policy, entry.adapter_kind)) {
+                        return rejectedReport(report, &.{.SupervisionPolicyMismatch});
+                    }
+                    if (supervision_policy.require_portable_value_images and !entry.value_policy.require_portable_values) {
+                        return rejectedReport(report, &.{.PortableValuesRequired});
+                    }
+                    if (supervision_policy.reject_native_only_values and entry.value_policy.allow_native_only_values) {
+                        return rejectedReport(report, &.{.NativeOnlyValueRejected});
+                    }
                 }
             }
             return report;
         }
 
         pub fn acceptanceReportWithPermit(requested_mode: Mode, transcript_image_available: bool, permit: RunPermit) AcceptanceReport {
-            return acceptanceReportWithPermitFromReport(acceptanceReportFor(Target, bindings, policy, requested_mode, transcript_image_available), requested_mode, transcript_image_available, permit);
+            return acceptanceReportWithPermitFromReport(acceptanceReportFor(Target, bindings, policy, requested_mode, transcript_image_available), requested_mode, transcript_image_available, permit, null);
         }
 
         pub fn acceptanceReportWithFabricPlanAndPermit(requested_mode: Mode, transcript_image_available: bool, plan: Fabric.Plan, permit: RunPermit) AcceptanceReport {
             const base_report = acceptanceReportWithFabricPlan(requested_mode, transcript_image_available, plan);
-            const report = acceptanceReportWithPermitFromReport(base_report, requested_mode, transcript_image_available, permit);
+            const report = acceptanceReportWithPermitFromReport(base_report, requested_mode, transcript_image_available, permit, plan);
             return acceptanceReportWithFabricPlanPermitRoutes(report, requested_mode, plan, permit);
         }
 
         pub fn acceptanceReportWithFabricPlanAndPermitForHandoff(requested_mode: Mode, transcript_image_available: bool, plan: Fabric.Plan, permit: RunPermit) AcceptanceReport {
             const base_report = acceptanceReportWithFabricPlan(requested_mode, transcript_image_available, plan);
-            const report = acceptanceReportWithPermitFromReport(base_report, requested_mode, transcript_image_available, permit);
+            const report = acceptanceReportWithPermitFromReport(base_report, requested_mode, transcript_image_available, permit, plan);
             return acceptanceReportWithFabricPlanPermitRoutes(report, requested_mode, plan, permit);
         }
 
@@ -4481,7 +4487,7 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
             return report;
         }
 
-        fn acceptanceReportWithPermitFromReport(base_report: AcceptanceReport, requested_mode: Mode, transcript_image_available: bool, permit: RunPermit) AcceptanceReport {
+        fn acceptanceReportWithPermitFromReport(base_report: AcceptanceReport, requested_mode: Mode, transcript_image_available: bool, permit: RunPermit, fabric_plan: ?Fabric.Plan) AcceptanceReport {
             const environment_target_ref = TargetRef.fromTarget(Target);
             if (permit.mode != requested_mode) {
                 return rejectedAcceptance(environment_target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
@@ -4505,7 +4511,7 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
             if (base_report.fabric_plan_fingerprint != permit.fabric_plan_fingerprint) {
                 return rejectedAcceptance(environment_target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
             }
-            const report = acceptanceReportWithSupervisionFromReport(base_report, requested_mode, transcript_image_available, permit.policy);
+            const report = acceptanceReportWithSupervisionFromReport(base_report, requested_mode, transcript_image_available, permit.policy, fabric_plan);
             if (!report.accepted) return report;
             Supervision.Supervisor.validatePermitForRun(permit, Target.WorldPortTable.entries.len) catch |err| {
                 return rejectedAcceptance(environment_target_ref, requested_mode, &.{supervisionPreflightBlocker(err)});
@@ -4513,17 +4519,19 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
             inline for (bindings) |BindingDecl| {
                 if (BindingDecl.TargetType != Target) continue;
                 if (BindingDecl.world_port_id >= Target.WorldPortTable.entries.len) continue;
-                if (permit.ruleFor(BindingDecl.world_port_id)) |rule| {
-                    if (!rule.permitsMode(requested_mode)) return rejectedReport(report, &.{.SupervisionPortRuleDenied});
-                    const adapter_kind: AdapterKind = if (@hasDecl(BindingDecl, "adapter_kind")) BindingDecl.adapter_kind else .native;
-                    if (!rule.allowed_adapter_kinds.allows(adapter_kind)) return rejectedReport(report, &.{.SupervisionPortRuleDenied});
-                    const value_policy: ValuePolicy = if (@hasDecl(BindingDecl, "value_policy")) BindingDecl.value_policy else .native_compatible;
-                    if (rule.require_portable_values and !value_policy.require_portable_values) return rejectedReport(report, &.{.SupervisionPortRuleDenied});
-                    const authority_kind = comptime authorityKindForDecl(BindingDecl);
-                    if (authority_kind) |kind| {
-                        if (!rule.allowed_authority_kinds.allows(kind)) return rejectedReport(report, &.{.SupervisionPortRuleDenied});
-                    } else if (!std.meta.eql(rule.allowed_authority_kinds, Supervision.AllowedAuthorityKinds.all)) {
-                        return rejectedReport(report, &.{.SupervisionPortRuleDenied});
+                if (!fabricPlanCoversPort(fabric_plan, BindingDecl.world_port_id)) {
+                    if (permit.ruleFor(BindingDecl.world_port_id)) |rule| {
+                        if (!rule.permitsMode(requested_mode)) return rejectedReport(report, &.{.SupervisionPortRuleDenied});
+                        const adapter_kind: AdapterKind = if (@hasDecl(BindingDecl, "adapter_kind")) BindingDecl.adapter_kind else .native;
+                        if (!rule.allowed_adapter_kinds.allows(adapter_kind)) return rejectedReport(report, &.{.SupervisionPortRuleDenied});
+                        const value_policy: ValuePolicy = if (@hasDecl(BindingDecl, "value_policy")) BindingDecl.value_policy else .native_compatible;
+                        if (rule.require_portable_values and !value_policy.require_portable_values) return rejectedReport(report, &.{.SupervisionPortRuleDenied});
+                        const authority_kind = comptime authorityKindForDecl(BindingDecl);
+                        if (authority_kind) |kind| {
+                            if (!rule.allowed_authority_kinds.allows(kind)) return rejectedReport(report, &.{.SupervisionPortRuleDenied});
+                        } else if (!std.meta.eql(rule.allowed_authority_kinds, Supervision.AllowedAuthorityKinds.all)) {
+                            return rejectedReport(report, &.{.SupervisionPortRuleDenied});
+                        }
                     }
                 }
             }
@@ -9171,6 +9179,8 @@ pub const Runspace = struct {
         if (admitted_run.run_image) |image| {
             installed_image = try cloneRunImage(self.allocator, image);
             installed_image_owned = true;
+            installed_image.?.environment_certificate_fingerprint = admitted_run.environment_certificate_fingerprint;
+            installed_image.?.acceptance_report_fingerprint = admitted_run.environment_acceptance_report_fingerprint;
             if (admitted_run.transcript_image) |transcript_image| {
                 if (admitted_run.mode == .replay_only or admitted_run.mode == .verify_only) {
                     var replay_validation = transcript_image;
@@ -9182,6 +9192,7 @@ pub const Runspace = struct {
                 try installed_image.?.validate(.{});
             }
             try applySelectedBranchToRunImage(&installed_image.?, admitted_run.selected_branch_id);
+            refreshRunImageFingerprint(&installed_image.?);
         } else if (transcript_only_replay_install) {
             installed_image = try runImageFromAdmittedTranscript(
                 self.allocator,
@@ -9191,6 +9202,9 @@ pub const Runspace = struct {
                 admitted_run.transcript_image.?,
             );
             installed_image_owned = true;
+            installed_image.?.environment_certificate_fingerprint = admitted_run.environment_certificate_fingerprint;
+            installed_image.?.acceptance_report_fingerprint = admitted_run.environment_acceptance_report_fingerprint;
+            refreshRunImageFingerprint(&installed_image.?);
             try installed_image.?.validate(.{});
         }
         var supervisor: ?Supervision.Supervisor = null;
@@ -21526,6 +21540,7 @@ fn fingerprintAdmittedRun(run: Admission.AdmittedRun) u64 {
     hashOptionalU64(&hasher, run.module_ref_fingerprint);
     hashOptionalU64(&hasher, run.import_set_fingerprint);
     hashOptionalU64(&hasher, run.environment_certificate_fingerprint);
+    hashOptionalU64(&hasher, run.environment_acceptance_report_fingerprint);
     hashOptionalU64(&hasher, if (run.run_permit) |permit| permit.permit_fingerprint else null);
     hashOptionalU64(&hasher, if (run.fabric_plan) |plan| plan.plan_fingerprint else null);
     hashOptionalU64(&hasher, if (run.run_image) |image| image.run_image_fingerprint else null);
