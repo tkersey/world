@@ -7289,14 +7289,12 @@ pub const Fabric = struct {
                 .target_export => {
                     if (self.response_status != .responded) return error.UnsupportedMapping;
                     if (self.provider_target_ref_fingerprint == null and self.provider_module_fingerprint == null) return error.ProviderRunDenied;
-                    if (self.provider_world_port_id != null) return error.ProviderRunDenied;
                     if (self.provider_transcript_image_fingerprint != null) return error.ProviderRunDenied;
                 },
                 .guest => return error.GuestRouteDenied,
                 .admitted_run => {
                     if (self.response_status != .responded) return error.UnsupportedMapping;
                     if (self.provider_target_ref_fingerprint == null and self.provider_module_fingerprint == null) return error.ProviderRunDenied;
-                    if (self.provider_world_port_id != null) return error.ProviderRunDenied;
                     if (self.provider_admission_receipt_fingerprint == null) return error.ProviderRunDenied;
                     if (self.provider_transcript_image_fingerprint != null) return error.ProviderRunDenied;
                 },
@@ -16603,12 +16601,13 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         return Error.MissingHandler;
                     }
                     if (comptime @hasField(@TypeOf(Config), "environment")) {
+                        const fabric_replay_transcript_available = admitted_transcript_image != null or
+                            @hasField(Options, "transcript_image");
                         const transcript_available = handoff_transcript_available or
-                            admitted_transcript_image != null or
-                            @hasField(Options, "transcript_image") or
+                            fabric_replay_transcript_available or
                             (@hasField(Options, "transcript") and Config.environment.policy_decl.allow_native_adapters);
                         const report = if (maybe_fabric_plan) |plan|
-                            Config.environment.acceptanceReportWithFabricPlan(effective, transcript_available, plan)
+                            Config.environment.acceptanceReportWithFabricPlanEvidence(effective, transcript_available, fabric_replay_transcript_available, plan)
                         else
                             Config.environment.acceptanceReport(effective, transcript_available);
                         if (!report.accepted) return acceptanceError(report);
@@ -16644,9 +16643,10 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             return Error.SupervisionDenied;
                         }
                         if (comptime @hasField(@TypeOf(Config), "environment")) {
+                            const fabric_replay_transcript_available = admitted_transcript_image != null or
+                                @hasField(Options, "transcript_image");
                             const transcript_available = handoff_transcript_available or
-                                admitted_transcript_image != null or
-                                @hasField(Options, "transcript_image") or
+                                fabric_replay_transcript_available or
                                 (@hasField(Options, "transcript") and Config.environment.policy_decl.allow_native_adapters);
                             const supervision_transcript_available = if (permit.policy.require_transcript_image_for_replay and modeConsumesTranscript(effective))
                                 @hasField(Options, "transcript_image") or admitted_transcript_image != null
@@ -16655,9 +16655,9 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             if (permit.policy.require_transcript_image_for_replay and modeConsumesTranscript(effective) and !supervision_transcript_available) return Error.TranscriptImageRequired;
                             const supervision_report = if (maybe_fabric_plan) |plan|
                                 if (handoff_transcript_available)
-                                    Config.environment.acceptanceReportWithFabricPlanAndPermitForHandoff(mode_value, supervision_transcript_available, plan, permit)
+                                    Config.environment.acceptanceReportWithFabricPlanAndPermitForHandoffEvidence(mode_value, supervision_transcript_available, fabric_replay_transcript_available, plan, permit)
                                 else
-                                    Config.environment.acceptanceReportWithFabricPlanAndPermit(mode_value, supervision_transcript_available, plan, permit)
+                                    Config.environment.acceptanceReportWithFabricPlanAndPermitEvidence(mode_value, supervision_transcript_available, fabric_replay_transcript_available, plan, permit)
                             else
                                 Config.environment.acceptanceReportWithPermit(mode_value, supervision_transcript_available, permit);
                             if (!supervision_report.accepted) return acceptanceError(supervision_report);

@@ -4830,7 +4830,7 @@ test "fabric core validation rejects unsupported mappings and missing routes" {
         .provider_admission_receipt_fingerprint = 0xadd1_7001,
         .provider_world_port_id = 1,
     });
-    try std.testing.expectError(error.ProviderRunDenied, pinned_admitted.validate());
+    try pinned_admitted.validate();
 
     const terminal_provider_route = world.Fabric.Route.init(.{
         .route_id = 26,
@@ -6072,6 +6072,14 @@ test "runspace direct fabric replay install requires stored transcript evidence"
         .transcript = &transcript,
     }));
     try std.testing.expectEqual(@as(usize, 0), runspace.slots.items.len);
+
+    const DirectMachine = world.Machine(fixtures.Ports.Target, PortsMissingEnv.machine_config);
+    try std.testing.expectError(error.TranscriptImageRequired, DirectMachine.start(&runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .fabric_plan = plan,
+        .transcript = &transcript,
+    }));
 }
 
 test "runspace fabric provider response completes admitted parked handoff without driver" {
@@ -7734,7 +7742,24 @@ test "runspace fabric plan validation rejects guest routes without a guest execu
     _ = provider_handle;
 }
 
-test "runspace fabric local provider routing rejects pinned completed-provider routes" {
+test "runspace fabric provider port pins are enforced by provider slot validation" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+
+    _ = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    _ = try runspace.tick();
+    const provider_handle = try runspace.installMachineRun(fixtures.Agent.Target, AgentEnv, &runtime, AgentArgs{ @as(usize, 3), fixtures.Agent.initialObservation(.skeleton) }, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    _ = try runspace.tick();
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try runspace.getSlotSummary(provider_handle)).status);
+
     const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const provider_ref = world.TargetRef.fromTarget(fixtures.Agent.Target);
     const response_mapping = fabricTestMapping(.provider_result_to_parent_response);
@@ -7745,10 +7770,10 @@ test "runspace fabric local provider routing rejects pinned completed-provider r
         .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
         .parent_world_port_id = 0,
         .provider_target_ref_fingerprint = provider_ref.target_ref_fingerprint,
-        .provider_world_port_id = 1,
+        .provider_world_port_id = 2,
         .response_value_mapping_fingerprint = response_mapping.mapping_fingerprint,
     });
-    try std.testing.expectError(error.ProviderRunDenied, route.validate());
+    try route.validate();
     const plan = world.Fabric.Plan.init(.{
         .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
         .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
@@ -7757,9 +7782,10 @@ test "runspace fabric local provider routing rejects pinned completed-provider r
         .routes = &.{route},
         .value_mappings = &.{response_mapping},
     });
-    var runspace = world.Runspace.init(std.testing.allocator, .{});
-    defer runspace.deinit();
-    try std.testing.expectError(error.ProviderRunDenied, runspace.installFabricPlan(parent_ref, plan));
+    try runspace.installFabricPlan(parent_ref, plan);
+    try std.testing.expectError(error.WrongPortId, runspace.routePendingToProviderRun(0, plan, provider_handle));
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_invocation_count);
+    try std.testing.expectEqual(@as(usize, 2), runspace.report().pending_port_count);
 }
 
 test "runspace fabric provider routing records parked provider before retained result image" {
@@ -7792,6 +7818,7 @@ test "runspace fabric provider routing records parked provider before retained r
         .provider_target_ref_fingerprint = provider_ref.target_ref_fingerprint,
         .provider_world_surface_fingerprint = provider_ref.world_surface_fingerprint,
         .provider_target_certificate_fingerprint = provider_ref.target_certificate_fingerprint,
+        .provider_world_port_id = AgentDecideDecl.world_port_id,
         .response_value_mapping_fingerprint = response_mapping.mapping_fingerprint,
     });
     const plan = world.Fabric.Plan.init(.{
