@@ -465,6 +465,177 @@ test "route synthesis emits Fabric plan and certificate binds witnesses" {
     try std.testing.expectEqual(linked.certificate.certificate_fingerprint, relinked.certificate.certificate_fingerprint);
 }
 
+test "link hint cannot rewrite provider route kind" {
+    const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
+    const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    const provider_export = world.Linker.ExportDescriptor.init(.{
+        .target_ref = provider_ref,
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id },
+        .label = "strict",
+    });
+    const entries = [_]world.Linker.Catalog.Entry{
+        world.Linker.Catalog.Entry.generatedTarget(.{
+            .target_ref = provider_ref,
+            .export_descriptor = provider_export,
+            .import_set = world.ImportSet.fromTarget(fixtures.Strict.Target),
+            .label = "strict",
+        }),
+    };
+    const hint = world.Linker.Hint.init(.{
+        .parent_target_ref_fingerprint = root_ref.target_ref_fingerprint,
+        .parent_world_port_id = root_import.world_port_id,
+        .provider_target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+        .route_kind = .replay,
+        .label = "bad-kind",
+    });
+    var linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
+        .root_imports = &.{root_import},
+        .catalog = world.Linker.Catalog.init(&entries),
+        .hints = &.{hint},
+        .policy = .strict_closed,
+    });
+    defer linked.deinit();
+
+    try std.testing.expect(!linked.plan.accepted());
+    try std.testing.expectEqual(world.Linker.NormalForm.partial_with_blockers, linked.plan.normal_form);
+    try std.testing.expectEqual(@as(usize, 0), linked.plan.fabric_plans.len);
+    try std.testing.expect(linked.graph.hasBlocker(.UnsupportedRouteKind));
+}
+
+test "link rejects provider nested imports before claiming closed Fabric" {
+    const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
+    const provider_ref = world.TargetRef.fromTarget(fixtures.ProviderPorts.Target);
+    const provider_import = world.ImportRequirement.fromTargetPort(fixtures.ProviderPorts.Target, 0);
+    const provider_export = world.Linker.ExportDescriptor.init(.{
+        .target_ref = provider_ref,
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id },
+        .label = "provider",
+    });
+    const entries = [_]world.Linker.Catalog.Entry{
+        world.Linker.Catalog.Entry.generatedTarget(.{
+            .target_ref = provider_ref,
+            .export_descriptor = provider_export,
+            .import_set = world.ImportSet.fromTarget(fixtures.ProviderPorts.Target),
+            .imports = &.{provider_import},
+            .label = "provider",
+        }),
+    };
+    var linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
+        .root_imports = &.{root_import},
+        .catalog = world.Linker.Catalog.init(&entries),
+        .policy = .strict_closed,
+    });
+    defer linked.deinit();
+
+    try std.testing.expect(!linked.plan.accepted());
+    try std.testing.expectEqual(world.Linker.NormalForm.partial_with_blockers, linked.plan.normal_form);
+    try std.testing.expectEqual(@as(usize, 0), linked.plan.fabric_plans.len);
+    try std.testing.expectEqual(@as(usize, 0), linked.report.resolved_import_count);
+    try std.testing.expectEqual(@as(usize, 2), linked.graph.max_depth_observed);
+    try std.testing.expect(linked.graph.hasBlocker(.ProviderRequiresUnsupportedImports));
+}
+
+test "link unsupported catalog route kinds become blockers before Fabric synthesis" {
+    const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
+    const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    const unsupported_export = world.Linker.ExportDescriptor.init(.{
+        .target_ref = provider_ref,
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id },
+        .label = "unsupported",
+    });
+    const entries = [_]world.Linker.Catalog.Entry{
+        world.Linker.Catalog.Entry.guest(.{
+            .target_ref = provider_ref,
+            .export_descriptor = unsupported_export,
+            .conformance_report_fingerprint = 0x675e_700d,
+            .label = "guest",
+        }),
+        world.Linker.Catalog.Entry.init(.{
+            .provider_kind = .replay_provider,
+            .target_ref = provider_ref,
+            .export_descriptor = unsupported_export,
+            .replay_transcript_image_fingerprint = 0x7777,
+            .label = "replay",
+        }),
+        world.Linker.Catalog.Entry.init(.{
+            .provider_kind = .reject_route,
+            .target_ref = provider_ref,
+            .export_descriptor = unsupported_export,
+            .label = "reject",
+        }),
+        world.Linker.Catalog.Entry.init(.{
+            .provider_kind = .environment_adapter,
+            .target_ref = provider_ref,
+            .export_descriptor = unsupported_export,
+            .environment_certificate_fingerprint = 0xe4e4,
+            .label = "adapter",
+        }),
+    };
+    var policy = world.Linker.Policy.strict_closed;
+    policy.allow_replay_routes = true;
+    policy.allow_guest_routes = true;
+    policy.allow_reject_routes = true;
+    policy.allow_adapter_fallback = true;
+    var linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
+        .root_imports = &.{root_import},
+        .catalog = world.Linker.Catalog.init(&entries),
+        .policy = policy,
+    });
+    defer linked.deinit();
+
+    try std.testing.expect(!linked.plan.accepted());
+    try std.testing.expectEqual(@as(usize, 0), linked.plan.fabric_plans.len);
+    try std.testing.expect(linked.graph.hasBlocker(.UnsupportedRouteKind));
+    try std.testing.expectEqual(@as(usize, 0), linked.report.guest_conformance_blockers);
+}
+
+test "link descriptorless route providers are unsupported blockers not missing providers" {
+    const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
+    const entries = [_]world.Linker.Catalog.Entry{
+        world.Linker.Catalog.Entry.replay(.{
+            .transcript_image_fingerprint = 0x7777,
+            .label = "replay",
+        }),
+        world.Linker.Catalog.Entry.init(.{
+            .provider_kind = .reject_route,
+            .label = "reject",
+        }),
+        world.Linker.Catalog.Entry.init(.{
+            .provider_kind = .environment_adapter,
+            .environment_certificate_fingerprint = 0xe4e4,
+            .label = "adapter",
+        }),
+    };
+    var policy = world.Linker.Policy.strict_closed;
+    policy.allow_replay_routes = true;
+    policy.allow_reject_routes = true;
+    policy.allow_adapter_fallback = true;
+    var linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
+        .root_imports = &.{root_import},
+        .catalog = world.Linker.Catalog.init(&entries),
+        .policy = policy,
+    });
+    defer linked.deinit();
+
+    try std.testing.expect(!linked.plan.accepted());
+    try std.testing.expectEqual(world.Linker.NormalForm.partial_with_blockers, linked.plan.normal_form);
+    try std.testing.expectEqual(@as(usize, 0), linked.plan.fabric_plans.len);
+    try std.testing.expect(linked.graph.hasBlocker(.UnsupportedRouteKind));
+    try std.testing.expect(!linked.graph.hasBlocker(.MissingProvider));
+}
+
 test "link plan reports residual external environment imports" {
     const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
