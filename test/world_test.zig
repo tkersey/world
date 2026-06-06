@@ -8572,6 +8572,69 @@ test "runspace fabric replay route enforces unsupervised environment value polic
     try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
 }
 
+test "runspace fabric replay route enforces driverless response value policy" {
+    var source_transcript = world.Transcript.init(std.testing.allocator);
+    defer source_transcript.deinit();
+    try recordPortsTranscript(&source_transcript);
+    var replay_image = try source_transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.native_compatible });
+    defer replay_image.deinit(std.testing.allocator);
+
+    const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const route = world.Fabric.Route.init(.{
+        .route_id = 440,
+        .kind = .replay,
+        .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .parent_world_port_id = 0,
+        .provider_transcript_image_fingerprint = replay_image.transcript_image_fingerprint,
+    });
+    const plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .routes = &.{route},
+    });
+
+    var pending_request = for (replay_image.events) |event| {
+        if (event.request_frame) |request| break try request.clone(std.testing.allocator);
+    } else return error.ExpectedFrameRequest;
+    defer pending_request.deinit(std.testing.allocator);
+    const parked_state = world.RunState.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .pending_request_fingerprint = pending_request.frame_fingerprint,
+        .turn_index = pending_request.turn_index,
+        .status = .parked_on_port,
+    });
+    const parked_image = world.RunImage.init(.{
+        .kind = .parked_run,
+        .target_ref = parent_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = parked_state,
+        .pending_request_frame = pending_request,
+        .acceptance_report_fingerprint = PortsMissingEnv.acceptanceReportWithFabricPlan(.fresh, true, plan).report_fingerprint,
+    });
+    const admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_f440,
+        .target_ref = parent_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .fabric_plan = plan,
+        .run_image = parked_image,
+        .mode = .resume_parked,
+    });
+
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+    const handle = try runspace.installAdmitted(admitted);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectError(error.UnsupportedValueImage, runspace.routePendingFromReplay(0, plan, &replay_image));
+    try std.testing.expectEqual(@as(usize, 0), replay_image.replay_cursor);
+    try std.testing.expectEqual(@as(?usize, null), replay_image.replay_limit);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_invocation_count);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_receipt_count);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+}
+
 test "runspace fabric replay response failure records failed receipt" {
     var source_transcript = world.Transcript.init(std.testing.allocator);
     defer source_transcript.deinit();

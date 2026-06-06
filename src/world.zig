@@ -10654,12 +10654,16 @@ pub const Runspace = struct {
     }
 
     fn validateFabricParentResponseValue(self: *@This(), parent_slot: Runspace.RunSlot, world_port_id: u32, image: Frame.ValueImage) !void {
+        var policy_owner = false;
         if (parent_slot.supervisor) |supervisor| {
+            policy_owner = true;
             try validateFabricParentResponseValuePolicy(image, supervisor.permit, world_port_id);
         }
         if (parent_slot.driver) |driver| {
+            policy_owner = true;
             try driver.validateFabricResponseValue(world_port_id, image);
         }
+        if (!policy_owner) try validateValueImagePolicy(image, ValuePolicy.portable);
         _ = self;
     }
 
@@ -10669,6 +10673,9 @@ pub const Runspace = struct {
                 if (err == error.NativeOnlyValue and supervisor.permit.policy.reject_native_only_values) return error.NativeValueRejected;
                 return err;
             };
+        }
+        if (parent_slot.supervisor == null and parent_slot.driver == null) {
+            try validateResponseFramePolicy(response, ValuePolicy.portable);
         }
         if (response.response_image) |image| {
             try self.validateFabricParentResponseValue(parent_slot, world_port_id, image);
