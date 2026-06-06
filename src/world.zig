@@ -7420,6 +7420,11 @@ pub const Fabric = struct {
                     }
                     if (self.parent_payload_value_table_id != null or self.provider_argument_value_table_id != null) return error.UnsupportedMapping;
                     if (self.parent_payload_value_fingerprint != null or self.provider_argument_value_fingerprint != null) return error.UnsupportedMapping;
+                    if (self.provider_result_value_fingerprint != null and self.parent_response_value_fingerprint != null and
+                        self.provider_result_value_fingerprint.? != self.parent_response_value_fingerprint.?)
+                    {
+                        return error.UnsupportedMapping;
+                    }
                 },
             }
         }

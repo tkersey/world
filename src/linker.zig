@@ -138,9 +138,6 @@ pub fn Linker(comptime W: type) type {
                     if (self.value_ref_fingerprint != null and other.value_ref_fingerprint != null) {
                         return self.value_ref_fingerprint.? == other.value_ref_fingerprint.?;
                     }
-                    if (self.schema_fingerprint != null and other.schema_fingerprint != null) {
-                        return self.schema_fingerprint.? == other.schema_fingerprint.?;
-                    }
                     return false;
                 }
                 if (self.value_table_id != null and other.value_table_id != null and self.value_table_id.? == other.value_table_id.?) return true;
@@ -1892,7 +1889,6 @@ pub fn Linker(comptime W: type) type {
             return .{
                 .value_table_id = requirement.response_value_table_id,
                 .value_ref_fingerprint = requirement.response_value_ref_fingerprint,
-                .schema_fingerprint = requirement.response_value_ref_fingerprint,
             };
         }
 
@@ -2091,7 +2087,6 @@ pub fn Linker(comptime W: type) type {
             return W.Fabric.ValueMapping.init(.{
                 .kind = .provider_result_to_parent_response,
                 .provider_result_value_table_id = provider_value,
-                .provider_result_value_fingerprint = descriptor.result_ref.value_ref_fingerprint,
                 .parent_response_value_table_id = parent_value,
                 .parent_response_value_fingerprint = requirement.response_value_ref_fingerprint,
             });

@@ -75,7 +75,7 @@ pub fn main(init: std.process.Init) !void {
     const strict_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
     const provider_export = world.Linker.ExportDescriptor.init(.{
         .target_ref = provider_ref,
-        .result_ref = .{ .value_table_id = root_import.response_value_table_id, .schema_fingerprint = root_import.response_value_ref_fingerprint },
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id, .value_ref_fingerprint = root_import.response_value_ref_fingerprint },
         .label = "provider-main",
     });
     const entries = [_]world.Linker.Catalog.Entry{
@@ -97,7 +97,7 @@ pub fn main(init: std.process.Init) !void {
     defer root_link.deinit();
     const nested_export = world.Linker.ExportDescriptor.init(.{
         .target_ref = strict_ref,
-        .result_ref = .{ .value_table_id = provider_import.response_value_table_id, .schema_fingerprint = provider_import.response_value_ref_fingerprint },
+        .result_ref = .{ .value_table_id = provider_import.response_value_table_id, .value_ref_fingerprint = provider_import.response_value_ref_fingerprint },
         .label = "strict-nested-main",
     });
     const nested_entries = [_]world.Linker.Catalog.Entry{
