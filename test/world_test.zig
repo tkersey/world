@@ -5654,6 +5654,42 @@ test "runspace install consumes explicit fabric plan for missing environment bin
         try std.testing.expectEqual(@as(u32, 0), resumed_image.pending_request_frame.?.world_port_id);
     } else return error.ExpectedAdmittedRun;
 
+    const fabric_handoff_budget_denied_permit = world.Supervision.issue(fixtures.Ports.Target, PortsMissingEnv, .{
+        .mode = .fresh,
+        .fabric_plan_fingerprint = fabric_plan.plan_fingerprint,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_handoff_accept = true,
+            .allow_fabric_routes = true,
+            .allow_reject_routes = true,
+            .allow_rejected_responses = true,
+        }),
+        .budget = world.Budget.init(.{ .max_fabric_invocations = 0 }),
+    });
+    var budget_denied_handoff_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, PortsMissingEnv, parked_package, .{
+        .fabric_plan = fabric_plan,
+        .permit = fabric_handoff_budget_denied_permit,
+    });
+    defer budget_denied_handoff_result.deinit(std.testing.allocator);
+    try std.testing.expect(!budget_denied_handoff_result.report.accepted);
+    try std.testing.expect(budget_denied_handoff_result.admitted_run == null);
+    var denied_resume_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, PortsMissingEnv, parked_package, .{ .fabric_plan = fabric_plan });
+    defer denied_resume_result.deinit(std.testing.allocator);
+    var denied_resume_admitted = denied_resume_result.admitted_run orelse return error.ExpectedAdmittedRun;
+    var denied_resume_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer denied_resume_runtime.deinit();
+    try std.testing.expectError(error.BudgetExceeded, denied_resume_admitted.@"resume"(std.testing.allocator, fixtures.Ports.Target, PortsMissingEnv, &denied_resume_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .permit = fabric_handoff_budget_denied_permit,
+    }));
+
     const bound_fabric_handoff_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
         .mode = .fresh,
         .fabric_plan_fingerprint = fabric_plan.plan_fingerprint,
@@ -6831,6 +6867,7 @@ test "runspace fabric live completed provider is adopted before response validat
     try runspace.installFabricPlan(parent_ref, plan);
     const invocation = try runspace.routePendingToProviderRun(0, plan, provider_handle);
     try std.testing.expectEqual(world.Fabric.InvocationStatus.provider_completed, invocation.status);
+    try std.testing.expectEqual(world.Runspace.EventKind.fabric_provider_completed, runspace.events.items[runspace.events.items.len - 1].kind);
     try std.testing.expectError(error.MissingValueImage, runspace.respondFromFabric(invocation));
     try std.testing.expectEqual(world.Fabric.InvocationStatus.failed, runspace.fabric_invocations.items[invocation.sequence].status);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
@@ -7531,6 +7568,7 @@ test "runspace fabric provider routing records parked provider before retained r
 
     const invocation = try runspace.routePendingToProviderRun(0, plan, provider_handle);
     try std.testing.expectEqual(world.Fabric.InvocationStatus.provider_parked, invocation.status);
+    try std.testing.expectEqual(world.Runspace.EventKind.fabric_provider_parked, runspace.events.items[runspace.events.items.len - 1].kind);
     try std.testing.expectError(error.InvalidRunspaceTransition, runspace.respondFromFabric(invocation));
     try std.testing.expectEqual(world.Fabric.InvocationStatus.provider_parked, runspace.fabric_invocations.items[invocation.sequence].status);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().fabric_invocation_count);
@@ -9261,6 +9299,7 @@ test "runspace fabric provider routing links live nested provider before respons
 
     const invocation = try runspace.routePendingToProviderRun(0, plan, nested_parent_handle);
     try std.testing.expectEqual(world.Fabric.InvocationStatus.provider_parked, invocation.status);
+    try std.testing.expectEqual(world.Runspace.EventKind.fabric_provider_parked, runspace.events.items[runspace.events.items.len - 1].kind);
     try std.testing.expectError(error.ActiveFabricUnsupported, runspace.routePendingToProviderRun(0, plan, nested_parent_handle));
     try std.testing.expectError(error.ActiveFabricUnsupported, runspace.exportRun(parent_handle));
     try std.testing.expectEqual(@as(usize, 1), runspace.report().fabric_invocation_count);

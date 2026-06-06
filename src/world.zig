@@ -10165,7 +10165,8 @@ pub const Runspace = struct {
             .sequence = self.fabric_invocations.items.len,
             .status = status,
         });
-        try self.recordFabricInvocation(parent_slot.*, invocation, route, .fabric_provider_completed, "fabric provider route recorded");
+        const event = fabricProviderEventForStatus(status);
+        try self.recordFabricInvocation(parent_slot.*, invocation, route, event.kind, event.summary);
         fabric_charge_committed = true;
         return invocation;
     }
@@ -10657,6 +10658,16 @@ pub const Runspace = struct {
                 break :completed .provider_completed;
             },
             .failed, .exported, .rejected => error.InvalidRunspaceTransition,
+        };
+    }
+
+    fn fabricProviderEventForStatus(status: Fabric.InvocationStatus) struct { kind: Runspace.EventKind, summary: []const u8 } {
+        return switch (status) {
+            .provider_installed => .{ .kind = .fabric_provider_installed, .summary = "fabric provider installed route recorded" },
+            .provider_running => .{ .kind = .fabric_invocation_started, .summary = "fabric provider running route recorded" },
+            .provider_parked => .{ .kind = .fabric_provider_parked, .summary = "fabric provider parked route recorded" },
+            .provider_completed => .{ .kind = .fabric_provider_completed, .summary = "fabric provider completed route recorded" },
+            else => unreachable,
         };
     }
 
@@ -15621,7 +15632,13 @@ pub const Handoff = struct {
         const image = if (self.run_image.transcript_image) |*image| image else {
             if (pending_frame.turn_index != 0) return error.TranscriptImageRequired;
             try self.preflightRequestFrameWithSupervisor(supervisor, pending_frame);
-            if (fabricPlanCoversPort(admitted_fabric_plan, pending_frame.world_port_id)) return;
+            if (fabricPreflightRouteForPort(admitted_fabric_plan, pending_frame.world_port_id)) |route| {
+                try supervisor.beforeFabricInvocation(.{
+                    .world_port_id = pending_frame.world_port_id,
+                    .route_kind = route.kind,
+                });
+                return;
+            }
             try supervisor.beforeAdapterCall(.{
                 .world_port_id = pending_frame.world_port_id,
                 .mode = .fresh,
@@ -15673,7 +15690,13 @@ pub const Handoff = struct {
             }
         }
         try self.preflightRequestFrameWithSupervisor(supervisor, pending_frame);
-        if (fabricPlanCoversPort(admitted_fabric_plan, pending_frame.world_port_id)) return;
+        if (fabricPreflightRouteForPort(admitted_fabric_plan, pending_frame.world_port_id)) |route| {
+            try supervisor.beforeFabricInvocation(.{
+                .world_port_id = pending_frame.world_port_id,
+                .route_kind = route.kind,
+            });
+            return;
+        }
         try supervisor.beforeAdapterCall(.{
             .world_port_id = pending_frame.world_port_id,
             .mode = .fresh,
@@ -15884,7 +15907,9 @@ pub const Handoff = struct {
                                         run.audit.replay_mismatch_count += 1;
                                         return replay_err;
                                     };
-                                    if (!fabricPlanCoversPort(admitted_fabric_plan, request.world_port_id)) {
+                                    if (fabricPlanCoversPort(admitted_fabric_plan, request.world_port_id)) {
+                                        try run.accountPendingFabricInvocation(request.world_port_id);
+                                    } else {
                                         try run.accountPendingAdapterCall(request.world_port_id);
                                     }
                                     run.handoff_pending_frame_fingerprint = null;
@@ -15945,7 +15970,9 @@ pub const Handoff = struct {
                             };
                         }
                         try self.validatePendingFrame(request);
-                        if (!fabricPlanCoversPort(admitted_fabric_plan, request.world_port_id)) {
+                        if (fabricPlanCoversPort(admitted_fabric_plan, request.world_port_id)) {
+                            try run.accountPendingFabricInvocation(request.world_port_id);
+                        } else {
                             try run.accountPendingAdapterCall(request.world_port_id);
                         }
                         run.handoff_pending_frame_fingerprint = null;
@@ -17403,6 +17430,26 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             .adapter_kind = .replay,
                             .authority_kind = PortAuthority.replay_source.authority_kind,
                             .value_policy = .portable,
+                        }) catch |err| {
+                            try self.handleSupervisionError(err);
+                            return Error.HandlerPending;
+                        };
+                    }
+                    self.pending_adapter_call_accounted = true;
+                }
+
+                fn accountPendingFabricInvocation(self: *Self, world_port_id: u32) !void {
+                    if (self.pending_adapter_call_accounted) return;
+                    const plan = self.activeFabricPlan() orelse return Error.MissingHandler;
+                    const route = plan.findRouteForPort(world_port_id) orelse return Error.MissingHandler;
+                    switch (route.kind) {
+                        .adapter, .unsupported => return Error.MissingHandler,
+                        .target_export, .admitted_run, .guest, .replay, .reject => {},
+                    }
+                    if (self.supervisor) |*supervisor| {
+                        supervisor.beforeFabricInvocation(.{
+                            .world_port_id = world_port_id,
+                            .route_kind = route.kind,
                         }) catch |err| {
                             try self.handleSupervisionError(err);
                             return Error.HandlerPending;
@@ -19997,6 +20044,15 @@ fn fabricPlanCoversPort(admitted_fabric_plan: ?Fabric.Plan, world_port_id: u32) 
     return switch (route.kind) {
         .adapter, .unsupported => false,
         .target_export, .admitted_run, .guest, .replay, .reject => true,
+    };
+}
+
+fn fabricPreflightRouteForPort(admitted_fabric_plan: ?Fabric.Plan, world_port_id: u32) ?Fabric.Route {
+    const plan = admitted_fabric_plan orelse return null;
+    const route = plan.findRouteForPort(world_port_id) orelse return null;
+    return switch (route.kind) {
+        .adapter, .unsupported => null,
+        .target_export, .admitted_run, .guest, .replay, .reject => route,
     };
 }
 
