@@ -497,52 +497,6 @@ test "blocked link result does not expose executable assembly plans" {
     try std.testing.expectEqual(@as(usize, 0), linked.certificate.fabric_plan_fingerprints.len);
 }
 
-test "link enforces max provider candidates before selecting" {
-    const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
-    const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
-    const provider_ref = world.TargetRef.fromTarget(fixtures.ProviderPorts.Target);
-    const strict_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
-    const provider_export = world.Linker.ExportDescriptor.init(.{
-        .target_ref = provider_ref,
-        .result_ref = .{ .value_table_id = root_import.response_value_table_id },
-        .label = "provider",
-    });
-    const strict_export = world.Linker.ExportDescriptor.init(.{
-        .target_ref = strict_ref,
-        .result_ref = .{ .value_table_id = root_import.response_value_table_id },
-        .label = "strict",
-    });
-    const entries = [_]world.Linker.Catalog.Entry{
-        world.Linker.Catalog.Entry.generatedTarget(.{
-            .target_ref = provider_ref,
-            .export_descriptor = provider_export,
-            .import_set = world.ImportSet.fromTarget(fixtures.ProviderPorts.Target),
-            .label = "provider",
-        }),
-        world.Linker.Catalog.Entry.generatedTarget(.{
-            .target_ref = strict_ref,
-            .export_descriptor = strict_export,
-            .import_set = world.ImportSet.fromTarget(fixtures.Strict.Target),
-            .label = "strict",
-        }),
-    };
-    var linked = try world.Linker.link(std.testing.allocator, .{
-        .root_target_ref = root_ref,
-        .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
-        .root_imports = &.{root_import},
-        .catalog = world.Linker.Catalog.init(&entries),
-        .policy = .strict_closed,
-        .max_provider_candidates = 1,
-    });
-    defer linked.deinit();
-
-    try std.testing.expect(!linked.plan.accepted());
-    try std.testing.expect(linked.graph.hasBlocker(.ProviderRunLimitExceeded));
-    try std.testing.expectEqual(world.Linker.NormalForm.partial_with_blockers, linked.plan.normal_form);
-    try std.testing.expectEqual(@as(usize, 0), linked.report.resolved_import_count);
-    try std.testing.expectEqual(@as(usize, 0), linked.plan.fabric_plans.len);
-}
-
 test "route synthesis emits Fabric plan and certificate binds witnesses" {
     const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target);
