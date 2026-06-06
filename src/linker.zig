@@ -461,12 +461,14 @@ pub fn Linker(comptime W: type) type {
                     const descriptor = entry.export_descriptor orelse {
                         if (entry.provider_kind == .replay_provider or entry.provider_kind == .reject_route or entry.provider_kind == .environment_adapter) {
                             try candidates.append(allocator, entry);
+                            if (candidates.items.len > policy.max_candidates_per_import) break;
                         }
                         continue;
                     };
                     const expected = ValueRef{ .value_table_id = import_requirement.response_value_table_id };
                     if (expected.compatibleWith(descriptor.result_ref, policy)) {
                         try candidates.append(allocator, entry);
+                        if (candidates.items.len > policy.max_candidates_per_import) break;
                     }
                 }
                 return candidates.toOwnedSlice(allocator);
@@ -702,6 +704,9 @@ pub fn Linker(comptime W: type) type {
                 rejected_blockers.deinit(allocator);
             }
             for (candidates) |candidate| {
+                if (hint) |present| {
+                    if (present.hasProviderSelector() and !providerTargetMatches(present, candidate)) continue;
+                }
                 const candidate_match = try matchEntry(allocator, policy, requirement, candidate, hint);
                 if (candidate_match.accepted()) {
                     try accepted.append(allocator, candidate_match);
@@ -725,11 +730,6 @@ pub fn Linker(comptime W: type) type {
                     .warnings = try allocator.dupe(Warning, &.{}),
                 });
             }
-            if (accepted.items.len == 1) {
-                const selected = accepted.items[0];
-                _ = accepted.orderedRemove(0);
-                return selected;
-            }
             if (hint) |present| {
                 if (present.hasProviderSelector()) {
                     for (accepted.items, 0..) |candidate_match, index| {
@@ -745,7 +745,24 @@ pub fn Linker(comptime W: type) type {
                             return selected;
                         }
                     }
+                    const owned_blockers = if (rejected_blockers.items.len != 0) blk: {
+                        const owned = try rejected_blockers.toOwnedSlice(allocator);
+                        rejected_blockers = .empty;
+                        break :blk owned;
+                    } else try allocator.dupe(Blocker, &.{.AmbiguousProvider});
+                    return Match.init(.{
+                        .parent_import_requirement_fingerprint = requirement.requirement_fingerprint,
+                        .kind = .unsupported,
+                        .confidence = .rejected,
+                        .blockers = owned_blockers,
+                        .warnings = try allocator.dupe(Warning, &.{}),
+                    });
                 }
+            }
+            if (accepted.items.len == 1) {
+                const selected = accepted.items[0];
+                _ = accepted.orderedRemove(0);
+                return selected;
             }
             if (policy.allow_ambiguous_matches and !policy.require_explicit_hint_for_ambiguous_match) {
                 var selected = accepted.items[0];
@@ -1176,6 +1193,11 @@ pub fn Linker(comptime W: type) type {
                 return self.run_permit_fingerprint == null or self.run_permit_fingerprint.? == run_permit_fingerprint;
             }
 
+            pub fn validate(self: Assembly) !void {
+                if (fingerprintAssembly(self) != self.assembly_fingerprint) return error.InvalidFrameEncoding;
+                for (self.fabric_plans) |plan| try assertFabricInvariant(plan);
+            }
+
             pub fn residualImportSet(self: Assembly) ResidualImportSet {
                 return ResidualImportSet.init(.{
                     .root_target_ref_fingerprint = self.root_target_ref.target_ref_fingerprint,
@@ -1320,9 +1342,32 @@ pub fn Linker(comptime W: type) type {
             var resolved_count: usize = 0;
             var ambiguous_count: usize = 0;
             var max_depth_observed: usize = 0;
-            if (input.root_import_set.target_ref_fingerprint != input.root_target_ref.target_ref_fingerprint or
-                input.root_imports.len != input.root_import_set.required_count)
-            {
+            var root_port_coverage = try allocator.alloc(bool, input.root_import_set.required_count);
+            defer allocator.free(root_port_coverage);
+            @memset(root_port_coverage, false);
+            var root_import_set_mismatch =
+                input.root_import_set.target_ref_fingerprint != input.root_target_ref.target_ref_fingerprint or
+                input.root_imports.len != input.root_import_set.required_count;
+            for (input.root_imports) |requirement| {
+                if (requirement.world_surface_fingerprint != input.root_target_ref.world_surface_fingerprint or
+                    requirement.world_port_id >= input.root_import_set.required_count)
+                {
+                    root_import_set_mismatch = true;
+                    continue;
+                }
+                if (root_port_coverage[requirement.world_port_id]) {
+                    root_import_set_mismatch = true;
+                    continue;
+                }
+                root_port_coverage[requirement.world_port_id] = true;
+            }
+            for (root_port_coverage) |covered| {
+                if (!covered) {
+                    root_import_set_mismatch = true;
+                    break;
+                }
+            }
+            if (root_import_set_mismatch) {
                 try blockers.append(allocator, .RootImportSetMismatch);
             }
             for (input.root_imports) |requirement| {
@@ -1337,6 +1382,11 @@ pub fn Linker(comptime W: type) type {
 
                 const candidates = try export_index.candidateProvidersForPolicy(allocator, requirement, policy);
                 defer allocator.free(candidates);
+                if (candidates.len > policy.max_candidates_per_import) {
+                    try unresolved.append(allocator, requirement);
+                    try blockers.append(allocator, .ProviderRunLimitExceeded);
+                    continue;
+                }
                 if (candidates.len == 0) {
                     if (policy.allow_external_environment_ports and external.items.len < policy.max_unresolved_imports) {
                         try external.append(allocator, requirement);
@@ -1369,6 +1419,12 @@ pub fn Linker(comptime W: type) type {
                     try blockers.append(allocator, .MissingProvider);
                     continue;
                 };
+                const provider_import_required_count = if (entry.import_set) |import_set| import_set.required_count else entry.imports.len;
+                if (policy.require_closed_graph and provider_import_required_count != entry.imports.len) {
+                    try blockers.append(allocator, .ProviderRequiresUnsupportedImports);
+                    if (provider_import_required_count != 0) max_depth_observed = @max(max_depth_observed, 2);
+                    continue;
+                }
                 if (entry.imports.len != 0 and policy.require_closed_graph) {
                     const provider_node = Graph.Node.init(.{
                         .kind = .target_module,
@@ -1531,7 +1587,7 @@ pub fn Linker(comptime W: type) type {
             hint_fingerprints = .empty;
 
             var fabric_plans: std.ArrayList(W.Fabric.Plan) = .empty;
-            if (owned_routes.len != 0) {
+            if (owned_routes.len != 0 and owned_blockers.len == 0) {
                 const fabric_plan = W.Fabric.Plan.init(.{
                     .target_ref_fingerprint = input.root_target_ref.target_ref_fingerprint,
                     .module_fingerprint = if (input.root_module_ref) |module_ref| module_ref.module_ref_fingerprint else input.root_target_ref.boundary_module_fingerprint,
@@ -1545,7 +1601,7 @@ pub fn Linker(comptime W: type) type {
                     .max_provider_runs = policy.max_provider_runs,
                     .metadata = "world-linker-synthesized",
                 });
-                if (owned_blockers.len == 0) try assertFabricInvariant(fabric_plan);
+                try assertFabricInvariant(fabric_plan);
                 try fabric_plans.append(allocator, fabric_plan);
                 try fabric_plan_fingerprints.append(allocator, fabric_plan.plan_fingerprint);
             }
@@ -1619,15 +1675,19 @@ pub fn Linker(comptime W: type) type {
                 .blocker_count = owned_blockers.len,
                 .warning_count = owned_warnings.len,
             });
+            const assembly_fabric_plans = if (plan.accepted()) owned_fabric_plans else &.{};
+            const assembly_external_imports = if (plan.accepted()) owned_external else &.{};
+            const assembly_provider_targets = if (plan.accepted()) owned_provider_targets else &.{};
+            const assembly_guest_targets = if (plan.accepted()) owned_guest_targets else &.{};
             const assembly = Assembly.init(.{
                 .root_target_ref = input.root_target_ref,
                 .link_plan_fingerprint = plan.plan_fingerprint,
                 .linker_certificate_fingerprint = certificate.certificate_fingerprint,
                 .run_permit_fingerprint = input.run_permit_fingerprint,
-                .fabric_plans = owned_fabric_plans,
-                .external_import_requirements = owned_external,
-                .provider_run_templates = owned_provider_targets,
-                .guest_provider_templates = owned_guest_targets,
+                .fabric_plans = assembly_fabric_plans,
+                .external_import_requirements = assembly_external_imports,
+                .provider_run_templates = assembly_provider_targets,
+                .guest_provider_templates = assembly_guest_targets,
             });
             return .{
                 .allocator = allocator,

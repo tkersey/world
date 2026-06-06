@@ -4654,6 +4654,7 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
         }
 
         pub fn preflightAssemblyWithPermit(requested_mode: Mode, transcript_image_available: bool, assembly: Assembly, permit: RunPermit) AcceptanceReport {
+            assembly.validate() catch return rejectedAcceptance(target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
             if (assembly.run_permit_fingerprint != null and assembly.run_permit_fingerprint.? != permit.permit_fingerprint) return rejectedAcceptance(target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
             if (permit.link_plan_fingerprint != null and permit.link_plan_fingerprint.? != assembly.link_plan_fingerprint) return rejectedAcceptance(target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
             if (permit.linker_certificate_fingerprint != null and permit.linker_certificate_fingerprint.? != assembly.linker_certificate_fingerprint) return rejectedAcceptance(target_ref, requested_mode, &.{.SupervisionPolicyMismatch});

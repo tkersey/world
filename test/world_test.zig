@@ -377,6 +377,19 @@ test "link hint resolves ambiguity without bypassing value compatibility" {
     try std.testing.expect(hinted.accepted());
     try std.testing.expectEqual(world.Linker.MatchKind.explicit_hint, hinted.kind);
     try std.testing.expectEqual(strict_export.export_fingerprint, hinted.provider_export_fingerprint.?);
+
+    const bad_kind_hint = world.Linker.Hint.init(.{
+        .parent_target_ref_fingerprint = root_ref.target_ref_fingerprint,
+        .parent_world_port_id = 0,
+        .provider_target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+        .route_kind = .replay,
+        .label = "bad-kind",
+    });
+    const invalid_hint = try world.Linker.chooseProviderMatch(std.testing.allocator, .strict_closed, root_import, &candidates, bad_kind_hint);
+    defer std.testing.allocator.free(invalid_hint.blockers);
+    defer std.testing.allocator.free(invalid_hint.warnings);
+    try std.testing.expect(!invalid_hint.accepted());
+    try std.testing.expectEqual(world.Linker.Blocker.UnsupportedRouteKind, invalid_hint.blockers[0]);
 }
 
 test "link graph fingerprint stable with blockers" {
@@ -428,6 +441,106 @@ test "link rejects incomplete root imports before closed acceptance" {
     try std.testing.expectEqual(@as(usize, 0), linked.plan.fabric_plans.len);
     try std.testing.expect(linked.graph.hasBlocker(.RootImportSetMismatch));
     try std.testing.expectEqual(@as(usize, 1), linked.certificate.blocker_count);
+}
+
+test "link rejects duplicate root import coverage before closed acceptance" {
+    const root_ref = world.TargetRef.fromTarget(fixtures.Agent.Target);
+    const decide_import = world.ImportRequirement.fromTargetPort(fixtures.Agent.Target, 0);
+    const entries = [_]world.Linker.Catalog.Entry{};
+    var linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = world.ImportSet.fromTarget(fixtures.Agent.Target),
+        .root_imports = &.{ decide_import, decide_import },
+        .catalog = world.Linker.Catalog.init(&entries),
+        .policy = .allow_external_ports,
+    });
+    defer linked.deinit();
+
+    try std.testing.expect(!linked.plan.accepted());
+    try std.testing.expectEqual(world.Linker.NormalForm.partial_with_blockers, linked.plan.normal_form);
+    try std.testing.expect(linked.graph.hasBlocker(.RootImportSetMismatch));
+}
+
+test "blocked link result does not expose executable assembly plans" {
+    const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
+    const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    const provider_export = world.Linker.ExportDescriptor.init(.{
+        .target_ref = provider_ref,
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id },
+        .label = "strict",
+    });
+    const entries = [_]world.Linker.Catalog.Entry{
+        world.Linker.Catalog.Entry.generatedTarget(.{
+            .target_ref = provider_ref,
+            .export_descriptor = provider_export,
+            .import_set = world.ImportSet.fromTarget(fixtures.Strict.Target),
+            .label = "strict",
+        }),
+    };
+    var policy = world.Linker.Policy.strict_closed;
+    policy.reject_same_module_cycle = false;
+    var linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = world.ImportSet.fromTarget(fixtures.Agent.Target),
+        .root_imports = &.{root_import},
+        .catalog = world.Linker.Catalog.init(&entries),
+        .policy = policy,
+    });
+    defer linked.deinit();
+
+    try std.testing.expect(!linked.plan.accepted());
+    try std.testing.expect(linked.graph.hasBlocker(.RootImportSetMismatch));
+    try std.testing.expectEqual(@as(usize, 0), linked.plan.fabric_plans.len);
+    try std.testing.expectEqual(@as(usize, 0), linked.assembly.fabric_plans.len);
+    try std.testing.expectEqual(@as(usize, 0), linked.assembly.provider_run_templates.len);
+    try std.testing.expectEqual(@as(usize, 0), linked.certificate.fabric_plan_fingerprints.len);
+}
+
+test "link enforces max provider candidates before selecting" {
+    const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
+    const provider_ref = world.TargetRef.fromTarget(fixtures.ProviderPorts.Target);
+    const strict_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    const provider_export = world.Linker.ExportDescriptor.init(.{
+        .target_ref = provider_ref,
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id },
+        .label = "provider",
+    });
+    const strict_export = world.Linker.ExportDescriptor.init(.{
+        .target_ref = strict_ref,
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id },
+        .label = "strict",
+    });
+    const entries = [_]world.Linker.Catalog.Entry{
+        world.Linker.Catalog.Entry.generatedTarget(.{
+            .target_ref = provider_ref,
+            .export_descriptor = provider_export,
+            .import_set = world.ImportSet.fromTarget(fixtures.ProviderPorts.Target),
+            .label = "provider",
+        }),
+        world.Linker.Catalog.Entry.generatedTarget(.{
+            .target_ref = strict_ref,
+            .export_descriptor = strict_export,
+            .import_set = world.ImportSet.fromTarget(fixtures.Strict.Target),
+            .label = "strict",
+        }),
+    };
+    var linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
+        .root_imports = &.{root_import},
+        .catalog = world.Linker.Catalog.init(&entries),
+        .policy = .strict_closed,
+        .max_provider_candidates = 1,
+    });
+    defer linked.deinit();
+
+    try std.testing.expect(!linked.plan.accepted());
+    try std.testing.expect(linked.graph.hasBlocker(.ProviderRunLimitExceeded));
+    try std.testing.expectEqual(world.Linker.NormalForm.partial_with_blockers, linked.plan.normal_form);
+    try std.testing.expectEqual(@as(usize, 0), linked.report.resolved_import_count);
+    try std.testing.expectEqual(@as(usize, 0), linked.plan.fabric_plans.len);
 }
 
 test "route synthesis emits Fabric plan and certificate binds witnesses" {
@@ -570,6 +683,82 @@ test "link rejects provider nested imports before claiming closed Fabric" {
     try std.testing.expect(linked.graph.hasBlocker(.ProviderRequiresUnsupportedImports));
 }
 
+test "link rejects provider import set without matching import witnesses" {
+    const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
+    const provider_ref = world.TargetRef.fromTarget(fixtures.ProviderPorts.Target);
+    const provider_export = world.Linker.ExportDescriptor.init(.{
+        .target_ref = provider_ref,
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id },
+        .label = "provider",
+    });
+    const entries = [_]world.Linker.Catalog.Entry{
+        world.Linker.Catalog.Entry.generatedTarget(.{
+            .target_ref = provider_ref,
+            .export_descriptor = provider_export,
+            .import_set = world.ImportSet.fromTarget(fixtures.ProviderPorts.Target),
+            .label = "provider",
+        }),
+    };
+    var linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
+        .root_imports = &.{root_import},
+        .catalog = world.Linker.Catalog.init(&entries),
+        .policy = .strict_closed,
+    });
+    defer linked.deinit();
+
+    try std.testing.expect(!linked.plan.accepted());
+    try std.testing.expectEqual(@as(usize, 0), linked.plan.fabric_plans.len);
+    try std.testing.expect(linked.graph.hasBlocker(.ProviderRequiresUnsupportedImports));
+}
+
+test "link enforces max provider candidate limit before matching" {
+    const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
+    const provider_ref = world.TargetRef.fromTarget(fixtures.ProviderPorts.Target);
+    const strict_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    const provider_export = world.Linker.ExportDescriptor.init(.{
+        .target_ref = provider_ref,
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id },
+        .label = "provider",
+    });
+    const strict_export = world.Linker.ExportDescriptor.init(.{
+        .target_ref = strict_ref,
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id },
+        .label = "strict",
+    });
+    const entries = [_]world.Linker.Catalog.Entry{
+        world.Linker.Catalog.Entry.generatedTarget(.{
+            .target_ref = provider_ref,
+            .export_descriptor = provider_export,
+            .import_set = world.ImportSet.fromTarget(fixtures.ProviderPorts.Target),
+            .label = "provider",
+        }),
+        world.Linker.Catalog.Entry.generatedTarget(.{
+            .target_ref = strict_ref,
+            .export_descriptor = strict_export,
+            .import_set = world.ImportSet.fromTarget(fixtures.Strict.Target),
+            .label = "strict",
+        }),
+    };
+    var linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
+        .root_imports = &.{root_import},
+        .catalog = world.Linker.Catalog.init(&entries),
+        .max_provider_candidates = 1,
+        .policy = .strict_closed,
+    });
+    defer linked.deinit();
+
+    try std.testing.expect(!linked.plan.accepted());
+    try std.testing.expectEqual(@as(usize, 0), linked.report.resolved_import_count);
+    try std.testing.expectEqual(@as(usize, 1), linked.report.unresolved_import_count);
+    try std.testing.expect(linked.graph.hasBlocker(.ProviderRunLimitExceeded));
+}
+
 test "link rejects same-module provider cycles before route synthesis" {
     const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
@@ -586,7 +775,7 @@ test "link rejects same-module provider cycles before route synthesis" {
         world.Linker.Catalog.Entry.generatedTarget(.{
             .target_ref = provider_ref,
             .export_descriptor = provider_export,
-            .import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
+            .import_set = world.ImportSet.fromTarget(fixtures.Strict.Target),
             .label = "provider",
         }),
     };
@@ -769,6 +958,11 @@ test "assembly preflights environment and installs into Runspace through Fabric 
     try std.testing.expectEqual(linked.assembly.assembly_fingerprint, permit.assembly_fingerprint.?);
     const permit_report = PortsMissingEnv.preflightAssemblyWithPermit(.fresh, true, linked.assembly, permit);
     try std.testing.expect(permit_report.accepted);
+    var forged_assembly = linked.assembly;
+    forged_assembly.fabric_plans = &.{};
+    const forged_report = PortsMissingEnv.preflightAssemblyWithPermit(.fresh, true, forged_assembly, permit);
+    try std.testing.expect(!forged_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.SupervisionPolicyMismatch, forged_report.blockers[0]);
     const scope_permit = world.Supervision.issue(fixtures.Ports.Target, PortsMissingEnv, .{
         .mode = .fresh,
         .transcript_image_available = true,

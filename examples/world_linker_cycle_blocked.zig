@@ -16,10 +16,10 @@ pub fn main(init: std.process.Init) !void {
         .label = "root-self-export",
     });
     const entries = [_]world.Linker.Catalog.Entry{
-        world.Linker.Catalog.Entry.generatedTarget(.{
+        world.Linker.Catalog.Entry.init(.{
+            .provider_kind = .target,
             .target_ref = root_ref,
             .export_descriptor = root_export,
-            .import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
             .label = "self",
         }),
     };
