@@ -1101,6 +1101,37 @@ test "link rejects provider import set from a different target witness" {
     try std.testing.expectEqual(@as(usize, 0), linked.plan.fabric_plans.len);
 }
 
+test "strict closed link requires provider import set witness" {
+    const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
+    const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    const provider_export = world.Linker.ExportDescriptor.init(.{
+        .target_ref = provider_ref,
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id, .schema_fingerprint = root_import.response_value_ref_fingerprint },
+        .label = "strict",
+    });
+    const entries = [_]world.Linker.Catalog.Entry{
+        world.Linker.Catalog.Entry.init(.{
+            .provider_kind = .target,
+            .target_ref = provider_ref,
+            .export_descriptor = provider_export,
+            .label = "strict-unwitnessed-import-set",
+        }),
+    };
+    var linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
+        .root_imports = &.{root_import},
+        .catalog = world.Linker.Catalog.init(&entries),
+        .policy = .strict_closed,
+    });
+    defer linked.deinit();
+
+    try std.testing.expect(!linked.plan.accepted());
+    try std.testing.expect(linked.graph.hasBlocker(.ProviderRequiresUnsupportedImports));
+    try std.testing.expectEqual(@as(usize, 0), linked.plan.fabric_plans.len);
+}
+
 test "link rejects root imports from a different target witness" {
     const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const wrong_ref = world.TargetRef.fromTarget(fixtures.ProviderPorts.Target);

@@ -20,15 +20,19 @@ pub fn main(init: std.process.Init) !void {
             .provider_kind = .target,
             .target_ref = root_ref,
             .export_descriptor = root_export,
+            .import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
+            .imports = &.{root_import},
             .label = "self",
         }),
     };
+    var policy = world.Linker.Policy.strict_closed;
+    policy.require_closed_graph = false;
     var linked = try world.Linker.link(allocator, .{
         .root_target_ref = root_ref,
         .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
         .root_imports = &.{root_import},
         .catalog = world.Linker.Catalog.init(&entries),
-        .policy = .strict_closed,
+        .policy = policy,
     });
     defer linked.deinit();
 

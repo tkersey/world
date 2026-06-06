@@ -1506,6 +1506,11 @@ pub fn Linker(comptime W: type) type {
                     .world_surface_fingerprint = 0,
                     .target_certificate_fingerprint = 0,
                 };
+                if (policy.require_closed_graph and requires_provider_run and entry.import_set == null) {
+                    try blockers.append(allocator, .ProviderRequiresUnsupportedImports);
+                    max_depth_observed = @max(max_depth_observed, 2);
+                    continue;
+                }
                 const provider_import_required_count = if (entry.import_set) |import_set| import_set.required_count else entry.imports.len;
                 if (policy.require_closed_graph and provider_import_required_count != entry.imports.len) {
                     try blockers.append(allocator, .ProviderRequiresUnsupportedImports);
