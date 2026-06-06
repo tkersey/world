@@ -424,7 +424,7 @@ pub fn Linker(comptime W: type) type {
                 errdefer candidates.deinit(allocator);
                 for (self.catalog.entries) |entry| {
                     const descriptor = entry.export_descriptor orelse {
-                        if (entry.provider_kind == .replay_provider or entry.provider_kind == .reject_route or entry.provider_kind == .environment_adapter) {
+                        if ((entry.provider_kind == .replay_provider or entry.provider_kind == .reject_route or entry.provider_kind == .environment_adapter) and linkerCanSynthesizeRouteKind(policy, entry)) {
                             try candidates.append(allocator, entry);
                             if (candidates.items.len > policy.max_candidates_per_import) break;
                         }
@@ -687,7 +687,7 @@ pub fn Linker(comptime W: type) type {
             errdefer allocator.free(owned_warnings);
             return Match.init(.{
                 .parent_import_requirement_fingerprint = requirement.requirement_fingerprint,
-                .provider_entry_fingerprint = entry.entry_fingerprint,
+                .provider_entry_fingerprint = fingerprintCatalogEntry(entry),
                 .provider_export_fingerprint = if (entry.export_descriptor) |descriptor| descriptor.export_fingerprint else null,
                 .provider_target_ref_fingerprint = if (entry.target_ref) |target_ref| target_ref.target_ref_fingerprint else null,
                 .provider_module_ref_fingerprint = if (entry.module_ref) |module_ref| module_ref.module_ref_fingerprint else null,
@@ -1962,7 +1962,7 @@ pub fn Linker(comptime W: type) type {
         fn entryForMatch(candidates: []const Catalog.Entry, match: Match) ?Catalog.Entry {
             if (match.provider_entry_fingerprint) |expected| {
                 for (candidates) |candidate| {
-                    if (candidate.entry_fingerprint == expected) return candidate;
+                    if (fingerprintCatalogEntry(candidate) == expected) return candidate;
                 }
                 return null;
             }

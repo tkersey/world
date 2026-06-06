@@ -249,6 +249,7 @@ test "link catalog entry fingerprint is stable and excludes pointer identity" {
     try std.testing.expect(linked.plan.catalog_fingerprint != stale_catalog.catalog_fingerprint);
     try std.testing.expectEqual(link_catalog.catalog_fingerprint, linked.plan.catalog_fingerprint);
     try std.testing.expectEqual(link_catalog.catalog_fingerprint, linked.certificate.catalog_fingerprint);
+    try std.testing.expectEqual(link_entry.entry_fingerprint, linked.matches[0].provider_entry_fingerprint.?);
 }
 
 test "import index and export index expose closed catalog requirements" {
@@ -1112,7 +1113,7 @@ test "link descriptorless replay and reject providers synthesize terminal routes
     try std.testing.expectEqual(@as(usize, 1), reject_linked.plan.reject_routes_used.len);
 }
 
-test "link descriptorless adapter remains unsupported not missing provider" {
+test "link descriptorless adapter is ignored as non viable provider" {
     const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
     const entries = [_]world.Linker.Catalog.Entry{
@@ -1136,8 +1137,48 @@ test "link descriptorless adapter remains unsupported not missing provider" {
     try std.testing.expect(!linked.plan.accepted());
     try std.testing.expectEqual(world.Linker.NormalForm.partial_with_blockers, linked.plan.normal_form);
     try std.testing.expectEqual(@as(usize, 0), linked.plan.fabric_plans.len);
-    try std.testing.expect(linked.graph.hasBlocker(.UnsupportedRouteKind));
-    try std.testing.expect(!linked.graph.hasBlocker(.MissingProvider));
+    try std.testing.expect(linked.graph.hasBlocker(.MissingProvider));
+    try std.testing.expect(!linked.graph.hasBlocker(.UnsupportedRouteKind));
+}
+
+test "link unsupported descriptorless providers do not consume candidate cap" {
+    const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
+    const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    const provider_export = world.Linker.ExportDescriptor.init(.{
+        .target_ref = provider_ref,
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id },
+        .label = "strict",
+    });
+    const entries = [_]world.Linker.Catalog.Entry{
+        world.Linker.Catalog.Entry.replay(.{
+            .transcript_image_fingerprint = 0x7777,
+            .label = "unsupported-replay",
+        }),
+        world.Linker.Catalog.Entry.init(.{
+            .provider_kind = .reject_route,
+            .label = "unsupported-reject",
+        }),
+        world.Linker.Catalog.Entry.generatedTarget(.{
+            .target_ref = provider_ref,
+            .export_descriptor = provider_export,
+            .import_set = world.ImportSet.fromTarget(fixtures.Strict.Target),
+            .label = "strict",
+        }),
+    };
+    var linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
+        .root_imports = &.{root_import},
+        .catalog = world.Linker.Catalog.init(&entries),
+        .policy = .strict_closed,
+        .max_provider_candidates = 1,
+    });
+    defer linked.deinit();
+
+    try std.testing.expect(linked.plan.accepted());
+    try std.testing.expectEqual(world.Fabric.RouteKind.target_export, linked.plan.fabric_plans[0].routes[0].kind);
+    try std.testing.expect(!linked.graph.hasBlocker(.ProviderRunLimitExceeded));
 }
 
 test "link plan reports residual external environment imports" {
