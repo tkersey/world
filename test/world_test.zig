@@ -7487,7 +7487,7 @@ test "runspace fabric local provider routing rejects pinned completed-provider r
     try std.testing.expectError(error.ProviderRunDenied, runspace.installFabricPlan(parent_ref, plan));
 }
 
-test "runspace fabric provider routing rejects parked provider without retained result image" {
+test "runspace fabric provider routing records parked provider before retained result image" {
     var runtime = boundary.Runtime.init(std.testing.allocator);
     defer runtime.deinit();
     var runspace = world.Runspace.init(std.testing.allocator, .{});
@@ -7529,12 +7529,14 @@ test "runspace fabric provider routing rejects parked provider without retained 
     });
     try runspace.installFabricPlan(parent_ref, plan);
 
-    try std.testing.expectError(error.InvalidRunspaceTransition, runspace.routePendingToProviderRun(0, plan, provider_handle));
-    try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_invocation_count);
+    const invocation = try runspace.routePendingToProviderRun(0, plan, provider_handle);
+    try std.testing.expectEqual(world.Fabric.InvocationStatus.provider_parked, invocation.status);
+    try std.testing.expectError(error.InvalidRunspaceTransition, runspace.respondFromFabric(invocation));
+    try std.testing.expectEqual(world.Fabric.InvocationStatus.provider_parked, runspace.fabric_invocations.items[invocation.sequence].status);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().fabric_invocation_count);
     try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_receipt_count);
     try std.testing.expectEqual(@as(usize, 2), runspace.report().pending_port_count);
-    var exported_parent = try runspace.exportPending(0);
-    defer exported_parent.deinit(std.testing.allocator);
+    try std.testing.expectError(error.ActiveFabricUnsupported, runspace.exportPending(0));
 }
 
 test "runspace fabric routing rolls back invocation when event recording fails" {
@@ -9208,7 +9210,7 @@ test "runspace active fabric provider handle cannot be shared by another parent"
     _ = try runspace.respondFromFabric(invocation);
 }
 
-test "runspace fabric provider routing rejects live nested provider before invocation record" {
+test "runspace fabric provider routing links live nested provider before response" {
     var runtime = boundary.Runtime.init(std.testing.allocator);
     defer runtime.deinit();
     var runspace = world.Runspace.init(std.testing.allocator, .{});
@@ -9252,9 +9254,11 @@ test "runspace fabric provider routing rejects live nested provider before invoc
     });
     try runspace.installFabricPlan(ports_ref, plan);
 
-    _ = parent_handle;
-    try std.testing.expectError(error.InvalidRunspaceTransition, runspace.routePendingToProviderRun(0, plan, nested_parent_handle));
-    try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_invocation_count);
+    const invocation = try runspace.routePendingToProviderRun(0, plan, nested_parent_handle);
+    try std.testing.expectEqual(world.Fabric.InvocationStatus.provider_parked, invocation.status);
+    try std.testing.expectError(error.ActiveFabricUnsupported, runspace.routePendingToProviderRun(0, plan, nested_parent_handle));
+    try std.testing.expectError(error.ActiveFabricUnsupported, runspace.exportRun(parent_handle));
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().fabric_invocation_count);
     try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_receipt_count);
     try std.testing.expectEqual(@as(usize, 2), runspace.report().pending_port_count);
 }

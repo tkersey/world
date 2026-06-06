@@ -10133,8 +10133,7 @@ pub const Runspace = struct {
         }
         const mapped_request_frame_fingerprint = try self.fabricRequestMappingFrame(route);
         try self.validateFabricProviderSlot(route, provider_slot);
-        try self.validateFabricProviderResultSlot(provider_index);
-        const status: Fabric.InvocationStatus = .provider_completed;
+        const status = try self.fabricProviderInvocationStatus(provider_index);
         const depth = try self.fabricDepthForParent(parent_slot.handle);
         const provider_run_count = self.fabricProviderRunCount(plan.plan_fingerprint) + 1;
         try plan.assertDepth(depth);
@@ -10646,11 +10645,19 @@ pub const Runspace = struct {
         }
     }
 
-    fn validateFabricProviderResultSlot(self: *@This(), provider_index: usize) !void {
+    fn fabricProviderInvocationStatus(self: *@This(), provider_index: usize) !Fabric.InvocationStatus {
         const provider_slot = self.slots.items[provider_index];
-        if (provider_slot.status != .completed) return error.InvalidRunspaceTransition;
-        var image = try self.snapshotSlotImage(provider_index);
-        defer image.deinit(self.allocator);
+        return switch (provider_slot.status) {
+            .admitted => .provider_installed,
+            .runnable, .running => .provider_running,
+            .parked_on_port, .parked_on_supervision => .provider_parked,
+            .completed => completed: {
+                var image = try self.snapshotSlotImage(provider_index);
+                defer image.deinit(self.allocator);
+                break :completed .provider_completed;
+            },
+            .failed, .exported, .rejected => error.InvalidRunspaceTransition,
+        };
     }
 
     fn validateFabricParentResponseValue(self: *@This(), parent_slot: Runspace.RunSlot, world_port_id: u32, image: Frame.ValueImage) !void {
