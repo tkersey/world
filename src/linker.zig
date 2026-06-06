@@ -1998,6 +1998,10 @@ pub fn Linker(comptime W: type) type {
             if (entry.module_ref) |module_ref| {
                 if (!moduleRefIsValid(module_ref)) return false;
             }
+            if (entry.import_set) |import_set| {
+                const provider_ref = providerTargetRef(entry) orelse return false;
+                if (!importSetMatchesProviderRef(import_set, provider_ref)) return false;
+            }
             if (entry.export_descriptor) |descriptor| {
                 if (!targetRefIsValid(descriptor.target_ref)) return false;
                 if (descriptor.module_ref) |module_ref| {
@@ -2028,6 +2032,12 @@ pub fn Linker(comptime W: type) type {
                 module_ref.world_dispatch_table_fingerprint == target_ref.world_dispatch_table_fingerprint and
                 target_ref.boundary_module_fingerprint != null and
                 module_ref.boundary_module_fingerprint == target_ref.boundary_module_fingerprint.?;
+        }
+
+        fn importSetMatchesProviderRef(import_set: W.ImportSet, provider_ref: W.TargetRef) bool {
+            return import_set.target_ref_fingerprint == provider_ref.target_ref_fingerprint and
+                import_set.import_set_fingerprint == fingerprintRootImportSet(import_set) and
+                import_set.world_port_count >= import_set.required_count;
         }
 
         fn appendUniqueBlocker(allocator: std.mem.Allocator, blockers: *std.ArrayList(Blocker), blocker: Blocker) !void {
