@@ -1356,27 +1356,6 @@ pub fn Linker(comptime W: type) type {
                     try blockers.append(allocator, .MissingProvider);
                     continue;
                 };
-                if (entry.imports.len != 0 and policy.require_closed_graph) {
-                    const provider_node = Graph.Node.init(.{
-                        .kind = .target_module,
-                        .target_ref_fingerprint = provider_ref.target_ref_fingerprint,
-                        .label = provider_ref.target_label orelse "",
-                    });
-                    try nodes.append(allocator, provider_node);
-                    for (entry.imports) |nested_requirement| {
-                        const nested_import_node = Graph.Node.init(.{
-                            .kind = .import_requirement,
-                            .target_ref_fingerprint = provider_ref.target_ref_fingerprint,
-                            .import_requirement_fingerprint = nested_requirement.requirement_fingerprint,
-                            .label = nested_requirement.suggested_symbolic_name orelse "",
-                        });
-                        try nodes.append(allocator, nested_import_node);
-                        try edges.append(allocator, Graph.Edge.init(.provider_requires_nested_import, provider_node.fingerprint, nested_import_node.fingerprint));
-                    }
-                    try blockers.append(allocator, .ProviderRequiresUnsupportedImports);
-                    max_depth_observed = @max(max_depth_observed, 2);
-                    continue;
-                }
                 if (policy.reject_same_target_cycle and provider_ref.target_ref_fingerprint == input.root_target_ref.target_ref_fingerprint) {
                     try blockers.append(allocator, .CycleDetected);
                     continue;
@@ -1472,6 +1451,7 @@ pub fn Linker(comptime W: type) type {
                         try nodes.append(allocator, nested_import_node);
                         try edges.append(allocator, Graph.Edge.init(.provider_requires_nested_import, provider_node.fingerprint, nested_import_node.fingerprint));
                     }
+                    if (policy.require_closed_graph) try blockers.append(allocator, .ProviderRequiresUnsupportedImports);
                 }
                 resolved_count += 1;
             }

@@ -535,8 +535,8 @@ test "link rejects provider nested imports before claiming closed Fabric" {
 
     try std.testing.expect(!linked.plan.accepted());
     try std.testing.expectEqual(world.Linker.NormalForm.partial_with_blockers, linked.plan.normal_form);
-    try std.testing.expectEqual(@as(usize, 0), linked.plan.fabric_plans.len);
-    try std.testing.expectEqual(@as(usize, 0), linked.report.resolved_import_count);
+    try std.testing.expectEqual(@as(usize, 1), linked.plan.fabric_plans.len);
+    try std.testing.expectEqual(@as(usize, 1), linked.report.resolved_import_count);
     try std.testing.expectEqual(@as(usize, 2), linked.graph.max_depth_observed);
     try std.testing.expect(linked.graph.hasBlocker(.ProviderRequiresUnsupportedImports));
 }
