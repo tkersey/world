@@ -5165,6 +5165,20 @@ test "runspace install consumes explicit fabric plan for missing environment bin
     try std.testing.expect(native_permit_report.accepted);
     try std.testing.expectEqual(@as(?u64, fabric_plan.plan_fingerprint), native_permit_report.fabric_plan_fingerprint);
 
+    const overlapping_fabric_only_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .fabric_plan_fingerprint = fabric_plan.plan_fingerprint,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_fabric_routes = true,
+            .allow_reject_routes = true,
+            .allow_rejected_responses = true,
+        }),
+    });
+    const overlapping_fabric_only_report = PortsEnv.acceptanceReportWithFabricPlanAndPermit(.fresh, false, fabric_plan, overlapping_fabric_only_permit);
+    try std.testing.expect(!overlapping_fabric_only_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.SupervisionPolicyMismatch, overlapping_fabric_only_report.blockers[0]);
+
     const wildcard_route = world.Fabric.Route.init(.{
         .route_id = 0x51ace_fab9,
         .kind = .reject,
@@ -5633,36 +5647,21 @@ test "runspace install consumes explicit fabric plan for missing environment bin
         }),
     });
     const bound_fabric_machine_report = PortsEnv.acceptanceReportWithFabricPlanAndPermit(.fresh, false, fabric_plan, bound_fabric_handoff_permit);
-    try std.testing.expect(bound_fabric_machine_report.accepted);
+    try std.testing.expect(!bound_fabric_machine_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.SupervisionPolicyMismatch, bound_fabric_machine_report.blockers[0]);
     const bound_fabric_handoff_report = PortsEnv.acceptanceReportWithFabricPlanAndPermitForHandoff(.fresh, false, fabric_plan, bound_fabric_handoff_permit);
-    try std.testing.expect(bound_fabric_handoff_report.accepted);
-    var bound_fabric_handoff = world.Admission.Admitter.init(.{
+    try std.testing.expect(!bound_fabric_handoff_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.SupervisionPolicyMismatch, bound_fabric_handoff_report.blockers[0]);
+    var denied_bound_fabric_handoff = world.Admission.Admitter.init(.{
         .registry = registry,
         .policy = world.Admission.AdmissionPolicy.test_fixture,
     }).admitForTarget(fixtures.Ports.Target, PortsEnv, parked_package, .{
         .fabric_plan = fabric_plan,
         .permit = bound_fabric_handoff_permit,
     });
-    defer bound_fabric_handoff.deinit(std.testing.allocator);
-    try std.testing.expect(bound_fabric_handoff.report.accepted);
-    if (bound_fabric_handoff.admitted_run) |*admitted_handoff| {
-        var handoff_runtime = boundary.Runtime.init(std.testing.allocator);
-        defer handoff_runtime.deinit();
-        var handoff_ctx: PortsCtx = .{};
-        var resumed_handoff = try admitted_handoff.@"resume"(std.testing.allocator, fixtures.Ports.Target, PortsEnv, &handoff_runtime, .{}, .{
-            .allocator = std.testing.allocator,
-            .mode = world.Mode.fresh,
-            .ctx = &handoff_ctx,
-            .permit = bound_fabric_handoff_permit,
-        });
-        defer resumed_handoff.deinit();
-        var resumed_image = try resumed_handoff.snapshotRunImage();
-        defer resumed_image.deinit(std.testing.allocator);
-        try std.testing.expectEqual(world.RunState.Status.parked_on_port, resumed_image.current_state.status);
-        try std.testing.expect(resumed_image.pending_request_frame != null);
-        try std.testing.expectEqual(@as(u32, 0), resumed_image.pending_request_frame.?.world_port_id);
-        try std.testing.expectEqual(@as(usize, 0), handoff_ctx.calls);
-    } else return error.ExpectedAdmittedRun;
+    defer denied_bound_fabric_handoff.deinit(std.testing.allocator);
+    try std.testing.expect(!denied_bound_fabric_handoff.report.accepted);
+    try std.testing.expect(denied_bound_fabric_handoff.admitted_run == null);
 
     const wildcard_handoff_permit = world.Supervision.issue(fixtures.Ports.Target, PortsMissingEnv, .{
         .mode = .fresh,
