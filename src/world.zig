@@ -4702,10 +4702,7 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
             if (!base_report.accepted) return base_report;
             const maybe_plan = assemblyFabricPlanForTarget(assembly);
             const permit_report = acceptanceReportWithPermitFromReport(base_report, requested_mode, transcript_image_available, permit, maybe_plan, false);
-            if (maybe_plan) |plan| {
-                return reportWithAssemblyEvidence(acceptanceReportWithFabricPlanPermitRoutes(permit_report, requested_mode, plan, permit), assembly);
-            }
-            return reportWithAssemblyEvidence(permit_report, assembly);
+            return reportWithAssemblyEvidence(acceptanceReportWithAssemblyFabricPlanPermitRoutes(permit_report, requested_mode, assembly, permit), assembly);
         }
 
         pub fn acceptanceReportWithFabricPlanAndPermitForHandoff(requested_mode: Mode, transcript_image_available: bool, plan: Fabric.Plan, permit: RunPermit) AcceptanceReport {
@@ -4739,14 +4736,31 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
 
         fn assemblyFabricPlanForTarget(assembly: Assembly) ?Fabric.Plan {
             for (assembly.fabric_plans) |plan| {
-                if (plan.target_ref_fingerprint == target_ref.target_ref_fingerprint and
-                    plan.world_surface_fingerprint == target_ref.world_surface_fingerprint and
-                    plan.target_certificate_fingerprint == target_ref.target_certificate_fingerprint)
-                {
+                if (fabricPlanTargetsEnvironment(plan)) {
                     return plan;
                 }
             }
             return null;
+        }
+
+        fn acceptanceReportWithAssemblyFabricPlanPermitRoutes(report: AcceptanceReport, requested_mode: Mode, assembly: Assembly, permit: RunPermit) AcceptanceReport {
+            if (!report.accepted) return report;
+            var result = report;
+            for (assembly.fabric_plans) |plan| {
+                if (!fabricPlanTargetsEnvironment(plan)) continue;
+                if (permit.fabric_plan_fingerprint == null or permit.fabric_plan_fingerprint.? != plan.plan_fingerprint) {
+                    return rejectedReport(result, &.{.SupervisionPolicyMismatch});
+                }
+                result = acceptanceReportWithFabricPlanPermitRoutes(result, requested_mode, plan, permit);
+                if (!result.accepted) return result;
+            }
+            return result;
+        }
+
+        fn fabricPlanTargetsEnvironment(plan: Fabric.Plan) bool {
+            return plan.target_ref_fingerprint == target_ref.target_ref_fingerprint and
+                plan.world_surface_fingerprint == target_ref.world_surface_fingerprint and
+                plan.target_certificate_fingerprint == target_ref.target_certificate_fingerprint;
         }
 
         fn reportWithLinkerCertificate(report: AcceptanceReport, linker_certificate_fingerprint: u64) AcceptanceReport {

@@ -1247,6 +1247,21 @@ test "route synthesis emits Fabric plan and certificate binds witnesses" {
     effective_policy.max_provider_runs = 2;
     try std.testing.expectEqual(effective_policy.fingerprint(), module_scoped.plan.policy_fingerprint);
     try std.testing.expectEqual(effective_policy.fingerprint(), module_scoped.certificate.policy_fingerprint);
+
+    var mismatched_root_module_ref = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Strict.Target),
+        .root_import_set = root_import_set,
+        .root_imports = &.{root_import},
+        .catalog = catalog,
+        .hints = &.{hint},
+        .policy = capped_policy,
+        .max_routes = 2,
+    });
+    defer mismatched_root_module_ref.deinit();
+    try std.testing.expect(!mismatched_root_module_ref.plan.accepted());
+    try std.testing.expect(mismatched_root_module_ref.graph.hasBlocker(.ReferenceFingerprintMismatch));
+    try std.testing.expectEqual(@as(usize, 0), mismatched_root_module_ref.plan.fabric_plans.len);
 }
 
 test "link hint cannot rewrite provider route kind" {
@@ -1952,6 +1967,36 @@ test "assembly preflights environment and installs into Runspace through Fabric 
     });
     const bound_permit_report = PortsMissingEnv.preflightAssemblyWithPermit(.fresh, true, bound_assembly, scope_permit);
     try std.testing.expect(bound_permit_report.accepted);
+    const extra_route = world.Fabric.Route.init(.{
+        .route_id = 0xbee5,
+        .kind = .reject,
+        .parent_world_surface_fingerprint = root_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = root_ref.target_certificate_fingerprint,
+        .parent_world_port_id = root_import.world_port_id,
+        .response_status = .rejected,
+        .metadata = "extra-assembly-plan-route",
+    });
+    const extra_plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = root_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = root_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = root_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .routes = &.{extra_route},
+        .metadata = "extra-assembly-plan",
+    });
+    try extra_plan.validate();
+    try std.testing.expect(extra_plan.plan_fingerprint != linked.plan.fabric_plans[0].plan_fingerprint);
+    const multi_plan_assembly = world.Assembly.init(.{
+        .root_target_ref = linked.assembly.root_target_ref,
+        .link_plan_fingerprint = linked.assembly.link_plan_fingerprint,
+        .linker_certificate_fingerprint = linked.assembly.linker_certificate_fingerprint,
+        .run_permit_fingerprint = scope_permit.permit_fingerprint,
+        .fabric_plans = &.{ linked.plan.fabric_plans[0], extra_plan },
+        .external_import_requirements = linked.assembly.external_import_requirements,
+    });
+    const multi_plan_report = PortsMissingEnv.preflightAssemblyWithPermit(.fresh, true, multi_plan_assembly, scope_permit);
+    try std.testing.expect(!multi_plan_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.SupervisionPolicyMismatch, multi_plan_report.blockers[0]);
 
     var runspace = world.Runspace.init(std.testing.allocator, .{});
     defer runspace.deinit();

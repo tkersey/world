@@ -1982,6 +1982,7 @@ pub fn Linker(comptime W: type) type {
             if (!targetRefIsValid(input.root_target_ref)) valid = false;
             if (input.root_module_ref) |module_ref| {
                 if (!moduleRefIsValid(module_ref)) valid = false;
+                if (!moduleRefMatchesTargetRef(module_ref, input.root_target_ref)) valid = false;
             }
             for (input.catalog.entries) |entry| {
                 if (!catalogEntryReferencesValid(entry)) valid = false;
@@ -2014,6 +2015,19 @@ pub fn Linker(comptime W: type) type {
         fn moduleRefIsValid(module_ref: W.Admission.ModuleRef) bool {
             module_ref.validate() catch return false;
             return true;
+        }
+
+        fn moduleRefMatchesTargetRef(module_ref: W.Admission.ModuleRef, target_ref: W.TargetRef) bool {
+            return module_ref.target_ref_fingerprint == target_ref.target_ref_fingerprint and
+                module_ref.world_surface_fingerprint == target_ref.world_surface_fingerprint and
+                module_ref.target_certificate_fingerprint == target_ref.target_certificate_fingerprint and
+                module_ref.residual_program_plan_hash == target_ref.residual_program_plan_hash and
+                module_ref.normal_form_kind == target_ref.normal_form_kind and
+                module_ref.world_port_table_fingerprint == target_ref.world_port_table_fingerprint and
+                module_ref.world_value_table_fingerprint == target_ref.world_value_table_fingerprint and
+                module_ref.world_dispatch_table_fingerprint == target_ref.world_dispatch_table_fingerprint and
+                target_ref.boundary_module_fingerprint != null and
+                module_ref.boundary_module_fingerprint == target_ref.boundary_module_fingerprint.?;
         }
 
         fn appendUniqueBlocker(allocator: std.mem.Allocator, blockers: *std.ArrayList(Blocker), blocker: Blocker) !void {
