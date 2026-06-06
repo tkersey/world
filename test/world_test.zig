@@ -6258,10 +6258,11 @@ test "runspace driverless fabric provider response accounts supervision" {
     try std.testing.expectEqual(world.Runspace.EventKind.run_parked_on_supervision, event.kind);
     try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_supervision, (try runspace.getSlotSummary(parent_handle)).status);
     try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
-    try std.testing.expectEqual(world.Fabric.InvocationStatus.provider_completed, runspace.fabric_invocations.items[invocation.sequence].status);
-    try std.testing.expectError(error.ActiveFabricUnsupported, runspace.exportPending(0));
+    try std.testing.expectEqual(world.Fabric.InvocationStatus.supervision_denied, runspace.fabric_invocations.items[invocation.sequence].status);
     try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_receipt_count);
-    try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+    var exported = try runspace.exportPending(0);
+    defer exported.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
 }
 
 test "runspace driverless fabric provider response denial records failed receipt" {
@@ -6622,7 +6623,7 @@ test "runspace fabric provider result resumes exactly one parent pending port" {
     try std.testing.expect(exported.current_state.final_value_image_fingerprint != null);
 }
 
-test "runspace fabric parked provider response keeps active invocation" {
+test "runspace fabric parked provider response retires invocation" {
     const park_policy = world.SupervisionPolicy.init(.{
         .allow_fresh_calls = true,
         .allow_native_adapters = true,
@@ -6702,14 +6703,15 @@ test "runspace fabric parked provider response keeps active invocation" {
     try std.testing.expectEqual(world.Runspace.EventKind.run_parked_on_supervision, event.kind);
     try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_supervision, (try runspace.getSlotSummary(parent_handle)).status);
     try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
-    try std.testing.expectEqual(world.Fabric.InvocationStatus.provider_completed, runspace.fabric_invocations.items[invocation.sequence].status);
-    try std.testing.expectError(error.ActiveFabricUnsupported, runspace.exportPending(0));
+    try std.testing.expectEqual(world.Fabric.InvocationStatus.supervision_denied, runspace.fabric_invocations.items[invocation.sequence].status);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().fabric_invocation_count);
     try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_receipt_count);
-    try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+    var exported = try runspace.exportPending(0);
+    defer exported.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
 }
 
-test "runspace fabric parked provider response blocks export after slot-scoped supervision park" {
+test "runspace fabric parked provider response exports after slot-scoped supervision park" {
     var parent_runtime = boundary.Runtime.init(std.testing.allocator);
     defer parent_runtime.deinit();
     var runspace = world.Runspace.init(std.testing.allocator, .{});
@@ -6788,12 +6790,13 @@ test "runspace fabric parked provider response blocks export after slot-scoped s
     const event = try runspace.respondFromFabric(invocation);
     try std.testing.expectEqual(world.Runspace.EventKind.run_parked_on_supervision, event.kind);
     try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_supervision, (try runspace.getSlotSummary(parent_handle)).status);
-    try std.testing.expectEqual(world.Fabric.InvocationStatus.provider_completed, runspace.fabric_invocations.items[invocation.sequence].status);
-    try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
-    try std.testing.expectError(error.ActiveFabricUnsupported, runspace.exportPending(0));
+    try std.testing.expectEqual(world.Fabric.InvocationStatus.supervision_denied, runspace.fabric_invocations.items[invocation.sequence].status);
+    var exported = try runspace.exportPending(0);
+    defer exported.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
 }
 
-test "runspace fabric terminal route parks active without receipt" {
+test "runspace fabric terminal route retires on supervision park without receipt" {
     const park_policy = world.SupervisionPolicy.init(.{
         .allow_fresh_calls = true,
         .allow_native_adapters = true,
@@ -6842,17 +6845,16 @@ test "runspace fabric terminal route parks active without receipt" {
     try runspace.installFabricPlan(parent_ref, plan);
 
     const invocation = try runspace.routePending(0, plan);
-    try std.testing.expectEqual(world.Fabric.InvocationStatus.started, invocation.status);
+    try std.testing.expectEqual(world.Fabric.InvocationStatus.supervision_denied, invocation.status);
     try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_supervision, (try runspace.getSlotSummary(parent_handle)).status);
     try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
-    try std.testing.expectEqual(world.Fabric.InvocationStatus.started, runspace.fabric_invocations.items[invocation.sequence].status);
+    try std.testing.expectEqual(world.Fabric.InvocationStatus.supervision_denied, runspace.fabric_invocations.items[invocation.sequence].status);
     try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_receipt_count);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
-    try std.testing.expectError(error.ActiveFabricUnsupported, runspace.exportPending(0));
-    const retried = try runspace.routePending(0, plan);
-    try std.testing.expectEqual(invocation.invocation_fingerprint, retried.invocation_fingerprint);
+    var exported = try runspace.exportPending(0);
+    defer exported.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().fabric_invocation_count);
-    try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
 }
 
 test "runspace fabric provider result does not require handoff export" {

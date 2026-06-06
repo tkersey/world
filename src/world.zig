@@ -10164,7 +10164,22 @@ pub const Runspace = struct {
             return err;
         };
         if (event.kind == .run_parked_on_supervision) {
-            return started;
+            const denied = Fabric.Invocation.init(.{
+                .plan_fingerprint = started.plan_fingerprint,
+                .route_fingerprint = started.route_fingerprint,
+                .parent_run_handle_fingerprint = started.parent_run_handle_fingerprint,
+                .parent_pending_port_fingerprint = started.parent_pending_port_fingerprint,
+                .parent_mailbox_id = started.parent_mailbox_id,
+                .request_frame_fingerprint = started.request_frame_fingerprint,
+                .mapped_response_frame_fingerprint = started.mapped_response_frame_fingerprint,
+                .run_permit_fingerprint = started.run_permit_fingerprint,
+                .depth = started.depth,
+                .sequence = started.sequence,
+                .status = .supervision_denied,
+            });
+            try self.replaceFabricInvocation(denied);
+            if (fabric_charge_committed) |committed| committed.* = true;
+            return denied;
         }
         const parent_response_frame_fingerprint = event.response_frame_fingerprint orelse response.frame_fingerprint;
         const terminal_status: Fabric.InvocationStatus = if (route.kind == .reject) .rejected else .unsupported;
@@ -10485,6 +10500,7 @@ pub const Runspace = struct {
             return err;
         };
         if (event.kind == .run_parked_on_supervision) {
+            try self.retireFabricInvocation(recorded, .supervision_denied);
             return event;
         }
         if (event.kind != .run_resumed and event.kind != .run_completed) {
