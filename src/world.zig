@@ -7957,7 +7957,7 @@ pub const Runspace = struct {
     };
 
     const DriverStep = union(enum) {
-        done,
+        done: ?Frame.ValueImage,
         port_request: Frame.Request,
         failed,
     };
@@ -8107,8 +8107,10 @@ pub const Runspace = struct {
                         const frame_step = try active.nextFrame();
                         return switch (frame_step) {
                             .done => |value| {
+                                var result_image = try captureRunspaceDoneResultImage(active);
+                                errdefer if (result_image) |*image| image.deinit(active.allocator);
                                 discardRunspaceDoneValue(RunType, active, value);
-                                return .done;
+                                return .{ .done = result_image };
                             },
                             .port_request => |request| .{ .port_request = request },
                             .failed => .failed,
@@ -8117,12 +8119,22 @@ pub const Runspace = struct {
                     const frame_step = try active.nextFrame();
                     return switch (frame_step) {
                         .done => |value| {
+                            var result_image = try captureRunspaceDoneResultImage(active);
+                            errdefer if (result_image) |*image| image.deinit(active.allocator);
                             discardRunspaceDoneValue(RunType, active, value);
-                            return .done;
+                            return .{ .done = result_image };
                         },
                         .port_request => |request| .{ .port_request = request },
                         .failed => .failed,
                     };
+                }
+
+                fn captureRunspaceDoneResultImage(active: *RunType) anyerror!?Frame.ValueImage {
+                    if (!@hasDecl(RunType, "snapshotRunImage") or !@hasField(RunType, "allocator")) return null;
+                    var image = try active.snapshotRunImage();
+                    defer image.deinit(active.allocator);
+                    const result = image.final_result_image orelse return null;
+                    return try result.clone(active.allocator);
                 }
 
                 fn discardRunspaceDoneValue(comptime ActiveRunType: type, active: *ActiveRunType, value: anytype) void {
@@ -8391,6 +8403,8 @@ pub const Runspace = struct {
         supervisor: ?Supervision.Supervisor = null,
         installed_run_image: ?RunImage = null,
         owns_installed_run_image: bool = false,
+        completed_result_image: ?Frame.ValueImage = null,
+        owns_completed_result_image: bool = false,
 
         pub const Status = RunStatus;
         pub const Transition = enum {
@@ -8444,6 +8458,8 @@ pub const Runspace = struct {
             supervisor: ?Supervision.Supervisor = null,
             installed_run_image: ?RunImage = null,
             owns_installed_run_image: bool = false,
+            completed_result_image: ?Frame.ValueImage = null,
+            owns_completed_result_image: bool = false,
         }) @This() {
             return .{
                 .handle = args.handle,
@@ -8465,6 +8481,8 @@ pub const Runspace = struct {
                 .supervisor = args.supervisor,
                 .installed_run_image = args.installed_run_image,
                 .owns_installed_run_image = args.owns_installed_run_image,
+                .completed_result_image = args.completed_result_image,
+                .owns_completed_result_image = args.owns_completed_result_image,
             };
         }
 
@@ -8479,6 +8497,9 @@ pub const Runspace = struct {
             }
             if (self.owns_installed_run_image) {
                 if (self.installed_run_image) |*image| image.deinit(allocator);
+            }
+            if (self.owns_completed_result_image) {
+                if (self.completed_result_image) |*image| image.deinit(allocator);
             }
             self.* = undefined;
         }
@@ -10721,7 +10742,7 @@ pub const Runspace = struct {
     fn validateFabricProviderResultImageEvidence(self: *@This(), provider_index: usize) !void {
         const provider_slot = self.slots.items[provider_index];
         if (provider_slot.status != .completed) return;
-        var image = try self.snapshotSlotImage(provider_index);
+        var image = try self.snapshotFabricProviderResultImage(provider_index);
         defer image.deinit(self.allocator);
         if (image.final_result_image == null) return error.InvalidRunspaceTransition;
     }
@@ -10902,10 +10923,35 @@ pub const Runspace = struct {
         for (self.slots.items, 0..) |slot, index| {
             if (slot.handle.handle_fingerprint == provider_fingerprint) {
                 if (slot.status != .completed) return error.InvalidRunspaceTransition;
-                return try self.snapshotSlotImage(index);
+                return try self.snapshotFabricProviderResultImage(index);
             }
         }
         return error.StaleRunHandle;
+    }
+
+    fn snapshotFabricProviderResultImage(self: *@This(), index: usize) !RunImage {
+        const slot = self.slots.items[index];
+        var image = try self.snapshotSlotImage(index);
+        errdefer image.deinit(self.allocator);
+        if (image.final_result_image == null) {
+            if (slot.completed_result_image) |result| {
+                image.final_result_image = try result.clone(self.allocator);
+                image.owns_final_result_image = true;
+                image.current_state = RunState.init(.{
+                    .target_ref_fingerprint = image.current_state.target_ref_fingerprint,
+                    .transcript_image_fingerprint = image.current_state.transcript_image_fingerprint,
+                    .branch_id = image.current_state.branch_id,
+                    .checkpoint_fingerprint = image.current_state.checkpoint_fingerprint,
+                    .pending_request_fingerprint = image.current_state.pending_request_fingerprint,
+                    .final_response_fingerprint = image.current_state.final_response_fingerprint,
+                    .final_value_image_fingerprint = result.value_image_fingerprint,
+                    .turn_index = image.current_state.turn_index,
+                    .status = image.current_state.status,
+                });
+                refreshRunImageFingerprint(&image);
+            }
+        }
+        return image;
     }
 
     fn fabricProviderRunStillActive(self: *const @This(), invocation: Fabric.Invocation) bool {
@@ -12475,8 +12521,21 @@ pub const Runspace = struct {
             return err;
         };
         switch (step_result) {
-            .done => {
+            .done => |result_image| {
+                var completed_result_image = result_image;
+                var owns_completed_result_image = completed_result_image != null;
+                errdefer if (owns_completed_result_image) {
+                    if (completed_result_image) |*image| image.deinit(self.allocator);
+                };
                 try slot.transition(.complete, null);
+                if (completed_result_image) |image| {
+                    if (slot.owns_completed_result_image) {
+                        if (slot.completed_result_image) |*previous| previous.deinit(self.allocator);
+                    }
+                    slot.completed_result_image = image;
+                    slot.owns_completed_result_image = true;
+                    owns_completed_result_image = false;
+                }
                 const event = self.appendPreparedEventAssumeCapacity(.{
                     .kind = .run_completed,
                     .run_handle = slot.handle,

@@ -39,11 +39,13 @@ fn pendingApproval(ctx: *PortsCtx, payload: []const u8) !i32 {
 }
 
 const PortsDecl = world.port(fixtures.Ports.Target, fixtures.Ports.ApprovalRequest, approve);
+const ProviderPortsDecl = world.port(fixtures.ProviderPorts.Target, fixtures.ProviderPorts.ApprovalRequest, approve);
 const FailingPortsDecl = world.port(fixtures.Ports.Target, fixtures.Ports.ApprovalRequest, failApproval);
 const PendingPortsDecl = world.port(fixtures.Ports.Target, fixtures.Ports.ApprovalRequest, pendingApproval);
 const PortsByIdDecl = world.portById(fixtures.Ports.Target, 0, fixtures.Ports.ApprovalRequest, approve);
 const PortsRequestDecl = world.port(fixtures.Ports.Target, fixtures.Ports.ApprovalRequest, approveRequest);
 const PortsNativeBinding = world.bind(PortsDecl, world.NativeAdapter(approve));
+const ProviderPortsNativeBinding = world.bind(ProviderPortsDecl, world.NativeAdapter(approve));
 const FailingPortsNativeBinding = world.bind(FailingPortsDecl, world.NativeAdapter(failApproval));
 const PortsPortablePendingNativeBinding = world.bind(PendingPortsDecl, struct {
     pub const kind: world.AdapterKind = .native;
@@ -689,6 +691,10 @@ const PortsWrongDescriptorRecordBinding = struct {
 };
 const PortsEnv = world.Environment(fixtures.Ports.Target, .{
     .bindings = .{PortsNativeBinding},
+    .policy = world.EnvironmentPolicy.fresh_and_replay,
+});
+const ProviderPortsEnv = world.Environment(fixtures.ProviderPorts.Target, .{
+    .bindings = .{ProviderPortsNativeBinding},
     .policy = world.EnvironmentPolicy.fresh_and_replay,
 });
 const FailingPortsEnv = world.Environment(fixtures.Ports.Target, .{
@@ -5943,7 +5949,7 @@ test "runspace install consumes explicit fabric plan for missing environment bin
 
 test "runspace fabric provider route resumes fabric-only missing environment port" {
     const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
-    const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    const provider_ref = world.TargetRef.fromTarget(fixtures.ProviderPorts.Target);
     const response_mapping = fabricTestMapping(.provider_result_to_parent_response);
     const route = world.Fabric.Route.init(.{
         .route_id = 0x51ace_fab3,
@@ -5998,27 +6004,18 @@ test "runspace fabric provider route resumes fabric-only missing environment por
     try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try runspace.getSlotSummary(parent_handle)).status);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
 
-    var provider_final_image = try world.Frame.ValueImage.fromValue(
-        std.testing.allocator,
-        1,
-        0x5150_fab3,
-        null,
-        @as(i32, 7),
-        world.ValuePolicy.portable,
-    );
-    defer provider_final_image.deinit(std.testing.allocator);
-    const provider_handle = try runspace.installRunImage(world.RunImage.init(.{
-        .kind = .completed_run,
-        .target_ref = provider_ref,
-        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Strict.Target).import_set_fingerprint,
-        .current_state = world.RunState.init(.{
-            .target_ref_fingerprint = provider_ref.target_ref_fingerprint,
-            .final_response_fingerprint = 0x5150_fab3,
-            .final_value_image_fingerprint = provider_final_image.value_image_fingerprint,
-            .status = .completed,
-        }),
-        .final_result_image = provider_final_image,
-    }));
+    var provider_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer provider_runtime.deinit();
+    var provider_ctx: PortsCtx = .{};
+    const provider_handle = try runspace.installMachineRun(fixtures.ProviderPorts.Target, ProviderPortsEnv, &provider_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &provider_ctx,
+    });
+    _ = try runspace.tick();
+    try std.testing.expectEqual(@as(usize, 1), provider_ctx.calls);
+    _ = try runspace.tick();
+    try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try runspace.getSlotSummary(provider_handle)).status);
 
     const invocation = try runspace.routePendingToProviderRun(0, plan, provider_handle);
     try std.testing.expectEqual(world.Fabric.InvocationStatus.provider_completed, invocation.status);
