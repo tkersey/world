@@ -9482,10 +9482,11 @@ pub const Runspace = struct {
         if (self.config.require_supervision and maybe_permit == null) return error.SupervisionDenied;
         const maybe_fabric_plan: ?Fabric.Plan = if (comptime @hasField(Options, "fabric_plan")) @field(options, "fabric_plan") else null;
         if (maybe_fabric_plan) |plan| {
-            const transcript_available = @hasField(Options, "transcript_image") or
+            const fabric_replay_transcript_available = @hasField(Options, "transcript_image");
+            const transcript_available = fabric_replay_transcript_available or
                 @hasField(Options, "transcript") or
                 (@hasField(Options, "transcript_image_available") and @field(options, "transcript_image_available"));
-            const fabric_report = Env.acceptanceReportWithFabricPlan(requested_mode, transcript_available, plan);
+            const fabric_report = Env.acceptanceReportWithFabricPlanEvidence(requested_mode, transcript_available, fabric_replay_transcript_available, plan);
             if (!fabric_report.accepted) return acceptanceError(fabric_report);
         }
         const MachineType = Machine(Target, Env.machine_config);

@@ -6040,6 +6040,40 @@ test "runspace fabric provider route resumes fabric-only missing environment por
     try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try runspace.getSlotSummary(ordinary_handle)).status);
 }
 
+test "runspace direct fabric replay install requires stored transcript evidence" {
+    const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const route = world.Fabric.Route.init(.{
+        .route_id = 0x51ace_fab5,
+        .kind = .replay,
+        .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .parent_world_port_id = 0,
+        .provider_transcript_image_fingerprint = 0x7777_fab5,
+    });
+    const plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .routes = &.{route},
+    });
+
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var transcript = world.Transcript.init(std.testing.allocator);
+    defer transcript.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+
+    try std.testing.expectError(error.TranscriptImageRequired, runspace.installMachineRun(fixtures.Ports.Target, PortsMissingEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .fabric_plan = plan,
+        .transcript = &transcript,
+    }));
+    try std.testing.expectEqual(@as(usize, 0), runspace.slots.items.len);
+}
+
 test "runspace fabric provider response completes admitted parked handoff without driver" {
     const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
