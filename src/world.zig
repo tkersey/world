@@ -10743,12 +10743,12 @@ pub const Runspace = struct {
             }
         }
         if (route.provider_run_image_fingerprint) |expected| {
-            if (provider_slot.installed_run_image) |image| {
-                if (image.run_image_fingerprint != expected) return error.InvalidFrameEncoding;
-            } else if (provider_slot.status == .completed) {
+            if (provider_slot.status == .completed) {
                 const provider_index = try self.slotIndex(provider_slot.handle);
-                var image = try self.snapshotSlotImage(provider_index);
+                var image = try self.snapshotFabricProviderResultImage(provider_index);
                 defer image.deinit(self.allocator);
+                if (image.run_image_fingerprint != expected) return error.InvalidFrameEncoding;
+            } else if (provider_slot.installed_run_image) |image| {
                 if (image.run_image_fingerprint != expected) return error.InvalidFrameEncoding;
             } else return error.InvalidFrameEncoding;
         }
@@ -16919,7 +16919,13 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                             var frame = try self.pendingRequestFrame(!had_pending_request);
                             errdefer frame.deinit(self.allocator);
                             if (self.handoff_pending_frame_fingerprint == null and !self.pending_adapter_call_accounted) {
-                                try self.accountPendingAdapterCall(frame.world_port_id);
+                                if (self.runspace_fabric_route_frame_request and self.fabricPlanCoversWorldPort(frame.world_port_id)) {
+                                    // Runspace owns the invocation record after it receives the frame.
+                                } else if (self.fabricPlanCoversHandlerlessWorldPort(frame.world_port_id)) {
+                                    try self.accountPendingFabricInvocation(frame.world_port_id);
+                                } else {
+                                    try self.accountPendingAdapterCall(frame.world_port_id);
+                                }
                             }
                             break :request .{ .port_request = frame };
                         },
@@ -17641,6 +17647,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         supervisor.beforeFabricInvocation(.{
                             .world_port_id = world_port_id,
                             .route_kind = route.kind,
+                            .provider_runs = if (fabricRouteRequiresProviderRun(route.kind)) 1 else 0,
                         }) catch |err| {
                             try self.handleSupervisionError(err);
                             return Error.HandlerPending;
