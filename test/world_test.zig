@@ -954,6 +954,19 @@ test "link graph inhabits external unresolved and replay evidence nodes" {
     try std.testing.expect(graphHasNodeKind(external_linked.graph, .environment_external));
     try std.testing.expect(graphHasEdgeKind(external_linked.graph, .environment_satisfies_import));
 
+    var boundary_linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
+        .root_imports = &.{root_import},
+        .catalog = world.Linker.Catalog.init(&.{}),
+        .policy = .world_boundary,
+    });
+    defer boundary_linked.deinit();
+
+    try std.testing.expect(boundary_linked.plan.accepted());
+    try std.testing.expectEqual(world.Linker.NormalForm.fabric_with_external_ports, boundary_linked.plan.normal_form);
+    try std.testing.expect(graphHasNodeKind(boundary_linked.graph, .environment_external));
+
     var unresolved_linked = try world.Linker.link(std.testing.allocator, .{
         .root_target_ref = root_ref,
         .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
@@ -1158,6 +1171,10 @@ test "blocked link result does not expose executable assembly plans" {
     try std.testing.expectEqual(@as(usize, 0), linked.assembly.fabric_plans.len);
     try std.testing.expectEqual(@as(usize, 0), linked.assembly.provider_run_templates.len);
     try std.testing.expectEqual(@as(usize, 0), linked.certificate.fabric_plan_fingerprints.len);
+    try std.testing.expectError(error.InvalidFrameEncoding, linked.assembly.validate());
+    const blocked_preflight = PortsEnv.preflightAssembly(.fresh, true, linked.assembly);
+    try std.testing.expect(!blocked_preflight.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.SupervisionPolicyMismatch, blocked_preflight.blockers[0]);
 }
 
 test "route synthesis emits Fabric plan and certificate binds witnesses" {

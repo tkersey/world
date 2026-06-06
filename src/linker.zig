@@ -52,6 +52,7 @@ pub fn Linker(comptime W: type) type {
 
             pub const strict_closed = Policy{};
             pub const world_boundary = Policy{
+                .require_closed_graph = false,
                 .allow_external_environment_ports = true,
                 .max_unresolved_imports = 16,
             };
@@ -1226,6 +1227,7 @@ pub fn Linker(comptime W: type) type {
 
             pub fn validate(self: Assembly) !void {
                 if (fingerprintAssembly(self) != self.assembly_fingerprint) return error.InvalidFrameEncoding;
+                if (self.link_plan_fingerprint == 0 or self.linker_certificate_fingerprint == 0) return error.InvalidFrameEncoding;
                 for (self.fabric_plans) |plan| {
                     if (plan.target_ref_fingerprint != self.root_target_ref.target_ref_fingerprint) return error.InvalidFrameEncoding;
                     if (plan.world_surface_fingerprint != self.root_target_ref.world_surface_fingerprint) return error.InvalidFrameEncoding;
@@ -1819,8 +1821,8 @@ pub fn Linker(comptime W: type) type {
             const assembly_admission_receipts = if (plan.accepted()) owned_admission_receipts else &.{};
             const assembly = Assembly.init(.{
                 .root_target_ref = input.root_target_ref,
-                .link_plan_fingerprint = plan.plan_fingerprint,
-                .linker_certificate_fingerprint = certificate.certificate_fingerprint,
+                .link_plan_fingerprint = if (plan.accepted()) plan.plan_fingerprint else 0,
+                .linker_certificate_fingerprint = if (plan.accepted()) certificate.certificate_fingerprint else 0,
                 .run_permit_fingerprint = input.run_permit_fingerprint,
                 .fabric_plans = assembly_fabric_plans,
                 .external_import_requirements = assembly_external_imports,
