@@ -4450,7 +4450,7 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
 
         pub fn acceptanceReportWithFabricPlanAndPermit(requested_mode: Mode, transcript_image_available: bool, plan: Fabric.Plan, permit: RunPermit) AcceptanceReport {
             const base_report = acceptanceReportWithFabricPlan(requested_mode, transcript_image_available, plan);
-            const report = acceptanceReportWithPermitFromReport(base_report, requested_mode, transcript_image_available, permit, null);
+            const report = acceptanceReportWithPermitFromReport(base_report, requested_mode, transcript_image_available, permit, plan);
             return acceptanceReportWithFabricPlanPermitRoutes(report, requested_mode, plan, permit);
         }
 

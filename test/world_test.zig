@@ -5633,7 +5633,7 @@ test "runspace install consumes explicit fabric plan for missing environment bin
         }),
     });
     const bound_fabric_machine_report = PortsEnv.acceptanceReportWithFabricPlanAndPermit(.fresh, false, fabric_plan, bound_fabric_handoff_permit);
-    try std.testing.expect(!bound_fabric_machine_report.accepted);
+    try std.testing.expect(bound_fabric_machine_report.accepted);
     const bound_fabric_handoff_report = PortsEnv.acceptanceReportWithFabricPlanAndPermitForHandoff(.fresh, false, fabric_plan, bound_fabric_handoff_permit);
     try std.testing.expect(bound_fabric_handoff_report.accepted);
     var bound_fabric_handoff = world.Admission.Admitter.init(.{
