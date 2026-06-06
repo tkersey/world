@@ -9995,7 +9995,6 @@ pub const Runspace = struct {
         const parent_index = try self.slotIndex(pending.handle);
         const parent_slot = &self.slots.items[parent_index];
         if (!slotHasFabricRoutablePending(parent_slot.*, mailbox_id)) return error.StaleRunHandle;
-        if (self.hasActiveFabricInvocationForMailbox(mailbox_id)) return error.ActiveFabricUnsupported;
         try self.validateFabricPlanForPending(plan, pending);
         const route = plan.routeForPort(pending.world_port_id) orelse return error.FabricMissingRoute;
         try route.validate();
@@ -10005,11 +10004,22 @@ pub const Runspace = struct {
             .target_export, .admitted_run, .guest => return error.ProviderRunDenied,
             .adapter => return error.UnsupportedMapping,
         }
+        if (self.activeFabricInvocationForMailbox(mailbox_id)) |active| {
+            if (active.status == .started and
+                active.provider_run_handle_fingerprint == null and
+                active.plan_fingerprint == plan.plan_fingerprint and
+                active.route_fingerprint == route.route_fingerprint and
+                active.parent_run_handle_fingerprint == pending.handle.handle_fingerprint and
+                active.parent_pending_port_fingerprint == pending.pending_port_fingerprint and
+                active.request_frame_fingerprint == pending.request_frame_fingerprint)
+            {
+                return self.completeTerminalFabricInvocation(mailbox_id, pending, parent_slot, route, active, null);
+            }
+            return error.ActiveFabricUnsupported;
+        }
         const depth = try self.fabricDepthForParent(parent_slot.handle);
         try plan.assertDepth(depth);
         try assertFabricRouteDepth(route, depth);
-        var receipt_evidence = try self.prepareFabricReceiptEvidence(5);
-        defer receipt_evidence.deinit(self.allocator);
         var supervisor_snapshot = try self.snapshotSlotSupervisor(parent_index);
         defer supervisor_snapshot.deinit(self.allocator);
         var fabric_charge_committed = false;
@@ -10037,7 +10047,6 @@ pub const Runspace = struct {
             .reject, .unsupported => {
                 var response = try fabricResponseForPending(pending, route.response_status, route.route_fingerprint, "fabric terminal response");
                 defer response.deinit(self.allocator);
-                const terminal_status: Fabric.InvocationStatus = if (route.kind == .reject) .rejected else .unsupported;
                 const started = Fabric.Invocation.init(.{
                     .plan_fingerprint = invocation.plan_fingerprint,
                     .route_fingerprint = invocation.route_fingerprint,
@@ -10058,50 +10067,36 @@ pub const Runspace = struct {
                 errdefer if (!fabric_charge_committed and invocation_recorded) self.rollbackFabricInvocationRecord(invocation_count_before, event_count_before, next_event_index_before);
                 try self.recordFabricInvocation(parent_slot.*, started, route, .fabric_failed, "fabric terminal route recorded");
                 invocation_recorded = true;
-                const event = self.respondWithFabricOwnership(mailbox_id, response, true) catch |err| {
-                    const parent_moved = parent_slot.status != .parked_on_port or parent_slot.pending_mailbox_id != mailbox_id;
-                    const pending_after = self.mailbox.get(mailbox_id) catch null;
-                    const pending_consumed = if (pending_after) |after| after.status != .pending else true;
-                    if (parent_moved or pending_consumed) {
-                        invocation = Fabric.Invocation.init(.{
-                            .plan_fingerprint = started.plan_fingerprint,
-                            .route_fingerprint = started.route_fingerprint,
-                            .parent_run_handle_fingerprint = started.parent_run_handle_fingerprint,
-                            .parent_pending_port_fingerprint = started.parent_pending_port_fingerprint,
-                            .parent_mailbox_id = started.parent_mailbox_id,
-                            .request_frame_fingerprint = started.request_frame_fingerprint,
-                            .mapped_response_frame_fingerprint = started.mapped_response_frame_fingerprint,
-                            .run_permit_fingerprint = started.run_permit_fingerprint,
-                            .depth = started.depth,
-                            .sequence = started.sequence,
-                            .status = .failed,
-                        });
-                        try self.replaceFabricInvocation(invocation);
-                        try self.recordFabricReceipt(parent_slot.handle, invocation, route.route_fingerprint, pending, response.frame_fingerprint, null, null, .failed, .FabricDenied, receipt_evidence.takeReceiptSummary());
-                        fabric_charge_committed = true;
-                    }
-                    return err;
-                };
-                if (event.kind == .run_parked_on_supervision) {
-                    invocation = Fabric.Invocation.init(.{
-                        .plan_fingerprint = started.plan_fingerprint,
-                        .route_fingerprint = started.route_fingerprint,
-                        .parent_run_handle_fingerprint = started.parent_run_handle_fingerprint,
-                        .parent_pending_port_fingerprint = started.parent_pending_port_fingerprint,
-                        .parent_mailbox_id = started.parent_mailbox_id,
-                        .request_frame_fingerprint = started.request_frame_fingerprint,
-                        .mapped_response_frame_fingerprint = started.mapped_response_frame_fingerprint,
-                        .run_permit_fingerprint = started.run_permit_fingerprint,
-                        .depth = started.depth,
-                        .sequence = started.sequence,
-                        .status = .supervision_denied,
-                    });
-                    try self.replaceFabricInvocation(invocation);
-                    fabric_charge_committed = true;
-                    return invocation;
-                }
-                const parent_response_frame_fingerprint = event.response_frame_fingerprint orelse response.frame_fingerprint;
-                invocation = Fabric.Invocation.init(.{
+                invocation = try self.completeTerminalFabricInvocation(mailbox_id, pending, parent_slot, route, started, &fabric_charge_committed);
+                fabric_charge_committed = true;
+                return invocation;
+            },
+            .target_export, .admitted_run, .guest => return error.ProviderRunDenied,
+            .adapter => return error.UnsupportedMapping,
+        }
+    }
+
+    fn completeTerminalFabricInvocation(
+        self: *@This(),
+        mailbox_id: u64,
+        pending: Runspace.PendingPort,
+        parent_slot: *Runspace.RunSlot,
+        route: Fabric.Route,
+        started: Fabric.Invocation,
+        fabric_charge_committed: ?*bool,
+    ) !Fabric.Invocation {
+        var response = try fabricResponseForPending(pending, route.response_status, route.route_fingerprint, "fabric terminal response");
+        defer response.deinit(self.allocator);
+        if (started.mapped_response_frame_fingerprint != response.frame_fingerprint) return error.InvalidFrameEncoding;
+        var receipt_evidence = try self.prepareFabricReceiptEvidence(5);
+        defer receipt_evidence.deinit(self.allocator);
+        const event = self.respondWithFabricOwnership(mailbox_id, response, true) catch |err| {
+            const parent_not_retryable = parent_slot.pending_mailbox_id != mailbox_id or
+                (parent_slot.status != .parked_on_port and parent_slot.status != .parked_on_supervision);
+            const pending_after = self.mailbox.get(mailbox_id) catch null;
+            const pending_consumed = if (pending_after) |after| after.status != .pending else true;
+            if (parent_not_retryable or pending_consumed) {
+                const failed = Fabric.Invocation.init(.{
                     .plan_fingerprint = started.plan_fingerprint,
                     .route_fingerprint = started.route_fingerprint,
                     .parent_run_handle_fingerprint = started.parent_run_handle_fingerprint,
@@ -10112,16 +10107,35 @@ pub const Runspace = struct {
                     .run_permit_fingerprint = started.run_permit_fingerprint,
                     .depth = started.depth,
                     .sequence = started.sequence,
-                    .status = terminal_status,
+                    .status = .failed,
                 });
-                try self.replaceFabricInvocation(invocation);
-                try self.recordFabricReceipt(parent_slot.handle, invocation, route.route_fingerprint, pending, parent_response_frame_fingerprint, null, null, terminal_status, if (route.kind == .reject) .FabricRejected else .UnsupportedMapping, receipt_evidence.takeReceiptSummary());
-                fabric_charge_committed = true;
-                return invocation;
-            },
-            .target_export, .admitted_run, .guest => return error.ProviderRunDenied,
-            .adapter => return error.UnsupportedMapping,
+                try self.replaceFabricInvocation(failed);
+                try self.recordFabricReceipt(parent_slot.handle, failed, route.route_fingerprint, pending, response.frame_fingerprint, null, null, .failed, .FabricDenied, receipt_evidence.takeReceiptSummary());
+                if (fabric_charge_committed) |committed| committed.* = true;
+            }
+            return err;
+        };
+        if (event.kind == .run_parked_on_supervision) {
+            return started;
         }
+        const parent_response_frame_fingerprint = event.response_frame_fingerprint orelse response.frame_fingerprint;
+        const terminal_status: Fabric.InvocationStatus = if (route.kind == .reject) .rejected else .unsupported;
+        const completed = Fabric.Invocation.init(.{
+            .plan_fingerprint = started.plan_fingerprint,
+            .route_fingerprint = started.route_fingerprint,
+            .parent_run_handle_fingerprint = started.parent_run_handle_fingerprint,
+            .parent_pending_port_fingerprint = started.parent_pending_port_fingerprint,
+            .parent_mailbox_id = started.parent_mailbox_id,
+            .request_frame_fingerprint = started.request_frame_fingerprint,
+            .mapped_response_frame_fingerprint = started.mapped_response_frame_fingerprint,
+            .run_permit_fingerprint = started.run_permit_fingerprint,
+            .depth = started.depth,
+            .sequence = started.sequence,
+            .status = terminal_status,
+        });
+        try self.replaceFabricInvocation(completed);
+        try self.recordFabricReceipt(parent_slot.handle, completed, route.route_fingerprint, pending, parent_response_frame_fingerprint, null, null, terminal_status, if (route.kind == .reject) .FabricRejected else .UnsupportedMapping, receipt_evidence.takeReceiptSummary());
+        return completed;
     }
 
     pub fn routePendingToProviderRun(self: *@This(), mailbox_id: u64, plan: Fabric.Plan, provider_handle: RunHandle) !Fabric.Invocation {
@@ -10958,7 +10972,7 @@ pub const Runspace = struct {
         return false;
     }
 
-    fn hasActiveFabricInvocationForMailbox(self: *const @This(), mailbox_id: u64) bool {
+    fn activeFabricInvocationForMailbox(self: *const @This(), mailbox_id: u64) ?Fabric.Invocation {
         for (self.fabric_invocations.items) |invocation| {
             if (invocation.parent_mailbox_id != mailbox_id) continue;
             switch (invocation.status) {
@@ -10967,7 +10981,7 @@ pub const Runspace = struct {
                 .provider_running,
                 .provider_parked,
                 .provider_completed,
-                => return true,
+                => return invocation,
                 .planned,
                 .parent_responded,
                 .completed,
@@ -10980,7 +10994,11 @@ pub const Runspace = struct {
                 => {},
             }
         }
-        return false;
+        return null;
+    }
+
+    fn hasActiveFabricInvocationForMailbox(self: *const @This(), mailbox_id: u64) bool {
+        return self.activeFabricInvocationForMailbox(mailbox_id) != null;
     }
 
     fn hasSupervisionDeniedFabricInvocationForMailbox(self: *const @This(), mailbox_id: u64) bool {
