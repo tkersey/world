@@ -4427,17 +4427,18 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
 
         pub fn acceptanceReportWithSupervision(requested_mode: Mode, transcript_image_available: bool, supervision_policy: SupervisionPolicy) AcceptanceReport {
             const report = acceptanceReportFor(Target, bindings, policy, requested_mode, transcript_image_available);
-            return acceptanceReportWithSupervisionFromReport(report, requested_mode, transcript_image_available, supervision_policy, null);
+            return acceptanceReportWithSupervisionFromReport(report, requested_mode, transcript_image_available, supervision_policy, null, false);
         }
 
-        fn acceptanceReportWithSupervisionFromReport(report: AcceptanceReport, requested_mode: Mode, transcript_image_available: bool, supervision_policy: SupervisionPolicy, fabric_plan: ?Fabric.Plan) AcceptanceReport {
+        fn acceptanceReportWithSupervisionFromReport(report: AcceptanceReport, requested_mode: Mode, transcript_image_available: bool, supervision_policy: SupervisionPolicy, fabric_plan: ?Fabric.Plan, comptime fabric_owns_bound_ports: bool) AcceptanceReport {
             if (!report.accepted) return report;
             if (!Supervision.modeAllowedByPolicy(supervision_policy, requested_mode)) return rejectedReport(report, &.{supervisionModeAcceptanceBlocker(requested_mode)});
             if (supervision_policy.require_transcript_image_for_replay and modeConsumesTranscript(requested_mode) and !transcript_image_available) {
                 return rejectedReport(report, &.{.TranscriptImageRequired});
             }
             inline for (dense_binding_entries) |entry| {
-                if (!fabricPlanCoversPort(fabric_plan, entry.world_port_id)) {
+                const fabric_owns_binding = fabric_owns_bound_ports and fabricPlanCoversPort(fabric_plan, entry.world_port_id);
+                if (!fabric_owns_binding) {
                     if (!Supervision.adapterAllowedByPolicy(supervision_policy, entry.adapter_kind)) {
                         return rejectedReport(report, &.{.SupervisionPolicyMismatch});
                     }
@@ -4453,18 +4454,18 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
         }
 
         pub fn acceptanceReportWithPermit(requested_mode: Mode, transcript_image_available: bool, permit: RunPermit) AcceptanceReport {
-            return acceptanceReportWithPermitFromReport(acceptanceReportFor(Target, bindings, policy, requested_mode, transcript_image_available), requested_mode, transcript_image_available, permit, null);
+            return acceptanceReportWithPermitFromReport(acceptanceReportFor(Target, bindings, policy, requested_mode, transcript_image_available), requested_mode, transcript_image_available, permit, null, false);
         }
 
         pub fn acceptanceReportWithFabricPlanAndPermit(requested_mode: Mode, transcript_image_available: bool, plan: Fabric.Plan, permit: RunPermit) AcceptanceReport {
             const base_report = acceptanceReportWithFabricPlan(requested_mode, transcript_image_available, plan);
-            const report = acceptanceReportWithPermitFromReport(base_report, requested_mode, transcript_image_available, permit, plan);
+            const report = acceptanceReportWithPermitFromReport(base_report, requested_mode, transcript_image_available, permit, plan, false);
             return acceptanceReportWithFabricPlanPermitRoutes(report, requested_mode, plan, permit);
         }
 
         pub fn acceptanceReportWithFabricPlanAndPermitForHandoff(requested_mode: Mode, transcript_image_available: bool, plan: Fabric.Plan, permit: RunPermit) AcceptanceReport {
             const base_report = acceptanceReportWithFabricPlan(requested_mode, transcript_image_available, plan);
-            const report = acceptanceReportWithPermitFromReport(base_report, requested_mode, transcript_image_available, permit, plan);
+            const report = acceptanceReportWithPermitFromReport(base_report, requested_mode, transcript_image_available, permit, plan, true);
             return acceptanceReportWithFabricPlanPermitRoutes(report, requested_mode, plan, permit);
         }
 
@@ -4487,7 +4488,7 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
             return report;
         }
 
-        fn acceptanceReportWithPermitFromReport(base_report: AcceptanceReport, requested_mode: Mode, transcript_image_available: bool, permit: RunPermit, fabric_plan: ?Fabric.Plan) AcceptanceReport {
+        fn acceptanceReportWithPermitFromReport(base_report: AcceptanceReport, requested_mode: Mode, transcript_image_available: bool, permit: RunPermit, fabric_plan: ?Fabric.Plan, comptime fabric_owns_bound_ports: bool) AcceptanceReport {
             const environment_target_ref = TargetRef.fromTarget(Target);
             if (permit.mode != requested_mode) {
                 return rejectedAcceptance(environment_target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
@@ -4511,7 +4512,7 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
             if (base_report.fabric_plan_fingerprint != permit.fabric_plan_fingerprint) {
                 return rejectedAcceptance(environment_target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
             }
-            const report = acceptanceReportWithSupervisionFromReport(base_report, requested_mode, transcript_image_available, permit.policy, fabric_plan);
+            const report = acceptanceReportWithSupervisionFromReport(base_report, requested_mode, transcript_image_available, permit.policy, fabric_plan, fabric_owns_bound_ports);
             if (!report.accepted) return report;
             Supervision.Supervisor.validatePermitForRun(permit, Target.WorldPortTable.entries.len) catch |err| {
                 return rejectedAcceptance(environment_target_ref, requested_mode, &.{supervisionPreflightBlocker(err)});
@@ -4519,7 +4520,8 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
             inline for (bindings) |BindingDecl| {
                 if (BindingDecl.TargetType != Target) continue;
                 if (BindingDecl.world_port_id >= Target.WorldPortTable.entries.len) continue;
-                if (!fabricPlanCoversPort(fabric_plan, BindingDecl.world_port_id)) {
+                const fabric_owns_binding = fabric_owns_bound_ports and fabricPlanCoversPort(fabric_plan, BindingDecl.world_port_id);
+                if (!fabric_owns_binding) {
                     if (permit.ruleFor(BindingDecl.world_port_id)) |rule| {
                         if (!rule.permitsMode(requested_mode)) return rejectedReport(report, &.{.SupervisionPortRuleDenied});
                         const adapter_kind: AdapterKind = if (@hasDecl(BindingDecl, "adapter_kind")) BindingDecl.adapter_kind else .native;

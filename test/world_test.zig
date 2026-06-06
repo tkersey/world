@@ -5195,8 +5195,8 @@ test "runspace install consumes explicit fabric plan for missing environment bin
         }),
     });
     const overlapping_fabric_only_report = PortsEnv.acceptanceReportWithFabricPlanAndPermit(.fresh, false, fabric_plan, overlapping_fabric_only_permit);
-    try std.testing.expect(overlapping_fabric_only_report.accepted);
-    try std.testing.expectEqual(@as(?u64, fabric_plan.plan_fingerprint), overlapping_fabric_only_report.fabric_plan_fingerprint);
+    try std.testing.expect(!overlapping_fabric_only_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.SupervisionPolicyMismatch, overlapping_fabric_only_report.blockers[0]);
 
     const wildcard_route = world.Fabric.Route.init(.{
         .route_id = 0x51ace_fab9,
@@ -5287,7 +5287,8 @@ test "runspace install consumes explicit fabric plan for missing environment bin
         }),
     });
     const unsupported_fabric_only_report = PortsEnv.acceptanceReportWithFabricPlanAndPermit(.fresh, false, unsupported_plan, unsupported_fabric_only_permit);
-    try std.testing.expect(unsupported_fabric_only_report.accepted);
+    try std.testing.expect(!unsupported_fabric_only_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.SupervisionPolicyMismatch, unsupported_fabric_only_report.blockers[0]);
 
     const disallowed_fabric_permit = world.Supervision.issue(fixtures.Ports.Target, PortsMissingEnv, .{
         .mode = .fresh,
@@ -5752,8 +5753,8 @@ test "runspace install consumes explicit fabric plan for missing environment bin
         }),
     });
     const bound_fabric_machine_report = PortsEnv.acceptanceReportWithFabricPlanAndPermit(.fresh, false, fabric_plan, bound_fabric_handoff_permit);
-    try std.testing.expect(bound_fabric_machine_report.accepted);
-    try std.testing.expectEqual(@as(?u64, fabric_plan.plan_fingerprint), bound_fabric_machine_report.fabric_plan_fingerprint);
+    try std.testing.expect(!bound_fabric_machine_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.SupervisionPolicyMismatch, bound_fabric_machine_report.blockers[0]);
     const bound_fabric_handoff_report = PortsEnv.acceptanceReportWithFabricPlanAndPermitForHandoff(.fresh, false, fabric_plan, bound_fabric_handoff_permit);
     try std.testing.expect(bound_fabric_handoff_report.accepted);
     try std.testing.expectEqual(@as(?u64, fabric_plan.plan_fingerprint), bound_fabric_handoff_report.fabric_plan_fingerprint);
