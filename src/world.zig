@@ -9218,13 +9218,13 @@ pub const Runspace = struct {
                             replay_image.world_surface_fingerprint,
                             replay_image.target_certificate_fingerprint,
                         );
-                        try self.accountPreparedTranscriptReplayWithSupervisor(replay_image, admissionModeToRunMode(admitted_run.mode), &supervisor.?, .completed_run);
+                        try self.accountPreparedTranscriptReplayWithSupervisor(replay_image, admissionModeToRunMode(admitted_run.mode), &supervisor.?, .completed_run, admitted_run.fabric_plan);
                     } else if (runImageIsInterruptedSupervisionExport(image) and image.current_state.turn_index != 0) {
                         try replay_image.prepareReplayPrefixForInterruptedRun(
                             replay_image.world_surface_fingerprint,
                             replay_image.target_certificate_fingerprint,
                         );
-                        try self.accountPreparedTranscriptReplayWithSupervisor(replay_image, .replay, &supervisor.?, .interrupted_prefix);
+                        try self.accountPreparedTranscriptReplayWithSupervisor(replay_image, .replay, &supervisor.?, .interrupted_prefix, admitted_run.fabric_plan);
                     }
                 }
             }
@@ -9504,7 +9504,7 @@ pub const Runspace = struct {
         if (permit) |run_permit| {
             supervisor = try Supervision.Supervisor.init(self.allocator, run_permit, @max(Target.WorldPortTable.entries.len, transcriptPortCount(transcript_image)));
             supervisor_owned = true;
-            try self.accountPreparedTranscriptReplayWithSupervisor(replay_validation, .replay, &supervisor.?, .completed_run);
+            try self.accountPreparedTranscriptReplayWithSupervisor(replay_validation, .replay, &supervisor.?, .completed_run, null);
         }
         const next_run_id_before = self.next_run_id;
         var installed = false;
@@ -9608,7 +9608,7 @@ pub const Runspace = struct {
         completed_run,
     };
 
-    fn accountPreparedTranscriptReplayWithSupervisor(self: *@This(), image: TranscriptImage, replay_mode: Mode, supervisor: *Supervision.Supervisor, accounting: TranscriptReplayAccounting) !void {
+    fn accountPreparedTranscriptReplayWithSupervisor(self: *@This(), image: TranscriptImage, replay_mode: Mode, supervisor: *Supervision.Supervisor, accounting: TranscriptReplayAccounting, admitted_fabric_plan: ?Fabric.Plan) !void {
         var index = image.replay_cursor;
         const limit = image.replay_limit orelse image.events.len;
         while (index < limit) : (index += 1) {
@@ -9635,13 +9635,20 @@ pub const Runspace = struct {
             }
             if (eventKindIsSourceResponse(event.kind)) {
                 const response_frame = event.response_frame orelse return error.ReplayMissing;
-                try supervisor.beforeAdapterCall(.{
-                    .world_port_id = response_frame.world_port_id,
-                    .mode = replay_mode,
-                    .adapter_kind = if (replay_mode == .verify) .native else .replay,
-                    .authority_kind = if (replay_mode == .verify) PortAuthority.native_function.authority_kind else PortAuthority.replay_source.authority_kind,
-                    .value_policy = if (replay_mode == .verify) .native_compatible else .portable,
-                });
+                if (fabricReplayRouteForPort(admitted_fabric_plan, response_frame.world_port_id)) |route| {
+                    try supervisor.beforeFabricInvocation(.{
+                        .world_port_id = response_frame.world_port_id,
+                        .route_kind = route.kind,
+                    });
+                } else {
+                    try supervisor.beforeAdapterCall(.{
+                        .world_port_id = response_frame.world_port_id,
+                        .mode = replay_mode,
+                        .adapter_kind = if (replay_mode == .verify) .native else .replay,
+                        .authority_kind = if (replay_mode == .verify) PortAuthority.native_function.authority_kind else PortAuthority.replay_source.authority_kind,
+                        .value_policy = if (replay_mode == .verify) .native_compatible else .portable,
+                    });
+                }
                 const response_bytes = bytes: {
                     const encoded = try response_frame.encode(self.allocator);
                     defer self.allocator.free(encoded);
@@ -19966,6 +19973,12 @@ fn fabricPlanCoversPort(admitted_fabric_plan: ?Fabric.Plan, world_port_id: u32) 
         .adapter, .unsupported => false,
         .target_export, .admitted_run, .guest, .replay, .reject => true,
     };
+}
+
+fn fabricReplayRouteForPort(admitted_fabric_plan: ?Fabric.Plan, world_port_id: u32) ?Fabric.Route {
+    const plan = admitted_fabric_plan orelse return null;
+    const route = plan.findRouteForPort(world_port_id) orelse return null;
+    return if (route.kind == .replay) route else null;
 }
 
 fn fabricPlanCoversTargetPorts(comptime Target: type, plan: Fabric.Plan) bool {

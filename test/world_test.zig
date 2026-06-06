@@ -23888,6 +23888,14 @@ test "fabric-covered replay admission requires transcript evidence" {
     });
     defer supervised_replay_only_result.deinit(std.testing.allocator);
     try std.testing.expect(supervised_replay_only_result.report.accepted);
+    var supervised_replay_install = world.Runspace.init(std.testing.allocator, .{});
+    defer supervised_replay_install.deinit();
+    const supervised_replay_handle = try supervised_replay_install.installAdmitted(supervised_replay_only_result.admitted_run.?);
+    try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try supervised_replay_install.getSlotSummary(supervised_replay_handle)).status);
+    try std.testing.expectEqual(@as(usize, 1), supervised_replay_install.fabric_plan_fingerprints.items.len);
+    const replay_install_supervisor = supervised_replay_install.slots.items[0].supervisor.?;
+    try std.testing.expectEqual(@as(usize, 0), replay_install_supervisor.ledger.total_replay_calls);
+    try std.testing.expectEqual(@as(usize, 1), replay_install_supervisor.ledger.total_fabric_invocations);
 
     const TranscriptRequiredPortsMissingEnv = world.Environment(fixtures.Ports.Target, .{
         .bindings = .{},
