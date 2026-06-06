@@ -1599,6 +1599,53 @@ test "link rejects same-module provider cycles before route synthesis" {
     try std.testing.expect(linked.graph.hasBlocker(.CycleDetected));
 }
 
+test "link rejects same boundary module cycles across target and module refs" {
+    const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
+    const strict_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    const root_boundary_module = root_ref.boundary_module_fingerprint orelse return error.ExpectedBoundaryModuleFingerprint;
+    const provider_module_ref = world.Admission.ModuleRef.init(.{
+        .boundary_module_fingerprint = root_boundary_module,
+        .module_kind = .reference_only,
+        .target_ref_fingerprint = strict_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = strict_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = strict_ref.target_certificate_fingerprint,
+        .residual_program_plan_hash = strict_ref.residual_program_plan_hash,
+        .normal_form_kind = strict_ref.normal_form_kind,
+        .world_port_table_fingerprint = strict_ref.world_port_table_fingerprint,
+        .world_value_table_fingerprint = strict_ref.world_value_table_fingerprint,
+        .world_dispatch_table_fingerprint = strict_ref.world_dispatch_table_fingerprint,
+        .label = "same-boundary-module-provider",
+    });
+    const provider_export = world.Linker.ExportDescriptor.init(.{
+        .target_ref = strict_ref,
+        .module_ref = provider_module_ref,
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id, .schema_fingerprint = root_import.response_value_ref_fingerprint },
+        .label = "provider",
+    });
+    const entries = [_]world.Linker.Catalog.Entry{
+        world.Linker.Catalog.Entry.moduleRef(.{
+            .module_ref = provider_module_ref,
+            .target_ref = strict_ref,
+            .export_descriptor = provider_export,
+            .import_set = world.ImportSet.fromTarget(fixtures.Strict.Target),
+            .label = "provider",
+        }),
+    };
+    var linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
+        .root_imports = &.{root_import},
+        .catalog = world.Linker.Catalog.init(&entries),
+        .policy = .strict_closed,
+    });
+    defer linked.deinit();
+
+    try std.testing.expect(!linked.plan.accepted());
+    try std.testing.expectEqual(@as(usize, 0), linked.plan.fabric_plans.len);
+    try std.testing.expect(linked.graph.hasBlocker(.CycleDetected));
+}
+
 test "link non executable catalog route kinds become blockers before Fabric synthesis" {
     const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);

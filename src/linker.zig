@@ -2145,8 +2145,8 @@ pub fn Linker(comptime W: type) type {
         }
 
         fn sameModuleFingerprint(root_module_ref: ?W.Admission.ModuleRef, root_target_ref: W.TargetRef, entry: Catalog.Entry, provider_ref: W.TargetRef) bool {
-            const root_module = if (root_module_ref) |module_ref| module_ref.module_ref_fingerprint else root_target_ref.boundary_module_fingerprint;
-            const provider_module = if (entry.module_ref) |module_ref| module_ref.module_ref_fingerprint else provider_ref.boundary_module_fingerprint;
+            const root_module = if (root_module_ref) |module_ref| @as(?u64, module_ref.boundary_module_fingerprint) else root_target_ref.boundary_module_fingerprint;
+            const provider_module = if (entry.module_ref) |module_ref| @as(?u64, module_ref.boundary_module_fingerprint) else provider_ref.boundary_module_fingerprint;
             if (root_module == null or provider_module == null) return false;
             return root_module.? == provider_module.?;
         }
