@@ -258,11 +258,17 @@ test "import index and export index expose closed catalog requirements" {
     const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
     const provider_import = world.ImportRequirement.fromTargetPort(fixtures.ProviderPorts.Target, 0);
     const provider_result_ref = world.Linker.ValueRef{ .value_table_id = 1 };
+    const provider_alt_result_ref = world.Linker.ValueRef{ .value_table_id = 2 };
     const strict_result_ref = world.Linker.ValueRef{ .value_table_id = 1 };
     const provider_export = world.Linker.ExportDescriptor.init(.{
         .target_ref = provider_ref,
         .result_ref = provider_result_ref,
         .label = "provider",
+    });
+    const provider_alt_export = world.Linker.ExportDescriptor.init(.{
+        .target_ref = provider_ref,
+        .result_ref = provider_alt_result_ref,
+        .label = "provider-alt",
     });
     const strict_export = world.Linker.ExportDescriptor.init(.{
         .target_ref = strict_ref,
@@ -277,6 +283,14 @@ test "import index and export index expose closed catalog requirements" {
             .import_set = world.ImportSet.fromTarget(fixtures.ProviderPorts.Target),
             .imports = &.{provider_import},
             .label = "provider",
+        }),
+        world.Linker.Catalog.Entry.init(.{
+            .provider_kind = .target,
+            .target_ref = provider_ref,
+            .export_descriptor = provider_alt_export,
+            .import_set = world.ImportSet.fromTarget(fixtures.ProviderPorts.Target),
+            .imports = &.{provider_import},
+            .label = "provider-alt",
         }),
         world.Linker.Catalog.Entry.init(.{
             .provider_kind = .target,
@@ -306,8 +320,9 @@ test "import index and export index expose closed catalog requirements" {
 
     const provider_exports = try export_index.exportsFor(std.testing.allocator, provider_ref);
     defer std.testing.allocator.free(provider_exports);
-    try std.testing.expectEqual(@as(usize, 1), provider_exports.len);
+    try std.testing.expectEqual(@as(usize, 2), provider_exports.len);
     try std.testing.expectEqual(provider_export.export_fingerprint, provider_exports[0].export_fingerprint);
+    try std.testing.expectEqual(provider_alt_export.export_fingerprint, provider_exports[1].export_fingerprint);
 
     const candidates = try export_index.candidateProvidersFor(std.testing.allocator, root_import);
     defer std.testing.allocator.free(candidates);

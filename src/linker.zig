@@ -444,7 +444,8 @@ pub fn Linker(comptime W: type) type {
 
             pub fn exportsFor(self: ExportIndex, allocator: std.mem.Allocator, target_ref: W.TargetRef) ![]ExportDescriptor {
                 var exports: std.ArrayList(ExportDescriptor) = .empty;
-                if (self.catalog.entryByTargetFingerprint(target_ref.target_ref_fingerprint)) |entry| {
+                for (self.catalog.entries) |entry| {
+                    if (entry.target_ref == null or entry.target_ref.?.target_ref_fingerprint != target_ref.target_ref_fingerprint) continue;
                     if (entry.export_descriptor) |descriptor| try exports.append(allocator, descriptor);
                 }
                 return exports.toOwnedSlice(allocator);
