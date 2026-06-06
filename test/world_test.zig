@@ -24041,6 +24041,42 @@ test "fabric-covered replay admission requires transcript evidence" {
     });
     defer permit_handoff_result.deinit(std.testing.allocator);
     try std.testing.expect(permit_handoff_result.report.accepted);
+    const fabric_only_prefix_permit = world.Supervision.issue(fixtures.Ports.Target, PortsMissingEnv, .{
+        .mode = .fresh,
+        .fabric_plan_fingerprint = replay_plan.plan_fingerprint,
+        .transcript_image_available = true,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_handoff_accept = true,
+            .allow_fabric_routes = true,
+            .allow_replay_routes = true,
+        }),
+    });
+    var fabric_only_prefix_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, PortsMissingEnv, parked_package, .{
+        .fabric_plan = replay_plan,
+        .permit = fabric_only_prefix_permit,
+    });
+    defer fabric_only_prefix_result.deinit(std.testing.allocator);
+    try std.testing.expect(fabric_only_prefix_result.report.accepted);
+    const fabric_budget_prefix_permit = world.Supervision.issue(fixtures.Ports.Target, PortsMissingEnv, .{
+        .mode = .fresh,
+        .fabric_plan_fingerprint = replay_plan.plan_fingerprint,
+        .transcript_image_available = true,
+        .policy = fabric_only_prefix_permit.policy,
+        .budget = world.Budget.init(.{ .max_fabric_invocations = 0 }),
+    });
+    var fabric_budget_prefix_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, PortsMissingEnv, parked_package, .{
+        .fabric_plan = replay_plan,
+        .permit = fabric_budget_prefix_permit,
+    });
+    defer fabric_budget_prefix_result.deinit(std.testing.allocator);
+    try std.testing.expect(!fabric_budget_prefix_result.report.accepted);
 
     var completed_source_transcript = world.Transcript.init(std.testing.allocator);
     defer completed_source_transcript.deinit();
@@ -24081,6 +24117,42 @@ test "fabric-covered replay admission requires transcript evidence" {
     });
     defer supervised_replay_only_result.deinit(std.testing.allocator);
     try std.testing.expect(supervised_replay_only_result.report.accepted);
+    const fabric_only_replay_permit = world.Supervision.issue(fixtures.Ports.Target, PortsMissingEnv, .{
+        .mode = .replay,
+        .fabric_plan_fingerprint = replay_plan.plan_fingerprint,
+        .transcript_image_available = true,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_replay_calls = true,
+            .allow_handoff_accept = true,
+            .allow_fabric_routes = true,
+            .allow_replay_routes = true,
+        }),
+    });
+    var fabric_only_replay_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, PortsMissingEnv, replay_only_package, .{
+        .fabric_plan = replay_plan,
+        .permit = fabric_only_replay_permit,
+    });
+    defer fabric_only_replay_result.deinit(std.testing.allocator);
+    try std.testing.expect(fabric_only_replay_result.report.accepted);
+    const fabric_budget_replay_permit = world.Supervision.issue(fixtures.Ports.Target, PortsMissingEnv, .{
+        .mode = .replay,
+        .fabric_plan_fingerprint = replay_plan.plan_fingerprint,
+        .transcript_image_available = true,
+        .policy = fabric_only_replay_permit.policy,
+        .budget = world.Budget.init(.{ .max_fabric_invocations = 0 }),
+    });
+    var fabric_budget_replay_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, PortsMissingEnv, replay_only_package, .{
+        .fabric_plan = replay_plan,
+        .permit = fabric_budget_replay_permit,
+    });
+    defer fabric_budget_replay_result.deinit(std.testing.allocator);
+    try std.testing.expect(!fabric_budget_replay_result.report.accepted);
     var supervised_replay_install = world.Runspace.init(std.testing.allocator, .{});
     defer supervised_replay_install.deinit();
     const supervised_replay_handle = try supervised_replay_install.installAdmitted(supervised_replay_only_result.admitted_run.?);

@@ -15664,18 +15664,25 @@ pub const Handoff = struct {
                 => {
                     const request_frame = event.request_frame orelse return error.ReplayMissing;
                     try self.preflightRequestFrameWithSupervisor(supervisor, request_frame);
-                    try supervisor.beforeAdapterCall(.{
-                        .world_port_id = request_frame.world_port_id,
-                        .mode = .replay,
-                        .adapter_kind = .replay,
-                        .authority_kind = PortAuthority.replay_source.authority_kind,
-                        .value_policy = .portable,
-                    });
                 },
                 else => {},
             }
             if (eventKindIsSourceResponse(event.kind)) {
                 const response_frame = event.response_frame orelse return error.ReplayMissing;
+                if (fabricReplayRouteForPort(admitted_fabric_plan, response_frame.world_port_id)) |route| {
+                    try supervisor.beforeFabricInvocation(.{
+                        .world_port_id = response_frame.world_port_id,
+                        .route_kind = route.kind,
+                    });
+                } else {
+                    try supervisor.beforeAdapterCall(.{
+                        .world_port_id = response_frame.world_port_id,
+                        .mode = .replay,
+                        .adapter_kind = .replay,
+                        .authority_kind = PortAuthority.replay_source.authority_kind,
+                        .value_policy = .portable,
+                    });
+                }
                 const response_bytes = bytes: {
                     const encoded = try response_frame.encode(self.allocator);
                     defer self.allocator.free(encoded);
@@ -15723,19 +15730,25 @@ pub const Handoff = struct {
                 => {
                     const request_frame = event.request_frame orelse return error.ReplayMissing;
                     try self.preflightRequestFrameWithSupervisor(supervisor, request_frame);
-                    if (fabricPlanCoversPort(admitted_fabric_plan, request_frame.world_port_id)) continue;
-                    try supervisor.beforeAdapterCall(.{
-                        .world_port_id = request_frame.world_port_id,
-                        .mode = run_mode,
-                        .adapter_kind = try adapterKindForEnvironmentPort(Env, request_frame.world_port_id),
-                        .authority_kind = try authorityKindForEnvironmentPort(Env, request_frame.world_port_id),
-                        .value_policy = try valuePolicyForEnvironmentPort(Env, request_frame.world_port_id, .request),
-                    });
                 },
                 else => {},
             }
             if (eventKindIsSourceResponse(event.kind)) {
                 const response_frame = event.response_frame orelse return error.ReplayMissing;
+                if (fabricReplayRouteForPort(admitted_fabric_plan, response_frame.world_port_id)) |route| {
+                    try supervisor.beforeFabricInvocation(.{
+                        .world_port_id = response_frame.world_port_id,
+                        .route_kind = route.kind,
+                    });
+                } else {
+                    try supervisor.beforeAdapterCall(.{
+                        .world_port_id = response_frame.world_port_id,
+                        .mode = run_mode,
+                        .adapter_kind = try adapterKindForEnvironmentPort(Env, response_frame.world_port_id),
+                        .authority_kind = try authorityKindForEnvironmentPort(Env, response_frame.world_port_id),
+                        .value_policy = try valuePolicyForEnvironmentPort(Env, response_frame.world_port_id, .request),
+                    });
+                }
                 const response_bytes = bytes: {
                     const encoded = try response_frame.encode(self.allocator);
                     defer self.allocator.free(encoded);
