@@ -259,6 +259,10 @@ test "fabric plan lookup coverage and cycle checks are deterministic" {
         .value_mappings = &mappings,
     });
     try std.testing.expect(!wrong_certificate_plan.coverage(parent_ref, import_set).accepted);
+    var wrong_import_set = import_set;
+    wrong_import_set.import_set_fingerprint +%= 1;
+    try std.testing.expectError(error.InvalidFrameEncoding, plan.assertCoverage(wrong_import_set));
+    try std.testing.expect(!plan.coverage(parent_ref, wrong_import_set).accepted);
 
     const missing = world.Fabric.Plan.init(.{
         .target_ref_fingerprint = parent_ref.target_ref_fingerprint,

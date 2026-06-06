@@ -7631,6 +7631,10 @@ pub const Fabric = struct {
                 self.world_surface_fingerprint == target_ref.world_surface_fingerprint and
                 self.target_certificate_fingerprint == target_ref.target_certificate_fingerprint and
                 import_set.target_ref_fingerprint == target_ref.target_ref_fingerprint;
+            const import_set_matches = if (self.import_set_fingerprint) |fingerprint|
+                fingerprint == import_set.import_set_fingerprint
+            else
+                true;
             return Fabric.CoverageReport.init(.{
                 .target_ref_fingerprint = target_ref.target_ref_fingerprint,
                 .world_surface_fingerprint = target_ref.world_surface_fingerprint,
@@ -7641,7 +7645,7 @@ pub const Fabric = struct {
                 .missing_port_count = missing_count,
                 .unsupported_port_count = unsupported_route_count,
                 .duplicate_route_count = duplicate_route_count,
-                .accepted = target_matches and missing_count == 0 and duplicate_route_count == 0 and unsupported_route_count == 0,
+                .accepted = target_matches and import_set_matches and missing_count == 0 and duplicate_route_count == 0 and unsupported_route_count == 0,
             });
         }
     };
