@@ -15931,7 +15931,7 @@ pub const Handoff = struct {
                                 run.audit.replay_mismatch_count += 1;
                                 return err;
                             };
-                            try run.accountReplayPrefixAdapterCall(request.world_port_id);
+                            try run.accountReplayPrefixResponse(request.world_port_id);
                             try run.resumeReplayedFrame(response.*);
                         },
                         else => return error.HandoffPendingFrameMismatch,
@@ -15998,7 +15998,7 @@ pub const Handoff = struct {
                         }
                     else
                         return error.HandoffPendingFrameMismatch;
-                    try run.accountReplayPrefixAdapterCall(request.world_port_id);
+                    try run.accountReplayPrefixResponse(request.world_port_id);
                     try run.resumeReplayedFrame(response.*);
                 },
                 else => return error.HandoffPendingFrameMismatch,
@@ -17434,19 +17434,29 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     self.pending_adapter_call_accounted = true;
                 }
 
-                fn accountReplayPrefixAdapterCall(self: *Self, world_port_id: u32) !void {
+                fn accountReplayPrefixResponse(self: *Self, world_port_id: u32) !void {
                     if (self.pending_adapter_call_accounted) return;
                     if (self.supervisor) |*supervisor| {
-                        supervisor.beforeAdapterCall(.{
-                            .world_port_id = world_port_id,
-                            .mode = .replay,
-                            .adapter_kind = .replay,
-                            .authority_kind = PortAuthority.replay_source.authority_kind,
-                            .value_policy = .portable,
-                        }) catch |err| {
-                            try self.handleSupervisionError(err);
-                            return Error.HandlerPending;
-                        };
+                        if (fabricReplayRouteForPort(self.activeFabricPlan(), world_port_id)) |route| {
+                            supervisor.beforeFabricInvocation(.{
+                                .world_port_id = world_port_id,
+                                .route_kind = route.kind,
+                            }) catch |err| {
+                                try self.handleSupervisionError(err);
+                                return Error.HandlerPending;
+                            };
+                        } else {
+                            supervisor.beforeAdapterCall(.{
+                                .world_port_id = world_port_id,
+                                .mode = .replay,
+                                .adapter_kind = .replay,
+                                .authority_kind = PortAuthority.replay_source.authority_kind,
+                                .value_policy = .portable,
+                            }) catch |err| {
+                                try self.handleSupervisionError(err);
+                                return Error.HandlerPending;
+                            };
+                        }
                     }
                     self.pending_adapter_call_accounted = true;
                 }
