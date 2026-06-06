@@ -7947,6 +7947,7 @@ pub const Runspace = struct {
     const ResponseEvidence = struct {
         response_fingerprint: u64,
         response_frame_fingerprint: ?u64 = null,
+        response_value_table_id: ?u32 = null,
         response_value_image_fingerprint: ?u64 = null,
     };
 
@@ -8124,6 +8125,7 @@ pub const Runspace = struct {
                     return .{
                         .response_fingerprint = response.response_fingerprint,
                         .response_frame_fingerprint = response.frame_fingerprint,
+                        .response_value_table_id = response.response_value_table_id,
                         .response_value_image_fingerprint = response.response_value_fingerprint,
                     };
                 }
@@ -9905,6 +9907,7 @@ pub const Runspace = struct {
             break :evidence Runspace.ResponseEvidence{
                 .response_fingerprint = response.response_fingerprint,
                 .response_frame_fingerprint = response.frame_fingerprint,
+                .response_value_table_id = response.response_value_table_id,
                 .response_value_image_fingerprint = response.response_value_fingerprint,
             };
         } else return error.InvalidRunspaceTransition;
@@ -10163,6 +10166,7 @@ pub const Runspace = struct {
         }
         const mapped_request_frame_fingerprint = try self.fabricRequestMappingFrame(route);
         try self.validateFabricProviderSlot(route, provider_slot);
+        try self.validateFabricProviderResultImageEvidence(provider_index);
         const status = try self.fabricProviderInvocationStatus(provider_index);
         const depth = try self.fabricDepthForParent(parent_slot.handle);
         const provider_run_count = self.fabricProviderRunCount(plan.plan_fingerprint) + 1;
@@ -10684,6 +10688,14 @@ pub const Runspace = struct {
                 if (image.run_image_fingerprint != expected) return error.InvalidFrameEncoding;
             } else return error.InvalidFrameEncoding;
         }
+    }
+
+    fn validateFabricProviderResultImageEvidence(self: *@This(), provider_index: usize) !void {
+        const provider_slot = self.slots.items[provider_index];
+        if (provider_slot.status != .completed) return;
+        var image = try self.snapshotSlotImage(provider_index);
+        defer image.deinit(self.allocator);
+        if (image.final_result_image == null) return error.InvalidRunspaceTransition;
     }
 
     fn fabricProviderInvocationStatus(self: *@This(), provider_index: usize) !Fabric.InvocationStatus {
@@ -16821,6 +16833,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     return self.last_response_evidence orelse .{
                         .response_fingerprint = response_frame.response_fingerprint,
                         .response_frame_fingerprint = response_frame_fingerprint,
+                        .response_value_table_id = response_frame.response_value_table_id,
                         .response_value_image_fingerprint = response_frame.response_value_fingerprint,
                     };
                 }
@@ -16956,6 +16969,29 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     else
                         .running;
                     const terminal_response_evidence = if (status == .completed or status == .failed) self.last_response_evidence else null;
+                    var final_result_image: ?Frame.ValueImage = null;
+                    var owns_final_result_image = false;
+                    errdefer if (owns_final_result_image) {
+                        if (final_result_image) |*image| image.deinit(self.allocator);
+                    };
+                    if (status == .completed and self.done_value_present) {
+                        if (terminal_response_evidence) |evidence| {
+                            if (evidence.response_value_image_fingerprint != null) {
+                                final_result_image = Frame.ValueImage.fromValue(
+                                    self.allocator,
+                                    evidence.response_value_table_id,
+                                    evidence.response_fingerprint,
+                                    null,
+                                    self.done_value,
+                                    ValuePolicy.portable,
+                                ) catch |err| switch (err) {
+                                    error.UnsupportedValueImage => null,
+                                    else => return err,
+                                };
+                                owns_final_result_image = final_result_image != null;
+                            }
+                        }
+                    }
                     var state = RunState.init(.{
                         .target_ref_fingerprint = target_ref.target_ref_fingerprint,
                         .transcript_image_fingerprint = if (transcript_image) |image| image.transcript_image_fingerprint else null,
@@ -16987,6 +17023,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         .transcript_image = transcript_image,
                         .current_state = state,
                         .pending_request_frame = pending_frame,
+                        .final_result_image = final_result_image,
                         .environment_certificate_fingerprint = if (comptime @hasField(@TypeOf(Config), "environment"))
                             Config.environment.certificate(self.mode, transcript_image != null).certificate_fingerprint
                         else
@@ -17006,8 +17043,10 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     });
                     image.owns_transcript_image = owns_transcript_image;
                     image.owns_pending_request_frame = owns_pending_frame;
+                    image.owns_final_result_image = owns_final_result_image;
                     owns_transcript_image = false;
                     owns_pending_frame = false;
+                    owns_final_result_image = false;
                     return image;
                 }
 
@@ -17333,6 +17372,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     self.last_response_evidence = .{
                         .response_fingerprint = response_trace.fingerprint,
                         .response_frame_fingerprint = effective_response_frame.frame_fingerprint,
+                        .response_value_table_id = effective_response_frame.response_value_table_id,
                         .response_value_image_fingerprint = effective_response_frame.response_value_fingerprint,
                     };
                     return effective_response_frame.frame_fingerprint;
@@ -17410,6 +17450,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     self.last_response_evidence = .{
                         .response_fingerprint = response_trace.fingerprint,
                         .response_frame_fingerprint = effective_response_frame.frame_fingerprint,
+                        .response_value_table_id = effective_response_frame.response_value_table_id,
                         .response_value_image_fingerprint = effective_response_frame.response_value_fingerprint,
                     };
                     return effective_response_frame.frame_fingerprint;
@@ -17596,6 +17637,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     stored = null;
                     self.last_response_evidence = .{
                         .response_fingerprint = response_trace.fingerprint,
+                        .response_value_table_id = valueIdForRuntime(Target, Decl.world_port_id, .@"resume"),
                         .response_value_image_fingerprint = accounting.value_image_fingerprint,
                     };
                     self.audit.fresh_response_count += 1;
@@ -17657,6 +17699,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     self.last_response_evidence = .{
                         .response_fingerprint = response_trace.fingerprint,
                         .response_frame_fingerprint = if (replay_response_frame) |frame| frame.frame_fingerprint else null,
+                        .response_value_table_id = valueIdForRuntime(Target, Decl.world_port_id, .@"resume"),
                         .response_value_image_fingerprint = if (replay_response_frame) |frame| frame.response_value_fingerprint else null,
                     };
                     self.audit.replayed_response_count += 1;
@@ -17708,6 +17751,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     self.last_response_evidence = .{
                         .response_fingerprint = response_trace.fingerprint,
                         .response_frame_fingerprint = frame.frame_fingerprint,
+                        .response_value_table_id = frame.response_value_table_id,
                         .response_value_image_fingerprint = frame.response_value_fingerprint,
                     };
                     self.audit.replayed_response_count += 1;
@@ -17864,6 +17908,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     self.last_response_evidence = .{
                         .response_fingerprint = expected_response_fingerprint,
                         .response_frame_fingerprint = if (expected_response_frame) |frame| frame.frame_fingerprint else null,
+                        .response_value_table_id = expected_value_table_id,
                         .response_value_image_fingerprint = expected_value_image_fingerprint,
                     };
                     self.audit.fresh_response_count += 1;

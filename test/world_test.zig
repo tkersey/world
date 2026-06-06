@@ -6968,7 +6968,7 @@ test "runspace fabric inert provider handle is rejected before invocation record
     try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
 }
 
-test "runspace fabric live completed provider is adopted before response validation" {
+test "runspace fabric completed live provider without retained result image is rejected before invocation" {
     var parent_runtime = boundary.Runtime.init(std.testing.allocator);
     defer parent_runtime.deinit();
     var provider_runtime = boundary.Runtime.init(std.testing.allocator);
@@ -7029,13 +7029,10 @@ test "runspace fabric live completed provider is adopted before response validat
     });
 
     try runspace.installFabricPlan(parent_ref, plan);
-    const invocation = try runspace.routePendingToProviderRun(0, plan, provider_handle);
-    try std.testing.expectEqual(world.Fabric.InvocationStatus.provider_completed, invocation.status);
-    try std.testing.expectEqual(world.Runspace.EventKind.fabric_provider_completed, runspace.events.items[runspace.events.items.len - 1].kind);
-    try std.testing.expectError(error.MissingValueImage, runspace.respondFromFabric(invocation));
-    try std.testing.expectEqual(world.Fabric.InvocationStatus.failed, runspace.fabric_invocations.items[invocation.sequence].status);
+    try std.testing.expectError(error.InvalidRunspaceTransition, runspace.routePendingToProviderRun(0, plan, provider_handle));
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_invocation_count);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
-    try std.testing.expectEqual(@as(usize, 1), runspace.report().fabric_receipt_count);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_receipt_count);
     try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try runspace.getSlotSummary(provider_handle)).status);
 }
 
