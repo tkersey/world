@@ -47,6 +47,9 @@ The public root is intentionally small:
 - `world.Runspace`
 - `world.RunHandle`
 - `world.Guest`
+- `world.Fabric`
+- `world.ConduitPlan`
+- `world.ConduitRoute`
 - `world.AuditImage`
 - `world.AuditReport`
 - `world.Error`
@@ -228,6 +231,24 @@ Manual mode is the default: every port request parks and waits for host action. 
 Runspace integrates with Admission by installing `AdmittedRun` values and preserving admission receipt fingerprints. Parked run images install into the mailbox so hosts can inspect or export the pending request. It integrates with Supervision through the existing `Machine`/`Supervisor` membrane: permits are enforced before handlers, runspace limits cap runs, pending ports, and events, and handoff/checkpoint/branch operations record runspace events. It integrates with Timeline and Handoff by exporting `RunImage` snapshots, creating `Timeline.Checkpoint` metadata, and creating local branch handles.
 
 Runspace is not a scheduler, async runtime, storage backend, network transport, xitdb integration, agent framework, real model/tool/file/human integration, service discovery layer, WASM ABI, Boundary loaded execution path, Boundary closure/normalization path, package manager, artifact registry, signing layer, or encryption layer.
+
+## World Fabric
+
+Environment says what the host can provide. Fabric says how admitted Boundary runs can provide for each other.
+
+`world.Fabric.Route` is an explicit conduit from one parent residual `WorldPort` to a local provider path. Route kinds include adapter, target export, admitted run, guest, replay, reject, and unsupported. Routes fingerprint target/module/export/admission/environment/permit/guest/value-mapping metadata, but exclude handler pointers, runtime pointers, allocator/thread identity, request tokens, credentials, URLs, model clients, file handles, and network handles.
+
+`world.Fabric.Plan` is the deterministic routing table for a parent target. Plans are ordered by dense `world_port_id`, not operation-name dispatch, and expose lookup, coverage, cycle, depth, provider-run-limit, and summary checks. `world.Fabric.Binding` records the parent import requirement, route, provider reference, export reference, value mapping, required flag, and route kind for run-to-run composition.
+
+`world.Fabric.ValueMapping` v1 supports only canonical relationships already represented by World/Boundary metadata: provider request descriptors and provider final result to parent response. Provider request mappings are structurally represented but are rejected by executable plan installation until provider argument identity has a witness. Fabric rejects unsupported mapping, payload/result mismatch, unsupported value images, and cross-type conversion instead of adding host conversion, JSON conversion, string conversion, or callback mappers.
+
+Runspace integrates Fabric through `installFabricPlan`, `routePending`, `routePendingToProviderRun`, `routePendingFromReplay`, `respondFromFabric`, and `tickFabric`. A parent run parks on a `PendingPort`; an installed plan selects a route; a provider run is installed or adopted in the same deterministic Runspace; the provider result maps to one parent `Frame.Response`; the parent mailbox entry resumes; and invocation, receipt, and runspace events record the causal path. Routing requires a previously installed plan, replay routes require `routePendingFromReplay` transcript evidence, and `respondFromFabric` completes only recorded invocation occurrences.
+
+Fabric cycle/depth controls fail closed with same-run recursion, same-target cycle, depth, and provider-run-limit errors. Supervision accounts Fabric invocations, provider runs, nested depth, and provider costs before provider installation or response emission. Replay routes satisfy parent requests from transcript images. Reject routes produce deterministic terminal responses. Fabric v1 rejects guest routes until a dedicated guest route executor exists. Active Fabric handoff fails closed in v1 with `ActiveFabricUnsupported`; completed Fabric history remains available in runspace Fabric receipts and event summaries.
+
+Fabric is local composition only. It does not implement Boundary provider linking, Boundary normalization, TreatyResolver hot paths, ProviderHarness hot paths, service discovery, storage, xitdb, network transport, scheduler threads, async runtime, real model/tool/file/human integration, provider lifecycle, WASM host packages, Boundary loaded-module execution, signing, encryption, package management, artifact registry, or an agent framework.
+
+See `docs/fabric.md`.
 
 ## World Guest Conformance
 

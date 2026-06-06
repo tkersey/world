@@ -180,6 +180,120 @@ pub const Ports = struct {
     };
 };
 
+pub const ProviderPorts = struct {
+    pub const Handlers = struct {};
+    const semantic = boundary.ir.builder.semantic;
+    const ApprovalProtocol = boundary.ir.schema.Protocol(.{
+        .label = "provider-approval",
+        .ops = .{boundary.ir.schema.transform("request", []const u8, i32)},
+    });
+    const Rows = ApprovalProtocol.Rows(Handlers, .{ .requirement_index = 0, .first_op = 0 });
+    const RequestOp = Rows.op("request");
+
+    const compiled = semantic.finish(.{
+        .label = "world-provider-ports-residual",
+        .ir_hash = 0x7773_7072_6f76_0001,
+        .entry = "run",
+        .requirements = &.{Rows.requirement},
+        .ops = &Rows.ops,
+        .functions = .{.{
+            .symbol_name = "run",
+            .requirements = semantic.span(0, 1),
+            .params = .{},
+            .locals = .{ semantic.local("payload", []const u8), semantic.local("decision", i32) },
+            .result = i32,
+            .blocks = .{.{
+                .name = "entry",
+                .instructions = .{
+                    semantic.constString("payload", "deploy-prod"),
+                    semantic.call(RequestOp, .{ .dst = "decision", .payload = "payload", .label = "provider-approval.request.world" }),
+                },
+                .terminator = semantic.returnValue("decision"),
+            }},
+        }},
+    }) catch |err| @compileError("invalid provider ports fixture: " ++ @errorName(err));
+
+    pub const Program = boundary.program("world-provider-ports-residual", Handlers, struct {
+        pub const site_metadata = compiled.site_metadata;
+        pub const compiled_plan = compiled.plan;
+    });
+    pub const ApprovalRequest = Program.protocol.operationSite("provider-approval", "request", 0);
+
+    const Closure = Program.BoundaryClosure;
+    const Elaboration = Closure.Elaboration;
+    const program_ref = blk: {
+        @setEvalBranchQuota(2_000_000);
+        break :blk Program.Evidence.refFor(Program.Evidence.domains.program_plan, Program.compiled_plan.hash(), .{ .label = Program.contract.label });
+    };
+    pub const source_shape = Closure.EffectShape.init(.{
+        .program_label = Program.contract.label,
+        .plan_hash = Program.compiled_plan.hash(),
+        .kind = .operation,
+        .site_index = ApprovalRequest.index,
+        .protocol_label = "provider-approval",
+        .protocol_op_fingerprint = ApprovalRequest.fingerprint,
+    });
+    const intrinsic_ref = Program.Evidence.refFor(Program.Evidence.domains.host_intrinsic, 0x7773_9002, .{ .label = "provider-approval-host" });
+    const static_plan = blk: {
+        @setEvalBranchQuota(2_000_000);
+        break :blk Closure.StaticTreatyPlan.init(.{
+            .label = "provider-approval.request.world",
+            .source_shape = source_shape,
+            .selected_semantic_body = .host_intrinsic,
+            .selected_intrinsic_ref = intrinsic_ref,
+            .host_intrinsic = true,
+        });
+    };
+    const port = Closure.WorldPort.init(.{
+        .label = "provider-approval-port",
+        .kind = .host_human,
+        .effect_shape_ref = source_shape.evidenceRef(),
+        .exposed_intrinsic_ref = intrinsic_ref,
+        .supported_protocol_labels = &.{"provider-approval"},
+        .supported_site_indexes = &.{ApprovalRequest.index},
+        .supported_protocol_op_fingerprints = &.{ApprovalRequest.fingerprint},
+    });
+    const closure_graph = Closure.Graph.init("world-provider-ports-graph", &.{}, &.{}, &.{});
+    const closure_report = blk: {
+        @setEvalBranchQuota(2_000_000);
+        break :blk Closure.Report.init(.{
+            .graph_fingerprint = closure_graph.fingerprint,
+            .root_program_refs = &.{program_ref},
+            .effect_shape_count = 1,
+            .world_port_refs = &.{port.evidenceRef()},
+            .open_world_port_count = 1,
+        });
+    };
+    const closure_policy = Closure.Policy.auditOnly();
+    pub const closure_certificate = blk: {
+        @setEvalBranchQuota(2_000_000);
+        break :blk Closure.Certificate.init(closure_report, closure_graph, closure_policy, &.{static_plan.evidenceRef()});
+    };
+    const elaboration_policy = blk: {
+        var policy = Elaboration.Policy.auditOnly();
+        policy.closure_policy = closure_policy;
+        break :blk policy;
+    };
+    const elaboration_input = Elaboration.Input{
+        .closure_graph = closure_graph,
+        .closure_report = closure_report,
+        .closure_certificate = closure_certificate,
+        .static_treaty_plans = &.{static_plan},
+        .source_program_ref = program_ref,
+        .world_ports = &.{port},
+        .policy = elaboration_policy,
+    };
+    pub const Target = blk: {
+        @setEvalBranchQuota(2_000_000);
+        break :blk Elaboration.Target.compileComptime(.{
+            .label = "world-provider-ports-target",
+            .input = elaboration_input,
+            .residual_program = Program,
+            .policy = Elaboration.Target.Policy.auditOnly(),
+        });
+    };
+};
+
 pub const Agent = struct {
     pub const Action = union(enum) {
         final: []const u8,

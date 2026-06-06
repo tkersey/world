@@ -283,9 +283,9 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-handoff-parked",
             .desc = "Run the parked World handoff example.",
             .expected_stdout =
-            \\run_image_fingerprint=d03f9380631ddd21
+            \\run_image_fingerprint=703082b270df5742
             \\pending_request_fingerprint=a2e08a01b91af8f0
-            \\environment_certificate_fingerprint=a94455d24d986578
+            \\environment_certificate_fingerprint=37227268d7e2489
             \\final_result=7
             \\
             ,
@@ -336,7 +336,7 @@ pub fn build(b: *std.Build) void {
             .expected_stdout =
             \\package_fingerprint=5a5e606018190afc
             \\target_match_fingerprint=c4108ddb5ef704d9
-            \\admission_receipt_fingerprint=9425e37822ccb82d
+            \\admission_receipt_fingerprint=ec3485f852ca2f4c
             \\final_result=7
             \\
             ,
@@ -361,8 +361,8 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World admission parked handoff example.",
             .expected_stdout =
             \\package_fingerprint=91d0e487f35697a
-            \\admission_receipt_fingerprint=7778c076f25270ab
-            \\receiver_permit_fingerprint=3375ddcdc320bbf9
+            \\admission_receipt_fingerprint=aaf4ff66349f69bd
+            \\receiver_permit_fingerprint=b87664d5f288ef48
             \\final_result=7
             \\
             ,
@@ -373,8 +373,8 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-admission-replay-verify",
             .desc = "Run the World admission replay/verify example.",
             .expected_stdout =
-            \\replay_admission_receipt=f7ee708df7f6786
-            \\verify_admission_receipt=29df70f7ec255752
+            \\replay_admission_receipt=1a1b9917a8a40d5a
+            \\verify_admission_receipt=17e93b3b27ce1a8
             \\divergence_detected=true
             \\
             ,
@@ -388,7 +388,7 @@ pub fn build(b: *std.Build) void {
             \\module_ref_fingerprint=8980705f83427fa6
             \\model_port_id=0
             \\tool_port_id=1
-            \\admission_receipt=50be22761d4a6cd2
+            \\admission_receipt=fd516227b3664c05
             \\final_result=final=actuate skeleton complete
             \\
             ,
@@ -424,8 +424,8 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-runspace-handoff",
             .desc = "Run the handoff World runspace example.",
             .expected_stdout =
-            \\admission_receipt=3fec963d52ca0d13
-            \\run_handle=7d49e74888e537a3
+            \\admission_receipt=c9438c19425d9d18
+            \\run_handle=fa89ae9472e539e7
             \\final_result=7
             \\
             ,
@@ -449,9 +449,9 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-runspace-supervised",
             .desc = "Run the supervised World runspace example.",
             .expected_stdout =
-            \\run_permit=802923ff46eb3109
+            \\run_permit=52999c92544b1487
             \\budget_exceeded=true
-            \\event_fingerprint=cea9dbf7ebf47c50
+            \\event_fingerprint=d94d5587cfd19a6b
             \\
             ,
         },
@@ -463,7 +463,7 @@ pub fn build(b: *std.Build) void {
             .expected_stdout =
             \\request_frame_fingerprint=a2e08a01b91af8f0
             \\response_frame_fingerprint=736978f58eeb5450
-            \\result_fingerprint=f41a4f1f93242ab4
+            \\result_fingerprint=3d881e9808dec3df
             \\
             ,
         },
@@ -473,8 +473,8 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-guest-conformance",
             .desc = "Run the World native guest conformance report example.",
             .expected_stdout =
-            \\vector_fingerprint=904403ad28c05d54
-            \\report_fingerprint=9d1af280bea0b200
+            \\vector_fingerprint=665d5b3674bb9e2a
+            \\report_fingerprint=4f0359d051363afb
             \\conformance=true
             \\
             ,
@@ -487,8 +487,71 @@ pub fn build(b: *std.Build) void {
             .expected_stdout =
             \\model_pending_count=2
             \\tool_pending_count=1
-            \\result_fingerprint=5e84107fd6677320
+            \\result_fingerprint=cf3a9be8873fdc38
             \\conformance=true
+            \\
+            ,
+        },
+        .{
+            .name = "world-fabric-target-provider",
+            .path = "examples/world_fabric_target_provider.zig",
+            .step = "run-world-fabric-target-provider",
+            .desc = "Run the World Fabric target provider example.",
+            .expected_stdout =
+            \\parent_run_handle=367cb72b9a8188ae
+            \\provider_run_handle=a53ebdcc0976217b
+            \\fabric_receipt_fingerprint=271db8a6e0670c1f
+            \\final_result=7
+            \\native_handler_calls=0
+            \\
+            ,
+        },
+        .{
+            .name = "world-fabric-agent-tool",
+            .path = "examples/world_fabric_agent_tool.zig",
+            .step = "run-world-fabric-agent-tool",
+            .desc = "Run the World Fabric agent tool example.",
+            .expected_stdout =
+            \\tool_port_id=1
+            \\provider_target_ref=5fd6e98eae4c7db0
+            \\fabric_invocation_count=1
+            \\native_tool_calls=0
+            \\final_result=final=actuate skeleton complete
+            \\
+            ,
+        },
+        .{
+            .name = "world-fabric-nested",
+            .path = "examples/world_fabric_nested.zig",
+            .step = "run-world-fabric-nested",
+            .desc = "Run the World Fabric nested provider example.",
+            .expected_stdout =
+            \\fabric_depth=1
+            \\parent_result=final=actuate skeleton complete
+            \\provider_result=actuate
+            \\
+            ,
+        },
+        .{
+            .name = "world-fabric-supervised",
+            .path = "examples/world_fabric_supervised.zig",
+            .step = "run-world-fabric-supervised",
+            .desc = "Run the World Fabric supervised denial example.",
+            .expected_stdout =
+            \\fabric_invocation_count=1
+            \\budget_exceeded=true
+            \\run_receipt_fingerprint=93ec63716ec61af3
+            \\
+            ,
+        },
+        .{
+            .name = "world-fabric-cycle-blocked",
+            .path = "examples/world_fabric_cycle_blocked.zig",
+            .step = "run-world-fabric-cycle-blocked",
+            .desc = "Run the World Fabric cycle rejection example.",
+            .expected_stdout =
+            \\cycle_blocked=true
+            \\report_fingerprint=6d79f4a5c08b55a8
             \\
             ,
         },
@@ -498,8 +561,8 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-supervised-budget",
             .desc = "Run the supervised budget World example.",
             .expected_stdout =
-            \\permit_fingerprint=be67c834a0d5ca6e
-            \\receipt_fingerprint=da5bdd2ea2d4e7ad
+            \\permit_fingerprint=400104c204165312
+            \\receipt_fingerprint=fc5131bf24e2a2d5
             \\budget_exceeded=false
             \\denied_budget_exceeded=true
             \\
@@ -524,9 +587,9 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-supervised-handoff",
             .desc = "Run the supervised handoff World example.",
             .expected_stdout =
-            \\received_run_image_fingerprint=2b11457c148f707f
-            \\receiver_permit_fingerprint=3375ddcdc320bbf9
-            \\receiver_receipt_fingerprint=6f68ceb099281ec0
+            \\received_run_image_fingerprint=c3f6cc63bd33e649
+            \\receiver_permit_fingerprint=b87664d5f288ef48
+            \\receiver_receipt_fingerprint=7fcf0c2c57eaa585
             \\final_result=7
             \\
             ,
@@ -549,8 +612,8 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-supervised-replay-verify",
             .desc = "Run the supervised replay/verify World example.",
             .expected_stdout =
-            \\fresh_receipt=18c2f35d72d66171
-            \\replay_receipt=10dc84132ed1fe4a
+            \\fresh_receipt=90098f44ecab7cbb
+            \\replay_receipt=abbdbc1cf01120ed
             \\verify_divergence_detected=true
             \\
             ,
