@@ -286,6 +286,26 @@ test "fabric plan lookup coverage and cycle checks are deterministic" {
     try std.testing.expectError(error.FabricCycle, cyclic.assertNoCycles());
 
     const parent_module = parent_ref.boundary_module_fingerprint orelse return error.ExpectedBoundaryModuleFingerprint;
+    const surface_cyclic_route = world.Fabric.Route.init(.{
+        .route_id = 11,
+        .kind = .target_export,
+        .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .parent_world_port_id = 0,
+        .provider_module_fingerprint = parent_module +% 1,
+        .provider_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .provider_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+    });
+    const surface_cyclic_routes = [_]world.Fabric.Route{surface_cyclic_route};
+    const surface_cyclic = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = import_set.import_set_fingerprint,
+        .routes = &surface_cyclic_routes,
+    });
+    try std.testing.expectError(error.FabricCycle, surface_cyclic.assertNoCycles());
+
     const module_cyclic_route = world.Fabric.Route.init(.{
         .route_id = 12,
         .kind = .target_export,

@@ -7535,6 +7535,15 @@ pub const Fabric = struct {
                 if (route.provider_target_ref_fingerprint) |provider_target| {
                     if (provider_target == self.target_ref_fingerprint) return error.FabricCycle;
                 }
+                if (route.provider_world_surface_fingerprint) |provider_surface| {
+                    if (route.provider_target_certificate_fingerprint) |provider_certificate| {
+                        if (provider_surface == self.world_surface_fingerprint and
+                            provider_certificate == self.target_certificate_fingerprint)
+                        {
+                            return error.FabricCycle;
+                        }
+                    }
+                }
                 if (self.module_fingerprint) |parent_module| {
                     if (route.provider_module_fingerprint) |provider_module| {
                         if (provider_module == parent_module) return error.FabricCycle;
