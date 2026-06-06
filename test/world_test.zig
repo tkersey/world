@@ -5156,7 +5156,9 @@ test "runspace install consumes explicit fabric plan for missing environment bin
         .ctx = &native_ctx,
         .fabric_plan = fabric_plan,
     });
+    native_runspace.config.max_events = native_runspace.report().event_count + 3;
     _ = try native_runspace.tick();
+    native_runspace.config.max_events = null;
     try std.testing.expectEqual(@as(usize, 0), native_ctx.calls);
     try std.testing.expectEqual(@as(usize, 1), native_runspace.report().pending_port_count);
     try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try native_runspace.getSlotSummary(native_handle)).status);

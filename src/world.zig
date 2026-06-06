@@ -11517,10 +11517,6 @@ pub const Runspace = struct {
         return !self.hasSupervisionDeniedFabricInvocationForMailbox(pending.mailbox_id);
     }
 
-    fn pendingSuppressesAutoDispatch(self: *@This(), slot: Runspace.RunSlot, pending: Runspace.PendingPort) bool {
-        return self.pendingRequiresFabricRoute(slot, pending);
-    }
-
     fn slotHasFabricRoutablePending(slot: Runspace.RunSlot, mailbox_id: u64) bool {
         if (slot.pending_mailbox_id != mailbox_id) return false;
         return switch (slot.status) {
@@ -12398,7 +12394,7 @@ pub const Runspace = struct {
             2
         else if (slot.current_state.final_response_fingerprint != null and slot.current_state.turn_index >= slot.driver_world_port_count)
             2
-        else if (self.config.auto_dispatch)
+        else if (self.config.auto_dispatch and fabricPlanFingerprintForSlot(slot.*) == null)
             5
         else
             3;
@@ -12478,8 +12474,9 @@ pub const Runspace = struct {
             .port_request => |request| {
                 var owned_request = request;
                 defer owned_request.deinit(self.allocator);
+                const suppress_auto_dispatch = self.config.auto_dispatch and driver.fabricPlanCoversWorldPort(owned_request.world_port_id);
                 var event_pair = self.prepareEventPair(
-                    if (self.config.auto_dispatch) 4 else 2,
+                    2,
                     "port enqueued",
                     "run parked on port",
                 ) catch |err| {
@@ -12488,7 +12485,7 @@ pub const Runspace = struct {
                 defer event_pair.deinit(self.allocator);
                 var auto_events: ?PreparedAutoDispatchEvents = null;
                 defer if (auto_events) |*events| events.deinit(self.allocator);
-                if (self.config.auto_dispatch) {
+                if (self.config.auto_dispatch and !suppress_auto_dispatch) {
                     auto_events = self.prepareAutoDispatchEvents() catch |err| {
                         return self.failSteppedRunBeforePort(slot, err);
                     };
@@ -12530,7 +12527,7 @@ pub const Runspace = struct {
                     .run_permit_fingerprint = slot.run_permit_fingerprint,
                     .summary = event_pair.takeSecond(),
                 });
-                if (self.config.auto_dispatch and !self.pendingSuppressesAutoDispatch(slot.*, pending)) return self.autoDispatchPending(index, pending, mailbox_id, &auto_events.?);
+                if (self.config.auto_dispatch and !suppress_auto_dispatch) return self.autoDispatchPending(index, pending, mailbox_id, &auto_events.?);
                 return parked_event;
             },
         }
