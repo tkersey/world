@@ -24307,6 +24307,63 @@ test "fabric-covered replay admission requires transcript evidence" {
     });
     defer stored_replay_only.deinit(std.testing.allocator);
     try std.testing.expect(stored_replay_only.report.accepted);
+
+    const agent_ref = world.TargetRef.fromTarget(fixtures.Agent.Target);
+    var agent_transcript = world.Transcript.init(std.testing.allocator);
+    defer agent_transcript.deinit();
+    try agent_transcript.append(.{
+        .kind = .run_started,
+        .world_surface_fingerprint = fixtures.Agent.Target.WorldSurface.surface_fingerprint,
+        .target_certificate_fingerprint = fixtures.Agent.Target.Certificate.certificate_fingerprint,
+    });
+    try agent_transcript.append(.{
+        .kind = .run_completed,
+        .world_surface_fingerprint = fixtures.Agent.Target.WorldSurface.surface_fingerprint,
+        .target_certificate_fingerprint = fixtures.Agent.Target.Certificate.certificate_fingerprint,
+        .status = .responded,
+    });
+    var agent_transcript_image = try agent_transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
+    defer agent_transcript_image.deinit(std.testing.allocator);
+    const mixed_agent_replay_route = world.Fabric.Route.init(.{
+        .route_id = 0x7777_fab2,
+        .kind = .replay,
+        .parent_world_surface_fingerprint = agent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = agent_ref.target_certificate_fingerprint,
+        .parent_world_port_id = AgentDecideDecl.world_port_id,
+        .provider_transcript_image_fingerprint = agent_transcript_image.transcript_image_fingerprint,
+    });
+    const mixed_agent_replay_plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = agent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = agent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = agent_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Agent.Target).import_set_fingerprint,
+        .routes = &.{mixed_agent_replay_route},
+    });
+    const mixed_agent_package = world.Admission.TransferPackage.init(.{
+        .kind = .target_reference_only,
+        .target_ref = agent_ref,
+        .transcript_image = agent_transcript_image,
+        .requested_mode = .continue_fresh,
+    });
+    var mixed_agent_no_sink = world.Admission.Admitter.init(.{
+        .registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Agent.Target)}),
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Agent.Target, AgentEnvTranscriptRequired, mixed_agent_package, .{
+        .fabric_plan = mixed_agent_replay_plan,
+    });
+    defer mixed_agent_no_sink.deinit(std.testing.allocator);
+    try std.testing.expect(!mixed_agent_no_sink.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.EnvironmentRejected, mixed_agent_no_sink.report.blockers[0]);
+    var mixed_agent_with_sink = world.Admission.Admitter.init(.{
+        .registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Agent.Target)}),
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Agent.Target, AgentEnvTranscriptRequired, mixed_agent_package, .{
+        .fabric_plan = mixed_agent_replay_plan,
+        .fresh_transcript_sink_available = true,
+    });
+    defer mixed_agent_with_sink.deinit(std.testing.allocator);
+    try std.testing.expect(mixed_agent_with_sink.report.accepted);
+
     const missing_stored_replay_package = world.Admission.TransferPackage.init(.{
         .kind = .target_reference_only,
         .target_ref = parent_ref,
@@ -24328,7 +24385,8 @@ test "fabric-covered replay admission requires transcript evidence" {
         .fresh_transcript_sink_available = true,
     });
     defer missing_stored_replay_with_sink.deinit(std.testing.allocator);
-    try std.testing.expect(missing_stored_replay_with_sink.report.accepted);
+    try std.testing.expect(!missing_stored_replay_with_sink.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.EnvironmentRejected, missing_stored_replay_with_sink.report.blockers[0]);
 
     const package = world.Admission.TransferPackage.init(.{
         .kind = .target_reference_only,

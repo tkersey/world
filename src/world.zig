@@ -2191,8 +2191,9 @@ pub const Admission = struct {
                 null;
             const transcript_sink_available = comptime @hasField(Options, "transcript") and Env.policy_decl.allow_native_adapters;
             const fabric_replay_requires_stored_transcript = if (self.fabric_plan) |plan| fabricPlanHasReplayRoute(plan) else false;
+            const fabric_plan_covers_target_ports = if (self.fabric_plan) |plan| fabricPlanCoversTargetPorts(Target, plan) else false;
             const transcript_available = if (requested_mode == .fresh)
-                transcript_sink_available or (fabric_replay_requires_stored_transcript and stored_transcript_image != null)
+                transcript_sink_available or (fabric_replay_requires_stored_transcript and stored_transcript_image != null and fabric_plan_covers_target_ports)
             else
                 supplied_transcript_image != null or stored_transcript_image != null or transcript_sink_available;
             if (self.environment_certificate_fingerprint) |fingerprint| {
@@ -2318,8 +2319,9 @@ pub const Admission = struct {
                 (package.run_image != null and package.run_image.?.transcript_image != null);
             const fresh_transcript_sink_available = args.fresh_transcript_sink_available and Env.policy_decl.allow_native_adapters;
             const fabric_replay_requires_transcript = if (args.fabric_plan) |plan| fabricPlanHasReplayRoute(plan) else false;
+            const fabric_plan_covers_target_ports = if (args.fabric_plan) |plan| fabricPlanCoversTargetPorts(Target, plan) else false;
             const transcript_available = switch (mode) {
-                .continue_fresh => fresh_transcript_sink_available or (fabric_replay_requires_transcript and package_transcript_available),
+                .continue_fresh => fresh_transcript_sink_available or (fabric_replay_requires_transcript and package_transcript_available and fabric_plan_covers_target_ports),
                 .resume_parked, .branch_resume => package_transcript_available or fresh_transcript_sink_available,
                 else => package_transcript_available,
             };
@@ -2342,7 +2344,7 @@ pub const Admission = struct {
             if (package.kind == .target_reference_only and package.target_ref == null and package.run_image == null) {
                 return rejectedResult(request, package, null, null, null, &.{.TargetRefMissing}, "target reference package is missing target ref");
             }
-            if (mode == .continue_fresh and fabric_replay_requires_transcript and !package_transcript_available and !fresh_transcript_sink_available) {
+            if (mode == .continue_fresh and fabric_replay_requires_transcript and !package_transcript_available) {
                 return rejectedResult(request, package, null, null, null, &.{.EnvironmentRejected}, "fabric replay admission requires transcript evidence");
             }
             if (package.transcript_image != null and package.target_ref == null and package.run_image == null and package.module_ref == null) {
@@ -2498,7 +2500,7 @@ pub const Admission = struct {
             const cert = Env.certificate(admissionModeToRunMode(mode), transcript_available);
             if (policy.require_environment_preflight) {
                 const env_report = if (args.fabric_plan) |plan|
-                    Env.acceptanceReportWithFabricPlan(admissionModeToRunMode(mode), transcript_available, plan)
+                    Env.acceptanceReportWithFabricPlanEvidence(admissionModeToRunMode(mode), transcript_available, package_transcript_available, plan)
                 else
                     Env.acceptanceReport(admissionModeToRunMode(mode), transcript_available);
                 if (!env_report.accepted) {
@@ -2534,9 +2536,9 @@ pub const Admission = struct {
                 }
                 const permit_report = if (args.fabric_plan) |plan|
                     if (mode == .resume_parked or mode == .branch_resume)
-                        Env.acceptanceReportWithFabricPlanAndPermitForHandoff(admissionModeToRunMode(mode), transcript_available, plan, permit)
+                        Env.acceptanceReportWithFabricPlanAndPermitForHandoffEvidence(admissionModeToRunMode(mode), transcript_available, package_transcript_available, plan, permit)
                     else
-                        Env.acceptanceReportWithFabricPlanAndPermit(admissionModeToRunMode(mode), transcript_available, plan, permit)
+                        Env.acceptanceReportWithFabricPlanAndPermitEvidence(admissionModeToRunMode(mode), transcript_available, package_transcript_available, plan, permit)
                 else
                     Env.acceptanceReportWithPermit(admissionModeToRunMode(mode), transcript_available, permit);
                 if (!permit_report.accepted) {
@@ -2598,7 +2600,7 @@ pub const Admission = struct {
                 .target_match_fingerprint = match.match_fingerprint,
                 .import_set_fingerprint = ImportSet.fromTarget(Target).import_set_fingerprint,
                 .environment_acceptance_report_fingerprint = if (args.fabric_plan) |plan|
-                    Env.acceptanceReportWithFabricPlan(admissionModeToRunMode(mode), transcript_available, plan).report_fingerprint
+                    Env.acceptanceReportWithFabricPlanEvidence(admissionModeToRunMode(mode), transcript_available, package_transcript_available, plan).report_fingerprint
                 else
                     Env.acceptanceReport(admissionModeToRunMode(mode), transcript_available).report_fingerprint,
                 .run_permit_fingerprint = if (args.permit) |permit| permit.permit_fingerprint else null,
@@ -4385,6 +4387,10 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
         }
 
         pub fn acceptanceReportWithFabricPlan(requested_mode: Mode, transcript_image_available: bool, plan: Fabric.Plan) AcceptanceReport {
+            return acceptanceReportWithFabricPlanEvidence(requested_mode, transcript_image_available, transcript_image_available, plan);
+        }
+
+        pub fn acceptanceReportWithFabricPlanEvidence(requested_mode: Mode, transcript_image_available: bool, fabric_replay_transcript_available: bool, plan: Fabric.Plan) AcceptanceReport {
             const report = acceptanceReportFor(Target, bindings, policy, requested_mode, transcript_image_available);
             plan.validate() catch return rejectedReport(report, &.{.SupervisionPolicyMismatch});
             plan.assertNoCyclesForTargetRef(target_ref) catch return rejectedReport(report, &.{.SupervisionPolicyMismatch});
@@ -4399,7 +4405,7 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
             if (report.accepted) {
                 var accepted = report;
                 accepted.fabric_plan_fingerprint = plan.plan_fingerprint;
-                if (!transcript_image_available and fabricPlanHasReplayRoute(plan)) {
+                if (!fabric_replay_transcript_available and fabricPlanHasReplayRoute(plan)) {
                     return rejectedReport(accepted, &.{.TranscriptImageRequired});
                 }
                 accepted.report_fingerprint = fingerprintAcceptanceReport(accepted);
@@ -4415,7 +4421,7 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
             accepted.blockers = &.{};
             accepted.summary = "accepted by fabric";
             accepted.fabric_plan_fingerprint = plan.plan_fingerprint;
-            if (!transcript_image_available and fabricPlanHasReplayRoute(plan)) {
+            if (!fabric_replay_transcript_available and fabricPlanHasReplayRoute(plan)) {
                 return rejectedReport(accepted, &.{.TranscriptImageRequired});
             }
             if (requested_mode == .fresh and !transcript_image_available and !policy.allow_fresh_without_transcript) return rejectedReport(accepted, &.{.TranscriptImageRequired});
@@ -4458,13 +4464,21 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
         }
 
         pub fn acceptanceReportWithFabricPlanAndPermit(requested_mode: Mode, transcript_image_available: bool, plan: Fabric.Plan, permit: RunPermit) AcceptanceReport {
-            const base_report = acceptanceReportWithFabricPlan(requested_mode, transcript_image_available, plan);
+            return acceptanceReportWithFabricPlanAndPermitEvidence(requested_mode, transcript_image_available, transcript_image_available, plan, permit);
+        }
+
+        pub fn acceptanceReportWithFabricPlanAndPermitEvidence(requested_mode: Mode, transcript_image_available: bool, fabric_replay_transcript_available: bool, plan: Fabric.Plan, permit: RunPermit) AcceptanceReport {
+            const base_report = acceptanceReportWithFabricPlanEvidence(requested_mode, transcript_image_available, fabric_replay_transcript_available, plan);
             const report = acceptanceReportWithPermitFromReport(base_report, requested_mode, transcript_image_available, permit, plan, false);
             return acceptanceReportWithFabricPlanPermitRoutes(report, requested_mode, plan, permit);
         }
 
         pub fn acceptanceReportWithFabricPlanAndPermitForHandoff(requested_mode: Mode, transcript_image_available: bool, plan: Fabric.Plan, permit: RunPermit) AcceptanceReport {
-            const base_report = acceptanceReportWithFabricPlan(requested_mode, transcript_image_available, plan);
+            return acceptanceReportWithFabricPlanAndPermitForHandoffEvidence(requested_mode, transcript_image_available, transcript_image_available, plan, permit);
+        }
+
+        pub fn acceptanceReportWithFabricPlanAndPermitForHandoffEvidence(requested_mode: Mode, transcript_image_available: bool, fabric_replay_transcript_available: bool, plan: Fabric.Plan, permit: RunPermit) AcceptanceReport {
+            const base_report = acceptanceReportWithFabricPlanEvidence(requested_mode, transcript_image_available, fabric_replay_transcript_available, plan);
             const report = acceptanceReportWithPermitFromReport(base_report, requested_mode, transcript_image_available, permit, plan, true);
             return acceptanceReportWithFabricPlanPermitRoutes(report, requested_mode, plan, permit);
         }
