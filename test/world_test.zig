@@ -965,7 +965,7 @@ test "link rejects same-module provider cycles before route synthesis" {
     try std.testing.expect(linked.graph.hasBlocker(.CycleDetected));
 }
 
-test "link unsupported catalog route kinds become blockers before Fabric synthesis" {
+test "link non executable catalog route kinds become blockers before Fabric synthesis" {
     const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
     const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
@@ -982,19 +982,6 @@ test "link unsupported catalog route kinds become blockers before Fabric synthes
             .label = "guest",
         }),
         world.Linker.Catalog.Entry.init(.{
-            .provider_kind = .replay_provider,
-            .target_ref = provider_ref,
-            .export_descriptor = unsupported_export,
-            .replay_transcript_image_fingerprint = 0x7777,
-            .label = "replay",
-        }),
-        world.Linker.Catalog.Entry.init(.{
-            .provider_kind = .reject_route,
-            .target_ref = provider_ref,
-            .export_descriptor = unsupported_export,
-            .label = "reject",
-        }),
-        world.Linker.Catalog.Entry.init(.{
             .provider_kind = .environment_adapter,
             .target_ref = provider_ref,
             .export_descriptor = unsupported_export,
@@ -1003,9 +990,7 @@ test "link unsupported catalog route kinds become blockers before Fabric synthes
         }),
     };
     var policy = world.Linker.Policy.strict_closed;
-    policy.allow_replay_routes = true;
     policy.allow_guest_routes = true;
-    policy.allow_reject_routes = true;
     policy.allow_adapter_fallback = true;
     var linked = try world.Linker.link(std.testing.allocator, .{
         .root_target_ref = root_ref,
@@ -1022,18 +1007,62 @@ test "link unsupported catalog route kinds become blockers before Fabric synthes
     try std.testing.expectEqual(@as(usize, 0), linked.report.guest_conformance_blockers);
 }
 
-test "link descriptorless route providers are unsupported blockers not missing providers" {
+test "link descriptorless replay and reject providers synthesize terminal routes" {
     const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
-    const entries = [_]world.Linker.Catalog.Entry{
+    const replay_entries = [_]world.Linker.Catalog.Entry{
         world.Linker.Catalog.Entry.replay(.{
             .transcript_image_fingerprint = 0x7777,
             .label = "replay",
         }),
+    };
+    var replay_policy = world.Linker.Policy.strict_closed;
+    replay_policy.allow_replay_routes = true;
+    var replay_linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
+        .root_imports = &.{root_import},
+        .catalog = world.Linker.Catalog.init(&replay_entries),
+        .policy = replay_policy,
+    });
+    defer replay_linked.deinit();
+
+    try std.testing.expect(replay_linked.plan.accepted());
+    try std.testing.expectEqual(world.Fabric.RouteKind.replay, replay_linked.plan.fabric_plans[0].routes[0].kind);
+    try std.testing.expectEqual(@as(?u64, 0x7777), replay_linked.plan.fabric_plans[0].routes[0].provider_transcript_image_fingerprint);
+    try std.testing.expectEqual(@as(?u64, null), replay_linked.plan.fabric_plans[0].routes[0].provider_target_ref_fingerprint);
+    try std.testing.expectEqual(@as(?u64, null), replay_linked.plan.fabric_plans[0].routes[0].response_value_mapping_fingerprint);
+    try std.testing.expectEqual(@as(usize, 1), replay_linked.plan.replay_routes_used.len);
+
+    const reject_entries = [_]world.Linker.Catalog.Entry{
         world.Linker.Catalog.Entry.init(.{
             .provider_kind = .reject_route,
             .label = "reject",
         }),
+    };
+    var reject_policy = world.Linker.Policy.strict_closed;
+    reject_policy.allow_reject_routes = true;
+    var reject_linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
+        .root_imports = &.{root_import},
+        .catalog = world.Linker.Catalog.init(&reject_entries),
+        .policy = reject_policy,
+    });
+    defer reject_linked.deinit();
+
+    try std.testing.expect(reject_linked.plan.accepted());
+    try std.testing.expectEqual(world.Fabric.RouteKind.reject, reject_linked.plan.fabric_plans[0].routes[0].kind);
+    try std.testing.expectEqual(world.ResponseStatus.rejected, reject_linked.plan.fabric_plans[0].routes[0].response_status);
+    try std.testing.expectEqual(@as(?u64, null), reject_linked.plan.fabric_plans[0].routes[0].provider_target_ref_fingerprint);
+    try std.testing.expectEqual(@as(?u64, null), reject_linked.plan.fabric_plans[0].routes[0].response_value_mapping_fingerprint);
+    try std.testing.expectEqual(@as(usize, 1), reject_linked.plan.reject_routes_used.len);
+}
+
+test "link descriptorless adapter remains unsupported not missing provider" {
+    const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
+    const entries = [_]world.Linker.Catalog.Entry{
         world.Linker.Catalog.Entry.init(.{
             .provider_kind = .environment_adapter,
             .environment_certificate_fingerprint = 0xe4e4,
@@ -1041,8 +1070,6 @@ test "link descriptorless route providers are unsupported blockers not missing p
         }),
     };
     var policy = world.Linker.Policy.strict_closed;
-    policy.allow_replay_routes = true;
-    policy.allow_reject_routes = true;
     policy.allow_adapter_fallback = true;
     var linked = try world.Linker.link(std.testing.allocator, .{
         .root_target_ref = root_ref,
@@ -1226,16 +1253,43 @@ test "assembly preserves linker run permit scope" {
     const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
     const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    const permit_fingerprint: u64 = 0x5150_7001;
     const provider_export = world.Linker.ExportDescriptor.init(.{
         .target_ref = provider_ref,
         .result_ref = .{ .value_table_id = root_import.response_value_table_id },
         .label = "strict",
     });
-    const entries = [_]world.Linker.Catalog.Entry{
-        world.Linker.Catalog.Entry.generatedTarget(.{
+    const stale_entries = [_]world.Linker.Catalog.Entry{
+        world.Linker.Catalog.Entry.init(.{
+            .provider_kind = .target,
             .target_ref = provider_ref,
             .export_descriptor = provider_export,
             .import_set = world.ImportSet.fromTarget(fixtures.Strict.Target),
+            .run_permit_fingerprint = permit_fingerprint +% 1,
+            .label = "strict",
+        }),
+    };
+    var stale_linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
+        .root_imports = &.{root_import},
+        .catalog = world.Linker.Catalog.init(&stale_entries),
+        .policy = .strict_closed,
+        .run_permit_fingerprint = permit_fingerprint,
+    });
+    defer stale_linked.deinit();
+
+    try std.testing.expect(!stale_linked.plan.accepted());
+    try std.testing.expect(stale_linked.graph.hasBlocker(.SupervisionIncompatible));
+    try std.testing.expectEqual(@as(usize, 1), stale_linked.report.supervision_blockers);
+
+    const entries = [_]world.Linker.Catalog.Entry{
+        world.Linker.Catalog.Entry.init(.{
+            .provider_kind = .target,
+            .target_ref = provider_ref,
+            .export_descriptor = provider_export,
+            .import_set = world.ImportSet.fromTarget(fixtures.Strict.Target),
+            .run_permit_fingerprint = permit_fingerprint,
             .label = "strict",
         }),
     };
@@ -1245,13 +1299,13 @@ test "assembly preserves linker run permit scope" {
         .root_imports = &.{root_import},
         .catalog = world.Linker.Catalog.init(&entries),
         .policy = .strict_closed,
-        .run_permit_fingerprint = 0x5150_7001,
+        .run_permit_fingerprint = permit_fingerprint,
     });
     defer linked.deinit();
 
-    try std.testing.expectEqual(@as(?u64, 0x5150_7001), linked.assembly.run_permit_fingerprint);
-    try std.testing.expect(linked.assembly.preflightSupervision(0x5150_7001));
-    try std.testing.expect(!linked.assembly.preflightSupervision(0x5150_7002));
+    try std.testing.expectEqual(@as(?u64, permit_fingerprint), linked.assembly.run_permit_fingerprint);
+    try std.testing.expect(linked.assembly.preflightSupervision(permit_fingerprint));
+    try std.testing.expect(!linked.assembly.preflightSupervision(permit_fingerprint +% 1));
 }
 
 test "assembly witnesses admitted-run provider receipts" {

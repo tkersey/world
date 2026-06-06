@@ -642,6 +642,18 @@ pub fn Linker(comptime W: type) type {
         };
 
         pub fn matchEntry(allocator: std.mem.Allocator, policy: Policy, requirement: W.ImportRequirement, entry: Catalog.Entry, hint: ?Hint) !Match {
+            return matchEntryWithScope(allocator, policy, null, null, requirement, entry, hint);
+        }
+
+        fn matchEntryWithScope(
+            allocator: std.mem.Allocator,
+            policy: Policy,
+            supervision_policy_fingerprint: ?u64,
+            run_permit_fingerprint: ?u64,
+            requirement: W.ImportRequirement,
+            entry: Catalog.Entry,
+            hint: ?Hint,
+        ) !Match {
             var blockers: std.ArrayList(Blocker) = .empty;
             errdefer blockers.deinit(allocator);
             var warnings: std.ArrayList(Warning) = .empty;
@@ -685,11 +697,19 @@ pub fn Linker(comptime W: type) type {
             if (entry.provider_kind == .replay_provider and !policy.allow_replay_routes) try blockers.append(allocator, .UnsupportedRouteKind);
             if (entry.provider_kind == .reject_route and !policy.allow_reject_routes) try blockers.append(allocator, .UnsupportedRouteKind);
             if (entry.provider_kind == .environment_adapter and !policy.allow_adapter_fallback) try blockers.append(allocator, .UnsupportedRouteKind);
-            if (!linkerCanSynthesizeRouteKind(entry)) try blockers.append(allocator, .UnsupportedRouteKind);
+            if (!linkerCanSynthesizeRouteKind(policy, entry)) try blockers.append(allocator, .UnsupportedRouteKind);
+            if (entry.provider_kind == .replay_provider and entry.replay_transcript_image_fingerprint == null) try blockers.append(allocator, .MissingProvider);
             if (hint) |present| {
                 if (providerTargetMatches(present, entry) and present.route_kind != routeKindForEntry(entry)) try blockers.append(allocator, .UnsupportedRouteKind);
             }
             if (policy.require_admission_for_provider_targets and (entry.provider_kind == .target or entry.provider_kind == .module_ref) and entry.admission_receipt_fingerprint == null) try blockers.append(allocator, .ProviderNotAdmitted);
+            if (policy.require_supervision_compatible_routes and routeKindRequiresProviderRun(routeKindForEntry(entry))) {
+                if (run_permit_fingerprint) |expected_permit| {
+                    if (entry.run_permit_fingerprint == null or entry.run_permit_fingerprint.? != expected_permit) try blockers.append(allocator, .SupervisionIncompatible);
+                } else if (supervision_policy_fingerprint != null and entry.run_permit_fingerprint == null) {
+                    try blockers.append(allocator, .SupervisionIncompatible);
+                }
+            }
             if (kind == .explicit_hint and blockers.items.len == 0) try warnings.append(allocator, .ExplicitHintSelected);
 
             const owned_blockers = try blockers.toOwnedSlice(allocator);
@@ -710,6 +730,18 @@ pub fn Linker(comptime W: type) type {
         }
 
         pub fn chooseProviderMatch(allocator: std.mem.Allocator, policy: Policy, requirement: W.ImportRequirement, candidates: []const Catalog.Entry, hint: ?Hint) !Match {
+            return chooseProviderMatchWithScope(allocator, policy, null, null, requirement, candidates, hint);
+        }
+
+        fn chooseProviderMatchWithScope(
+            allocator: std.mem.Allocator,
+            policy: Policy,
+            supervision_policy_fingerprint: ?u64,
+            run_permit_fingerprint: ?u64,
+            requirement: W.ImportRequirement,
+            candidates: []const Catalog.Entry,
+            hint: ?Hint,
+        ) !Match {
             var accepted: std.ArrayList(Match) = .empty;
             var rejected_blockers: std.ArrayList(Blocker) = .empty;
             defer {
@@ -724,7 +756,7 @@ pub fn Linker(comptime W: type) type {
                 if (hint) |present| {
                     if (present.hasProviderSelector() and !providerTargetMatches(present, candidate)) continue;
                 }
-                const candidate_match = try matchEntry(allocator, policy, requirement, candidate, hint);
+                const candidate_match = try matchEntryWithScope(allocator, policy, supervision_policy_fingerprint, run_permit_fingerprint, requirement, candidate, hint);
                 if (candidate_match.accepted()) {
                     try accepted.append(allocator, candidate_match);
                 } else {
@@ -1430,7 +1462,7 @@ pub fn Linker(comptime W: type) type {
                         if (hint.selects(input.root_target_ref, requirement, candidate)) selected_hint = hint;
                     }
                 }
-                const chosen = try chooseProviderMatch(allocator, policy, requirement, candidates, selected_hint);
+                const chosen = try chooseProviderMatchWithScope(allocator, policy, input.supervision_policy_fingerprint, input.run_permit_fingerprint, requirement, candidates, selected_hint);
                 try matches.append(allocator, chosen);
                 try match_fingerprints.append(allocator, chosen.match_fingerprint);
                 if (!chosen.accepted()) {
@@ -1442,9 +1474,17 @@ pub fn Linker(comptime W: type) type {
                     try blockers.append(allocator, .MissingProvider);
                     continue;
                 };
-                const provider_ref = providerTargetRef(entry) orelse {
+                const route_kind = routeKindForEntry(entry);
+                const requires_provider_run = routeKindRequiresProviderRun(route_kind);
+                const maybe_provider_ref = providerTargetRef(entry);
+                if (requires_provider_run and maybe_provider_ref == null) {
                     try blockers.append(allocator, .MissingProvider);
                     continue;
+                }
+                const provider_ref = maybe_provider_ref orelse W.TargetRef{
+                    .target_ref_fingerprint = 0,
+                    .world_surface_fingerprint = 0,
+                    .target_certificate_fingerprint = 0,
                 };
                 const provider_import_required_count = if (entry.import_set) |import_set| import_set.required_count else entry.imports.len;
                 if (policy.require_closed_graph and provider_import_required_count != entry.imports.len) {
@@ -1490,8 +1530,10 @@ pub fn Linker(comptime W: type) type {
                     try blockers.append(allocator, .DepthExceeded);
                     continue;
                 }
-                const mapping = chosen.response_mapping orelse try synthesizeResponseMapping(requirement, entry);
-                const route_kind = routeKindForEntry(entry);
+                const mapping = if (routeKindUsesResponseMapping(route_kind))
+                    chosen.response_mapping orelse try synthesizeResponseMapping(requirement, entry)
+                else
+                    null;
                 const route = W.Fabric.Route.init(.{
                     .route_id = routeIdFor(input.root_target_ref, requirement),
                     .kind = route_kind,
@@ -1499,13 +1541,13 @@ pub fn Linker(comptime W: type) type {
                     .parent_world_surface_fingerprint = input.root_target_ref.world_surface_fingerprint,
                     .parent_target_certificate_fingerprint = input.root_target_ref.target_certificate_fingerprint,
                     .parent_world_port_id = requirement.world_port_id,
-                    .provider_target_ref_fingerprint = provider_ref.target_ref_fingerprint,
-                    .provider_module_fingerprint = if (entry.module_ref) |module_ref| module_ref.module_ref_fingerprint else provider_ref.boundary_module_fingerprint,
-                    .provider_world_surface_fingerprint = provider_ref.world_surface_fingerprint,
-                    .provider_target_certificate_fingerprint = provider_ref.target_certificate_fingerprint,
-                    .provider_admission_receipt_fingerprint = entry.admission_receipt_fingerprint,
+                    .provider_target_ref_fingerprint = if (requires_provider_run) provider_ref.target_ref_fingerprint else null,
+                    .provider_module_fingerprint = if (requires_provider_run) (if (entry.module_ref) |module_ref| module_ref.module_ref_fingerprint else provider_ref.boundary_module_fingerprint) else null,
+                    .provider_world_surface_fingerprint = if (requires_provider_run) provider_ref.world_surface_fingerprint else null,
+                    .provider_target_certificate_fingerprint = if (requires_provider_run) provider_ref.target_certificate_fingerprint else null,
+                    .provider_admission_receipt_fingerprint = if (requires_provider_run) entry.admission_receipt_fingerprint else null,
                     .provider_transcript_image_fingerprint = entry.replay_transcript_image_fingerprint,
-                    .response_value_mapping_fingerprint = mapping.mapping_fingerprint,
+                    .response_value_mapping_fingerprint = if (mapping) |value| value.mapping_fingerprint else null,
                     .response_status = if (route_kind == .reject) .rejected else .responded,
                     .max_depth = policy.max_link_depth,
                     .metadata = "world-linker-route",
@@ -1518,19 +1560,19 @@ pub fn Linker(comptime W: type) type {
                     .world_port_id = requirement.world_port_id,
                     .import_requirement_fingerprint = requirement.requirement_fingerprint,
                     .route_fingerprint = route.route_fingerprint,
-                    .value_mapping_fingerprint = mapping.mapping_fingerprint,
+                    .value_mapping_fingerprint = if (mapping) |value| value.mapping_fingerprint else null,
                 });
                 try routes.append(allocator, route);
                 try bindings.append(allocator, binding);
-                try mappings.append(allocator, mapping);
+                if (mapping) |value| try mappings.append(allocator, value);
                 try syntheses.append(allocator, RouteSynthesis.init(.{
                     .parent_target_ref_fingerprint = input.root_target_ref.target_ref_fingerprint,
                     .import_requirement_fingerprint = requirement.requirement_fingerprint,
                     .match_fingerprint = chosen.match_fingerprint,
                     .route_fingerprint = route.route_fingerprint,
-                    .value_mapping_fingerprint = mapping.mapping_fingerprint,
+                    .value_mapping_fingerprint = if (mapping) |value| value.mapping_fingerprint else null,
                 }));
-                try provider_targets.append(allocator, provider_ref.target_ref_fingerprint);
+                if (requires_provider_run) try provider_targets.append(allocator, provider_ref.target_ref_fingerprint);
                 try route_fingerprints.append(allocator, route.route_fingerprint);
                 if (route_kind == .guest) try guest_targets.append(allocator, provider_ref.target_ref_fingerprint);
                 if (route_kind == .replay) try replay_routes.append(allocator, route.route_fingerprint);
@@ -1836,10 +1878,26 @@ pub fn Linker(comptime W: type) type {
             return null;
         }
 
-        fn linkerCanSynthesizeRouteKind(entry: Catalog.Entry) bool {
+        fn linkerCanSynthesizeRouteKind(policy: Policy, entry: Catalog.Entry) bool {
             return switch (entry.provider_kind) {
                 .target, .module_ref, .admitted_run => true,
-                .guest_provider, .replay_provider, .reject_route, .environment_adapter => false,
+                .replay_provider => policy.allow_replay_routes,
+                .reject_route => policy.allow_reject_routes,
+                .guest_provider, .environment_adapter => false,
+            };
+        }
+
+        fn routeKindRequiresProviderRun(kind: W.Fabric.RouteKind) bool {
+            return switch (kind) {
+                .target_export, .admitted_run, .guest => true,
+                .adapter, .replay, .reject, .unsupported => false,
+            };
+        }
+
+        fn routeKindUsesResponseMapping(kind: W.Fabric.RouteKind) bool {
+            return switch (kind) {
+                .target_export, .admitted_run => true,
+                .adapter, .guest, .replay, .reject, .unsupported => false,
             };
         }
 
@@ -1887,6 +1945,11 @@ pub fn Linker(comptime W: type) type {
             for (candidates) |candidate| {
                 const descriptor = candidate.export_descriptor orelse continue;
                 if (match.provider_export_fingerprint != descriptor.export_fingerprint) continue;
+                return candidate;
+            }
+            for (candidates) |candidate| {
+                if (candidate.export_descriptor != null) continue;
+                if (matchKindForEntry(candidate) != match.kind) continue;
                 return candidate;
             }
             return null;
