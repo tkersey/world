@@ -1139,6 +1139,40 @@ test "assembly preflights environment and installs into Runspace through Fabric 
     const forged_report = PortsMissingEnv.preflightAssemblyWithPermit(.fresh, true, forged_assembly, permit);
     try std.testing.expect(!forged_report.accepted);
     try std.testing.expectEqual(world.AcceptanceBlocker.SupervisionPolicyMismatch, forged_report.blockers[0]);
+    const replay_route = world.Fabric.Route.init(.{
+        .route_id = 0x51ace_a55e,
+        .kind = .replay,
+        .parent_world_surface_fingerprint = root_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = root_ref.target_certificate_fingerprint,
+        .parent_world_port_id = root_import.world_port_id,
+        .provider_transcript_image_fingerprint = 0x7777_a55e,
+        .metadata = "assembly-replay-route",
+    });
+    const replay_plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = root_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = root_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = root_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .routes = &.{replay_route},
+        .metadata = "assembly-replay-plan",
+    });
+    const replay_assembly = world.Assembly.init(.{
+        .root_target_ref = root_ref,
+        .link_plan_fingerprint = linked.assembly.link_plan_fingerprint,
+        .linker_certificate_fingerprint = linked.assembly.linker_certificate_fingerprint,
+        .fabric_plans = &.{replay_plan},
+    });
+    const replay_permit = world.Supervision.issue(fixtures.Ports.Target, PortsReplayEnv, .{
+        .mode = .replay,
+        .transcript_image_available = true,
+        .fabric_plan_fingerprint = replay_plan.plan_fingerprint,
+        .policy = world.SupervisionPolicy.strict_replay,
+    });
+    const missing_replay_evidence_report = PortsReplayEnv.preflightAssemblyWithPermitEvidence(.replay, true, false, replay_assembly, replay_permit);
+    try std.testing.expect(!missing_replay_evidence_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.TranscriptImageRequired, missing_replay_evidence_report.blockers[0]);
+    const replay_evidence_report = PortsReplayEnv.preflightAssemblyWithPermitEvidence(.replay, true, true, replay_assembly, replay_permit);
+    try std.testing.expect(replay_evidence_report.accepted);
     const scope_permit = world.Supervision.issue(fixtures.Ports.Target, PortsMissingEnv, .{
         .mode = .fresh,
         .transcript_image_available = true,

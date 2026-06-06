@@ -4670,12 +4670,16 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
         }
 
         pub fn preflightAssemblyWithPermit(requested_mode: Mode, transcript_image_available: bool, assembly: Assembly, permit: RunPermit) AcceptanceReport {
+            return preflightAssemblyWithPermitEvidence(requested_mode, transcript_image_available, false, assembly, permit);
+        }
+
+        pub fn preflightAssemblyWithPermitEvidence(requested_mode: Mode, transcript_image_available: bool, fabric_replay_transcript_available: bool, assembly: Assembly, permit: RunPermit) AcceptanceReport {
             assembly.validate() catch return rejectedAcceptance(target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
             if (assembly.run_permit_fingerprint != null and assembly.run_permit_fingerprint.? != permit.permit_fingerprint) return rejectedAcceptance(target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
             if (permit.link_plan_fingerprint != null and permit.link_plan_fingerprint.? != assembly.link_plan_fingerprint) return rejectedAcceptance(target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
             if (permit.linker_certificate_fingerprint != null and permit.linker_certificate_fingerprint.? != assembly.linker_certificate_fingerprint) return rejectedAcceptance(target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
             if (permit.assembly_fingerprint != null and permit.assembly_fingerprint.? != assembly.assembly_fingerprint) return rejectedAcceptance(target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
-            const base_report = preflightAssembly(requested_mode, transcript_image_available, assembly);
+            const base_report = preflightAssemblyEvidence(requested_mode, transcript_image_available, fabric_replay_transcript_available, assembly);
             if (!base_report.accepted) return base_report;
             const maybe_plan = assemblyFabricPlanForTarget(assembly);
             const permit_report = acceptanceReportWithPermitFromReport(base_report, requested_mode, transcript_image_available, permit, maybe_plan, false);
