@@ -474,6 +474,168 @@ test "link hint resolves ambiguity without bypassing value compatibility" {
     try std.testing.expectEqual(world.Linker.Blocker.UnsupportedRouteKind, invalid_hint.blockers[0]);
 }
 
+test "link partial provider hint remains ambiguous across matching exports" {
+    const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
+    const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    const first_export = world.Linker.ExportDescriptor.init(.{
+        .target_ref = provider_ref,
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id },
+        .label = "first",
+    });
+    const second_export = world.Linker.ExportDescriptor.init(.{
+        .target_ref = provider_ref,
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id },
+        .label = "second",
+    });
+    const entries = [_]world.Linker.Catalog.Entry{
+        world.Linker.Catalog.Entry.generatedTarget(.{
+            .target_ref = provider_ref,
+            .export_descriptor = first_export,
+            .import_set = world.ImportSet.fromTarget(fixtures.Strict.Target),
+            .label = "first",
+        }),
+        world.Linker.Catalog.Entry.generatedTarget(.{
+            .target_ref = provider_ref,
+            .export_descriptor = second_export,
+            .import_set = world.ImportSet.fromTarget(fixtures.Strict.Target),
+            .label = "second",
+        }),
+    };
+    const target_only_hint = world.Linker.Hint.init(.{
+        .parent_target_ref_fingerprint = root_ref.target_ref_fingerprint,
+        .parent_world_port_id = root_import.world_port_id,
+        .provider_target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+        .route_kind = .target_export,
+        .label = "target-only",
+    });
+    var ambiguous_linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
+        .root_imports = &.{root_import},
+        .catalog = world.Linker.Catalog.init(&entries),
+        .hints = &.{target_only_hint},
+        .policy = .strict_closed,
+    });
+    defer ambiguous_linked.deinit();
+
+    try std.testing.expect(!ambiguous_linked.plan.accepted());
+    try std.testing.expect(ambiguous_linked.graph.hasBlocker(.AmbiguousProvider));
+    try std.testing.expectEqual(@as(usize, 1), ambiguous_linked.report.ambiguous_import_count);
+    try std.testing.expectEqual(@as(usize, 0), ambiguous_linked.plan.fabric_plans.len);
+
+    const export_hint = world.Linker.Hint.init(.{
+        .parent_target_ref_fingerprint = root_ref.target_ref_fingerprint,
+        .parent_world_port_id = root_import.world_port_id,
+        .provider_target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+        .provider_export_fingerprint = second_export.export_fingerprint,
+        .route_kind = .target_export,
+        .label = "second",
+    });
+    const hinted_match = try world.Linker.chooseProviderMatch(std.testing.allocator, .strict_closed, root_import, &entries, export_hint);
+    defer std.testing.allocator.free(hinted_match.blockers);
+    defer std.testing.allocator.free(hinted_match.warnings);
+    try std.testing.expect(hinted_match.accepted());
+    try std.testing.expectEqual(second_export.export_fingerprint, hinted_match.provider_export_fingerprint.?);
+
+    var hinted_linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
+        .root_imports = &.{root_import},
+        .catalog = world.Linker.Catalog.init(&entries),
+        .hints = &.{export_hint},
+        .policy = .strict_closed,
+    });
+    defer hinted_linked.deinit();
+
+    try std.testing.expect(hinted_linked.plan.accepted());
+    try std.testing.expectEqual(hinted_match.match_fingerprint, hinted_linked.plan.route_syntheses[0].match_fingerprint);
+}
+
+test "link blocks compatible non executable provider run mapping" {
+    const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
+    const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    const incompatible_export = world.Linker.ExportDescriptor.init(.{
+        .target_ref = provider_ref,
+        .result_ref = .{
+            .value_table_id = (root_import.response_value_table_id orelse return error.ExpectedResponseValueTableId) + 1,
+            .schema_fingerprint = 0x5151,
+        },
+        .label = "compatible-but-not-executable",
+    });
+    const entries = [_]world.Linker.Catalog.Entry{
+        world.Linker.Catalog.Entry.generatedTarget(.{
+            .target_ref = provider_ref,
+            .export_descriptor = incompatible_export,
+            .import_set = world.ImportSet.fromTarget(fixtures.Strict.Target),
+            .label = "compatible-but-not-executable",
+        }),
+    };
+    var linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
+        .root_imports = &.{root_import},
+        .catalog = world.Linker.Catalog.init(&entries),
+        .policy = .audit_only,
+    });
+    defer linked.deinit();
+
+    try std.testing.expect(!linked.plan.accepted());
+    try std.testing.expect(linked.graph.hasBlocker(.ResponseRefMismatch));
+    try std.testing.expectEqual(@as(usize, 0), linked.plan.fabric_plans.len);
+}
+
+test "link reports accepted ambiguous matches" {
+    const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
+    const provider_ref = world.TargetRef.fromTarget(fixtures.ProviderPorts.Target);
+    const strict_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    const provider_export = world.Linker.ExportDescriptor.init(.{
+        .target_ref = provider_ref,
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id },
+        .label = "provider",
+    });
+    const strict_export = world.Linker.ExportDescriptor.init(.{
+        .target_ref = strict_ref,
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id },
+        .label = "strict",
+    });
+    const entries = [_]world.Linker.Catalog.Entry{
+        world.Linker.Catalog.Entry.generatedTarget(.{
+            .target_ref = provider_ref,
+            .export_descriptor = provider_export,
+            .import_set = world.ImportSet.fromTarget(fixtures.ProviderPorts.Target),
+            .label = "provider",
+        }),
+        world.Linker.Catalog.Entry.generatedTarget(.{
+            .target_ref = strict_ref,
+            .export_descriptor = strict_export,
+            .import_set = world.ImportSet.fromTarget(fixtures.Strict.Target),
+            .label = "strict",
+        }),
+    };
+    const ambiguous_match = try world.Linker.chooseProviderMatch(std.testing.allocator, .audit_only, root_import, &entries, null);
+    defer std.testing.allocator.free(ambiguous_match.blockers);
+    defer std.testing.allocator.free(ambiguous_match.warnings);
+    try std.testing.expect(ambiguous_match.accepted());
+    try std.testing.expectEqual(world.Linker.MatchConfidence.ambiguous, ambiguous_match.confidence);
+
+    var linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
+        .root_imports = &.{root_import},
+        .catalog = world.Linker.Catalog.init(&entries),
+        .policy = .audit_only,
+    });
+    defer linked.deinit();
+
+    try std.testing.expect(linked.plan.accepted());
+    try std.testing.expectEqual(@as(usize, 1), linked.graph.ambiguous_match_count);
+    try std.testing.expectEqual(@as(usize, 1), linked.report.ambiguous_import_count);
+    try std.testing.expectEqual(ambiguous_match.match_fingerprint, linked.plan.route_syntheses[0].match_fingerprint);
+}
+
 test "link graph fingerprint stable with blockers" {
     const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);

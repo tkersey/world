@@ -652,7 +652,7 @@ pub fn Linker(comptime W: type) type {
                 if (!parent_ref.compatibleWith(descriptor.result_ref, policy)) {
                     try blockers.append(allocator, .ResponseRefMismatch);
                 } else if (entry.provider_kind == .target or entry.provider_kind == .module_ref or entry.provider_kind == .admitted_run) {
-                    if (parent_ref.value_table_id == null or descriptor.result_ref.value_table_id == null) {
+                    if (!canSynthesizeExecutableResponseMapping(parent_ref, descriptor.result_ref)) {
                         try blockers.append(allocator, .ResponseRefMismatch);
                     } else {
                         response_mapping = try synthesizeResponseMapping(requirement, entry);
@@ -751,18 +751,32 @@ pub fn Linker(comptime W: type) type {
             }
             if (hint) |present| {
                 if (present.hasProviderSelector()) {
+                    var selected_index: ?usize = null;
+                    var selected_count: usize = 0;
                     for (accepted.items, 0..) |candidate_match, index| {
                         const target_ok = present.provider_target_ref_fingerprint == null or present.provider_target_ref_fingerprint == candidate_match.provider_target_ref_fingerprint;
                         const module_ok = present.provider_module_ref_fingerprint == null or present.provider_module_ref_fingerprint == candidate_match.provider_module_ref_fingerprint;
                         const export_ok = present.provider_export_fingerprint == null or present.provider_export_fingerprint == candidate_match.provider_export_fingerprint;
                         if (target_ok and module_ok and export_ok) {
-                            var selected = candidate_match;
-                            selected.kind = .explicit_hint;
-                            selected.confidence = .hinted;
-                            selected.match_fingerprint = fingerprintMatch(selected);
-                            _ = accepted.orderedRemove(index);
-                            return selected;
+                            selected_index = selected_index orelse index;
+                            selected_count += 1;
                         }
+                    }
+                    if (selected_count == 1) {
+                        var selected = accepted.items[selected_index.?];
+                        selected.kind = .explicit_hint;
+                        selected.confidence = .hinted;
+                        selected.match_fingerprint = fingerprintMatch(selected);
+                        _ = accepted.orderedRemove(selected_index.?);
+                        return selected;
+                    }
+                    if (selected_count > 1 and policy.allow_ambiguous_matches and !policy.require_explicit_hint_for_ambiguous_match) {
+                        var selected = accepted.items[selected_index.?];
+                        selected.kind = .explicit_hint;
+                        selected.confidence = .ambiguous;
+                        selected.match_fingerprint = fingerprintMatch(selected);
+                        _ = accepted.orderedRemove(selected_index.?);
+                        return selected;
                     }
                     const owned_blockers = if (rejected_blockers.items.len != 0) blk: {
                         const owned = try rejected_blockers.toOwnedSlice(allocator);
@@ -1458,13 +1472,14 @@ pub fn Linker(comptime W: type) type {
                 try match_fingerprints.append(allocator, chosen.match_fingerprint);
                 if (!chosen.accepted()) {
                     for (chosen.blockers) |blocker| try blockers.append(allocator, blocker);
-                    if (chosen.confidence == .ambiguous) ambiguous_count += 1;
+                    if (chosen.confidence == .ambiguous or matchHasBlocker(chosen, .AmbiguousProvider)) ambiguous_count += 1;
                     continue;
                 }
                 const entry = entryForMatch(candidates, chosen) orelse {
                     try blockers.append(allocator, .MissingProvider);
                     continue;
                 };
+                if (chosen.confidence == .ambiguous) ambiguous_count += 1;
                 const route_kind = routeKindForEntry(entry);
                 const requires_provider_run = routeKindRequiresProviderRun(route_kind);
                 const maybe_provider_ref = providerTargetRef(entry);
@@ -1942,6 +1957,15 @@ pub fn Linker(comptime W: type) type {
             });
         }
 
+        fn canSynthesizeExecutableResponseMapping(parent_ref: ValueRef, provider_ref: ValueRef) bool {
+            if (parent_ref.value_table_id == null or provider_ref.value_table_id == null) return false;
+            if (parent_ref.value_table_id.? != provider_ref.value_table_id.?) return false;
+            if (parent_ref.value_ref_fingerprint) |expected| {
+                return provider_ref.value_ref_fingerprint != null and provider_ref.value_ref_fingerprint.? == expected;
+            }
+            return true;
+        }
+
         fn routeIdFor(target_ref: W.TargetRef, requirement: W.ImportRequirement) u64 {
             var hasher = std.hash.Wyhash.init(0);
             hashBytes(&hasher, "world.linker.route.id.v1");
@@ -2006,6 +2030,13 @@ pub fn Linker(comptime W: type) type {
                 if (blocker == expected) count += 1;
             }
             return count;
+        }
+
+        fn matchHasBlocker(match: Match, expected: Blocker) bool {
+            for (match.blockers) |blocker| {
+                if (blocker == expected) return true;
+            }
+            return false;
         }
 
         fn fingerprintExportDescriptor(descriptor: ExportDescriptor) u64 {
