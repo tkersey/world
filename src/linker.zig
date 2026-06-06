@@ -492,6 +492,7 @@ pub fn Linker(comptime W: type) type {
             FabricInvariantViolation,
             UnsupportedRouteKind,
             RootImportSetMismatch,
+            ReferenceFingerprintMismatch,
         };
 
         pub const Warning = enum {
@@ -837,7 +838,6 @@ pub fn Linker(comptime W: type) type {
                 fabric_route,
                 environment_external,
                 replay_source,
-                guest_provider,
                 unresolved,
             };
 
@@ -848,7 +848,6 @@ pub fn Linker(comptime W: type) type {
                 provider_requires_nested_import,
                 environment_satisfies_import,
                 replay_satisfies_import,
-                guest_satisfies_import,
             };
 
             pub const Node = struct {
@@ -1374,6 +1373,7 @@ pub fn Linker(comptime W: type) type {
             errdefer match_fingerprints.deinit(allocator);
             errdefer hint_fingerprints.deinit(allocator);
 
+            const references_valid = try validateInputReferences(allocator, input, &blockers);
             for (input.hints) |hint| try hint_fingerprints.append(allocator, hint.hint_fingerprint);
             const root_node = Graph.Node.init(.{
                 .kind = .target_module,
@@ -1431,19 +1431,25 @@ pub fn Linker(comptime W: type) type {
                 try nodes.append(allocator, import_node);
                 try edges.append(allocator, Graph.Edge.init(.target_requires_import, root_node.fingerprint, import_node.fingerprint));
 
+                if (!references_valid) continue;
+
                 const candidates = try export_index.candidateProvidersForPolicy(allocator, requirement, policy);
                 defer allocator.free(candidates);
                 if (candidates.len > policy.max_candidates_per_import) {
                     try unresolved.append(allocator, requirement);
+                    _ = try appendGraphEvidenceNode(allocator, &nodes, .unresolved, input.root_target_ref.target_ref_fingerprint, requirement, "provider-limit");
                     try blockers.append(allocator, .ProviderRunLimitExceeded);
                     continue;
                 }
                 if (candidates.len == 0) {
                     if (policy.allow_external_environment_ports and external.items.len < policy.max_unresolved_imports) {
                         try external.append(allocator, requirement);
+                        const external_node = try appendGraphEvidenceNode(allocator, &nodes, .environment_external, input.root_target_ref.target_ref_fingerprint, requirement, "external");
+                        try edges.append(allocator, Graph.Edge.init(.environment_satisfies_import, external_node.fingerprint, import_node.fingerprint));
                         try warnings.append(allocator, .ExternalEnvironmentRequired);
                     } else {
                         try unresolved.append(allocator, requirement);
+                        _ = try appendGraphEvidenceNode(allocator, &nodes, .unresolved, input.root_target_ref.target_ref_fingerprint, requirement, "unresolved");
                         try blockers.append(allocator, .MissingProvider);
                     }
                     continue;
@@ -1539,6 +1545,7 @@ pub fn Linker(comptime W: type) type {
                 }
                 if (policy.max_link_depth < 1) {
                     try unresolved.append(allocator, requirement);
+                    _ = try appendGraphEvidenceNode(allocator, &nodes, .unresolved, input.root_target_ref.target_ref_fingerprint, requirement, "depth");
                     try blockers.append(allocator, .DepthExceeded);
                     continue;
                 }
@@ -1603,6 +1610,15 @@ pub fn Linker(comptime W: type) type {
                     .to_fingerprint = import_node.fingerprint,
                     .route_fingerprint = route.route_fingerprint,
                 });
+                if (route_kind == .replay) {
+                    const replay_node = try appendGraphEvidenceNode(allocator, &nodes, .replay_source, input.root_target_ref.target_ref_fingerprint, requirement, "replay");
+                    try edges.append(allocator, .{
+                        .kind = .replay_satisfies_import,
+                        .from_fingerprint = replay_node.fingerprint,
+                        .to_fingerprint = import_node.fingerprint,
+                        .route_fingerprint = route.route_fingerprint,
+                    });
+                }
                 max_depth_observed = @max(max_depth_observed, 1);
                 if (requires_provider_run) {
                     const provider_node = Graph.Node.init(.{
@@ -1959,6 +1975,70 @@ pub fn Linker(comptime W: type) type {
                 .target_export, .admitted_run => true,
                 .adapter, .guest, .replay, .reject, .unsupported => false,
             };
+        }
+
+        fn validateInputReferences(allocator: std.mem.Allocator, input: Input, blockers: *std.ArrayList(Blocker)) !bool {
+            var valid = true;
+            if (!targetRefIsValid(input.root_target_ref)) valid = false;
+            if (input.root_module_ref) |module_ref| {
+                if (!moduleRefIsValid(module_ref)) valid = false;
+            }
+            for (input.catalog.entries) |entry| {
+                if (!catalogEntryReferencesValid(entry)) valid = false;
+            }
+            if (!valid) try appendUniqueBlocker(allocator, blockers, .ReferenceFingerprintMismatch);
+            return valid;
+        }
+
+        fn catalogEntryReferencesValid(entry: Catalog.Entry) bool {
+            if (entry.target_ref) |target_ref| {
+                if (!targetRefIsValid(target_ref)) return false;
+            }
+            if (entry.module_ref) |module_ref| {
+                if (!moduleRefIsValid(module_ref)) return false;
+            }
+            if (entry.export_descriptor) |descriptor| {
+                if (!targetRefIsValid(descriptor.target_ref)) return false;
+                if (descriptor.module_ref) |module_ref| {
+                    if (!moduleRefIsValid(module_ref)) return false;
+                }
+            }
+            return true;
+        }
+
+        fn targetRefIsValid(target_ref: W.TargetRef) bool {
+            target_ref.validate() catch return false;
+            return true;
+        }
+
+        fn moduleRefIsValid(module_ref: W.Admission.ModuleRef) bool {
+            module_ref.validate() catch return false;
+            return true;
+        }
+
+        fn appendUniqueBlocker(allocator: std.mem.Allocator, blockers: *std.ArrayList(Blocker), blocker: Blocker) !void {
+            for (blockers.items) |existing| {
+                if (existing == blocker) return;
+            }
+            try blockers.append(allocator, blocker);
+        }
+
+        fn appendGraphEvidenceNode(
+            allocator: std.mem.Allocator,
+            nodes: *std.ArrayList(Graph.Node),
+            kind: Graph.NodeKind,
+            target_ref_fingerprint: u64,
+            requirement: W.ImportRequirement,
+            label: []const u8,
+        ) !Graph.Node {
+            const node = Graph.Node.init(.{
+                .kind = kind,
+                .target_ref_fingerprint = target_ref_fingerprint,
+                .import_requirement_fingerprint = requirement.requirement_fingerprint,
+                .label = label,
+            });
+            try nodes.append(allocator, node);
+            return node;
         }
 
         fn matchKindForEntry(entry: Catalog.Entry) MatchKind {

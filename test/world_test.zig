@@ -3,6 +3,20 @@ const fixtures = @import("world_fixtures");
 const std = @import("std");
 const world = @import("world");
 
+fn graphHasNodeKind(graph: world.Linker.Graph, kind: world.Linker.Graph.NodeKind) bool {
+    for (graph.nodes) |node| {
+        if (node.kind == kind) return true;
+    }
+    return false;
+}
+
+fn graphHasEdgeKind(graph: world.Linker.Graph, kind: world.Linker.Graph.EdgeKind) bool {
+    for (graph.edges) |edge| {
+        if (edge.kind == kind) return true;
+    }
+    return false;
+}
+
 const PortsCtx = struct {
     calls: usize = 0,
     response: i32 = 7,
@@ -250,6 +264,91 @@ test "link catalog entry fingerprint is stable and excludes pointer identity" {
     try std.testing.expectEqual(link_catalog.catalog_fingerprint, linked.plan.catalog_fingerprint);
     try std.testing.expectEqual(link_catalog.catalog_fingerprint, linked.certificate.catalog_fingerprint);
     try std.testing.expectEqual(link_entry.entry_fingerprint, linked.matches[0].provider_entry_fingerprint.?);
+}
+
+test "link catalog rejects stale target and module ref witnesses" {
+    const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
+    const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    const provider_export = world.Linker.ExportDescriptor.init(.{
+        .target_ref = provider_ref,
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id, .schema_fingerprint = root_import.response_value_ref_fingerprint },
+        .label = "provider",
+    });
+    var stale_provider_ref = provider_ref;
+    stale_provider_ref.world_value_table_fingerprint = (stale_provider_ref.world_value_table_fingerprint orelse 0) +% 1;
+    const stale_target_entries = [_]world.Linker.Catalog.Entry{
+        world.Linker.Catalog.Entry.generatedTarget(.{
+            .target_ref = stale_provider_ref,
+            .export_descriptor = provider_export,
+            .import_set = world.ImportSet.fromTarget(fixtures.Strict.Target),
+            .label = "stale-target",
+        }),
+    };
+    var stale_target_linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
+        .root_imports = &.{root_import},
+        .catalog = world.Linker.Catalog.init(&stale_target_entries),
+        .policy = .strict_closed,
+    });
+    defer stale_target_linked.deinit();
+
+    try std.testing.expect(!stale_target_linked.plan.accepted());
+    try std.testing.expect(stale_target_linked.graph.hasBlocker(.ReferenceFingerprintMismatch));
+    try std.testing.expectEqual(@as(usize, 0), stale_target_linked.matches.len);
+    try std.testing.expectEqual(@as(usize, 0), stale_target_linked.plan.fabric_plans.len);
+
+    var stale_descriptor_ref = provider_ref;
+    stale_descriptor_ref.world_value_table_fingerprint = (stale_descriptor_ref.world_value_table_fingerprint orelse 0) +% 1;
+    const stale_descriptor = world.Linker.ExportDescriptor.init(.{
+        .target_ref = stale_descriptor_ref,
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id, .schema_fingerprint = root_import.response_value_ref_fingerprint },
+        .label = "stale-descriptor",
+    });
+    const stale_descriptor_entries = [_]world.Linker.Catalog.Entry{
+        world.Linker.Catalog.Entry.generatedTarget(.{
+            .target_ref = provider_ref,
+            .export_descriptor = stale_descriptor,
+            .import_set = world.ImportSet.fromTarget(fixtures.Strict.Target),
+            .label = "stale-descriptor",
+        }),
+    };
+    var stale_descriptor_linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
+        .root_imports = &.{root_import},
+        .catalog = world.Linker.Catalog.init(&stale_descriptor_entries),
+        .policy = .strict_closed,
+    });
+    defer stale_descriptor_linked.deinit();
+
+    try std.testing.expect(!stale_descriptor_linked.plan.accepted());
+    try std.testing.expect(stale_descriptor_linked.graph.hasBlocker(.ReferenceFingerprintMismatch));
+    try std.testing.expectEqual(@as(usize, 0), stale_descriptor_linked.matches.len);
+
+    var stale_module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Strict.Target);
+    stale_module_ref.world_value_table_fingerprint = (stale_module_ref.world_value_table_fingerprint orelse 0) +% 1;
+    const stale_module_entries = [_]world.Linker.Catalog.Entry{
+        world.Linker.Catalog.Entry.moduleRef(.{
+            .module_ref = stale_module_ref,
+            .export_descriptor = provider_export,
+            .import_set = world.ImportSet.fromTarget(fixtures.Strict.Target),
+            .label = "stale-module",
+        }),
+    };
+    var stale_module_linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
+        .root_imports = &.{root_import},
+        .catalog = world.Linker.Catalog.init(&stale_module_entries),
+        .policy = .strict_closed,
+    });
+    defer stale_module_linked.deinit();
+
+    try std.testing.expect(!stale_module_linked.plan.accepted());
+    try std.testing.expect(stale_module_linked.graph.hasBlocker(.ReferenceFingerprintMismatch));
+    try std.testing.expectEqual(@as(usize, 0), stale_module_linked.matches.len);
 }
 
 test "import index and export index expose closed catalog requirements" {
@@ -628,8 +727,7 @@ test "link rejects non executable provider run mapping before closed acceptance"
 test "link rejects cross target value table id collision without stable witness" {
     const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
-    var provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
-    provider_ref.world_value_table_fingerprint = (provider_ref.world_value_table_fingerprint orelse 0) +% 1;
+    const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
     const provider_export = world.Linker.ExportDescriptor.init(.{
         .target_ref = provider_ref,
         .result_ref = .{ .value_table_id = root_import.response_value_table_id },
@@ -837,6 +935,56 @@ test "link graph fingerprint stable with blockers" {
     });
     try std.testing.expectEqual(graph.graph_fingerprint, same.graph_fingerprint);
     try std.testing.expect(graph.hasBlocker(.MissingProvider));
+}
+
+test "link graph inhabits external unresolved and replay evidence nodes" {
+    const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
+    var external_linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
+        .root_imports = &.{root_import},
+        .catalog = world.Linker.Catalog.init(&.{}),
+        .policy = .allow_external_ports,
+    });
+    defer external_linked.deinit();
+
+    try std.testing.expect(external_linked.plan.accepted());
+    try std.testing.expect(graphHasNodeKind(external_linked.graph, .environment_external));
+    try std.testing.expect(graphHasEdgeKind(external_linked.graph, .environment_satisfies_import));
+
+    var unresolved_linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
+        .root_imports = &.{root_import},
+        .catalog = world.Linker.Catalog.init(&.{}),
+        .policy = .strict_closed,
+    });
+    defer unresolved_linked.deinit();
+
+    try std.testing.expect(!unresolved_linked.plan.accepted());
+    try std.testing.expect(graphHasNodeKind(unresolved_linked.graph, .unresolved));
+
+    const replay_entries = [_]world.Linker.Catalog.Entry{
+        world.Linker.Catalog.Entry.replay(.{
+            .transcript_image_fingerprint = 0x7777,
+            .label = "replay",
+        }),
+    };
+    var replay_policy = world.Linker.Policy.strict_closed;
+    replay_policy.allow_replay_routes = true;
+    var replay_linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
+        .root_imports = &.{root_import},
+        .catalog = world.Linker.Catalog.init(&replay_entries),
+        .policy = replay_policy,
+    });
+    defer replay_linked.deinit();
+
+    try std.testing.expect(replay_linked.plan.accepted());
+    try std.testing.expect(graphHasNodeKind(replay_linked.graph, .replay_source));
+    try std.testing.expect(graphHasEdgeKind(replay_linked.graph, .replay_satisfies_import));
 }
 
 test "link rejects incomplete root imports before closed acceptance" {
@@ -1421,9 +1569,7 @@ test "link rejects same-module provider cycles before route synthesis" {
     const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
     _ = root_ref.boundary_module_fingerprint orelse return error.ExpectedBoundaryModuleFingerprint;
-    var provider_ref = root_ref;
-    provider_ref.target_ref_fingerprint +%= 1;
-    provider_ref.target_label = "same-module-provider";
+    const provider_ref = root_ref;
     const provider_export = world.Linker.ExportDescriptor.init(.{
         .target_ref = provider_ref,
         .result_ref = .{ .value_table_id = root_import.response_value_table_id, .schema_fingerprint = root_import.response_value_ref_fingerprint },

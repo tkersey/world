@@ -54,9 +54,9 @@ Accepted matches become ordinary `world.Fabric.Route` records. Route synthesis i
 
 ## LinkGraph
 
-`world.Linker.Graph` records target/module nodes, import nodes, export nodes, route nodes, environment external nodes, replay source nodes, guest provider nodes, and unresolved nodes.
+`world.Linker.Graph` records target/module nodes, import nodes, export nodes, route nodes, environment external nodes, replay source nodes, and unresolved nodes.
 
-Edges record target requires import, route satisfies import, route invokes provider, provider requires nested import, environment satisfies import, replay satisfies import, and guest satisfies import. The graph reports cycles, unresolved required imports, ambiguity, depth violations, and provider-run limit violations.
+Edges record target requires import, route satisfies import, route invokes provider, provider requires nested import, environment satisfies import, and replay satisfies import. The graph reports cycles, unresolved required imports, ambiguity, depth violations, and provider-run limit violations.
 
 ## LinkPlan
 

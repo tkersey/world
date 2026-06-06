@@ -429,6 +429,10 @@ pub const TargetRef = struct {
             self.target_ref_fingerprint == expected.target_ref_fingerprint and
             self.residual_program_plan_hash == expected.residual_program_plan_hash;
     }
+
+    pub fn validate(self: @This()) !void {
+        try validateTargetRef(self);
+    }
 };
 
 pub const ImportRequirement = struct {
@@ -1182,6 +1186,12 @@ pub const Admission = struct {
                 .world_dispatch_table_fingerprint = target_ref.world_dispatch_table_fingerprint,
                 .label = target_ref.target_label,
             });
+        }
+
+        pub fn validate(self: Admission.ModuleRef) !void {
+            if (self.format_version != world_module_ref_format_version) return error.InvalidFrameEncoding;
+            if (self.fingerprint_version != world_module_ref_fingerprint_version) return error.InvalidFrameEncoding;
+            if (self.module_ref_fingerprint != fingerprintModuleRef(self)) return error.InvalidFrameEncoding;
         }
     };
 
