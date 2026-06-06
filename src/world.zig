@@ -9324,6 +9324,15 @@ pub const Runspace = struct {
         if (permit.admission_receipt_fingerprint) |receipt_fingerprint| {
             if (receipt_fingerprint != admitted_run.admission_receipt_fingerprint) return error.SupervisionDenied;
         }
+        if (permit.link_plan_fingerprint) |fingerprint| {
+            if (admitted_run.link_plan_fingerprint == null or admitted_run.link_plan_fingerprint.? != fingerprint) return error.SupervisionDenied;
+        }
+        if (permit.linker_certificate_fingerprint) |fingerprint| {
+            if (admitted_run.linker_certificate_fingerprint == null or admitted_run.linker_certificate_fingerprint.? != fingerprint) return error.SupervisionDenied;
+        }
+        if (permit.assembly_fingerprint) |fingerprint| {
+            if (admitted_run.assembly_fingerprint == null or admitted_run.assembly_fingerprint.? != fingerprint) return error.SupervisionDenied;
+        }
         if (permit.module_ref_fingerprint) |permit_module_ref| {
             const admitted_module_ref = admitted_run.module_ref_fingerprint orelse if (admitted_run.run_image) |image| image.module_ref_fingerprint else null;
             if (admitted_module_ref == null or admitted_module_ref.? != permit_module_ref) return error.SupervisionDenied;

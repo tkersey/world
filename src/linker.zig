@@ -1363,6 +1363,7 @@ pub fn Linker(comptime W: type) type {
             var resolved_count: usize = 0;
             var ambiguous_count: usize = 0;
             var max_depth_observed: usize = 0;
+            const catalog_fingerprint = fingerprintCanonicalCatalog(input.catalog.entries);
             var root_port_coverage = try allocator.alloc(bool, input.root_import_set.required_count);
             defer allocator.free(root_port_coverage);
             @memset(root_port_coverage, false);
@@ -1662,7 +1663,7 @@ pub fn Linker(comptime W: type) type {
                 .root_target_ref_fingerprint = input.root_target_ref.target_ref_fingerprint,
                 .root_module_ref_fingerprint = if (input.root_module_ref) |module_ref| module_ref.module_ref_fingerprint else null,
                 .policy_fingerprint = policy.fingerprint(),
-                .catalog_fingerprint = input.catalog.catalog_fingerprint,
+                .catalog_fingerprint = catalog_fingerprint,
                 .graph_fingerprint = graph.graph_fingerprint,
                 .fabric_plans = owned_fabric_plans,
                 .route_syntheses = owned_syntheses,
@@ -1698,7 +1699,7 @@ pub fn Linker(comptime W: type) type {
                 .link_graph_fingerprint = graph.graph_fingerprint,
                 .report_fingerprint = report.report_fingerprint,
                 .root_target_ref_fingerprint = input.root_target_ref.target_ref_fingerprint,
-                .catalog_fingerprint = input.catalog.catalog_fingerprint,
+                .catalog_fingerprint = catalog_fingerprint,
                 .fabric_plan_fingerprints = owned_fabric_plan_fingerprints,
                 .route_fingerprints = owned_route_fingerprints,
                 .match_fingerprints = owned_match_fingerprints,
@@ -1962,6 +1963,15 @@ pub fn Linker(comptime W: type) type {
             hashU64(&hasher, W.world_linker_catalog_fingerprint_version);
             hashU64(&hasher, entries.len);
             for (entries) |entry| hashU64(&hasher, entry.entry_fingerprint);
+            return hasher.final();
+        }
+
+        fn fingerprintCanonicalCatalog(entries: []const Catalog.Entry) u64 {
+            var hasher = std.hash.Wyhash.init(0);
+            hashBytes(&hasher, "world.linker.catalog.v1");
+            hashU64(&hasher, W.world_linker_catalog_fingerprint_version);
+            hashU64(&hasher, entries.len);
+            for (entries) |entry| hashU64(&hasher, fingerprintCatalogEntry(entry));
             return hasher.final();
         }
 

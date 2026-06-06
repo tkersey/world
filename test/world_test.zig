@@ -215,6 +215,40 @@ test "link catalog entry fingerprint is stable and excludes pointer identity" {
     const catalog = world.Linker.Catalog.init(&entries);
     const same_catalog = world.Linker.Catalog.init(&entries);
     try std.testing.expectEqual(catalog.catalog_fingerprint, same_catalog.catalog_fingerprint);
+
+    const link_export_descriptor = world.Linker.ExportDescriptor.init(.{
+        .target_ref = provider_ref,
+        .result_ref = .{ .value_table_id = 1 },
+        .label = "strict-link",
+    });
+    const link_entry = world.Linker.Catalog.Entry.init(.{
+        .provider_kind = .target,
+        .target_ref = provider_ref,
+        .export_descriptor = link_export_descriptor,
+        .import_set = world.ImportSet.fromTarget(fixtures.Strict.Target),
+        .label = "strict-link",
+    });
+    const link_entries = [_]world.Linker.Catalog.Entry{link_entry};
+    const link_catalog = world.Linker.Catalog.init(&link_entries);
+    var stale_entry = link_entry;
+    stale_entry.entry_fingerprint +%= 1;
+    const stale_entries = [_]world.Linker.Catalog.Entry{stale_entry};
+    const stale_catalog = world.Linker.Catalog.init(&stale_entries);
+    const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
+    var linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
+        .root_imports = &.{root_import},
+        .catalog = stale_catalog,
+        .policy = .strict_closed,
+    });
+    defer linked.deinit();
+
+    try std.testing.expect(linked.plan.accepted());
+    try std.testing.expect(linked.plan.catalog_fingerprint != stale_catalog.catalog_fingerprint);
+    try std.testing.expectEqual(link_catalog.catalog_fingerprint, linked.plan.catalog_fingerprint);
+    try std.testing.expectEqual(link_catalog.catalog_fingerprint, linked.certificate.catalog_fingerprint);
 }
 
 test "import index and export index expose closed catalog requirements" {
@@ -14266,6 +14300,25 @@ test "runspace install admitted and replay records receipts summaries and events
         .mode = .continue_fresh,
     });
     try std.testing.expectError(error.SupervisionDenied, supervised_runspace.installAdmitted(stale_receipt_admitted));
+
+    const stale_link_scope_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+        .link_plan_fingerprint = 0x1111,
+        .linker_certificate_fingerprint = 0x2222,
+        .assembly_fingerprint = 0x3333,
+    });
+    const stale_link_scope_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_5517,
+        .target_ref = target_ref,
+        .environment_certificate_fingerprint = ports_cert.certificate_fingerprint,
+        .run_permit = stale_link_scope_permit,
+        .link_plan_fingerprint = 0x1111,
+        .linker_certificate_fingerprint = 0x2222,
+        .assembly_fingerprint = 0x4444,
+        .mode = .continue_fresh,
+    });
+    try std.testing.expectError(error.SupervisionDenied, supervised_runspace.installAdmitted(stale_link_scope_admitted));
 
     const unwitnessed_module_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
         .mode = .fresh,
