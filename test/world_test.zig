@@ -353,6 +353,17 @@ test "link hint resolves ambiguity without bypassing value compatibility" {
     try std.testing.expect(!ambiguous.accepted());
     try std.testing.expectEqual(world.Linker.Blocker.AmbiguousProvider, ambiguous.blockers[0]);
 
+    const parent_only_hint = world.Linker.Hint.init(.{
+        .parent_target_ref_fingerprint = root_ref.target_ref_fingerprint,
+        .parent_world_port_id = 0,
+        .label = "parent-only",
+    });
+    const still_ambiguous = try world.Linker.chooseProviderMatch(std.testing.allocator, .strict_closed, root_import, &candidates, parent_only_hint);
+    defer std.testing.allocator.free(still_ambiguous.blockers);
+    defer std.testing.allocator.free(still_ambiguous.warnings);
+    try std.testing.expect(!still_ambiguous.accepted());
+    try std.testing.expectEqual(world.Linker.Blocker.AmbiguousProvider, still_ambiguous.blockers[0]);
+
     const hint = world.Linker.Hint.init(.{
         .parent_target_ref_fingerprint = root_ref.target_ref_fingerprint,
         .parent_world_port_id = 0,
@@ -399,6 +410,24 @@ test "link graph fingerprint stable with blockers" {
     });
     try std.testing.expectEqual(graph.graph_fingerprint, same.graph_fingerprint);
     try std.testing.expect(graph.hasBlocker(.MissingProvider));
+}
+
+test "link rejects incomplete root imports before closed acceptance" {
+    const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    var linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
+        .root_imports = &.{},
+        .catalog = world.Linker.Catalog.init(&.{}),
+        .policy = .strict_closed,
+    });
+    defer linked.deinit();
+
+    try std.testing.expect(!linked.plan.accepted());
+    try std.testing.expectEqual(world.Linker.NormalForm.partial_with_blockers, linked.plan.normal_form);
+    try std.testing.expectEqual(@as(usize, 0), linked.plan.fabric_plans.len);
+    try std.testing.expect(linked.graph.hasBlocker(.RootImportSetMismatch));
+    try std.testing.expectEqual(@as(usize, 1), linked.certificate.blocker_count);
 }
 
 test "route synthesis emits Fabric plan and certificate binds witnesses" {
@@ -535,10 +564,45 @@ test "link rejects provider nested imports before claiming closed Fabric" {
 
     try std.testing.expect(!linked.plan.accepted());
     try std.testing.expectEqual(world.Linker.NormalForm.partial_with_blockers, linked.plan.normal_form);
-    try std.testing.expectEqual(@as(usize, 1), linked.plan.fabric_plans.len);
-    try std.testing.expectEqual(@as(usize, 1), linked.report.resolved_import_count);
+    try std.testing.expectEqual(@as(usize, 0), linked.plan.fabric_plans.len);
+    try std.testing.expectEqual(@as(usize, 0), linked.report.resolved_import_count);
     try std.testing.expectEqual(@as(usize, 2), linked.graph.max_depth_observed);
     try std.testing.expect(linked.graph.hasBlocker(.ProviderRequiresUnsupportedImports));
+}
+
+test "link rejects same-module provider cycles before route synthesis" {
+    const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
+    _ = root_ref.boundary_module_fingerprint orelse return error.ExpectedBoundaryModuleFingerprint;
+    var provider_ref = root_ref;
+    provider_ref.target_ref_fingerprint +%= 1;
+    provider_ref.target_label = "same-module-provider";
+    const provider_export = world.Linker.ExportDescriptor.init(.{
+        .target_ref = provider_ref,
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id },
+        .label = "provider",
+    });
+    const entries = [_]world.Linker.Catalog.Entry{
+        world.Linker.Catalog.Entry.generatedTarget(.{
+            .target_ref = provider_ref,
+            .export_descriptor = provider_export,
+            .import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
+            .label = "provider",
+        }),
+    };
+    var linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
+        .root_imports = &.{root_import},
+        .catalog = world.Linker.Catalog.init(&entries),
+        .policy = .strict_closed,
+    });
+    defer linked.deinit();
+
+    try std.testing.expect(!linked.plan.accepted());
+    try std.testing.expectEqual(@as(usize, 0), linked.plan.fabric_plans.len);
+    try std.testing.expectEqual(@as(usize, 0), linked.report.resolved_import_count);
+    try std.testing.expect(linked.graph.hasBlocker(.CycleDetected));
 }
 
 test "link unsupported catalog route kinds become blockers before Fabric synthesis" {
@@ -705,11 +769,72 @@ test "assembly preflights environment and installs into Runspace through Fabric 
     try std.testing.expectEqual(linked.assembly.assembly_fingerprint, permit.assembly_fingerprint.?);
     const permit_report = PortsMissingEnv.preflightAssemblyWithPermit(.fresh, true, linked.assembly, permit);
     try std.testing.expect(permit_report.accepted);
+    const scope_permit = world.Supervision.issue(fixtures.Ports.Target, PortsMissingEnv, .{
+        .mode = .fresh,
+        .transcript_image_available = true,
+        .fabric_plan_fingerprint = linked.plan.fabric_plans[0].plan_fingerprint,
+        .link_plan_fingerprint = linked.plan.plan_fingerprint,
+        .linker_certificate_fingerprint = linked.certificate.certificate_fingerprint,
+        .policy = world.SupervisionPolicy.strict_fresh,
+    });
+    const scoped_assembly = world.Assembly.init(.{
+        .root_target_ref = linked.assembly.root_target_ref,
+        .link_plan_fingerprint = linked.assembly.link_plan_fingerprint,
+        .linker_certificate_fingerprint = linked.assembly.linker_certificate_fingerprint,
+        .run_permit_fingerprint = scope_permit.permit_fingerprint +% 1,
+        .fabric_plans = linked.assembly.fabric_plans,
+        .external_import_requirements = linked.assembly.external_import_requirements,
+    });
+    const wrong_permit_report = PortsMissingEnv.preflightAssemblyWithPermit(.fresh, true, scoped_assembly, scope_permit);
+    try std.testing.expect(!wrong_permit_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.SupervisionPolicyMismatch, wrong_permit_report.blockers[0]);
+    const bound_assembly = world.Assembly.init(.{
+        .root_target_ref = linked.assembly.root_target_ref,
+        .link_plan_fingerprint = linked.assembly.link_plan_fingerprint,
+        .linker_certificate_fingerprint = linked.assembly.linker_certificate_fingerprint,
+        .run_permit_fingerprint = scope_permit.permit_fingerprint,
+        .fabric_plans = linked.assembly.fabric_plans,
+        .external_import_requirements = linked.assembly.external_import_requirements,
+    });
+    const bound_permit_report = PortsMissingEnv.preflightAssemblyWithPermit(.fresh, true, bound_assembly, scope_permit);
+    try std.testing.expect(bound_permit_report.accepted);
 
     var runspace = world.Runspace.init(std.testing.allocator, .{});
     defer runspace.deinit();
     try runspace.installAssembly(linked.assembly);
     try runspace.installAssembly(linked.assembly);
+}
+
+test "assembly preserves linker run permit scope" {
+    const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
+    const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    const provider_export = world.Linker.ExportDescriptor.init(.{
+        .target_ref = provider_ref,
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id },
+        .label = "strict",
+    });
+    const entries = [_]world.Linker.Catalog.Entry{
+        world.Linker.Catalog.Entry.generatedTarget(.{
+            .target_ref = provider_ref,
+            .export_descriptor = provider_export,
+            .import_set = world.ImportSet.fromTarget(fixtures.Strict.Target),
+            .label = "strict",
+        }),
+    };
+    var linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
+        .root_imports = &.{root_import},
+        .catalog = world.Linker.Catalog.init(&entries),
+        .policy = .strict_closed,
+        .run_permit_fingerprint = 0x5150_7001,
+    });
+    defer linked.deinit();
+
+    try std.testing.expectEqual(@as(?u64, 0x5150_7001), linked.assembly.run_permit_fingerprint);
+    try std.testing.expect(linked.assembly.preflightSupervision(0x5150_7001));
+    try std.testing.expect(!linked.assembly.preflightSupervision(0x5150_7002));
 }
 
 test "fabric route rejects split parent port identity" {
@@ -13917,6 +14042,27 @@ test "runspace install admitted and replay records receipts summaries and events
         .fabric_plan_fingerprint = 0xfab1_c501,
     });
     try std.testing.expectError(error.SupervisionDenied, supervised_replay_runspace.installReplay(fixtures.Strict.Target, image, fabric_scoped_replay_permit));
+    const link_scoped_replay_permit = world.Supervision.issue(fixtures.Strict.Target, StrictReplayEnv, .{
+        .mode = .replay,
+        .policy = world.SupervisionPolicy.strict_replay,
+        .transcript_image_available = true,
+        .link_plan_fingerprint = 0x11_aa,
+    });
+    try std.testing.expectError(error.SupervisionDenied, supervised_replay_runspace.installReplay(fixtures.Strict.Target, image, link_scoped_replay_permit));
+    const linker_certificate_scoped_replay_permit = world.Supervision.issue(fixtures.Strict.Target, StrictReplayEnv, .{
+        .mode = .replay,
+        .policy = world.SupervisionPolicy.strict_replay,
+        .transcript_image_available = true,
+        .linker_certificate_fingerprint = 0x11_cc,
+    });
+    try std.testing.expectError(error.SupervisionDenied, supervised_replay_runspace.installReplay(fixtures.Strict.Target, image, linker_certificate_scoped_replay_permit));
+    const assembly_scoped_replay_permit = world.Supervision.issue(fixtures.Strict.Target, StrictReplayEnv, .{
+        .mode = .replay,
+        .policy = world.SupervisionPolicy.strict_replay,
+        .transcript_image_available = true,
+        .assembly_fingerprint = 0x11_55,
+    });
+    try std.testing.expectError(error.SupervisionDenied, supervised_replay_runspace.installReplay(fixtures.Strict.Target, image, assembly_scoped_replay_permit));
     const embedded_transcript_unavailable_permit = world.Supervision.issue(fixtures.Strict.Target, StrictReplayEnv, .{
         .mode = .replay,
         .policy = world.SupervisionPolicy.strict_replay,
@@ -16913,6 +17059,21 @@ test "runspace enforces lifecycle supervision for direct and imported slots" {
     try std.testing.expectError(error.SupervisionDenied, direct.installTarget(fixtures.Strict.Target, StrictEnv, world.Supervision.issue(fixtures.Strict.Target, StrictEnv, .{
         .mode = .fresh,
         .fabric_plan_fingerprint = 0xfab1_c500,
+        .policy = world.SupervisionPolicy.strict_fresh,
+    }), .{}));
+    try std.testing.expectError(error.SupervisionDenied, direct.installTarget(fixtures.Strict.Target, StrictEnv, world.Supervision.issue(fixtures.Strict.Target, StrictEnv, .{
+        .mode = .fresh,
+        .link_plan_fingerprint = 0x11_aa,
+        .policy = world.SupervisionPolicy.strict_fresh,
+    }), .{}));
+    try std.testing.expectError(error.SupervisionDenied, direct.installTarget(fixtures.Strict.Target, StrictEnv, world.Supervision.issue(fixtures.Strict.Target, StrictEnv, .{
+        .mode = .fresh,
+        .linker_certificate_fingerprint = 0x11_cc,
+        .policy = world.SupervisionPolicy.strict_fresh,
+    }), .{}));
+    try std.testing.expectError(error.SupervisionDenied, direct.installTarget(fixtures.Strict.Target, StrictEnv, world.Supervision.issue(fixtures.Strict.Target, StrictEnv, .{
+        .mode = .fresh,
+        .assembly_fingerprint = 0x11_55,
         .policy = world.SupervisionPolicy.strict_fresh,
     }), .{}));
     const direct_handle = try direct.installTarget(fixtures.Strict.Target, StrictEnv, branch_denied_permit, .{});

@@ -223,7 +223,7 @@ pub const world_binding_fingerprint_version: u32 = 1;
 pub const world_port_authority_fingerprint_version: u32 = 1;
 pub const world_environment_policy_fingerprint_version: u32 = 1;
 pub const world_binding_plan_fingerprint_version: u32 = 1;
-pub const world_acceptance_report_fingerprint_version: u32 = 2;
+pub const world_acceptance_report_fingerprint_version: u32 = 3;
 pub const world_environment_certificate_format_version: u32 = 1;
 pub const world_environment_certificate_fingerprint_version: u32 = 1;
 pub const world_adapter_descriptor_fingerprint_version: u32 = 1;
@@ -906,6 +906,57 @@ pub const AcceptanceReport = struct {
     blockers: []const AcceptanceBlocker = &.{},
     warnings: []const AcceptanceBlocker = &.{},
     summary: []const u8 = "",
+
+    pub fn init(args: struct {
+        target_ref_fingerprint: u64,
+        world_surface_fingerprint: u64,
+        target_certificate_fingerprint: u64,
+        fabric_plan_fingerprint: ?u64 = null,
+        link_plan_fingerprint: ?u64 = null,
+        linker_certificate_fingerprint: ?u64 = null,
+        assembly_fingerprint: ?u64 = null,
+        requested_mode: Mode,
+        accepted: bool,
+        required_port_count: usize = 0,
+        bound_port_count: usize = 0,
+        missing_port_count: usize = 0,
+        extra_binding_count: usize = 0,
+        replay_only_port_count: usize = 0,
+        native_port_count: usize = 0,
+        byte_adapter_port_count: usize = 0,
+        portable_value_compatible_count: usize = 0,
+        native_only_value_count: usize = 0,
+        blockers: []const AcceptanceBlocker = &.{},
+        warnings: []const AcceptanceBlocker = &.{},
+        summary: []const u8 = "",
+    }) AcceptanceReport {
+        var report = AcceptanceReport{
+            .report_fingerprint = 0,
+            .target_ref_fingerprint = args.target_ref_fingerprint,
+            .world_surface_fingerprint = args.world_surface_fingerprint,
+            .target_certificate_fingerprint = args.target_certificate_fingerprint,
+            .fabric_plan_fingerprint = args.fabric_plan_fingerprint,
+            .link_plan_fingerprint = args.link_plan_fingerprint,
+            .linker_certificate_fingerprint = args.linker_certificate_fingerprint,
+            .assembly_fingerprint = args.assembly_fingerprint,
+            .requested_mode = args.requested_mode,
+            .accepted = args.accepted,
+            .required_port_count = args.required_port_count,
+            .bound_port_count = args.bound_port_count,
+            .missing_port_count = args.missing_port_count,
+            .extra_binding_count = args.extra_binding_count,
+            .replay_only_port_count = args.replay_only_port_count,
+            .native_port_count = args.native_port_count,
+            .byte_adapter_port_count = args.byte_adapter_port_count,
+            .portable_value_compatible_count = args.portable_value_compatible_count,
+            .native_only_value_count = args.native_only_value_count,
+            .blockers = args.blockers,
+            .warnings = args.warnings,
+            .summary = args.summary,
+        };
+        report.report_fingerprint = fingerprintAcceptanceReport(report);
+        return report;
+    }
 };
 
 pub const EnvironmentCertificate = struct {
@@ -4603,6 +4654,7 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
         }
 
         pub fn preflightAssemblyWithPermit(requested_mode: Mode, transcript_image_available: bool, assembly: Assembly, permit: RunPermit) AcceptanceReport {
+            if (assembly.run_permit_fingerprint != null and assembly.run_permit_fingerprint.? != permit.permit_fingerprint) return rejectedAcceptance(target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
             if (permit.link_plan_fingerprint != null and permit.link_plan_fingerprint.? != assembly.link_plan_fingerprint) return rejectedAcceptance(target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
             if (permit.linker_certificate_fingerprint != null and permit.linker_certificate_fingerprint.? != assembly.linker_certificate_fingerprint) return rejectedAcceptance(target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
             if (permit.assembly_fingerprint != null and permit.assembly_fingerprint.? != assembly.assembly_fingerprint) return rejectedAcceptance(target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
@@ -9641,7 +9693,12 @@ pub const Runspace = struct {
         if (permit.world_surface_fingerprint != Target.WorldSurface.surface_fingerprint) return error.SupervisionDenied;
         if (permit.target_certificate_fingerprint != Target.Certificate.certificate_fingerprint) return error.SupervisionDenied;
         if (permit.mode != expected_mode) return error.SupervisionDenied;
-        if (permit.admission_receipt_fingerprint != null or permit.module_ref_fingerprint != null or permit.fabric_plan_fingerprint != null) return error.SupervisionDenied;
+        if (permit.admission_receipt_fingerprint != null or
+            permit.module_ref_fingerprint != null or
+            permit.fabric_plan_fingerprint != null or
+            permit.link_plan_fingerprint != null or
+            permit.linker_certificate_fingerprint != null or
+            permit.assembly_fingerprint != null) return error.SupervisionDenied;
         const transcript_available: bool = if (@hasField(Args, "transcript_image_available")) @field(args, "transcript_image_available") else false;
         const Env = if (@TypeOf(env) == type) env else @TypeOf(env);
         if (@hasDecl(Env, "certificate")) {
@@ -9787,7 +9844,12 @@ pub const Runspace = struct {
         if (permit.world_surface_fingerprint != Target.WorldSurface.surface_fingerprint) return error.SupervisionDenied;
         if (permit.target_certificate_fingerprint != Target.Certificate.certificate_fingerprint) return error.SupervisionDenied;
         if (permit.mode != .replay) return error.SupervisionDenied;
-        if (permit.admission_receipt_fingerprint != null or permit.module_ref_fingerprint != null or permit.fabric_plan_fingerprint != null) return error.SupervisionDenied;
+        if (permit.admission_receipt_fingerprint != null or
+            permit.module_ref_fingerprint != null or
+            permit.fabric_plan_fingerprint != null or
+            permit.link_plan_fingerprint != null or
+            permit.linker_certificate_fingerprint != null or
+            permit.assembly_fingerprint != null) return error.SupervisionDenied;
         if (permit.policy.require_environment_certificate) return error.SupervisionDenied;
         if (!permit.transcript_image_available) {
             if (permit.policy.require_transcript_image_for_replay) return error.TranscriptImageRequired;
@@ -21001,10 +21063,10 @@ fn fingerprintAcceptanceReport(report: AcceptanceReport) u64 {
     hashU64(&hasher, report.target_ref_fingerprint);
     hashU64(&hasher, report.world_surface_fingerprint);
     hashU64(&hasher, report.target_certificate_fingerprint);
-    if (report.fabric_plan_fingerprint) |fingerprint| hashU64(&hasher, fingerprint);
-    if (report.link_plan_fingerprint) |fingerprint| hashU64(&hasher, fingerprint);
-    if (report.linker_certificate_fingerprint) |fingerprint| hashU64(&hasher, fingerprint);
-    if (report.assembly_fingerprint) |fingerprint| hashU64(&hasher, fingerprint);
+    hashOptionalU64(&hasher, report.fabric_plan_fingerprint);
+    hashOptionalU64(&hasher, report.link_plan_fingerprint);
+    hashOptionalU64(&hasher, report.linker_certificate_fingerprint);
+    hashOptionalU64(&hasher, report.assembly_fingerprint);
     hashU64(&hasher, @intFromEnum(report.requested_mode));
     hashBool(&hasher, report.accepted);
     hashU64(&hasher, report.required_port_count);
@@ -21023,6 +21085,24 @@ fn fingerprintAcceptanceReport(report: AcceptanceReport) u64 {
     hashU64(&hasher, report.summary.len);
     hashBytes(&hasher, report.summary);
     return hasher.final();
+}
+
+test "AcceptanceReport fingerprint tags optional linker evidence fields" {
+    var fabric_only = AcceptanceReport{
+        .report_fingerprint = 0,
+        .target_ref_fingerprint = 0x51ace_7a96,
+        .world_surface_fingerprint = 0x51ace_500f,
+        .target_certificate_fingerprint = 0x51ace_c07e,
+        .fabric_plan_fingerprint = 0xabcd,
+        .requested_mode = .fresh,
+        .accepted = true,
+    };
+    fabric_only.report_fingerprint = fingerprintAcceptanceReport(fabric_only);
+    var link_only = fabric_only;
+    link_only.fabric_plan_fingerprint = null;
+    link_only.link_plan_fingerprint = 0xabcd;
+    link_only.report_fingerprint = fingerprintAcceptanceReport(link_only);
+    try std.testing.expect(fabric_only.report_fingerprint != link_only.report_fingerprint);
 }
 
 fn fingerprintEnvironmentCertificate(cert: EnvironmentCertificate) u64 {

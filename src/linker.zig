@@ -520,6 +520,7 @@ pub fn Linker(comptime W: type) type {
             SupervisionIncompatible,
             FabricInvariantViolation,
             UnsupportedRouteKind,
+            RootImportSetMismatch,
         };
 
         pub const Warning = enum {
@@ -620,6 +621,7 @@ pub fn Linker(comptime W: type) type {
             fn selects(self: Hint, parent_ref: W.TargetRef, requirement: W.ImportRequirement, entry: Catalog.Entry) bool {
                 if (self.parent_target_ref_fingerprint != parent_ref.target_ref_fingerprint) return false;
                 if (self.parent_world_port_id != requirement.world_port_id) return false;
+                if (!self.hasProviderSelector()) return false;
                 if (self.provider_target_ref_fingerprint) |expected| {
                     if (entry.target_ref == null or entry.target_ref.?.target_ref_fingerprint != expected) return false;
                 }
@@ -630,6 +632,10 @@ pub fn Linker(comptime W: type) type {
                     if (entry.export_descriptor == null or entry.export_descriptor.?.export_fingerprint != expected) return false;
                 }
                 return true;
+            }
+
+            fn hasProviderSelector(self: Hint) bool {
+                return self.provider_target_ref_fingerprint != null or self.provider_module_ref_fingerprint != null or self.provider_export_fingerprint != null;
             }
         };
 
@@ -725,17 +731,19 @@ pub fn Linker(comptime W: type) type {
                 return selected;
             }
             if (hint) |present| {
-                for (accepted.items, 0..) |candidate_match, index| {
-                    const target_ok = present.provider_target_ref_fingerprint == null or present.provider_target_ref_fingerprint == candidate_match.provider_target_ref_fingerprint;
-                    const module_ok = present.provider_module_ref_fingerprint == null or present.provider_module_ref_fingerprint == candidate_match.provider_module_ref_fingerprint;
-                    const export_ok = present.provider_export_fingerprint == null or present.provider_export_fingerprint == candidate_match.provider_export_fingerprint;
-                    if (target_ok and module_ok and export_ok) {
-                        var selected = candidate_match;
-                        selected.kind = .explicit_hint;
-                        selected.confidence = .hinted;
-                        selected.match_fingerprint = fingerprintMatch(selected);
-                        _ = accepted.orderedRemove(index);
-                        return selected;
+                if (present.hasProviderSelector()) {
+                    for (accepted.items, 0..) |candidate_match, index| {
+                        const target_ok = present.provider_target_ref_fingerprint == null or present.provider_target_ref_fingerprint == candidate_match.provider_target_ref_fingerprint;
+                        const module_ok = present.provider_module_ref_fingerprint == null or present.provider_module_ref_fingerprint == candidate_match.provider_module_ref_fingerprint;
+                        const export_ok = present.provider_export_fingerprint == null or present.provider_export_fingerprint == candidate_match.provider_export_fingerprint;
+                        if (target_ok and module_ok and export_ok) {
+                            var selected = candidate_match;
+                            selected.kind = .explicit_hint;
+                            selected.confidence = .hinted;
+                            selected.match_fingerprint = fingerprintMatch(selected);
+                            _ = accepted.orderedRemove(index);
+                            return selected;
+                        }
                     }
                 }
             }
@@ -1312,6 +1320,11 @@ pub fn Linker(comptime W: type) type {
             var resolved_count: usize = 0;
             var ambiguous_count: usize = 0;
             var max_depth_observed: usize = 0;
+            if (input.root_import_set.target_ref_fingerprint != input.root_target_ref.target_ref_fingerprint or
+                input.root_imports.len != input.root_import_set.required_count)
+            {
+                try blockers.append(allocator, .RootImportSetMismatch);
+            }
             for (input.root_imports) |requirement| {
                 const import_node = Graph.Node.init(.{
                     .kind = .import_requirement,
@@ -1356,7 +1369,32 @@ pub fn Linker(comptime W: type) type {
                     try blockers.append(allocator, .MissingProvider);
                     continue;
                 };
+                if (entry.imports.len != 0 and policy.require_closed_graph) {
+                    const provider_node = Graph.Node.init(.{
+                        .kind = .target_module,
+                        .target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+                        .label = provider_ref.target_label orelse "",
+                    });
+                    try nodes.append(allocator, provider_node);
+                    for (entry.imports) |nested_requirement| {
+                        const nested_import_node = Graph.Node.init(.{
+                            .kind = .import_requirement,
+                            .target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+                            .import_requirement_fingerprint = nested_requirement.requirement_fingerprint,
+                            .label = nested_requirement.suggested_symbolic_name orelse "",
+                        });
+                        try nodes.append(allocator, nested_import_node);
+                        try edges.append(allocator, Graph.Edge.init(.provider_requires_nested_import, provider_node.fingerprint, nested_import_node.fingerprint));
+                    }
+                    try blockers.append(allocator, .ProviderRequiresUnsupportedImports);
+                    max_depth_observed = @max(max_depth_observed, 2);
+                    continue;
+                }
                 if (policy.reject_same_target_cycle and provider_ref.target_ref_fingerprint == input.root_target_ref.target_ref_fingerprint) {
+                    try blockers.append(allocator, .CycleDetected);
+                    continue;
+                }
+                if (policy.reject_same_module_cycle and sameModuleFingerprint(input.root_module_ref, input.root_target_ref, entry, provider_ref)) {
                     try blockers.append(allocator, .CycleDetected);
                     continue;
                 }
@@ -1451,7 +1489,6 @@ pub fn Linker(comptime W: type) type {
                         try nodes.append(allocator, nested_import_node);
                         try edges.append(allocator, Graph.Edge.init(.provider_requires_nested_import, provider_node.fingerprint, nested_import_node.fingerprint));
                     }
-                    if (policy.require_closed_graph) try blockers.append(allocator, .ProviderRequiresUnsupportedImports);
                 }
                 resolved_count += 1;
             }
@@ -1586,6 +1623,7 @@ pub fn Linker(comptime W: type) type {
                 .root_target_ref = input.root_target_ref,
                 .link_plan_fingerprint = plan.plan_fingerprint,
                 .linker_certificate_fingerprint = certificate.certificate_fingerprint,
+                .run_permit_fingerprint = input.run_permit_fingerprint,
                 .fabric_plans = owned_fabric_plans,
                 .external_import_requirements = owned_external,
                 .provider_run_templates = owned_provider_targets,
@@ -1715,6 +1753,7 @@ pub fn Linker(comptime W: type) type {
         }
 
         fn providerTargetMatches(self: Hint, entry: Catalog.Entry) bool {
+            if (!self.hasProviderSelector()) return false;
             if (self.provider_target_ref_fingerprint) |expected| {
                 if (entry.target_ref == null or entry.target_ref.?.target_ref_fingerprint != expected) return false;
             }
@@ -1725,6 +1764,13 @@ pub fn Linker(comptime W: type) type {
                 if (entry.export_descriptor == null or entry.export_descriptor.?.export_fingerprint != expected) return false;
             }
             return true;
+        }
+
+        fn sameModuleFingerprint(root_module_ref: ?W.Admission.ModuleRef, root_target_ref: W.TargetRef, entry: Catalog.Entry, provider_ref: W.TargetRef) bool {
+            const root_module = if (root_module_ref) |module_ref| module_ref.module_ref_fingerprint else root_target_ref.boundary_module_fingerprint;
+            const provider_module = if (entry.module_ref) |module_ref| module_ref.module_ref_fingerprint else provider_ref.boundary_module_fingerprint;
+            if (root_module == null or provider_module == null) return false;
+            return root_module.? == provider_module.?;
         }
 
         fn countBlocker(blockers: []const Blocker, expected: Blocker) usize {
