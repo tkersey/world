@@ -340,7 +340,6 @@ pub fn Linker(comptime W: type) type {
                     return Entry.init(.{
                         .provider_kind = .admitted_run,
                         .target_ref = args.admitted_run.target_ref,
-                        .module_ref = args.admitted_run.module_ref,
                         .export_descriptor = args.export_descriptor,
                         .import_set = args.import_set,
                         .imports = args.imports,
@@ -653,6 +652,12 @@ pub fn Linker(comptime W: type) type {
                 matchKindForEntry(entry);
             var response_mapping: ?W.Fabric.ValueMapping = null;
             if (entry.export_descriptor) |descriptor| {
+                if (entry.target_ref) |target_ref| {
+                    if (descriptor.target_ref.target_ref_fingerprint != target_ref.target_ref_fingerprint) try blockers.append(allocator, .MissingProvider);
+                }
+                if (entry.module_ref) |module_ref| {
+                    if (descriptor.module_ref == null or descriptor.module_ref.?.module_ref_fingerprint != module_ref.module_ref_fingerprint) try blockers.append(allocator, .MissingProvider);
+                }
                 if (descriptor.argument_refs.len != 0) try blockers.append(allocator, .ArgumentCountMismatch);
                 const parent_ref = valueRefForRequirement(requirement);
                 if (!parent_ref.compatibleWith(descriptor.result_ref, policy)) {
@@ -1174,14 +1179,9 @@ pub fn Linker(comptime W: type) type {
             }
 
             pub fn installIntoRunspace(self: Assembly, runspace: anytype) !void {
+                try self.validate();
                 for (self.fabric_plans) |fabric_plan| {
-                    var target_ref = self.root_target_ref;
-                    if (fabric_plan.target_ref_fingerprint != self.root_target_ref.target_ref_fingerprint) {
-                        target_ref.target_ref_fingerprint = fabric_plan.target_ref_fingerprint;
-                        target_ref.world_surface_fingerprint = fabric_plan.world_surface_fingerprint;
-                        target_ref.target_certificate_fingerprint = fabric_plan.target_certificate_fingerprint;
-                    }
-                    try runspace.installFabricPlan(target_ref, fabric_plan);
+                    try runspace.installFabricPlan(self.root_target_ref, fabric_plan);
                 }
             }
 
@@ -1195,7 +1195,13 @@ pub fn Linker(comptime W: type) type {
 
             pub fn validate(self: Assembly) !void {
                 if (fingerprintAssembly(self) != self.assembly_fingerprint) return error.InvalidFrameEncoding;
-                for (self.fabric_plans) |plan| try assertFabricInvariant(plan);
+                for (self.fabric_plans) |plan| {
+                    if (plan.target_ref_fingerprint != self.root_target_ref.target_ref_fingerprint) return error.InvalidFrameEncoding;
+                    if (plan.world_surface_fingerprint != self.root_target_ref.world_surface_fingerprint) return error.InvalidFrameEncoding;
+                    if (plan.target_certificate_fingerprint != self.root_target_ref.target_certificate_fingerprint) return error.InvalidFrameEncoding;
+                    if (plan.module_fingerprint != null and self.root_target_ref.boundary_module_fingerprint != null and plan.module_fingerprint.? != self.root_target_ref.boundary_module_fingerprint.?) return error.InvalidFrameEncoding;
+                    try assertFabricInvariant(plan);
+                }
             }
 
             pub fn residualImportSet(self: Assembly) ResidualImportSet {
@@ -1250,6 +1256,7 @@ pub fn Linker(comptime W: type) type {
             owned_guest_providers_used: []u64 = &.{},
             owned_replay_routes_used: []u64 = &.{},
             owned_reject_routes_used: []u64 = &.{},
+            owned_admission_receipts_used: []u64 = &.{},
             owned_fabric_plan_fingerprints: []u64 = &.{},
             owned_route_fingerprints: []u64 = &.{},
             owned_match_fingerprints: []u64 = &.{},
@@ -1276,6 +1283,7 @@ pub fn Linker(comptime W: type) type {
                 self.allocator.free(self.owned_guest_providers_used);
                 self.allocator.free(self.owned_replay_routes_used);
                 self.allocator.free(self.owned_reject_routes_used);
+                self.allocator.free(self.owned_admission_receipts_used);
                 self.allocator.free(self.owned_fabric_plan_fingerprints);
                 self.allocator.free(self.owned_route_fingerprints);
                 self.allocator.free(self.owned_match_fingerprints);
@@ -1307,6 +1315,7 @@ pub fn Linker(comptime W: type) type {
             var guest_targets: std.ArrayList(u64) = .empty;
             var replay_routes: std.ArrayList(u64) = .empty;
             var reject_routes: std.ArrayList(u64) = .empty;
+            var admission_receipts: std.ArrayList(u64) = .empty;
             var fabric_plan_fingerprints: std.ArrayList(u64) = .empty;
             var route_fingerprints: std.ArrayList(u64) = .empty;
             var match_fingerprints: std.ArrayList(u64) = .empty;
@@ -1326,6 +1335,7 @@ pub fn Linker(comptime W: type) type {
             errdefer guest_targets.deinit(allocator);
             errdefer replay_routes.deinit(allocator);
             errdefer reject_routes.deinit(allocator);
+            errdefer admission_receipts.deinit(allocator);
             errdefer fabric_plan_fingerprints.deinit(allocator);
             errdefer route_fingerprints.deinit(allocator);
             errdefer match_fingerprints.deinit(allocator);
@@ -1458,6 +1468,11 @@ pub fn Linker(comptime W: type) type {
                     try blockers.append(allocator, .ProviderRunLimitExceeded);
                     continue;
                 }
+                if (policy.max_link_depth < 1) {
+                    try unresolved.append(allocator, requirement);
+                    try blockers.append(allocator, .DepthExceeded);
+                    continue;
+                }
                 const mapping = chosen.response_mapping orelse try synthesizeResponseMapping(requirement, entry);
                 const route_kind = routeKindForEntry(entry);
                 const route = W.Fabric.Route.init(.{
@@ -1503,6 +1518,7 @@ pub fn Linker(comptime W: type) type {
                 if (route_kind == .guest) try guest_targets.append(allocator, provider_ref.target_ref_fingerprint);
                 if (route_kind == .replay) try replay_routes.append(allocator, route.route_fingerprint);
                 if (route_kind == .reject) try reject_routes.append(allocator, route.route_fingerprint);
+                if (entry.admission_receipt_fingerprint) |receipt| try appendUniqueU64(allocator, &admission_receipts, receipt);
                 const route_node = Graph.Node.init(.{
                     .kind = .fabric_route,
                     .target_ref_fingerprint = input.root_target_ref.target_ref_fingerprint,
@@ -1579,6 +1595,8 @@ pub fn Linker(comptime W: type) type {
             replay_routes = .empty;
             const owned_reject_routes = try reject_routes.toOwnedSlice(allocator);
             reject_routes = .empty;
+            const owned_admission_receipts = try admission_receipts.toOwnedSlice(allocator);
+            admission_receipts = .empty;
             const owned_route_fingerprints = try route_fingerprints.toOwnedSlice(allocator);
             route_fingerprints = .empty;
             const owned_match_fingerprints = try match_fingerprints.toOwnedSlice(allocator);
@@ -1679,6 +1697,7 @@ pub fn Linker(comptime W: type) type {
             const assembly_external_imports = if (plan.accepted()) owned_external else &.{};
             const assembly_provider_targets = if (plan.accepted()) owned_provider_targets else &.{};
             const assembly_guest_targets = if (plan.accepted()) owned_guest_targets else &.{};
+            const assembly_admission_receipts = if (plan.accepted()) owned_admission_receipts else &.{};
             const assembly = Assembly.init(.{
                 .root_target_ref = input.root_target_ref,
                 .link_plan_fingerprint = plan.plan_fingerprint,
@@ -1686,6 +1705,7 @@ pub fn Linker(comptime W: type) type {
                 .run_permit_fingerprint = input.run_permit_fingerprint,
                 .fabric_plans = assembly_fabric_plans,
                 .external_import_requirements = assembly_external_imports,
+                .admission_receipts_used = assembly_admission_receipts,
                 .provider_run_templates = assembly_provider_targets,
                 .guest_provider_templates = assembly_guest_targets,
             });
@@ -1715,6 +1735,7 @@ pub fn Linker(comptime W: type) type {
                 .owned_guest_providers_used = owned_guest_targets,
                 .owned_replay_routes_used = owned_replay_routes,
                 .owned_reject_routes_used = owned_reject_routes,
+                .owned_admission_receipts_used = owned_admission_receipts,
                 .owned_fabric_plan_fingerprints = owned_fabric_plan_fingerprints,
                 .owned_route_fingerprints = owned_route_fingerprints,
                 .owned_match_fingerprints = owned_match_fingerprints,
@@ -1754,6 +1775,13 @@ pub fn Linker(comptime W: type) type {
                 .reject_route => .reject,
                 .environment_adapter => .adapter,
             };
+        }
+
+        fn appendUniqueU64(allocator: std.mem.Allocator, list: *std.ArrayList(u64), value: u64) !void {
+            for (list.items) |existing| {
+                if (existing == value) return;
+            }
+            try list.append(allocator, value);
         }
 
         fn linkerCanSynthesizeRouteKind(entry: Catalog.Entry) bool {

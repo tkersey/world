@@ -316,6 +316,19 @@ test "link match accepts exact value refs and rejects mismatches" {
     defer std.testing.allocator.free(mismatch.warnings);
     try std.testing.expect(!mismatch.accepted());
     try std.testing.expectEqual(world.Linker.Blocker.ResponseRefMismatch, mismatch.blockers[0]);
+
+    const wrong_provider_ref = world.TargetRef.fromTarget(fixtures.ProviderPorts.Target);
+    const forged_entry = world.Linker.Catalog.Entry.init(.{
+        .provider_kind = .target,
+        .target_ref = wrong_provider_ref,
+        .export_descriptor = exact_export,
+        .label = "forged-entry",
+    });
+    const forged = try world.Linker.matchEntry(std.testing.allocator, .strict_closed, root_import, forged_entry, null);
+    defer std.testing.allocator.free(forged.blockers);
+    defer std.testing.allocator.free(forged.warnings);
+    try std.testing.expect(!forged.accepted());
+    try std.testing.expectEqual(world.Linker.Blocker.MissingProvider, forged.blockers[0]);
 }
 
 test "link hint resolves ambiguity without bypassing value compatibility" {
@@ -713,6 +726,40 @@ test "link enforces max provider candidate limit before matching" {
     try std.testing.expect(linked.graph.hasBlocker(.ProviderRunLimitExceeded));
 }
 
+test "link reports depth blocker for zero-depth policy" {
+    const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
+    const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    const provider_export = world.Linker.ExportDescriptor.init(.{
+        .target_ref = provider_ref,
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id },
+        .label = "strict",
+    });
+    const entries = [_]world.Linker.Catalog.Entry{
+        world.Linker.Catalog.Entry.generatedTarget(.{
+            .target_ref = provider_ref,
+            .export_descriptor = provider_export,
+            .import_set = world.ImportSet.fromTarget(fixtures.Strict.Target),
+            .label = "strict",
+        }),
+    };
+    var linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
+        .root_imports = &.{root_import},
+        .catalog = world.Linker.Catalog.init(&entries),
+        .max_depth = 0,
+        .policy = .strict_closed,
+    });
+    defer linked.deinit();
+
+    try std.testing.expect(!linked.plan.accepted());
+    try std.testing.expectEqual(world.Linker.NormalForm.partial_with_blockers, linked.plan.normal_form);
+    try std.testing.expectEqual(@as(usize, 0), linked.plan.fabric_plans.len);
+    try std.testing.expectEqual(@as(usize, 1), linked.report.unresolved_import_count);
+    try std.testing.expect(linked.graph.hasBlocker(.DepthExceeded));
+}
+
 test "link rejects same-module provider cycles before route synthesis" {
     const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
@@ -897,6 +944,11 @@ test "assembly preflights environment and installs into Runspace through Fabric 
     try std.testing.expectEqual(linked.certificate.certificate_fingerprint, missing_env_report.linker_certificate_fingerprint.?);
     try std.testing.expectEqual(linked.assembly.assembly_fingerprint, missing_env_report.assembly_fingerprint.?);
     try std.testing.expectEqual(linked.plan.fabric_plans[0].plan_fingerprint, missing_env_report.fabric_plan_fingerprint.?);
+    var unpermitted_forged_assembly = linked.assembly;
+    unpermitted_forged_assembly.link_plan_fingerprint +%= 1;
+    const unpermitted_forged_report = PortsMissingEnv.preflightAssembly(.fresh, true, unpermitted_forged_assembly);
+    try std.testing.expect(!unpermitted_forged_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.SupervisionPolicyMismatch, unpermitted_forged_report.blockers[0]);
 
     const permit = world.Supervision.issue(fixtures.Ports.Target, PortsMissingEnv, .{
         .mode = .fresh,
@@ -951,6 +1003,17 @@ test "assembly preflights environment and installs into Runspace through Fabric 
     defer runspace.deinit();
     try runspace.installAssembly(linked.assembly);
     try runspace.installAssembly(linked.assembly);
+    var non_root_plan = linked.plan.fabric_plans[0];
+    non_root_plan.target_ref_fingerprint +%= 1;
+    non_root_plan.module_fingerprint = (root_ref.boundary_module_fingerprint orelse 0) +% 1;
+    const non_root_plans = [_]world.Fabric.Plan{non_root_plan};
+    const non_root_assembly = world.Assembly.init(.{
+        .root_target_ref = linked.assembly.root_target_ref,
+        .link_plan_fingerprint = linked.assembly.link_plan_fingerprint,
+        .linker_certificate_fingerprint = linked.assembly.linker_certificate_fingerprint,
+        .fabric_plans = &non_root_plans,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, runspace.installAssembly(non_root_assembly));
 }
 
 test "assembly preserves linker run permit scope" {
@@ -983,6 +1046,45 @@ test "assembly preserves linker run permit scope" {
     try std.testing.expectEqual(@as(?u64, 0x5150_7001), linked.assembly.run_permit_fingerprint);
     try std.testing.expect(linked.assembly.preflightSupervision(0x5150_7001));
     try std.testing.expect(!linked.assembly.preflightSupervision(0x5150_7002));
+}
+
+test "assembly witnesses admitted-run provider receipts" {
+    const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
+    const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    const provider_export = world.Linker.ExportDescriptor.init(.{
+        .target_ref = provider_ref,
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id },
+        .label = "strict",
+    });
+    const receipt_fingerprint: u64 = 0xadd1_7001;
+    const admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = receipt_fingerprint,
+        .target_ref = provider_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Strict.Target).import_set_fingerprint,
+        .mode = .local_target_match_only,
+    });
+    const entries = [_]world.Linker.Catalog.Entry{
+        world.Linker.Catalog.Entry.admittedRun(.{
+            .admitted_run = admitted,
+            .export_descriptor = provider_export,
+            .import_set = world.ImportSet.fromTarget(fixtures.Strict.Target),
+            .label = "admitted-strict",
+        }),
+    };
+    var linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
+        .root_imports = &.{root_import},
+        .catalog = world.Linker.Catalog.init(&entries),
+        .policy = .strict_closed,
+    });
+    defer linked.deinit();
+
+    try std.testing.expect(linked.plan.accepted());
+    try std.testing.expectEqual(@as(usize, 1), linked.assembly.admission_receipts_used.len);
+    try std.testing.expectEqual(receipt_fingerprint, linked.assembly.admission_receipts_used[0]);
+    try std.testing.expectEqual(receipt_fingerprint, linked.plan.fabric_plans[0].routes[0].provider_admission_receipt_fingerprint.?);
 }
 
 test "fabric route rejects split parent port identity" {
@@ -24269,6 +24371,25 @@ test "admission rejects permit mode mismatch before receipt" {
     }).admitForTarget(fixtures.Ports.Target, PortsEnv, package, .{ .permit = stale_admission_scope_permit });
     try std.testing.expect(!stale_admission_scope_result.report.accepted);
     try std.testing.expectEqual(world.Admission.AdmissionBlocker.PermitRejected, stale_admission_scope_result.report.blockers[0]);
+
+    const link_scoped_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+        .link_plan_fingerprint = 0x1111,
+        .linker_certificate_fingerprint = 0x2222,
+        .assembly_fingerprint = 0x3333,
+    });
+    const mismatched_link_scope_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.strict_local_execution,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, package, .{
+        .permit = link_scoped_permit,
+        .link_plan_fingerprint = 0x1111,
+        .linker_certificate_fingerprint = 0x2222,
+        .assembly_fingerprint = 0x4444,
+    });
+    try std.testing.expect(!mismatched_link_scope_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PermitRejected, mismatched_link_scope_result.report.blockers[0]);
 
     const module_package = world.Admission.TransferPackage.init(.{
         .kind = .module_reference,

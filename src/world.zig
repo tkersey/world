@@ -2664,6 +2664,21 @@ pub const Admission = struct {
                 if (permit.admission_receipt_fingerprint != null) {
                     return rejectedResult(request, package, target_ref, module_ref, match, &.{.PermitRejected}, "permit admission scope mismatch");
                 }
+                if (permit.link_plan_fingerprint) |fingerprint| {
+                    if (args.link_plan_fingerprint == null or args.link_plan_fingerprint.? != fingerprint) {
+                        return rejectedResult(request, package, target_ref, module_ref, match, &.{.PermitRejected}, "permit link plan scope mismatch");
+                    }
+                }
+                if (permit.linker_certificate_fingerprint) |fingerprint| {
+                    if (args.linker_certificate_fingerprint == null or args.linker_certificate_fingerprint.? != fingerprint) {
+                        return rejectedResult(request, package, target_ref, module_ref, match, &.{.PermitRejected}, "permit linker certificate scope mismatch");
+                    }
+                }
+                if (permit.assembly_fingerprint) |fingerprint| {
+                    if (args.assembly_fingerprint == null or args.assembly_fingerprint.? != fingerprint) {
+                        return rejectedResult(request, package, target_ref, module_ref, match, &.{.PermitRejected}, "permit assembly scope mismatch");
+                    }
+                }
                 if (permit.module_ref_fingerprint) |permit_module_ref| {
                     if (module_ref == null or module_ref.?.module_ref_fingerprint != permit_module_ref) {
                         return rejectedResult(request, package, target_ref, module_ref, match, &.{.PermitRejected}, "permit module mismatch");
@@ -4595,6 +4610,7 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
         }
 
         pub fn preflightAssemblyEvidence(requested_mode: Mode, transcript_image_available: bool, fabric_replay_transcript_available: bool, assembly: Assembly) AcceptanceReport {
+            assembly.validate() catch return rejectedAcceptance(target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
             if (assembly.root_target_ref.target_ref_fingerprint != target_ref.target_ref_fingerprint) {
                 return rejectedAcceptance(target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
             }
