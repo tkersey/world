@@ -10044,7 +10044,7 @@ pub const Runspace = struct {
         const parent_slot = &self.slots.items[parent_index];
         if (!slotHasFabricRoutablePending(parent_slot.*, mailbox_id)) return error.StaleRunHandle;
         try self.validateFabricPlanForPending(plan, pending);
-        const route = plan.routeForPort(pending.world_port_id) orelse return error.FabricMissingRoute;
+        const route = try self.installedFabricRouteForPending(plan.plan_fingerprint, pending);
         try route.validate();
         switch (route.kind) {
             .reject, .unsupported => {},
@@ -10212,7 +10212,7 @@ pub const Runspace = struct {
         if (provider_handle.handle_fingerprint == pending.handle.handle_fingerprint) return error.SameRunRecursion;
         if (self.hasActiveFabricInvocationForRun(provider_handle)) return error.UnsupportedSharedProviderRun;
         try self.validateFabricPlanForPending(plan, pending);
-        const route = plan.routeForPort(pending.world_port_id) orelse return error.FabricMissingRoute;
+        const route = try self.installedFabricRouteForPending(plan.plan_fingerprint, pending);
         try route.validate();
         switch (route.kind) {
             .target_export, .admitted_run => {},
@@ -10270,7 +10270,7 @@ pub const Runspace = struct {
         if (!slotHasFabricRoutablePending(parent_slot.*, mailbox_id)) return error.StaleRunHandle;
         if (self.hasActiveFabricInvocationForMailbox(mailbox_id)) return error.ActiveFabricUnsupported;
         try self.validateFabricPlanForPending(plan, pending);
-        const route = plan.routeForPort(pending.world_port_id) orelse return error.FabricMissingRoute;
+        const route = try self.installedFabricRouteForPending(plan.plan_fingerprint, pending);
         try route.validate();
         if (route.kind != .replay) return error.UnsupportedMapping;
         try validateTranscriptImageFingerprint(transcript_image.*);
@@ -10610,6 +10610,14 @@ pub const Runspace = struct {
     fn installedFabricRoute(self: *const @This(), route_fingerprint: u64) !Fabric.Route {
         for (self.fabric_routes.items) |route| {
             if (route.route_fingerprint == route_fingerprint) return route;
+        }
+        return error.FabricMissingRoute;
+    }
+
+    fn installedFabricRouteForPending(self: *const @This(), plan_fingerprint: u64, pending: Runspace.PendingPort) !Fabric.Route {
+        for (self.fabric_routes.items, self.fabric_route_plan_fingerprints.items) |route, route_plan_fingerprint| {
+            if (route_plan_fingerprint != plan_fingerprint) continue;
+            if (fabricRouteCoversPending(route, pending)) return route;
         }
         return error.FabricMissingRoute;
     }

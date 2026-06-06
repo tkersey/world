@@ -7252,6 +7252,32 @@ test "runspace fabric routing requires installed plans before mutation" {
     try std.testing.expectError(error.FabricMissingRoute, runspace.routePending(0, plan));
     try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_invocation_count);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+
+    try runspace.installFabricPlan(parent_ref, plan);
+    const forged_route = world.Fabric.Route.init(.{
+        .route_id = 422,
+        .kind = .unsupported,
+        .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .parent_world_port_id = 0,
+        .response_status = .failed,
+    });
+    var forged_plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .routes = &.{forged_route},
+    });
+    forged_plan.plan_fingerprint = plan.plan_fingerprint;
+
+    try std.testing.expectError(error.InvalidFrameEncoding, runspace.routePending(0, forged_plan));
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_invocation_count);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+
+    const invocation = try runspace.routePending(0, plan);
+    try std.testing.expectEqual(world.Fabric.InvocationStatus.rejected, invocation.status);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().fabric_invocation_count);
 }
 
 test "runspace fabric response rejects unrecorded invocation before consuming mailbox" {
