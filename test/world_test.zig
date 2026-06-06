@@ -1173,6 +1173,8 @@ test "assembly preflights environment and installs into Runspace through Fabric 
     try std.testing.expectEqual(world.AcceptanceBlocker.TranscriptImageRequired, missing_replay_evidence_report.blockers[0]);
     const replay_evidence_report = PortsReplayEnv.preflightAssemblyWithPermitEvidence(.replay, true, true, replay_assembly, replay_permit);
     try std.testing.expect(replay_evidence_report.accepted);
+    const replay_wrapper_report = PortsReplayEnv.preflightAssemblyWithPermit(.replay, true, replay_assembly, replay_permit);
+    try std.testing.expect(replay_wrapper_report.accepted);
     const scope_permit = world.Supervision.issue(fixtures.Ports.Target, PortsMissingEnv, .{
         .mode = .fresh,
         .transcript_image_available = true,

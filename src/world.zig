@@ -4670,7 +4670,7 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
         }
 
         pub fn preflightAssemblyWithPermit(requested_mode: Mode, transcript_image_available: bool, assembly: Assembly, permit: RunPermit) AcceptanceReport {
-            return preflightAssemblyWithPermitEvidence(requested_mode, transcript_image_available, false, assembly, permit);
+            return preflightAssemblyWithPermitEvidence(requested_mode, transcript_image_available, transcript_image_available, assembly, permit);
         }
 
         pub fn preflightAssemblyWithPermitEvidence(requested_mode: Mode, transcript_image_available: bool, fabric_replay_transcript_available: bool, assembly: Assembly, permit: RunPermit) AcceptanceReport {
