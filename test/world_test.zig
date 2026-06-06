@@ -330,6 +330,44 @@ test "import index and export index expose closed catalog requirements" {
     try std.testing.expectEqual(@as(usize, 2), candidates.len);
 }
 
+test "import index and export index include module-ref-only target entries" {
+    const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const provider_ref = world.TargetRef.fromTarget(fixtures.ProviderPorts.Target);
+    const provider_module_ref = world.Admission.ModuleRef.fromTarget(fixtures.ProviderPorts.Target);
+    const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
+    const provider_import = world.ImportRequirement.fromTargetPort(fixtures.ProviderPorts.Target, 0);
+    const provider_export = world.Linker.ExportDescriptor.init(.{
+        .target_ref = provider_ref,
+        .result_ref = .{ .value_table_id = provider_import.response_value_table_id, .schema_fingerprint = provider_import.response_value_ref_fingerprint },
+        .label = "provider-module",
+    });
+    const entries = [_]world.Linker.Catalog.Entry{
+        world.Linker.Catalog.Entry.moduleRef(.{
+            .module_ref = provider_module_ref,
+            .export_descriptor = provider_export,
+            .import_set = world.ImportSet.fromTarget(fixtures.ProviderPorts.Target),
+            .imports = &.{provider_import},
+            .label = "provider-module",
+        }),
+    };
+    const catalog = world.Linker.Catalog.init(&entries);
+    const input = world.Linker.Input{
+        .root_target_ref = root_ref,
+        .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
+        .root_imports = &.{root_import},
+        .catalog = catalog,
+    };
+    const import_index = world.Linker.ImportIndex.init(input);
+    try std.testing.expectEqual(@as(usize, 1), import_index.importsFor(provider_ref).len);
+    try std.testing.expectEqual(provider_import.requirement_fingerprint, import_index.importsFor(provider_ref)[0].requirement_fingerprint);
+
+    const export_index = world.Linker.ExportIndex.init(catalog);
+    const provider_exports = try export_index.exportsFor(std.testing.allocator, provider_ref);
+    defer std.testing.allocator.free(provider_exports);
+    try std.testing.expectEqual(@as(usize, 1), provider_exports.len);
+    try std.testing.expectEqual(provider_export.export_fingerprint, provider_exports[0].export_fingerprint);
+}
+
 test "link match accepts exact value refs and rejects mismatches" {
     const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
     const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
@@ -804,6 +842,42 @@ test "link rejects forged root import set fingerprint before closed acceptance" 
         .root_target_ref = root_ref,
         .root_import_set = forged_import_set,
         .root_imports = &.{root_import},
+        .catalog = world.Linker.Catalog.init(&entries),
+        .policy = .strict_closed,
+    });
+    defer linked.deinit();
+
+    try std.testing.expect(!linked.plan.accepted());
+    try std.testing.expect(linked.graph.hasBlocker(.RootImportSetMismatch));
+    try std.testing.expectEqual(@as(usize, 0), linked.plan.fabric_plans.len);
+}
+
+test "link rejects root imports from a different target witness" {
+    const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const wrong_ref = world.TargetRef.fromTarget(fixtures.ProviderPorts.Target);
+    var wrong_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
+    wrong_import.target_ref_fingerprint = wrong_ref.target_ref_fingerprint;
+    try std.testing.expectEqual(root_ref.world_surface_fingerprint, wrong_import.world_surface_fingerprint);
+    try std.testing.expect(wrong_ref.target_ref_fingerprint != root_ref.target_ref_fingerprint);
+
+    const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    const provider_export = world.Linker.ExportDescriptor.init(.{
+        .target_ref = provider_ref,
+        .result_ref = .{ .value_table_id = wrong_import.response_value_table_id, .schema_fingerprint = wrong_import.response_value_ref_fingerprint },
+        .label = "strict",
+    });
+    const entries = [_]world.Linker.Catalog.Entry{
+        world.Linker.Catalog.Entry.generatedTarget(.{
+            .target_ref = provider_ref,
+            .export_descriptor = provider_export,
+            .import_set = world.ImportSet.fromTarget(fixtures.Strict.Target),
+            .label = "strict",
+        }),
+    };
+    var linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
+        .root_imports = &.{wrong_import},
         .catalog = world.Linker.Catalog.init(&entries),
         .policy = .strict_closed,
     });

@@ -363,9 +363,8 @@ pub fn Linker(comptime W: type) type {
 
             pub fn entryByTargetFingerprint(self: Catalog, target_ref_fingerprint: u64) ?Entry {
                 for (self.entries) |entry| {
-                    if (entry.target_ref) |target_ref| {
-                        if (target_ref.target_ref_fingerprint == target_ref_fingerprint) return entry;
-                    }
+                    const entry_target_ref_fingerprint = providerTargetFingerprint(entry) orelse continue;
+                    if (entry_target_ref_fingerprint == target_ref_fingerprint) return entry;
                 }
                 return null;
             }
@@ -412,7 +411,8 @@ pub fn Linker(comptime W: type) type {
                 var exports: std.ArrayList(ExportDescriptor) = .empty;
                 errdefer exports.deinit(allocator);
                 for (self.catalog.entries) |entry| {
-                    if (entry.target_ref == null or entry.target_ref.?.target_ref_fingerprint != target_ref.target_ref_fingerprint) continue;
+                    const entry_target_ref_fingerprint = providerTargetFingerprint(entry) orelse continue;
+                    if (entry_target_ref_fingerprint != target_ref.target_ref_fingerprint) continue;
                     if (entry.export_descriptor) |descriptor| try exports.append(allocator, descriptor);
                 }
                 return exports.toOwnedSlice(allocator);
@@ -1395,7 +1395,9 @@ pub fn Linker(comptime W: type) type {
                 input.root_import_set.world_port_count < input.root_import_set.required_count or
                 input.root_imports.len != input.root_import_set.required_count;
             for (input.root_imports) |requirement| {
-                if (requirement.world_surface_fingerprint != input.root_target_ref.world_surface_fingerprint or
+                if (requirement.target_ref_fingerprint == null or
+                    requirement.target_ref_fingerprint.? != input.root_target_ref.target_ref_fingerprint or
+                    requirement.world_surface_fingerprint != input.root_target_ref.world_surface_fingerprint or
                     requirement.world_port_id >= input.root_import_set.required_count)
                 {
                     root_import_set_mismatch = true;
