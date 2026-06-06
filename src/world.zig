@@ -1932,6 +1932,7 @@ pub const Admission = struct {
         target_registry_fingerprint: ?u64 = null,
         environment_certificate_fingerprint: ?u64 = null,
         run_permit_fingerprint: ?u64 = null,
+        fabric_plan_fingerprint: ?u64 = null,
         requested_branch_id: ?u64 = null,
         requested_checkpoint_ref: ?u64 = null,
         metadata: []const u8 = "",
@@ -1943,6 +1944,7 @@ pub const Admission = struct {
             target_registry_fingerprint: ?u64 = null,
             environment_certificate_fingerprint: ?u64 = null,
             run_permit_fingerprint: ?u64 = null,
+            fabric_plan_fingerprint: ?u64 = null,
             requested_branch_id: ?u64 = null,
             requested_checkpoint_ref: ?u64 = null,
             metadata: []const u8 = "",
@@ -1955,6 +1957,7 @@ pub const Admission = struct {
                 .target_registry_fingerprint = args.target_registry_fingerprint,
                 .environment_certificate_fingerprint = args.environment_certificate_fingerprint,
                 .run_permit_fingerprint = args.run_permit_fingerprint,
+                .fabric_plan_fingerprint = args.fabric_plan_fingerprint,
                 .requested_branch_id = args.requested_branch_id,
                 .requested_checkpoint_ref = args.requested_checkpoint_ref,
                 .metadata = args.metadata,
@@ -2328,6 +2331,7 @@ pub const Admission = struct {
                 .target_registry_fingerprint = self.registry.registry_fingerprint,
                 .environment_certificate_fingerprint = environment_certificate_fingerprint,
                 .run_permit_fingerprint = if (args.permit) |permit| permit.permit_fingerprint else null,
+                .fabric_plan_fingerprint = if (args.fabric_plan) |plan| plan.plan_fingerprint else null,
                 .requested_branch_id = args.requested_branch_id,
                 .requested_checkpoint_ref = args.requested_checkpoint_ref,
                 .metadata = args.metadata,
@@ -21383,6 +21387,7 @@ fn fingerprintAdmissionRequest(request: Admission.AdmissionRequest) u64 {
     hashOptionalU64(&hasher, request.target_registry_fingerprint);
     hashOptionalU64(&hasher, request.environment_certificate_fingerprint);
     hashOptionalU64(&hasher, request.run_permit_fingerprint);
+    hashOptionalU64(&hasher, request.fabric_plan_fingerprint);
     hashOptionalU64(&hasher, request.requested_branch_id);
     hashOptionalU64(&hasher, request.requested_checkpoint_ref);
     hashU64(&hasher, request.metadata.len);

@@ -5096,6 +5096,15 @@ test "runspace install consumes explicit fabric plan for missing environment bin
     const unpinned_import_report = PortsMissingEnv.acceptanceReportWithFabricPlan(.fresh, false, unpinned_import_plan);
     try std.testing.expect(unpinned_import_report.accepted);
     try std.testing.expectEqual(@as(?u64, unpinned_import_plan.plan_fingerprint), unpinned_import_report.fabric_plan_fingerprint);
+    var unpinned_import_accepted = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, PortsMissingEnv, package, .{ .fabric_plan = unpinned_import_plan });
+    defer unpinned_import_accepted.deinit(std.testing.allocator);
+    try std.testing.expect(unpinned_import_accepted.report.accepted);
+    try std.testing.expectEqual(@as(?u64, fabric_plan.plan_fingerprint), accepted.request.fabric_plan_fingerprint);
+    try std.testing.expectEqual(@as(?u64, unpinned_import_plan.plan_fingerprint), unpinned_import_accepted.request.fabric_plan_fingerprint);
+    try std.testing.expect(accepted.request.request_fingerprint != unpinned_import_accepted.request.request_fingerprint);
 
     var direct_runtime = boundary.Runtime.init(std.testing.allocator);
     defer direct_runtime.deinit();
