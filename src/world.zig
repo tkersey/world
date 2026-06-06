@@ -10417,7 +10417,6 @@ pub const Runspace = struct {
             return err;
         };
         if (event.kind == .run_parked_on_supervision) {
-            try self.retireFabricInvocation(recorded, .supervision_denied);
             return event;
         }
         if (event.kind != .run_resumed and event.kind != .run_completed) {
@@ -10655,8 +10654,14 @@ pub const Runspace = struct {
             }
         }
         if (route.provider_run_image_fingerprint) |expected| {
-            const image = provider_slot.installed_run_image orelse return error.InvalidFrameEncoding;
-            if (image.run_image_fingerprint != expected) return error.InvalidFrameEncoding;
+            if (provider_slot.installed_run_image) |image| {
+                if (image.run_image_fingerprint != expected) return error.InvalidFrameEncoding;
+            } else if (provider_slot.status == .completed) {
+                const provider_index = try self.slotIndex(provider_slot.handle);
+                var image = try self.snapshotSlotImage(provider_index);
+                defer image.deinit(self.allocator);
+                if (image.run_image_fingerprint != expected) return error.InvalidFrameEncoding;
+            } else return error.InvalidFrameEncoding;
         }
     }
 
@@ -11476,19 +11481,7 @@ pub const Runspace = struct {
     }
 
     fn pendingSuppressesAutoDispatch(self: *@This(), slot: Runspace.RunSlot, pending: Runspace.PendingPort) bool {
-        if (self.pendingRequiresFabricRoute(slot, pending)) return true;
-        if (!self.installedFabricRouteCoversAnyPending(pending)) return false;
-        var owner_count: usize = 0;
-        for (self.slots.items) |candidate| {
-            if (candidate.target_ref.target_ref_fingerprint != slot.target_ref.target_ref_fingerprint) continue;
-            switch (candidate.status) {
-                .admitted, .runnable, .running, .parked_on_port, .parked_on_supervision => {},
-                else => continue,
-            }
-            owner_count += 1;
-            if (owner_count > 1) return false;
-        }
-        return owner_count == 1;
+        return self.pendingRequiresFabricRoute(slot, pending);
     }
 
     fn slotHasFabricRoutablePending(slot: Runspace.RunSlot, mailbox_id: u64) bool {
@@ -11502,13 +11495,6 @@ pub const Runspace = struct {
     fn installedFabricRouteCoversPending(self: *const @This(), plan_fingerprint: u64, pending: Runspace.PendingPort) bool {
         for (self.fabric_routes.items, self.fabric_route_plan_fingerprints.items) |route, route_plan_fingerprint| {
             if (route_plan_fingerprint != plan_fingerprint) continue;
-            if (fabricRouteCoversPending(route, pending)) return true;
-        }
-        return false;
-    }
-
-    fn installedFabricRouteCoversAnyPending(self: *const @This(), pending: Runspace.PendingPort) bool {
-        for (self.fabric_routes.items) |route| {
             if (fabricRouteCoversPending(route, pending)) return true;
         }
         return false;
@@ -20056,8 +20042,8 @@ fn fabricPlanCoversPort(admitted_fabric_plan: ?Fabric.Plan, world_port_id: u32) 
     const plan = admitted_fabric_plan orelse return false;
     const route = plan.findRouteForPort(world_port_id) orelse return false;
     return switch (route.kind) {
-        .adapter, .unsupported => false,
-        .target_export, .admitted_run, .guest, .replay, .reject => true,
+        .adapter => false,
+        .target_export, .admitted_run, .guest, .replay, .reject, .unsupported => true,
     };
 }
 
@@ -20065,8 +20051,8 @@ fn fabricPreflightRouteForPort(admitted_fabric_plan: ?Fabric.Plan, world_port_id
     const plan = admitted_fabric_plan orelse return null;
     const route = plan.findRouteForPort(world_port_id) orelse return null;
     return switch (route.kind) {
-        .adapter, .unsupported => null,
-        .target_export, .admitted_run, .guest, .replay, .reject => route,
+        .adapter => null,
+        .target_export, .admitted_run, .guest, .replay, .reject, .unsupported => route,
     };
 }
 

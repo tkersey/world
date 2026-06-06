@@ -5277,6 +5277,17 @@ test "runspace install consumes explicit fabric plan for missing environment bin
     });
     const unsupported_allowed_report = PortsEnv.acceptanceReportWithFabricPlanAndPermit(.fresh, false, unsupported_plan, unsupported_allowed_permit);
     try std.testing.expect(unsupported_allowed_report.accepted);
+    const unsupported_fabric_only_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .fabric_plan_fingerprint = unsupported_plan.plan_fingerprint,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_failed_responses = true,
+            .allow_fabric_routes = true,
+        }),
+    });
+    const unsupported_fabric_only_report = PortsEnv.acceptanceReportWithFabricPlanAndPermit(.fresh, false, unsupported_plan, unsupported_fabric_only_permit);
+    try std.testing.expect(unsupported_fabric_only_report.accepted);
 
     const disallowed_fabric_permit = world.Supervision.issue(fixtures.Ports.Target, PortsMissingEnv, .{
         .mode = .fresh,
@@ -5976,6 +5987,17 @@ test "runspace fabric provider route resumes fabric-only missing environment por
     const report = try runspace.tick();
     try std.testing.expectEqual(@as(usize, 2), report.completed_count);
     try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try runspace.getSlotSummary(parent_handle)).status);
+
+    var ordinary_ctx: PortsCtx = .{};
+    const ordinary_handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &parent_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &ordinary_ctx,
+    });
+    _ = try runspace.tick();
+    try std.testing.expectEqual(@as(usize, 1), ordinary_ctx.calls);
+    _ = try runspace.tick();
+    try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try runspace.getSlotSummary(ordinary_handle)).status);
 }
 
 test "runspace fabric provider response completes admitted parked handoff without driver" {
@@ -6152,7 +6174,8 @@ test "runspace driverless fabric provider response accounts supervision" {
     try std.testing.expectEqual(world.Runspace.EventKind.run_parked_on_supervision, event.kind);
     try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_supervision, (try runspace.getSlotSummary(parent_handle)).status);
     try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
-    try std.testing.expectEqual(world.Fabric.InvocationStatus.supervision_denied, runspace.fabric_invocations.items[invocation.sequence].status);
+    try std.testing.expectEqual(world.Fabric.InvocationStatus.provider_completed, runspace.fabric_invocations.items[invocation.sequence].status);
+    try std.testing.expectError(error.ActiveFabricUnsupported, runspace.exportPending(0));
     try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_receipt_count);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
 }
@@ -6422,7 +6445,7 @@ test "runspace fabric provider result resumes exactly one parent pending port" {
     try std.testing.expect(exported.current_state.final_value_image_fingerprint != null);
 }
 
-test "runspace fabric parked provider response retires active invocation" {
+test "runspace fabric parked provider response keeps active invocation" {
     const park_policy = world.SupervisionPolicy.init(.{
         .allow_fresh_calls = true,
         .allow_native_adapters = true,
@@ -6502,16 +6525,14 @@ test "runspace fabric parked provider response retires active invocation" {
     try std.testing.expectEqual(world.Runspace.EventKind.run_parked_on_supervision, event.kind);
     try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_supervision, (try runspace.getSlotSummary(parent_handle)).status);
     try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
-    try std.testing.expectEqual(world.Fabric.InvocationStatus.supervision_denied, runspace.fabric_invocations.items[invocation.sequence].status);
+    try std.testing.expectEqual(world.Fabric.InvocationStatus.provider_completed, runspace.fabric_invocations.items[invocation.sequence].status);
+    try std.testing.expectError(error.ActiveFabricUnsupported, runspace.exportPending(0));
     try std.testing.expectEqual(@as(usize, 1), runspace.report().fabric_invocation_count);
     try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_receipt_count);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
-    var exported = try runspace.exportPending(0);
-    defer exported.deinit(std.testing.allocator);
-    try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
 }
 
-test "runspace fabric parked provider response exports after slot-scoped supervision park" {
+test "runspace fabric parked provider response blocks export after slot-scoped supervision park" {
     var parent_runtime = boundary.Runtime.init(std.testing.allocator);
     defer parent_runtime.deinit();
     var runspace = world.Runspace.init(std.testing.allocator, .{});
@@ -6590,11 +6611,9 @@ test "runspace fabric parked provider response exports after slot-scoped supervi
     const event = try runspace.respondFromFabric(invocation);
     try std.testing.expectEqual(world.Runspace.EventKind.run_parked_on_supervision, event.kind);
     try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_supervision, (try runspace.getSlotSummary(parent_handle)).status);
-    try std.testing.expectEqual(world.Fabric.InvocationStatus.supervision_denied, runspace.fabric_invocations.items[invocation.sequence].status);
+    try std.testing.expectEqual(world.Fabric.InvocationStatus.provider_completed, runspace.fabric_invocations.items[invocation.sequence].status);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
-    var exported = try runspace.exportPending(0);
-    defer exported.deinit(std.testing.allocator);
-    try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
+    try std.testing.expectError(error.ActiveFabricUnsupported, runspace.exportPending(0));
 }
 
 test "runspace fabric terminal route parks without receipt" {
@@ -6879,6 +6898,17 @@ test "runspace fabric live completed provider is adopted before response validat
     });
     _ = try runspace.tick();
     try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try runspace.getSlotSummary(provider_handle)).status);
+    var pin_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer pin_runtime.deinit();
+    var pin_runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer pin_runspace.deinit();
+    const pin_handle = try pin_runspace.installMachineRun(fixtures.Strict.Target, StrictEnv, &pin_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    _ = try pin_runspace.tick();
+    var pinned_provider_image = try pin_runspace.exportRun(pin_handle);
+    defer pinned_provider_image.deinit(std.testing.allocator);
 
     const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
@@ -6892,6 +6922,7 @@ test "runspace fabric live completed provider is adopted before response validat
         .provider_target_ref_fingerprint = provider_ref.target_ref_fingerprint,
         .provider_world_surface_fingerprint = provider_ref.world_surface_fingerprint,
         .provider_target_certificate_fingerprint = provider_ref.target_certificate_fingerprint,
+        .provider_run_image_fingerprint = pinned_provider_image.run_image_fingerprint,
         .response_value_mapping_fingerprint = response_mapping.mapping_fingerprint,
     });
     const plan = world.Fabric.Plan.init(.{
@@ -14686,8 +14717,8 @@ test "runspace auto dispatch honors installed fabric plans" {
         .allocator = std.testing.allocator,
         .mode = world.Mode.fresh,
         .ctx = &ctx,
+        .fabric_plan = plan,
     });
-    try runspace.installFabricPlan(parent_ref, plan);
     const report = try runspace.tick();
     try std.testing.expectEqual(@as(usize, 0), ctx.calls);
     try std.testing.expectEqual(@as(usize, 1), report.pending_port_count);
