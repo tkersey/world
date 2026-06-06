@@ -542,6 +542,39 @@ test "link rejects duplicate root import coverage before closed acceptance" {
     try std.testing.expect(linked.graph.hasBlocker(.RootImportSetMismatch));
 }
 
+test "link rejects forged root import set fingerprint before closed acceptance" {
+    const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
+    const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    const provider_export = world.Linker.ExportDescriptor.init(.{
+        .target_ref = provider_ref,
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id },
+        .label = "strict",
+    });
+    const entries = [_]world.Linker.Catalog.Entry{
+        world.Linker.Catalog.Entry.generatedTarget(.{
+            .target_ref = provider_ref,
+            .export_descriptor = provider_export,
+            .import_set = world.ImportSet.fromTarget(fixtures.Strict.Target),
+            .label = "strict",
+        }),
+    };
+    var forged_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target);
+    forged_import_set.import_set_fingerprint +%= 1;
+    var linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = forged_import_set,
+        .root_imports = &.{root_import},
+        .catalog = world.Linker.Catalog.init(&entries),
+        .policy = .strict_closed,
+    });
+    defer linked.deinit();
+
+    try std.testing.expect(!linked.plan.accepted());
+    try std.testing.expect(linked.graph.hasBlocker(.RootImportSetMismatch));
+    try std.testing.expectEqual(@as(usize, 0), linked.plan.fabric_plans.len);
+}
+
 test "blocked link result does not expose executable assembly plans" {
     const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
@@ -640,6 +673,26 @@ test "route synthesis emits Fabric plan and certificate binds witnesses" {
     defer relinked.deinit();
     try std.testing.expectEqual(linked.plan.plan_fingerprint, relinked.plan.plan_fingerprint);
     try std.testing.expectEqual(linked.certificate.certificate_fingerprint, relinked.certificate.certificate_fingerprint);
+
+    const conflicting_hint = world.Linker.Hint.init(.{
+        .parent_target_ref_fingerprint = root_ref.target_ref_fingerprint,
+        .parent_world_port_id = root_import.world_port_id,
+        .provider_export_fingerprint = provider_export.export_fingerprint,
+        .route_kind = .target_export,
+        .label = "conflicting-export",
+    });
+    var conflicting_hints_linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = root_import_set,
+        .root_imports = &.{root_import},
+        .catalog = catalog,
+        .hints = &.{ hint, conflicting_hint },
+        .policy = .strict_closed,
+    });
+    defer conflicting_hints_linked.deinit();
+    try std.testing.expect(!conflicting_hints_linked.plan.accepted());
+    try std.testing.expect(conflicting_hints_linked.graph.hasBlocker(.AmbiguousProvider));
+    try std.testing.expectEqual(@as(usize, 0), conflicting_hints_linked.plan.fabric_plans.len);
 
     var capped_policy = world.Linker.Policy.strict_closed;
     capped_policy.max_provider_runs = 1;

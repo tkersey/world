@@ -1410,6 +1410,8 @@ pub fn Linker(comptime W: type) type {
             @memset(root_port_coverage, false);
             var root_import_set_mismatch =
                 input.root_import_set.target_ref_fingerprint != input.root_target_ref.target_ref_fingerprint or
+                input.root_import_set.import_set_fingerprint != fingerprintRootImportSet(input.root_import_set) or
+                input.root_import_set.world_port_count < input.root_import_set.required_count or
                 input.root_imports.len != input.root_import_set.required_count;
             for (input.root_imports) |requirement| {
                 if (requirement.world_surface_fingerprint != input.root_target_ref.world_surface_fingerprint or
@@ -1464,10 +1466,29 @@ pub fn Linker(comptime W: type) type {
                     continue;
                 }
                 var selected_hint: ?Hint = null;
+                var conflicting_hint = false;
                 for (input.hints) |hint| {
+                    var hint_selects_requirement = false;
                     for (candidates) |candidate| {
-                        if (hint.selects(input.root_target_ref, requirement, candidate)) selected_hint = hint;
+                        if (hint.selects(input.root_target_ref, requirement, candidate)) {
+                            hint_selects_requirement = true;
+                            break;
+                        }
                     }
+                    if (!hint_selects_requirement) continue;
+                    if (selected_hint) |present| {
+                        if (present.hint_fingerprint != hint.hint_fingerprint) {
+                            conflicting_hint = true;
+                            break;
+                        }
+                    } else {
+                        selected_hint = hint;
+                    }
+                }
+                if (conflicting_hint) {
+                    try blockers.append(allocator, .AmbiguousProvider);
+                    ambiguous_count += 1;
+                    continue;
                 }
                 const chosen = try chooseProviderMatchWithScope(allocator, policy, input.supervision_policy_fingerprint, input.run_permit_fingerprint, requirement, candidates, selected_hint);
                 try matches.append(allocator, chosen);
@@ -2088,6 +2109,19 @@ pub fn Linker(comptime W: type) type {
             hashU64(&hasher, index.root_imports.len);
             for (index.root_imports) |requirement| hashU64(&hasher, requirement.requirement_fingerprint);
             hashU64(&hasher, index.catalog.catalog_fingerprint);
+            return hasher.final();
+        }
+
+        fn fingerprintRootImportSet(import_set: W.ImportSet) u64 {
+            var hasher = std.hash.Wyhash.init(0);
+            hasher.update("world.import_set.fingerprint");
+            hashU64(&hasher, W.world_import_set_fingerprint_version);
+            hashU64(&hasher, import_set.target_ref_fingerprint);
+            hashU64(&hasher, import_set.required_count);
+            hashU64(&hasher, import_set.optional_count);
+            hashU64(&hasher, import_set.world_port_count);
+            hashU64(&hasher, import_set.value_table_entry_count);
+            hashOptionalU64(&hasher, import_set.surface_profile_fingerprint);
             return hasher.final();
         }
 
