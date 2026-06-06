@@ -28,7 +28,7 @@ Route kinds:
 - `reject`: emits a deterministic terminal response.
 - `unsupported`: records a fail-closed unsupported path.
 
-A route fingerprint includes route kind, parent surface/certificate/port, optional provider target/module/admission/environment/permit/guest/report/export references, value mapping, supervision policy reference, label, and metadata. It excludes handler pointers, runtime pointers, allocator or thread identity, request tokens, credentials, URLs, model clients, file handles, and network handles.
+A route fingerprint includes route kind, parent surface/certificate/port, optional provider target/module/surface/certificate/port references, optional provider admission/run-image/transcript witnesses, value-mapping references, terminal response status, maximum route depth, and metadata. It excludes handler pointers, runtime pointers, allocator or thread identity, request tokens, credentials, URLs, model clients, file handles, and network handles.
 
 ## Fabric.Plan
 
@@ -41,13 +41,13 @@ Plans are ordered by dense `world_port_id`. They provide:
 - `assertNoCycles`
 - `summary`
 
-There is no implicit lookup and no operation-name dispatch on the hot path. The plan records missing route ids, optional default route, maximum conduit depth, maximum provider runs, cycle policy, value policy, and supervision policy references.
+There is no implicit lookup and no operation-name dispatch on the hot path. The plan records parent target identity, optional module/import-set identity, explicit routes, optional bindings, value mappings, maximum conduit depth, maximum provider runs, optional coverage report fingerprint, and metadata.
 
 Runspace routing requires the plan to be installed first with `installFabricPlan`. Route calls validate the supplied plan against the installed plan fingerprint before any invocation, mailbox, or response mutation. Installed plans also provide the route and value-mapping witnesses used later by `respondFromFabric`.
 
 ## Fabric.Binding
 
-`world.Fabric.Binding` connects a parent import requirement to a provider route. It records the parent import requirement fingerprint, parent port id, route fingerprint, provider target/module/run/export references, value mapping fingerprint, route kind, required flag, and metadata.
+`world.Fabric.Binding` connects a parent import requirement to a route. It records parent target/surface/certificate identity, parent port id, optional import requirement fingerprint, route fingerprint, optional value mapping fingerprint, and the required flag.
 
 This is separate from Environment binding. Environment binds host adapters. Fabric binds admitted runs/modules to each other inside Runspace.
 
@@ -67,13 +67,13 @@ Fail-closed blockers include payload reference mismatch, provider argument misma
 
 ## Fabric.Invocation
 
-`world.Fabric.Invocation` records one routed parent request. It binds the plan, route, parent run handle, parent pending port, parent request frame, parent port id, optional provider handle, provider target, provider run image, provider result, mapped parent response, depth, turn index, status, and metadata.
+`world.Fabric.Invocation` records one routed parent request. It binds the plan, route, parent run handle, parent pending port, parent mailbox, parent request frame, optional provider run handle, mapped provider request, mapped parent response, run permit fingerprint, depth, sequence, and status.
 
 Invocation statuses include started, provider installed, provider running, provider parked, provider completed, parent responded, failed, rejected, cycle blocked, and supervision denied.
 
 ## Fabric.Receipt
 
-`world.Fabric.Receipt` summarizes a completed or failed invocation. It binds invocation, parent run, pending port, provider run, route, provider run receipt, parent response, final status, blockers, warnings, and usage summary.
+`world.Fabric.Receipt` summarizes a completed or failed invocation. It binds invocation, route, parent pending port, optional parent response, optional provider run, optional provider run receipt, final status, blocker, and warning count.
 
 Receipts are deterministic audit records. They are not cryptographic security claims.
 
