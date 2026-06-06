@@ -6124,6 +6124,8 @@ test "runspace fabric provider response completes admitted parked handoff withou
     var exported_parent = try runspace.exportRun(parent_handle);
     defer exported_parent.deinit(std.testing.allocator);
     try std.testing.expectEqual(world.RunImage.Kind.completed_run, exported_parent.kind);
+    try std.testing.expect(exported_parent.pending_request_frame == null);
+    try std.testing.expect(exported_parent.current_state.pending_request_fingerprint == null);
     const exported_result_image = exported_parent.final_result_image orelse return error.MissingValueImage;
     try std.testing.expectEqual(exported_parent.current_state.final_value_image_fingerprint.?, exported_result_image.value_image_fingerprint);
     const exported_result = try exported_result_image.decodeValue(std.testing.allocator, i32);
@@ -6399,6 +6401,8 @@ test "runspace driverless fabric provider response completes admitted parent" {
     var completed = try runspace.exportRun(parent_handle);
     defer completed.deinit(std.testing.allocator);
     try std.testing.expectEqual(world.RunImage.Kind.completed_run, completed.kind);
+    try std.testing.expect(completed.pending_request_frame == null);
+    try std.testing.expect(completed.current_state.pending_request_fingerprint == null);
     try std.testing.expectEqual(event.response_frame_fingerprint, completed.current_state.final_response_fingerprint);
     try std.testing.expect(completed.current_state.final_value_image_fingerprint != null);
 }

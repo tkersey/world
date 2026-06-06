@@ -9968,8 +9968,13 @@ pub const Runspace = struct {
                 if (image.owns_final_result_image) {
                     if (image.final_result_image) |*previous| previous.deinit(self.allocator);
                 }
+                if (image.owns_pending_request_frame) {
+                    if (image.pending_request_frame) |*previous| previous.deinit(self.allocator);
+                }
                 image.kind = .completed_run;
                 image.current_state = slot.current_state;
+                image.pending_request_frame = null;
+                image.owns_pending_request_frame = false;
                 image.final_result_image = driverless_final_image;
                 image.owns_final_result_image = true;
                 refreshRunImageFingerprint(image);
