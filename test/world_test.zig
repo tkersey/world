@@ -1361,6 +1361,25 @@ test "assembly preserves linker run permit scope" {
     try std.testing.expect(!linked.assembly.preflightSupervision(permit_fingerprint +% 1));
 
     const admitted_receipt_fingerprint: u64 = 0xadd1_7001;
+    const admitted_permit = world.Supervision.issue(fixtures.Ports.Target, PortsMissingEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+    });
+    const admitted_with_permit = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = admitted_receipt_fingerprint,
+        .target_ref = provider_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Strict.Target).import_set_fingerprint,
+        .run_permit = admitted_permit,
+        .mode = .local_target_match_only,
+    });
+    const admitted_entry = world.Linker.Catalog.Entry.admittedRun(.{
+        .admitted_run = admitted_with_permit,
+        .export_descriptor = provider_export,
+        .import_set = world.ImportSet.fromTarget(fixtures.Strict.Target),
+        .label = "admitted",
+    });
+    try std.testing.expectEqual(@as(?u64, admitted_permit.permit_fingerprint), admitted_entry.run_permit_fingerprint);
+
     const mixed_entries = [_]world.Linker.Catalog.Entry{
         world.Linker.Catalog.Entry.init(.{
             .provider_kind = .target,

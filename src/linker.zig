@@ -8,8 +8,6 @@ pub fn Linker(comptime W: type) type {
             root_import_set: W.ImportSet,
             root_imports: []const W.ImportRequirement = &.{},
             catalog: Catalog = .{},
-            environment_bindings: []const EnvironmentBinding = &.{},
-            replay_sources: []const ReplaySource = &.{},
             hints: []const Hint = &.{},
             policy: Policy = .strict_closed,
             supervision_policy_fingerprint: ?u64 = null,
@@ -195,42 +193,6 @@ pub fn Linker(comptime W: type) type {
             }
         };
 
-        pub const EnvironmentBinding = struct {
-            parent_target_ref_fingerprint: u64,
-            world_port_id: u32,
-            import_requirement_fingerprint: ?u64 = null,
-            adapter_descriptor_fingerprint: ?u64 = null,
-            label: []const u8 = "",
-
-            pub fn fingerprint(self: EnvironmentBinding) u64 {
-                var hasher = std.hash.Wyhash.init(0);
-                hashBytes(&hasher, "world.linker.environment.binding.v1");
-                hashU64(&hasher, self.parent_target_ref_fingerprint);
-                hashU64(&hasher, self.world_port_id);
-                hashOptionalU64(&hasher, self.import_requirement_fingerprint);
-                hashOptionalU64(&hasher, self.adapter_descriptor_fingerprint);
-                hashBytes(&hasher, self.label);
-                return hasher.final();
-            }
-        };
-
-        pub const ReplaySource = struct {
-            parent_target_ref_fingerprint: u64,
-            world_port_id: u32,
-            transcript_image_fingerprint: u64,
-            label: []const u8 = "",
-
-            pub fn fingerprint(self: ReplaySource) u64 {
-                var hasher = std.hash.Wyhash.init(0);
-                hashBytes(&hasher, "world.linker.replay.source.v1");
-                hashU64(&hasher, self.parent_target_ref_fingerprint);
-                hashU64(&hasher, self.world_port_id);
-                hashU64(&hasher, self.transcript_image_fingerprint);
-                hashBytes(&hasher, self.label);
-                return hasher.final();
-            }
-        };
-
         pub const Catalog = struct {
             catalog_fingerprint: u64 = fingerprintCatalog(&.{}),
             entries: []const Entry = &.{},
@@ -344,6 +306,7 @@ pub fn Linker(comptime W: type) type {
                         .import_set = args.import_set,
                         .imports = args.imports,
                         .admission_receipt_fingerprint = args.admitted_run.admission_receipt_fingerprint,
+                        .run_permit_fingerprint = if (args.admitted_run.run_permit) |permit| permit.permit_fingerprint else null,
                         .label = args.label,
                         .metadata = args.metadata,
                     });
