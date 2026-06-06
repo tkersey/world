@@ -10417,7 +10417,7 @@ pub const Runspace = struct {
                 try self.replaceFabricInvocation(failed);
                 try self.recordFabricReceipt(parent_slot.handle, failed, failed.route_fingerprint, pending, response.frame_fingerprint, recorded.provider_run_handle_fingerprint, provider_image.prior_run_receipt_fingerprint, .failed, .FabricDenied, receipt_evidence.takeReceiptSummary());
             } else {
-                try self.retireFabricInvocation(recorded, .failed);
+                try self.failProviderFabricInvocation(parent_slot.handle, recorded, pending, provider_image.prior_run_receipt_fingerprint, null, fabricResponseBlocker(err), receipt_evidence.takeReceiptSummary());
             }
             return err;
         };
