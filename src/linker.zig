@@ -594,7 +594,8 @@ pub fn Linker(comptime W: type) type {
                 if (self.parent_world_port_id != requirement.world_port_id) return false;
                 if (!self.hasProviderSelector()) return false;
                 if (self.provider_target_ref_fingerprint) |expected| {
-                    if (entry.target_ref == null or entry.target_ref.?.target_ref_fingerprint != expected) return false;
+                    const actual = providerTargetFingerprint(entry) orelse return false;
+                    if (actual != expected) return false;
                 }
                 if (self.provider_module_ref_fingerprint) |expected| {
                     if (entry.module_ref == null or entry.module_ref.?.module_ref_fingerprint != expected) return false;
@@ -689,7 +690,7 @@ pub fn Linker(comptime W: type) type {
                 .parent_import_requirement_fingerprint = requirement.requirement_fingerprint,
                 .provider_entry_fingerprint = fingerprintCatalogEntry(entry),
                 .provider_export_fingerprint = if (entry.export_descriptor) |descriptor| descriptor.export_fingerprint else null,
-                .provider_target_ref_fingerprint = if (entry.target_ref) |target_ref| target_ref.target_ref_fingerprint else null,
+                .provider_target_ref_fingerprint = providerTargetFingerprint(entry),
                 .provider_module_ref_fingerprint = if (entry.module_ref) |module_ref| module_ref.module_ref_fingerprint else null,
                 .kind = kind,
                 .response_mapping = response_mapping,
@@ -1352,7 +1353,7 @@ pub fn Linker(comptime W: type) type {
             errdefer routes.deinit(allocator);
             errdefer bindings.deinit(allocator);
             errdefer mappings.deinit(allocator);
-            errdefer matches.deinit(allocator);
+            errdefer deinitMatchList(allocator, &matches);
             errdefer syntheses.deinit(allocator);
             errdefer nodes.deinit(allocator);
             errdefer edges.deinit(allocator);
@@ -1598,12 +1599,7 @@ pub fn Linker(comptime W: type) type {
                     .route_fingerprint = route.route_fingerprint,
                 });
                 max_depth_observed = @max(max_depth_observed, 1);
-                if (entry.imports.len != 0) {
-                    const nested_depth: usize = 2;
-                    max_depth_observed = @max(max_depth_observed, nested_depth);
-                    if (nested_depth > policy.max_link_depth) {
-                        try blockers.append(allocator, .DepthExceeded);
-                    }
+                if (requires_provider_run) {
                     const provider_node = Graph.Node.init(.{
                         .kind = .target_module,
                         .target_ref_fingerprint = provider_ref.target_ref_fingerprint,
@@ -1616,6 +1612,15 @@ pub fn Linker(comptime W: type) type {
                         .to_fingerprint = provider_node.fingerprint,
                         .route_fingerprint = route.route_fingerprint,
                     });
+                    if (entry.imports.len == 0) {
+                        resolved_count += 1;
+                        continue;
+                    }
+                    const nested_depth: usize = 2;
+                    max_depth_observed = @max(max_depth_observed, nested_depth);
+                    if (nested_depth > policy.max_link_depth) {
+                        try blockers.append(allocator, .DepthExceeded);
+                    }
                     for (entry.imports) |nested_requirement| {
                         const nested_import_node = Graph.Node.init(.{
                             .kind = .import_requirement,
@@ -1695,6 +1700,7 @@ pub fn Linker(comptime W: type) type {
             hint_fingerprints = .empty;
 
             var fabric_plans: std.ArrayList(W.Fabric.Plan) = .empty;
+            errdefer fabric_plans.deinit(allocator);
             if (owned_routes.len != 0 and owned_blockers.len == 0) {
                 const fabric_plan = W.Fabric.Plan.init(.{
                     .target_ref_fingerprint = input.root_target_ref.target_ref_fingerprint,
@@ -1911,6 +1917,12 @@ pub fn Linker(comptime W: type) type {
             return null;
         }
 
+        fn providerTargetFingerprint(entry: Catalog.Entry) ?u64 {
+            if (entry.target_ref) |target_ref| return target_ref.target_ref_fingerprint;
+            if (entry.module_ref) |module_ref| return module_ref.target_ref_fingerprint;
+            return null;
+        }
+
         fn linkerCanSynthesizeRouteKind(policy: Policy, entry: Catalog.Entry) bool {
             return switch (entry.provider_kind) {
                 .target, .module_ref, .admitted_run => true,
@@ -2006,7 +2018,8 @@ pub fn Linker(comptime W: type) type {
         fn providerTargetMatches(self: Hint, entry: Catalog.Entry) bool {
             if (!self.hasProviderSelector()) return false;
             if (self.provider_target_ref_fingerprint) |expected| {
-                if (entry.target_ref == null or entry.target_ref.?.target_ref_fingerprint != expected) return false;
+                const actual = providerTargetFingerprint(entry) orelse return false;
+                if (actual != expected) return false;
             }
             if (self.provider_module_ref_fingerprint) |expected| {
                 if (entry.module_ref == null or entry.module_ref.?.module_ref_fingerprint != expected) return false;
@@ -2037,6 +2050,14 @@ pub fn Linker(comptime W: type) type {
                 if (blocker == expected) return true;
             }
             return false;
+        }
+
+        fn deinitMatchList(allocator: std.mem.Allocator, list: *std.ArrayList(Match)) void {
+            for (list.items) |match| {
+                allocator.free(match.blockers);
+                allocator.free(match.warnings);
+            }
+            list.deinit(allocator);
         }
 
         fn fingerprintExportDescriptor(descriptor: ExportDescriptor) u64 {
