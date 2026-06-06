@@ -17532,8 +17532,8 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     const plan = self.activeFabricPlan() orelse return Error.MissingHandler;
                     const route = plan.findRouteForPort(world_port_id) orelse return Error.MissingHandler;
                     switch (route.kind) {
-                        .adapter, .unsupported => return Error.MissingHandler,
-                        .target_export, .admitted_run, .guest, .replay, .reject => {},
+                        .adapter => return Error.MissingHandler,
+                        .target_export, .admitted_run, .guest, .replay, .reject, .unsupported => {},
                     }
                     if (self.supervisor) |*supervisor| {
                         supervisor.beforeFabricInvocation(.{
