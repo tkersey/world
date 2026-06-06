@@ -433,7 +433,7 @@ pub fn Linker(comptime W: type) type {
                         }
                         continue;
                     };
-                    const expected = ValueRef{ .value_table_id = import_requirement.response_value_table_id };
+                    const expected = valueRefForRequirement(import_requirement);
                     if (expected.compatibleWith(descriptor.result_ref, policy)) {
                         try candidates.append(allocator, entry);
                         if (candidates.items.len > policy.max_candidates_per_import) break;
@@ -447,7 +447,7 @@ pub fn Linker(comptime W: type) type {
                 errdefer candidates.deinit(allocator);
                 for (self.catalog.entries) |entry| {
                     const descriptor = entry.export_descriptor orelse continue;
-                    const expected = ValueRef{ .value_table_id = import_requirement.response_value_table_id };
+                    const expected = valueRefForRequirement(import_requirement);
                     if (expected.compatibleWith(descriptor.result_ref, policy)) {
                         try candidates.append(allocator, descriptor);
                     }
@@ -1868,6 +1868,7 @@ pub fn Linker(comptime W: type) type {
         fn valueRefForRequirement(requirement: W.ImportRequirement) ValueRef {
             return .{
                 .value_table_id = requirement.response_value_table_id,
+                .value_ref_fingerprint = requirement.response_value_ref_fingerprint,
                 .schema_fingerprint = requirement.response_value_ref_fingerprint,
             };
         }
@@ -1979,7 +1980,7 @@ pub fn Linker(comptime W: type) type {
                 .provider_result_value_table_id = provider_value,
                 .provider_result_value_fingerprint = descriptor.result_ref.value_ref_fingerprint,
                 .parent_response_value_table_id = parent_value,
-                .parent_response_value_fingerprint = descriptor.result_ref.value_ref_fingerprint,
+                .parent_response_value_fingerprint = requirement.response_value_ref_fingerprint,
             });
         }
 

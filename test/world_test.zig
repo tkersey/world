@@ -591,7 +591,7 @@ test "link partial provider hint remains ambiguous across matching exports" {
     try std.testing.expectEqual(hinted_match.match_fingerprint, hinted_linked.plan.route_syntheses[0].match_fingerprint);
 }
 
-test "link blocks compatible non executable provider run mapping" {
+test "link rejects non executable provider run mapping before closed acceptance" {
     const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
     const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
@@ -616,12 +616,12 @@ test "link blocks compatible non executable provider run mapping" {
         .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
         .root_imports = &.{root_import},
         .catalog = world.Linker.Catalog.init(&entries),
-        .policy = .audit_only,
+        .policy = .strict_closed,
     });
     defer linked.deinit();
 
     try std.testing.expect(!linked.plan.accepted());
-    try std.testing.expect(linked.graph.hasBlocker(.ResponseRefMismatch));
+    try std.testing.expect(linked.graph.hasBlocker(.MissingProvider));
     try std.testing.expectEqual(@as(usize, 0), linked.plan.fabric_plans.len);
 }
 
@@ -655,6 +655,62 @@ test "link rejects cross target value table id collision without stable witness"
     try std.testing.expect(!linked.plan.accepted());
     try std.testing.expect(linked.graph.hasBlocker(.ResponseRefMismatch));
     try std.testing.expectEqual(@as(usize, 0), linked.plan.fabric_plans.len);
+}
+
+test "link filters response witnesses before candidate cap" {
+    const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
+    const bad_ref = world.TargetRef.fromTarget(fixtures.ProviderPorts.Target);
+    const valid_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    const bad_export_one = world.Linker.ExportDescriptor.init(.{
+        .target_ref = bad_ref,
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id, .value_ref_fingerprint = root_import.response_value_ref_fingerprint.? +% 1 },
+        .label = "bad-one",
+    });
+    const bad_export_two = world.Linker.ExportDescriptor.init(.{
+        .target_ref = bad_ref,
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id, .value_ref_fingerprint = root_import.response_value_ref_fingerprint.? +% 2 },
+        .label = "bad-two",
+    });
+    const valid_export = world.Linker.ExportDescriptor.init(.{
+        .target_ref = valid_ref,
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id, .schema_fingerprint = root_import.response_value_ref_fingerprint },
+        .label = "valid",
+    });
+    const entries = [_]world.Linker.Catalog.Entry{
+        world.Linker.Catalog.Entry.generatedTarget(.{
+            .target_ref = bad_ref,
+            .export_descriptor = bad_export_one,
+            .import_set = world.ImportSet.fromTarget(fixtures.ProviderPorts.Target),
+            .label = "bad-one",
+        }),
+        world.Linker.Catalog.Entry.generatedTarget(.{
+            .target_ref = bad_ref,
+            .export_descriptor = bad_export_two,
+            .import_set = world.ImportSet.fromTarget(fixtures.ProviderPorts.Target),
+            .label = "bad-two",
+        }),
+        world.Linker.Catalog.Entry.generatedTarget(.{
+            .target_ref = valid_ref,
+            .export_descriptor = valid_export,
+            .import_set = world.ImportSet.fromTarget(fixtures.Strict.Target),
+            .label = "valid",
+        }),
+    };
+    var policy = world.Linker.Policy.strict_closed;
+    policy.max_candidates_per_import = 1;
+    var linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
+        .root_imports = &.{root_import},
+        .catalog = world.Linker.Catalog.init(&entries),
+        .policy = policy,
+    });
+    defer linked.deinit();
+
+    try std.testing.expect(linked.plan.accepted());
+    try std.testing.expect(!linked.graph.hasBlocker(.ProviderRunLimitExceeded));
+    try std.testing.expectEqual(valid_export.export_fingerprint, linked.matches[0].provider_export_fingerprint.?);
 }
 
 test "link reports accepted ambiguous matches" {
@@ -974,6 +1030,10 @@ test "route synthesis emits Fabric plan and certificate binds witnesses" {
     try world.Linker.assertFabricInvariant(linked.plan.fabric_plans[0]);
     try std.testing.expectEqual(world.Fabric.RouteKind.target_export, linked.plan.fabric_plans[0].routes[0].kind);
     try std.testing.expectEqual(provider_ref.target_ref_fingerprint, linked.plan.fabric_plans[0].routes[0].provider_target_ref_fingerprint.?);
+    try std.testing.expectEqual(@as(usize, 1), linked.plan.fabric_plans[0].value_mappings.len);
+    try std.testing.expectEqual(linked.plan.fabric_plans[0].value_mappings[0].mapping_fingerprint, linked.plan.fabric_plans[0].routes[0].response_value_mapping_fingerprint.?);
+    try std.testing.expectEqual(@as(?u64, null), linked.plan.fabric_plans[0].value_mappings[0].provider_result_value_fingerprint);
+    try std.testing.expectEqual(root_import.response_value_ref_fingerprint.?, linked.plan.fabric_plans[0].value_mappings[0].parent_response_value_fingerprint.?);
     var invokes_provider = false;
     for (linked.graph.edges) |edge| {
         if (edge.kind == .route_invokes_provider and edge.route_fingerprint == linked.plan.fabric_plans[0].routes[0].route_fingerprint) {
@@ -2111,15 +2171,17 @@ test "fabric value mapping enforces exact supported conversions" {
         .parent_response_value_table_id = 1,
         .parent_response_value_fingerprint = response.response_fingerprint,
     });
-    try std.testing.expectError(error.UnsupportedMapping, unwitnessed_parent_response.validate());
-    const mismatched_parent_response = world.Fabric.ValueMapping.init(.{
+    try unwitnessed_parent_response.validate();
+    try std.testing.expectEqual(@as(?u32, 1), try unwitnessed_parent_response.parentResponseValueTableId(response));
+    const distinct_parent_response = world.Fabric.ValueMapping.init(.{
         .kind = .provider_result_to_parent_response,
         .provider_result_value_table_id = 1,
         .provider_result_value_fingerprint = response.response_fingerprint,
         .parent_response_value_table_id = 1,
         .parent_response_value_fingerprint = response.response_fingerprint +% 1,
     });
-    try std.testing.expectError(error.UnsupportedMapping, mismatched_parent_response.validate());
+    try distinct_parent_response.validate();
+    try std.testing.expectEqual(@as(?u32, 1), try distinct_parent_response.parentResponseValueTableId(response));
     const conflicting_response_alias = world.Fabric.ValueMapping.init(.{
         .kind = .provider_result_to_parent_response,
         .provider_value_table_id = 7,
@@ -9226,13 +9288,13 @@ test "runspace fabric response honors pinned parent response fingerprint" {
     try std.testing.expectEqual(@as(usize, 1), runspace.report().fabric_receipt_count);
 }
 
-test "runspace fabric response rejects remapped fingerprint without matching witness" {
+test "runspace fabric response verifies remapped parent fingerprint" {
     var parent_runtime = boundary.Runtime.init(std.testing.allocator);
     defer parent_runtime.deinit();
     var runspace = world.Runspace.init(std.testing.allocator, .{});
     defer runspace.deinit();
 
-    _ = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &parent_runtime, .{}, .{
+    const parent_handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &parent_runtime, .{}, .{
         .allocator = std.testing.allocator,
         .mode = world.Mode.fresh,
     });
@@ -9282,10 +9344,12 @@ test "runspace fabric response rejects remapped fingerprint without matching wit
         .value_mappings = &.{mapping},
     });
 
-    _ = provider_handle;
-    try std.testing.expectError(error.UnsupportedMapping, runspace.installFabricPlan(parent_ref, plan));
-    try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_invocation_count);
-    try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_receipt_count);
+    try runspace.installFabricPlan(parent_ref, plan);
+    const invocation = try runspace.routePendingToProviderRun(0, plan, provider_handle);
+    _ = parent_handle;
+    try std.testing.expectError(error.VerifyResponseFingerprintMismatch, runspace.respondFromFabric(invocation));
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().fabric_invocation_count);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().fabric_receipt_count);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
 }
 

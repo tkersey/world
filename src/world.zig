@@ -7396,10 +7396,6 @@ pub const Fabric = struct {
                     }
                     if (self.parent_payload_value_table_id != null or self.provider_argument_value_table_id != null) return error.UnsupportedMapping;
                     if (self.parent_payload_value_fingerprint != null or self.provider_argument_value_fingerprint != null) return error.UnsupportedMapping;
-                    if (self.parent_response_value_fingerprint) |parent| {
-                        const provider = self.provider_result_value_fingerprint orelse return error.UnsupportedMapping;
-                        if (provider != parent) return error.UnsupportedMapping;
-                    }
                 },
             }
         }
@@ -10967,7 +10963,7 @@ pub const Runspace = struct {
             if (parent_table_id != expected_response_value_table_id) return error.CrossTypeConversionRejected;
             return .{
                 .value_table_id = parent_table_id,
-                .boundary_value_fingerprint = mapping.parent_response_value_fingerprint,
+                .boundary_value_fingerprint = if (mapping.provider_result_value_fingerprint != null) mapping.parent_response_value_fingerprint else null,
             };
         }
         if (provider_result.value_table_id != expected_response_value_table_id) return error.ProviderResultMismatch;
