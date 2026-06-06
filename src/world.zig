@@ -9090,7 +9090,8 @@ pub const Runspace = struct {
             runImageIsInterruptedSupervisionExport(image) and image.current_state.turn_index != 0
         else
             false;
-        const consumes_admitted_transcript = modeConsumesTranscript(permit.mode) or replays_transcript_prefix;
+        const consumes_fabric_replay = if (admitted_run.fabric_plan) |plan| fabricPlanHasReplayRoute(plan) else false;
+        const consumes_admitted_transcript = modeConsumesTranscript(permit.mode) or replays_transcript_prefix or consumes_fabric_replay;
         if (consumes_admitted_transcript) {
             if (permit.policy.require_transcript_image_for_replay and !transcript_available) return error.SupervisionDenied;
             if (permit.policy.require_transcript_image_for_replay and !permit.transcript_image_available) return error.SupervisionDenied;

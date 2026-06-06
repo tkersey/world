@@ -24489,6 +24489,32 @@ test "fabric-covered replay admission requires transcript evidence" {
     });
     defer permit_handoff_result.deinit(std.testing.allocator);
     try std.testing.expect(permit_handoff_result.report.accepted);
+    var supervised_replay_handoff_install = world.Runspace.init(std.testing.allocator, .{ .require_supervision = true });
+    defer supervised_replay_handoff_install.deinit();
+    _ = try supervised_replay_handoff_install.installAdmitted(permit_handoff_result.admitted_run.?);
+
+    const unattested_transcript_permit = world.Supervision.issue(fixtures.Ports.Target, PortsMissingEnv, .{
+        .mode = .fresh,
+        .fabric_plan_fingerprint = replay_plan.plan_fingerprint,
+        .policy = world.SupervisionPolicy.handoff_receiver,
+    });
+    const accepted_handoff = permit_handoff_result.admitted_run.?;
+    const unattested_transcript_handoff = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0x7777_fab2,
+        .target_ref = accepted_handoff.target_ref,
+        .import_set_fingerprint = accepted_handoff.import_set_fingerprint,
+        .environment_certificate_fingerprint = accepted_handoff.environment_certificate_fingerprint,
+        .environment_acceptance_report_fingerprint = accepted_handoff.environment_acceptance_report_fingerprint,
+        .run_permit = unattested_transcript_permit,
+        .fabric_plan = replay_plan,
+        .run_image = accepted_handoff.run_image,
+        .transcript_image = accepted_handoff.transcript_image,
+        .mode = accepted_handoff.mode,
+    });
+    var denied_replay_handoff_install = world.Runspace.init(std.testing.allocator, .{ .require_supervision = true });
+    defer denied_replay_handoff_install.deinit();
+    try std.testing.expectError(error.SupervisionDenied, denied_replay_handoff_install.installAdmitted(unattested_transcript_handoff));
+
     const fabric_only_prefix_permit = world.Supervision.issue(fixtures.Ports.Target, PortsMissingEnv, .{
         .mode = .fresh,
         .fabric_plan_fingerprint = replay_plan.plan_fingerprint,
