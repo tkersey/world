@@ -433,6 +433,8 @@ pub const TargetRef = struct {
 
 pub const ImportRequirement = struct {
     requirement_fingerprint: u64,
+    target_ref_fingerprint: ?u64 = null,
+    world_value_table_fingerprint: ?u64 = null,
     world_surface_fingerprint: u64,
     world_port_id: u32,
     world_port_ref_fingerprint: ?u64 = null,
@@ -440,7 +442,9 @@ pub const ImportRequirement = struct {
     residual_site_index: usize,
     residual_site_fingerprint: u64,
     payload_value_table_id: ?u32 = null,
+    payload_value_ref_fingerprint: ?u64 = null,
     response_value_table_id: ?u32 = null,
+    response_value_ref_fingerprint: ?u64 = null,
     mode: BindingModePolicy = .all,
     allowed_response_kinds: ResponseKindMask = .resume_only,
     replay_key_recipe_fingerprint: ?u64 = null,
@@ -458,8 +462,11 @@ pub const ImportRequirement = struct {
     pub fn fromTargetPort(comptime Target: type, comptime world_port_id: u32) @This() {
         if (world_port_id >= Target.WorldPortTable.entries.len) @compileError("world_port_id out of range");
         const entry = Target.WorldPortTable.entries[world_port_id];
+        const target_ref = TargetRef.fromTarget(Target);
         var result = @This(){
             .requirement_fingerprint = 0,
+            .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+            .world_value_table_fingerprint = target_ref.world_value_table_fingerprint,
             .world_surface_fingerprint = Target.WorldSurface.surface_fingerprint,
             .world_port_id = world_port_id,
             .world_port_ref_fingerprint = refFingerprint(entry.world_port_ref),
@@ -467,7 +474,9 @@ pub const ImportRequirement = struct {
             .residual_site_index = entry.residual_site_index,
             .residual_site_fingerprint = entry.residual_site_fingerprint,
             .payload_value_table_id = valueIdFor(Target, world_port_id, .payload),
+            .payload_value_ref_fingerprint = valueRefFingerprintForTargetPort(Target, world_port_id, .payload),
             .response_value_table_id = valueIdFor(Target, world_port_id, .@"resume"),
+            .response_value_ref_fingerprint = valueRefFingerprintForTargetPort(Target, world_port_id, .@"resume"),
             .replay_key_recipe_fingerprint = replayKeyRecipeFingerprint(Target),
             .suggested_symbolic_name = if (entry.semantic_label) |label| label else entry.op_name,
         };
@@ -18899,6 +18908,13 @@ fn valueIdForRuntime(comptime Target: type, world_port_id: u32, comptime kind: a
     return null;
 }
 
+pub fn valueRefFingerprintForTargetPort(comptime Target: type, comptime world_port_id: u32, comptime kind: anytype) ?u64 {
+    inline for (Target.WorldValueTable.entries) |entry| {
+        if (entry.world_port_id == world_port_id and entry.kind == kind) return fingerprintBoundaryValueRef(entry.ref);
+    }
+    return null;
+}
+
 fn descriptorWorldPortId(comptime Target: type, comptime Descriptor: type) u32 {
     if (comptime @hasDecl(Descriptor, "world_port_id")) return Descriptor.world_port_id;
     return comptime worldPortIdForSite(Target, Descriptor) orelse
@@ -20944,6 +20960,8 @@ fn fingerprintImportRequirement(requirement: ImportRequirement) u64 {
     var hasher = std.hash.Wyhash.init(0);
     hashBytes(&hasher, "world.import_requirement.fingerprint");
     hashU64(&hasher, world_import_requirement_fingerprint_version);
+    hashOptionalU64(&hasher, requirement.target_ref_fingerprint);
+    hashOptionalU64(&hasher, requirement.world_value_table_fingerprint);
     hashU64(&hasher, requirement.world_surface_fingerprint);
     hashU64(&hasher, requirement.world_port_id);
     hashOptionalU64(&hasher, requirement.world_port_ref_fingerprint);
@@ -20951,7 +20969,9 @@ fn fingerprintImportRequirement(requirement: ImportRequirement) u64 {
     hashU64(&hasher, requirement.residual_site_index);
     hashU64(&hasher, requirement.residual_site_fingerprint);
     hashOptionalU32(&hasher, requirement.payload_value_table_id);
+    hashOptionalU64(&hasher, requirement.payload_value_ref_fingerprint);
     hashOptionalU32(&hasher, requirement.response_value_table_id);
+    hashOptionalU64(&hasher, requirement.response_value_ref_fingerprint);
     hashU64(&hasher, @intFromEnum(requirement.mode));
     hashU64(&hasher, @intFromEnum(requirement.allowed_response_kinds));
     hashOptionalU64(&hasher, requirement.replay_key_recipe_fingerprint);
@@ -20964,6 +20984,15 @@ fn fingerprintImportRequirement(requirement: ImportRequirement) u64 {
     }
     hashU64(&hasher, requirement.metadata.len);
     hashBytes(&hasher, requirement.metadata);
+    return hasher.final();
+}
+
+fn fingerprintBoundaryValueRef(ref: anytype) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.boundary_value_ref.fingerprint");
+    hashBytes(&hasher, ref.codec);
+    const schema_index: ?u64 = if (ref.schema_index) |index| @as(u64, index) else null;
+    hashOptionalU64(&hasher, schema_index);
     return hasher.final();
 }
 

@@ -216,9 +216,11 @@ test "link catalog entry fingerprint is stable and excludes pointer identity" {
     const same_catalog = world.Linker.Catalog.init(&entries);
     try std.testing.expectEqual(catalog.catalog_fingerprint, same_catalog.catalog_fingerprint);
 
+    const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
     const link_export_descriptor = world.Linker.ExportDescriptor.init(.{
         .target_ref = provider_ref,
-        .result_ref = .{ .value_table_id = 1 },
+        .result_ref = .{ .value_table_id = 1, .schema_fingerprint = root_import.response_value_ref_fingerprint },
         .label = "strict-link",
     });
     const link_entry = world.Linker.Catalog.Entry.init(.{
@@ -234,8 +236,6 @@ test "link catalog entry fingerprint is stable and excludes pointer identity" {
     stale_entry.entry_fingerprint +%= 1;
     const stale_entries = [_]world.Linker.Catalog.Entry{stale_entry};
     const stale_catalog = world.Linker.Catalog.init(&stale_entries);
-    const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
-    const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
     var linked = try world.Linker.link(std.testing.allocator, .{
         .root_target_ref = root_ref,
         .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
@@ -335,7 +335,7 @@ test "link match accepts exact value refs and rejects mismatches" {
     const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
     const exact_export = world.Linker.ExportDescriptor.init(.{
         .target_ref = provider_ref,
-        .result_ref = .{ .value_table_id = root_import.response_value_table_id },
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id, .schema_fingerprint = root_import.response_value_ref_fingerprint },
         .label = "strict",
     });
     const exact_entry = world.Linker.Catalog.Entry.init(.{
@@ -407,12 +407,12 @@ test "link hint resolves ambiguity without bypassing value compatibility" {
     const strict_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
     const provider_export = world.Linker.ExportDescriptor.init(.{
         .target_ref = provider_ref,
-        .result_ref = .{ .value_table_id = root_import.response_value_table_id },
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id, .schema_fingerprint = root_import.response_value_ref_fingerprint },
         .label = "provider",
     });
     const strict_export = world.Linker.ExportDescriptor.init(.{
         .target_ref = strict_ref,
-        .result_ref = .{ .value_table_id = root_import.response_value_table_id },
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id, .schema_fingerprint = root_import.response_value_ref_fingerprint },
         .label = "strict",
     });
     const candidates = [_]world.Linker.Catalog.Entry{
@@ -432,6 +432,7 @@ test "link hint resolves ambiguity without bypassing value compatibility" {
     const ambiguous = try world.Linker.chooseProviderMatch(std.testing.allocator, .strict_closed, root_import, &candidates, null);
     defer std.testing.allocator.free(ambiguous.blockers);
     defer std.testing.allocator.free(ambiguous.warnings);
+    try std.testing.expectEqual(world.Linker.MatchConfidence.ambiguous, ambiguous.confidence);
     try std.testing.expect(!ambiguous.accepted());
     try std.testing.expectEqual(world.Linker.Blocker.AmbiguousProvider, ambiguous.blockers[0]);
 
@@ -480,12 +481,12 @@ test "link partial provider hint remains ambiguous across matching exports" {
     const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
     const first_export = world.Linker.ExportDescriptor.init(.{
         .target_ref = provider_ref,
-        .result_ref = .{ .value_table_id = root_import.response_value_table_id },
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id, .schema_fingerprint = root_import.response_value_ref_fingerprint },
         .label = "first",
     });
     const second_export = world.Linker.ExportDescriptor.init(.{
         .target_ref = provider_ref,
-        .result_ref = .{ .value_table_id = root_import.response_value_table_id },
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id, .schema_fingerprint = root_import.response_value_ref_fingerprint },
         .label = "second",
     });
     const entries = [_]world.Linker.Catalog.Entry{
@@ -586,6 +587,38 @@ test "link blocks compatible non executable provider run mapping" {
     try std.testing.expectEqual(@as(usize, 0), linked.plan.fabric_plans.len);
 }
 
+test "link rejects cross target value table id collision without stable witness" {
+    const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
+    var provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    provider_ref.world_value_table_fingerprint = (provider_ref.world_value_table_fingerprint orelse 0) +% 1;
+    const provider_export = world.Linker.ExportDescriptor.init(.{
+        .target_ref = provider_ref,
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id },
+        .label = "colliding-local-id",
+    });
+    const entries = [_]world.Linker.Catalog.Entry{
+        world.Linker.Catalog.Entry.generatedTarget(.{
+            .target_ref = provider_ref,
+            .export_descriptor = provider_export,
+            .import_set = world.ImportSet.fromTarget(fixtures.Strict.Target),
+            .label = "colliding-local-id",
+        }),
+    };
+    var linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
+        .root_imports = &.{root_import},
+        .catalog = world.Linker.Catalog.init(&entries),
+        .policy = .strict_closed,
+    });
+    defer linked.deinit();
+
+    try std.testing.expect(!linked.plan.accepted());
+    try std.testing.expect(linked.graph.hasBlocker(.ResponseRefMismatch));
+    try std.testing.expectEqual(@as(usize, 0), linked.plan.fabric_plans.len);
+}
+
 test "link reports accepted ambiguous matches" {
     const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
@@ -593,12 +626,12 @@ test "link reports accepted ambiguous matches" {
     const strict_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
     const provider_export = world.Linker.ExportDescriptor.init(.{
         .target_ref = provider_ref,
-        .result_ref = .{ .value_table_id = root_import.response_value_table_id },
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id, .schema_fingerprint = root_import.response_value_ref_fingerprint },
         .label = "provider",
     });
     const strict_export = world.Linker.ExportDescriptor.init(.{
         .target_ref = strict_ref,
-        .result_ref = .{ .value_table_id = root_import.response_value_table_id },
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id, .schema_fingerprint = root_import.response_value_ref_fingerprint },
         .label = "strict",
     });
     const entries = [_]world.Linker.Catalog.Entry{
@@ -642,7 +675,7 @@ test "link allocation failure frees owned matches" {
     const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
     const provider_export = world.Linker.ExportDescriptor.init(.{
         .target_ref = provider_ref,
-        .result_ref = .{ .value_table_id = root_import.response_value_table_id },
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id, .schema_fingerprint = root_import.response_value_ref_fingerprint },
         .label = "strict",
     });
     const entries = [_]world.Linker.Catalog.Entry{
@@ -754,7 +787,7 @@ test "link rejects forged root import set fingerprint before closed acceptance" 
     const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
     const provider_export = world.Linker.ExportDescriptor.init(.{
         .target_ref = provider_ref,
-        .result_ref = .{ .value_table_id = root_import.response_value_table_id },
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id, .schema_fingerprint = root_import.response_value_ref_fingerprint },
         .label = "strict",
     });
     const entries = [_]world.Linker.Catalog.Entry{
@@ -787,7 +820,7 @@ test "blocked link result does not expose executable assembly plans" {
     const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
     const provider_export = world.Linker.ExportDescriptor.init(.{
         .target_ref = provider_ref,
-        .result_ref = .{ .value_table_id = root_import.response_value_table_id },
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id, .schema_fingerprint = root_import.response_value_ref_fingerprint },
         .label = "strict",
     });
     const entries = [_]world.Linker.Catalog.Entry{
@@ -824,7 +857,7 @@ test "route synthesis emits Fabric plan and certificate binds witnesses" {
     const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
     const provider_export = world.Linker.ExportDescriptor.init(.{
         .target_ref = provider_ref,
-        .result_ref = .{ .value_table_id = root_import.response_value_table_id },
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id, .schema_fingerprint = root_import.response_value_ref_fingerprint },
         .label = "strict",
     });
     const entries = [_]world.Linker.Catalog.Entry{
@@ -939,7 +972,7 @@ test "link hint cannot rewrite provider route kind" {
     const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
     const provider_export = world.Linker.ExportDescriptor.init(.{
         .target_ref = provider_ref,
-        .result_ref = .{ .value_table_id = root_import.response_value_table_id },
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id, .schema_fingerprint = root_import.response_value_ref_fingerprint },
         .label = "strict",
     });
     const entries = [_]world.Linker.Catalog.Entry{
@@ -980,7 +1013,7 @@ test "link rejects provider nested imports before claiming closed Fabric" {
     const provider_import = world.ImportRequirement.fromTargetPort(fixtures.ProviderPorts.Target, 0);
     const provider_export = world.Linker.ExportDescriptor.init(.{
         .target_ref = provider_ref,
-        .result_ref = .{ .value_table_id = root_import.response_value_table_id },
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id, .schema_fingerprint = root_import.response_value_ref_fingerprint },
         .label = "provider",
     });
     const entries = [_]world.Linker.Catalog.Entry{
@@ -1015,7 +1048,7 @@ test "link rejects provider import set without matching import witnesses" {
     const provider_ref = world.TargetRef.fromTarget(fixtures.ProviderPorts.Target);
     const provider_export = world.Linker.ExportDescriptor.init(.{
         .target_ref = provider_ref,
-        .result_ref = .{ .value_table_id = root_import.response_value_table_id },
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id, .schema_fingerprint = root_import.response_value_ref_fingerprint },
         .label = "provider",
     });
     const entries = [_]world.Linker.Catalog.Entry{
@@ -1047,12 +1080,12 @@ test "link enforces max provider candidate limit before matching" {
     const strict_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
     const provider_export = world.Linker.ExportDescriptor.init(.{
         .target_ref = provider_ref,
-        .result_ref = .{ .value_table_id = root_import.response_value_table_id },
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id, .schema_fingerprint = root_import.response_value_ref_fingerprint },
         .label = "provider",
     });
     const strict_export = world.Linker.ExportDescriptor.init(.{
         .target_ref = strict_ref,
-        .result_ref = .{ .value_table_id = root_import.response_value_table_id },
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id, .schema_fingerprint = root_import.response_value_ref_fingerprint },
         .label = "strict",
     });
     const entries = [_]world.Linker.Catalog.Entry{
@@ -1091,7 +1124,7 @@ test "link reports depth blocker for zero-depth policy" {
     const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
     const provider_export = world.Linker.ExportDescriptor.init(.{
         .target_ref = provider_ref,
-        .result_ref = .{ .value_table_id = root_import.response_value_table_id },
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id, .schema_fingerprint = root_import.response_value_ref_fingerprint },
         .label = "strict",
     });
     const entries = [_]world.Linker.Catalog.Entry{
@@ -1126,7 +1159,7 @@ test "link accepts module-ref provider without redundant target ref" {
     const provider_module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Strict.Target);
     const provider_export = world.Linker.ExportDescriptor.init(.{
         .target_ref = provider_ref,
-        .result_ref = .{ .value_table_id = root_import.response_value_table_id },
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id, .schema_fingerprint = root_import.response_value_ref_fingerprint },
         .label = "strict-module",
     });
     const entries = [_]world.Linker.Catalog.Entry{
@@ -1161,12 +1194,12 @@ test "link target hint selects module-ref-only provider" {
     const provider_module_ref = world.Admission.ModuleRef.fromTarget(fixtures.ProviderPorts.Target);
     const strict_export = world.Linker.ExportDescriptor.init(.{
         .target_ref = strict_ref,
-        .result_ref = .{ .value_table_id = root_import.response_value_table_id },
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id, .schema_fingerprint = root_import.response_value_ref_fingerprint },
         .label = "strict-module",
     });
     const provider_export = world.Linker.ExportDescriptor.init(.{
         .target_ref = provider_ref,
-        .result_ref = .{ .value_table_id = root_import.response_value_table_id },
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id, .schema_fingerprint = root_import.response_value_ref_fingerprint },
         .label = "provider-module",
     });
     const entries = [_]world.Linker.Catalog.Entry{
@@ -1212,12 +1245,12 @@ test "link canonicalizes root import order before route synthesis" {
     const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
     const first_export = world.Linker.ExportDescriptor.init(.{
         .target_ref = provider_ref,
-        .result_ref = .{ .value_table_id = first_import.response_value_table_id },
+        .result_ref = .{ .value_table_id = first_import.response_value_table_id, .schema_fingerprint = first_import.response_value_ref_fingerprint },
         .label = "first",
     });
     const second_export = world.Linker.ExportDescriptor.init(.{
         .target_ref = provider_ref,
-        .result_ref = .{ .value_table_id = second_import.response_value_table_id },
+        .result_ref = .{ .value_table_id = second_import.response_value_table_id, .schema_fingerprint = second_import.response_value_ref_fingerprint },
         .label = "second",
     });
     const entries = [_]world.Linker.Catalog.Entry{
@@ -1259,7 +1292,7 @@ test "link rejects same-module provider cycles before route synthesis" {
     provider_ref.target_label = "same-module-provider";
     const provider_export = world.Linker.ExportDescriptor.init(.{
         .target_ref = provider_ref,
-        .result_ref = .{ .value_table_id = root_import.response_value_table_id },
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id, .schema_fingerprint = root_import.response_value_ref_fingerprint },
         .label = "provider",
     });
     const entries = [_]world.Linker.Catalog.Entry{
@@ -1291,7 +1324,7 @@ test "link non executable catalog route kinds become blockers before Fabric synt
     const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
     const unsupported_export = world.Linker.ExportDescriptor.init(.{
         .target_ref = provider_ref,
-        .result_ref = .{ .value_table_id = root_import.response_value_table_id },
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id, .schema_fingerprint = root_import.response_value_ref_fingerprint },
         .label = "unsupported",
     });
     const entries = [_]world.Linker.Catalog.Entry{
@@ -1413,7 +1446,7 @@ test "link unsupported descriptorless providers do not consume candidate cap" {
     const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
     const provider_export = world.Linker.ExportDescriptor.init(.{
         .target_ref = provider_ref,
-        .result_ref = .{ .value_table_id = root_import.response_value_table_id },
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id, .schema_fingerprint = root_import.response_value_ref_fingerprint },
         .label = "strict",
     });
     const entries = [_]world.Linker.Catalog.Entry{
@@ -1473,7 +1506,7 @@ test "assembly preflights environment and installs into Runspace through Fabric 
     const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
     const provider_export = world.Linker.ExportDescriptor.init(.{
         .target_ref = provider_ref,
-        .result_ref = .{ .value_table_id = root_import.response_value_table_id },
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id, .schema_fingerprint = root_import.response_value_ref_fingerprint },
         .label = "strict",
     });
     const entries = [_]world.Linker.Catalog.Entry{
@@ -1616,7 +1649,7 @@ test "assembly preserves linker run permit scope" {
     const permit_fingerprint: u64 = 0x5150_7001;
     const provider_export = world.Linker.ExportDescriptor.init(.{
         .target_ref = provider_ref,
-        .result_ref = .{ .value_table_id = root_import.response_value_table_id },
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id, .schema_fingerprint = root_import.response_value_ref_fingerprint },
         .label = "strict",
     });
     const stale_entries = [_]world.Linker.Catalog.Entry{
@@ -1729,7 +1762,7 @@ test "assembly witnesses admitted-run provider receipts" {
     const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
     const provider_export = world.Linker.ExportDescriptor.init(.{
         .target_ref = provider_ref,
-        .result_ref = .{ .value_table_id = root_import.response_value_table_id },
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id, .schema_fingerprint = root_import.response_value_ref_fingerprint },
         .label = "strict",
     });
     const receipt_fingerprint: u64 = 0xadd1_7001;

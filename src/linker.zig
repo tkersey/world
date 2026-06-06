@@ -134,8 +134,11 @@ pub fn Linker(comptime W: type) type {
             pub fn compatibleWith(self: ValueRef, other: ValueRef, policy: Policy) bool {
                 if (policy.require_exact_value_refs) {
                     if (self.value_table_id != other.value_table_id) return false;
-                    if (self.value_ref_fingerprint != null or other.value_ref_fingerprint != null) {
-                        return self.value_ref_fingerprint == other.value_ref_fingerprint;
+                    if (self.value_ref_fingerprint != null and other.value_ref_fingerprint != null) {
+                        return self.value_ref_fingerprint.? == other.value_ref_fingerprint.?;
+                    }
+                    if (self.schema_fingerprint != null and other.schema_fingerprint != null) {
+                        return self.schema_fingerprint.? == other.schema_fingerprint.?;
                     }
                     return true;
                 }
@@ -653,7 +656,7 @@ pub fn Linker(comptime W: type) type {
                 if (!parent_ref.compatibleWith(descriptor.result_ref, policy)) {
                     try blockers.append(allocator, .ResponseRefMismatch);
                 } else if (entry.provider_kind == .target or entry.provider_kind == .module_ref or entry.provider_kind == .admitted_run) {
-                    if (!canSynthesizeExecutableResponseMapping(parent_ref, descriptor.result_ref)) {
+                    if (!canSynthesizeExecutableResponseMapping(requirement, entry, parent_ref, descriptor.result_ref)) {
                         try blockers.append(allocator, .ResponseRefMismatch);
                     } else {
                         response_mapping = try synthesizeResponseMapping(requirement, entry);
@@ -1861,7 +1864,10 @@ pub fn Linker(comptime W: type) type {
         }
 
         fn valueRefForRequirement(requirement: W.ImportRequirement) ValueRef {
-            return .{ .value_table_id = requirement.response_value_table_id };
+            return .{
+                .value_table_id = requirement.response_value_table_id,
+                .schema_fingerprint = requirement.response_value_ref_fingerprint,
+            };
         }
 
         fn routeKindForEntry(entry: Catalog.Entry) W.Fabric.RouteKind {
@@ -1923,6 +1929,12 @@ pub fn Linker(comptime W: type) type {
             return null;
         }
 
+        fn providerWorldValueTableFingerprint(entry: Catalog.Entry) ?u64 {
+            if (entry.target_ref) |target_ref| return target_ref.world_value_table_fingerprint;
+            if (entry.module_ref) |module_ref| return module_ref.world_value_table_fingerprint;
+            return null;
+        }
+
         fn linkerCanSynthesizeRouteKind(policy: Policy, entry: Catalog.Entry) bool {
             return switch (entry.provider_kind) {
                 .target, .module_ref, .admitted_run => true,
@@ -1969,11 +1981,30 @@ pub fn Linker(comptime W: type) type {
             });
         }
 
-        fn canSynthesizeExecutableResponseMapping(parent_ref: ValueRef, provider_ref: ValueRef) bool {
+        fn canSynthesizeExecutableResponseMapping(requirement: W.ImportRequirement, entry: Catalog.Entry, parent_ref: ValueRef, provider_ref: ValueRef) bool {
             if (parent_ref.value_table_id == null or provider_ref.value_table_id == null) return false;
             if (parent_ref.value_table_id.? != provider_ref.value_table_id.?) return false;
+            const same_target = if (requirement.target_ref_fingerprint) |root_target|
+                if (providerTargetFingerprint(entry)) |provider_target| root_target == provider_target else false
+            else
+                false;
+            if (!same_target) {
+                const same_value_table = requirement.world_value_table_fingerprint != null and
+                    providerWorldValueTableFingerprint(entry) != null and
+                    requirement.world_value_table_fingerprint.? == providerWorldValueTableFingerprint(entry).?;
+                const same_value_ref = parent_ref.value_ref_fingerprint != null and
+                    provider_ref.value_ref_fingerprint != null and
+                    parent_ref.value_ref_fingerprint.? == provider_ref.value_ref_fingerprint.?;
+                const same_schema_ref = parent_ref.schema_fingerprint != null and
+                    provider_ref.schema_fingerprint != null and
+                    parent_ref.schema_fingerprint.? == provider_ref.schema_fingerprint.?;
+                if (!same_value_table and !same_value_ref and !same_schema_ref) return false;
+            }
             if (parent_ref.value_ref_fingerprint) |expected| {
-                return provider_ref.value_ref_fingerprint != null and provider_ref.value_ref_fingerprint.? == expected;
+                if (provider_ref.value_ref_fingerprint) |provider| return provider == expected;
+            }
+            if (parent_ref.schema_fingerprint) |expected| {
+                if (provider_ref.schema_fingerprint) |provider| return provider == expected;
             }
             return true;
         }

@@ -12,7 +12,7 @@ pub fn main(init: std.process.Init) !void {
     const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
     const root_export = world.Linker.ExportDescriptor.init(.{
         .target_ref = root_ref,
-        .result_ref = .{ .value_table_id = root_import.response_value_table_id },
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id, .schema_fingerprint = root_import.response_value_ref_fingerprint },
         .label = "root-self-export",
     });
     const entries = [_]world.Linker.Catalog.Entry{
