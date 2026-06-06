@@ -8206,6 +8206,8 @@ test "runspace fabric preflight parks provider route on supervision budget" {
             .allow_native_adapters = true,
             .allow_fabric_routes = true,
             .allow_target_export_routes = true,
+            .allow_handoff_export = true,
+            .allow_handoff_accept = true,
             .require_environment_certificate = true,
             .park_on_budget_exceeded = true,
         }),
@@ -8266,6 +8268,9 @@ test "runspace fabric preflight parks provider route on supervision budget" {
     try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_invocation_count);
     try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_receipt_count);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+    var exported = try runspace.exportPending(0);
+    defer exported.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
 }
 
 test "environment preflight accepts fabric-covered port and rejects missing route" {
