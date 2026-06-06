@@ -349,6 +349,56 @@ test "link catalog rejects stale target and module ref witnesses" {
     try std.testing.expect(!stale_module_linked.plan.accepted());
     try std.testing.expect(stale_module_linked.graph.hasBlocker(.ReferenceFingerprintMismatch));
     try std.testing.expectEqual(@as(usize, 0), stale_module_linked.matches.len);
+
+    const mixed_entry_module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
+    const mixed_entry_entries = [_]world.Linker.Catalog.Entry{
+        world.Linker.Catalog.Entry.moduleRef(.{
+            .module_ref = mixed_entry_module_ref,
+            .target_ref = provider_ref,
+            .export_descriptor = provider_export,
+            .import_set = world.ImportSet.fromTarget(fixtures.Strict.Target),
+            .label = "mixed-entry",
+        }),
+    };
+    var mixed_entry_linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
+        .root_imports = &.{root_import},
+        .catalog = world.Linker.Catalog.init(&mixed_entry_entries),
+        .policy = .strict_closed,
+    });
+    defer mixed_entry_linked.deinit();
+
+    try std.testing.expect(!mixed_entry_linked.plan.accepted());
+    try std.testing.expect(mixed_entry_linked.graph.hasBlocker(.ReferenceFingerprintMismatch));
+    try std.testing.expectEqual(@as(usize, 0), mixed_entry_linked.matches.len);
+
+    const mixed_descriptor = world.Linker.ExportDescriptor.init(.{
+        .target_ref = provider_ref,
+        .module_ref = mixed_entry_module_ref,
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id, .schema_fingerprint = root_import.response_value_ref_fingerprint },
+        .label = "mixed-descriptor",
+    });
+    const mixed_descriptor_entries = [_]world.Linker.Catalog.Entry{
+        world.Linker.Catalog.Entry.generatedTarget(.{
+            .target_ref = provider_ref,
+            .export_descriptor = mixed_descriptor,
+            .import_set = world.ImportSet.fromTarget(fixtures.Strict.Target),
+            .label = "mixed-descriptor",
+        }),
+    };
+    var mixed_descriptor_linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
+        .root_imports = &.{root_import},
+        .catalog = world.Linker.Catalog.init(&mixed_descriptor_entries),
+        .policy = .strict_closed,
+    });
+    defer mixed_descriptor_linked.deinit();
+
+    try std.testing.expect(!mixed_descriptor_linked.plan.accepted());
+    try std.testing.expect(mixed_descriptor_linked.graph.hasBlocker(.ReferenceFingerprintMismatch));
+    try std.testing.expectEqual(@as(usize, 0), mixed_descriptor_linked.matches.len);
 }
 
 test "import index and export index expose closed catalog requirements" {
@@ -1695,7 +1745,7 @@ test "link rejects same-module provider cycles before route synthesis" {
     try std.testing.expect(linked.graph.hasBlocker(.CycleDetected));
 }
 
-test "link rejects same boundary module cycles across target and module refs" {
+test "link rejects mixed boundary module target and module refs before route synthesis" {
     const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
     const strict_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
@@ -1739,7 +1789,8 @@ test "link rejects same boundary module cycles across target and module refs" {
 
     try std.testing.expect(!linked.plan.accepted());
     try std.testing.expectEqual(@as(usize, 0), linked.plan.fabric_plans.len);
-    try std.testing.expect(linked.graph.hasBlocker(.CycleDetected));
+    try std.testing.expect(linked.graph.hasBlocker(.ReferenceFingerprintMismatch));
+    try std.testing.expectEqual(@as(usize, 0), linked.matches.len);
 }
 
 test "link non executable catalog route kinds become blockers before Fabric synthesis" {

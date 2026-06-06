@@ -2005,6 +2005,7 @@ pub fn Linker(comptime W: type) type {
             if (entry.module_ref) |module_ref| {
                 if (!moduleRefIsValid(module_ref)) return false;
             }
+            if (entry.target_ref != null and entry.module_ref != null and !moduleRefMatchesTargetRef(entry.module_ref.?, entry.target_ref.?)) return false;
             if (entry.import_set) |import_set| {
                 const provider_ref = providerTargetRef(entry) orelse return false;
                 if (!importSetMatchesProviderRef(import_set, provider_ref)) return false;
@@ -2013,6 +2014,7 @@ pub fn Linker(comptime W: type) type {
                 if (!targetRefIsValid(descriptor.target_ref)) return false;
                 if (descriptor.module_ref) |module_ref| {
                     if (!moduleRefIsValid(module_ref)) return false;
+                    if (!moduleRefMatchesTargetRef(module_ref, descriptor.target_ref)) return false;
                 }
             }
             return true;
