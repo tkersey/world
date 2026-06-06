@@ -329,6 +329,25 @@ test "link match accepts exact value refs and rejects mismatches" {
     defer std.testing.allocator.free(forged.warnings);
     try std.testing.expect(!forged.accepted());
     try std.testing.expectEqual(world.Linker.Blocker.MissingProvider, forged.blockers[0]);
+
+    var schema_import = root_import;
+    schema_import.response_value_table_id = null;
+    const schema_export = world.Linker.ExportDescriptor.init(.{
+        .target_ref = provider_ref,
+        .result_ref = .{ .schema_fingerprint = 0x5151 },
+        .label = "schema-only",
+    });
+    const schema_entry = world.Linker.Catalog.Entry.init(.{
+        .provider_kind = .target,
+        .target_ref = provider_ref,
+        .export_descriptor = schema_export,
+        .label = "schema-only",
+    });
+    const schema_match = try world.Linker.matchEntry(std.testing.allocator, .audit_only, schema_import, schema_entry, null);
+    defer std.testing.allocator.free(schema_match.blockers);
+    defer std.testing.allocator.free(schema_match.warnings);
+    try std.testing.expect(!schema_match.accepted());
+    try std.testing.expectEqual(world.Linker.Blocker.ResponseRefMismatch, schema_match.blockers[0]);
 }
 
 test "link hint resolves ambiguity without bypassing value compatibility" {
@@ -572,6 +591,26 @@ test "route synthesis emits Fabric plan and certificate binds witnesses" {
     defer relinked.deinit();
     try std.testing.expectEqual(linked.plan.plan_fingerprint, relinked.plan.plan_fingerprint);
     try std.testing.expectEqual(linked.certificate.certificate_fingerprint, relinked.certificate.certificate_fingerprint);
+
+    var capped_policy = world.Linker.Policy.strict_closed;
+    capped_policy.max_provider_runs = 1;
+    const root_module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Ports.Target);
+    var module_scoped = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_module_ref = root_module_ref,
+        .root_import_set = root_import_set,
+        .root_imports = &.{root_import},
+        .catalog = catalog,
+        .hints = &.{hint},
+        .policy = capped_policy,
+        .max_routes = 2,
+    });
+    defer module_scoped.deinit();
+    try std.testing.expect(module_scoped.plan.accepted());
+    try module_scoped.assembly.validate();
+    try std.testing.expectEqual(root_module_ref.module_ref_fingerprint, module_scoped.plan.root_module_ref_fingerprint.?);
+    try std.testing.expectEqual(root_ref.boundary_module_fingerprint.?, module_scoped.plan.fabric_plans[0].module_fingerprint.?);
+    try std.testing.expectEqual(@as(usize, 2), module_scoped.plan.fabric_plans[0].max_provider_runs);
 }
 
 test "link hint cannot rewrite provider route kind" {
@@ -758,6 +797,84 @@ test "link reports depth blocker for zero-depth policy" {
     try std.testing.expectEqual(@as(usize, 0), linked.plan.fabric_plans.len);
     try std.testing.expectEqual(@as(usize, 1), linked.report.unresolved_import_count);
     try std.testing.expect(linked.graph.hasBlocker(.DepthExceeded));
+}
+
+test "link accepts module-ref provider without redundant target ref" {
+    const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
+    const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    const provider_module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Strict.Target);
+    const provider_export = world.Linker.ExportDescriptor.init(.{
+        .target_ref = provider_ref,
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id },
+        .label = "strict-module",
+    });
+    const entries = [_]world.Linker.Catalog.Entry{
+        world.Linker.Catalog.Entry.moduleRef(.{
+            .module_ref = provider_module_ref,
+            .export_descriptor = provider_export,
+            .import_set = world.ImportSet.fromTarget(fixtures.Strict.Target),
+            .label = "strict-module",
+        }),
+    };
+    var linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
+        .root_imports = &.{root_import},
+        .catalog = world.Linker.Catalog.init(&entries),
+        .policy = .strict_closed,
+    });
+    defer linked.deinit();
+
+    try std.testing.expect(linked.plan.accepted());
+    try std.testing.expectEqual(@as(usize, 1), linked.plan.fabric_plans.len);
+    try std.testing.expectEqual(provider_ref.target_ref_fingerprint, linked.plan.fabric_plans[0].routes[0].provider_target_ref_fingerprint.?);
+    try std.testing.expectEqual(provider_module_ref.module_ref_fingerprint, linked.plan.fabric_plans[0].routes[0].provider_module_fingerprint.?);
+}
+
+test "link canonicalizes root import order before route synthesis" {
+    const root_ref = world.TargetRef.fromTarget(fixtures.Agent.Target);
+    const first_import = world.ImportRequirement.fromTargetPort(fixtures.Agent.Target, 0);
+    const second_import = world.ImportRequirement.fromTargetPort(fixtures.Agent.Target, 1);
+    const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    const first_export = world.Linker.ExportDescriptor.init(.{
+        .target_ref = provider_ref,
+        .result_ref = .{ .value_table_id = first_import.response_value_table_id },
+        .label = "first",
+    });
+    const second_export = world.Linker.ExportDescriptor.init(.{
+        .target_ref = provider_ref,
+        .result_ref = .{ .value_table_id = second_import.response_value_table_id },
+        .label = "second",
+    });
+    const entries = [_]world.Linker.Catalog.Entry{
+        world.Linker.Catalog.Entry.generatedTarget(.{
+            .target_ref = provider_ref,
+            .export_descriptor = first_export,
+            .import_set = world.ImportSet.fromTarget(fixtures.Strict.Target),
+            .label = "first",
+        }),
+        world.Linker.Catalog.Entry.generatedTarget(.{
+            .target_ref = provider_ref,
+            .export_descriptor = second_export,
+            .import_set = world.ImportSet.fromTarget(fixtures.Strict.Target),
+            .label = "second",
+        }),
+    };
+    const reversed_imports = [_]world.ImportRequirement{ second_import, first_import };
+    var linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = world.ImportSet.fromTarget(fixtures.Agent.Target),
+        .root_imports = &reversed_imports,
+        .catalog = world.Linker.Catalog.init(&entries),
+        .policy = .strict_closed,
+    });
+    defer linked.deinit();
+
+    try std.testing.expect(linked.plan.accepted());
+    try std.testing.expectEqual(@as(usize, 1), linked.plan.fabric_plans.len);
+    try std.testing.expectEqual(@as(u32, 0), linked.plan.fabric_plans[0].routes[0].world_port_id);
+    try std.testing.expectEqual(@as(u32, 1), linked.plan.fabric_plans[0].routes[1].world_port_id);
 }
 
 test "link rejects same-module provider cycles before route synthesis" {

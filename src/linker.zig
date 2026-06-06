@@ -656,14 +656,25 @@ pub fn Linker(comptime W: type) type {
                     if (descriptor.target_ref.target_ref_fingerprint != target_ref.target_ref_fingerprint) try blockers.append(allocator, .MissingProvider);
                 }
                 if (entry.module_ref) |module_ref| {
-                    if (descriptor.module_ref == null or descriptor.module_ref.?.module_ref_fingerprint != module_ref.module_ref_fingerprint) try blockers.append(allocator, .MissingProvider);
+                    if (descriptor.module_ref) |descriptor_module_ref| {
+                        if (descriptor_module_ref.module_ref_fingerprint != module_ref.module_ref_fingerprint) try blockers.append(allocator, .MissingProvider);
+                    } else if (descriptor.target_ref.target_ref_fingerprint != module_ref.target_ref_fingerprint or
+                        descriptor.target_ref.world_surface_fingerprint != module_ref.world_surface_fingerprint or
+                        descriptor.target_ref.target_certificate_fingerprint != module_ref.target_certificate_fingerprint)
+                    {
+                        try blockers.append(allocator, .MissingProvider);
+                    }
                 }
                 if (descriptor.argument_refs.len != 0) try blockers.append(allocator, .ArgumentCountMismatch);
                 const parent_ref = valueRefForRequirement(requirement);
                 if (!parent_ref.compatibleWith(descriptor.result_ref, policy)) {
                     try blockers.append(allocator, .ResponseRefMismatch);
                 } else if (entry.provider_kind == .target or entry.provider_kind == .module_ref or entry.provider_kind == .admitted_run) {
-                    response_mapping = try synthesizeResponseMapping(requirement, entry);
+                    if (parent_ref.value_table_id == null or descriptor.result_ref.value_table_id == null) {
+                        try blockers.append(allocator, .ResponseRefMismatch);
+                    } else {
+                        response_mapping = try synthesizeResponseMapping(requirement, entry);
+                    }
                 }
             } else switch (entry.provider_kind) {
                 .replay_provider, .reject_route, .environment_adapter => {},
@@ -1380,7 +1391,10 @@ pub fn Linker(comptime W: type) type {
             if (root_import_set_mismatch) {
                 try blockers.append(allocator, .RootImportSetMismatch);
             }
-            for (input.root_imports) |requirement| {
+            const ordered_root_imports = try allocator.dupe(W.ImportRequirement, input.root_imports);
+            defer allocator.free(ordered_root_imports);
+            sortImportRequirements(ordered_root_imports);
+            for (ordered_root_imports) |requirement| {
                 const import_node = Graph.Node.init(.{
                     .kind = .import_requirement,
                     .target_ref_fingerprint = input.root_target_ref.target_ref_fingerprint,
@@ -1425,7 +1439,7 @@ pub fn Linker(comptime W: type) type {
                     try blockers.append(allocator, .MissingProvider);
                     continue;
                 };
-                const provider_ref = entry.target_ref orelse {
+                const provider_ref = providerTargetRef(entry) orelse {
                     try blockers.append(allocator, .MissingProvider);
                     continue;
                 };
@@ -1608,7 +1622,7 @@ pub fn Linker(comptime W: type) type {
             if (owned_routes.len != 0 and owned_blockers.len == 0) {
                 const fabric_plan = W.Fabric.Plan.init(.{
                     .target_ref_fingerprint = input.root_target_ref.target_ref_fingerprint,
-                    .module_fingerprint = if (input.root_module_ref) |module_ref| module_ref.module_ref_fingerprint else input.root_target_ref.boundary_module_fingerprint,
+                    .module_fingerprint = input.root_target_ref.boundary_module_fingerprint,
                     .world_surface_fingerprint = input.root_target_ref.world_surface_fingerprint,
                     .target_certificate_fingerprint = input.root_target_ref.target_certificate_fingerprint,
                     .import_set_fingerprint = input.root_import_set.import_set_fingerprint,
@@ -1616,7 +1630,7 @@ pub fn Linker(comptime W: type) type {
                     .bindings = owned_bindings,
                     .value_mappings = owned_mappings,
                     .max_depth = policy.max_link_depth,
-                    .max_provider_runs = policy.max_provider_runs,
+                    .max_provider_runs = max_routes,
                     .metadata = "world-linker-synthesized",
                 });
                 try assertFabricInvariant(fabric_plan);
@@ -1782,6 +1796,41 @@ pub fn Linker(comptime W: type) type {
                 if (existing == value) return;
             }
             try list.append(allocator, value);
+        }
+
+        fn sortImportRequirements(requirements: []W.ImportRequirement) void {
+            var index: usize = 1;
+            while (index < requirements.len) : (index += 1) {
+                var cursor = index;
+                while (cursor > 0 and importRequirementLess(requirements[cursor], requirements[cursor - 1])) : (cursor -= 1) {
+                    std.mem.swap(W.ImportRequirement, &requirements[cursor], &requirements[cursor - 1]);
+                }
+            }
+        }
+
+        fn importRequirementLess(lhs: W.ImportRequirement, rhs: W.ImportRequirement) bool {
+            if (lhs.world_port_id != rhs.world_port_id) return lhs.world_port_id < rhs.world_port_id;
+            return lhs.requirement_fingerprint < rhs.requirement_fingerprint;
+        }
+
+        fn providerTargetRef(entry: Catalog.Entry) ?W.TargetRef {
+            if (entry.target_ref) |target_ref| return target_ref;
+            if (entry.module_ref) |module_ref| {
+                return W.TargetRef{
+                    .target_ref_fingerprint = module_ref.target_ref_fingerprint,
+                    .target_label = module_ref.label,
+                    .world_surface_fingerprint = module_ref.world_surface_fingerprint,
+                    .target_certificate_fingerprint = module_ref.target_certificate_fingerprint,
+                    .residual_program_plan_hash = module_ref.residual_program_plan_hash,
+                    .normal_form_kind = module_ref.normal_form_kind,
+                    .world_port_table_fingerprint = module_ref.world_port_table_fingerprint,
+                    .world_value_table_fingerprint = module_ref.world_value_table_fingerprint,
+                    .world_dispatch_table_fingerprint = module_ref.world_dispatch_table_fingerprint,
+                    .boundary_module_fingerprint = module_ref.boundary_module_fingerprint,
+                    .metadata = module_ref.metadata,
+                };
+            }
+            return null;
         }
 
         fn linkerCanSynthesizeRouteKind(entry: Catalog.Entry) bool {
