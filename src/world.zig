@@ -7728,6 +7728,7 @@ pub const Fabric = struct {
             if (self.fingerprint_version != world_fabric_receipt_fingerprint_version) return error.InvalidFrameEncoding;
             if (fingerprintFabricReceipt(self) != self.receipt_fingerprint) return error.InvalidFrameEncoding;
             if (self.status == .completed and self.parent_response_frame_fingerprint == null) return error.InvalidFrameEncoding;
+            if (self.status == .completed and self.blocker != null) return error.InvalidFrameEncoding;
             if (self.status != .completed and self.blocker == null and self.status != .provider_parked and self.status != .provider_installed and self.status != .planned) return error.InvalidFrameEncoding;
         }
     };

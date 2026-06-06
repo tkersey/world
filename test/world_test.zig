@@ -4983,6 +4983,16 @@ test "fabric invocation receipt report and coverage fingerprints bind causal evi
     });
     try receipt.validate();
 
+    const contradictory_receipt = world.Fabric.Receipt.init(.{
+        .invocation_fingerprint = invocation.invocation_fingerprint,
+        .route_fingerprint = route.route_fingerprint,
+        .parent_pending_port_fingerprint = pending.pending_port_fingerprint,
+        .parent_response_frame_fingerprint = response.frame_fingerprint,
+        .status = .completed,
+        .blocker = .FabricDenied,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, contradictory_receipt.validate());
+
     const blocked_receipt = world.Fabric.Receipt.init(.{
         .invocation_fingerprint = invocation.invocation_fingerprint,
         .route_fingerprint = route.route_fingerprint,
