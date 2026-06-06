@@ -10273,6 +10273,34 @@ test "world dispatch failures record failed audit and transcript events" {
     try std.testing.expectEqual(@as(usize, 1), summary.run_failed);
 }
 
+test "direct machine rejects mismatched fabric plan before handlerless coverage" {
+    const MissingMachine = world.Machine(fixtures.Ports.Target, .{ .ports = .{} });
+    const wrong_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    const wrong_route = world.Fabric.Route.init(.{
+        .route_id = 0x7777_d1ec,
+        .kind = .reject,
+        .parent_world_surface_fingerprint = wrong_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = wrong_ref.target_certificate_fingerprint,
+        .parent_world_port_id = 0,
+        .response_status = .rejected,
+    });
+    const wrong_plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = wrong_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = wrong_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = wrong_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Strict.Target).import_set_fingerprint,
+        .routes = &.{wrong_route},
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+
+    try std.testing.expectError(error.HandoffTargetMismatch, MissingMachine.start(&runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .fabric_plan = wrong_plan,
+    }));
+}
+
 test "world malformed dispatch lookup records failed run" {
     var runtime = boundary.Runtime.init(std.testing.allocator);
     defer runtime.deinit();

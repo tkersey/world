@@ -16501,6 +16501,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         @field(options, "fabric_plan")
                     else
                         null;
+                    if (maybe_fabric_plan) |plan| try validateFabricPlanForTarget(Target, plan);
                     const handlerless_ports_covered_by_fabric = if (maybe_fabric_plan) |plan|
                         fabricPlanCoversTargetPorts(Target, plan)
                     else
@@ -20181,6 +20182,20 @@ fn fabricPlanCoversTargetPorts(comptime Target: type, plan: Fabric.Plan) bool {
         if (!fabricPlanCoversPort(plan, @intCast(world_port_id))) return false;
     }
     return true;
+}
+
+fn validateFabricPlanForTarget(comptime Target: type, plan: Fabric.Plan) !void {
+    const target_ref = TargetRef.fromTarget(Target);
+    try plan.validate();
+    try plan.assertNoCyclesForTargetRef(target_ref);
+    try plan.assertDeterministicRouteOrder();
+    try plan.assertExecutableMappings();
+    if (plan.target_ref_fingerprint != target_ref.target_ref_fingerprint) return error.HandoffTargetMismatch;
+    if (plan.world_surface_fingerprint != target_ref.world_surface_fingerprint) return error.WrongWorldSurface;
+    if (plan.target_certificate_fingerprint != target_ref.target_certificate_fingerprint) return error.WrongTargetCertificate;
+    if (plan.import_set_fingerprint) |fingerprint| {
+        if (fingerprint != ImportSet.fromTarget(Target).import_set_fingerprint) return error.InvalidFrameEncoding;
+    }
 }
 
 fn environmentHasBindingForPort(comptime Env: type, world_port_id: u32) bool {
