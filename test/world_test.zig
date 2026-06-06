@@ -645,6 +645,10 @@ test "route synthesis emits Fabric plan and certificate binds witnesses" {
     try std.testing.expectEqual(root_module_ref.module_ref_fingerprint, module_scoped.plan.root_module_ref_fingerprint.?);
     try std.testing.expectEqual(root_ref.boundary_module_fingerprint.?, module_scoped.plan.fabric_plans[0].module_fingerprint.?);
     try std.testing.expectEqual(@as(usize, 2), module_scoped.plan.fabric_plans[0].max_provider_runs);
+    var effective_policy = capped_policy;
+    effective_policy.max_provider_runs = 2;
+    try std.testing.expectEqual(effective_policy.fingerprint(), module_scoped.plan.policy_fingerprint);
+    try std.testing.expectEqual(effective_policy.fingerprint(), module_scoped.certificate.policy_fingerprint);
 }
 
 test "link hint cannot rewrite provider route kind" {

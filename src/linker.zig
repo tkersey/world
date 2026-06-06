@@ -1307,7 +1307,8 @@ pub fn Linker(comptime W: type) type {
             var policy = input.policy;
             if (input.max_depth) |max_depth| policy.max_link_depth = max_depth;
             if (input.max_provider_candidates) |max| policy.max_candidates_per_import = max;
-            const max_routes = input.max_routes orelse policy.max_provider_runs;
+            if (input.max_routes) |max| policy.max_provider_runs = max;
+            const max_routes = policy.max_provider_runs;
 
             const import_index = ImportIndex.init(input);
             const export_index = ExportIndex.init(input.catalog);
