@@ -10201,12 +10201,17 @@ pub const Runspace = struct {
         }
         const replay_cursor_before = transcript_image.replay_cursor;
         const replay_limit_before = transcript_image.replay_limit;
+        const replay_state_prepared = replay_cursor_before != 0 or replay_limit_before != null;
         var replay_cursor_committed = false;
         errdefer if (!replay_cursor_committed) {
             transcript_image.replay_cursor = replay_cursor_before;
             transcript_image.replay_limit = replay_limit_before;
         };
         try transcript_image.validateReplayRun(pending.world_surface_fingerprint, pending.target_certificate_fingerprint);
+        if (replay_state_prepared) {
+            transcript_image.replay_cursor = replay_cursor_before;
+            transcript_image.replay_limit = replay_limit_before;
+        }
         const depth = try self.fabricDepthForParent(parent_slot.handle);
         try plan.assertDepth(depth);
         try assertFabricRouteDepth(route, depth);
