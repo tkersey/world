@@ -16599,6 +16599,12 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
         }
 
         fn startWithPermit(runtime: anytype, args: anytype, options: anytype, permit: RunPermit) !Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)) {
+            if (permit.link_plan_fingerprint != null or
+                permit.linker_certificate_fingerprint != null or
+                permit.assembly_fingerprint != null)
+            {
+                return Error.SupervisionDenied;
+            }
             return Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)).startWithTranscriptAvailablePermit(runtime, args, options, false, permit, null, null);
         }
 

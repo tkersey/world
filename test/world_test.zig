@@ -246,7 +246,7 @@ test "link catalog entry fingerprint is stable and excludes pointer identity" {
     defer linked.deinit();
 
     try std.testing.expect(linked.plan.accepted());
-    try std.testing.expect(linked.plan.catalog_fingerprint != stale_catalog.catalog_fingerprint);
+    try std.testing.expectEqual(link_catalog.catalog_fingerprint, stale_catalog.catalog_fingerprint);
     try std.testing.expectEqual(link_catalog.catalog_fingerprint, linked.plan.catalog_fingerprint);
     try std.testing.expectEqual(link_catalog.catalog_fingerprint, linked.certificate.catalog_fingerprint);
     try std.testing.expectEqual(link_entry.entry_fingerprint, linked.matches[0].provider_entry_fingerprint.?);
@@ -7024,6 +7024,22 @@ test "runspace install consumes explicit fabric plan for missing environment bin
         .mode = world.Mode.fresh,
         .permit = no_env_pinned_permit,
         .fabric_plan = alternate_plan,
+    }));
+
+    const linker_scoped_direct_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .link_plan_fingerprint = 0x11_aa,
+        .linker_certificate_fingerprint = 0x22_bb,
+        .assembly_fingerprint = 0x33_cc,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_native_adapters = true,
+        }),
+    });
+    try std.testing.expectError(error.SupervisionDenied, PortsMachine.start(&no_env_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .permit = linker_scoped_direct_permit,
     }));
 
     var source_runtime = boundary.Runtime.init(std.testing.allocator);

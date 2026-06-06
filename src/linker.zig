@@ -349,13 +349,13 @@ pub fn Linker(comptime W: type) type {
 
             pub fn init(entries: []const Entry) Catalog {
                 return .{
-                    .catalog_fingerprint = fingerprintCatalog(entries),
+                    .catalog_fingerprint = fingerprintCanonicalCatalog(entries),
                     .entries = entries,
                 };
             }
 
             pub fn fingerprint(self: Catalog) u64 {
-                return fingerprintCatalog(self.entries);
+                return fingerprintCanonicalCatalog(self.entries);
             }
 
             pub fn entryByTargetFingerprint(self: Catalog, target_ref_fingerprint: u64) ?Entry {
