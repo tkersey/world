@@ -10536,6 +10536,16 @@ pub const Runspace = struct {
         return null;
     }
 
+    fn fabricPlanCoversAllSlotPorts(slot: Runspace.RunSlot) bool {
+        const driver = slot.driver orelse return false;
+        if (fabricPlanFingerprintForSlot(slot) == null) return false;
+        var world_port_id: u32 = 0;
+        while (world_port_id < slot.driver_world_port_count) : (world_port_id += 1) {
+            if (!driver.fabricPlanCoversWorldPort(world_port_id)) return false;
+        }
+        return true;
+    }
+
     fn hasInstalledFabricPlan(self: *const @This(), plan_fingerprint: u64) bool {
         for (self.fabric_plan_fingerprints.items) |installed| {
             if (installed == plan_fingerprint) return true;
@@ -12394,7 +12404,7 @@ pub const Runspace = struct {
             2
         else if (slot.current_state.final_response_fingerprint != null and slot.current_state.turn_index >= slot.driver_world_port_count)
             2
-        else if (self.config.auto_dispatch and fabricPlanFingerprintForSlot(slot.*) == null)
+        else if (self.config.auto_dispatch and !fabricPlanCoversAllSlotPorts(slot.*))
             5
         else
             3;

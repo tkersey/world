@@ -5171,6 +5171,42 @@ test "runspace install consumes explicit fabric plan for missing environment bin
     try std.testing.expectEqual(world.Fabric.InvocationStatus.rejected, native_invocation.status);
     try std.testing.expectEqual(@as(usize, 0), native_runspace.report().pending_port_count);
 
+    const agent_ref = world.TargetRef.fromTarget(fixtures.Agent.Target);
+    const partial_agent_route = world.Fabric.Route.init(.{
+        .route_id = 0x51ace_fab3,
+        .kind = .reject,
+        .parent_world_surface_fingerprint = agent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = agent_ref.target_certificate_fingerprint,
+        .parent_world_port_id = 1,
+        .response_status = .rejected,
+    });
+    const partial_agent_plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = agent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = agent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = agent_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Agent.Target).import_set_fingerprint,
+        .routes = &.{partial_agent_route},
+    });
+    var partial_agent_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer partial_agent_runtime.deinit();
+    var partial_agent_ctx = AgentCtx{ .allocator = std.testing.allocator, .scenario = .skeleton };
+    var partial_agent_runspace = world.Runspace.init(std.testing.allocator, .{ .auto_dispatch = true });
+    defer partial_agent_runspace.deinit();
+    const partial_agent_handle = try partial_agent_runspace.installMachineRun(fixtures.Agent.Target, AgentEnv, &partial_agent_runtime, AgentArgs{ @as(usize, 3), fixtures.Agent.initialObservation(.skeleton) }, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &partial_agent_ctx,
+        .fabric_plan = partial_agent_plan,
+    });
+    const partial_event_count = partial_agent_runspace.report().event_count;
+    partial_agent_runspace.config.max_events = partial_event_count + 3;
+    try std.testing.expectError(error.BudgetExceeded, partial_agent_runspace.tick());
+    try std.testing.expectEqual(@as(usize, 0), partial_agent_ctx.model_calls);
+    try std.testing.expectEqual(@as(usize, 0), partial_agent_ctx.tool_calls);
+    try std.testing.expectEqual(world.Runspace.RunStatus.runnable, (try partial_agent_runspace.getSlotSummary(partial_agent_handle)).status);
+    try std.testing.expectEqual(@as(usize, 0), partial_agent_runspace.report().pending_port_count);
+    try std.testing.expectEqual(partial_event_count, partial_agent_runspace.report().event_count);
+
     const native_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
         .mode = .fresh,
         .fabric_plan_fingerprint = fabric_plan.plan_fingerprint,
