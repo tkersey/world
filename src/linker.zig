@@ -444,6 +444,7 @@ pub fn Linker(comptime W: type) type {
 
             pub fn exportsFor(self: ExportIndex, allocator: std.mem.Allocator, target_ref: W.TargetRef) ![]ExportDescriptor {
                 var exports: std.ArrayList(ExportDescriptor) = .empty;
+                errdefer exports.deinit(allocator);
                 for (self.catalog.entries) |entry| {
                     if (entry.target_ref == null or entry.target_ref.?.target_ref_fingerprint != target_ref.target_ref_fingerprint) continue;
                     if (entry.export_descriptor) |descriptor| try exports.append(allocator, descriptor);
@@ -457,6 +458,7 @@ pub fn Linker(comptime W: type) type {
 
             pub fn candidateProvidersForPolicy(self: ExportIndex, allocator: std.mem.Allocator, import_requirement: W.ImportRequirement, policy: Policy) ![]Catalog.Entry {
                 var candidates: std.ArrayList(Catalog.Entry) = .empty;
+                errdefer candidates.deinit(allocator);
                 for (self.catalog.entries) |entry| {
                     const descriptor = entry.export_descriptor orelse {
                         if (entry.provider_kind == .replay_provider or entry.provider_kind == .reject_route or entry.provider_kind == .environment_adapter) {
@@ -476,6 +478,7 @@ pub fn Linker(comptime W: type) type {
 
             pub fn candidateExportsFor(self: ExportIndex, allocator: std.mem.Allocator, import_requirement: W.ImportRequirement, policy: Policy) ![]ExportDescriptor {
                 var candidates: std.ArrayList(ExportDescriptor) = .empty;
+                errdefer candidates.deinit(allocator);
                 for (self.catalog.entries) |entry| {
                     const descriptor = entry.export_descriptor orelse continue;
                     const expected = ValueRef{ .value_table_id = import_requirement.response_value_table_id };
@@ -1625,42 +1628,67 @@ pub fn Linker(comptime W: type) type {
             }
 
             const owned_routes = try routes.toOwnedSlice(allocator);
+            errdefer allocator.free(owned_routes);
             routes = .empty;
             const owned_bindings = try bindings.toOwnedSlice(allocator);
+            errdefer allocator.free(owned_bindings);
             bindings = .empty;
             const owned_mappings = try mappings.toOwnedSlice(allocator);
+            errdefer allocator.free(owned_mappings);
             mappings = .empty;
             const owned_nodes = try nodes.toOwnedSlice(allocator);
+            errdefer allocator.free(owned_nodes);
             nodes = .empty;
             const owned_edges = try edges.toOwnedSlice(allocator);
+            errdefer allocator.free(owned_edges);
             edges = .empty;
             const owned_blockers = try blockers.toOwnedSlice(allocator);
+            errdefer allocator.free(owned_blockers);
             blockers = .empty;
             const owned_warnings = try warnings.toOwnedSlice(allocator);
+            errdefer allocator.free(owned_warnings);
             warnings = .empty;
             const owned_matches = try matches.toOwnedSlice(allocator);
+            errdefer {
+                for (owned_matches) |match| {
+                    allocator.free(match.blockers);
+                    allocator.free(match.warnings);
+                }
+                allocator.free(owned_matches);
+            }
             matches = .empty;
             const owned_syntheses = try syntheses.toOwnedSlice(allocator);
+            errdefer allocator.free(owned_syntheses);
             syntheses = .empty;
             const owned_unresolved = try unresolved.toOwnedSlice(allocator);
+            errdefer allocator.free(owned_unresolved);
             unresolved = .empty;
             const owned_external = try external.toOwnedSlice(allocator);
+            errdefer allocator.free(owned_external);
             external = .empty;
             const owned_provider_targets = try provider_targets.toOwnedSlice(allocator);
+            errdefer allocator.free(owned_provider_targets);
             provider_targets = .empty;
             const owned_guest_targets = try guest_targets.toOwnedSlice(allocator);
+            errdefer allocator.free(owned_guest_targets);
             guest_targets = .empty;
             const owned_replay_routes = try replay_routes.toOwnedSlice(allocator);
+            errdefer allocator.free(owned_replay_routes);
             replay_routes = .empty;
             const owned_reject_routes = try reject_routes.toOwnedSlice(allocator);
+            errdefer allocator.free(owned_reject_routes);
             reject_routes = .empty;
             const owned_admission_receipts = try admission_receipts.toOwnedSlice(allocator);
+            errdefer allocator.free(owned_admission_receipts);
             admission_receipts = .empty;
             const owned_route_fingerprints = try route_fingerprints.toOwnedSlice(allocator);
+            errdefer allocator.free(owned_route_fingerprints);
             route_fingerprints = .empty;
             const owned_match_fingerprints = try match_fingerprints.toOwnedSlice(allocator);
+            errdefer allocator.free(owned_match_fingerprints);
             match_fingerprints = .empty;
             const owned_hint_fingerprints = try hint_fingerprints.toOwnedSlice(allocator);
+            errdefer allocator.free(owned_hint_fingerprints);
             hint_fingerprints = .empty;
 
             var fabric_plans: std.ArrayList(W.Fabric.Plan) = .empty;
@@ -1683,8 +1711,10 @@ pub fn Linker(comptime W: type) type {
                 try fabric_plan_fingerprints.append(allocator, fabric_plan.plan_fingerprint);
             }
             const owned_fabric_plans = try fabric_plans.toOwnedSlice(allocator);
+            errdefer allocator.free(owned_fabric_plans);
             fabric_plans = .empty;
             const owned_fabric_plan_fingerprints = try fabric_plan_fingerprints.toOwnedSlice(allocator);
+            errdefer allocator.free(owned_fabric_plan_fingerprints);
             fabric_plan_fingerprints = .empty;
 
             const graph = Graph.init(.{
