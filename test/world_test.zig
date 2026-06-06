@@ -1306,6 +1306,42 @@ test "assembly preserves linker run permit scope" {
     try std.testing.expectEqual(@as(?u64, permit_fingerprint), linked.assembly.run_permit_fingerprint);
     try std.testing.expect(linked.assembly.preflightSupervision(permit_fingerprint));
     try std.testing.expect(!linked.assembly.preflightSupervision(permit_fingerprint +% 1));
+
+    const admitted_receipt_fingerprint: u64 = 0xadd1_7001;
+    const mixed_entries = [_]world.Linker.Catalog.Entry{
+        world.Linker.Catalog.Entry.init(.{
+            .provider_kind = .target,
+            .target_ref = provider_ref,
+            .export_descriptor = provider_export,
+            .import_set = world.ImportSet.fromTarget(fixtures.Strict.Target),
+            .run_permit_fingerprint = permit_fingerprint +% 1,
+            .label = "stale-target",
+        }),
+        world.Linker.Catalog.Entry.init(.{
+            .provider_kind = .admitted_run,
+            .target_ref = provider_ref,
+            .export_descriptor = provider_export,
+            .import_set = world.ImportSet.fromTarget(fixtures.Strict.Target),
+            .admission_receipt_fingerprint = admitted_receipt_fingerprint,
+            .run_permit_fingerprint = permit_fingerprint,
+            .label = "admitted",
+        }),
+    };
+    var mixed_linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
+        .root_imports = &.{root_import},
+        .catalog = world.Linker.Catalog.init(&mixed_entries),
+        .policy = .strict_closed,
+        .run_permit_fingerprint = permit_fingerprint,
+    });
+    defer mixed_linked.deinit();
+
+    try std.testing.expect(mixed_linked.plan.accepted());
+    try std.testing.expectEqual(mixed_entries[1].entry_fingerprint, mixed_linked.matches[0].provider_entry_fingerprint.?);
+    try std.testing.expectEqual(world.Fabric.RouteKind.admitted_run, mixed_linked.plan.fabric_plans[0].routes[0].kind);
+    try std.testing.expectEqual(@as(?u64, admitted_receipt_fingerprint), mixed_linked.plan.fabric_plans[0].routes[0].provider_admission_receipt_fingerprint);
+    try std.testing.expectEqual(@as(usize, 1), mixed_linked.assembly.admission_receipts_used.len);
 }
 
 test "assembly witnesses admitted-run provider receipts" {

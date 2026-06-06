@@ -561,9 +561,9 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-linker-one-provider",
             .desc = "Run the World Linker one-provider example.",
             .expected_stdout =
-            \\link_plan_fingerprint=f71f872fd8212bc0
+            \\link_plan_fingerprint=4d80883599fe6ae1
             \\fabric_route_count=1
-            \\assembly_fingerprint=3bad616e20663752
+            \\assembly_fingerprint=cd847d13e87040a1
             \\final_result=7
             \\native_handler_calls=0
             \\
@@ -624,8 +624,8 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-linker-guest-conformance",
             .desc = "Run the World Linker guest conformance example.",
             .expected_stdout =
-            \\assembly_fingerprint=e5a4e5c54f9fc9ee
-            \\conformance_report_fingerprint=6cf534c32303347a
+            \\assembly_fingerprint=45e1184f237bf20d
+            \\conformance_report_fingerprint=77aebeb78a03b9db
             \\conformance=true
             \\
             ,

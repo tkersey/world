@@ -540,6 +540,7 @@ pub fn Linker(comptime W: type) type {
         pub const Match = struct {
             match_fingerprint: u64,
             parent_import_requirement_fingerprint: u64,
+            provider_entry_fingerprint: ?u64 = null,
             provider_export_fingerprint: ?u64 = null,
             provider_target_ref_fingerprint: ?u64 = null,
             provider_module_ref_fingerprint: ?u64 = null,
@@ -552,6 +553,7 @@ pub fn Linker(comptime W: type) type {
 
             pub fn init(args: struct {
                 parent_import_requirement_fingerprint: u64,
+                provider_entry_fingerprint: ?u64 = null,
                 provider_export_fingerprint: ?u64 = null,
                 provider_target_ref_fingerprint: ?u64 = null,
                 provider_module_ref_fingerprint: ?u64 = null,
@@ -565,6 +567,7 @@ pub fn Linker(comptime W: type) type {
                 var result = Match{
                     .match_fingerprint = 0,
                     .parent_import_requirement_fingerprint = args.parent_import_requirement_fingerprint,
+                    .provider_entry_fingerprint = args.provider_entry_fingerprint,
                     .provider_export_fingerprint = args.provider_export_fingerprint,
                     .provider_target_ref_fingerprint = args.provider_target_ref_fingerprint,
                     .provider_module_ref_fingerprint = args.provider_module_ref_fingerprint,
@@ -721,6 +724,7 @@ pub fn Linker(comptime W: type) type {
             errdefer allocator.free(owned_warnings);
             return Match.init(.{
                 .parent_import_requirement_fingerprint = requirement.requirement_fingerprint,
+                .provider_entry_fingerprint = entry.entry_fingerprint,
                 .provider_export_fingerprint = if (entry.export_descriptor) |descriptor| descriptor.export_fingerprint else null,
                 .provider_target_ref_fingerprint = if (entry.target_ref) |target_ref| target_ref.target_ref_fingerprint else null,
                 .provider_module_ref_fingerprint = if (entry.module_ref) |module_ref| module_ref.module_ref_fingerprint else null,
@@ -1972,6 +1976,12 @@ pub fn Linker(comptime W: type) type {
         }
 
         fn entryForMatch(candidates: []const Catalog.Entry, match: Match) ?Catalog.Entry {
+            if (match.provider_entry_fingerprint) |expected| {
+                for (candidates) |candidate| {
+                    if (candidate.entry_fingerprint == expected) return candidate;
+                }
+                return null;
+            }
             for (candidates) |candidate| {
                 const descriptor = candidate.export_descriptor orelse continue;
                 if (match.provider_export_fingerprint != descriptor.export_fingerprint) continue;
@@ -2094,6 +2104,7 @@ pub fn Linker(comptime W: type) type {
             hashBytes(&hasher, "world.linker.match.v1");
             hashU64(&hasher, W.world_linker_match_fingerprint_version);
             hashU64(&hasher, match.parent_import_requirement_fingerprint);
+            hashOptionalU64(&hasher, match.provider_entry_fingerprint);
             hashOptionalU64(&hasher, match.provider_export_fingerprint);
             hashOptionalU64(&hasher, match.provider_target_ref_fingerprint);
             hashOptionalU64(&hasher, match.provider_module_ref_fingerprint);
