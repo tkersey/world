@@ -357,9 +357,9 @@ test "import index and export index expose closed catalog requirements" {
     const strict_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
     const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
     const provider_import = world.ImportRequirement.fromTargetPort(fixtures.ProviderPorts.Target, 0);
-    const provider_result_ref = world.Linker.ValueRef{ .value_table_id = 1 };
+    const provider_result_ref = world.Linker.ValueRef{ .value_table_id = 1, .schema_fingerprint = root_import.response_value_ref_fingerprint };
     const provider_alt_result_ref = world.Linker.ValueRef{ .value_table_id = 2 };
-    const strict_result_ref = world.Linker.ValueRef{ .value_table_id = 1 };
+    const strict_result_ref = world.Linker.ValueRef{ .value_table_id = 1, .schema_fingerprint = root_import.response_value_ref_fingerprint };
     const provider_export = world.Linker.ExportDescriptor.init(.{
         .target_ref = provider_ref,
         .result_ref = provider_result_ref,
@@ -751,7 +751,8 @@ test "link rejects cross target value table id collision without stable witness"
     defer linked.deinit();
 
     try std.testing.expect(!linked.plan.accepted());
-    try std.testing.expect(linked.graph.hasBlocker(.ResponseRefMismatch));
+    try std.testing.expect(linked.graph.hasBlocker(.MissingProvider));
+    try std.testing.expectEqual(@as(usize, 0), linked.matches.len);
     try std.testing.expectEqual(@as(usize, 0), linked.plan.fabric_plans.len);
 }
 

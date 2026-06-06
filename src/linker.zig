@@ -140,7 +140,7 @@ pub fn Linker(comptime W: type) type {
                     if (self.schema_fingerprint != null and other.schema_fingerprint != null) {
                         return self.schema_fingerprint.? == other.schema_fingerprint.?;
                     }
-                    return true;
+                    return false;
                 }
                 if (self.value_table_id != null and other.value_table_id != null and self.value_table_id.? == other.value_table_id.?) return true;
                 if (policy.allow_same_schema_compatible_refs and self.schema_fingerprint != null and other.schema_fingerprint != null) {
