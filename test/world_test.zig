@@ -24577,6 +24577,24 @@ test "fabric-covered replay admission requires transcript evidence" {
     try recordPortsTranscript(&completed_source_transcript);
     var completed_source_image = try completed_source_transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.portable });
     defer completed_source_image.deinit(std.testing.allocator);
+    var native_completed_source_image = try completed_source_transcript.toImage(std.testing.allocator, .{ .value_policy = world.ValuePolicy.native_compatible });
+    defer native_completed_source_image.deinit(std.testing.allocator);
+    const bound_native_replay_only_package = world.Admission.TransferPackage.init(.{
+        .kind = .target_reference_only,
+        .target_ref = parent_ref,
+        .transcript_image = native_completed_source_image,
+        .requested_mode = .replay_only,
+    });
+    var bound_native_replay_only_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, bound_native_replay_only_package, .{
+        .fabric_plan = replay_plan,
+    });
+    defer bound_native_replay_only_result.deinit(std.testing.allocator);
+    try std.testing.expect(!bound_native_replay_only_result.report.accepted);
+    try std.testing.expect(bound_native_replay_only_result.admitted_run == null);
+
     const replay_only_package = world.Admission.TransferPackage.init(.{
         .kind = .target_reference_only,
         .target_ref = parent_ref,

@@ -17028,22 +17028,22 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 fn runspaceFabricReplayResponseValuePolicy(self: *Self, world_port_id: u32) !ValuePolicy {
                     if (comptime @hasField(@TypeOf(Config), "environment")) {
                         const Env = Config.environment;
+                        if (self.fabricPlanCoversWorldPort(world_port_id)) return fabricReplayResponseValuePolicy();
                         if (environmentHasBindingForPort(Env, world_port_id)) {
                             return replayImageValuePolicyForEnvironmentPort(Env, world_port_id);
                         }
-                        if (self.fabricPlanCoversWorldPort(world_port_id)) return ValuePolicy.portable;
                         return Error.MissingHandler;
                     }
 
                     switch (world_port_id) {
                         inline 0...Target.WorldPortTable.entries.len - 1 => |id| {
+                            if (self.fabricPlanCoversWorldPort(world_port_id)) return fabricReplayResponseValuePolicy();
                             const Handler = comptime handlerForWorldPortId(Target, Config, @intCast(id));
                             if (Handler) |Decl| {
                                 var policy: ValuePolicy = if (comptime @hasDecl(Decl, "value_policy")) Decl.value_policy else .native_compatible;
                                 policy.require_response_images_for_replay = true;
                                 return policy;
                             }
-                            if (self.fabricPlanCoversWorldPort(world_port_id)) return ValuePolicy.portable;
                             return Error.MissingHandler;
                         },
                         else => return Error.UnknownWorldPort,
@@ -20226,6 +20226,12 @@ fn replayImageValuePolicyForEnvironmentPort(comptime Env: type, world_port_id: u
     return policy;
 }
 
+fn fabricReplayResponseValuePolicy() ValuePolicy {
+    var policy = ValuePolicy.portable;
+    policy.require_response_images_for_replay = true;
+    return policy;
+}
+
 fn valuePolicyForHandoffRequestFrame(comptime Target: type, comptime Env: type, world_port_id: u32, admitted_fabric_plan: ?Fabric.Plan) !ValuePolicy {
     if (Target != Env.TargetType) return error.HandoffTargetMismatch;
     if (environmentHasBindingForPort(Env, world_port_id)) {
@@ -20242,20 +20248,19 @@ fn valuePolicyForHandoffRequestFrame(comptime Target: type, comptime Env: type, 
 
 fn replayImageValuePolicyForHandoffResponseFrame(comptime Target: type, comptime Env: type, world_port_id: u32, admitted_fabric_plan: ?Fabric.Plan) !ValuePolicy {
     if (Target != Env.TargetType) return error.HandoffTargetMismatch;
+    if (world_port_id >= Target.WorldPortTable.entries.len) return error.WrongPortId;
+    if (admitted_fabric_plan) |plan| {
+        if (plan.findRouteForPort(world_port_id)) |route| {
+            return switch (route.kind) {
+                .target_export, .admitted_run, .guest, .replay, .reject => fabricReplayResponseValuePolicy(),
+                .adapter, .unsupported => error.MissingBinding,
+            };
+        }
+    }
     if (environmentHasBindingForPort(Env, world_port_id)) {
         return replayImageValuePolicyForEnvironmentPort(Env, world_port_id);
     }
-    if (world_port_id >= Target.WorldPortTable.entries.len) return error.WrongPortId;
-    const plan = admitted_fabric_plan orelse return error.MissingBinding;
-    const route = plan.findRouteForPort(world_port_id) orelse return error.MissingBinding;
-    return switch (route.kind) {
-        .target_export, .admitted_run, .guest, .replay, .reject => replay_image_policy: {
-            var policy = ValuePolicy.portable;
-            policy.require_response_images_for_replay = true;
-            break :replay_image_policy policy;
-        },
-        .adapter, .unsupported => error.MissingBinding,
-    };
+    return error.MissingBinding;
 }
 
 fn fabricPlanCoversPort(admitted_fabric_plan: ?Fabric.Plan, world_port_id: u32) bool {
