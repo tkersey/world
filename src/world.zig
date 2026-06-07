@@ -17661,10 +17661,10 @@ pub const Capsule = struct {
             errdefer if (slot_image_owned) slot_image.deinit(allocator);
             try slot_images.append(allocator, slot_image);
             slot_image_owned = false;
-            if (slot.parent_run_handle_fingerprint == null) {
-                try root_refs.append(allocator, slot.handle.handle_fingerprint);
-            } else {
-                try provider_refs.append(allocator, slot.handle.handle_fingerprint);
+            switch (runSlotRoleForFreeze(slot)) {
+                .root => try root_refs.append(allocator, slot.handle.handle_fingerprint),
+                .provider => try provider_refs.append(allocator, slot.handle.handle_fingerprint),
+                .branch, .guest, .replay, .verify => {},
             }
         }
 

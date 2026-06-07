@@ -22186,6 +22186,14 @@ test "runspace checkpoint branch and replay install are deterministic" {
     defer std.testing.allocator.free(branches);
     try std.testing.expectEqual(@as(usize, 1), branches.len);
     try std.testing.expectEqual(branch_handle.handle_fingerprint, branches[0].handle_fingerprint);
+    var branch_capsule = try world.Capsule.freezeRunspace(&runspace, .{ .require_quiescent = false });
+    defer branch_capsule.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 1), branch_capsule.runspace_image.root_run_handle_fingerprints.len);
+    try std.testing.expectEqual(handle.handle_fingerprint, branch_capsule.runspace_image.root_run_handle_fingerprints[0]);
+    try std.testing.expectEqual(@as(usize, 0), branch_capsule.runspace_image.provider_run_handle_fingerprints.len);
+    try std.testing.expectEqual(world.Capsule.RunRole.root, branch_capsule.runspace_image.run_slots[0].role);
+    try std.testing.expectEqual(world.Capsule.RunRole.branch, branch_capsule.runspace_image.run_slots[1].role);
+    try std.testing.expectEqual(branch_handle.handle_fingerprint, branch_capsule.runspace_image.run_slots[1].original_run_handle_fingerprint);
 
     var transcript = world.Transcript.init(std.testing.allocator);
     defer transcript.deinit();
