@@ -17192,7 +17192,10 @@ pub const Capsule = struct {
             return cert;
         }
 
-        pub fn fromImage(image: Image, report: QuiescenceReport) @This() {
+        pub fn fromImage(image: Image, report: QuiescenceReport) !@This() {
+            if (report.runspace_fingerprint != image.runspace_image.runspace_fingerprint) return error.InvalidFrameEncoding;
+            if (report.normal_form != image.manifest.normal_form) return error.InvalidFrameEncoding;
+            if (report.assembly_fingerprint != image.manifest.assembly_fingerprint) return error.InvalidFrameEncoding;
             return init(.{
                 .capsule_image_fingerprint = image.image_fingerprint,
                 .capsule_manifest_fingerprint = image.manifest.manifest_fingerprint,
@@ -17367,7 +17370,7 @@ pub const Capsule = struct {
     pub const AssemblyImage = Image;
 
     pub fn certificate(image: Image, report: QuiescenceReport) !Certificate {
-        return Certificate.fromImage(image, report);
+        return try Certificate.fromImage(image, report);
     }
 
     pub fn validate(image: Image, options: ValidateOptions) !ValidationReport {
@@ -17837,7 +17840,8 @@ pub const Capsule = struct {
         if (runspace.mailbox.pending.items.len > options.max_pending_ports) return error.InvalidFrameEncoding;
         if (runspace.fabric_invocations.items.len > options.max_fabric_invocations) return error.InvalidFrameEncoding;
 
-        var report = try quiescenceReport(allocator, runspace, assembly);
+        const report_assembly = if (options.include_link_certificate) assembly else null;
+        var report = try quiescenceReport(allocator, runspace, report_assembly);
         defer report.deinit(allocator);
         if (options.require_quiescent and !report.quiescent) return error.InvalidFrameEncoding;
         try validateFreezePolicy(report, options);
@@ -17865,7 +17869,7 @@ pub const Capsule = struct {
         errdefer if (fabric_image_owned) if (maybe_fabric_image) |*image| image.deinit(allocator);
 
         var maybe_link_image: ?LinkImage = if (options.include_link_certificate) if (assembly) |value|
-            try linkImageFromAssembly(allocator, value, value.link_plan_fingerprint, null)
+            try linkImageFromAssembly(allocator, value, 0, null)
         else
             null else null;
         var link_image_owned = maybe_link_image != null;
@@ -18033,6 +18037,8 @@ pub const Capsule = struct {
             .relink_status = if (accepted) if (link_status == .mismatched and options.allow_relink_drift) .drift_allowed else .matched else .rejected,
             .environment_preflight_refs = image.manifest.environment_certificate_fingerprints,
             .guest_conformance_refs = image.manifest.guest_conformance_report_fingerprints,
+            .handle_remapping_plan = image.runspace_image.run_handle_mappings,
+            .mailbox_id_remapping_plan = if (image.runspace_image.mailbox_image) |mailbox| mailbox.pending_port_fingerprints else &.{},
             .blockers = if (blocker) |value| blockerSlice(value) else &.{},
             .warnings = if (image.link_image == null) &.{.relink_not_performed} else &.{},
         });

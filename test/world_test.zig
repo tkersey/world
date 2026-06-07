@@ -296,6 +296,12 @@ test "capsule certificate derives from image and quiescence without image hash c
     try std.testing.expectEqual(image.image_fingerprint, cert.capsule_image_fingerprint);
     try std.testing.expectEqual(image.manifest.manifest_fingerprint, cert.capsule_manifest_fingerprint);
     try std.testing.expectEqual(report.report_fingerprint, cert.quiescence_report_fingerprint);
+    const wrong_report = world.Capsule.QuiescenceReport.init(.{
+        .runspace_fingerprint = 0x9999,
+        .quiescent = true,
+        .normal_form = .quiescent_completed,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Capsule.certificate(image, wrong_report));
 }
 
 test "capsule freezeRun produces consistent reference image" {
@@ -939,6 +945,9 @@ test "capsule thaw restores completed capsule with handle remap" {
     try std.testing.expectEqual(@as(usize, 1), image.run_images.len);
     const slot_run_image_fingerprint = image.runspace_image.run_slots[0].run_image_fingerprint orelse return error.ExpectedRunImage;
     try std.testing.expectEqual(image.run_images[0].run_image_fingerprint, slot_run_image_fingerprint);
+    const thaw_plan = try world.Capsule.planThaw(image, 0, 0, 0x7775, .{ .mode = .restore_completed });
+    try std.testing.expectEqual(@as(usize, 1), thaw_plan.handle_remapping_plan.len);
+    try std.testing.expectEqual(handle.handle_fingerprint, thaw_plan.handle_remapping_plan[0]);
 
     var terminal_receiver = world.Runspace.init(allocator, .{ .max_runs = 0, .preserve_completed_runs = false });
     defer terminal_receiver.deinit();
@@ -1795,6 +1804,9 @@ test "capsule parked freeze embeds run image and thaw enforces receiver capacity
     const slot_run_image_fingerprint = image.runspace_image.run_slots[0].run_image_fingerprint orelse return error.ExpectedRunImage;
     try std.testing.expectEqual(image.run_images[0].run_image_fingerprint, slot_run_image_fingerprint);
     try image.validate(.{});
+    const parked_plan = try world.Capsule.planThaw(image, target_ref.target_ref_fingerprint, 0, 0x5150_3990, .{ .mode = .restore_parked });
+    try std.testing.expectEqual(@as(usize, 1), parked_plan.mailbox_id_remapping_plan.len);
+    try std.testing.expectEqual(image.runspace_image.mailbox_image.?.pending_port_fingerprints[0], parked_plan.mailbox_id_remapping_plan[0]);
     var bad_pending = image.runspace_image.mailbox_image.?.pending_port_entries[0];
     bad_pending.pending_port_image_fingerprint +%= 1;
     const bad_pending_entries = [_]world.Capsule.PendingPortImage{bad_pending};
