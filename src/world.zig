@@ -2236,6 +2236,7 @@ pub const Admission = struct {
         thaw_plan: ?Capsule.ThawPlan = null,
         restore_report: ?Capsule.RestoreReport = null,
     }) Admission.AdmissionReport {
+        const image_valid = capsuleImageValid(args.image);
         const witnesses_valid =
             (args.certificate == null or capsuleCertificateValid(args.certificate.?)) and
             (args.thaw_plan == null or capsuleThawPlanValid(args.thaw_plan.?)) and
@@ -2261,9 +2262,9 @@ pub const Admission = struct {
             .mode = admissionModeForCapsuleAdmission(args.mode),
             .policy_fingerprint = 0,
         });
-        const accepted = witnesses_valid and witnesses_bound and witness_modes_bound and has_required_witnesses and witnesses_accept;
+        const accepted = image_valid and witnesses_valid and witnesses_bound and witness_modes_bound and has_required_witnesses and witnesses_accept;
         if (!accepted) {
-            const invalid_witnesses = !witnesses_valid or !witnesses_bound or !witness_modes_bound or !has_required_witnesses;
+            const invalid_witnesses = !image_valid or !witnesses_valid or !witnesses_bound or !witness_modes_bound or !has_required_witnesses;
             return Admission.AdmissionReport.rejected(.{
                 .request = request,
                 .package_fingerprint = args.image.image_fingerprint,
@@ -2294,6 +2295,11 @@ pub const Admission = struct {
             .capsule_restore_report_fingerprint = if (args.restore_report) |report| report.restore_report_fingerprint else null,
             .summary = "capsule admission accepted",
         });
+    }
+
+    fn capsuleImageValid(image: Capsule.Image) bool {
+        image.validate(.{}) catch return false;
+        return true;
     }
 
     fn capsuleCertificateValid(certificate: Capsule.Certificate) bool {
@@ -18133,6 +18139,8 @@ pub const Capsule = struct {
             });
         }
 
+        if (runspace.config.require_admission) return error.RunspaceAdmissionRequired;
+        if (!runspace.config.allow_handoff_install) return error.RunspaceInstallDenied;
         try ensureRestoreRunCapacity(runspace, image.runspace_image.run_slots);
 
         const allocator = runspace.allocator;
@@ -18786,7 +18794,12 @@ pub const Capsule = struct {
             for (images.items) |*image| image.deinit(allocator);
             images.deinit(allocator);
         };
-        if (!options.include_run_images) return images.toOwnedSlice(allocator);
+        if (!options.include_run_images) {
+            for (runspace.slots.items) |slot| {
+                if (slotNeedsRunImageForCapsule(slot)) return error.InvalidFrameEncoding;
+            }
+            return images.toOwnedSlice(allocator);
+        }
         try images.ensureUnusedCapacity(allocator, runspace.slots.items.len);
         for (runspace.slots.items, 0..) |slot, index| {
             if (!slotNeedsRunImageForCapsule(slot)) continue;

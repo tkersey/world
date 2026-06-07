@@ -1760,6 +1760,15 @@ test "capsule handoff admission binds restore witnesses and receiver permit" {
     try std.testing.expectEqual(thaw.thaw_plan_fingerprint, admission.capsule_thaw_plan_fingerprint.?);
     try std.testing.expectEqual(restore.restore_report_fingerprint, admission.capsule_restore_report_fingerprint.?);
 
+    var malformed_image = imported;
+    malformed_image.image_fingerprint +%= 1;
+    const malformed_image_rejected = world.Admission.capsuleAdmissionReport(.{
+        .mode = .inspect_only,
+        .image = malformed_image,
+    });
+    try std.testing.expect(!malformed_image_rejected.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, malformed_image_rejected.blockers[0]);
+
     const inspect_thaw = try world.Capsule.planThaw(imported, target_ref.target_ref_fingerprint, 0, null, .{ .mode = .inspect_only, .require_local_permit = false });
     var inspect_receiver = world.Runspace.init(allocator, .{});
     defer inspect_receiver.deinit();
@@ -2146,6 +2155,16 @@ test "capsule parked freeze embeds run image and thaw enforces receiver capacity
     try std.testing.expectError(error.BudgetExceeded, world.Capsule.thawIntoRunspace(image, &capped_receiver, target_ref.target_ref_fingerprint, 0, 0x5150_3991, .{ .mode = .restore_parked }));
     try std.testing.expectEqual(@as(usize, 0), capped_receiver.slots.items.len);
     try std.testing.expectEqual(@as(usize, 0), capped_receiver.mailbox.pendingCount());
+
+    var admission_required_receiver = world.Runspace.init(allocator, .{ .require_admission = true });
+    defer admission_required_receiver.deinit();
+    try std.testing.expectError(error.RunspaceAdmissionRequired, world.Capsule.thawIntoRunspace(image, &admission_required_receiver, target_ref.target_ref_fingerprint, 0, 0x5150_3991, .{ .mode = .restore_parked }));
+    try std.testing.expectEqual(@as(usize, 0), admission_required_receiver.slots.items.len);
+
+    var handoff_denied_receiver = world.Runspace.init(allocator, .{ .allow_handoff_install = false });
+    defer handoff_denied_receiver.deinit();
+    try std.testing.expectError(error.RunspaceInstallDenied, world.Capsule.thawIntoRunspace(image, &handoff_denied_receiver, target_ref.target_ref_fingerprint, 0, 0x5150_3991, .{ .mode = .restore_parked }));
+    try std.testing.expectEqual(@as(usize, 0), handoff_denied_receiver.slots.items.len);
 
     var receiver = world.Runspace.init(allocator, .{});
     defer receiver.deinit();
