@@ -259,7 +259,7 @@ pub const world_admitted_run_fingerprint_version: u32 = 6;
 pub const world_run_handle_format_version: u32 = 1;
 pub const world_run_handle_fingerprint_version: u32 = 1;
 pub const world_pending_port_format_version: u32 = 1;
-pub const world_pending_port_fingerprint_version: u32 = 1;
+pub const world_pending_port_fingerprint_version: u32 = 2;
 pub const world_runspace_config_fingerprint_version: u32 = 1;
 pub const world_runspace_event_fingerprint_version: u32 = 2;
 pub const world_fabric_format_version: u32 = 1;
@@ -16520,7 +16520,10 @@ pub const Capsule = struct {
             }
             if (self.status == .parked_on_port) {
                 if (self.current_pending_mailbox_id == null) return error.InvalidFrameEncoding;
-            } else if (self.current_pending_mailbox_id != null and self.status != .parked_on_supervision) return error.InvalidFrameEncoding;
+            } else if (self.current_pending_mailbox_id != null) switch (self.status) {
+                .parked_on_supervision, .exported => {},
+                else => return error.InvalidFrameEncoding,
+            };
             switch (self.role) {
                 .root => if (self.parent_run_handle_fingerprint != null) return error.InvalidFrameEncoding,
                 .branch, .provider => if (self.parent_run_handle_fingerprint == null) return error.InvalidFrameEncoding,
@@ -18440,7 +18443,7 @@ pub const Capsule = struct {
         if (manifest.pending_port_count != pendingPortImageCount(runspace_image_value)) return error.InvalidFrameEncoding;
         if (manifest.active_fabric_invocation_count != runspace_image_value.active_fabric_invocation_refs.len) return error.InvalidFrameEncoding;
         try validateKindNormalForm(manifest.kind, manifest.normal_form);
-        try validateRunSlotNormalForm(manifest.normal_form, runspace_image_value.run_slots, manifest.pending_port_count, manifest.active_fabric_invocation_count);
+        try validateRunSlotNormalForm(image, manifest.normal_form, manifest.pending_port_count, manifest.active_fabric_invocation_count);
         try validateManifestRootSlotCoverage(image);
         try validateParkedSlotMailboxCoverage(image);
         if (image.link_image) |link| {
@@ -18475,6 +18478,21 @@ pub const Capsule = struct {
                 if (slot.status == .parked_on_port) return error.InvalidFrameEncoding;
                 continue;
             };
+            if (slot.status == .exported) {
+                const run_image_fingerprint = slot.run_image_fingerprint orelse return error.InvalidFrameEncoding;
+                const run_image = capsuleRunImageByFingerprint(image.run_images, run_image_fingerprint) orelse return error.InvalidFrameEncoding;
+                if (run_image.current_state.run_state_fingerprint != slot.run_state_fingerprint) return error.InvalidFrameEncoding;
+                switch (run_image.current_state.status) {
+                    .parked_on_port, .parked_on_supervision => {
+                        if (run_image.current_state.pending_request_fingerprint == null) return error.InvalidFrameEncoding;
+                        if (run_image.pending_request_frame) |frame| {
+                            if (frame.frame_fingerprint != run_image.current_state.pending_request_fingerprint.?) return error.InvalidFrameEncoding;
+                        }
+                    },
+                    else => return error.InvalidFrameEncoding,
+                }
+                continue;
+            }
             const mailbox = maybe_mailbox orelse return error.InvalidFrameEncoding;
             var found = false;
             for (mailbox.pending_port_entries) |entry| {
@@ -18615,14 +18633,29 @@ pub const Capsule = struct {
         }
     }
 
-    fn validateRunSlotNormalForm(normal_form: NormalForm, slots: []const RunSlotImage, pending_port_count: usize, active_fabric_count: usize) !void {
+    fn validateRunSlotNormalForm(image: Image, normal_form: NormalForm, pending_port_count: usize, active_fabric_count: usize) !void {
         var completed_count: usize = 0;
         var failed_count: usize = 0;
         var parked_count: usize = 0;
         var unsupported_count: usize = 0;
-        for (slots) |slot| {
+        for (image.runspace_image.run_slots) |slot| {
             switch (slot.status) {
-                .completed, .exported => completed_count += 1,
+                .completed => completed_count += 1,
+                .exported => switch (capturedRunStateStatus(image, slot) orelse return error.InvalidFrameEncoding) {
+                    .completed => {
+                        if (slot.current_pending_mailbox_id != null) return error.InvalidFrameEncoding;
+                        completed_count += 1;
+                    },
+                    .parked_on_port, .parked_on_supervision => {
+                        if (slot.current_pending_mailbox_id == null) return error.InvalidFrameEncoding;
+                        parked_count += 1;
+                    },
+                    .failed => {
+                        if (slot.current_pending_mailbox_id != null) return error.InvalidFrameEncoding;
+                        failed_count += 1;
+                    },
+                    .not_started, .running => unsupported_count += 1,
+                },
                 .failed, .rejected => failed_count += 1,
                 .parked_on_port, .parked_on_supervision => parked_count += 1,
                 .admitted, .runnable => unsupported_count += 1,
@@ -18631,11 +18664,11 @@ pub const Capsule = struct {
         switch (normal_form) {
             .quiescent_completed => {
                 if (pending_port_count != 0 or active_fabric_count != 0) return error.InvalidFrameEncoding;
-                if (completed_count != slots.len) return error.InvalidFrameEncoding;
+                if (completed_count != image.runspace_image.run_slots.len) return error.InvalidFrameEncoding;
             },
             .quiescent_failed => {
                 if (pending_port_count != 0 or active_fabric_count != 0) return error.InvalidFrameEncoding;
-                if (failed_count == 0 or completed_count + failed_count != slots.len) return error.InvalidFrameEncoding;
+                if (failed_count == 0 or completed_count + failed_count != image.runspace_image.run_slots.len) return error.InvalidFrameEncoding;
             },
             .quiescent_parked => {
                 if (active_fabric_count != 0 or parked_count == 0 or unsupported_count != 0) return error.InvalidFrameEncoding;
@@ -18647,6 +18680,13 @@ pub const Capsule = struct {
                 if (unsupported_count == 0) return error.InvalidFrameEncoding;
             },
         }
+    }
+
+    fn capturedRunStateStatus(image: Image, slot: RunSlotImage) ?RunState.Status {
+        const fingerprint = slot.run_image_fingerprint orelse return null;
+        const run_image = capsuleRunImageByFingerprint(image.run_images, fingerprint) orelse return null;
+        if (run_image.current_state.run_state_fingerprint != slot.run_state_fingerprint) return null;
+        return run_image.current_state.status;
     }
 
     fn linkFabricPlanWitnessesCover(manifest_refs: []const u64, link_plan_witness_refs: []const u64) bool {
@@ -18804,6 +18844,12 @@ pub const Capsule = struct {
     }
 
     fn runImageStateMatchesCapsuleSlot(run_image: RunImage, slot_image: RunSlotImage) bool {
+        if (slot_image.status == .exported) {
+            return switch (run_image.current_state.status) {
+                .completed, .parked_on_port, .parked_on_supervision, .failed => true,
+                .not_started, .running => false,
+            };
+        }
         return run_image.current_state.status == runStateStatusForCapsuleStatus(slot_image.status);
     }
 

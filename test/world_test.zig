@@ -177,6 +177,7 @@ test "fabric route fingerprint stable and route kinds represented" {
 }
 
 test "linker namespace exposes kernel boundary and stable policy fingerprint" {
+    try std.testing.expectEqual(@as(u32, 2), world.world_pending_port_fingerprint_version);
     try std.testing.expectEqual(@as(u32, 1), world.world_linker_policy_fingerprint_version);
     try std.testing.expectEqual(@as(u32, 1), world.world_linker_catalog_fingerprint_version);
     try std.testing.expectEqual(@as(u32, 1), world.world_assembly_fingerprint_version);
@@ -20609,6 +20610,10 @@ test "runspace supervised export events carry receipt witnesses" {
     const parked_export_event = parked_runspace.report().emitted_events[parked_runspace.report().emitted_events.len - 1];
     try std.testing.expectEqual(world.Runspace.EventKind.run_exported, parked_export_event.kind);
     try std.testing.expectEqual(parked_receipt, parked_export_event.run_receipt_fingerprint.?);
+    var parked_capsule = try world.Capsule.freezeRunspace(&parked_runspace, .{});
+    defer parked_capsule.deinit(std.testing.allocator);
+    try std.testing.expectEqual(world.Capsule.NormalForm.quiescent_parked, parked_capsule.manifest.normal_form);
+    try parked_capsule.validate(.{});
 
     const sender_receipt_fingerprint: u64 = 0x5eed_cafe;
     const admitted_permit = world.Supervision.issue(fixtures.Strict.Target, StrictEnv, .{
