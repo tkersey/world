@@ -1504,6 +1504,26 @@ test "capsule relink requires manifest fabric plan coverage" {
     try std.testing.expectEqual(world.Capsule.LinkCertificateMatchStatus.matched, guest_accepted.link_certificate_match_status);
     try std.testing.expectEqual(world.Capsule.RelinkStatus.matched, guest_accepted.relink_status);
     try std.testing.expectEqual(@as(usize, 0), guest_accepted.blockers.len);
+    const residual_link = world.Capsule.LinkImage.init(.{
+        .link_plan_fingerprint = 0x1010,
+        .link_certificate_fingerprint = 0x2020,
+        .assembly_fingerprint = 0x3030,
+        .linker_policy_fingerprint = 0x4040,
+        .residual_import_set_fingerprint = 0x5150_3710,
+        .route_synthesis_refs = &covered_route_refs,
+    });
+    const residual_image = world.Capsule.Image.init(.{
+        .manifest = manifest,
+        .runspace_image = runspace_image,
+        .link_image = residual_link,
+        .fabric_image = fabric_image,
+    });
+    const residual_rejected = try world.Capsule.verifyLink(residual_image, 0, .{});
+    try std.testing.expectEqual(world.Capsule.RelinkStatus.rejected, residual_rejected.relink_status);
+    try std.testing.expectEqual(world.Capsule.Blocker.residual_import_mismatch, residual_rejected.blockers[0]);
+    const residual_accepted = try world.Capsule.verifyLink(residual_image, 0, .{ .expected_residual_import_set_fingerprint = 0x5150_3710 });
+    try std.testing.expectEqual(world.Capsule.RelinkStatus.matched, residual_accepted.relink_status);
+    try std.testing.expectEqual(@as(usize, 0), residual_accepted.blockers.len);
     const fabric_only_manifest = world.Capsule.Manifest.init(.{
         .kind = .completed_assembly,
         .root_target_ref_fingerprint = root_ref.target_ref_fingerprint,

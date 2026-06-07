@@ -16204,6 +16204,7 @@ pub const Capsule = struct {
         require_link_certificate: bool = true,
         allow_relink_drift: bool = false,
         require_residual_import_match: bool = true,
+        expected_residual_import_set_fingerprint: ?u64 = null,
         require_fabric_plan_match: bool = true,
         require_guest_conformance: bool = false,
     };
@@ -18284,18 +18285,20 @@ pub const Capsule = struct {
             });
         };
         const catalog_matched = link.catalog_fingerprint == null or local_catalog_fingerprint == 0 or link.catalog_fingerprint.? == local_catalog_fingerprint;
-        const residual_matched = !policy.require_residual_import_match or image.manifest.link_plan_fingerprint == null or image.manifest.link_plan_fingerprint.? == link.link_plan_fingerprint;
+        const residual_matched = !policy.require_residual_import_match or
+            link.residual_import_set_fingerprint == (policy.expected_residual_import_set_fingerprint orelse 0);
         const fabric_matched = !policy.require_fabric_plan_match or fabricPlanRefsCovered(image.manifest.fabric_plan_fingerprints, link.route_synthesis_refs);
         const guest_conformance_matched = !policy.require_guest_conformance or guestConformanceRefsCovered(image.manifest.guest_conformance_report_fingerprints, image.guest_conformance_refs);
         const matched = catalog_matched and residual_matched and fabric_matched and guest_conformance_matched;
         const accepted = matched or policy.allow_relink_drift;
+        const blocker: Blocker = if (!catalog_matched) .relink_drift_rejected else if (!residual_matched) .residual_import_mismatch else .relink_drift_rejected;
         return ThawPlan.init(.{
             .capsule_image_fingerprint = image.image_fingerprint,
             .requested_mode = .relink_and_restore,
             .local_target_registry_fingerprint = local_catalog_fingerprint,
             .link_certificate_match_status = if (matched) .matched else .mismatched,
             .relink_status = if (matched) .matched else if (policy.allow_relink_drift) .drift_allowed else .rejected,
-            .blockers = if (accepted) &.{} else &.{.relink_drift_rejected},
+            .blockers = if (accepted) &.{} else blockerSlice(blocker),
         });
     }
 
