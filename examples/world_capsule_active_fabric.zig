@@ -153,6 +153,7 @@ pub fn main(init: std.process.Init) !void {
     try stdout.print("active_fabric_invocation_fingerprint={x}\n", .{invocation.invocation_fingerprint});
     try stdout.print("pending_provider_port_fingerprint={x}\n", .{provider_pending.pending_port_fingerprint});
     try stdout.print("restore_report_fingerprint={x}\n", .{restore.restore_report_fingerprint});
-    try stdout.print("final_result=active-fabric-restored\n", .{});
+    try stdout.print("restore_accepted={}\n", .{restore.accepted});
+    try stdout.print("final_result=active-fabric-restore-denied\n", .{});
     try stdout.flush();
 }

@@ -17434,8 +17434,10 @@ pub const Capsule = struct {
             else
                 runImageFingerprintForSlot(slot);
             var slot_image = try runSlotImageForSlot(allocator, runspace, slot, run_image_fingerprint);
-            errdefer slot_image.deinit(allocator);
+            var slot_image_owned = true;
+            errdefer if (slot_image_owned) slot_image.deinit(allocator);
             try slot_images.append(allocator, slot_image);
+            slot_image_owned = false;
             if (slot.parent_run_handle_fingerprint == null) {
                 try root_refs.append(allocator, slot.handle.handle_fingerprint);
             } else {
@@ -17761,10 +17763,10 @@ pub const Capsule = struct {
         var fabric_image_owned = maybe_fabric_image != null;
         errdefer if (fabric_image_owned) if (maybe_fabric_image) |*image| image.deinit(allocator);
 
-        var maybe_link_image: ?LinkImage = if (assembly) |value|
+        var maybe_link_image: ?LinkImage = if (options.include_link_certificate) if (assembly) |value|
             try linkImageFromAssembly(allocator, value, value.link_plan_fingerprint, null)
         else
-            null;
+            null else null;
         var link_image_owned = maybe_link_image != null;
         errdefer if (link_image_owned) if (maybe_link_image) |*image| image.deinit(allocator);
 
@@ -17812,9 +17814,9 @@ pub const Capsule = struct {
             .kind = capsuleKindForNormalForm(report.normal_form),
             .root_target_ref_fingerprint = rootTargetRefFingerprintForFreeze(runspace, assembly),
             .root_module_ref_fingerprint = if (assembly) |value| value.root_target_ref.boundary_module_fingerprint else rootModuleRefFingerprintForFreeze(runspace),
-            .link_plan_fingerprint = if (assembly) |value| value.link_plan_fingerprint else null,
-            .link_certificate_fingerprint = if (assembly) |value| value.linker_certificate_fingerprint else null,
-            .assembly_fingerprint = if (assembly) |value| value.assembly_fingerprint else null,
+            .link_plan_fingerprint = if (options.include_link_certificate) if (assembly) |value| value.link_plan_fingerprint else null else null,
+            .link_certificate_fingerprint = if (options.include_link_certificate) if (assembly) |value| value.linker_certificate_fingerprint else null else null,
+            .assembly_fingerprint = if (options.include_link_certificate) if (assembly) |value| value.assembly_fingerprint else null else null,
             .admission_receipt_fingerprints = admission_refs,
             .environment_certificate_fingerprints = environment_refs,
             .run_permit_fingerprints = permit_refs,
@@ -17921,12 +17923,13 @@ pub const Capsule = struct {
         try image.validate(.{ .max_image_bytes = options.max_image_bytes });
         const blocker: ?Blocker = thawBlocker(image, registry_fingerprint, environment_fingerprint, permit_fingerprint, options);
         const accepted = blocker == null;
+        const link_status = linkMatchStatusForThaw(image, registry_fingerprint);
         return ThawPlan.init(.{
             .capsule_image_fingerprint = image.image_fingerprint,
             .requested_mode = options.mode,
             .local_target_registry_fingerprint = registry_fingerprint,
-            .link_certificate_match_status = linkMatchStatusForThaw(image, registry_fingerprint),
-            .relink_status = if (accepted) .matched else .rejected,
+            .link_certificate_match_status = link_status,
+            .relink_status = if (accepted) if (link_status == .mismatched and options.allow_relink_drift) .drift_allowed else .matched else .rejected,
             .environment_preflight_refs = image.manifest.environment_certificate_fingerprints,
             .guest_conformance_refs = image.manifest.guest_conformance_report_fingerprints,
             .blockers = if (blocker) |value| blockerSlice(value) else &.{},
@@ -18159,7 +18162,7 @@ pub const Capsule = struct {
         if (options.require_link_match) {
             if (image.link_image) |link| {
                 if (link.catalog_fingerprint) |catalog| {
-                    if (registry_fingerprint != 0 and catalog != registry_fingerprint) return .link_plan_mismatch;
+                    if (registry_fingerprint != 0 and catalog != registry_fingerprint and !options.allow_relink_drift) return .link_plan_mismatch;
                 }
             }
         }
@@ -18172,7 +18175,7 @@ pub const Capsule = struct {
             .replay_only => image.manifest.kind == .replay_only or image.manifest.kind == .completed_assembly or image.manifest.kind == .full_assembly,
             .restore_completed => image.manifest.kind == .completed_assembly or image.manifest.normal_form == .quiescent_completed,
             .restore_failed => image.manifest.kind == .failed_assembly or image.manifest.normal_form == .quiescent_failed,
-            .restore_parked => image.manifest.kind == .parked_assembly or image.manifest.normal_form == .quiescent_parked or image.manifest.normal_form == .active_fabric_parked,
+            .restore_parked => image.manifest.kind == .parked_assembly and image.manifest.normal_form == .quiescent_parked,
             .relink_and_restore, .verify_and_restore => image.link_image != null and normalFormIsRestorable(image.manifest.normal_form),
         };
     }
@@ -18251,8 +18254,8 @@ pub const Capsule = struct {
 
     fn normalFormIsRestorable(normal_form: NormalForm) bool {
         return switch (normal_form) {
-            .quiescent_completed, .quiescent_failed, .quiescent_parked, .active_fabric_parked => true,
-            .unsupported_running, .partial_with_blockers => false,
+            .quiescent_completed, .quiescent_failed, .quiescent_parked => true,
+            .active_fabric_parked, .unsupported_running, .partial_with_blockers => false,
         };
     }
 

@@ -785,6 +785,14 @@ test "capsule freeze freezes completed linked assembly" {
     try cert.validate();
     try std.testing.expectEqual(image.image_fingerprint, cert.capsule_image_fingerprint);
     try std.testing.expectEqual(image.link_image.?.link_image_fingerprint, cert.link_image_fingerprint.?);
+
+    var omitted_link = try world.Capsule.freezeAssembly(&runspace, assembly, .{ .include_link_certificate = false });
+    defer omitted_link.deinit(allocator);
+    try std.testing.expect(omitted_link.link_image == null);
+    try std.testing.expect(omitted_link.manifest.link_plan_fingerprint == null);
+    try std.testing.expect(omitted_link.manifest.link_certificate_fingerprint == null);
+    try std.testing.expect(omitted_link.manifest.assembly_fingerprint == null);
+    try omitted_link.validate(.{});
 }
 
 test "capsule freeze rejects non-quiescent runspace" {
@@ -1076,6 +1084,27 @@ test "capsule relink requires manifest fabric plan coverage" {
     try std.testing.expectEqual(world.Capsule.LinkCertificateMatchStatus.matched, accepted.link_certificate_match_status);
     try std.testing.expectEqual(world.Capsule.RelinkStatus.matched, accepted.relink_status);
     try std.testing.expectEqual(@as(usize, 0), accepted.blockers.len);
+
+    const catalog_link = world.Capsule.LinkImage.init(.{
+        .link_plan_fingerprint = 0x1010,
+        .link_certificate_fingerprint = 0x2020,
+        .assembly_fingerprint = 0x3030,
+        .linker_policy_fingerprint = 0x4040,
+        .catalog_fingerprint = 0x9999,
+        .route_synthesis_refs = &covered_route_refs,
+    });
+    const catalog_image = world.Capsule.Image.init(.{
+        .manifest = manifest,
+        .runspace_image = runspace_image,
+        .link_image = catalog_link,
+        .fabric_image = fabric_image,
+    });
+    const drift_rejected = try world.Capsule.planThaw(catalog_image, root_ref.target_ref_fingerprint, 0, 0x5150_3711, .{ .mode = .restore_completed });
+    try std.testing.expectEqual(world.Capsule.Blocker.link_plan_mismatch, drift_rejected.blockers[0]);
+    const drift_allowed_thaw = try world.Capsule.planThaw(catalog_image, root_ref.target_ref_fingerprint, 0, 0x5150_3712, .{ .mode = .restore_completed, .allow_relink_drift = true });
+    try std.testing.expectEqual(@as(usize, 0), drift_allowed_thaw.blockers.len);
+    try std.testing.expectEqual(world.Capsule.LinkCertificateMatchStatus.mismatched, drift_allowed_thaw.link_certificate_match_status);
+    try std.testing.expectEqual(world.Capsule.RelinkStatus.drift_allowed, drift_allowed_thaw.relink_status);
 
     const wrong_link = world.Capsule.LinkImage.init(.{
         .link_plan_fingerprint = 0x9999,
@@ -1410,7 +1439,7 @@ test "capsule parked freeze embeds run image and thaw enforces receiver capacity
     try std.testing.expectEqual(@as(usize, 1), receiver.mailbox.pendingCount());
 }
 
-test "capsule active fabric restore rehydrates pending mailbox entries" {
+test "capsule active fabric restore rejects mutation without fabric state image" {
     const allocator = std.testing.allocator;
     const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
@@ -1528,11 +1557,11 @@ test "capsule active fabric restore rehydrates pending mailbox entries" {
     defer receiver.deinit();
     var restore = try world.Capsule.thawIntoRunspace(image, &receiver, parent_ref.target_ref_fingerprint, 0, 0x5150_3a03, .{ .mode = .restore_parked });
     defer restore.deinit(allocator);
-    try std.testing.expect(restore.accepted);
-    try std.testing.expectEqual(@as(usize, 2), receiver.mailbox.pendingCount());
-    try std.testing.expect(receiver.slots.items[0].installed_run_image != null);
-    try std.testing.expect(receiver.slots.items[1].installed_run_image != null);
-    try std.testing.expectEqual(@as(usize, 4), restore.restored_pending_port_mappings.len);
+    try std.testing.expect(!restore.accepted);
+    try std.testing.expectEqual(world.Capsule.Blocker.malformed_image, restore.blockers[0]);
+    try std.testing.expectEqual(@as(usize, 0), receiver.slots.items.len);
+    try std.testing.expectEqual(@as(usize, 0), receiver.mailbox.pendingCount());
+    try std.testing.expectEqual(@as(usize, 0), receiver.fabric_invocations.items.len);
 }
 
 test "capsule agent transfer preserves residual external import" {
