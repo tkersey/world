@@ -3126,6 +3126,31 @@ test "capsule parked freeze embeds run image and thaw enforces receiver capacity
         .run_images = image.run_images,
     });
     try exported_image.validate(.{});
+    const exported_forged_runspace_image = world.Capsule.RunspaceImage.init(.{
+        .runspace_fingerprint = image.runspace_image.runspace_fingerprint,
+        .runspace_report_fingerprint = image.runspace_image.runspace_report_fingerprint,
+        .run_handle_mappings = image.runspace_image.run_handle_mappings,
+        .run_slots = &exported_slots,
+        .mailbox_image = forged_mailbox,
+        .runspace_event_fingerprints = image.runspace_image.runspace_event_fingerprints,
+        .root_run_handle_fingerprints = image.runspace_image.root_run_handle_fingerprints,
+        .provider_run_handle_fingerprints = image.runspace_image.provider_run_handle_fingerprints,
+        .branch_refs = image.runspace_image.branch_refs,
+        .checkpoint_refs = image.runspace_image.checkpoint_refs,
+        .transcript_image_refs = image.runspace_image.transcript_image_refs,
+        .run_image_refs = image.runspace_image.run_image_refs,
+        .run_receipt_refs = image.runspace_image.run_receipt_refs,
+        .admission_receipt_refs = image.runspace_image.admission_receipt_refs,
+        .permit_refs = image.runspace_image.permit_refs,
+        .active_fabric_invocation_refs = image.runspace_image.active_fabric_invocation_refs,
+    });
+    const exported_forged_image = world.Capsule.Image.init(.{
+        .manifest = image.manifest,
+        .runspace_image = exported_forged_runspace_image,
+        .run_image_refs = image.run_image_refs,
+        .run_images = image.run_images,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, exported_forged_image.validate(.{}));
     var exported_receiver = world.Runspace.init(allocator, .{});
     defer exported_receiver.deinit();
     var exported_restore = try world.Capsule.thawIntoRunspace(exported_image, &exported_receiver, target_ref.target_ref_fingerprint, 0, 0x5150_3992, .{ .mode = .restore_parked });

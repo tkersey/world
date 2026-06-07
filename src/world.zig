@@ -18804,6 +18804,15 @@ pub const Capsule = struct {
                     if (mailbox_id != entry.mailbox_id) continue;
                     if (slot.original_run_handle_fingerprint != entry.original_run_handle_fingerprint) continue;
                     if (slot.target_ref_fingerprint != entry.target_ref_fingerprint) continue;
+                    if (slot.status == .exported) {
+                        const run_image_fingerprint = slot.run_image_fingerprint orelse return error.InvalidFrameEncoding;
+                        const run_image = capsuleRunImageByFingerprint(image.run_images, run_image_fingerprint) orelse return error.InvalidFrameEncoding;
+                        if (run_image.current_state.run_state_fingerprint != slot.run_state_fingerprint) return error.InvalidFrameEncoding;
+                        if ((run_image.current_state.pending_request_fingerprint orelse return error.InvalidFrameEncoding) != entry.request_frame.frame_fingerprint) return error.InvalidFrameEncoding;
+                        if (run_image.pending_request_frame) |frame| {
+                            if (frame.frame_fingerprint != entry.request_frame.frame_fingerprint) return error.InvalidFrameEncoding;
+                        }
+                    }
                     coverage_count += 1;
                 }
                 if (coverage_count != 1) return error.InvalidFrameEncoding;
