@@ -2246,7 +2246,7 @@ pub const Admission = struct {
             (args.restore_report == null or !args.restore_report.?.accepted or capsuleRestoreReportAccepted(args.restore_report.?));
         const witnesses_bound =
             (args.certificate == null or capsuleCertificateMatchesImage(args.image, args.certificate.?)) and
-            (args.thaw_plan == null or args.thaw_plan.?.capsule_image_fingerprint == args.image.image_fingerprint) and
+            (args.thaw_plan == null or capsuleThawPlanMatchesImage(args.image, args.thaw_plan.?)) and
             (args.restore_report == null or args.restore_report.?.capsule_image_fingerprint == args.image.image_fingerprint) and
             (args.thaw_plan == null or args.restore_report == null or args.restore_report.?.thaw_plan_fingerprint == args.thaw_plan.?.thaw_plan_fingerprint) and
             (args.thaw_plan == null or args.restore_report == null or args.thaw_plan.?.receiver_run_permit_fingerprint == args.restore_report.?.receiver_run_permit_fingerprint) and
@@ -2316,6 +2316,18 @@ pub const Admission = struct {
 
     fn capsuleThawPlanValid(plan: Capsule.ThawPlan) bool {
         plan.validate() catch return false;
+        return true;
+    }
+
+    fn capsuleThawPlanMatchesImage(image: Capsule.Image, plan: Capsule.ThawPlan) bool {
+        if (plan.capsule_image_fingerprint != image.image_fingerprint) return false;
+        if (!Capsule.restoreModeAllowedForImage(image, plan.requested_mode)) return false;
+        if (plan.target_matches.len != 0 or plan.module_matches.len != 0 or plan.receiver_run_permit_refs.len != 0) return false;
+        if (!Capsule.u64SlicesEqual(plan.environment_preflight_refs, image.manifest.environment_certificate_fingerprints)) return false;
+        if (!Capsule.u64SlicesEqual(plan.guest_conformance_refs, image.guest_conformance_refs)) return false;
+        if (!Capsule.u64SlicesEqual(plan.handle_remapping_plan, image.runspace_image.run_handle_mappings)) return false;
+        const mailbox_refs = if (image.runspace_image.mailbox_image) |mailbox| mailbox.pending_port_fingerprints else &.{};
+        if (!Capsule.u64SlicesEqual(plan.mailbox_id_remapping_plan, mailbox_refs)) return false;
         return true;
     }
 

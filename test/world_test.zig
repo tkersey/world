@@ -2272,6 +2272,19 @@ test "capsule handoff admission binds restore witnesses and receiver permit" {
     });
     try std.testing.expect(replay_admission.accepted);
     try std.testing.expectEqual(replay_thaw.thaw_plan_fingerprint, replay_admission.capsule_thaw_plan_fingerprint.?);
+    const reference_only = try world.Capsule.freezeRun(handle, .{});
+    const forged_replay_thaw = world.Capsule.ThawPlan.init(.{
+        .capsule_image_fingerprint = reference_only.image_fingerprint,
+        .requested_mode = .replay_only,
+    });
+    try forged_replay_thaw.validate();
+    const forged_replay_admission = world.Admission.capsuleAdmissionReport(.{
+        .mode = .replay_only,
+        .image = reference_only,
+        .thaw_plan = forged_replay_thaw,
+    });
+    try std.testing.expect(!forged_replay_admission.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, forged_replay_admission.blockers[0]);
     const forged_verify_thaw = world.Capsule.ThawPlan.init(.{
         .capsule_image_fingerprint = imported.image_fingerprint,
         .requested_mode = .verify_and_restore,
