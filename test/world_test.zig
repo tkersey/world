@@ -3774,12 +3774,24 @@ test "capsule agent transfer preserves residual external import" {
     try std.testing.expect(!missing_catalog_restore.accepted);
     try std.testing.expectEqual(world.Capsule.Blocker.link_plan_mismatch, missing_catalog_restore.blockers[0]);
     try std.testing.expectEqual(@as(usize, 0), receiver.slots.items.len);
+    const catalog_thaw = try world.Capsule.planThaw(image, root_ref.target_ref_fingerprint, 0, 0x5150_3b01, .{
+        .mode = .restore_completed,
+        .local_catalog_fingerprint = linked.plan.catalog_fingerprint,
+    });
+    try std.testing.expectEqual(@as(usize, 0), catalog_thaw.blockers.len);
     var restore = try world.Capsule.thawIntoRunspace(image, &receiver, root_ref.target_ref_fingerprint, 0, 0x5150_3b01, .{
         .mode = .restore_completed,
         .local_catalog_fingerprint = linked.plan.catalog_fingerprint,
     });
     defer restore.deinit(allocator);
     try std.testing.expect(restore.accepted);
+    const admission = world.Admission.capsuleAdmissionReport(.{
+        .mode = .restore_completed,
+        .image = image,
+        .thaw_plan = catalog_thaw,
+        .restore_report = restore,
+    });
+    try std.testing.expect(admission.accepted);
     try std.testing.expectEqual(@as(usize, 1), restore.restored_root_run_handles.len);
 }
 

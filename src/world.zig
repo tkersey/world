@@ -2369,12 +2369,20 @@ pub const Admission = struct {
 
     fn capsuleAcceptedRestoreHasLocalAuthority(image: Capsule.Image, plan: Capsule.ThawPlan, report: Capsule.RestoreReport) bool {
         const environment_fingerprint = report.environment_certificate_fingerprint orelse 0;
+        const options = Capsule.ThawOptions{
+            .mode = plan.requested_mode,
+            .require_local_permit = plan.require_local_permit,
+            .require_link_match = plan.require_link_match,
+            .allow_relink_drift = plan.allow_relink_drift,
+            .local_catalog_fingerprint = plan.local_catalog_fingerprint,
+            .rerun_guest_conformance = plan.rerun_guest_conformance,
+        };
         return Capsule.thawBlocker(
             image,
             plan.local_target_registry_fingerprint,
             environment_fingerprint,
             plan.receiver_run_permit_fingerprint,
-            .{ .mode = plan.requested_mode },
+            options,
         ) == null;
     }
 
@@ -17558,6 +17566,11 @@ pub const Capsule = struct {
         capsule_image_fingerprint: u64,
         requested_mode: RestoreMode,
         local_target_registry_fingerprint: u64 = 0,
+        require_local_permit: bool = true,
+        require_link_match: bool = true,
+        allow_relink_drift: bool = false,
+        local_catalog_fingerprint: ?u64 = null,
+        rerun_guest_conformance: bool = false,
         target_matches: []const u64 = &.{},
         module_matches: []const u64 = &.{},
         link_certificate_match_status: LinkCertificateMatchStatus = .unchecked,
@@ -17576,6 +17589,11 @@ pub const Capsule = struct {
             capsule_image_fingerprint: u64,
             requested_mode: RestoreMode,
             local_target_registry_fingerprint: u64 = 0,
+            require_local_permit: bool = true,
+            require_link_match: bool = true,
+            allow_relink_drift: bool = false,
+            local_catalog_fingerprint: ?u64 = null,
+            rerun_guest_conformance: bool = false,
             target_matches: []const u64 = &.{},
             module_matches: []const u64 = &.{},
             link_certificate_match_status: LinkCertificateMatchStatus = .unchecked,
@@ -17594,6 +17612,11 @@ pub const Capsule = struct {
                 .capsule_image_fingerprint = args.capsule_image_fingerprint,
                 .requested_mode = args.requested_mode,
                 .local_target_registry_fingerprint = args.local_target_registry_fingerprint,
+                .require_local_permit = args.require_local_permit,
+                .require_link_match = args.require_link_match,
+                .allow_relink_drift = args.allow_relink_drift,
+                .local_catalog_fingerprint = args.local_catalog_fingerprint,
+                .rerun_guest_conformance = args.rerun_guest_conformance,
                 .target_matches = args.target_matches,
                 .module_matches = args.module_matches,
                 .link_certificate_match_status = args.link_certificate_match_status,
@@ -18463,6 +18486,11 @@ pub const Capsule = struct {
             .capsule_image_fingerprint = image.image_fingerprint,
             .requested_mode = options.mode,
             .local_target_registry_fingerprint = registry_fingerprint,
+            .require_local_permit = options.require_local_permit,
+            .require_link_match = options.require_link_match,
+            .allow_relink_drift = options.allow_relink_drift,
+            .local_catalog_fingerprint = options.local_catalog_fingerprint,
+            .rerun_guest_conformance = options.rerun_guest_conformance,
             .link_certificate_match_status = link_status,
             .relink_status = if (accepted) if (link_status == .mismatched and options.allow_relink_drift) .drift_allowed else .matched else .rejected,
             .environment_preflight_refs = image.manifest.environment_certificate_fingerprints,
@@ -18744,6 +18772,8 @@ pub const Capsule = struct {
                 .capsule_image_fingerprint = image.image_fingerprint,
                 .requested_mode = .relink_and_restore,
                 .local_target_registry_fingerprint = local_catalog_fingerprint,
+                .require_local_permit = false,
+                .local_catalog_fingerprint = local_catalog_fingerprint,
                 .link_certificate_match_status = .missing,
                 .relink_status = if (accepted) .matched else .blocked,
                 .blockers = if (accepted) &.{} else &.{.link_certificate_missing},
@@ -18775,6 +18805,9 @@ pub const Capsule = struct {
             .capsule_image_fingerprint = image.image_fingerprint,
             .requested_mode = .relink_and_restore,
             .local_target_registry_fingerprint = local_catalog_fingerprint,
+            .require_local_permit = false,
+            .allow_relink_drift = policy.allow_relink_drift,
+            .local_catalog_fingerprint = local_catalog_fingerprint,
             .link_certificate_match_status = if (matched) .matched else .mismatched,
             .relink_status = if (matched) .matched else if (policy.allow_relink_drift) .drift_allowed else .rejected,
             .blockers = if (accepted) &.{} else blockerSlice(blocker),
@@ -19842,6 +19875,11 @@ pub const Capsule = struct {
         hashU64(&hasher, plan.capsule_image_fingerprint);
         hashU64(&hasher, @intFromEnum(plan.requested_mode));
         hashU64(&hasher, plan.local_target_registry_fingerprint);
+        hashBool(&hasher, plan.require_local_permit);
+        hashBool(&hasher, plan.require_link_match);
+        hashBool(&hasher, plan.allow_relink_drift);
+        hashOptionalU64(&hasher, plan.local_catalog_fingerprint);
+        hashBool(&hasher, plan.rerun_guest_conformance);
         hashU64Slice(&hasher, plan.target_matches);
         hashU64Slice(&hasher, plan.module_matches);
         hashU64(&hasher, @intFromEnum(plan.link_certificate_match_status));
