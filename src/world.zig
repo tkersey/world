@@ -13115,7 +13115,8 @@ pub const Runspace = struct {
     fn runImageKindForExportedSlot(slot: Runspace.RunSlot) !RunImage.Kind {
         return switch (slot.current_state.status) {
             .completed => .completed_run,
-            .parked_on_port, .parked_on_supervision => .parked_run,
+            .parked_on_port => .parked_run,
+            .parked_on_supervision => .full_target_run,
             .failed => .replay_only_run,
             .not_started, .running => error.InvalidFrameEncoding,
         };
@@ -18729,8 +18730,12 @@ pub const Capsule = struct {
                         if (slot.current_pending_mailbox_id != null) return error.InvalidFrameEncoding;
                         completed_count += 1;
                     },
-                    .parked_on_port, .parked_on_supervision => {
+                    .parked_on_port => {
                         if (slot.current_pending_mailbox_id == null) return error.InvalidFrameEncoding;
+                        parked_count += 1;
+                    },
+                    .parked_on_supervision => {
+                        if (slot.current_pending_mailbox_id != null) return error.InvalidFrameEncoding;
                         parked_count += 1;
                     },
                     .failed => {

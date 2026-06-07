@@ -2682,6 +2682,35 @@ test "capsule parked freeze embeds run image and thaw enforces receiver capacity
     try std.testing.expectEqual(expected_state.run_state_fingerprint, restored_slot.current_state.run_state_fingerprint);
 }
 
+test "capsule freeze preserves exported supervision parked run image kind" {
+    const allocator = std.testing.allocator;
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    var source = world.Runspace.init(allocator, .{});
+    defer source.deinit();
+    const handle = world.RunHandle.init(.{
+        .runspace_fingerprint = source.runspace_fingerprint,
+        .local_run_id = 0,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+    });
+    const state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .parked_on_supervision,
+    });
+    try source.slots.append(allocator, world.Runspace.RunSlot.fromState(.{
+        .handle = handle,
+        .target_ref = target_ref,
+        .current_state = state,
+        .status = .exported,
+    }));
+
+    var image = try world.Capsule.freezeRunspace(&source, .{});
+    defer image.deinit(allocator);
+    try std.testing.expectEqual(world.Capsule.NormalForm.quiescent_parked, image.manifest.normal_form);
+    try std.testing.expectEqual(@as(usize, 1), image.run_images.len);
+    try std.testing.expectEqual(world.RunImage.Kind.full_target_run, image.run_images[0].kind);
+    try std.testing.expectEqual(world.RunState.Status.parked_on_supervision, image.run_images[0].current_state.status);
+}
+
 test "capsule active fabric restore rejects mutation without fabric state image" {
     const allocator = std.testing.allocator;
     const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
