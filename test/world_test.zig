@@ -20718,7 +20718,21 @@ test "runspace supervised export events carry receipt witnesses" {
     var parked_capsule = try world.Capsule.freezeRunspace(&parked_runspace, .{});
     defer parked_capsule.deinit(std.testing.allocator);
     try std.testing.expectEqual(world.Capsule.NormalForm.quiescent_parked, parked_capsule.manifest.normal_form);
+    try std.testing.expectEqual(@as(usize, 1), parked_capsule.run_images.len);
+    try std.testing.expectEqual(world.RunImage.Kind.parked_run, parked_capsule.run_images[0].kind);
+    try std.testing.expectEqual(world.RunState.Status.parked_on_port, parked_capsule.run_images[0].current_state.status);
     try parked_capsule.validate(.{});
+    var capped_receiver = world.Runspace.init(std.testing.allocator, .{ .max_runs = 0, .preserve_completed_runs = false });
+    defer capped_receiver.deinit();
+    try std.testing.expectError(error.BudgetExceeded, world.Capsule.thawIntoRunspace(
+        parked_capsule,
+        &capped_receiver,
+        world.TargetRef.fromTarget(fixtures.Ports.Target).target_ref_fingerprint,
+        PortsEnv.certificate(.fresh, false).certificate_fingerprint,
+        0x5150_3d01,
+        .{ .mode = .restore_parked },
+    ));
+    try std.testing.expectEqual(@as(usize, 0), capped_receiver.slots.items.len);
 
     const sender_receipt_fingerprint: u64 = 0x5eed_cafe;
     const admitted_permit = world.Supervision.issue(fixtures.Strict.Target, StrictEnv, .{

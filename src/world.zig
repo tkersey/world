@@ -13057,10 +13057,7 @@ pub const Runspace = struct {
             slot.run_receipt_fingerprint;
         if (slot.installed_run_image) |installed_image| {
             var image = try cloneRunImage(self.allocator, installed_image);
-            image.kind = switch (slot.status) {
-                .completed, .exported => if (installed_image.kind == .parked_run) .completed_run else installed_image.kind,
-                else => installed_image.kind,
-            };
+            image.kind = try runImageKindForSlotSnapshot(slot.*, installed_image.kind);
             image.current_state = slot.current_state;
             image.prior_run_permit_fingerprint = slot.run_permit_fingerprint;
             image.prior_run_receipt_fingerprint = run_receipt_fingerprint;
@@ -13084,7 +13081,8 @@ pub const Runspace = struct {
             .kind = switch (slot.status) {
                 .parked_on_port => .parked_run,
                 .parked_on_supervision => if (slot.current_state.status == .parked_on_port) .parked_run else .full_target_run,
-                .completed, .exported => .completed_run,
+                .completed => .completed_run,
+                .exported => try runImageKindForExportedSlot(slot.*),
                 .failed, .rejected => .replay_only_run,
                 .admitted, .runnable, .running => .full_target_run,
             },
@@ -13099,6 +13097,23 @@ pub const Runspace = struct {
         image.owns_pending_request_frame = owns_pending_frame;
         owns_pending_frame = false;
         return image;
+    }
+
+    fn runImageKindForSlotSnapshot(slot: Runspace.RunSlot, installed_kind: RunImage.Kind) !RunImage.Kind {
+        return switch (slot.status) {
+            .completed => if (installed_kind == .parked_run) .completed_run else installed_kind,
+            .exported => try runImageKindForExportedSlot(slot),
+            else => installed_kind,
+        };
+    }
+
+    fn runImageKindForExportedSlot(slot: Runspace.RunSlot) !RunImage.Kind {
+        return switch (slot.current_state.status) {
+            .completed => .completed_run,
+            .parked_on_port, .parked_on_supervision => .parked_run,
+            .failed => .replay_only_run,
+            .not_started, .running => error.InvalidFrameEncoding,
+        };
     }
 
     fn enqueueInstalledPending(self: *@This(), index: usize, request: Frame.Request) !void {
@@ -18166,7 +18181,7 @@ pub const Capsule = struct {
 
         if (runspace.config.require_admission) return error.RunspaceAdmissionRequired;
         if (!runspace.config.allow_handoff_install) return error.RunspaceInstallDenied;
-        try ensureRestoreRunCapacity(runspace, image.runspace_image.run_slots);
+        try ensureRestoreRunCapacity(runspace, image);
 
         const allocator = runspace.allocator;
         const slot_count_before = runspace.slots.items.len;
@@ -18629,21 +18644,26 @@ pub const Capsule = struct {
         return std.mem.eql(u64, left, right);
     }
 
-    fn ensureRestoreRunCapacity(runspace: *const Runspace, slots: []const RunSlotImage) !void {
+    fn ensureRestoreRunCapacity(runspace: *const Runspace, image: Image) !void {
         if (runspace.config.max_runs) |max| {
             var count = runspace.activeRunCountForCapacity();
-            for (slots) |slot| {
-                if (!restoredSlotCountsAgainstMaxRuns(runspace.config, slot.status)) continue;
+            for (image.runspace_image.run_slots) |slot| {
+                if (!(try restoredSlotCountsAgainstMaxRuns(runspace.config, image, slot))) continue;
                 if (count >= max) return error.BudgetExceeded;
                 count += 1;
             }
         }
     }
 
-    fn restoredSlotCountsAgainstMaxRuns(config: Runspace.Config, status: RunSlotStatus) bool {
+    fn restoredSlotCountsAgainstMaxRuns(config: Runspace.Config, image: Image, slot: RunSlotImage) !bool {
         if (config.preserve_completed_runs) return true;
-        return switch (status) {
-            .completed, .exported => false,
+        return switch (slot.status) {
+            .completed => false,
+            .exported => switch (capturedRunStateStatus(image, slot) orelse return error.InvalidFrameEncoding) {
+                .completed => false,
+                .parked_on_port, .parked_on_supervision, .failed => true,
+                .not_started, .running => return error.InvalidFrameEncoding,
+            },
             else => true,
         };
     }
