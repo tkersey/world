@@ -17057,6 +17057,9 @@ pub const Capsule = struct {
             if (self.link_plan_fingerprint == 0) return error.InvalidFrameEncoding;
             if (self.link_certificate_fingerprint == 0) return error.InvalidFrameEncoding;
             if (self.assembly_fingerprint == 0) return error.InvalidFrameEncoding;
+            if (self.catalog_fingerprint) |catalog| {
+                if (catalog == 0) return error.InvalidFrameEncoding;
+            }
             if (self.link_image_fingerprint != fingerprintLinkImage(self)) return error.InvalidFrameEncoding;
         }
 
@@ -18284,7 +18287,7 @@ pub const Capsule = struct {
             .link_certificate_match_status = link_status,
             .relink_status = if (accepted) if (link_status == .mismatched and options.allow_relink_drift) .drift_allowed else .matched else .rejected,
             .environment_preflight_refs = image.manifest.environment_certificate_fingerprints,
-            .guest_conformance_refs = image.manifest.guest_conformance_report_fingerprints,
+            .guest_conformance_refs = image.guest_conformance_refs,
             .receiver_run_permit_fingerprint = permit_fingerprint,
             .handle_remapping_plan = image.runspace_image.run_handle_mappings,
             .mailbox_id_remapping_plan = if (image.runspace_image.mailbox_image) |mailbox| mailbox.pending_port_fingerprints else &.{},

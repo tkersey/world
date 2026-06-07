@@ -1066,6 +1066,15 @@ test "link image captures assembly linker provenance" {
     try std.testing.expectEqual(assembly.linker_certificate_fingerprint, image.link_certificate_fingerprint);
     try std.testing.expectEqual(@as(u64, 0x1111), image.linker_policy_fingerprint);
     try std.testing.expectEqual(@as(?u64, 0x2222), image.catalog_fingerprint);
+    const zero_catalog = world.Capsule.LinkImage.init(.{
+        .link_plan_fingerprint = image.link_plan_fingerprint,
+        .link_certificate_fingerprint = image.link_certificate_fingerprint,
+        .assembly_fingerprint = image.assembly_fingerprint,
+        .linker_policy_fingerprint = image.linker_policy_fingerprint,
+        .catalog_fingerprint = 0,
+        .route_synthesis_refs = image.route_synthesis_refs,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, zero_catalog.validate());
     try std.testing.expectEqual(assembly.residualImportSet().residual_import_set_fingerprint, image.residual_import_set_fingerprint);
     try std.testing.expect(image.route_synthesis_refs.len >= 3);
     try std.testing.expectEqual(provider_ref.target_ref_fingerprint, image.provider_target_refs[0]);
@@ -2459,13 +2468,16 @@ test "capsule guest conformance refs are exposed during thaw and inspect restore
     });
     const missing_guest_thaw = try world.Capsule.planThaw(missing_guest_image, 0, 0, null, .{ .mode = .inspect_only, .rerun_guest_conformance = true });
     try std.testing.expectEqual(world.Capsule.Blocker.guest_conformance_missing, missing_guest_thaw.blockers[0]);
+    try std.testing.expectEqual(@as(usize, 0), missing_guest_thaw.guest_conformance_refs.len);
+    const unwitnessed_guest_thaw = try world.Capsule.planThaw(missing_guest_image, 0, 0, null, .{ .mode = .inspect_only });
+    try std.testing.expectEqual(@as(usize, 0), unwitnessed_guest_thaw.guest_conformance_refs.len);
     var missing_guest_receiver = world.Runspace.init(allocator, .{});
     defer missing_guest_receiver.deinit();
     var missing_guest_restore = try world.Capsule.thawIntoRunspace(missing_guest_image, &missing_guest_receiver, 0, 0, null, .{ .mode = .inspect_only, .rerun_guest_conformance = true });
     defer missing_guest_restore.deinit(allocator);
     try std.testing.expect(!missing_guest_restore.accepted);
     try std.testing.expect(missing_guest_restore.owns_memory);
-    try std.testing.expectEqual(guest_report.report_fingerprint, missing_guest_restore.guest_conformance_refs[0]);
+    try std.testing.expectEqual(@as(usize, 0), missing_guest_restore.guest_conformance_refs.len);
 
     const thaw = try world.Capsule.planThaw(image, 0, 0, null, .{ .mode = .inspect_only, .rerun_guest_conformance = true });
     try std.testing.expectEqual(guest_report.report_fingerprint, thaw.guest_conformance_refs[0]);
