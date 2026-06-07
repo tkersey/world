@@ -16942,6 +16942,9 @@ pub const Capsule = struct {
 
         pub fn validate(self: @This()) !void {
             if (self.fingerprint_version != world_capsule_link_image_fingerprint_version) return error.InvalidFrameEncoding;
+            if (self.link_plan_fingerprint == 0) return error.InvalidFrameEncoding;
+            if (self.link_certificate_fingerprint == 0) return error.InvalidFrameEncoding;
+            if (self.assembly_fingerprint == 0) return error.InvalidFrameEncoding;
             if (self.link_image_fingerprint != fingerprintLinkImage(self)) return error.InvalidFrameEncoding;
         }
 

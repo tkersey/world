@@ -295,6 +295,13 @@ test "capsule decode applies dependency limits to link image refs" {
         .linker_policy_fingerprint = 0x504,
         .route_synthesis_refs = &route_refs,
     });
+    const empty_link_image = world.Capsule.LinkImage.init(.{
+        .link_plan_fingerprint = 0,
+        .link_certificate_fingerprint = 0,
+        .assembly_fingerprint = 0,
+        .linker_policy_fingerprint = 0,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, empty_link_image.validate());
     const image = world.Capsule.Image.init(.{
         .manifest = manifest,
         .runspace_image = runspace_image,
