@@ -431,6 +431,7 @@ pub fn Linker(comptime W: type) type {
                         }
                         continue;
                     };
+                    if (!linkerCanSynthesizeRouteKind(policy, entry)) continue;
                     const expected = valueRefForRequirement(import_requirement);
                     if (expected.compatibleWith(descriptor.result_ref, policy)) {
                         try candidates.append(allocator, entry);

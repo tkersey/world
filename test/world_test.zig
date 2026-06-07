@@ -1867,7 +1867,7 @@ test "link rejects mixed boundary module target and module refs before route syn
     try std.testing.expectEqual(@as(usize, 0), linked.matches.len);
 }
 
-test "link non executable catalog route kinds become blockers before Fabric synthesis" {
+test "link non executable descriptor providers are ignored before Fabric synthesis" {
     const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
     const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
@@ -1905,7 +1905,8 @@ test "link non executable catalog route kinds become blockers before Fabric synt
 
     try std.testing.expect(!linked.plan.accepted());
     try std.testing.expectEqual(@as(usize, 0), linked.plan.fabric_plans.len);
-    try std.testing.expect(linked.graph.hasBlocker(.UnsupportedRouteKind));
+    try std.testing.expect(linked.graph.hasBlocker(.MissingProvider));
+    try std.testing.expect(!linked.graph.hasBlocker(.UnsupportedRouteKind));
     try std.testing.expectEqual(@as(usize, 0), linked.report.guest_conformance_blockers);
 }
 
@@ -2006,6 +2007,11 @@ test "link unsupported descriptorless providers do not consume candidate cap" {
         world.Linker.Catalog.Entry.init(.{
             .provider_kind = .reject_route,
             .label = "unsupported-reject",
+        }),
+        world.Linker.Catalog.Entry.guest(.{
+            .target_ref = provider_ref,
+            .export_descriptor = provider_export,
+            .label = "unsupported-guest",
         }),
         world.Linker.Catalog.Entry.generatedTarget(.{
             .target_ref = provider_ref,
