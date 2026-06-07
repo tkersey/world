@@ -19679,14 +19679,9 @@ pub const Capsule = struct {
     }
 
     fn fabricValueMappingWitness(runspace: *const Runspace, route: Fabric.Route) ?u64 {
-        if (fabricRouteMappingWitnessFingerprint(route)) |fingerprint| {
-            for (runspace.fabric_value_mappings.items) |mapping| {
-                if (mapping.mapping_fingerprint == fingerprint) return fingerprint;
-            }
-            return null;
-        }
+        const fingerprint = fabricRouteMappingWitnessFingerprint(route) orelse return null;
         for (runspace.fabric_value_mappings.items) |mapping| {
-            return mapping.mapping_fingerprint;
+            if (mapping.mapping_fingerprint == fingerprint) return fingerprint;
         }
         return null;
     }

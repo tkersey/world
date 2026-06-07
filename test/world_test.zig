@@ -1000,9 +1000,17 @@ test "fabric image rejects missing active route witness" {
         .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
         .inserted_event_index = 0,
     });
+    const route_without_mapping = world.Fabric.Route.init(.{
+        .route_id = 0x51ace_4040,
+        .kind = .target_export,
+        .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .parent_world_port_id = 0,
+        .provider_target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+    });
     const invocation = world.Fabric.Invocation.init(.{
         .plan_fingerprint = 0x51ace,
-        .route_fingerprint = 0xdead,
+        .route_fingerprint = route_without_mapping.route_fingerprint,
         .parent_run_handle_fingerprint = parent_handle.handle_fingerprint,
         .parent_pending_port_fingerprint = pending.pending_port_fingerprint,
         .parent_mailbox_id = 0,
@@ -1011,6 +1019,9 @@ test "fabric image rejects missing active route witness" {
         .status = .provider_parked,
     });
     try runspace.fabric_invocations.append(allocator, invocation);
+    try std.testing.expectError(error.FabricWitnessMissing, world.Capsule.fabricImage(allocator, &runspace));
+    try runspace.fabric_routes.append(allocator, route_without_mapping);
+    try runspace.fabric_value_mappings.append(allocator, fabricTestMapping(.payload_to_provider_args));
     try std.testing.expectError(error.FabricWitnessMissing, world.Capsule.fabricImage(allocator, &runspace));
 }
 
