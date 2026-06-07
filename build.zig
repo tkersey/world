@@ -636,9 +636,9 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-capsule-linked-restore",
             .desc = "Run the World Assembly Capsule linked restore example.",
             .expected_stdout =
-            \\capsule_fingerprint=768b60bd410af025
+            \\capsule_fingerprint=e6e2ac3bc246ab6c
             \\link_certificate_fingerprint=2045220a5ff7a9fd
-            \\restore_report_fingerprint=aa58d2ca9527bcd5
+            \\restore_report_fingerprint=3699b4d57a8f7ea0
             \\final_result=7
             \\
             ,
@@ -651,7 +651,7 @@ pub fn build(b: *std.Build) void {
             .expected_stdout =
             \\active_fabric_invocation_fingerprint=8d055b4f4a23bde
             \\pending_provider_port_fingerprint=82826af2d53f2782
-            \\restore_report_fingerprint=f3562471333ef007
+            \\restore_report_fingerprint=2c50e97577db3ea1
             \\restore_accepted=false
             \\final_result=active-fabric-restore-denied
             \\
@@ -663,7 +663,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-capsule-agent-transfer",
             .desc = "Run the World Assembly Capsule agent transfer example.",
             .expected_stdout =
-            \\capsule_fingerprint=bb317e4275f7a047
+            \\capsule_fingerprint=be859cc422410daa
             \\residual_external_import_count=1
             \\receiver_permit_fingerprint=e9600a9c50625a17
             \\final_result=final=actuate skeleton complete

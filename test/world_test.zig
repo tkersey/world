@@ -310,6 +310,8 @@ test "capsule freezeRun produces consistent reference image" {
     try std.testing.expectEqual(world.Capsule.Kind.reference_only, image.manifest.kind);
     try std.testing.expectEqual(@as(usize, 0), image.manifest.run_slot_count);
     try std.testing.expectEqual(@as(usize, 0), image.runspace_image.run_slots.len);
+    const denied = try world.Capsule.planThaw(image, target_ref.target_ref_fingerprint, 0, 0x5150_3302, .{ .mode = .restore_completed });
+    try std.testing.expectEqual(world.Capsule.Blocker.malformed_image, denied.blockers[0]);
 }
 
 test "capsule image validation rejects completed manifest with parked slot" {
@@ -936,6 +938,58 @@ test "capsule thaw restores completed capsule with handle remap" {
     try std.testing.expect(report.restored_root_run_handles[0] != handle.handle_fingerprint);
 }
 
+test "capsule thaw preserves branch parent links" {
+    const allocator = std.testing.allocator;
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    var source = world.Runspace.init(allocator, .{});
+    defer source.deinit();
+    const parent_handle = world.RunHandle.init(.{
+        .runspace_fingerprint = source.runspace_fingerprint,
+        .local_run_id = 0,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+    });
+    const branch_handle = world.RunHandle.init(.{
+        .runspace_fingerprint = source.runspace_fingerprint,
+        .local_run_id = 1,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .branch_id = 1,
+    });
+    try source.slots.append(allocator, world.Runspace.RunSlot.fromState(.{
+        .handle = parent_handle,
+        .target_ref = target_ref,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+            .status = .completed,
+        }),
+        .status = .completed,
+    }));
+    try source.slots.append(allocator, world.Runspace.RunSlot.fromState(.{
+        .handle = branch_handle,
+        .target_ref = target_ref,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+            .branch_id = 1,
+            .status = .completed,
+        }),
+        .status = .completed,
+        .branch_id = 1,
+        .parent_run_handle_fingerprint = parent_handle.handle_fingerprint,
+    }));
+    var image = try world.Capsule.freezeRunspace(&source, .{});
+    defer image.deinit(allocator);
+    try std.testing.expectEqual(world.Capsule.RunRole.branch, image.runspace_image.run_slots[1].role);
+    try std.testing.expectEqual(parent_handle.handle_fingerprint, image.runspace_image.run_slots[1].parent_run_handle_fingerprint.?);
+
+    var destination = world.Runspace.init(allocator, .{});
+    defer destination.deinit();
+    var report = try world.Capsule.thawIntoRunspace(image, &destination, 0, 0, 0x5150_3781, .{ .mode = .restore_completed });
+    defer report.deinit(allocator);
+    try std.testing.expect(report.accepted);
+    try std.testing.expectEqual(@as(usize, 2), destination.slots.items.len);
+    try std.testing.expectEqual(destination.slots.items[0].handle.handle_fingerprint, destination.slots.items[1].parent_run_handle_fingerprint.?);
+    try std.testing.expect(destination.slots.items[0].handle.handle_fingerprint != parent_handle.handle_fingerprint);
+}
+
 test "capsule freezeRunspace preserves run image environment refs" {
     const allocator = std.testing.allocator;
     const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
@@ -1138,15 +1192,42 @@ test "capsule relink requires manifest fabric plan coverage" {
         .catalog_fingerprint = 0x9999,
         .route_synthesis_refs = &covered_route_refs,
     });
+    const catalog_state = world.RunState.init(.{
+        .target_ref_fingerprint = root_ref.target_ref_fingerprint,
+        .status = .completed,
+    });
+    const catalog_slot = world.Capsule.RunSlotImage.init(.{
+        .original_run_handle_fingerprint = 0x5150_3711,
+        .role = .root,
+        .target_ref_fingerprint = root_ref.target_ref_fingerprint,
+        .run_state_fingerprint = catalog_state.run_state_fingerprint,
+        .status = .completed,
+    });
+    const catalog_slots = [_]world.Capsule.RunSlotImage{catalog_slot};
+    const catalog_manifest = world.Capsule.Manifest.init(.{
+        .kind = .completed_assembly,
+        .root_target_ref_fingerprint = root_ref.target_ref_fingerprint,
+        .link_plan_fingerprint = 0x1010,
+        .link_certificate_fingerprint = 0x2020,
+        .assembly_fingerprint = 0x3030,
+        .fabric_plan_fingerprints = &manifest_fabric_refs,
+        .run_slot_count = catalog_slots.len,
+        .normal_form = .quiescent_completed,
+    });
+    const catalog_runspace_image = world.Capsule.RunspaceImage.init(.{
+        .runspace_fingerprint = 0x5150_3712,
+        .runspace_report_fingerprint = 0x5150_3713,
+        .run_slots = &catalog_slots,
+    });
     const catalog_image = world.Capsule.Image.init(.{
-        .manifest = manifest,
-        .runspace_image = runspace_image,
+        .manifest = catalog_manifest,
+        .runspace_image = catalog_runspace_image,
         .link_image = catalog_link,
         .fabric_image = fabric_image,
     });
-    const drift_rejected = try world.Capsule.planThaw(catalog_image, root_ref.target_ref_fingerprint, 0, 0x5150_3711, .{ .mode = .restore_completed });
+    const drift_rejected = try world.Capsule.planThaw(catalog_image, root_ref.target_ref_fingerprint, 0, 0x5150_3714, .{ .mode = .restore_completed });
     try std.testing.expectEqual(world.Capsule.Blocker.link_plan_mismatch, drift_rejected.blockers[0]);
-    const drift_allowed_thaw = try world.Capsule.planThaw(catalog_image, root_ref.target_ref_fingerprint, 0, 0x5150_3712, .{ .mode = .restore_completed, .allow_relink_drift = true });
+    const drift_allowed_thaw = try world.Capsule.planThaw(catalog_image, root_ref.target_ref_fingerprint, 0, 0x5150_3715, .{ .mode = .restore_completed, .allow_relink_drift = true });
     try std.testing.expectEqual(@as(usize, 0), drift_allowed_thaw.blockers.len);
     try std.testing.expectEqual(world.Capsule.LinkCertificateMatchStatus.mismatched, drift_allowed_thaw.link_certificate_match_status);
     try std.testing.expectEqual(world.Capsule.RelinkStatus.drift_allowed, drift_allowed_thaw.relink_status);

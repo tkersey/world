@@ -16384,6 +16384,7 @@ pub const Capsule = struct {
         fingerprint_version: u32 = world_capsule_run_slot_image_fingerprint_version,
         slot_image_fingerprint: u64,
         original_run_handle_fingerprint: u64,
+        parent_run_handle_fingerprint: ?u64 = null,
         role: RunRole,
         target_ref_fingerprint: u64,
         module_ref_fingerprint: ?u64 = null,
@@ -16402,6 +16403,7 @@ pub const Capsule = struct {
 
         pub fn init(args: struct {
             original_run_handle_fingerprint: u64,
+            parent_run_handle_fingerprint: ?u64 = null,
             role: RunRole,
             target_ref_fingerprint: u64,
             module_ref_fingerprint: ?u64 = null,
@@ -16420,6 +16422,7 @@ pub const Capsule = struct {
             var image = @This(){
                 .slot_image_fingerprint = 0,
                 .original_run_handle_fingerprint = args.original_run_handle_fingerprint,
+                .parent_run_handle_fingerprint = args.parent_run_handle_fingerprint,
                 .role = args.role,
                 .target_ref_fingerprint = args.target_ref_fingerprint,
                 .module_ref_fingerprint = args.module_ref_fingerprint,
@@ -16446,6 +16449,11 @@ pub const Capsule = struct {
             switch (self.status) {
                 .runnable => return error.InvalidFrameEncoding,
                 .admitted, .parked_on_port, .parked_on_supervision, .completed, .failed, .exported, .rejected => {},
+            }
+            switch (self.role) {
+                .root => if (self.parent_run_handle_fingerprint != null) return error.InvalidFrameEncoding,
+                .branch, .provider => if (self.parent_run_handle_fingerprint == null) return error.InvalidFrameEncoding,
+                .replay, .verify, .guest => {},
             }
             if (self.slot_image_fingerprint != fingerprintRunSlotImage(self)) return error.InvalidFrameEncoding;
         }
@@ -18104,6 +18112,10 @@ pub const Capsule = struct {
             try handle_mappings.append(allocator, slot_image.original_run_handle_fingerprint);
             try handle_mappings.append(allocator, new_handle.handle_fingerprint);
             const status = runspaceStatusForCapsuleStatus(slot_image.status);
+            const parent_run_handle_fingerprint = if (slot_image.parent_run_handle_fingerprint) |parent|
+                try mappedHandleFingerprint(handle_mappings.items, parent)
+            else
+                null;
             const restored_target_ref = if (installed_run_image) |run_image|
                 run_image.target_ref
             else
@@ -18132,6 +18144,7 @@ pub const Capsule = struct {
                 .run_permit_fingerprint = permit_fingerprint orelse slot_image.run_permit_fingerprint,
                 .pending_mailbox_id = slot_image.current_pending_mailbox_id,
                 .branch_id = slot_image.branch_id,
+                .parent_run_handle_fingerprint = parent_run_handle_fingerprint,
                 .checkpoint_fingerprint = if (slot_image.checkpoint_refs.len == 0) null else slot_image.checkpoint_refs[0],
                 .module_ref_fingerprint = slot_image.module_ref_fingerprint,
                 .installed_run_image = installed_run_image,
@@ -18263,11 +18276,15 @@ pub const Capsule = struct {
         return switch (mode) {
             .inspect_only => true,
             .replay_only => image.manifest.kind == .replay_only or image.manifest.kind == .completed_assembly or image.manifest.kind == .full_assembly,
-            .restore_completed => image.manifest.kind == .completed_assembly or image.manifest.normal_form == .quiescent_completed,
-            .restore_failed => image.manifest.kind == .failed_assembly or image.manifest.normal_form == .quiescent_failed,
+            .restore_completed => imageHasRestorableSlots(image) and (image.manifest.kind == .completed_assembly or image.manifest.normal_form == .quiescent_completed),
+            .restore_failed => imageHasRestorableSlots(image) and (image.manifest.kind == .failed_assembly or image.manifest.normal_form == .quiescent_failed),
             .restore_parked => image.manifest.kind == .parked_assembly and image.manifest.normal_form == .quiescent_parked,
             .relink_and_restore, .verify_and_restore => image.link_image != null and normalFormIsRestorable(image.manifest.normal_form),
         };
+    }
+
+    fn imageHasRestorableSlots(image: Image) bool {
+        return image.manifest.kind != .reference_only and image.manifest.kind != .inspect_only and image.manifest.run_slot_count != 0 and image.runspace_image.run_slots.len != 0;
     }
 
     fn validateImageManifestConsistency(image: Image) !void {
@@ -18722,6 +18739,7 @@ pub const Capsule = struct {
         var hasher = std.hash.Wyhash.init(0x6361_7073_736c_6f74);
         hashU64(&hasher, image.fingerprint_version);
         hashU64(&hasher, image.original_run_handle_fingerprint);
+        hashOptionalU64(&hasher, image.parent_run_handle_fingerprint);
         hashU64(&hasher, @intFromEnum(image.role));
         hashU64(&hasher, image.target_ref_fingerprint);
         hashOptionalU64(&hasher, image.module_ref_fingerprint);
@@ -19005,7 +19023,8 @@ pub const Capsule = struct {
 
         var image = RunSlotImage.init(.{
             .original_run_handle_fingerprint = slot.handle.handle_fingerprint,
-            .role = if (slot.parent_run_handle_fingerprint == null) .root else .provider,
+            .parent_run_handle_fingerprint = slot.parent_run_handle_fingerprint,
+            .role = runSlotRoleForFreeze(slot),
             .target_ref_fingerprint = slot.target_ref.target_ref_fingerprint,
             .module_ref_fingerprint = slot.module_ref_fingerprint,
             .admission_receipt_fingerprint = slot.admission_receipt_fingerprint,
@@ -19022,6 +19041,12 @@ pub const Capsule = struct {
         });
         image.owns_memory = true;
         return image;
+    }
+
+    fn runSlotRoleForFreeze(slot: Runspace.RunSlot) RunRole {
+        if (slot.parent_run_handle_fingerprint == null) return .root;
+        if (slot.branch_id != null) return .branch;
+        return .provider;
     }
 
     fn capsuleStatusForRunspaceStatus(status: Runspace.RunStatus) RunSlotStatus {
@@ -19195,6 +19220,7 @@ pub const Capsule = struct {
         try writeU32(out, allocator, image.fingerprint_version);
         try writeU64(out, allocator, image.slot_image_fingerprint);
         try writeU64(out, allocator, image.original_run_handle_fingerprint);
+        try writeOptionalU64(out, allocator, image.parent_run_handle_fingerprint);
         try writeU8(out, allocator, @intFromEnum(image.role));
         try writeU64(out, allocator, image.target_ref_fingerprint);
         try writeOptionalU64(out, allocator, image.module_ref_fingerprint);
@@ -19216,6 +19242,7 @@ pub const Capsule = struct {
             .fingerprint_version = try readU32(bytes, cursor),
             .slot_image_fingerprint = try readU64(bytes, cursor),
             .original_run_handle_fingerprint = try readU64(bytes, cursor),
+            .parent_run_handle_fingerprint = try readOptionalU64(bytes, cursor),
             .role = try enumFromByte(RunRole, try readU8(bytes, cursor)),
             .target_ref_fingerprint = try readU64(bytes, cursor),
             .module_ref_fingerprint = try readOptionalU64(bytes, cursor),
