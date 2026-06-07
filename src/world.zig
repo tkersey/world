@@ -16896,6 +16896,7 @@ pub const Capsule = struct {
             if (self.run_slots.len > options.max_run_slots) return error.InvalidFrameEncoding;
             for (self.run_slots) |slot| try slot.validate(options);
             if (self.run_handle_mappings.len != 0 and !runspaceImageHandleMappingsMatchSlots(self)) return error.InvalidFrameEncoding;
+            if (!runspaceImageRoleRefsMatchSlots(self)) return error.InvalidFrameEncoding;
             if (self.mailbox_image) |mailbox| try mailbox.validate(options);
             if (self.image_fingerprint != fingerprintRunspaceImage(self)) return error.InvalidFrameEncoding;
         }
@@ -18744,6 +18745,30 @@ pub const Capsule = struct {
             if (image.run_handle_mappings[index] != slot.original_run_handle_fingerprint) return false;
         }
         return true;
+    }
+
+    fn runspaceImageRoleRefsMatchSlots(image: RunspaceImage) bool {
+        var root_index: usize = 0;
+        var provider_index: usize = 0;
+        for (image.run_slots) |slot| switch (slot.role) {
+            .root => {
+                if (image.root_run_handle_fingerprints.len != 0) {
+                    if (root_index >= image.root_run_handle_fingerprints.len) return false;
+                    if (image.root_run_handle_fingerprints[root_index] != slot.original_run_handle_fingerprint) return false;
+                }
+                root_index += 1;
+            },
+            .provider => {
+                if (image.provider_run_handle_fingerprints.len != 0) {
+                    if (provider_index >= image.provider_run_handle_fingerprints.len) return false;
+                    if (image.provider_run_handle_fingerprints[provider_index] != slot.original_run_handle_fingerprint) return false;
+                }
+                provider_index += 1;
+            },
+            .branch, .replay, .verify, .guest => {},
+        };
+        return (image.root_run_handle_fingerprints.len == 0 or root_index == image.root_run_handle_fingerprints.len) and
+            (image.provider_run_handle_fingerprints.len == 0 or provider_index == image.provider_run_handle_fingerprints.len);
     }
 
     fn validateUniqueRunSlotHandleRefs(slots: []const RunSlotImage) !void {

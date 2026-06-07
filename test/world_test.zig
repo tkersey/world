@@ -22515,6 +22515,32 @@ test "runspace checkpoint branch and replay install are deterministic" {
     try std.testing.expectEqual(world.Capsule.RunRole.root, branch_capsule.runspace_image.run_slots[0].role);
     try std.testing.expectEqual(world.Capsule.RunRole.branch, branch_capsule.runspace_image.run_slots[1].role);
     try std.testing.expectEqual(branch_handle.handle_fingerprint, branch_capsule.runspace_image.run_slots[1].original_run_handle_fingerprint);
+    const forged_root_refs = [_]u64{branch_handle.handle_fingerprint};
+    const forged_runspace_image = world.Capsule.RunspaceImage.init(.{
+        .runspace_fingerprint = branch_capsule.runspace_image.runspace_fingerprint,
+        .runspace_report_fingerprint = branch_capsule.runspace_image.runspace_report_fingerprint,
+        .run_handle_mappings = branch_capsule.runspace_image.run_handle_mappings,
+        .run_slots = branch_capsule.runspace_image.run_slots,
+        .mailbox_image = branch_capsule.runspace_image.mailbox_image,
+        .runspace_event_fingerprints = branch_capsule.runspace_image.runspace_event_fingerprints,
+        .root_run_handle_fingerprints = &forged_root_refs,
+        .provider_run_handle_fingerprints = branch_capsule.runspace_image.provider_run_handle_fingerprints,
+        .branch_refs = branch_capsule.runspace_image.branch_refs,
+        .checkpoint_refs = branch_capsule.runspace_image.checkpoint_refs,
+        .transcript_image_refs = branch_capsule.runspace_image.transcript_image_refs,
+        .run_image_refs = branch_capsule.runspace_image.run_image_refs,
+        .run_receipt_refs = branch_capsule.runspace_image.run_receipt_refs,
+        .admission_receipt_refs = branch_capsule.runspace_image.admission_receipt_refs,
+        .permit_refs = branch_capsule.runspace_image.permit_refs,
+        .active_fabric_invocation_refs = branch_capsule.runspace_image.active_fabric_invocation_refs,
+    });
+    const forged_capsule = world.Capsule.Image.init(.{
+        .manifest = branch_capsule.manifest,
+        .runspace_image = forged_runspace_image,
+        .run_image_refs = branch_capsule.run_image_refs,
+        .run_images = branch_capsule.run_images,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_capsule.validate(.{}));
 
     var transcript = world.Transcript.init(std.testing.allocator);
     defer transcript.deinit();

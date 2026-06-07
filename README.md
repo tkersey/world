@@ -411,7 +411,7 @@ zig build check-world-wasm
 
 `world_capsule_linked_restore` freezes a completed linked assembly capsule and thaws it into a fresh Runspace.
 
-`world_capsule_active_fabric` freezes a witnessed active Fabric invocation while parent/provider runs are parked and thaws the parked assembly.
+`world_capsule_active_fabric` freezes a witnessed active Fabric invocation while parent/provider runs are parked and reports parked restore as denied.
 
 `world_capsule_agent_transfer` demonstrates agent-shaped capsule transfer with a residual external model import.
 
