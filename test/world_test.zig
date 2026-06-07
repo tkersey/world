@@ -317,6 +317,15 @@ test "capsule freezeRun produces consistent reference image" {
 test "capsule image validation rejects completed manifest with parked slot" {
     const allocator = std.testing.allocator;
     const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const completed_with_mailbox = world.Capsule.RunSlotImage.init(.{
+        .original_run_handle_fingerprint = 0x1110,
+        .role = .root,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .run_state_fingerprint = 0x2220,
+        .current_pending_mailbox_id = 0x3330,
+        .status = .completed,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, completed_with_mailbox.validate(.{}));
     const slot = world.Capsule.RunSlotImage.init(.{
         .original_run_handle_fingerprint = 0x1111,
         .role = .root,
@@ -1379,6 +1388,22 @@ test "capsule relink requires manifest fabric plan coverage" {
     try std.testing.expectEqual(world.Capsule.LinkCertificateMatchStatus.matched, guest_accepted.link_certificate_match_status);
     try std.testing.expectEqual(world.Capsule.RelinkStatus.matched, guest_accepted.relink_status);
     try std.testing.expectEqual(@as(usize, 0), guest_accepted.blockers.len);
+    const fabric_only_manifest = world.Capsule.Manifest.init(.{
+        .kind = .completed_assembly,
+        .root_target_ref_fingerprint = root_ref.target_ref_fingerprint,
+        .fabric_plan_fingerprints = &manifest_fabric_refs,
+        .normal_form = .quiescent_completed,
+    });
+    const fabric_only_image = world.Capsule.Image.init(.{
+        .manifest = fabric_only_manifest,
+        .runspace_image = runspace_image,
+        .fabric_image = fabric_image,
+    });
+    const encoded_fabric = try fabric_only_image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(encoded_fabric);
+    for (0..encoded_fabric.len) |len| {
+        try std.testing.expectError(error.InvalidFrameEncoding, world.Capsule.Image.decode(std.testing.allocator, encoded_fabric[0..len]));
+    }
 
     const catalog_link = world.Capsule.LinkImage.init(.{
         .link_plan_fingerprint = 0x1010,

@@ -16450,6 +16450,9 @@ pub const Capsule = struct {
                 .runnable => return error.InvalidFrameEncoding,
                 .admitted, .parked_on_port, .parked_on_supervision, .completed, .failed, .exported, .rejected => {},
             }
+            if (self.status == .parked_on_port) {
+                if (self.current_pending_mailbox_id == null) return error.InvalidFrameEncoding;
+            } else if (self.current_pending_mailbox_id != null) return error.InvalidFrameEncoding;
             switch (self.role) {
                 .root => if (self.parent_run_handle_fingerprint != null) return error.InvalidFrameEncoding,
                 .branch, .provider => if (self.parent_run_handle_fingerprint == null) return error.InvalidFrameEncoding,
@@ -19650,22 +19653,65 @@ pub const Capsule = struct {
     }
 
     fn decodeFabricImage(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, options: ValidateOptions) !FabricImage {
+        const fingerprint_version = try readU32(bytes, cursor);
+        const fabric_image_fingerprint = try readU64(bytes, cursor);
+        const fabric_plan_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var fabric_plan_fingerprints_owned = true;
+        errdefer if (fabric_plan_fingerprints_owned) allocator.free(fabric_plan_fingerprints);
+        const active_invocation_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_fabric_invocations);
+        var active_invocation_fingerprints_owned = true;
+        errdefer if (active_invocation_fingerprints_owned) allocator.free(active_invocation_fingerprints);
+        const completed_receipt_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var completed_receipt_fingerprints_owned = true;
+        errdefer if (completed_receipt_fingerprints_owned) allocator.free(completed_receipt_fingerprints);
+        const parent_pending_port_refs = try readU64SliceOwned(allocator, bytes, cursor, options.max_pending_ports);
+        var parent_pending_port_refs_owned = true;
+        errdefer if (parent_pending_port_refs_owned) allocator.free(parent_pending_port_refs);
+        const provider_run_refs = try readU64SliceOwned(allocator, bytes, cursor, options.max_run_slots);
+        var provider_run_refs_owned = true;
+        errdefer if (provider_run_refs_owned) allocator.free(provider_run_refs);
+        const provider_state_summary_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_run_slots);
+        var provider_state_summary_fingerprints_owned = true;
+        errdefer if (provider_state_summary_fingerprints_owned) allocator.free(provider_state_summary_fingerprints);
+        const route_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var route_fingerprints_owned = true;
+        errdefer if (route_fingerprints_owned) allocator.free(route_fingerprints);
+        const value_mapping_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var value_mapping_fingerprints_owned = true;
+        errdefer if (value_mapping_fingerprints_owned) allocator.free(value_mapping_fingerprints);
+        const depth_route_stack = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var depth_route_stack_owned = true;
+        errdefer if (depth_route_stack_owned) allocator.free(depth_route_stack);
+        const replay_cursor_state_refs = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var replay_cursor_state_refs_owned = true;
+        errdefer if (replay_cursor_state_refs_owned) allocator.free(replay_cursor_state_refs);
+
         var image = FabricImage{
-            .fingerprint_version = try readU32(bytes, cursor),
-            .fabric_image_fingerprint = try readU64(bytes, cursor),
-            .fabric_plan_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies),
-            .active_invocation_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_fabric_invocations),
-            .completed_receipt_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies),
-            .parent_pending_port_refs = try readU64SliceOwned(allocator, bytes, cursor, options.max_pending_ports),
-            .provider_run_refs = try readU64SliceOwned(allocator, bytes, cursor, options.max_run_slots),
-            .provider_state_summary_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_run_slots),
-            .route_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies),
-            .value_mapping_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies),
-            .depth_route_stack = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies),
-            .replay_cursor_state_refs = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies),
+            .fingerprint_version = fingerprint_version,
+            .fabric_image_fingerprint = fabric_image_fingerprint,
+            .fabric_plan_fingerprints = fabric_plan_fingerprints,
+            .active_invocation_fingerprints = active_invocation_fingerprints,
+            .completed_receipt_fingerprints = completed_receipt_fingerprints,
+            .parent_pending_port_refs = parent_pending_port_refs,
+            .provider_run_refs = provider_run_refs,
+            .provider_state_summary_fingerprints = provider_state_summary_fingerprints,
+            .route_fingerprints = route_fingerprints,
+            .value_mapping_fingerprints = value_mapping_fingerprints,
+            .depth_route_stack = depth_route_stack,
+            .replay_cursor_state_refs = replay_cursor_state_refs,
             .status_summary_fingerprint = try readU64(bytes, cursor),
             .owns_memory = true,
         };
+        fabric_plan_fingerprints_owned = false;
+        active_invocation_fingerprints_owned = false;
+        completed_receipt_fingerprints_owned = false;
+        parent_pending_port_refs_owned = false;
+        provider_run_refs_owned = false;
+        provider_state_summary_fingerprints_owned = false;
+        route_fingerprints_owned = false;
+        value_mapping_fingerprints_owned = false;
+        depth_route_stack_owned = false;
+        replay_cursor_state_refs_owned = false;
         errdefer image.deinit(allocator);
         try image.validate(options);
         return image;
