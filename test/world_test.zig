@@ -2051,6 +2051,7 @@ test "capsule handoff admission binds restore witnesses and receiver permit" {
     });
     try std.testing.expect(completed_admission.accepted);
     try std.testing.expectEqual(restore.restore_report_fingerprint, completed_admission.capsule_restore_report_fingerprint.?);
+    try std.testing.expectEqual(@as(usize, imported.runspace_image.run_slots.len * 2), restore.restored_run_handle_mappings.len);
     const replay_without_thaw = world.Admission.capsuleAdmissionReport(.{
         .mode = .replay_only,
         .image = imported,
@@ -2176,6 +2177,8 @@ test "capsule handoff admission binds restore witnesses and receiver permit" {
         .capsule_image_fingerprint = restore.capsule_image_fingerprint,
         .thaw_plan_fingerprint = restore.thaw_plan_fingerprint,
         .restored_runspace_fingerprint = restore.restored_runspace_fingerprint,
+        .restored_local_run_id_start = restore.restored_local_run_id_start,
+        .restored_run_handle_mappings = restore.restored_run_handle_mappings,
         .restored_root_run_handles = restore.restored_root_run_handles,
         .restored_provider_run_handles = restore.restored_provider_run_handles,
         .restored_pending_port_mappings = restore.restored_pending_port_mappings,
@@ -2215,6 +2218,32 @@ test "capsule handoff admission binds restore witnesses and receiver permit" {
     });
     try std.testing.expect(!empty_restore_rejected.accepted);
     try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, empty_restore_rejected.blockers[0]);
+
+    const forged_handle_mappings = [_]u64{
+        imported.runspace_image.run_slots[0].original_run_handle_fingerprint,
+        0x5150_38ff,
+    };
+    const forged_root_handles = [_]u64{0x5150_38ff};
+    const forged_accepted_restore = world.Capsule.RestoreReport.init(.{
+        .capsule_image_fingerprint = restore.capsule_image_fingerprint,
+        .thaw_plan_fingerprint = restore.thaw_plan_fingerprint,
+        .restored_runspace_fingerprint = restore.restored_runspace_fingerprint,
+        .restored_local_run_id_start = restore.restored_local_run_id_start,
+        .restored_run_handle_mappings = &forged_handle_mappings,
+        .restored_root_run_handles = &forged_root_handles,
+        .receiver_run_permit_fingerprint = restore.receiver_run_permit_fingerprint,
+        .accepted = true,
+        .summary = "accepted restore with arbitrary restored handle",
+    });
+    const forged_restore_rejected = world.Admission.capsuleAdmissionReport(.{
+        .mode = .restore_completed,
+        .image = imported,
+        .certificate = cert,
+        .thaw_plan = thaw,
+        .restore_report = forged_accepted_restore,
+    });
+    try std.testing.expect(!forged_restore_rejected.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, forged_restore_rejected.blockers[0]);
 
     var mismatched_cert = cert;
     mismatched_cert.capsule_image_fingerprint +%= 1;

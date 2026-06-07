@@ -2339,24 +2339,79 @@ pub const Admission = struct {
         const mailbox_refs = if (image.runspace_image.mailbox_image) |mailbox| mailbox.pending_port_fingerprints else &.{};
         if (!Capsule.u64SlicesEqual(plan.mailbox_id_remapping_plan, mailbox_refs)) return false;
 
-        var root_count: usize = 0;
-        var provider_count: usize = 0;
-        for (image.runspace_image.run_slots) |slot| switch (slot.role) {
-            .root => root_count += 1,
-            .provider => provider_count += 1,
-            .branch, .guest, .replay, .verify => {},
-        };
-
-        const pending_mapping_count = Capsule.pendingPortImageCount(image.runspace_image) * 2;
-        const fabric_mapping_count = if (image.fabric_image) |fabric| fabric.active_invocation_fingerprints.len * 2 else 0;
         return switch (plan.requested_mode) {
-            .restore_completed, .restore_failed, .relink_and_restore => root_count != 0 and
-                report.restored_root_run_handles.len == root_count and
-                report.restored_provider_run_handles.len == provider_count and
-                report.restored_pending_port_mappings.len == pending_mapping_count and
-                report.restored_fabric_invocation_mappings.len == fabric_mapping_count,
+            .restore_completed, .restore_failed, .relink_and_restore => capsuleRestoreReportRunMappingsMatchImage(image, report) and
+                capsuleRestoreReportPendingMappingsMatchImage(image, report) and
+                capsuleRestoreReportFabricMappingsMatchImage(image, report),
             .inspect_only, .replay_only, .restore_parked, .verify_and_restore => false,
         };
+    }
+
+    fn capsuleRestoreReportRunMappingsMatchImage(image: Capsule.Image, report: Capsule.RestoreReport) bool {
+        const slots = image.runspace_image.run_slots;
+        const mappings = report.restored_run_handle_mappings;
+        if (slots.len == 0 or mappings.len != slots.len * 2) return false;
+        var root_index: usize = 0;
+        var provider_index: usize = 0;
+        for (slots, 0..) |slot, index| {
+            const mapped_original = mappings[index * 2];
+            const mapped_restored = mappings[index * 2 + 1];
+            if (mapped_original != slot.original_run_handle_fingerprint) return false;
+            const expected_restored = RunHandle.init(.{
+                .runspace_fingerprint = report.restored_runspace_fingerprint,
+                .local_run_id = report.restored_local_run_id_start + index,
+                .target_ref_fingerprint = slot.target_ref_fingerprint,
+                .admission_receipt_fingerprint = slot.admission_receipt_fingerprint,
+                .permit_fingerprint = report.receiver_run_permit_fingerprint orelse slot.run_permit_fingerprint,
+                .branch_id = slot.branch_id,
+            }).handle_fingerprint;
+            if (mapped_restored != expected_restored) return false;
+            var previous_index: usize = 0;
+            while (previous_index < index) : (previous_index += 1) {
+                if (mappings[previous_index * 2 + 1] == mapped_restored) return false;
+            }
+            switch (slot.role) {
+                .root => {
+                    if (root_index >= report.restored_root_run_handles.len) return false;
+                    if (report.restored_root_run_handles[root_index] != mapped_restored) return false;
+                    root_index += 1;
+                },
+                .provider => {
+                    if (provider_index >= report.restored_provider_run_handles.len) return false;
+                    if (report.restored_provider_run_handles[provider_index] != mapped_restored) return false;
+                    provider_index += 1;
+                },
+                .branch, .guest, .replay, .verify => {},
+            }
+        }
+        return root_index == report.restored_root_run_handles.len and provider_index == report.restored_provider_run_handles.len;
+    }
+
+    fn capsuleRestoreReportPendingMappingsMatchImage(image: Capsule.Image, report: Capsule.RestoreReport) bool {
+        const refs = if (image.runspace_image.mailbox_image) |mailbox| mailbox.pending_port_fingerprints else &.{};
+        const mappings = report.restored_pending_port_mappings;
+        if (mappings.len != refs.len * 2) return false;
+        for (refs, 0..) |pending, index| {
+            const mapped_original = mappings[index * 2];
+            const mapped_restored = mappings[index * 2 + 1];
+            if (mapped_original != pending) return false;
+            var previous_index: usize = 0;
+            while (previous_index < index) : (previous_index += 1) {
+                if (mappings[previous_index * 2 + 1] == mapped_restored) return false;
+            }
+        }
+        return true;
+    }
+
+    fn capsuleRestoreReportFabricMappingsMatchImage(image: Capsule.Image, report: Capsule.RestoreReport) bool {
+        const refs = if (image.fabric_image) |fabric| fabric.active_invocation_fingerprints else &.{};
+        const mappings = report.restored_fabric_invocation_mappings;
+        if (mappings.len != refs.len * 2) return false;
+        for (refs, 0..) |invocation, index| {
+            if (mappings[index * 2] != invocation) return false;
+            if (mappings[index * 2 + 1] != invocation) return false;
+        }
+        return true;
     }
 
     fn capsuleCertificateMatchesImage(image: Capsule.Image, cert: Capsule.Certificate) bool {
@@ -17453,6 +17508,8 @@ pub const Capsule = struct {
         capsule_image_fingerprint: u64,
         thaw_plan_fingerprint: u64,
         restored_runspace_fingerprint: u64,
+        restored_local_run_id_start: u64 = 0,
+        restored_run_handle_mappings: []const u64 = &.{},
         restored_root_run_handles: []const u64 = &.{},
         restored_provider_run_handles: []const u64 = &.{},
         restored_pending_port_mappings: []const u64 = &.{},
@@ -17470,6 +17527,8 @@ pub const Capsule = struct {
             capsule_image_fingerprint: u64,
             thaw_plan_fingerprint: u64,
             restored_runspace_fingerprint: u64,
+            restored_local_run_id_start: u64 = 0,
+            restored_run_handle_mappings: []const u64 = &.{},
             restored_root_run_handles: []const u64 = &.{},
             restored_provider_run_handles: []const u64 = &.{},
             restored_pending_port_mappings: []const u64 = &.{},
@@ -17487,6 +17546,8 @@ pub const Capsule = struct {
                 .capsule_image_fingerprint = args.capsule_image_fingerprint,
                 .thaw_plan_fingerprint = args.thaw_plan_fingerprint,
                 .restored_runspace_fingerprint = args.restored_runspace_fingerprint,
+                .restored_local_run_id_start = args.restored_local_run_id_start,
+                .restored_run_handle_mappings = args.restored_run_handle_mappings,
                 .restored_root_run_handles = args.restored_root_run_handles,
                 .restored_provider_run_handles = args.restored_provider_run_handles,
                 .restored_pending_port_mappings = args.restored_pending_port_mappings,
@@ -17505,6 +17566,7 @@ pub const Capsule = struct {
 
         pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
             if (self.owns_memory) {
+                allocator.free(self.restored_run_handle_mappings);
                 allocator.free(self.restored_root_run_handles);
                 allocator.free(self.restored_provider_run_handles);
                 allocator.free(self.restored_pending_port_mappings);
@@ -18383,6 +18445,8 @@ pub const Capsule = struct {
         errdefer allocator.free(root_slice);
         const provider_slice = try provider_refs.toOwnedSlice(allocator);
         errdefer allocator.free(provider_slice);
+        const handle_slice = try handle_mappings.toOwnedSlice(allocator);
+        errdefer allocator.free(handle_slice);
         const mailbox_slice = try mailbox_mappings.toOwnedSlice(allocator);
         errdefer allocator.free(mailbox_slice);
         const fabric_slice = try fabric_mappings.toOwnedSlice(allocator);
@@ -18398,6 +18462,8 @@ pub const Capsule = struct {
             .capsule_image_fingerprint = image.image_fingerprint,
             .thaw_plan_fingerprint = plan.thaw_plan_fingerprint,
             .restored_runspace_fingerprint = runspace.runspace_fingerprint,
+            .restored_local_run_id_start = next_run_id_before,
+            .restored_run_handle_mappings = handle_slice,
             .restored_root_run_handles = root_slice,
             .restored_provider_run_handles = provider_slice,
             .restored_pending_port_mappings = mailbox_slice,
@@ -18417,6 +18483,8 @@ pub const Capsule = struct {
         capsule_image_fingerprint: u64,
         thaw_plan_fingerprint: u64,
         restored_runspace_fingerprint: u64,
+        restored_local_run_id_start: u64 = 0,
+        restored_run_handle_mappings: []const u64 = &.{},
         restored_root_run_handles: []const u64 = &.{},
         restored_provider_run_handles: []const u64 = &.{},
         restored_pending_port_mappings: []const u64 = &.{},
@@ -18429,6 +18497,8 @@ pub const Capsule = struct {
         warnings: []const Warning = &.{},
         summary: []const u8 = "",
     }) !RestoreReport {
+        const handle_mappings = try allocator.dupe(u64, args.restored_run_handle_mappings);
+        errdefer allocator.free(handle_mappings);
         const root_handles = try allocator.dupe(u64, args.restored_root_run_handles);
         errdefer allocator.free(root_handles);
         const provider_handles = try allocator.dupe(u64, args.restored_provider_run_handles);
@@ -18450,6 +18520,8 @@ pub const Capsule = struct {
             .capsule_image_fingerprint = args.capsule_image_fingerprint,
             .thaw_plan_fingerprint = args.thaw_plan_fingerprint,
             .restored_runspace_fingerprint = args.restored_runspace_fingerprint,
+            .restored_local_run_id_start = args.restored_local_run_id_start,
+            .restored_run_handle_mappings = handle_mappings,
             .restored_root_run_handles = root_handles,
             .restored_provider_run_handles = provider_handles,
             .restored_pending_port_mappings = pending_mappings,
@@ -19480,6 +19552,8 @@ pub const Capsule = struct {
         hashU64(&hasher, report.capsule_image_fingerprint);
         hashU64(&hasher, report.thaw_plan_fingerprint);
         hashU64(&hasher, report.restored_runspace_fingerprint);
+        hashU64(&hasher, report.restored_local_run_id_start);
+        hashU64Slice(&hasher, report.restored_run_handle_mappings);
         hashU64Slice(&hasher, report.restored_root_run_handles);
         hashU64Slice(&hasher, report.restored_provider_run_handles);
         hashU64Slice(&hasher, report.restored_pending_port_mappings);

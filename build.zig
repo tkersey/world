@@ -638,7 +638,7 @@ pub fn build(b: *std.Build) void {
             .expected_stdout =
             \\capsule_fingerprint=2eef2b7bf9dd7c3c
             \\link_certificate_fingerprint=2045220a5ff7a9fd
-            \\restore_report_fingerprint=9b2b646c66ca3868
+            \\restore_report_fingerprint=1783ce5f9157744a
             \\final_result=7
             \\
             ,
@@ -651,7 +651,7 @@ pub fn build(b: *std.Build) void {
             .expected_stdout =
             \\active_fabric_invocation_fingerprint=6e1ba40ac216edb1
             \\pending_provider_port_fingerprint=423eef2930e63077
-            \\restore_report_fingerprint=80c5fb5d9885d115
+            \\restore_report_fingerprint=f2117300ea29be69
             \\restore_accepted=false
             \\final_result=active-fabric-restore-denied
             \\
@@ -690,7 +690,7 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Assembly Capsule guest verify example.",
             .expected_stdout =
             \\guest_report_fingerprint=d35a6d645e4511ea
-            \\restore_report_fingerprint=5acfa225688b0d08
+            \\restore_report_fingerprint=817f1e09da24bbbc
             \\conformance=true
             \\
             ,
