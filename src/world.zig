@@ -18546,7 +18546,7 @@ pub const Capsule = struct {
                 if (link.catalog_fingerprint) |catalog| {
                     if (local_catalog) |local| {
                         if (catalog != local and !options.allow_relink_drift) return .link_plan_mismatch;
-                    }
+                    } else if (!options.allow_relink_drift) return .link_plan_mismatch;
                 }
                 if (!linkFabricPlanWitnessesCover(image.manifest.fabric_plan_fingerprints, link.route_synthesis_refs)) return .fabric_plan_mismatch;
             } else if (options.mode == .relink_and_restore) {
@@ -18940,7 +18940,7 @@ pub const Capsule = struct {
         if (link.catalog_fingerprint) |catalog| {
             if (local_catalog) |local| {
                 if (catalog != local) return .mismatched;
-            }
+            } else return .mismatched;
         }
         return .matched;
     }

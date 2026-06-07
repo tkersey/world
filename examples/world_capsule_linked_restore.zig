@@ -59,7 +59,10 @@ pub fn main(init: std.process.Init) !void {
     defer capsule.deinit(allocator);
     var receiver = world.Runspace.init(allocator, .{});
     defer receiver.deinit();
-    var restore = try world.Capsule.thawIntoRunspace(capsule, &receiver, root_ref.target_ref_fingerprint, 0, 0x5150_c001, .{ .mode = .restore_completed });
+    var restore = try world.Capsule.thawIntoRunspace(capsule, &receiver, root_ref.target_ref_fingerprint, 0, 0x5150_c001, .{
+        .mode = .restore_completed,
+        .local_catalog_fingerprint = linked.plan.catalog_fingerprint,
+    });
     defer restore.deinit(allocator);
 
     try stdout.print("capsule_fingerprint={x}\n", .{capsule.image_fingerprint});

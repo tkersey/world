@@ -1900,6 +1900,9 @@ test "capsule relink requires manifest fabric plan coverage" {
     defer verify_restore.deinit(std.testing.allocator);
     try std.testing.expect(!verify_restore.accepted);
     try std.testing.expectEqual(@as(usize, 0), verify_receiver.slots.items.len);
+    const missing_catalog_thaw = try world.Capsule.planThaw(catalog_image, root_ref.target_ref_fingerprint, 0, 0x5150_3722, .{ .mode = .restore_completed });
+    try std.testing.expectEqual(world.Capsule.Blocker.link_plan_mismatch, missing_catalog_thaw.blockers[0]);
+    try std.testing.expectEqual(world.Capsule.LinkCertificateMatchStatus.mismatched, missing_catalog_thaw.link_certificate_match_status);
     const drift_rejected = try world.Capsule.planThaw(catalog_image, root_ref.target_ref_fingerprint, 0, 0x5150_3714, .{
         .mode = .restore_completed,
         .local_catalog_fingerprint = root_ref.target_ref_fingerprint,
@@ -3153,7 +3156,15 @@ test "capsule agent transfer preserves residual external import" {
     try std.testing.expectEqual(world.Capsule.Blocker.relink_drift_rejected, stale_catalog.blockers[0]);
     var receiver = world.Runspace.init(allocator, .{});
     defer receiver.deinit();
-    var restore = try world.Capsule.thawIntoRunspace(image, &receiver, root_ref.target_ref_fingerprint, 0, 0x5150_3b01, .{ .mode = .restore_completed });
+    var missing_catalog_restore = try world.Capsule.thawIntoRunspace(image, &receiver, root_ref.target_ref_fingerprint, 0, 0x5150_3b00, .{ .mode = .restore_completed });
+    defer missing_catalog_restore.deinit(allocator);
+    try std.testing.expect(!missing_catalog_restore.accepted);
+    try std.testing.expectEqual(world.Capsule.Blocker.link_plan_mismatch, missing_catalog_restore.blockers[0]);
+    try std.testing.expectEqual(@as(usize, 0), receiver.slots.items.len);
+    var restore = try world.Capsule.thawIntoRunspace(image, &receiver, root_ref.target_ref_fingerprint, 0, 0x5150_3b01, .{
+        .mode = .restore_completed,
+        .local_catalog_fingerprint = linked.plan.catalog_fingerprint,
+    });
     defer restore.deinit(allocator);
     try std.testing.expect(restore.accepted);
     try std.testing.expectEqual(@as(usize, 1), restore.restored_root_run_handles.len);
