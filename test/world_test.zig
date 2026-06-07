@@ -411,6 +411,36 @@ test "capsule freezeRunspace honors receipt and transcript exclusion flags" {
     try std.testing.expectEqual(@as(usize, 1), full.run_images.len);
     try std.testing.expect(full.run_images[0].transcript_image != null);
     try std.testing.expectEqual(@as(?u64, 0x5150_3341), full.run_images[0].prior_run_receipt_fingerprint);
+    var stale_embedded_transcript = full.run_images[0].transcript_image orelse return error.ExpectedTranscriptImage;
+    stale_embedded_transcript.response_count +%= 1;
+    const stale_transcript_images = [_]world.TranscriptImage{stale_embedded_transcript};
+    const stale_capsule_transcript = world.Capsule.Image.init(.{
+        .manifest = full.manifest,
+        .runspace_image = full.runspace_image,
+        .link_image = full.link_image,
+        .fabric_image = full.fabric_image,
+        .admission_refs = full.admission_refs,
+        .environment_refs = full.environment_refs,
+        .supervision_refs = full.supervision_refs,
+        .guest_conformance_refs = full.guest_conformance_refs,
+        .transcript_image_refs = full.transcript_image_refs,
+        .run_image_refs = full.run_image_refs,
+        .value_image_refs = full.value_image_refs,
+        .transcript_images = &stale_transcript_images,
+        .run_images = full.run_images,
+        .value_images = full.value_images,
+        .dependency_refs = full.dependency_refs,
+        .object_refs = full.object_refs,
+        .metadata = full.metadata,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, stale_capsule_transcript.validate(.{}));
+    var stale_run_transcript = try world.Capsule.freezeRunspace(&source, .{});
+    defer stale_run_transcript.deinit(allocator);
+    const stale_run_image = @constCast(&stale_run_transcript.run_images[0]);
+    if (stale_run_image.transcript_image) |*embedded_run_transcript| {
+        embedded_run_transcript.response_count +%= 1;
+    } else return error.ExpectedTranscriptImage;
+    try std.testing.expectError(error.InvalidFrameEncoding, stale_run_transcript.validate(.{}));
     const missing_transcript_ref_image = world.Capsule.Image.init(.{
         .manifest = full.manifest,
         .runspace_image = full.runspace_image,

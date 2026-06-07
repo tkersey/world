@@ -7173,6 +7173,7 @@ pub const RunImage = struct {
                 .failed => if (self.current_state.status != .failed) return error.HandoffTargetMismatch,
                 .running => if (self.current_state.status != .running and self.current_state.status != .parked_on_port and self.current_state.status != .parked_on_supervision) return error.HandoffTargetMismatch,
             }
+            try validateTranscriptImageFingerprint(image);
             try image.validateValuePolicy(value_policy);
         }
         try validateRunImageKindState(self);
@@ -17039,7 +17040,10 @@ pub const Capsule = struct {
             if (self.fabric_image) |fabric| try fabric.validate(options);
             try validateImageManifestConsistency(self);
             try validateRunImageCoverage(self);
-            for (self.transcript_images) |transcript| try transcript.validateValuePolicy(.portable);
+            for (self.transcript_images) |transcript| {
+                try validateTranscriptImageFingerprint(transcript);
+                try transcript.validateValuePolicy(.portable);
+            }
             for (self.run_images) |run_image| try run_image.validate(.{});
             for (self.value_images) |value_image| try validateValueImage(value_image);
             if (self.image_fingerprint != fingerprintImage(self)) return error.InvalidFrameEncoding;
