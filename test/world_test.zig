@@ -2333,6 +2333,61 @@ test "capsule handoff admission binds restore witnesses and receiver permit" {
     try std.testing.expect(!corrupt_restore_rejected.accepted);
     try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, corrupt_restore_rejected.blockers[0]);
 
+    const forged_guest_refs = [_]u64{0x5150_bad1};
+    const forged_guest_restore = world.Capsule.RestoreReport.init(.{
+        .capsule_image_fingerprint = restore.capsule_image_fingerprint,
+        .thaw_plan_fingerprint = restore.thaw_plan_fingerprint,
+        .restored_runspace_fingerprint = restore.restored_runspace_fingerprint,
+        .restored_local_run_id_start = restore.restored_local_run_id_start,
+        .restored_run_handle_mappings = restore.restored_run_handle_mappings,
+        .restored_root_run_handles = restore.restored_root_run_handles,
+        .restored_provider_run_handles = restore.restored_provider_run_handles,
+        .restored_pending_port_mappings = restore.restored_pending_port_mappings,
+        .restored_fabric_invocation_mappings = restore.restored_fabric_invocation_mappings,
+        .guest_conformance_refs = &forged_guest_refs,
+        .environment_certificate_fingerprint = restore.environment_certificate_fingerprint,
+        .receiver_run_permit_fingerprint = restore.receiver_run_permit_fingerprint,
+        .accepted = true,
+        .warnings = restore.warnings,
+        .summary = restore.summary,
+    });
+    const forged_guest_rejected = world.Admission.capsuleAdmissionReport(.{
+        .mode = .restore_completed,
+        .image = imported,
+        .certificate = cert,
+        .thaw_plan = thaw,
+        .restore_report = forged_guest_restore,
+    });
+    try std.testing.expect(!forged_guest_rejected.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, forged_guest_rejected.blockers[0]);
+
+    const forged_environment_restore = world.Capsule.RestoreReport.init(.{
+        .capsule_image_fingerprint = restore.capsule_image_fingerprint,
+        .thaw_plan_fingerprint = restore.thaw_plan_fingerprint,
+        .restored_runspace_fingerprint = restore.restored_runspace_fingerprint,
+        .restored_local_run_id_start = restore.restored_local_run_id_start,
+        .restored_run_handle_mappings = restore.restored_run_handle_mappings,
+        .restored_root_run_handles = restore.restored_root_run_handles,
+        .restored_provider_run_handles = restore.restored_provider_run_handles,
+        .restored_pending_port_mappings = restore.restored_pending_port_mappings,
+        .restored_fabric_invocation_mappings = restore.restored_fabric_invocation_mappings,
+        .guest_conformance_refs = restore.guest_conformance_refs,
+        .environment_certificate_fingerprint = 0x5150_bad2,
+        .receiver_run_permit_fingerprint = restore.receiver_run_permit_fingerprint,
+        .accepted = true,
+        .warnings = restore.warnings,
+        .summary = restore.summary,
+    });
+    const forged_environment_rejected = world.Admission.capsuleAdmissionReport(.{
+        .mode = .restore_completed,
+        .image = imported,
+        .certificate = cert,
+        .thaw_plan = thaw,
+        .restore_report = forged_environment_restore,
+    });
+    try std.testing.expect(!forged_environment_rejected.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, forged_environment_rejected.blockers[0]);
+
     const blocked_accepted_restore = world.Capsule.RestoreReport.init(.{
         .capsule_image_fingerprint = restore.capsule_image_fingerprint,
         .thaw_plan_fingerprint = restore.thaw_plan_fingerprint,

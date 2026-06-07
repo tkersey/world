@@ -2336,6 +2336,13 @@ pub const Admission = struct {
         if (plan.blockers.len != 0 or report.blockers.len != 0 or !report.accepted) return false;
         if (!Capsule.restoreModeAllowedForImage(image, plan.requested_mode)) return false;
         if (!Capsule.u64SlicesEqual(plan.handle_remapping_plan, image.runspace_image.run_handle_mappings)) return false;
+        if (!Capsule.u64SlicesEqual(plan.guest_conformance_refs, report.guest_conformance_refs)) return false;
+        if (plan.environment_preflight_refs.len == 0) {
+            if (report.environment_certificate_fingerprint != null) return false;
+        } else {
+            if (plan.environment_preflight_refs.len != 1) return false;
+            if (report.environment_certificate_fingerprint != plan.environment_preflight_refs[0]) return false;
+        }
         const mailbox_refs = if (image.runspace_image.mailbox_image) |mailbox| mailbox.pending_port_fingerprints else &.{};
         if (!Capsule.u64SlicesEqual(plan.mailbox_id_remapping_plan, mailbox_refs)) return false;
 
