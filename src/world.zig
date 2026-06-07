@@ -16521,7 +16521,7 @@ pub const Capsule = struct {
             if (self.status == .parked_on_port) {
                 if (self.current_pending_mailbox_id == null) return error.InvalidFrameEncoding;
             } else if (self.current_pending_mailbox_id != null) switch (self.status) {
-                .parked_on_supervision, .exported => {},
+                .exported => {},
                 else => return error.InvalidFrameEncoding,
             };
             switch (self.role) {

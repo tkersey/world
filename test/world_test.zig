@@ -444,7 +444,7 @@ test "capsule image validation rejects completed manifest with parked slot" {
         .current_pending_mailbox_id = 0x3331,
         .status = .parked_on_supervision,
     });
-    try supervision_parked_with_mailbox.validate(.{});
+    try std.testing.expectError(error.InvalidFrameEncoding, supervision_parked_with_mailbox.validate(.{}));
     const supervision_slots = [_]world.Capsule.RunSlotImage{supervision_parked_with_mailbox};
     const supervision_manifest = world.Capsule.Manifest.init(.{
         .kind = .parked_assembly,
@@ -2148,6 +2148,20 @@ test "capsule parked thaw rejects missing run image before mutation" {
     try std.testing.expectError(error.InvalidFrameEncoding, world.Capsule.thawIntoRunspace(image, &receiver, target_ref.target_ref_fingerprint, 0, 0x5150_3985, .{ .mode = .restore_parked }));
     try std.testing.expectEqual(@as(usize, 0), receiver.slots.items.len);
     try std.testing.expectEqual(@as(usize, 0), receiver.mailbox.pendingCount());
+
+    const supervision_state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .parked_on_supervision,
+    });
+    const supervision_slot_with_mailbox = world.Capsule.RunSlotImage.init(.{
+        .original_run_handle_fingerprint = 0x5150_3986,
+        .role = .root,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .run_state_fingerprint = supervision_state.run_state_fingerprint,
+        .current_pending_mailbox_id = 0,
+        .status = .parked_on_supervision,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, supervision_slot_with_mailbox.validate(.{}));
 }
 
 test "capsule validation rejects port parked slot without mailbox mapping" {
