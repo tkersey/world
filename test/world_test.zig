@@ -343,6 +343,17 @@ test "capsule certificate derives from image and quiescence without image hash c
         .normal_form = .quiescent_completed,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, world.Capsule.certificate(image, wrong_report));
+    var tampered_report = report;
+    tampered_report.report_fingerprint +%= 1;
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Capsule.certificate(image, tampered_report));
+    const wrong_count_report = world.Capsule.QuiescenceReport.init(.{
+        .runspace_fingerprint = 0x2222,
+        .quiescent = true,
+        .normal_form = .quiescent_completed,
+        .run_count = 1,
+        .completed_run_count = 1,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Capsule.certificate(image, wrong_count_report));
 }
 
 test "capsule freezeRun produces consistent reference image" {

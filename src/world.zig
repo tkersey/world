@@ -16558,6 +16558,23 @@ pub const Capsule = struct {
             return report;
         }
 
+        pub fn validate(self: @This()) !void {
+            if (self.fingerprint_version != world_capsule_quiescence_report_fingerprint_version) return error.InvalidFrameEncoding;
+            if (self.report_fingerprint != fingerprintQuiescenceReport(self)) return error.InvalidFrameEncoding;
+            if (self.quiescent != (self.blockers.len == 0)) return error.InvalidFrameEncoding;
+            if (self.parked_run_count > self.run_count) return error.InvalidFrameEncoding;
+            if (self.completed_run_count > self.run_count - self.parked_run_count) return error.InvalidFrameEncoding;
+            if (self.failed_run_count > self.run_count - self.parked_run_count - self.completed_run_count) return error.InvalidFrameEncoding;
+            if (self.normal_form != normalFormForQuiescence(
+                self.run_count,
+                self.parked_run_count,
+                self.completed_run_count,
+                self.failed_run_count,
+                self.active_fabric_invocation_count,
+                self.blockers.len,
+            )) return error.InvalidFrameEncoding;
+        }
+
         pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
             if (self.owns_memory) {
                 allocator.free(self.blockers);
@@ -17417,9 +17434,8 @@ pub const Capsule = struct {
         }
 
         pub fn fromImage(image: Image, report: QuiescenceReport) !@This() {
-            if (report.runspace_fingerprint != image.runspace_image.runspace_fingerprint) return error.InvalidFrameEncoding;
-            if (report.normal_form != image.manifest.normal_form) return error.InvalidFrameEncoding;
-            if (report.assembly_fingerprint != image.manifest.assembly_fingerprint) return error.InvalidFrameEncoding;
+            try report.validate();
+            try validateQuiescenceReportImageConsistency(image, report);
             return init(.{
                 .capsule_image_fingerprint = image.image_fingerprint,
                 .capsule_manifest_fingerprint = image.manifest.manifest_fingerprint,
@@ -18715,6 +18731,34 @@ pub const Capsule = struct {
         {
             return error.InvalidFrameEncoding;
         }
+    }
+
+    fn validateQuiescenceReportImageConsistency(image: Image, report: QuiescenceReport) !void {
+        if (report.runspace_fingerprint != image.runspace_image.runspace_fingerprint) return error.InvalidFrameEncoding;
+        if (report.normal_form != image.manifest.normal_form) return error.InvalidFrameEncoding;
+        if (report.assembly_fingerprint != image.manifest.assembly_fingerprint) return error.InvalidFrameEncoding;
+        if (report.run_count != image.runspace_image.run_slots.len) return error.InvalidFrameEncoding;
+        if (report.pending_port_count != image.manifest.pending_port_count) return error.InvalidFrameEncoding;
+        if (report.active_fabric_invocation_count != image.manifest.active_fabric_invocation_count) return error.InvalidFrameEncoding;
+
+        var parked_count: usize = 0;
+        var completed_count: usize = 0;
+        var failed_count: usize = 0;
+        for (image.runspace_image.run_slots) |slot| switch (slot.status) {
+            .parked_on_port, .parked_on_supervision => parked_count += 1,
+            .completed => completed_count += 1,
+            .failed, .rejected => failed_count += 1,
+            .exported => switch (capturedRunStateStatus(image, slot) orelse return error.InvalidFrameEncoding) {
+                .completed => completed_count += 1,
+                .parked_on_port, .parked_on_supervision => parked_count += 1,
+                .failed => failed_count += 1,
+                .not_started, .running => {},
+            },
+            .admitted, .runnable => {},
+        };
+        if (report.parked_run_count != parked_count) return error.InvalidFrameEncoding;
+        if (report.completed_run_count != completed_count) return error.InvalidFrameEncoding;
+        if (report.failed_run_count != failed_count) return error.InvalidFrameEncoding;
     }
 
     fn validateActiveFabricRunspaceCoverage(runspace_image: RunspaceImage, fabric: FabricImage) !void {
