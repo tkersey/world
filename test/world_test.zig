@@ -330,27 +330,46 @@ test "capsule freezeRunspace honors receipt and transcript exclusion flags" {
         .local_run_id = 0,
         .target_ref_fingerprint = target_ref.target_ref_fingerprint,
     });
+    var transcript = world.Transcript.init(allocator);
+    defer transcript.deinit();
+    try recordPortsTranscript(&transcript);
+    var transcript_image = try transcript.toImage(allocator, .{ .value_policy = world.ValuePolicy.portable });
     const state = world.RunState.init(.{
         .target_ref_fingerprint = target_ref.target_ref_fingerprint,
-        .transcript_image_fingerprint = 0x5150_3340,
+        .transcript_image_fingerprint = transcript_image.transcript_image_fingerprint,
         .status = .completed,
     });
+    var installed_run_image = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .transcript_image = transcript_image,
+        .current_state = state,
+        .prior_run_receipt_fingerprint = 0x5150_3341,
+    });
+    installed_run_image.owns_transcript_image = true;
+    transcript_image = undefined;
     try source.slots.append(allocator, world.Runspace.RunSlot.fromState(.{
         .handle = handle,
         .target_ref = target_ref,
         .current_state = state,
         .status = .completed,
         .run_receipt_fingerprint = 0x5150_3341,
+        .installed_run_image = installed_run_image,
+        .owns_installed_run_image = true,
     }));
 
     var full = try world.Capsule.freezeRunspace(&source, .{});
     defer full.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 1), full.runspace_image.transcript_image_refs.len);
     try std.testing.expectEqual(@as(usize, 1), full.runspace_image.run_receipt_refs.len);
-    try std.testing.expectEqual(@as(?u64, 0x5150_3340), full.runspace_image.run_slots[0].transcript_image_fingerprint);
+    try std.testing.expectEqual(state.transcript_image_fingerprint, full.runspace_image.run_slots[0].transcript_image_fingerprint);
     try std.testing.expectEqual(@as(usize, 1), full.manifest.transcript_image_fingerprints.len);
     try std.testing.expectEqual(@as(usize, 1), full.manifest.run_receipt_fingerprints.len);
     try std.testing.expectEqual(@as(usize, 1), full.transcript_image_refs.len);
+    try std.testing.expectEqual(@as(usize, 1), full.run_images.len);
+    try std.testing.expect(full.run_images[0].transcript_image != null);
+    try std.testing.expectEqual(@as(?u64, 0x5150_3341), full.run_images[0].prior_run_receipt_fingerprint);
 
     var excluded = try world.Capsule.freezeRunspace(&source, .{ .include_receipts = false, .include_transcripts = false });
     defer excluded.deinit(allocator);
@@ -360,6 +379,10 @@ test "capsule freezeRunspace honors receipt and transcript exclusion flags" {
     try std.testing.expectEqual(@as(usize, 0), excluded.manifest.transcript_image_fingerprints.len);
     try std.testing.expectEqual(@as(usize, 0), excluded.manifest.run_receipt_fingerprints.len);
     try std.testing.expectEqual(@as(usize, 0), excluded.transcript_image_refs.len);
+    try std.testing.expectEqual(@as(usize, 1), excluded.run_images.len);
+    try std.testing.expect(excluded.run_images[0].transcript_image == null);
+    try std.testing.expectEqual(@as(?u64, null), excluded.run_images[0].current_state.transcript_image_fingerprint);
+    try std.testing.expectEqual(@as(?u64, null), excluded.run_images[0].prior_run_receipt_fingerprint);
 }
 
 test "capsule image validation rejects completed manifest with parked slot" {
@@ -1945,6 +1968,23 @@ test "capsule parked freeze embeds run image and thaw enforces receiver capacity
     const slot_run_image_fingerprint = image.runspace_image.run_slots[0].run_image_fingerprint orelse return error.ExpectedRunImage;
     try std.testing.expectEqual(image.run_images[0].run_image_fingerprint, slot_run_image_fingerprint);
     try image.validate(.{});
+    const extra_run_image = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+            .status = .completed,
+        }),
+    });
+    const extra_run_images = [_]world.RunImage{ image.run_images[0], extra_run_image };
+    const unmanifested_payload = world.Capsule.Image.init(.{
+        .manifest = image.manifest,
+        .runspace_image = image.runspace_image,
+        .run_image_refs = image.run_image_refs,
+        .run_images = &extra_run_images,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, unmanifested_payload.validate(.{}));
     const parked_plan = try world.Capsule.planThaw(image, target_ref.target_ref_fingerprint, 0, 0x5150_3990, .{ .mode = .restore_parked });
     try std.testing.expectEqual(@as(usize, 1), parked_plan.mailbox_id_remapping_plan.len);
     try std.testing.expectEqual(image.runspace_image.mailbox_image.?.pending_port_fingerprints[0], parked_plan.mailbox_id_remapping_plan[0]);

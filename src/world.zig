@@ -18412,10 +18412,20 @@ pub const Capsule = struct {
             }
         }
         for (image.run_images) |run_image| {
+            if (!u64SliceContains(image.manifest.run_image_fingerprints, run_image.run_image_fingerprint)) return error.InvalidFrameEncoding;
+            if (!u64SliceContains(image.runspace_image.run_image_refs, run_image.run_image_fingerprint)) return error.InvalidFrameEncoding;
+            if (!u64SliceContains(image.run_image_refs, run_image.run_image_fingerprint)) return error.InvalidFrameEncoding;
             if (run_image.environment_certificate_fingerprint) |fingerprint| {
                 if (!u64SliceContains(image.manifest.environment_certificate_fingerprints, fingerprint)) return error.InvalidFrameEncoding;
                 if (!u64SliceContains(image.environment_refs, fingerprint)) return error.InvalidFrameEncoding;
             }
+        }
+        for (image.transcript_images) |transcript| {
+            if (!u64SliceContains(image.manifest.transcript_image_fingerprints, transcript.transcript_image_fingerprint)) return error.InvalidFrameEncoding;
+            if (!u64SliceContains(image.transcript_image_refs, transcript.transcript_image_fingerprint)) return error.InvalidFrameEncoding;
+        }
+        for (image.value_images) |value| {
+            if (!u64SliceContains(image.value_image_refs, value.value_image_fingerprint)) return error.InvalidFrameEncoding;
         }
     }
 
@@ -18722,13 +18732,42 @@ pub const Capsule = struct {
         try images.ensureUnusedCapacity(allocator, runspace.slots.items.len);
         for (runspace.slots.items, 0..) |slot, index| {
             if (!slotNeedsRunImageForCapsule(slot)) continue;
-            const clone = try runspace.snapshotSlotImage(index);
+            var clone = try runspace.snapshotSlotImage(index);
+            var clone_owned = true;
+            errdefer if (clone_owned) clone.deinit(allocator);
+            scrubRunImageForCapsuleFreeze(allocator, &clone, options);
             slot_run_image_fingerprints[index] = clone.run_image_fingerprint;
             images.appendAssumeCapacity(clone);
+            clone_owned = false;
         }
         const result = try images.toOwnedSlice(allocator);
         images_owned = false;
         return result;
+    }
+
+    fn scrubRunImageForCapsuleFreeze(allocator: std.mem.Allocator, image: *RunImage, options: FreezeOptions) void {
+        if (!options.include_transcripts) {
+            if (image.owns_transcript_image) {
+                if (image.transcript_image) |*transcript| transcript.deinit(allocator);
+            }
+            image.transcript_image = null;
+            image.owns_transcript_image = false;
+            image.current_state = RunState.init(.{
+                .target_ref_fingerprint = image.current_state.target_ref_fingerprint,
+                .transcript_image_fingerprint = null,
+                .branch_id = image.current_state.branch_id,
+                .checkpoint_fingerprint = image.current_state.checkpoint_fingerprint,
+                .pending_request_fingerprint = image.current_state.pending_request_fingerprint,
+                .final_response_fingerprint = image.current_state.final_response_fingerprint,
+                .final_value_image_fingerprint = image.current_state.final_value_image_fingerprint,
+                .turn_index = image.current_state.turn_index,
+                .status = image.current_state.status,
+            });
+        }
+        if (!options.include_receipts) image.prior_run_receipt_fingerprint = null;
+        const has_module_witness = image.module_ref_fingerprint != null or image.boundary_module_fingerprint != null or image.module_image_fingerprint != null;
+        if (has_module_witness) image.format_version = world_run_image_format_version;
+        image.run_image_fingerprint = if (image.format_version >= 3) fingerprintRunImageV3(image.*) else fingerprintRunImage(image.*);
     }
 
     fn slotNeedsRunImageForCapsule(slot: Runspace.RunSlot) bool {
