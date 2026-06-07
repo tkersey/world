@@ -16929,6 +16929,7 @@ pub const Capsule = struct {
             if (self.link_image) |link| try link.validate();
             if (self.fabric_image) |fabric| try fabric.validate(options);
             try validateImageManifestConsistency(self);
+            try validateRunImageCoverage(self);
             for (self.transcript_images) |transcript| try transcript.validateValuePolicy(.portable);
             for (self.run_images) |run_image| try run_image.validate(.{});
             for (self.value_images) |value_image| try validateValueImage(value_image);
@@ -17400,6 +17401,13 @@ pub const Capsule = struct {
     }
 
     pub fn runspaceImage(allocator: std.mem.Allocator, runspace: *const Runspace) !RunspaceImage {
+        return runspaceImageWithRunImageFingerprints(allocator, runspace, null);
+    }
+
+    fn runspaceImageWithRunImageFingerprints(allocator: std.mem.Allocator, runspace: *const Runspace, slot_run_image_fingerprints: ?[]const ?u64) !RunspaceImage {
+        if (slot_run_image_fingerprints) |fingerprints| {
+            if (fingerprints.len != runspace.slots.items.len) return error.InvalidFrameEncoding;
+        }
         var report = try quiescenceReport(allocator, runspace, null);
         defer report.deinit(allocator);
         if (!report.quiescent) return error.InvalidFrameEncoding;
@@ -17419,9 +17427,13 @@ pub const Capsule = struct {
         var provider_refs: std.ArrayList(u64) = .empty;
         errdefer provider_refs.deinit(allocator);
 
-        for (runspace.slots.items) |slot| {
+        for (runspace.slots.items, 0..) |slot, index| {
             try run_handle_refs.append(allocator, slot.handle.handle_fingerprint);
-            var slot_image = try runSlotImageForSlot(allocator, runspace, slot);
+            const run_image_fingerprint = if (slot_run_image_fingerprints) |fingerprints|
+                fingerprints[index]
+            else
+                runImageFingerprintForSlot(slot);
+            var slot_image = try runSlotImageForSlot(allocator, runspace, slot, run_image_fingerprint);
             errdefer slot_image.deinit(allocator);
             try slot_images.append(allocator, slot_image);
             if (slot.parent_run_handle_fingerprint == null) {
@@ -17449,11 +17461,15 @@ pub const Capsule = struct {
         errdefer admission_refs.deinit(allocator);
         var permit_refs: std.ArrayList(u64) = .empty;
         errdefer permit_refs.deinit(allocator);
-        for (runspace.slots.items) |slot| {
+        for (runspace.slots.items, 0..) |slot, index| {
             if (slot.branch_id) |branch| try branch_refs.append(allocator, branch);
             if (slot.checkpoint_fingerprint) |checkpoint| try checkpoint_refs.append(allocator, checkpoint);
             if (slot.current_state.transcript_image_fingerprint) |transcript| try transcript_refs.append(allocator, transcript);
-            if (slot.installed_run_image) |image| try run_image_refs.append(allocator, image.run_image_fingerprint);
+            const slot_run_image_fingerprint = if (slot_run_image_fingerprints) |fingerprints|
+                fingerprints[index]
+            else
+                runImageFingerprintForSlot(slot);
+            if (slot_run_image_fingerprint) |fingerprint| try run_image_refs.append(allocator, fingerprint);
             if (slot.run_receipt_fingerprint) |receipt| try receipt_refs.append(allocator, receipt);
             if (slot.admission_receipt_fingerprint) |admission| try admission_refs.append(allocator, admission);
             if (slot.run_permit_fingerprint) |permit| try permit_refs.append(allocator, permit);
@@ -17723,7 +17739,18 @@ pub const Capsule = struct {
         if (options.require_quiescent and !report.quiescent) return error.InvalidFrameEncoding;
         try validateFreezePolicy(report, options);
 
-        var runspace_image_value = try runspaceImage(allocator, runspace);
+        const slot_run_image_fingerprints = try allocator.alloc(?u64, runspace.slots.items.len);
+        defer allocator.free(slot_run_image_fingerprints);
+        @memset(slot_run_image_fingerprints, null);
+
+        const run_images = try collectRunImages(allocator, runspace, options, slot_run_image_fingerprints);
+        var run_images_owned = true;
+        errdefer if (run_images_owned) {
+            for (run_images) |*image| image.deinit(allocator);
+            allocator.free(run_images);
+        };
+
+        var runspace_image_value = try runspaceImageWithRunImageFingerprints(allocator, runspace, slot_run_image_fingerprints);
         var runspace_image_owned = true;
         errdefer if (runspace_image_owned) runspace_image_value.deinit(allocator);
 
@@ -17740,13 +17767,6 @@ pub const Capsule = struct {
             null;
         var link_image_owned = maybe_link_image != null;
         errdefer if (link_image_owned) if (maybe_link_image) |*image| image.deinit(allocator);
-
-        const run_images = try collectRunImages(allocator, runspace, options);
-        var run_images_owned = true;
-        errdefer if (run_images_owned) {
-            for (run_images) |*image| image.deinit(allocator);
-            allocator.free(run_images);
-        };
 
         const admission_refs = try allocator.dupe(u64, runspace_image_value.admission_receipt_refs);
         var admission_refs_owned = true;
@@ -17939,6 +17959,8 @@ pub const Capsule = struct {
             });
         }
 
+        try ensureRestoreRunCapacity(runspace, image.runspace_image.run_slots);
+
         const allocator = runspace.allocator;
         const slot_count_before = runspace.slots.items.len;
         const next_run_id_before = runspace.next_run_id;
@@ -17980,15 +18002,12 @@ pub const Capsule = struct {
             } else if (slotRestoreRequiresRunImage(slot_image.status)) {
                 return error.InvalidFrameEncoding;
             }
-            const new_handle = RunHandle.init(.{
-                .runspace_fingerprint = runspace.runspace_fingerprint,
-                .local_run_id = runspace.next_run_id,
+            const new_handle = try runspace.nextHandle(.{
                 .target_ref_fingerprint = slot_image.target_ref_fingerprint,
                 .admission_receipt_fingerprint = slot_image.admission_receipt_fingerprint,
                 .permit_fingerprint = permit_fingerprint orelse slot_image.run_permit_fingerprint,
                 .branch_id = slot_image.branch_id,
             });
-            runspace.next_run_id += 1;
             try handle_mappings.append(allocator, slot_image.original_run_handle_fingerprint);
             try handle_mappings.append(allocator, new_handle.handle_fingerprint);
             const status = runspaceStatusForCapsuleStatus(slot_image.status);
@@ -18180,6 +18199,45 @@ pub const Capsule = struct {
     fn pendingPortImageCount(image: RunspaceImage) usize {
         if (image.mailbox_image) |mailbox| return mailbox.pending_port_entries.len;
         return 0;
+    }
+
+    fn validateRunImageCoverage(image: Image) !void {
+        for (image.runspace_image.run_slots) |slot| {
+            if (slot.run_image_fingerprint) |fingerprint| {
+                if (!runImageSliceContains(image.run_images, fingerprint)) return error.InvalidFrameEncoding;
+                if (!u64SliceContains(image.manifest.run_image_fingerprints, fingerprint)) return error.InvalidFrameEncoding;
+                if (!u64SliceContains(image.runspace_image.run_image_refs, fingerprint)) return error.InvalidFrameEncoding;
+                if (!u64SliceContains(image.run_image_refs, fingerprint)) return error.InvalidFrameEncoding;
+            } else if (slotRestoreRequiresRunImage(slot.status)) {
+                return error.InvalidFrameEncoding;
+            }
+        }
+    }
+
+    fn runImageSliceContains(images: []const RunImage, fingerprint: u64) bool {
+        for (images) |image| {
+            if (image.run_image_fingerprint == fingerprint) return true;
+        }
+        return false;
+    }
+
+    fn ensureRestoreRunCapacity(runspace: *const Runspace, slots: []const RunSlotImage) !void {
+        if (runspace.config.max_runs) |max| {
+            var count = runspace.activeRunCountForCapacity();
+            for (slots) |slot| {
+                if (!restoredSlotCountsAgainstMaxRuns(runspace.config, slot.status)) continue;
+                if (count >= max) return error.BudgetExceeded;
+                count += 1;
+            }
+        }
+    }
+
+    fn restoredSlotCountsAgainstMaxRuns(config: Runspace.Config, status: RunSlotStatus) bool {
+        if (config.preserve_completed_runs) return true;
+        return switch (status) {
+            .completed, .exported => false,
+            else => true,
+        };
     }
 
     fn validateKindNormalForm(kind: Kind, normal_form: NormalForm) !void {
@@ -18400,7 +18458,8 @@ pub const Capsule = struct {
         return refs.toOwnedSlice(allocator);
     }
 
-    fn collectRunImages(allocator: std.mem.Allocator, runspace: *const Runspace, options: FreezeOptions) ![]RunImage {
+    fn collectRunImages(allocator: std.mem.Allocator, runspace: *Runspace, options: FreezeOptions, slot_run_image_fingerprints: []?u64) ![]RunImage {
+        if (slot_run_image_fingerprints.len != runspace.slots.items.len) return error.InvalidFrameEncoding;
         var images: std.ArrayList(RunImage) = .empty;
         var images_owned = true;
         errdefer if (images_owned) {
@@ -18409,14 +18468,24 @@ pub const Capsule = struct {
         };
         if (!options.include_run_images) return images.toOwnedSlice(allocator);
         try images.ensureUnusedCapacity(allocator, runspace.slots.items.len);
-        for (runspace.slots.items) |slot| {
-            const installed = slot.installed_run_image orelse continue;
-            const clone = try cloneCapsuleRunImage(allocator, installed);
+        for (runspace.slots.items, 0..) |slot, index| {
+            if (!slotNeedsRunImageForCapsule(slot)) continue;
+            const clone = try runspace.snapshotSlotImage(index);
+            slot_run_image_fingerprints[index] = clone.run_image_fingerprint;
             images.appendAssumeCapacity(clone);
         }
         const result = try images.toOwnedSlice(allocator);
         images_owned = false;
         return result;
+    }
+
+    fn slotNeedsRunImageForCapsule(slot: Runspace.RunSlot) bool {
+        return slot.installed_run_image != null or slotRestoreRequiresRunImage(capsuleStatusForRunspaceStatus(slot.status));
+    }
+
+    fn runImageFingerprintForSlot(slot: Runspace.RunSlot) ?u64 {
+        if (slot.installed_run_image) |image| return image.run_image_fingerprint;
+        return null;
     }
 
     fn cloneCapsuleRunImage(allocator: std.mem.Allocator, image: RunImage) !RunImage {
@@ -18779,7 +18848,7 @@ pub const Capsule = struct {
         try values.append(allocator, value);
     }
 
-    fn runSlotImageForSlot(allocator: std.mem.Allocator, runspace: *const Runspace, slot: Runspace.RunSlot) !RunSlotImage {
+    fn runSlotImageForSlot(allocator: std.mem.Allocator, runspace: *const Runspace, slot: Runspace.RunSlot, run_image_fingerprint: ?u64) !RunSlotImage {
         const checkpoint_refs = if (slot.checkpoint_fingerprint) |checkpoint| refs: {
             const refs = try allocator.alloc(u64, 1);
             refs[0] = checkpoint;
@@ -18799,7 +18868,6 @@ pub const Capsule = struct {
         const fabric_slice = try fabric_refs.toOwnedSlice(allocator);
         errdefer allocator.free(fabric_slice);
 
-        const run_image_fingerprint = if (slot.installed_run_image) |image| image.run_image_fingerprint else null;
         var image = RunSlotImage.init(.{
             .original_run_handle_fingerprint = slot.handle.handle_fingerprint,
             .role = if (slot.parent_run_handle_fingerprint == null) .root else .provider,

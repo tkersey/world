@@ -643,9 +643,9 @@ test "fabric image rejects missing active route witness" {
         .target_ref = provider_ref,
         .current_state = world.RunState.init(.{
             .target_ref_fingerprint = provider_ref.target_ref_fingerprint,
-            .status = .parked_on_port,
+            .status = .parked_on_supervision,
         }),
-        .status = .parked_on_port,
+        .status = .parked_on_supervision,
         .parent_run_handle_fingerprint = parent_handle.handle_fingerprint,
     }));
     const request = testRunspaceRequestFrame();
@@ -834,7 +834,8 @@ test "capsule freeze active fabric requires parked allowance" {
         .target_ref = parent_ref,
         .current_state = world.RunState.init(.{
             .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
-            .pending_request_fingerprint = request.request_fingerprint,
+            .pending_request_fingerprint = request.frame_fingerprint,
+            .turn_index = request.turn_index,
             .status = .parked_on_port,
         }),
         .status = .parked_on_port,
@@ -845,9 +846,9 @@ test "capsule freeze active fabric requires parked allowance" {
         .target_ref = provider_ref,
         .current_state = world.RunState.init(.{
             .target_ref_fingerprint = provider_ref.target_ref_fingerprint,
-            .status = .parked_on_port,
+            .status = .parked_on_supervision,
         }),
-        .status = .parked_on_port,
+        .status = .parked_on_supervision,
         .parent_run_handle_fingerprint = parent_handle.handle_fingerprint,
     }));
     const pending = try runspace.mailbox.push(.{
@@ -1224,6 +1225,65 @@ test "capsule parked thaw rejects missing run image before mutation" {
     try std.testing.expectError(error.InvalidFrameEncoding, world.Capsule.thawIntoRunspace(image, &receiver, target_ref.target_ref_fingerprint, 0, 0x5150_3985, .{ .mode = .restore_parked }));
     try std.testing.expectEqual(@as(usize, 0), receiver.slots.items.len);
     try std.testing.expectEqual(@as(usize, 0), receiver.mailbox.pendingCount());
+}
+
+test "capsule parked freeze embeds run image and thaw enforces receiver capacity" {
+    const allocator = std.testing.allocator;
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const request = testRunspaceRequestFrame();
+    var source = world.Runspace.init(allocator, .{});
+    defer source.deinit();
+    const handle = world.RunHandle.init(.{
+        .runspace_fingerprint = source.runspace_fingerprint,
+        .local_run_id = 0,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+    });
+    try source.slots.append(allocator, world.Runspace.RunSlot.fromState(.{
+        .handle = handle,
+        .target_ref = target_ref,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+            .pending_request_fingerprint = request.frame_fingerprint,
+            .turn_index = request.turn_index,
+            .status = .parked_on_port,
+        }),
+        .status = .parked_on_port,
+        .pending_mailbox_id = 0,
+    }));
+    _ = try source.mailbox.push(.{
+        .run_handle = handle,
+        .mailbox_id = 0,
+        .request = request,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .inserted_event_index = 0,
+    });
+    source.next_mailbox_id = 1;
+
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Capsule.freezeRunspace(&source, .{ .include_run_images = false }));
+
+    var image = try world.Capsule.freezeRunspace(&source, .{});
+    defer image.deinit(allocator);
+    try std.testing.expectEqual(world.Capsule.NormalForm.quiescent_parked, image.manifest.normal_form);
+    try std.testing.expectEqual(@as(usize, 1), image.run_images.len);
+    const slot_run_image_fingerprint = image.runspace_image.run_slots[0].run_image_fingerprint orelse return error.ExpectedRunImage;
+    try std.testing.expectEqual(image.run_images[0].run_image_fingerprint, slot_run_image_fingerprint);
+    try image.validate(.{});
+
+    var capped_receiver = world.Runspace.init(allocator, .{ .max_runs = 0 });
+    defer capped_receiver.deinit();
+    try std.testing.expectError(error.BudgetExceeded, world.Capsule.thawIntoRunspace(image, &capped_receiver, target_ref.target_ref_fingerprint, 0, 0x5150_3991, .{ .mode = .restore_parked }));
+    try std.testing.expectEqual(@as(usize, 0), capped_receiver.slots.items.len);
+    try std.testing.expectEqual(@as(usize, 0), capped_receiver.mailbox.pendingCount());
+
+    var receiver = world.Runspace.init(allocator, .{});
+    defer receiver.deinit();
+    var restore = try world.Capsule.thawIntoRunspace(image, &receiver, target_ref.target_ref_fingerprint, 0, 0x5150_3992, .{ .mode = .restore_parked });
+    defer restore.deinit(allocator);
+    try std.testing.expect(restore.accepted);
+    try std.testing.expectEqual(@as(usize, 1), receiver.slots.items.len);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, receiver.slots.items[0].status);
+    try std.testing.expect(receiver.slots.items[0].installed_run_image != null);
+    try std.testing.expectEqual(@as(usize, 1), receiver.mailbox.pendingCount());
 }
 
 test "capsule active fabric restore rehydrates pending mailbox entries" {
