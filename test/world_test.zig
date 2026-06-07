@@ -1201,6 +1201,45 @@ test "capsule thaw preserves branch parent links" {
     try std.testing.expectEqual(@as(usize, 1), report.restored_root_run_handles.len);
     try std.testing.expectEqual(destination.slots.items[0].handle.handle_fingerprint, report.restored_root_run_handles[0]);
     try std.testing.expectEqual(@as(usize, 0), report.restored_provider_run_handles.len);
+
+    const reversed_slots = [_]world.Capsule.RunSlotImage{
+        image.runspace_image.run_slots[1],
+        image.runspace_image.run_slots[0],
+    };
+    const reversed_runspace_image = world.Capsule.RunspaceImage.init(.{
+        .runspace_fingerprint = image.runspace_image.runspace_fingerprint,
+        .runspace_report_fingerprint = image.runspace_image.runspace_report_fingerprint,
+        .run_handle_mappings = image.runspace_image.run_handle_mappings,
+        .run_slots = &reversed_slots,
+        .mailbox_image = image.runspace_image.mailbox_image,
+        .runspace_event_fingerprints = image.runspace_image.runspace_event_fingerprints,
+        .root_run_handle_fingerprints = image.runspace_image.root_run_handle_fingerprints,
+        .provider_run_handle_fingerprints = image.runspace_image.provider_run_handle_fingerprints,
+        .branch_refs = image.runspace_image.branch_refs,
+        .checkpoint_refs = image.runspace_image.checkpoint_refs,
+        .transcript_image_refs = image.runspace_image.transcript_image_refs,
+        .run_image_refs = image.runspace_image.run_image_refs,
+        .run_receipt_refs = image.runspace_image.run_receipt_refs,
+        .admission_receipt_refs = image.runspace_image.admission_receipt_refs,
+        .permit_refs = image.runspace_image.permit_refs,
+        .active_fabric_invocation_refs = image.runspace_image.active_fabric_invocation_refs,
+    });
+    const reversed_image = world.Capsule.Image.init(.{
+        .manifest = image.manifest,
+        .runspace_image = reversed_runspace_image,
+        .run_image_refs = image.run_image_refs,
+        .run_images = image.run_images,
+    });
+    try reversed_image.validate(.{});
+    const reversed_plan = try world.Capsule.planThaw(reversed_image, 0, 0, 0x5150_3782, .{ .mode = .restore_completed });
+    try std.testing.expectEqual(@as(usize, 0), reversed_plan.blockers.len);
+    var reversed_destination = world.Runspace.init(allocator, .{});
+    defer reversed_destination.deinit();
+    var reversed_report = try world.Capsule.thawIntoRunspace(reversed_image, &reversed_destination, 0, 0, 0x5150_3782, .{ .mode = .restore_completed });
+    defer reversed_report.deinit(allocator);
+    try std.testing.expect(reversed_report.accepted);
+    try std.testing.expectEqual(@as(usize, 2), reversed_destination.slots.items.len);
+    try std.testing.expectEqual(reversed_destination.slots.items[1].handle.handle_fingerprint, reversed_destination.slots.items[0].parent_run_handle_fingerprint.?);
 }
 
 test "capsule freezeRunspace preserves run image environment refs" {
@@ -1519,6 +1558,11 @@ test "capsule relink requires manifest fabric plan coverage" {
         .run_image_refs = &catalog_run_image_refs,
         .run_images = &catalog_run_images,
     });
+    const encoded_catalog = try catalog_image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(encoded_catalog);
+    for (0..encoded_catalog.len) |len| {
+        try std.testing.expectError(error.InvalidFrameEncoding, world.Capsule.Image.decode(std.testing.allocator, encoded_catalog[0..len]));
+    }
     const catalogless_image = world.Capsule.Image.init(.{
         .manifest = catalog_manifest,
         .runspace_image = catalog_runspace_image,
@@ -1664,6 +1708,42 @@ test "capsule handoff admission binds restore witnesses and receiver permit" {
     try std.testing.expectEqual(cert.certificate_fingerprint, admission.capsule_certificate_fingerprint.?);
     try std.testing.expectEqual(thaw.thaw_plan_fingerprint, admission.capsule_thaw_plan_fingerprint.?);
     try std.testing.expectEqual(restore.restore_report_fingerprint, admission.capsule_restore_report_fingerprint.?);
+
+    var mismatched_cert = cert;
+    mismatched_cert.capsule_image_fingerprint +%= 1;
+    const cert_rejected = world.Admission.capsuleAdmissionReport(.{
+        .mode = .restore_parked,
+        .image = imported,
+        .certificate = mismatched_cert,
+        .thaw_plan = thaw,
+        .restore_report = restore,
+    });
+    try std.testing.expect(!cert_rejected.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, cert_rejected.blockers[0]);
+
+    var mismatched_thaw = thaw;
+    mismatched_thaw.capsule_image_fingerprint +%= 1;
+    const thaw_rejected = world.Admission.capsuleAdmissionReport(.{
+        .mode = .restore_parked,
+        .image = imported,
+        .certificate = cert,
+        .thaw_plan = mismatched_thaw,
+        .restore_report = restore,
+    });
+    try std.testing.expect(!thaw_rejected.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, thaw_rejected.blockers[0]);
+
+    var mismatched_restore = restore;
+    mismatched_restore.capsule_image_fingerprint +%= 1;
+    const restore_rejected = world.Admission.capsuleAdmissionReport(.{
+        .mode = .restore_parked,
+        .image = imported,
+        .certificate = cert,
+        .thaw_plan = thaw,
+        .restore_report = mismatched_restore,
+    });
+    try std.testing.expect(!restore_rejected.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, restore_rejected.blockers[0]);
 }
 
 test "capsule guest conformance refs are exposed during thaw and inspect restore" {

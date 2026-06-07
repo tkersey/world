@@ -2236,12 +2236,17 @@ pub const Admission = struct {
         thaw_plan: ?Capsule.ThawPlan = null,
         restore_report: ?Capsule.RestoreReport = null,
     }) Admission.AdmissionReport {
+        const witnesses_bound =
+            (args.certificate == null or args.certificate.?.capsule_image_fingerprint == args.image.image_fingerprint) and
+            (args.thaw_plan == null or args.thaw_plan.?.capsule_image_fingerprint == args.image.image_fingerprint) and
+            (args.restore_report == null or args.restore_report.?.capsule_image_fingerprint == args.image.image_fingerprint) and
+            (args.thaw_plan == null or args.restore_report == null or args.restore_report.?.thaw_plan_fingerprint == args.thaw_plan.?.thaw_plan_fingerprint);
         const request = Admission.AdmissionRequest.init(.{
             .package_fingerprint = args.image.image_fingerprint,
             .mode = admissionModeForCapsuleAdmission(args.mode),
             .policy_fingerprint = 0,
         });
-        const accepted = if (args.restore_report) |restore|
+        const accepted = witnesses_bound and if (args.restore_report) |restore|
             restore.accepted
         else if (args.thaw_plan) |plan|
             plan.blockers.len == 0
@@ -2260,8 +2265,8 @@ pub const Admission = struct {
                 .capsule_certificate_fingerprint = if (args.certificate) |cert| cert.certificate_fingerprint else null,
                 .capsule_thaw_plan_fingerprint = if (args.thaw_plan) |plan| plan.thaw_plan_fingerprint else null,
                 .capsule_restore_report_fingerprint = if (args.restore_report) |report| report.restore_report_fingerprint else null,
-                .blockers = &.{.AdmissionModeNotAllowed},
-                .summary = "capsule admission rejected",
+                .blockers = if (witnesses_bound) &.{.AdmissionModeNotAllowed} else &.{.PackageInvalid},
+                .summary = if (witnesses_bound) "capsule admission rejected" else "capsule admission witness mismatch",
             });
         }
         return Admission.AdmissionReport.accept(.{
@@ -18105,9 +18110,18 @@ pub const Capsule = struct {
         var fabric_mappings: std.ArrayList(u64) = .empty;
         errdefer fabric_mappings.deinit(allocator);
 
-        try runspace.slots.ensureUnusedCapacity(allocator, image.runspace_image.run_slots.len);
-        for (image.runspace_image.run_slots) |slot_image| {
+        const restored_handles = try allocator.alloc(RunHandle, image.runspace_image.run_slots.len);
+        defer allocator.free(restored_handles);
+        for (image.runspace_image.run_slots, 0..) |slot_image, index| {
             try slot_image.validate(.{});
+            const new_handle = restoredSlotHandle(runspace, slot_image, permit_fingerprint);
+            restored_handles[index] = new_handle;
+            try handle_mappings.append(allocator, slot_image.original_run_handle_fingerprint);
+            try handle_mappings.append(allocator, new_handle.handle_fingerprint);
+        }
+
+        try runspace.slots.ensureUnusedCapacity(allocator, image.runspace_image.run_slots.len);
+        for (image.runspace_image.run_slots, 0..) |slot_image, index| {
             var installed_run_image: ?RunImage = null;
             var installed_run_image_owned = false;
             errdefer if (installed_run_image_owned) {
@@ -18121,9 +18135,7 @@ pub const Capsule = struct {
             } else if (slotRestoreRequiresRunImage(slot_image.status)) {
                 return error.InvalidFrameEncoding;
             }
-            const new_handle = restoredSlotHandle(runspace, slot_image, permit_fingerprint);
-            try handle_mappings.append(allocator, slot_image.original_run_handle_fingerprint);
-            try handle_mappings.append(allocator, new_handle.handle_fingerprint);
+            const new_handle = restored_handles[index];
             const status = runspaceStatusForCapsuleStatus(slot_image.status);
             const parent_run_handle_fingerprint = if (slot_image.parent_run_handle_fingerprint) |parent|
                 try mappedHandleFingerprint(handle_mappings.items, parent)
@@ -19774,21 +19786,46 @@ pub const Capsule = struct {
 
     fn decodeLinkImage(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) !LinkImage {
         const max = 8192;
+        const fingerprint_version = try readU32(bytes, cursor);
+        const link_image_fingerprint = try readU64(bytes, cursor);
+        const link_plan_fingerprint = try readU64(bytes, cursor);
+        const link_certificate_fingerprint = try readU64(bytes, cursor);
+        const assembly_fingerprint = try readU64(bytes, cursor);
+        const linker_policy_fingerprint = try readU64(bytes, cursor);
+        const catalog_fingerprint = try readOptionalU64(bytes, cursor);
+        const route_synthesis_refs = try readU64SliceOwned(allocator, bytes, cursor, max);
+        var route_synthesis_refs_owned = true;
+        errdefer if (route_synthesis_refs_owned) allocator.free(route_synthesis_refs);
+        const residual_import_set_fingerprint = try readU64(bytes, cursor);
+        const provider_target_refs = try readU64SliceOwned(allocator, bytes, cursor, max);
+        var provider_target_refs_owned = true;
+        errdefer if (provider_target_refs_owned) allocator.free(provider_target_refs);
+        const guest_provider_refs = try readU64SliceOwned(allocator, bytes, cursor, max);
+        var guest_provider_refs_owned = true;
+        errdefer if (guest_provider_refs_owned) allocator.free(guest_provider_refs);
+        const external_environment_requirements = try readU64SliceOwned(allocator, bytes, cursor, max);
+        var external_environment_requirements_owned = true;
+        errdefer if (external_environment_requirements_owned) allocator.free(external_environment_requirements);
+
         var image = LinkImage{
-            .fingerprint_version = try readU32(bytes, cursor),
-            .link_image_fingerprint = try readU64(bytes, cursor),
-            .link_plan_fingerprint = try readU64(bytes, cursor),
-            .link_certificate_fingerprint = try readU64(bytes, cursor),
-            .assembly_fingerprint = try readU64(bytes, cursor),
-            .linker_policy_fingerprint = try readU64(bytes, cursor),
-            .catalog_fingerprint = try readOptionalU64(bytes, cursor),
-            .route_synthesis_refs = try readU64SliceOwned(allocator, bytes, cursor, max),
-            .residual_import_set_fingerprint = try readU64(bytes, cursor),
-            .provider_target_refs = try readU64SliceOwned(allocator, bytes, cursor, max),
-            .guest_provider_refs = try readU64SliceOwned(allocator, bytes, cursor, max),
-            .external_environment_requirements = try readU64SliceOwned(allocator, bytes, cursor, max),
+            .fingerprint_version = fingerprint_version,
+            .link_image_fingerprint = link_image_fingerprint,
+            .link_plan_fingerprint = link_plan_fingerprint,
+            .link_certificate_fingerprint = link_certificate_fingerprint,
+            .assembly_fingerprint = assembly_fingerprint,
+            .linker_policy_fingerprint = linker_policy_fingerprint,
+            .catalog_fingerprint = catalog_fingerprint,
+            .route_synthesis_refs = route_synthesis_refs,
+            .residual_import_set_fingerprint = residual_import_set_fingerprint,
+            .provider_target_refs = provider_target_refs,
+            .guest_provider_refs = guest_provider_refs,
+            .external_environment_requirements = external_environment_requirements,
             .owns_memory = true,
         };
+        route_synthesis_refs_owned = false;
+        provider_target_refs_owned = false;
+        guest_provider_refs_owned = false;
+        external_environment_requirements_owned = false;
         errdefer image.deinit(allocator);
         try image.validate();
         return image;
