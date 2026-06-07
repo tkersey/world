@@ -1877,7 +1877,8 @@ test "capsule relink requires manifest fabric plan coverage" {
     try std.testing.expectEqual(world.Capsule.Blocker.verification_witness_missing, verify_rejected.blockers[0]);
     var verify_receiver = world.Runspace.init(std.testing.allocator, .{});
     defer verify_receiver.deinit();
-    const verify_restore = try world.Capsule.thawIntoRunspace(catalogless_image, &verify_receiver, root_ref.target_ref_fingerprint, 0, 0x5150_3721, .{ .mode = .verify_and_restore });
+    var verify_restore = try world.Capsule.thawIntoRunspace(catalogless_image, &verify_receiver, root_ref.target_ref_fingerprint, 0, 0x5150_3721, .{ .mode = .verify_and_restore });
+    defer verify_restore.deinit(std.testing.allocator);
     try std.testing.expect(!verify_restore.accepted);
     try std.testing.expectEqual(@as(usize, 0), verify_receiver.slots.items.len);
     const drift_rejected = try world.Capsule.planThaw(catalog_image, root_ref.target_ref_fingerprint, 0, 0x5150_3714, .{
@@ -2019,6 +2020,15 @@ test "capsule handoff admission binds restore witnesses and receiver permit" {
     try std.testing.expectEqual(cert.certificate_fingerprint, admission.capsule_certificate_fingerprint.?);
     try std.testing.expectEqual(thaw.thaw_plan_fingerprint, admission.capsule_thaw_plan_fingerprint.?);
     try std.testing.expectEqual(restore.restore_report_fingerprint, admission.capsule_restore_report_fingerprint.?);
+    const completed_admission = world.Admission.capsuleAdmissionReport(.{
+        .mode = .restore_completed,
+        .image = imported,
+        .certificate = cert,
+        .thaw_plan = thaw,
+        .restore_report = restore,
+    });
+    try std.testing.expect(completed_admission.accepted);
+    try std.testing.expectEqual(restore.restore_report_fingerprint, completed_admission.capsule_restore_report_fingerprint.?);
     const replay_without_thaw = world.Admission.capsuleAdmissionReport(.{
         .mode = .replay_only,
         .image = imported,
@@ -2039,7 +2049,7 @@ test "capsule handoff admission binds restore witnesses and receiver permit" {
     try std.testing.expectEqual(world.Capsule.Blocker.link_certificate_missing, relink_without_link.blockers[0]);
     const wrong_permit_thaw = try world.Capsule.planThaw(imported, target_ref.target_ref_fingerprint, 0, 0x5150_3804, .{ .mode = .restore_completed });
     const wrong_permit_admission = world.Admission.capsuleAdmissionReport(.{
-        .mode = .restore_parked,
+        .mode = .restore_completed,
         .image = imported,
         .certificate = cert,
         .thaw_plan = wrong_permit_thaw,
@@ -2084,7 +2094,7 @@ test "capsule handoff admission binds restore witnesses and receiver permit" {
     var corrupt_cert = cert;
     corrupt_cert.certificate_fingerprint +%= 1;
     const corrupt_cert_rejected = world.Admission.capsuleAdmissionReport(.{
-        .mode = .restore_parked,
+        .mode = .restore_completed,
         .image = imported,
         .certificate = corrupt_cert,
         .thaw_plan = thaw,
@@ -2107,7 +2117,7 @@ test "capsule handoff admission binds restore witnesses and receiver permit" {
     });
     try stale_section_cert.validate();
     const stale_section_cert_rejected = world.Admission.capsuleAdmissionReport(.{
-        .mode = .restore_parked,
+        .mode = .restore_completed,
         .image = imported,
         .certificate = stale_section_cert,
         .thaw_plan = thaw,
@@ -2119,7 +2129,7 @@ test "capsule handoff admission binds restore witnesses and receiver permit" {
     var corrupt_thaw = thaw;
     corrupt_thaw.thaw_plan_fingerprint +%= 1;
     const corrupt_thaw_rejected = world.Admission.capsuleAdmissionReport(.{
-        .mode = .restore_parked,
+        .mode = .restore_completed,
         .image = imported,
         .certificate = cert,
         .thaw_plan = corrupt_thaw,
@@ -2131,7 +2141,7 @@ test "capsule handoff admission binds restore witnesses and receiver permit" {
     var corrupt_restore = restore;
     corrupt_restore.restore_report_fingerprint +%= 1;
     const corrupt_restore_rejected = world.Admission.capsuleAdmissionReport(.{
-        .mode = .restore_parked,
+        .mode = .restore_completed,
         .image = imported,
         .certificate = cert,
         .thaw_plan = thaw,
@@ -2157,7 +2167,7 @@ test "capsule handoff admission binds restore witnesses and receiver permit" {
         .summary = "contradictory accepted restore",
     });
     const blocked_restore_rejected = world.Admission.capsuleAdmissionReport(.{
-        .mode = .restore_parked,
+        .mode = .restore_completed,
         .image = imported,
         .certificate = cert,
         .thaw_plan = thaw,
@@ -2240,6 +2250,13 @@ test "capsule guest conformance refs are exposed during thaw and inspect restore
     });
     const missing_guest_thaw = try world.Capsule.planThaw(missing_guest_image, 0, 0, null, .{ .mode = .inspect_only, .rerun_guest_conformance = true });
     try std.testing.expectEqual(world.Capsule.Blocker.guest_conformance_missing, missing_guest_thaw.blockers[0]);
+    var missing_guest_receiver = world.Runspace.init(allocator, .{});
+    defer missing_guest_receiver.deinit();
+    var missing_guest_restore = try world.Capsule.thawIntoRunspace(missing_guest_image, &missing_guest_receiver, 0, 0, null, .{ .mode = .inspect_only, .rerun_guest_conformance = true });
+    defer missing_guest_restore.deinit(allocator);
+    try std.testing.expect(!missing_guest_restore.accepted);
+    try std.testing.expect(missing_guest_restore.owns_memory);
+    try std.testing.expectEqual(guest_report.report_fingerprint, missing_guest_restore.guest_conformance_refs[0]);
 
     const thaw = try world.Capsule.planThaw(image, 0, 0, null, .{ .mode = .inspect_only, .rerun_guest_conformance = true });
     try std.testing.expectEqual(guest_report.report_fingerprint, thaw.guest_conformance_refs[0]);
@@ -2248,6 +2265,7 @@ test "capsule guest conformance refs are exposed during thaw and inspect restore
     var restore = try world.Capsule.thawIntoRunspace(image, &receiver, 0, 0, null, .{ .mode = .inspect_only, .rerun_guest_conformance = true });
     defer restore.deinit(allocator);
     try std.testing.expect(restore.accepted);
+    try std.testing.expect(restore.owns_memory);
     try std.testing.expectEqual(guest_report.report_fingerprint, restore.guest_conformance_refs[0]);
     try std.testing.expectEqual(@as(usize, 0), receiver.slots.items.len);
 }

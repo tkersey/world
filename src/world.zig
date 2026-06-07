@@ -2225,6 +2225,8 @@ pub const Admission = struct {
         inspect_only,
         replay_only,
         restore_parked,
+        restore_completed,
+        restore_failed,
         relink_and_restore,
         verify,
     };
@@ -2253,13 +2255,13 @@ pub const Admission = struct {
             .inspect_only => true,
             .replay_only => args.thaw_plan != null,
             .verify => args.thaw_plan != null,
-            .restore_parked, .relink_and_restore => args.thaw_plan != null and args.restore_report != null,
+            .restore_parked, .restore_completed, .restore_failed, .relink_and_restore => args.thaw_plan != null and args.restore_report != null,
         };
         const witnesses_accept = switch (args.mode) {
             .inspect_only => if (args.thaw_plan) |plan| plan.blockers.len == 0 else true,
             .replay_only => if (args.thaw_plan) |plan| plan.blockers.len == 0 else false,
             .verify => if (args.thaw_plan) |plan| plan.blockers.len == 0 else false,
-            .restore_parked, .relink_and_restore => if (args.thaw_plan) |plan| if (args.restore_report) |report| plan.blockers.len == 0 and capsuleRestoreReportAccepted(report) else false else false,
+            .restore_parked, .restore_completed, .restore_failed, .relink_and_restore => if (args.thaw_plan) |plan| if (args.restore_report) |report| plan.blockers.len == 0 and capsuleRestoreReportAccepted(report) else false else false,
         };
         const request = Admission.AdmissionRequest.init(.{
             .package_fingerprint = args.image.image_fingerprint,
@@ -2341,6 +2343,8 @@ pub const Admission = struct {
             .replay_only => thaw_mode == .replay_only,
             .verify => thaw_mode == .verify_and_restore,
             .restore_parked => thaw_mode == .restore_parked,
+            .restore_completed => thaw_mode == .restore_completed,
+            .restore_failed => thaw_mode == .restore_failed,
             .relink_and_restore => thaw_mode == .relink_and_restore,
         };
     }
@@ -18168,9 +18172,10 @@ pub const Capsule = struct {
     }
 
     pub fn thawIntoRunspace(image: Image, runspace: *Runspace, registry_fingerprint: u64, environment_fingerprint: u64, permit_fingerprint: ?u64, options: ThawOptions) !RestoreReport {
+        const allocator = runspace.allocator;
         const plan = try planThaw(image, registry_fingerprint, environment_fingerprint, permit_fingerprint, options);
         if (plan.blockers.len != 0) {
-            return RestoreReport.init(.{
+            return restoreReportOwned(allocator, .{
                 .capsule_image_fingerprint = image.image_fingerprint,
                 .thaw_plan_fingerprint = plan.thaw_plan_fingerprint,
                 .restored_runspace_fingerprint = runspace.runspace_fingerprint,
@@ -18181,7 +18186,7 @@ pub const Capsule = struct {
             });
         }
         if (options.mode == .inspect_only or options.mode == .replay_only) {
-            return RestoreReport.init(.{
+            return restoreReportOwned(allocator, .{
                 .capsule_image_fingerprint = image.image_fingerprint,
                 .thaw_plan_fingerprint = plan.thaw_plan_fingerprint,
                 .restored_runspace_fingerprint = runspace.runspace_fingerprint,
@@ -18196,7 +18201,6 @@ pub const Capsule = struct {
         if (!runspace.config.allow_handoff_install) return error.RunspaceInstallDenied;
         try ensureRestoreRunCapacity(runspace, image);
 
-        const allocator = runspace.allocator;
         const slot_count_before = runspace.slots.items.len;
         const next_run_id_before = runspace.next_run_id;
         const mailbox_count_before = runspace.mailbox.pending.items.len;
@@ -18358,6 +18362,59 @@ pub const Capsule = struct {
             .receiver_run_permit_fingerprint = permit_fingerprint,
             .accepted = true,
             .warnings = warning_slice,
+            .summary = summary,
+        });
+        report.owns_memory = true;
+        return report;
+    }
+
+    fn restoreReportOwned(allocator: std.mem.Allocator, args: struct {
+        capsule_image_fingerprint: u64,
+        thaw_plan_fingerprint: u64,
+        restored_runspace_fingerprint: u64,
+        restored_root_run_handles: []const u64 = &.{},
+        restored_provider_run_handles: []const u64 = &.{},
+        restored_pending_port_mappings: []const u64 = &.{},
+        restored_fabric_invocation_mappings: []const u64 = &.{},
+        guest_conformance_refs: []const u64 = &.{},
+        environment_certificate_fingerprint: ?u64 = null,
+        receiver_run_permit_fingerprint: ?u64 = null,
+        accepted: bool,
+        blockers: []const Blocker = &.{},
+        warnings: []const Warning = &.{},
+        summary: []const u8 = "",
+    }) !RestoreReport {
+        const root_handles = try allocator.dupe(u64, args.restored_root_run_handles);
+        errdefer allocator.free(root_handles);
+        const provider_handles = try allocator.dupe(u64, args.restored_provider_run_handles);
+        errdefer allocator.free(provider_handles);
+        const pending_mappings = try allocator.dupe(u64, args.restored_pending_port_mappings);
+        errdefer allocator.free(pending_mappings);
+        const fabric_mappings = try allocator.dupe(u64, args.restored_fabric_invocation_mappings);
+        errdefer allocator.free(fabric_mappings);
+        const guest_refs = try allocator.dupe(u64, args.guest_conformance_refs);
+        errdefer allocator.free(guest_refs);
+        const blockers = try allocator.dupe(Blocker, args.blockers);
+        errdefer allocator.free(blockers);
+        const warnings = try allocator.dupe(Warning, args.warnings);
+        errdefer allocator.free(warnings);
+        const summary = try allocator.dupe(u8, args.summary);
+        errdefer allocator.free(summary);
+
+        var report = RestoreReport.init(.{
+            .capsule_image_fingerprint = args.capsule_image_fingerprint,
+            .thaw_plan_fingerprint = args.thaw_plan_fingerprint,
+            .restored_runspace_fingerprint = args.restored_runspace_fingerprint,
+            .restored_root_run_handles = root_handles,
+            .restored_provider_run_handles = provider_handles,
+            .restored_pending_port_mappings = pending_mappings,
+            .restored_fabric_invocation_mappings = fabric_mappings,
+            .guest_conformance_refs = guest_refs,
+            .environment_certificate_fingerprint = args.environment_certificate_fingerprint,
+            .receiver_run_permit_fingerprint = args.receiver_run_permit_fingerprint,
+            .accepted = args.accepted,
+            .blockers = blockers,
+            .warnings = warnings,
             .summary = summary,
         });
         report.owns_memory = true;
@@ -20902,6 +20959,15 @@ test "capsule handoff exports accepts and admission report binds witnesses" {
     try std.testing.expectEqual(cert.certificate_fingerprint, admission.capsule_certificate_fingerprint.?);
     try std.testing.expectEqual(thaw.thaw_plan_fingerprint, admission.capsule_thaw_plan_fingerprint.?);
     try std.testing.expectEqual(restore.restore_report_fingerprint, admission.capsule_restore_report_fingerprint.?);
+    const completed_admission = Admission.capsuleAdmissionReport(.{
+        .mode = .restore_completed,
+        .image = imported,
+        .certificate = cert,
+        .thaw_plan = thaw,
+        .restore_report = restore,
+    });
+    try std.testing.expect(completed_admission.accepted);
+    try std.testing.expectEqual(restore.restore_report_fingerprint, completed_admission.capsule_restore_report_fingerprint.?);
 }
 
 fn isSupportedRunImageFormatVersion(format_version: u32) bool {
@@ -24927,6 +24993,7 @@ fn admissionModeForCapsuleAdmission(mode: Admission.CapsuleAdmissionMode) Admiss
         .inspect_only => .inspect_only,
         .replay_only => .replay_only,
         .restore_parked, .relink_and_restore => .resume_parked,
+        .restore_completed, .restore_failed => .continue_fresh,
         .verify => .verify_only,
     };
 }
