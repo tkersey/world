@@ -296,7 +296,7 @@ pub const world_linker_plan_fingerprint_version: u32 = 1;
 pub const world_linker_report_fingerprint_version: u32 = 1;
 pub const world_linker_certificate_format_version: u32 = 1;
 pub const world_linker_certificate_fingerprint_version: u32 = 1;
-pub const world_assembly_fingerprint_version: u32 = 2;
+pub const world_assembly_fingerprint_version: u32 = 3;
 pub const world_capsule_manifest_format_version: u32 = 1;
 pub const world_capsule_manifest_fingerprint_version: u32 = 1;
 pub const world_capsule_quiescence_report_fingerprint_version: u32 = 1;
@@ -17978,7 +17978,7 @@ pub const Capsule = struct {
         errdefer if (fabric_image_owned) if (maybe_fabric_image) |*image| image.deinit(allocator);
 
         var maybe_link_image: ?LinkImage = if (options.include_link_certificate) if (assembly) |value|
-            try linkImageFromAssembly(allocator, value, 0, value.catalog_fingerprint)
+            try linkImageFromAssembly(allocator, value, value.linker_policy_fingerprint, value.catalog_fingerprint)
         else
             null else null;
         var link_image_owned = maybe_link_image != null;
@@ -18574,6 +18574,21 @@ pub const Capsule = struct {
             if (slot.environment_certificate_fingerprint) |fingerprint| {
                 if (!u64SliceContains(image.manifest.environment_certificate_fingerprints, fingerprint)) return error.InvalidFrameEncoding;
                 if (!u64SliceContains(image.environment_refs, fingerprint)) return error.InvalidFrameEncoding;
+            }
+            if (slot.transcript_image_fingerprint) |fingerprint| {
+                if (!u64SliceContains(image.manifest.transcript_image_fingerprints, fingerprint)) return error.InvalidFrameEncoding;
+                if (!u64SliceContains(image.runspace_image.transcript_image_refs, fingerprint)) return error.InvalidFrameEncoding;
+                if (!u64SliceContains(image.transcript_image_refs, fingerprint)) return error.InvalidFrameEncoding;
+            }
+            if (slot.admission_receipt_fingerprint) |fingerprint| {
+                if (!u64SliceContains(image.manifest.admission_receipt_fingerprints, fingerprint)) return error.InvalidFrameEncoding;
+                if (!u64SliceContains(image.runspace_image.admission_receipt_refs, fingerprint)) return error.InvalidFrameEncoding;
+                if (!u64SliceContains(image.admission_refs, fingerprint)) return error.InvalidFrameEncoding;
+            }
+            if (slot.run_permit_fingerprint) |fingerprint| {
+                if (!u64SliceContains(image.manifest.run_permit_fingerprints, fingerprint)) return error.InvalidFrameEncoding;
+                if (!u64SliceContains(image.runspace_image.permit_refs, fingerprint)) return error.InvalidFrameEncoding;
+                if (!u64SliceContains(image.supervision_refs, fingerprint)) return error.InvalidFrameEncoding;
             }
         }
         for (image.run_images) |run_image| {
@@ -20626,6 +20641,24 @@ test "capsule freeze produces completed image certificate and rejects running st
     try std.testing.expectEqual(@as(usize, 1), image.manifest.run_slot_count);
     try std.testing.expectEqual(@as(usize, 1), image.admission_refs.len);
     try std.testing.expectEqual(@as(usize, 1), image.supervision_refs.len);
+    const missing_admission_ref_image = Capsule.Image.init(.{
+        .manifest = image.manifest,
+        .runspace_image = image.runspace_image,
+        .admission_refs = &.{},
+        .supervision_refs = image.supervision_refs,
+        .run_image_refs = image.run_image_refs,
+        .run_images = image.run_images,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, missing_admission_ref_image.validate(.{}));
+    const missing_permit_ref_image = Capsule.Image.init(.{
+        .manifest = image.manifest,
+        .runspace_image = image.runspace_image,
+        .admission_refs = image.admission_refs,
+        .supervision_refs = &.{},
+        .run_image_refs = image.run_image_refs,
+        .run_images = image.run_images,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, missing_permit_ref_image.validate(.{}));
     var report = try Capsule.quiescenceReport(allocator, &runspace, null);
     defer report.deinit(allocator);
     const cert = try Capsule.certificate(image, report);

@@ -1191,6 +1191,7 @@ pub fn Linker(comptime W: type) type {
             root_admitted_run_fingerprint: ?u64 = null,
             link_plan_fingerprint: u64,
             linker_certificate_fingerprint: u64,
+            linker_policy_fingerprint: u64 = 0,
             catalog_fingerprint: ?u64 = null,
             environment_certificate_fingerprint: ?u64 = null,
             run_permit_fingerprint: ?u64 = null,
@@ -1205,6 +1206,7 @@ pub fn Linker(comptime W: type) type {
                 root_admitted_run_fingerprint: ?u64 = null,
                 link_plan_fingerprint: u64,
                 linker_certificate_fingerprint: u64,
+                linker_policy_fingerprint: u64 = 0,
                 catalog_fingerprint: ?u64 = null,
                 environment_certificate_fingerprint: ?u64 = null,
                 run_permit_fingerprint: ?u64 = null,
@@ -1220,6 +1222,7 @@ pub fn Linker(comptime W: type) type {
                     .root_admitted_run_fingerprint = args.root_admitted_run_fingerprint,
                     .link_plan_fingerprint = args.link_plan_fingerprint,
                     .linker_certificate_fingerprint = args.linker_certificate_fingerprint,
+                    .linker_policy_fingerprint = args.linker_policy_fingerprint,
                     .catalog_fingerprint = args.catalog_fingerprint,
                     .environment_certificate_fingerprint = args.environment_certificate_fingerprint,
                     .run_permit_fingerprint = args.run_permit_fingerprint,
@@ -1853,6 +1856,7 @@ pub fn Linker(comptime W: type) type {
                 .root_target_ref = input.root_target_ref,
                 .link_plan_fingerprint = if (plan.accepted()) plan.plan_fingerprint else 0,
                 .linker_certificate_fingerprint = if (plan.accepted()) certificate.certificate_fingerprint else 0,
+                .linker_policy_fingerprint = if (plan.accepted()) policy.fingerprint() else 0,
                 .catalog_fingerprint = if (plan.accepted()) catalog_fingerprint else null,
                 .run_permit_fingerprint = input.run_permit_fingerprint,
                 .fabric_plans = assembly_fabric_plans,
@@ -2549,6 +2553,7 @@ pub fn Linker(comptime W: type) type {
             hashOptionalU64(&hasher, assembly.root_admitted_run_fingerprint);
             hashU64(&hasher, assembly.link_plan_fingerprint);
             hashU64(&hasher, assembly.linker_certificate_fingerprint);
+            hashU64(&hasher, assembly.linker_policy_fingerprint);
             hashOptionalU64(&hasher, assembly.catalog_fingerprint);
             hashOptionalU64(&hasher, assembly.environment_certificate_fingerprint);
             hashOptionalU64(&hasher, assembly.run_permit_fingerprint);
