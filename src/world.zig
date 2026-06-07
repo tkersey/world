@@ -18755,22 +18755,26 @@ pub const Capsule = struct {
             }
             image.transcript_image = null;
             image.owns_transcript_image = false;
-            image.current_state = RunState.init(.{
-                .target_ref_fingerprint = image.current_state.target_ref_fingerprint,
-                .transcript_image_fingerprint = null,
-                .branch_id = image.current_state.branch_id,
-                .checkpoint_fingerprint = image.current_state.checkpoint_fingerprint,
-                .pending_request_fingerprint = image.current_state.pending_request_fingerprint,
-                .final_response_fingerprint = image.current_state.final_response_fingerprint,
-                .final_value_image_fingerprint = image.current_state.final_value_image_fingerprint,
-                .turn_index = image.current_state.turn_index,
-                .status = image.current_state.status,
-            });
+            image.current_state = runStateWithoutTranscript(image.current_state);
         }
         if (!options.include_receipts) image.prior_run_receipt_fingerprint = null;
         const has_module_witness = image.module_ref_fingerprint != null or image.boundary_module_fingerprint != null or image.module_image_fingerprint != null;
         if (has_module_witness) image.format_version = world_run_image_format_version;
         image.run_image_fingerprint = if (image.format_version >= 3) fingerprintRunImageV3(image.*) else fingerprintRunImage(image.*);
+    }
+
+    fn runStateWithoutTranscript(state: RunState) RunState {
+        return RunState.init(.{
+            .target_ref_fingerprint = state.target_ref_fingerprint,
+            .transcript_image_fingerprint = null,
+            .branch_id = state.branch_id,
+            .checkpoint_fingerprint = state.checkpoint_fingerprint,
+            .pending_request_fingerprint = state.pending_request_fingerprint,
+            .final_response_fingerprint = state.final_response_fingerprint,
+            .final_value_image_fingerprint = state.final_value_image_fingerprint,
+            .turn_index = state.turn_index,
+            .status = state.status,
+        });
     }
 
     fn slotNeedsRunImageForCapsule(slot: Runspace.RunSlot) bool {
@@ -19172,7 +19176,7 @@ pub const Capsule = struct {
             .admission_receipt_fingerprint = slot.admission_receipt_fingerprint,
             .environment_certificate_fingerprint = null,
             .run_permit_fingerprint = slot.run_permit_fingerprint,
-            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+            .run_state_fingerprint = if (include_transcripts) slot.current_state.run_state_fingerprint else runStateWithoutTranscript(slot.current_state).run_state_fingerprint,
             .run_image_fingerprint = run_image_fingerprint,
             .transcript_image_fingerprint = if (include_transcripts) slot.current_state.transcript_image_fingerprint else null,
             .current_pending_mailbox_id = slot.pending_mailbox_id,

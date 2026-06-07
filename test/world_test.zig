@@ -383,6 +383,11 @@ test "capsule freezeRunspace honors receipt and transcript exclusion flags" {
     try std.testing.expect(excluded.run_images[0].transcript_image == null);
     try std.testing.expectEqual(@as(?u64, null), excluded.run_images[0].current_state.transcript_image_fingerprint);
     try std.testing.expectEqual(@as(?u64, null), excluded.run_images[0].prior_run_receipt_fingerprint);
+    var receiver = world.Runspace.init(allocator, .{});
+    defer receiver.deinit();
+    var restore = try world.Capsule.thawIntoRunspace(excluded, &receiver, target_ref.target_ref_fingerprint, 0, 0x5150_3342, .{ .mode = .restore_completed });
+    defer restore.deinit(allocator);
+    try std.testing.expect(restore.accepted);
 }
 
 test "capsule image validation rejects completed manifest with parked slot" {
