@@ -9,9 +9,9 @@ Contract note:
 Toolchain:
 - zig version => 0.16.0
 
-Current-head refresh:
-- commit => d1daa4875c1927fb11c72d8d23d62e3d21ab3f8d
-- refreshed_at => 2026-06-07T22:36:46Z
+Current-tree refresh:
+- refreshed_at => 2026-06-07T22:45:30Z
+- regression => capsule link images without linker policy fingerprints reject through LinkImage.validate and Image.validate
 
 Completed commands:
 - zig fmt --check build.zig src examples test

@@ -321,6 +321,19 @@ test "capsule decode applies dependency limits to link image refs" {
         .linker_policy_fingerprint = 0,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, empty_link_image.validate());
+    const policyless_link_image = world.Capsule.LinkImage.init(.{
+        .link_plan_fingerprint = 0x501,
+        .link_certificate_fingerprint = 0x502,
+        .assembly_fingerprint = 0x503,
+        .linker_policy_fingerprint = 0,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, policyless_link_image.validate());
+    const policyless_image = world.Capsule.Image.init(.{
+        .manifest = manifest,
+        .runspace_image = runspace_image,
+        .link_image = policyless_link_image,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, policyless_image.validate(.{}));
     const image = world.Capsule.Image.init(.{
         .manifest = manifest,
         .runspace_image = runspace_image,

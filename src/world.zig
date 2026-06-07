@@ -17163,6 +17163,7 @@ pub const Capsule = struct {
             if (self.link_plan_fingerprint == 0) return error.InvalidFrameEncoding;
             if (self.link_certificate_fingerprint == 0) return error.InvalidFrameEncoding;
             if (self.assembly_fingerprint == 0) return error.InvalidFrameEncoding;
+            if (self.linker_policy_fingerprint == 0) return error.InvalidFrameEncoding;
             if (self.catalog_fingerprint) |catalog| {
                 if (catalog == 0) return error.InvalidFrameEncoding;
             }
