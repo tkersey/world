@@ -18438,6 +18438,8 @@ pub const Capsule = struct {
                     }
                 }
                 if (!linkFabricPlanWitnessesCover(image.manifest.fabric_plan_fingerprints, link.route_synthesis_refs)) return .fabric_plan_mismatch;
+            } else if (options.mode == .relink_and_restore) {
+                return .link_certificate_missing;
             }
         }
         if (options.rerun_guest_conformance and
@@ -18481,6 +18483,11 @@ pub const Capsule = struct {
             if (manifest.link_plan_fingerprint == null or manifest.link_plan_fingerprint.? != link.link_plan_fingerprint) return error.InvalidFrameEncoding;
             if (manifest.link_certificate_fingerprint == null or manifest.link_certificate_fingerprint.? != link.link_certificate_fingerprint) return error.InvalidFrameEncoding;
             if (manifest.assembly_fingerprint == null or manifest.assembly_fingerprint.? != link.assembly_fingerprint) return error.InvalidFrameEncoding;
+            if (manifest.fabric_plan_fingerprints.len != 0 and
+                !linkFabricPlanWitnessesCover(manifest.fabric_plan_fingerprints, link.route_synthesis_refs))
+            {
+                return error.InvalidFrameEncoding;
+            }
         } else if (manifest.link_plan_fingerprint != null or manifest.link_certificate_fingerprint != null or manifest.assembly_fingerprint != null) {
             return error.InvalidFrameEncoding;
         }

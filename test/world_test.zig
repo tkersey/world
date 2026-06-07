@@ -1601,14 +1601,7 @@ test "capsule relink requires manifest fabric plan coverage" {
         .link_image = mismatched_link,
         .fabric_image = fabric_image,
     });
-    const rejected = try world.Capsule.verifyLink(mismatched_image, 0, .{});
-    try std.testing.expectEqual(world.Capsule.LinkCertificateMatchStatus.mismatched, rejected.link_certificate_match_status);
-    try std.testing.expectEqual(world.Capsule.RelinkStatus.rejected, rejected.relink_status);
-    try std.testing.expectEqual(world.Capsule.Blocker.fabric_plan_mismatch, rejected.blockers[0]);
-    const drift_allowed = try world.Capsule.verifyLink(mismatched_image, 0, .{ .allow_relink_drift = true });
-    try std.testing.expectEqual(world.Capsule.LinkCertificateMatchStatus.mismatched, drift_allowed.link_certificate_match_status);
-    try std.testing.expectEqual(world.Capsule.RelinkStatus.drift_allowed, drift_allowed.relink_status);
-    try std.testing.expectEqual(@as(usize, 0), drift_allowed.blockers.len);
+    try std.testing.expectError(error.InvalidFrameEncoding, mismatched_image.validate(.{}));
 
     const covered_link = world.Capsule.LinkImage.init(.{
         .link_plan_fingerprint = 0x1010,
@@ -1690,8 +1683,6 @@ test "capsule relink requires manifest fabric plan coverage" {
     const residual_rejected = try world.Capsule.verifyLink(residual_image, 0, .{ .expected_residual_import_set_fingerprint = 0x5150_3711 });
     try std.testing.expectEqual(world.Capsule.RelinkStatus.rejected, residual_rejected.relink_status);
     try std.testing.expectEqual(world.Capsule.Blocker.residual_import_mismatch, residual_rejected.blockers[0]);
-    const fabric_thaw_rejected = try world.Capsule.planThaw(mismatched_image, root_ref.target_ref_fingerprint, 0, null, .{ .mode = .inspect_only });
-    try std.testing.expectEqual(world.Capsule.Blocker.fabric_plan_mismatch, fabric_thaw_rejected.blockers[0]);
     const residual_accepted = try world.Capsule.verifyLink(residual_image, 0, .{ .expected_residual_import_set_fingerprint = 0x5150_3710 });
     try std.testing.expectEqual(world.Capsule.RelinkStatus.matched, residual_accepted.relink_status);
     try std.testing.expectEqual(@as(usize, 0), residual_accepted.blockers.len);
@@ -1954,6 +1945,8 @@ test "capsule handoff admission binds restore witnesses and receiver permit" {
     });
     try std.testing.expect(replay_admission.accepted);
     try std.testing.expectEqual(replay_thaw.thaw_plan_fingerprint, replay_admission.capsule_thaw_plan_fingerprint.?);
+    const relink_without_link = try world.Capsule.planThaw(imported, target_ref.target_ref_fingerprint, 0, 0x5150_3805, .{ .mode = .relink_and_restore });
+    try std.testing.expectEqual(world.Capsule.Blocker.link_certificate_missing, relink_without_link.blockers[0]);
     const wrong_permit_thaw = try world.Capsule.planThaw(imported, target_ref.target_ref_fingerprint, 0, 0x5150_3804, .{ .mode = .restore_completed });
     const wrong_permit_admission = world.Admission.capsuleAdmissionReport(.{
         .mode = .restore_parked,
