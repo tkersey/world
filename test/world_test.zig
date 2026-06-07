@@ -235,7 +235,6 @@ test "capsule image encode decode roundtrips dependency and object refs" {
     const manifest = world.Capsule.Manifest.init(.{
         .kind = .full_assembly,
         .root_target_ref_fingerprint = 0x100,
-        .run_slot_count = 1,
         .normal_form = .quiescent_completed,
     });
     const mailbox = world.Capsule.MailboxImage.init(.{});
@@ -277,7 +276,6 @@ test "capsule certificate derives from image and quiescence without image hash c
     const manifest = world.Capsule.Manifest.init(.{
         .kind = .completed_assembly,
         .root_target_ref_fingerprint = 0x1111,
-        .run_slot_count = 1,
         .normal_form = .quiescent_completed,
     });
     const runspace_image = world.Capsule.RunspaceImage.init(.{
@@ -292,14 +290,47 @@ test "capsule certificate derives from image and quiescence without image hash c
         .runspace_fingerprint = 0x2222,
         .quiescent = true,
         .normal_form = .quiescent_completed,
-        .run_count = 1,
-        .completed_run_count = 1,
     });
     const cert = try world.Capsule.certificate(image, report);
     try std.testing.expect(cert.certificate_fingerprint != 0);
     try std.testing.expectEqual(image.image_fingerprint, cert.capsule_image_fingerprint);
     try std.testing.expectEqual(image.manifest.manifest_fingerprint, cert.capsule_manifest_fingerprint);
     try std.testing.expectEqual(report.report_fingerprint, cert.quiescence_report_fingerprint);
+}
+
+test "capsule image validation rejects completed manifest with parked slot" {
+    const allocator = std.testing.allocator;
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const slot = world.Capsule.RunSlotImage.init(.{
+        .original_run_handle_fingerprint = 0x1111,
+        .role = .root,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .run_state_fingerprint = 0x2222,
+        .current_pending_mailbox_id = 0x3333,
+        .status = .parked_on_port,
+    });
+    const slots = [_]world.Capsule.RunSlotImage{slot};
+    const manifest = world.Capsule.Manifest.init(.{
+        .kind = .completed_assembly,
+        .root_target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .run_slot_count = slots.len,
+        .normal_form = .quiescent_completed,
+    });
+    const runspace_image = world.Capsule.RunspaceImage.init(.{
+        .runspace_fingerprint = 0x4444,
+        .runspace_report_fingerprint = 0x5555,
+        .run_slots = &slots,
+    });
+    const image = world.Capsule.Image.init(.{
+        .manifest = manifest,
+        .runspace_image = runspace_image,
+    });
+
+    try std.testing.expectError(error.InvalidFrameEncoding, image.validate(.{}));
+    var destination = world.Runspace.init(allocator, .{});
+    defer destination.deinit();
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Capsule.thawIntoRunspace(image, &destination, 0, 0, 0x7777, .{ .mode = .restore_completed }));
+    try std.testing.expectEqual(@as(usize, 0), destination.slots.items.len);
 }
 
 test "capsule namespace excludes forbidden native execution fields" {
@@ -968,6 +999,63 @@ test "capsule relink rejects mismatched local catalog" {
     try std.testing.expectEqual(world.Capsule.LinkCertificateMatchStatus.mismatched, plan_result.link_certificate_match_status);
     try std.testing.expectEqual(world.Capsule.RelinkStatus.rejected, plan_result.relink_status);
     try std.testing.expectEqual(world.Capsule.Blocker.relink_drift_rejected, plan_result.blockers[0]);
+}
+
+test "capsule relink requires manifest fabric plan coverage" {
+    const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const manifest_fabric_refs = [_]u64{0xaaaa};
+    const mismatched_route_refs = [_]u64{ 0xbbbb, 0xcccc };
+    const covered_route_refs = [_]u64{ 0xbbbb, 0xaaaa, 0xcccc };
+    const manifest = world.Capsule.Manifest.init(.{
+        .kind = .completed_assembly,
+        .root_target_ref_fingerprint = root_ref.target_ref_fingerprint,
+        .link_plan_fingerprint = 0x1010,
+        .link_certificate_fingerprint = 0x2020,
+        .fabric_plan_fingerprints = &manifest_fabric_refs,
+        .normal_form = .quiescent_completed,
+    });
+    const runspace_image = world.Capsule.RunspaceImage.init(.{
+        .runspace_fingerprint = 0x3030,
+        .runspace_report_fingerprint = 0x4040,
+    });
+    const fabric_image = world.Capsule.FabricImage.init(.{
+        .fabric_plan_fingerprints = &manifest_fabric_refs,
+    });
+    const mismatched_link = world.Capsule.LinkImage.init(.{
+        .link_plan_fingerprint = 0x1010,
+        .link_certificate_fingerprint = 0x2020,
+        .assembly_fingerprint = 0x3030,
+        .linker_policy_fingerprint = 0x4040,
+        .route_synthesis_refs = &mismatched_route_refs,
+    });
+    const mismatched_image = world.Capsule.Image.init(.{
+        .manifest = manifest,
+        .runspace_image = runspace_image,
+        .link_image = mismatched_link,
+        .fabric_image = fabric_image,
+    });
+    const rejected = try world.Capsule.verifyLink(mismatched_image, 0, .{});
+    try std.testing.expectEqual(world.Capsule.LinkCertificateMatchStatus.mismatched, rejected.link_certificate_match_status);
+    try std.testing.expectEqual(world.Capsule.RelinkStatus.rejected, rejected.relink_status);
+    try std.testing.expectEqual(world.Capsule.Blocker.relink_drift_rejected, rejected.blockers[0]);
+
+    const covered_link = world.Capsule.LinkImage.init(.{
+        .link_plan_fingerprint = 0x1010,
+        .link_certificate_fingerprint = 0x2020,
+        .assembly_fingerprint = 0x3030,
+        .linker_policy_fingerprint = 0x4040,
+        .route_synthesis_refs = &covered_route_refs,
+    });
+    const covered_image = world.Capsule.Image.init(.{
+        .manifest = manifest,
+        .runspace_image = runspace_image,
+        .link_image = covered_link,
+        .fabric_image = fabric_image,
+    });
+    const accepted = try world.Capsule.verifyLink(covered_image, 0, .{});
+    try std.testing.expectEqual(world.Capsule.LinkCertificateMatchStatus.matched, accepted.link_certificate_match_status);
+    try std.testing.expectEqual(world.Capsule.RelinkStatus.matched, accepted.relink_status);
+    try std.testing.expectEqual(@as(usize, 0), accepted.blockers.len);
 }
 
 test "capsule handoff admission binds restore witnesses and receiver permit" {
