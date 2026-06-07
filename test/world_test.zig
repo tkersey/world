@@ -452,7 +452,7 @@ test "capsule image validation rejects completed manifest with parked slot" {
         .current_pending_mailbox_id = 0x3331,
         .status = .parked_on_supervision,
     });
-    try std.testing.expectError(error.InvalidFrameEncoding, supervision_parked_with_mailbox.validate(.{}));
+    try supervision_parked_with_mailbox.validate(.{});
     const supervision_slots = [_]world.Capsule.RunSlotImage{supervision_parked_with_mailbox};
     const supervision_manifest = world.Capsule.Manifest.init(.{
         .kind = .parked_assembly,
@@ -2197,7 +2197,7 @@ test "capsule parked thaw rejects missing run image before mutation" {
         .current_pending_mailbox_id = 0,
         .status = .parked_on_supervision,
     });
-    try std.testing.expectError(error.InvalidFrameEncoding, supervision_slot_with_mailbox.validate(.{}));
+    try supervision_slot_with_mailbox.validate(.{});
 }
 
 test "capsule validation rejects port parked slot without mailbox mapping" {
@@ -2709,6 +2709,49 @@ test "capsule freeze preserves exported supervision parked run image kind" {
     try std.testing.expectEqual(@as(usize, 1), image.run_images.len);
     try std.testing.expectEqual(world.RunImage.Kind.full_target_run, image.run_images[0].kind);
     try std.testing.expectEqual(world.RunState.Status.parked_on_supervision, image.run_images[0].current_state.status);
+}
+
+test "capsule freeze preserves supervised port parked mailbox" {
+    const allocator = std.testing.allocator;
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const request = testRunspaceRequestFrame();
+    var source = world.Runspace.init(allocator, .{});
+    defer source.deinit();
+    const handle = world.RunHandle.init(.{
+        .runspace_fingerprint = source.runspace_fingerprint,
+        .local_run_id = 0,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+    });
+    try source.slots.append(allocator, world.Runspace.RunSlot.fromState(.{
+        .handle = handle,
+        .target_ref = target_ref,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+            .pending_request_fingerprint = request.frame_fingerprint,
+            .turn_index = request.turn_index,
+            .status = .parked_on_port,
+        }),
+        .status = .parked_on_supervision,
+        .pending_mailbox_id = 0,
+    }));
+    _ = try source.mailbox.push(.{
+        .run_handle = handle,
+        .mailbox_id = 0,
+        .request = request,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .expected_response_kind = .return_now,
+        .inserted_event_index = 0,
+    });
+    source.next_mailbox_id = 1;
+
+    var image = try world.Capsule.freezeRunspace(&source, .{});
+    defer image.deinit(allocator);
+    try std.testing.expectEqual(world.Capsule.NormalForm.quiescent_parked, image.manifest.normal_form);
+    try std.testing.expectEqual(world.Capsule.RunSlotStatus.parked_on_supervision, image.runspace_image.run_slots[0].status);
+    try std.testing.expectEqual(@as(?u64, 0), image.runspace_image.run_slots[0].current_pending_mailbox_id);
+    try std.testing.expectEqual(@as(usize, 1), image.runspace_image.mailbox_image.?.pending_port_entries.len);
+    try std.testing.expectEqual(world.RunImage.Kind.parked_run, image.run_images[0].kind);
+    try std.testing.expectEqual(world.RunState.Status.parked_on_port, image.run_images[0].current_state.status);
 }
 
 test "capsule active fabric restore rejects mutation without fabric state image" {
