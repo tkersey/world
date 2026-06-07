@@ -2250,12 +2250,14 @@ pub const Admission = struct {
             (args.thaw_plan == null or args.restore_report == null or args.thaw_plan.?.receiver_run_permit_fingerprint == args.restore_report.?.receiver_run_permit_fingerprint);
         const witness_modes_bound = args.thaw_plan == null or capsuleAdmissionModeAllowsThaw(args.mode, args.thaw_plan.?.requested_mode);
         const has_required_witnesses = switch (args.mode) {
-            .inspect_only, .replay_only => true,
+            .inspect_only => true,
+            .replay_only => args.thaw_plan != null,
             .verify => args.thaw_plan != null,
             .restore_parked, .relink_and_restore => args.thaw_plan != null and args.restore_report != null,
         };
         const witnesses_accept = switch (args.mode) {
-            .inspect_only, .replay_only => if (args.thaw_plan) |plan| plan.blockers.len == 0 else true,
+            .inspect_only => if (args.thaw_plan) |plan| plan.blockers.len == 0 else true,
+            .replay_only => if (args.thaw_plan) |plan| plan.blockers.len == 0 else false,
             .verify => if (args.thaw_plan) |plan| plan.blockers.len == 0 else false,
             .restore_parked, .relink_and_restore => if (args.thaw_plan) |plan| if (args.restore_report) |report| plan.blockers.len == 0 and capsuleRestoreReportAccepted(report) else false else false,
         };
@@ -18383,7 +18385,8 @@ pub const Capsule = struct {
         };
         const catalog_matched = link.catalog_fingerprint == null or local_catalog_fingerprint == 0 or link.catalog_fingerprint.? == local_catalog_fingerprint;
         const residual_matched = !policy.require_residual_import_match or
-            link.residual_import_set_fingerprint == (policy.expected_residual_import_set_fingerprint orelse 0);
+            policy.expected_residual_import_set_fingerprint == null or
+            link.residual_import_set_fingerprint == policy.expected_residual_import_set_fingerprint.?;
         const fabric_matched = !policy.require_fabric_plan_match or linkFabricPlanWitnessesCover(image.manifest.fabric_plan_fingerprints, link.route_synthesis_refs);
         const guest_conformance_matched = !policy.require_guest_conformance or guestConformanceRefsCovered(image.manifest.guest_conformance_report_fingerprints, image.guest_conformance_refs);
         const matched = catalog_matched and residual_matched and fabric_matched and guest_conformance_matched;

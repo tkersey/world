@@ -1684,7 +1684,10 @@ test "capsule relink requires manifest fabric plan coverage" {
         .link_image = residual_link,
         .fabric_image = fabric_image,
     });
-    const residual_rejected = try world.Capsule.verifyLink(residual_image, 0, .{});
+    const residual_default = try world.Capsule.verifyLink(residual_image, 0, .{});
+    try std.testing.expectEqual(world.Capsule.RelinkStatus.matched, residual_default.relink_status);
+    try std.testing.expectEqual(@as(usize, 0), residual_default.blockers.len);
+    const residual_rejected = try world.Capsule.verifyLink(residual_image, 0, .{ .expected_residual_import_set_fingerprint = 0x5150_3711 });
     try std.testing.expectEqual(world.Capsule.RelinkStatus.rejected, residual_rejected.relink_status);
     try std.testing.expectEqual(world.Capsule.Blocker.residual_import_mismatch, residual_rejected.blockers[0]);
     const fabric_thaw_rejected = try world.Capsule.planThaw(mismatched_image, root_ref.target_ref_fingerprint, 0, null, .{ .mode = .inspect_only });
@@ -1935,6 +1938,22 @@ test "capsule handoff admission binds restore witnesses and receiver permit" {
     try std.testing.expectEqual(cert.certificate_fingerprint, admission.capsule_certificate_fingerprint.?);
     try std.testing.expectEqual(thaw.thaw_plan_fingerprint, admission.capsule_thaw_plan_fingerprint.?);
     try std.testing.expectEqual(restore.restore_report_fingerprint, admission.capsule_restore_report_fingerprint.?);
+    const replay_without_thaw = world.Admission.capsuleAdmissionReport(.{
+        .mode = .replay_only,
+        .image = imported,
+        .certificate = cert,
+    });
+    try std.testing.expect(!replay_without_thaw.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, replay_without_thaw.blockers[0]);
+    const replay_thaw = try world.Capsule.planThaw(imported, target_ref.target_ref_fingerprint, 0, null, .{ .mode = .replay_only });
+    const replay_admission = world.Admission.capsuleAdmissionReport(.{
+        .mode = .replay_only,
+        .image = imported,
+        .certificate = cert,
+        .thaw_plan = replay_thaw,
+    });
+    try std.testing.expect(replay_admission.accepted);
+    try std.testing.expectEqual(replay_thaw.thaw_plan_fingerprint, replay_admission.capsule_thaw_plan_fingerprint.?);
     const wrong_permit_thaw = try world.Capsule.planThaw(imported, target_ref.target_ref_fingerprint, 0, 0x5150_3804, .{ .mode = .restore_completed });
     const wrong_permit_admission = world.Admission.capsuleAdmissionReport(.{
         .mode = .restore_parked,
