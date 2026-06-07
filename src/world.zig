@@ -18173,7 +18173,7 @@ pub const Capsule = struct {
             .restore_completed => image.manifest.kind == .completed_assembly or image.manifest.normal_form == .quiescent_completed,
             .restore_failed => image.manifest.kind == .failed_assembly or image.manifest.normal_form == .quiescent_failed,
             .restore_parked => image.manifest.kind == .parked_assembly or image.manifest.normal_form == .quiescent_parked or image.manifest.normal_form == .active_fabric_parked,
-            .relink_and_restore, .verify_and_restore => image.link_image != null,
+            .relink_and_restore, .verify_and_restore => image.link_image != null and normalFormIsRestorable(image.manifest.normal_form),
         };
     }
 
@@ -18185,8 +18185,18 @@ pub const Capsule = struct {
         if (manifest.active_fabric_invocation_count != runspace_image_value.active_fabric_invocation_refs.len) return error.InvalidFrameEncoding;
         try validateKindNormalForm(manifest.kind, manifest.normal_form);
         try validateRunSlotNormalForm(manifest.normal_form, runspace_image_value.run_slots, manifest.pending_port_count, manifest.active_fabric_invocation_count);
+        try validateParkedSlotMailboxCoverage(runspace_image_value);
+        if (image.link_image) |link| {
+            if (manifest.link_plan_fingerprint == null or manifest.link_plan_fingerprint.? != link.link_plan_fingerprint) return error.InvalidFrameEncoding;
+            if (manifest.link_certificate_fingerprint == null or manifest.link_certificate_fingerprint.? != link.link_certificate_fingerprint) return error.InvalidFrameEncoding;
+            if (manifest.assembly_fingerprint == null or manifest.assembly_fingerprint.? != link.assembly_fingerprint) return error.InvalidFrameEncoding;
+        } else if (manifest.link_plan_fingerprint != null or manifest.link_certificate_fingerprint != null or manifest.assembly_fingerprint != null) {
+            return error.InvalidFrameEncoding;
+        }
         if (image.fabric_image) |fabric| {
-            if (manifest.fabric_plan_fingerprints.len != fabric.fabric_plan_fingerprints.len) return error.InvalidFrameEncoding;
+            if (!u64SlicesEqual(manifest.fabric_plan_fingerprints, fabric.fabric_plan_fingerprints)) return error.InvalidFrameEncoding;
+            if (!u64SlicesEqual(manifest.fabric_invocation_fingerprints, fabric.active_invocation_fingerprints)) return error.InvalidFrameEncoding;
+            if (!u64SlicesEqual(manifest.fabric_receipt_fingerprints, fabric.completed_receipt_fingerprints)) return error.InvalidFrameEncoding;
             if (manifest.active_fabric_invocation_count != fabric.active_invocation_fingerprints.len) return error.InvalidFrameEncoding;
         } else if (manifest.fabric_plan_fingerprints.len != 0 or
             manifest.fabric_invocation_fingerprints.len != 0 or
@@ -18199,6 +18209,24 @@ pub const Capsule = struct {
     fn pendingPortImageCount(image: RunspaceImage) usize {
         if (image.mailbox_image) |mailbox| return mailbox.pending_port_entries.len;
         return 0;
+    }
+
+    fn validateParkedSlotMailboxCoverage(image: RunspaceImage) !void {
+        const maybe_mailbox = image.mailbox_image;
+        for (image.run_slots) |slot| {
+            if (slot.status != .parked_on_port) continue;
+            const mailbox_id = slot.current_pending_mailbox_id orelse return error.InvalidFrameEncoding;
+            const mailbox = maybe_mailbox orelse return error.InvalidFrameEncoding;
+            var found = false;
+            for (mailbox.pending_port_entries) |entry| {
+                if (entry.mailbox_id != mailbox_id) continue;
+                if (entry.original_run_handle_fingerprint != slot.original_run_handle_fingerprint) return error.InvalidFrameEncoding;
+                if (entry.target_ref_fingerprint != slot.target_ref_fingerprint) return error.InvalidFrameEncoding;
+                found = true;
+                break;
+            }
+            if (!found) return error.InvalidFrameEncoding;
+        }
     }
 
     fn validateRunImageCoverage(image: Image) !void {
@@ -18219,6 +18247,17 @@ pub const Capsule = struct {
             if (image.run_image_fingerprint == fingerprint) return true;
         }
         return false;
+    }
+
+    fn normalFormIsRestorable(normal_form: NormalForm) bool {
+        return switch (normal_form) {
+            .quiescent_completed, .quiescent_failed, .quiescent_parked, .active_fabric_parked => true,
+            .unsupported_running, .partial_with_blockers => false,
+        };
+    }
+
+    fn u64SlicesEqual(left: []const u64, right: []const u64) bool {
+        return std.mem.eql(u64, left, right);
     }
 
     fn ensureRestoreRunCapacity(runspace: *const Runspace, slots: []const RunSlotImage) !void {

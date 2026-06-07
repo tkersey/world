@@ -1026,6 +1026,7 @@ test "capsule relink requires manifest fabric plan coverage" {
         .root_target_ref_fingerprint = root_ref.target_ref_fingerprint,
         .link_plan_fingerprint = 0x1010,
         .link_certificate_fingerprint = 0x2020,
+        .assembly_fingerprint = 0x3030,
         .fabric_plan_fingerprints = &manifest_fabric_refs,
         .normal_form = .quiescent_completed,
     });
@@ -1075,6 +1076,78 @@ test "capsule relink requires manifest fabric plan coverage" {
     try std.testing.expectEqual(world.Capsule.LinkCertificateMatchStatus.matched, accepted.link_certificate_match_status);
     try std.testing.expectEqual(world.Capsule.RelinkStatus.matched, accepted.relink_status);
     try std.testing.expectEqual(@as(usize, 0), accepted.blockers.len);
+
+    const wrong_link = world.Capsule.LinkImage.init(.{
+        .link_plan_fingerprint = 0x9999,
+        .link_certificate_fingerprint = 0x2020,
+        .assembly_fingerprint = 0x3030,
+        .linker_policy_fingerprint = 0x4040,
+        .route_synthesis_refs = &covered_route_refs,
+    });
+    const wrong_link_image = world.Capsule.Image.init(.{
+        .manifest = manifest,
+        .runspace_image = runspace_image,
+        .link_image = wrong_link,
+        .fabric_image = fabric_image,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, wrong_link_image.validate(.{}));
+
+    const wrong_fabric_refs = [_]u64{0xbbbb};
+    const wrong_fabric = world.Capsule.FabricImage.init(.{
+        .fabric_plan_fingerprints = &wrong_fabric_refs,
+    });
+    const wrong_fabric_image = world.Capsule.Image.init(.{
+        .manifest = manifest,
+        .runspace_image = runspace_image,
+        .link_image = covered_link,
+        .fabric_image = wrong_fabric,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, wrong_fabric_image.validate(.{}));
+}
+
+test "capsule relink restore rejects unsupported normal form" {
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const link = world.Capsule.LinkImage.init(.{
+        .link_plan_fingerprint = 0x5150_3701,
+        .link_certificate_fingerprint = 0x5150_3702,
+        .assembly_fingerprint = 0x5150_3703,
+        .linker_policy_fingerprint = 0x5150_3704,
+    });
+    const state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .not_started,
+    });
+    const slot = world.Capsule.RunSlotImage.init(.{
+        .original_run_handle_fingerprint = 0x5150_3705,
+        .role = .root,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .run_state_fingerprint = state.run_state_fingerprint,
+        .status = .admitted,
+    });
+    const slots = [_]world.Capsule.RunSlotImage{slot};
+    const manifest = world.Capsule.Manifest.init(.{
+        .kind = .inspect_only,
+        .root_target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .link_plan_fingerprint = link.link_plan_fingerprint,
+        .link_certificate_fingerprint = link.link_certificate_fingerprint,
+        .assembly_fingerprint = link.assembly_fingerprint,
+        .run_slot_count = slots.len,
+        .normal_form = .unsupported_running,
+    });
+    const runspace_image = world.Capsule.RunspaceImage.init(.{
+        .runspace_fingerprint = 0x5150_3706,
+        .runspace_report_fingerprint = 0x5150_3707,
+        .run_slots = &slots,
+    });
+    const image = world.Capsule.Image.init(.{
+        .manifest = manifest,
+        .runspace_image = runspace_image,
+        .link_image = link,
+    });
+
+    try image.validate(.{});
+    const thaw = try world.Capsule.planThaw(image, target_ref.target_ref_fingerprint, 0, 0x5150_3708, .{ .mode = .relink_and_restore });
+    try std.testing.expectEqual(world.Capsule.Blocker.malformed_image, thaw.blockers[0]);
 }
 
 test "capsule handoff admission binds restore witnesses and receiver permit" {
@@ -1225,6 +1298,57 @@ test "capsule parked thaw rejects missing run image before mutation" {
     try std.testing.expectError(error.InvalidFrameEncoding, world.Capsule.thawIntoRunspace(image, &receiver, target_ref.target_ref_fingerprint, 0, 0x5150_3985, .{ .mode = .restore_parked }));
     try std.testing.expectEqual(@as(usize, 0), receiver.slots.items.len);
     try std.testing.expectEqual(@as(usize, 0), receiver.mailbox.pendingCount());
+}
+
+test "capsule validation rejects port parked slot without mailbox mapping" {
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const request = testRunspaceRequestFrame();
+    const state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .pending_request_fingerprint = request.frame_fingerprint,
+        .turn_index = request.turn_index,
+        .status = .parked_on_port,
+    });
+    const run_image = world.RunImage.init(.{
+        .kind = .parked_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = state,
+        .pending_request_frame = request,
+    });
+    const run_image_refs = [_]u64{run_image.run_image_fingerprint};
+    const slot = world.Capsule.RunSlotImage.init(.{
+        .original_run_handle_fingerprint = 0x5150_3986,
+        .role = .root,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .run_state_fingerprint = state.run_state_fingerprint,
+        .run_image_fingerprint = run_image.run_image_fingerprint,
+        .current_pending_mailbox_id = 0,
+        .status = .parked_on_port,
+    });
+    const slots = [_]world.Capsule.RunSlotImage{slot};
+    const manifest = world.Capsule.Manifest.init(.{
+        .kind = .parked_assembly,
+        .root_target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .run_image_fingerprints = &run_image_refs,
+        .run_slot_count = slots.len,
+        .normal_form = .quiescent_parked,
+    });
+    const runspace_image = world.Capsule.RunspaceImage.init(.{
+        .runspace_fingerprint = 0x5150_3987,
+        .runspace_report_fingerprint = 0x5150_3988,
+        .run_slots = &slots,
+        .run_image_refs = &run_image_refs,
+    });
+    const run_images = [_]world.RunImage{run_image};
+    const image = world.Capsule.Image.init(.{
+        .manifest = manifest,
+        .runspace_image = runspace_image,
+        .run_image_refs = &run_image_refs,
+        .run_images = &run_images,
+    });
+
+    try std.testing.expectError(error.InvalidFrameEncoding, image.validate(.{}));
 }
 
 test "capsule parked freeze embeds run image and thaw enforces receiver capacity" {
