@@ -30,7 +30,7 @@ const Env = world.Environment(fixtures.Agent.Target, .{
 });
 const Args = struct { usize, []const u8 };
 
-fn providerImage(allocator: std.mem.Allocator) !struct {
+fn providerImage(allocator: std.mem.Allocator, boundary_value_fingerprint: u64) !struct {
     image: world.RunImage,
     value_image: world.Frame.ValueImage,
 } {
@@ -38,7 +38,7 @@ fn providerImage(allocator: std.mem.Allocator) !struct {
     var value_image = try world.Frame.ValueImage.fromValue(
         allocator,
         4,
-        0x5150_1a02,
+        boundary_value_fingerprint,
         null,
         @as([]const u8, "actuate"),
         world.ValuePolicy.portable,
@@ -114,7 +114,7 @@ pub fn main(init: std.process.Init) !void {
         .mode = world.Mode.fresh,
         .ctx = &ctx,
     });
-    var provider = try providerImage(allocator);
+    var provider = try providerImage(allocator, tool_import.response_value_ref_fingerprint.?);
     defer provider.value_image.deinit(allocator);
     const provider_handle = try runspace.installRunImage(provider.image);
 

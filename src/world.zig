@@ -5379,7 +5379,8 @@ pub const Frame = struct {
             if (!self.responseFingerprintDeferred()) return error.InvalidFrameEncoding;
             if (self.status != .responded) return error.InvalidFrameEncoding;
             const response_image = self.response_image orelse return error.MissingValueImage;
-            var rebound_image = try response_image.cloneWithBoundaryValueFingerprint(allocator, response_fingerprint);
+            const boundary_value_fingerprint = response_image.boundary_value_fingerprint orelse response_fingerprint;
+            var rebound_image = try response_image.cloneWithBoundaryValueFingerprint(allocator, boundary_value_fingerprint);
             errdefer rebound_image.deinit(allocator);
             return init(.{
                 .world_surface_fingerprint = self.world_surface_fingerprint,
@@ -5486,8 +5487,8 @@ pub const Frame = struct {
             if (response_image) |image| {
                 if (image.value_table_id != response_value_table_id) return error.InvalidFrameEncoding;
                 if (deferred_response_fingerprint) {
-                    if (image.boundary_value_fingerprint != null) return error.InvalidFrameEncoding;
-                } else if (image.boundary_value_fingerprint != response_fingerprint) {
+                    // Deferred responses may carry a temporary boundary value witness.
+                } else if (image.boundary_value_fingerprint == null) {
                     return error.InvalidFrameEncoding;
                 }
             }
@@ -10779,7 +10780,7 @@ pub const Runspace = struct {
         var response_image = try provider_result.cloneForValueContract(self.allocator, mapped_contract.value_table_id, mapped_contract.boundary_value_fingerprint);
         var response_image_owned = true;
         errdefer if (response_image_owned) response_image.deinit(self.allocator);
-        var response = try fabricMappedResponseForPending(pending, response_image, mapped_contract.boundary_value_fingerprint);
+        var response = try fabricMappedResponseForPending(pending, response_image, null);
         response_image_owned = false;
         defer response.deinit(self.allocator);
         const event = self.respondWithFabricOwnership(invocation.parent_mailbox_id, response, true) catch |err| {
@@ -19172,9 +19173,7 @@ fn validateResponseFrameImage(frame: Frame.Response) !void {
         try validateValueImage(image);
         if (frame.response_value_fingerprint != image.value_image_fingerprint) return error.InvalidFrameEncoding;
         if (image.value_table_id != frame.response_value_table_id) return error.InvalidFrameEncoding;
-        if (deferred_response_fingerprint) {
-            if (image.boundary_value_fingerprint != null) return error.InvalidFrameEncoding;
-        } else if (image.boundary_value_fingerprint != frame.response_fingerprint) {
+        if (!deferred_response_fingerprint and image.boundary_value_fingerprint == null) {
             return error.InvalidFrameEncoding;
         }
     } else if (frame.response_value_fingerprint != null) {

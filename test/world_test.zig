@@ -327,6 +327,29 @@ test "link catalog rejects stale target and module ref witnesses" {
     try std.testing.expect(stale_descriptor_linked.graph.hasBlocker(.ReferenceFingerprintMismatch));
     try std.testing.expectEqual(@as(usize, 0), stale_descriptor_linked.matches.len);
 
+    var stale_export_fingerprint = provider_export;
+    stale_export_fingerprint.result_ref.value_ref_fingerprint = root_import.response_value_ref_fingerprint.? +% 1;
+    const stale_export_entries = [_]world.Linker.Catalog.Entry{
+        world.Linker.Catalog.Entry.generatedTarget(.{
+            .target_ref = provider_ref,
+            .export_descriptor = stale_export_fingerprint,
+            .import_set = world.ImportSet.fromTarget(fixtures.Strict.Target),
+            .label = "stale-export-fingerprint",
+        }),
+    };
+    var stale_export_linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
+        .root_imports = &.{root_import},
+        .catalog = world.Linker.Catalog.init(&stale_export_entries),
+        .policy = .strict_closed,
+    });
+    defer stale_export_linked.deinit();
+
+    try std.testing.expect(!stale_export_linked.plan.accepted());
+    try std.testing.expect(stale_export_linked.graph.hasBlocker(.ReferenceFingerprintMismatch));
+    try std.testing.expectEqual(@as(usize, 0), stale_export_linked.matches.len);
+
     var stale_module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Strict.Target);
     stale_module_ref.world_value_table_fingerprint = (stale_module_ref.world_value_table_fingerprint orelse 0) +% 1;
     const stale_module_entries = [_]world.Linker.Catalog.Entry{
@@ -1137,6 +1160,40 @@ test "link rejects forged root import set fingerprint before closed acceptance" 
     try std.testing.expectEqual(@as(usize, 0), linked.plan.fabric_plans.len);
 }
 
+test "link rejects stale root import requirement fingerprint before matching" {
+    const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
+    var stale_import = root_import;
+    stale_import.response_value_ref_fingerprint = stale_import.response_value_ref_fingerprint.? +% 1;
+    const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    const provider_export = world.Linker.ExportDescriptor.init(.{
+        .target_ref = provider_ref,
+        .result_ref = .{ .value_table_id = stale_import.response_value_table_id, .value_ref_fingerprint = stale_import.response_value_ref_fingerprint },
+        .label = "strict",
+    });
+    const entries = [_]world.Linker.Catalog.Entry{
+        world.Linker.Catalog.Entry.generatedTarget(.{
+            .target_ref = provider_ref,
+            .export_descriptor = provider_export,
+            .import_set = world.ImportSet.fromTarget(fixtures.Strict.Target),
+            .label = "strict",
+        }),
+    };
+    var linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
+        .root_imports = &.{stale_import},
+        .catalog = world.Linker.Catalog.init(&entries),
+        .policy = .strict_closed,
+    });
+    defer linked.deinit();
+
+    try std.testing.expect(!linked.plan.accepted());
+    try std.testing.expect(linked.graph.hasBlocker(.ReferenceFingerprintMismatch));
+    try std.testing.expectEqual(@as(usize, 0), linked.matches.len);
+    try std.testing.expectEqual(@as(usize, 0), linked.plan.fabric_plans.len);
+}
+
 test "link rejects provider import set from a different target witness" {
     const root_ref = world.TargetRef.fromTarget(fixtures.ProviderPorts.Target);
     const root_import = world.ImportRequirement.fromTargetPort(fixtures.ProviderPorts.Target, 0);
@@ -1327,7 +1384,7 @@ test "route synthesis emits Fabric plan and certificate binds witnesses" {
     try std.testing.expectEqual(provider_ref.target_ref_fingerprint, linked.plan.fabric_plans[0].routes[0].provider_target_ref_fingerprint.?);
     try std.testing.expectEqual(@as(usize, 1), linked.plan.fabric_plans[0].value_mappings.len);
     try std.testing.expectEqual(linked.plan.fabric_plans[0].value_mappings[0].mapping_fingerprint, linked.plan.fabric_plans[0].routes[0].response_value_mapping_fingerprint.?);
-    try std.testing.expectEqual(@as(?u64, null), linked.plan.fabric_plans[0].value_mappings[0].provider_result_value_fingerprint);
+    try std.testing.expectEqual(root_import.response_value_ref_fingerprint.?, linked.plan.fabric_plans[0].value_mappings[0].provider_result_value_fingerprint.?);
     try std.testing.expectEqual(root_import.response_value_ref_fingerprint.?, linked.plan.fabric_plans[0].value_mappings[0].parent_response_value_fingerprint.?);
     var invokes_provider = false;
     for (linked.graph.edges) |edge| {

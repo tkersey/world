@@ -16,7 +16,7 @@ const ParentEnv = world.Environment(fixtures.Ports.Target, .{
     .policy = world.EnvironmentPolicy.fresh_and_replay,
 });
 
-fn providerImage(allocator: std.mem.Allocator, value: i32) !struct {
+fn providerImage(allocator: std.mem.Allocator, boundary_value_fingerprint: u64, value: i32) !struct {
     image: world.RunImage,
     value_image: world.Frame.ValueImage,
 } {
@@ -24,7 +24,7 @@ fn providerImage(allocator: std.mem.Allocator, value: i32) !struct {
     var value_image = try world.Frame.ValueImage.fromValue(
         allocator,
         1,
-        0x5150_1a01,
+        boundary_value_fingerprint,
         null,
         value,
         world.ValuePolicy.portable,
@@ -100,7 +100,7 @@ pub fn main(init: std.process.Init) !void {
         .ctx = &ctx,
     });
     _ = try runspace.tick();
-    var provider = try providerImage(allocator, 7);
+    var provider = try providerImage(allocator, root_import.response_value_ref_fingerprint.?, 7);
     defer provider.value_image.deinit(allocator);
     const provider_handle = try runspace.installRunImage(provider.image);
     const invocation = try runspace.routePendingToProviderRun(0, linked.plan.fabric_plans[0], provider_handle);

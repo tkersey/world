@@ -1987,6 +1987,9 @@ pub fn Linker(comptime W: type) type {
                 if (!moduleRefIsValid(module_ref)) valid = false;
                 if (!moduleRefMatchesTargetRef(module_ref, input.root_target_ref)) valid = false;
             }
+            for (input.root_imports) |requirement| {
+                if (!importRequirementIsValid(requirement)) valid = false;
+            }
             for (input.catalog.entries) |entry| {
                 if (!catalogEntryReferencesValid(entry)) valid = false;
             }
@@ -2006,7 +2009,11 @@ pub fn Linker(comptime W: type) type {
                 const provider_ref = providerTargetRef(entry) orelse return false;
                 if (!importSetMatchesProviderRef(import_set, provider_ref)) return false;
             }
+            for (entry.imports) |requirement| {
+                if (!importRequirementIsValid(requirement)) return false;
+            }
             if (entry.export_descriptor) |descriptor| {
+                if (!exportDescriptorIsValid(descriptor)) return false;
                 if (!targetRefIsValid(descriptor.target_ref)) return false;
                 if (descriptor.module_ref) |module_ref| {
                     if (!moduleRefIsValid(module_ref)) return false;
@@ -2043,6 +2050,14 @@ pub fn Linker(comptime W: type) type {
             return import_set.target_ref_fingerprint == provider_ref.target_ref_fingerprint and
                 import_set.import_set_fingerprint == fingerprintRootImportSet(import_set) and
                 import_set.world_port_count >= import_set.required_count;
+        }
+
+        fn importRequirementIsValid(requirement: W.ImportRequirement) bool {
+            return requirement.requirement_fingerprint == fingerprintImportRequirement(requirement);
+        }
+
+        fn exportDescriptorIsValid(descriptor: ExportDescriptor) bool {
+            return descriptor.export_fingerprint == fingerprintExportDescriptor(descriptor);
         }
 
         fn appendUniqueBlocker(allocator: std.mem.Allocator, blockers: *std.ArrayList(Blocker), blocker: Blocker) !void {
@@ -2087,6 +2102,7 @@ pub fn Linker(comptime W: type) type {
             return W.Fabric.ValueMapping.init(.{
                 .kind = .provider_result_to_parent_response,
                 .provider_result_value_table_id = provider_value,
+                .provider_result_value_fingerprint = if (entry.imports.len == 0) descriptor.result_ref.value_ref_fingerprint else null,
                 .parent_response_value_table_id = parent_value,
                 .parent_response_value_fingerprint = requirement.response_value_ref_fingerprint,
             });
@@ -2279,6 +2295,37 @@ pub fn Linker(comptime W: type) type {
             hashU64(&hasher, import_set.world_port_count);
             hashU64(&hasher, import_set.value_table_entry_count);
             hashOptionalU64(&hasher, import_set.surface_profile_fingerprint);
+            return hasher.final();
+        }
+
+        fn fingerprintImportRequirement(requirement: W.ImportRequirement) u64 {
+            var hasher = std.hash.Wyhash.init(0);
+            hasher.update("world.import_requirement.fingerprint");
+            hashU64(&hasher, W.world_import_requirement_fingerprint_version);
+            hashOptionalU64(&hasher, requirement.target_ref_fingerprint);
+            hashOptionalU64(&hasher, requirement.world_value_table_fingerprint);
+            hashU64(&hasher, requirement.world_surface_fingerprint);
+            hashU64(&hasher, requirement.world_port_id);
+            hashOptionalU64(&hasher, requirement.world_port_ref_fingerprint);
+            hashOptionalU64(&hasher, requirement.source_effect_shape_ref_fingerprint);
+            hashU64(&hasher, requirement.residual_site_index);
+            hashU64(&hasher, requirement.residual_site_fingerprint);
+            hashOptionalU32(&hasher, requirement.payload_value_table_id);
+            hashOptionalU64(&hasher, requirement.payload_value_ref_fingerprint);
+            hashOptionalU32(&hasher, requirement.response_value_table_id);
+            hashOptionalU64(&hasher, requirement.response_value_ref_fingerprint);
+            hashU64(&hasher, @intFromEnum(requirement.mode));
+            hashU64(&hasher, @intFromEnum(requirement.allowed_response_kinds));
+            hashOptionalU64(&hasher, requirement.replay_key_recipe_fingerprint);
+            hashOptionalRawBytes(&hasher, requirement.suggested_symbolic_name);
+            hashBool(&hasher, requirement.required);
+            hashU64(&hasher, requirement.tags.len);
+            for (requirement.tags) |tag| {
+                hashU64(&hasher, tag.len);
+                hasher.update(tag);
+            }
+            hashU64(&hasher, requirement.metadata.len);
+            hasher.update(requirement.metadata);
             return hasher.final();
         }
 
@@ -2507,6 +2554,16 @@ fn hashOptionalU64(hasher: *std.hash.Wyhash, value: ?u64) void {
         hashU64(hasher, present);
     } else {
         hashU64(hasher, @as(u8, 0));
+    }
+}
+
+fn hashOptionalRawBytes(hasher: *std.hash.Wyhash, bytes: ?[]const u8) void {
+    if (bytes) |present| {
+        hashBool(hasher, true);
+        hashU64(hasher, present.len);
+        hasher.update(present);
+    } else {
+        hashBool(hasher, false);
     }
 }
 
