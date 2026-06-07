@@ -539,8 +539,7 @@ test "capsule image validation rejects completed manifest with parked slot" {
     try std.testing.expectEqual(@as(usize, 0), destination.slots.items.len);
 }
 
-test "capsule thaw rejects slot status drift from embedded run image" {
-    const allocator = std.testing.allocator;
+test "capsule validation rejects slot status drift from embedded run image" {
     const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const request = testRunspaceRequestFrame();
     const parked_state = world.RunState.init(.{
@@ -586,11 +585,7 @@ test "capsule thaw rejects slot status drift from embedded run image" {
         .run_image_refs = &run_image_refs,
         .run_images = &run_images,
     });
-    try image.validate(.{});
-    var destination = world.Runspace.init(allocator, .{});
-    defer destination.deinit();
-    try std.testing.expectError(error.InvalidFrameEncoding, world.Capsule.thawIntoRunspace(image, &destination, target_ref.target_ref_fingerprint, 0, 0x5150_3348, .{ .mode = .restore_completed }));
-    try std.testing.expectEqual(@as(usize, 0), destination.slots.items.len);
+    try std.testing.expectError(error.InvalidFrameEncoding, image.validate(.{}));
 }
 
 test "capsule namespace excludes forbidden native execution fields" {
@@ -2448,6 +2443,53 @@ test "capsule parked freeze embeds run image and thaw enforces receiver capacity
         .run_images = &extra_run_images,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, unmanifested_payload.validate(.{}));
+    const mismatched_state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .pending_request_fingerprint = request.frame_fingerprint,
+        .turn_index = request.turn_index + 1,
+        .status = .parked_on_port,
+    });
+    const mismatched_run_image = world.RunImage.init(.{
+        .kind = .parked_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = mismatched_state,
+        .pending_request_frame = request,
+    });
+    const mismatched_run_refs = [_]u64{mismatched_run_image.run_image_fingerprint};
+    const mismatched_slot = world.Capsule.RunSlotImage.init(.{
+        .original_run_handle_fingerprint = image.runspace_image.run_slots[0].original_run_handle_fingerprint,
+        .role = image.runspace_image.run_slots[0].role,
+        .target_ref_fingerprint = image.runspace_image.run_slots[0].target_ref_fingerprint,
+        .run_state_fingerprint = image.runspace_image.run_slots[0].run_state_fingerprint,
+        .run_image_fingerprint = mismatched_run_image.run_image_fingerprint,
+        .current_pending_mailbox_id = image.runspace_image.run_slots[0].current_pending_mailbox_id,
+        .status = image.runspace_image.run_slots[0].status,
+    });
+    const mismatched_slots = [_]world.Capsule.RunSlotImage{mismatched_slot};
+    const mismatched_state_manifest = world.Capsule.Manifest.init(.{
+        .kind = image.manifest.kind,
+        .root_target_ref_fingerprint = image.manifest.root_target_ref_fingerprint,
+        .run_image_fingerprints = &mismatched_run_refs,
+        .pending_port_count = image.manifest.pending_port_count,
+        .run_slot_count = mismatched_slots.len,
+        .normal_form = image.manifest.normal_form,
+    });
+    const mismatched_state_runspace_image = world.Capsule.RunspaceImage.init(.{
+        .runspace_fingerprint = image.runspace_image.runspace_fingerprint,
+        .runspace_report_fingerprint = image.runspace_image.runspace_report_fingerprint,
+        .run_slots = &mismatched_slots,
+        .mailbox_image = image.runspace_image.mailbox_image,
+        .run_image_refs = &mismatched_run_refs,
+    });
+    const mismatched_state_run_images = [_]world.RunImage{mismatched_run_image};
+    const mismatched_state_image = world.Capsule.Image.init(.{
+        .manifest = mismatched_state_manifest,
+        .runspace_image = mismatched_state_runspace_image,
+        .run_image_refs = &mismatched_run_refs,
+        .run_images = &mismatched_state_run_images,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, mismatched_state_image.validate(.{}));
     const parked_plan = try world.Capsule.planThaw(image, target_ref.target_ref_fingerprint, 0, 0x5150_3990, .{ .mode = .restore_parked });
     try std.testing.expectEqual(@as(usize, 1), parked_plan.mailbox_id_remapping_plan.len);
     try std.testing.expectEqual(image.runspace_image.mailbox_image.?.pending_port_fingerprints[0], parked_plan.mailbox_id_remapping_plan[0]);

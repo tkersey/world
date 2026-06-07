@@ -18654,10 +18654,13 @@ pub const Capsule = struct {
     fn validateRunImageCoverage(image: Image) !void {
         for (image.runspace_image.run_slots) |slot| {
             if (slot.run_image_fingerprint) |fingerprint| {
-                if (!runImageSliceContains(image.run_images, fingerprint)) return error.InvalidFrameEncoding;
+                const run_image = capsuleRunImageByFingerprint(image.run_images, fingerprint) orelse return error.InvalidFrameEncoding;
                 if (!u64SliceContains(image.manifest.run_image_fingerprints, fingerprint)) return error.InvalidFrameEncoding;
                 if (!u64SliceContains(image.runspace_image.run_image_refs, fingerprint)) return error.InvalidFrameEncoding;
                 if (!u64SliceContains(image.run_image_refs, fingerprint)) return error.InvalidFrameEncoding;
+                if (run_image.target_ref.target_ref_fingerprint != slot.target_ref_fingerprint) return error.InvalidFrameEncoding;
+                if (run_image.current_state.run_state_fingerprint != slot.run_state_fingerprint) return error.InvalidFrameEncoding;
+                if (!runImageStateMatchesCapsuleSlot(run_image, slot)) return error.InvalidFrameEncoding;
             } else if (slotRestoreRequiresRunImage(slot.status)) {
                 return error.InvalidFrameEncoding;
             }
