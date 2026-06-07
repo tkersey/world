@@ -1,5 +1,11 @@
 World Assembly Capsule Kernel proof receipt
 
+Contract note:
+- Capsule v1 restores completed/failed capsule slot metadata after validation.
+- Parked and active-Fabric capsules freeze and thaw for inspection/replay, but
+  mutating restore fails closed before Runspace mutation until an executable
+  continuation witness exists.
+
 Toolchain:
 - zig version => 0.16.0
 
