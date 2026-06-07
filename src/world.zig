@@ -2249,7 +2249,8 @@ pub const Admission = struct {
             (args.thaw_plan == null or args.thaw_plan.?.capsule_image_fingerprint == args.image.image_fingerprint) and
             (args.restore_report == null or args.restore_report.?.capsule_image_fingerprint == args.image.image_fingerprint) and
             (args.thaw_plan == null or args.restore_report == null or args.restore_report.?.thaw_plan_fingerprint == args.thaw_plan.?.thaw_plan_fingerprint) and
-            (args.thaw_plan == null or args.restore_report == null or args.thaw_plan.?.receiver_run_permit_fingerprint == args.restore_report.?.receiver_run_permit_fingerprint);
+            (args.thaw_plan == null or args.restore_report == null or args.thaw_plan.?.receiver_run_permit_fingerprint == args.restore_report.?.receiver_run_permit_fingerprint) and
+            (args.thaw_plan == null or args.restore_report == null or !args.restore_report.?.accepted or capsuleRestoreReportMatchesImageAndPlan(args.image, args.thaw_plan.?, args.restore_report.?));
         const witness_modes_bound = args.thaw_plan == null or capsuleAdmissionModeAllowsThaw(args.mode, args.thaw_plan.?.requested_mode);
         const has_required_witnesses = switch (args.mode) {
             .inspect_only => true,
@@ -2325,6 +2326,37 @@ pub const Admission = struct {
 
     fn capsuleRestoreReportAccepted(report: Capsule.RestoreReport) bool {
         return report.accepted and report.blockers.len == 0;
+    }
+
+    fn capsuleRestoreReportMatchesImageAndPlan(image: Capsule.Image, plan: Capsule.ThawPlan, report: Capsule.RestoreReport) bool {
+        if (plan.capsule_image_fingerprint != image.image_fingerprint) return false;
+        if (report.capsule_image_fingerprint != image.image_fingerprint) return false;
+        if (report.thaw_plan_fingerprint != plan.thaw_plan_fingerprint) return false;
+        if (report.receiver_run_permit_fingerprint != plan.receiver_run_permit_fingerprint) return false;
+        if (plan.blockers.len != 0 or report.blockers.len != 0 or !report.accepted) return false;
+        if (!Capsule.restoreModeAllowedForImage(image, plan.requested_mode)) return false;
+        if (!Capsule.u64SlicesEqual(plan.handle_remapping_plan, image.runspace_image.run_handle_mappings)) return false;
+        const mailbox_refs = if (image.runspace_image.mailbox_image) |mailbox| mailbox.pending_port_fingerprints else &.{};
+        if (!Capsule.u64SlicesEqual(plan.mailbox_id_remapping_plan, mailbox_refs)) return false;
+
+        var root_count: usize = 0;
+        var provider_count: usize = 0;
+        for (image.runspace_image.run_slots) |slot| switch (slot.role) {
+            .root => root_count += 1,
+            .provider => provider_count += 1,
+            .branch, .guest, .replay, .verify => {},
+        };
+
+        const pending_mapping_count = Capsule.pendingPortImageCount(image.runspace_image) * 2;
+        const fabric_mapping_count = if (image.fabric_image) |fabric| fabric.active_invocation_fingerprints.len * 2 else 0;
+        return switch (plan.requested_mode) {
+            .restore_completed, .restore_failed, .relink_and_restore => root_count != 0 and
+                report.restored_root_run_handles.len == root_count and
+                report.restored_provider_run_handles.len == provider_count and
+                report.restored_pending_port_mappings.len == pending_mapping_count and
+                report.restored_fabric_invocation_mappings.len == fabric_mapping_count,
+            .inspect_only, .replay_only, .restore_parked, .verify_and_restore => false,
+        };
     }
 
     fn capsuleCertificateMatchesImage(image: Capsule.Image, cert: Capsule.Certificate) bool {

@@ -2195,6 +2195,24 @@ test "capsule handoff admission binds restore witnesses and receiver permit" {
     try std.testing.expect(!blocked_restore_rejected.accepted);
     try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, blocked_restore_rejected.blockers[0]);
 
+    const empty_accepted_restore = world.Capsule.RestoreReport.init(.{
+        .capsule_image_fingerprint = restore.capsule_image_fingerprint,
+        .thaw_plan_fingerprint = restore.thaw_plan_fingerprint,
+        .restored_runspace_fingerprint = restore.restored_runspace_fingerprint,
+        .receiver_run_permit_fingerprint = restore.receiver_run_permit_fingerprint,
+        .accepted = true,
+        .summary = "accepted restore without restore evidence",
+    });
+    const empty_restore_rejected = world.Admission.capsuleAdmissionReport(.{
+        .mode = .restore_completed,
+        .image = imported,
+        .certificate = cert,
+        .thaw_plan = thaw,
+        .restore_report = empty_accepted_restore,
+    });
+    try std.testing.expect(!empty_restore_rejected.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, empty_restore_rejected.blockers[0]);
+
     var mismatched_cert = cert;
     mismatched_cert.capsule_image_fingerprint +%= 1;
     const cert_rejected = world.Admission.capsuleAdmissionReport(.{
