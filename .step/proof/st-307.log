@@ -1,0 +1,55 @@
+World Assembly Capsule Kernel proof receipt
+
+Toolchain:
+- zig version => 0.16.0
+
+Completed commands:
+- zig fmt --check build.zig src examples test
+- git diff --check
+- zig build --summary all
+  - Build Summary: 6/6 steps succeeded; 419/419 tests passed
+- zig build check --summary all
+  - Build Summary: 162/162 steps succeeded; 419/419 tests passed
+- zig build world-wasm
+  - wasm_artifact=./.zig-cache/o/71683584da7e595619811038b8daf01e/world_wasm_guest_one_port.wasm
+  - abi_version=1
+  - export_count=19
+  - forbidden_imports=0
+- zig build check-world-wasm
+  - passed
+- zig build run-world-capsule-linked-restore
+- zig build run-world-capsule-active-fabric
+- zig build run-world-capsule-agent-transfer
+- zig build run-world-capsule-relink-mismatch
+- zig build run-world-capsule-guest-verify
+- zig build run-world-capsule-supervised-restore
+- zig build test --summary none -- --test-filter "capsule"
+- zig build test --summary none -- --test-filter "quiescence"
+- zig build test --summary none -- --test-filter "capsule manifest"
+- zig build test --summary none -- --test-filter "runspace image"
+- zig build test --summary none -- --test-filter "run slot image"
+- zig build test --summary none -- --test-filter "mailbox image"
+- zig build test --summary none -- --test-filter "fabric image"
+- zig build test --summary none -- --test-filter "link image"
+- zig build test --summary none -- --test-filter "freeze"
+- zig build test --summary none -- --test-filter "thaw"
+- zig build test --summary none -- --test-filter "relink"
+- zig build test --summary none -- --test-filter "active fabric restore"
+- zig build test --summary none -- --test-filter "capsule handoff"
+- zig build test --summary none -- --test-filter "capsule agent"
+- zig build lint -- --max-warnings 0
+
+Compatibility repair:
+- Non-capsule AdmissionReport fingerprints remain stable by hashing capsule refs
+  only when at least one capsule ref is present.
+- Affected existing examples rerun and passed:
+  - zig build run-world-admission-reference
+  - zig build run-world-admission-parked-handoff
+  - zig build run-world-admission-replay-verify
+  - zig build run-world-admission-agent-transfer
+  - zig build run-world-runspace-handoff
+
+$st state:
+- Capsule implementation tasks st-299 through st-307 completed.
+- Capsule governing invariant/data-flow atoms st-287 through st-298 completed.
+- st prime reports no projectable frontier.
