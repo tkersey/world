@@ -1760,6 +1760,23 @@ test "capsule handoff admission binds restore witnesses and receiver permit" {
     try std.testing.expectEqual(thaw.thaw_plan_fingerprint, admission.capsule_thaw_plan_fingerprint.?);
     try std.testing.expectEqual(restore.restore_report_fingerprint, admission.capsule_restore_report_fingerprint.?);
 
+    const inspect_thaw = try world.Capsule.planThaw(imported, target_ref.target_ref_fingerprint, 0, null, .{ .mode = .inspect_only, .require_local_permit = false });
+    var inspect_receiver = world.Runspace.init(allocator, .{});
+    defer inspect_receiver.deinit();
+    var inspect_restore = try world.Capsule.thawIntoRunspace(imported, &inspect_receiver, target_ref.target_ref_fingerprint, 0, null, .{ .mode = .inspect_only, .require_local_permit = false });
+    defer inspect_restore.deinit(allocator);
+    try std.testing.expect(inspect_restore.accepted);
+    try std.testing.expectEqual(@as(usize, 0), inspect_receiver.slots.items.len);
+    const inspect_restore_rejected = world.Admission.capsuleAdmissionReport(.{
+        .mode = .restore_parked,
+        .image = imported,
+        .certificate = cert,
+        .thaw_plan = inspect_thaw,
+        .restore_report = inspect_restore,
+    });
+    try std.testing.expect(!inspect_restore_rejected.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, inspect_restore_rejected.blockers[0]);
+
     const unwitnessed_restore = world.Admission.capsuleAdmissionReport(.{
         .mode = .restore_parked,
         .image = imported,
@@ -2139,6 +2156,22 @@ test "capsule parked freeze embeds run image and thaw enforces receiver capacity
     try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, receiver.slots.items[0].status);
     try std.testing.expect(receiver.slots.items[0].installed_run_image != null);
     try std.testing.expectEqual(@as(usize, 1), receiver.mailbox.pendingCount());
+    const restored_slot = receiver.slots.items[0];
+    const pending_mailbox_id = restored_slot.pending_mailbox_id orelse return error.ExpectedMailbox;
+    const restored_pending = try receiver.mailbox.get(pending_mailbox_id);
+    try std.testing.expectEqual(restored_pending.request_frame_fingerprint, restored_slot.current_state.pending_request_fingerprint.?);
+    const expected_state = world.RunState.init(.{
+        .target_ref_fingerprint = restored_slot.current_state.target_ref_fingerprint,
+        .transcript_image_fingerprint = restored_slot.current_state.transcript_image_fingerprint,
+        .branch_id = restored_slot.current_state.branch_id,
+        .checkpoint_fingerprint = restored_slot.current_state.checkpoint_fingerprint,
+        .pending_request_fingerprint = restored_slot.current_state.pending_request_fingerprint,
+        .final_response_fingerprint = restored_slot.current_state.final_response_fingerprint,
+        .final_value_image_fingerprint = restored_slot.current_state.final_value_image_fingerprint,
+        .turn_index = restored_slot.current_state.turn_index,
+        .status = restored_slot.current_state.status,
+    });
+    try std.testing.expectEqual(expected_state.run_state_fingerprint, restored_slot.current_state.run_state_fingerprint);
 }
 
 test "capsule active fabric restore rejects mutation without fabric state image" {

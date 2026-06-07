@@ -2245,6 +2245,7 @@ pub const Admission = struct {
             (args.thaw_plan == null or args.thaw_plan.?.capsule_image_fingerprint == args.image.image_fingerprint) and
             (args.restore_report == null or args.restore_report.?.capsule_image_fingerprint == args.image.image_fingerprint) and
             (args.thaw_plan == null or args.restore_report == null or args.restore_report.?.thaw_plan_fingerprint == args.thaw_plan.?.thaw_plan_fingerprint);
+        const witness_modes_bound = args.thaw_plan == null or capsuleAdmissionModeAllowsThaw(args.mode, args.thaw_plan.?.requested_mode);
         const has_required_witnesses = switch (args.mode) {
             .inspect_only, .replay_only => true,
             .verify => args.thaw_plan != null,
@@ -2260,9 +2261,9 @@ pub const Admission = struct {
             .mode = admissionModeForCapsuleAdmission(args.mode),
             .policy_fingerprint = 0,
         });
-        const accepted = witnesses_valid and witnesses_bound and has_required_witnesses and witnesses_accept;
+        const accepted = witnesses_valid and witnesses_bound and witness_modes_bound and has_required_witnesses and witnesses_accept;
         if (!accepted) {
-            const invalid_witnesses = !witnesses_valid or !witnesses_bound or !has_required_witnesses;
+            const invalid_witnesses = !witnesses_valid or !witnesses_bound or !witness_modes_bound or !has_required_witnesses;
             return Admission.AdmissionReport.rejected(.{
                 .request = request,
                 .package_fingerprint = args.image.image_fingerprint,
@@ -2308,6 +2309,19 @@ pub const Admission = struct {
     fn capsuleRestoreReportValid(report: Capsule.RestoreReport) bool {
         report.validate() catch return false;
         return true;
+    }
+
+    fn capsuleAdmissionModeAllowsThaw(mode: CapsuleAdmissionMode, thaw_mode: Capsule.RestoreMode) bool {
+        return switch (mode) {
+            .inspect_only => thaw_mode == .inspect_only,
+            .replay_only => thaw_mode == .replay_only,
+            .verify => thaw_mode == .verify_and_restore,
+            .restore_parked => switch (thaw_mode) {
+                .restore_parked, .restore_completed, .restore_failed => true,
+                else => false,
+            },
+            .relink_and_restore => thaw_mode == .relink_and_restore,
+        };
     }
 
     pub const AdmissionReceipt = struct {
@@ -18674,8 +18688,20 @@ pub const Capsule = struct {
     fn setRestoredSlotPendingMailbox(runspace: *Runspace, handle_fingerprint: u64, mailbox_id: u64) !void {
         for (runspace.slots.items) |*slot| {
             if (slot.handle.handle_fingerprint == handle_fingerprint) {
+                const current_state = slot.current_state;
+                const pending_request_fingerprint = (try runspace.mailbox.get(mailbox_id)).request_frame_fingerprint;
                 slot.pending_mailbox_id = mailbox_id;
-                slot.current_state.pending_request_fingerprint = (try runspace.mailbox.get(mailbox_id)).request_frame_fingerprint;
+                slot.current_state = RunState.init(.{
+                    .target_ref_fingerprint = current_state.target_ref_fingerprint,
+                    .transcript_image_fingerprint = current_state.transcript_image_fingerprint,
+                    .branch_id = current_state.branch_id,
+                    .checkpoint_fingerprint = current_state.checkpoint_fingerprint,
+                    .pending_request_fingerprint = pending_request_fingerprint,
+                    .final_response_fingerprint = current_state.final_response_fingerprint,
+                    .final_value_image_fingerprint = current_state.final_value_image_fingerprint,
+                    .turn_index = current_state.turn_index,
+                    .status = current_state.status,
+                });
                 return;
             }
         }
