@@ -4639,10 +4639,7 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
             if (assembly.root_target_ref.target_certificate_fingerprint != target_ref.target_certificate_fingerprint) {
                 return rejectedAcceptance(target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
             }
-            const report = if (assemblyFabricPlanForTarget(assembly)) |plan|
-                acceptanceReportWithFabricPlanEvidence(requested_mode, transcript_image_available, fabric_replay_transcript_available, plan)
-            else
-                acceptanceReport(requested_mode, transcript_image_available);
+            const report = acceptanceReportWithAssemblyFabricPlans(requested_mode, transcript_image_available, fabric_replay_transcript_available, assembly);
             return reportWithAssemblyEvidence(report, assembly);
         }
 
@@ -4741,6 +4738,21 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
                 }
             }
             return null;
+        }
+
+        fn acceptanceReportWithAssemblyFabricPlans(requested_mode: Mode, transcript_image_available: bool, fabric_replay_transcript_available: bool, assembly: Assembly) AcceptanceReport {
+            var report = acceptanceReport(requested_mode, transcript_image_available);
+            var found_plan = false;
+            for (assembly.fabric_plans) |plan| {
+                if (!fabricPlanTargetsEnvironment(plan)) continue;
+                const plan_report = acceptanceReportWithFabricPlanEvidence(requested_mode, transcript_image_available, fabric_replay_transcript_available, plan);
+                if (!plan_report.accepted) return plan_report;
+                if (!found_plan) {
+                    report = plan_report;
+                    found_plan = true;
+                }
+            }
+            return report;
         }
 
         fn acceptanceReportWithAssemblyFabricPlanPermitRoutes(report: AcceptanceReport, requested_mode: Mode, assembly: Assembly, permit: RunPermit) AcceptanceReport {

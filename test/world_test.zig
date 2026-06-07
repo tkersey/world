@@ -2144,6 +2144,15 @@ test "assembly preflights environment and installs into Runspace through Fabric 
     try std.testing.expect(replay_evidence_report.accepted);
     const replay_wrapper_report = PortsReplayEnv.preflightAssemblyWithPermit(.replay, true, replay_assembly, replay_permit);
     try std.testing.expect(replay_wrapper_report.accepted);
+    const multi_replay_assembly = world.Assembly.init(.{
+        .root_target_ref = linked.assembly.root_target_ref,
+        .link_plan_fingerprint = linked.assembly.link_plan_fingerprint,
+        .linker_certificate_fingerprint = linked.assembly.linker_certificate_fingerprint,
+        .fabric_plans = &.{ linked.plan.fabric_plans[0], replay_plan },
+    });
+    const multi_replay_report = PortsReplayEnv.preflightAssemblyEvidence(.replay, true, false, multi_replay_assembly);
+    try std.testing.expect(!multi_replay_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.TranscriptImageRequired, multi_replay_report.blockers[0]);
     const scope_permit = world.Supervision.issue(fixtures.Ports.Target, PortsMissingEnv, .{
         .mode = .fresh,
         .transcript_image_available = true,
