@@ -18288,7 +18288,7 @@ pub const Capsule = struct {
             .restore_completed => imageHasRestorableSlots(image) and (image.manifest.kind == .completed_assembly or image.manifest.normal_form == .quiescent_completed),
             .restore_failed => imageHasRestorableSlots(image) and (image.manifest.kind == .failed_assembly or image.manifest.normal_form == .quiescent_failed),
             .restore_parked => image.manifest.kind == .parked_assembly and image.manifest.normal_form == .quiescent_parked,
-            .relink_and_restore, .verify_and_restore => image.link_image != null and normalFormIsRestorable(image.manifest.normal_form),
+            .relink_and_restore, .verify_and_restore => false,
         };
     }
 
@@ -18470,7 +18470,7 @@ pub const Capsule = struct {
             },
             .quiescent_failed => {
                 if (pending_port_count != 0 or active_fabric_count != 0) return error.InvalidFrameEncoding;
-                if (failed_count != slots.len) return error.InvalidFrameEncoding;
+                if (failed_count == 0 or completed_count + failed_count != slots.len) return error.InvalidFrameEncoding;
             },
             .quiescent_parked => {
                 if (active_fabric_count != 0 or parked_count == 0 or unsupported_count != 0) return error.InvalidFrameEncoding;

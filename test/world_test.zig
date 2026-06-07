@@ -1046,6 +1046,48 @@ test "capsule validation rejects restorable capsules without a root slot" {
     try std.testing.expectError(error.InvalidFrameEncoding, image.validate(.{}));
 }
 
+test "capsule freezeRunspace classifies mixed terminal slots as failed assembly" {
+    const allocator = std.testing.allocator;
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    var source = world.Runspace.init(allocator, .{});
+    defer source.deinit();
+    const completed_handle = world.RunHandle.init(.{
+        .runspace_fingerprint = source.runspace_fingerprint,
+        .local_run_id = 0,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+    });
+    const failed_handle = world.RunHandle.init(.{
+        .runspace_fingerprint = source.runspace_fingerprint,
+        .local_run_id = 1,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+    });
+    try source.slots.append(allocator, world.Runspace.RunSlot.fromState(.{
+        .handle = completed_handle,
+        .target_ref = target_ref,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+            .status = .completed,
+        }),
+        .status = .completed,
+    }));
+    try source.slots.append(allocator, world.Runspace.RunSlot.fromState(.{
+        .handle = failed_handle,
+        .target_ref = target_ref,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+            .status = .failed,
+        }),
+        .status = .failed,
+    }));
+
+    var image = try world.Capsule.freezeRunspace(&source, .{});
+    defer image.deinit(allocator);
+    try std.testing.expectEqual(world.Capsule.Kind.failed_assembly, image.manifest.kind);
+    try std.testing.expectEqual(world.Capsule.NormalForm.quiescent_failed, image.manifest.normal_form);
+    try std.testing.expectEqual(@as(usize, 2), image.runspace_image.run_slots.len);
+    try image.validate(.{});
+}
+
 test "capsule thaw preserves branch parent links" {
     const allocator = std.testing.allocator;
     const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
@@ -1402,6 +1444,10 @@ test "capsule relink requires manifest fabric plan coverage" {
     });
     const catalogless_mismatch = try world.Capsule.planThaw(catalogless_image, 0x5150_3717, 0, 0x5150_3718, .{ .mode = .restore_completed });
     try std.testing.expectEqual(world.Capsule.Blocker.target_mismatch, catalogless_mismatch.blockers[0]);
+    const relink_denied = try world.Capsule.planThaw(catalogless_image, root_ref.target_ref_fingerprint, 0, 0x5150_3719, .{ .mode = .relink_and_restore });
+    try std.testing.expectEqual(world.Capsule.Blocker.malformed_image, relink_denied.blockers[0]);
+    const verify_denied = try world.Capsule.planThaw(catalogless_image, root_ref.target_ref_fingerprint, 0, 0x5150_3720, .{ .mode = .verify_and_restore });
+    try std.testing.expectEqual(world.Capsule.Blocker.malformed_image, verify_denied.blockers[0]);
     const drift_rejected = try world.Capsule.planThaw(catalog_image, root_ref.target_ref_fingerprint, 0, 0x5150_3714, .{ .mode = .restore_completed });
     try std.testing.expectEqual(world.Capsule.Blocker.link_plan_mismatch, drift_rejected.blockers[0]);
     const drift_allowed_thaw = try world.Capsule.planThaw(catalog_image, root_ref.target_ref_fingerprint, 0, 0x5150_3715, .{ .mode = .restore_completed, .allow_relink_drift = true });
