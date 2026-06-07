@@ -2219,6 +2219,16 @@ test "assembly preflights environment and installs into Runspace through Fabric 
         .fabric_plans = &non_root_plans,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, runspace.installAssembly(non_root_assembly));
+
+    var stale_root_ref = linked.assembly.root_target_ref;
+    stale_root_ref.boundary_module_fingerprint = (stale_root_ref.boundary_module_fingerprint orelse 0) +% 1;
+    const stale_root_assembly = world.Assembly.init(.{
+        .root_target_ref = stale_root_ref,
+        .link_plan_fingerprint = linked.assembly.link_plan_fingerprint,
+        .linker_certificate_fingerprint = linked.assembly.linker_certificate_fingerprint,
+        .fabric_plans = linked.assembly.fabric_plans,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, stale_root_assembly.validate());
 }
 
 test "assembly preserves linker run permit scope" {
@@ -2332,6 +2342,7 @@ test "assembly preserves linker run permit scope" {
     try std.testing.expectEqual(mixed_entries[1].entry_fingerprint, mixed_linked.matches[0].provider_entry_fingerprint.?);
     try std.testing.expectEqual(world.Fabric.RouteKind.admitted_run, mixed_linked.plan.fabric_plans[0].routes[0].kind);
     try std.testing.expectEqual(@as(?u64, admitted_receipt_fingerprint), mixed_linked.plan.fabric_plans[0].routes[0].provider_admission_receipt_fingerprint);
+    try std.testing.expectEqual(@as(?u64, null), mixed_linked.plan.fabric_plans[0].routes[0].provider_module_fingerprint);
     try std.testing.expectEqual(@as(usize, 1), mixed_linked.assembly.admission_receipts_used.len);
 }
 
@@ -2372,6 +2383,7 @@ test "assembly witnesses admitted-run provider receipts" {
     try std.testing.expectEqual(@as(usize, 1), linked.assembly.admission_receipts_used.len);
     try std.testing.expectEqual(receipt_fingerprint, linked.assembly.admission_receipts_used[0]);
     try std.testing.expectEqual(receipt_fingerprint, linked.plan.fabric_plans[0].routes[0].provider_admission_receipt_fingerprint.?);
+    try std.testing.expectEqual(@as(?u64, null), linked.plan.fabric_plans[0].routes[0].provider_module_fingerprint);
 }
 
 test "fabric route rejects split parent port identity" {

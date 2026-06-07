@@ -1224,6 +1224,7 @@ pub fn Linker(comptime W: type) type {
 
             pub fn validate(self: Assembly) !void {
                 if (fingerprintAssembly(self) != self.assembly_fingerprint) return error.InvalidFrameEncoding;
+                if (!targetRefIsValid(self.root_target_ref)) return error.InvalidFrameEncoding;
                 if (self.link_plan_fingerprint == 0 or self.linker_certificate_fingerprint == 0) return error.InvalidFrameEncoding;
                 for (self.fabric_plans) |plan| {
                     if (plan.target_ref_fingerprint != self.root_target_ref.target_ref_fingerprint) return error.InvalidFrameEncoding;
@@ -1565,7 +1566,7 @@ pub fn Linker(comptime W: type) type {
                     .parent_target_certificate_fingerprint = input.root_target_ref.target_certificate_fingerprint,
                     .parent_world_port_id = requirement.world_port_id,
                     .provider_target_ref_fingerprint = if (requires_provider_run) provider_ref.target_ref_fingerprint else null,
-                    .provider_module_fingerprint = if (requires_provider_run) (if (entry.module_ref) |module_ref| module_ref.module_ref_fingerprint else provider_ref.boundary_module_fingerprint) else null,
+                    .provider_module_fingerprint = routeProviderModuleFingerprint(entry, provider_ref, requires_provider_run),
                     .provider_world_surface_fingerprint = if (requires_provider_run) provider_ref.world_surface_fingerprint else null,
                     .provider_target_certificate_fingerprint = if (requires_provider_run) provider_ref.target_certificate_fingerprint else null,
                     .provider_admission_receipt_fingerprint = if (requires_provider_run) entry.admission_receipt_fingerprint else null,
@@ -1955,6 +1956,13 @@ pub fn Linker(comptime W: type) type {
             if (entry.target_ref) |target_ref| return target_ref.world_value_table_fingerprint;
             if (entry.module_ref) |module_ref| return module_ref.world_value_table_fingerprint;
             return null;
+        }
+
+        fn routeProviderModuleFingerprint(entry: Catalog.Entry, provider_ref: W.TargetRef, requires_provider_run: bool) ?u64 {
+            if (!requires_provider_run) return null;
+            if (entry.module_ref) |module_ref| return module_ref.module_ref_fingerprint;
+            if (entry.provider_kind == .admitted_run) return null;
+            return provider_ref.boundary_module_fingerprint;
         }
 
         fn linkerCanSynthesizeRouteKind(policy: Policy, entry: Catalog.Entry) bool {
