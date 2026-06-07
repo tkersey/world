@@ -2676,6 +2676,9 @@ pub const Admission = struct {
             if (policy.require_supervision_permit and args.permit == null) {
                 return rejectedResult(request, package, target_ref, module_ref, match, &.{.PermitMissing}, "receiver permit is required");
             }
+            if (args.link_plan_fingerprint != null or args.linker_certificate_fingerprint != null or args.assembly_fingerprint != null) {
+                return rejectedResult(request, package, target_ref, module_ref, match, &.{.PermitRejected}, "linker-scoped admission requires assembly preflight");
+            }
             if (args.permit) |permit| {
                 if (permit.target_ref_fingerprint != local_target_ref.target_ref_fingerprint) {
                     return rejectedResult(request, package, target_ref, module_ref, match, &.{.PermitRejected}, "permit target mismatch");

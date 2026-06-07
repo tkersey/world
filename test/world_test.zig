@@ -26115,6 +26115,43 @@ test "admission rejects permit mode mismatch before receipt" {
     try std.testing.expect(!mismatched_link_scope_result.report.accepted);
     try std.testing.expectEqual(world.Admission.AdmissionBlocker.PermitRejected, mismatched_link_scope_result.report.blockers[0]);
 
+    const link_scoped_route = world.Fabric.Route.init(.{
+        .route_id = 0xadd1_fab1,
+        .kind = .reject,
+        .parent_world_surface_fingerprint = target_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = target_ref.target_certificate_fingerprint,
+        .parent_world_port_id = 0,
+        .response_status = .rejected,
+    });
+    const link_scoped_plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = target_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .routes = &.{link_scoped_route},
+    });
+    const matching_link_scope_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+        .fabric_plan_fingerprint = link_scoped_plan.plan_fingerprint,
+        .link_plan_fingerprint = 0x1111,
+        .linker_certificate_fingerprint = 0x2222,
+        .assembly_fingerprint = 0x3333,
+    });
+    const matching_link_scope_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.strict_local_execution,
+    }).admitForTarget(fixtures.Ports.Target, PortsEnv, package, .{
+        .fabric_plan = link_scoped_plan,
+        .permit = matching_link_scope_permit,
+        .link_plan_fingerprint = 0x1111,
+        .linker_certificate_fingerprint = 0x2222,
+        .assembly_fingerprint = 0x3333,
+    });
+    try std.testing.expect(!matching_link_scope_result.report.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PermitRejected, matching_link_scope_result.report.blockers[0]);
+    try std.testing.expect(matching_link_scope_result.admitted_run == null);
+
     const module_package = world.Admission.TransferPackage.init(.{
         .kind = .module_reference,
         .target_ref = target_ref,
