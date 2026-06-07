@@ -2299,6 +2299,97 @@ test "capsule parked freeze embeds run image and thaw enforces receiver capacity
     });
     try std.testing.expectError(error.InvalidFrameEncoding, mismatched_image.validate(.{}));
     const original_pending = image.runspace_image.mailbox_image.?.pending_port_entries[0];
+    const duplicate_slots = [_]world.Capsule.RunSlotImage{ image.runspace_image.run_slots[0], image.runspace_image.run_slots[0] };
+    const duplicate_manifest = world.Capsule.Manifest.init(.{
+        .kind = image.manifest.kind,
+        .root_target_ref_fingerprint = image.manifest.root_target_ref_fingerprint,
+        .run_image_fingerprints = image.manifest.run_image_fingerprints,
+        .pending_port_count = image.manifest.pending_port_count,
+        .run_slot_count = duplicate_slots.len,
+        .normal_form = image.manifest.normal_form,
+    });
+    const duplicate_runspace_image = world.Capsule.RunspaceImage.init(.{
+        .runspace_fingerprint = image.runspace_image.runspace_fingerprint,
+        .runspace_report_fingerprint = image.runspace_image.runspace_report_fingerprint,
+        .run_handle_mappings = image.runspace_image.run_handle_mappings,
+        .run_slots = &duplicate_slots,
+        .mailbox_image = image.runspace_image.mailbox_image,
+        .runspace_event_fingerprints = image.runspace_image.runspace_event_fingerprints,
+        .root_run_handle_fingerprints = image.runspace_image.root_run_handle_fingerprints,
+        .provider_run_handle_fingerprints = image.runspace_image.provider_run_handle_fingerprints,
+        .branch_refs = image.runspace_image.branch_refs,
+        .checkpoint_refs = image.runspace_image.checkpoint_refs,
+        .transcript_image_refs = image.runspace_image.transcript_image_refs,
+        .run_image_refs = image.runspace_image.run_image_refs,
+        .run_receipt_refs = image.runspace_image.run_receipt_refs,
+        .admission_receipt_refs = image.runspace_image.admission_receipt_refs,
+        .permit_refs = image.runspace_image.permit_refs,
+        .active_fabric_invocation_refs = image.runspace_image.active_fabric_invocation_refs,
+    });
+    const duplicate_handle_image = world.Capsule.Image.init(.{
+        .manifest = duplicate_manifest,
+        .runspace_image = duplicate_runspace_image,
+        .run_image_refs = image.run_image_refs,
+        .run_images = image.run_images,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, duplicate_handle_image.validate(.{}));
+    var extra_pending = world.Runspace.PendingPort.init(.{
+        .handle = world.RunHandle.init(.{
+            .runspace_fingerprint = source.runspace_fingerprint,
+            .local_run_id = 99,
+            .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        }),
+        .mailbox_id = 1,
+        .request = request,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .expected_response_kind = .return_now,
+    });
+    var extra_pending_image = try world.Capsule.PendingPortImage.fromPending(allocator, extra_pending.borrowed());
+    defer extra_pending_image.deinit(allocator);
+    const uncovered_pending_entries = [_]world.Capsule.PendingPortImage{ original_pending, extra_pending_image };
+    const uncovered_pending_refs = [_]u64{ original_pending.pending_port_fingerprint, extra_pending_image.pending_port_fingerprint };
+    const uncovered_mailbox = world.Capsule.MailboxImage.init(.{
+        .pending_port_entries = &uncovered_pending_entries,
+        .pending_port_fingerprints = &uncovered_pending_refs,
+        .consumed_port_fingerprints = image.runspace_image.mailbox_image.?.consumed_port_fingerprints,
+        .next_mailbox_id = image.runspace_image.mailbox_image.?.next_mailbox_id,
+        .generation = image.runspace_image.mailbox_image.?.generation,
+        .single_use_status_fingerprints = image.runspace_image.mailbox_image.?.single_use_status_fingerprints,
+        .response_routing_status_fingerprints = image.runspace_image.mailbox_image.?.response_routing_status_fingerprints,
+    });
+    const uncovered_runspace_image = world.Capsule.RunspaceImage.init(.{
+        .runspace_fingerprint = image.runspace_image.runspace_fingerprint,
+        .runspace_report_fingerprint = image.runspace_image.runspace_report_fingerprint,
+        .run_handle_mappings = image.runspace_image.run_handle_mappings,
+        .run_slots = image.runspace_image.run_slots,
+        .mailbox_image = uncovered_mailbox,
+        .runspace_event_fingerprints = image.runspace_image.runspace_event_fingerprints,
+        .root_run_handle_fingerprints = image.runspace_image.root_run_handle_fingerprints,
+        .provider_run_handle_fingerprints = image.runspace_image.provider_run_handle_fingerprints,
+        .branch_refs = image.runspace_image.branch_refs,
+        .checkpoint_refs = image.runspace_image.checkpoint_refs,
+        .transcript_image_refs = image.runspace_image.transcript_image_refs,
+        .run_image_refs = image.runspace_image.run_image_refs,
+        .run_receipt_refs = image.runspace_image.run_receipt_refs,
+        .admission_receipt_refs = image.runspace_image.admission_receipt_refs,
+        .permit_refs = image.runspace_image.permit_refs,
+        .active_fabric_invocation_refs = image.runspace_image.active_fabric_invocation_refs,
+    });
+    const uncovered_manifest = world.Capsule.Manifest.init(.{
+        .kind = image.manifest.kind,
+        .root_target_ref_fingerprint = image.manifest.root_target_ref_fingerprint,
+        .run_image_fingerprints = image.manifest.run_image_fingerprints,
+        .pending_port_count = uncovered_pending_entries.len,
+        .run_slot_count = image.manifest.run_slot_count,
+        .normal_form = image.manifest.normal_form,
+    });
+    const uncovered_pending_image = world.Capsule.Image.init(.{
+        .manifest = uncovered_manifest,
+        .runspace_image = uncovered_runspace_image,
+        .run_image_refs = image.run_image_refs,
+        .run_images = image.run_images,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, uncovered_pending_image.validate(.{}));
     try std.testing.expectEqual(world.ResponseKind.return_now, original_pending.expected_response_kind);
     const forged_kind_pending = world.Capsule.PendingPortImage.init(.{
         .pending_port_fingerprint = original_pending.pending_port_fingerprint,

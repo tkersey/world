@@ -18443,6 +18443,7 @@ pub const Capsule = struct {
         if (manifest.pending_port_count != pendingPortImageCount(runspace_image_value)) return error.InvalidFrameEncoding;
         if (manifest.active_fabric_invocation_count != runspace_image_value.active_fabric_invocation_refs.len) return error.InvalidFrameEncoding;
         try validateKindNormalForm(manifest.kind, manifest.normal_form);
+        try validateUniqueRunSlotHandleRefs(runspace_image_value.run_slots);
         try validateRunSlotNormalForm(image, manifest.normal_form, manifest.pending_port_count, manifest.active_fabric_invocation_count);
         try validateManifestRootSlotCoverage(image);
         try validateParkedSlotMailboxCoverage(image);
@@ -18471,6 +18472,14 @@ pub const Capsule = struct {
         return 0;
     }
 
+    fn validateUniqueRunSlotHandleRefs(slots: []const RunSlotImage) !void {
+        for (slots, 0..) |slot, index| {
+            for (slots[index + 1 ..]) |other| {
+                if (slot.original_run_handle_fingerprint == other.original_run_handle_fingerprint) return error.InvalidFrameEncoding;
+            }
+        }
+    }
+
     fn validateParkedSlotMailboxCoverage(image: Image) !void {
         const maybe_mailbox = image.runspace_image.mailbox_image;
         for (image.runspace_image.run_slots) |slot| {
@@ -18494,7 +18503,7 @@ pub const Capsule = struct {
                 continue;
             }
             const mailbox = maybe_mailbox orelse return error.InvalidFrameEncoding;
-            var found = false;
+            var coverage_count: usize = 0;
             for (mailbox.pending_port_entries) |entry| {
                 if (entry.mailbox_id != mailbox_id) continue;
                 if (entry.original_run_handle_fingerprint != slot.original_run_handle_fingerprint) return error.InvalidFrameEncoding;
@@ -18508,10 +18517,23 @@ pub const Capsule = struct {
                         if (frame.frame_fingerprint != entry.request_frame.frame_fingerprint) return error.InvalidFrameEncoding;
                     }
                 }
-                found = true;
-                break;
+                coverage_count += 1;
             }
-            if (!found) return error.InvalidFrameEncoding;
+            if (coverage_count != 1) return error.InvalidFrameEncoding;
+        }
+        if (maybe_mailbox) |mailbox| {
+            for (mailbox.pending_port_entries) |entry| {
+                var coverage_count: usize = 0;
+                for (image.runspace_image.run_slots) |slot| {
+                    if (slot.status != .parked_on_port and slot.status != .parked_on_supervision) continue;
+                    const mailbox_id = slot.current_pending_mailbox_id orelse continue;
+                    if (mailbox_id != entry.mailbox_id) continue;
+                    if (slot.original_run_handle_fingerprint != entry.original_run_handle_fingerprint) continue;
+                    if (slot.target_ref_fingerprint != entry.target_ref_fingerprint) continue;
+                    coverage_count += 1;
+                }
+                if (coverage_count != 1) return error.InvalidFrameEncoding;
+            }
         }
     }
 
