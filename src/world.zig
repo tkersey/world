@@ -18857,13 +18857,20 @@ pub const Capsule = struct {
         return switch (mode) {
             .inspect_only => true,
             .replay_only => image.manifest.kind == .replay_only or image.manifest.kind == .completed_assembly or image.manifest.kind == .failed_assembly or image.manifest.kind == .full_assembly,
-            .restore_completed => imageHasRestorableSlots(image) and (image.manifest.kind == .completed_assembly or image.manifest.normal_form == .quiescent_completed),
-            .restore_failed => imageHasRestorableSlots(image) and (image.manifest.kind == .failed_assembly or image.manifest.normal_form == .quiescent_failed),
+            .restore_completed => imageHasRestorableSlots(image) and imageKindAllowsMutatingRestore(image.manifest.kind) and image.manifest.normal_form == .quiescent_completed,
+            .restore_failed => imageHasRestorableSlots(image) and imageKindAllowsMutatingRestore(image.manifest.kind) and image.manifest.normal_form == .quiescent_failed,
             .restore_parked => false,
-            .relink_and_restore, .verify_and_restore => imageHasRestorableSlots(image) and switch (image.manifest.normal_form) {
+            .relink_and_restore, .verify_and_restore => imageHasRestorableSlots(image) and imageKindAllowsMutatingRestore(image.manifest.kind) and switch (image.manifest.normal_form) {
                 .quiescent_completed, .quiescent_failed => true,
                 else => false,
             },
+        };
+    }
+
+    fn imageKindAllowsMutatingRestore(kind: Kind) bool {
+        return switch (kind) {
+            .completed_assembly, .failed_assembly, .full_assembly => true,
+            .reference_only, .parked_assembly, .replay_only, .inspect_only => false,
         };
     }
 
@@ -21442,6 +21449,95 @@ test "capsule thaw denies before mutation and restores completed slot metadata" 
     try std.testing.expectEqual(@as(usize, 1), restored.restored_root_run_handles.len);
     try std.testing.expectEqual(Runspace.RunStatus.completed, receiver.slots.items[0].status);
     try std.testing.expectEqual(@as(?u64, 0x5150_3603), receiver.slots.items[0].run_permit_fingerprint);
+}
+
+test "capsule replay-only terminal image cannot enter mutating restore modes" {
+    const allocator = std.testing.allocator;
+    var source = Runspace.init(allocator, .{});
+    defer source.deinit();
+    var target_ref = TargetRef{
+        .target_ref_fingerprint = 0,
+        .world_surface_fingerprint = 0x5150_3611,
+        .target_certificate_fingerprint = 0x5150_3612,
+    };
+    target_ref.target_ref_fingerprint = fingerprintTargetRef(target_ref);
+    const source_handle = RunHandle.init(.{
+        .runspace_fingerprint = source.runspace_fingerprint,
+        .local_run_id = 0,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+    });
+    try source.slots.append(allocator, Runspace.RunSlot.fromState(.{
+        .handle = source_handle,
+        .target_ref = target_ref,
+        .current_state = RunState.init(.{
+            .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+            .status = .completed,
+        }),
+        .status = .completed,
+    }));
+    var image = try Capsule.freezeRunspace(&source, .{});
+    defer image.deinit(allocator);
+
+    const replay_manifest = Capsule.Manifest.init(.{
+        .kind = .replay_only,
+        .root_target_ref_fingerprint = image.manifest.root_target_ref_fingerprint,
+        .root_module_ref_fingerprint = image.manifest.root_module_ref_fingerprint,
+        .link_plan_fingerprint = image.manifest.link_plan_fingerprint,
+        .link_certificate_fingerprint = image.manifest.link_certificate_fingerprint,
+        .assembly_fingerprint = image.manifest.assembly_fingerprint,
+        .admission_receipt_fingerprints = image.manifest.admission_receipt_fingerprints,
+        .environment_certificate_fingerprints = image.manifest.environment_certificate_fingerprints,
+        .run_permit_fingerprints = image.manifest.run_permit_fingerprints,
+        .run_receipt_fingerprints = image.manifest.run_receipt_fingerprints,
+        .run_image_fingerprints = image.manifest.run_image_fingerprints,
+        .transcript_image_fingerprints = image.manifest.transcript_image_fingerprints,
+        .fabric_plan_fingerprints = image.manifest.fabric_plan_fingerprints,
+        .fabric_invocation_fingerprints = image.manifest.fabric_invocation_fingerprints,
+        .fabric_receipt_fingerprints = image.manifest.fabric_receipt_fingerprints,
+        .guest_conformance_report_fingerprints = image.manifest.guest_conformance_report_fingerprints,
+        .pending_port_count = image.manifest.pending_port_count,
+        .run_slot_count = image.manifest.run_slot_count,
+        .active_fabric_invocation_count = image.manifest.active_fabric_invocation_count,
+        .normal_form = image.manifest.normal_form,
+        .metadata = image.manifest.metadata,
+    });
+    const replay_image = Capsule.Image.init(.{
+        .manifest = replay_manifest,
+        .runspace_image = image.runspace_image,
+        .link_image = image.link_image,
+        .fabric_image = image.fabric_image,
+        .admission_refs = image.admission_refs,
+        .environment_refs = image.environment_refs,
+        .supervision_refs = image.supervision_refs,
+        .guest_conformance_refs = image.guest_conformance_refs,
+        .transcript_image_refs = image.transcript_image_refs,
+        .run_image_refs = image.run_image_refs,
+        .value_image_refs = image.value_image_refs,
+        .transcript_images = image.transcript_images,
+        .run_images = image.run_images,
+        .value_images = image.value_images,
+        .dependency_refs = image.dependency_refs,
+        .object_refs = image.object_refs,
+        .metadata = image.metadata,
+    });
+    try replay_image.validate(.{});
+
+    const replay_plan = try Capsule.planThaw(replay_image, target_ref.target_ref_fingerprint, 0, null, .{ .mode = .replay_only });
+    try std.testing.expectEqual(@as(usize, 0), replay_plan.blockers.len);
+
+    const restore_plan = try Capsule.planThaw(replay_image, target_ref.target_ref_fingerprint, 0, 0x5150_3613, .{ .mode = .restore_completed });
+    try std.testing.expectEqual(Capsule.Blocker.malformed_image, restore_plan.blockers[0]);
+    const relink_plan = try Capsule.planThaw(replay_image, target_ref.target_ref_fingerprint, 0, 0x5150_3614, .{ .mode = .relink_and_restore });
+    try std.testing.expectEqual(Capsule.Blocker.malformed_image, relink_plan.blockers[0]);
+    const verify_plan = try Capsule.planThaw(replay_image, target_ref.target_ref_fingerprint, 0, 0x5150_3615, .{ .mode = .verify_and_restore });
+    try std.testing.expectEqual(Capsule.Blocker.malformed_image, verify_plan.blockers[0]);
+
+    var receiver = Runspace.init(allocator, .{});
+    defer receiver.deinit();
+    var denied = try Capsule.thawIntoRunspace(replay_image, &receiver, target_ref.target_ref_fingerprint, 0, 0x5150_3616, .{ .mode = .restore_completed });
+    defer denied.deinit(allocator);
+    try std.testing.expect(!denied.accepted);
+    try std.testing.expectEqual(@as(usize, 0), receiver.slots.items.len);
 }
 
 test "capsule relink verification rejects catalog drift" {
