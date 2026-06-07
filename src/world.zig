@@ -2245,7 +2245,8 @@ pub const Admission = struct {
             (args.certificate == null or capsuleCertificateMatchesImage(args.image, args.certificate.?)) and
             (args.thaw_plan == null or args.thaw_plan.?.capsule_image_fingerprint == args.image.image_fingerprint) and
             (args.restore_report == null or args.restore_report.?.capsule_image_fingerprint == args.image.image_fingerprint) and
-            (args.thaw_plan == null or args.restore_report == null or args.restore_report.?.thaw_plan_fingerprint == args.thaw_plan.?.thaw_plan_fingerprint);
+            (args.thaw_plan == null or args.restore_report == null or args.restore_report.?.thaw_plan_fingerprint == args.thaw_plan.?.thaw_plan_fingerprint) and
+            (args.thaw_plan == null or args.restore_report == null or args.thaw_plan.?.receiver_run_permit_fingerprint == args.restore_report.?.receiver_run_permit_fingerprint);
         const witness_modes_bound = args.thaw_plan == null or capsuleAdmissionModeAllowsThaw(args.mode, args.thaw_plan.?.requested_mode);
         const has_required_witnesses = switch (args.mode) {
             .inspect_only, .replay_only => true,
@@ -9210,6 +9211,7 @@ pub const Runspace = struct {
             mailbox_id: u64,
             request: Frame.Request,
             target_ref_fingerprint: u64 = 0,
+            expected_response_kind: ResponseKind = .@"resume",
             environment_certificate_fingerprint: ?u64 = null,
             run_permit_fingerprint: ?u64 = null,
             inserted_event_index: u64 = 0,
@@ -9225,6 +9227,7 @@ pub const Runspace = struct {
                 .request_frame_fingerprint = args.request.frame_fingerprint,
                 .request_frame = args.request,
                 .owns_request_frame = true,
+                .expected_response_kind = args.expected_response_kind,
                 .expected_response_value_table_id = args.request.expected_response_value_table_id,
                 .residual_site_index = args.request.residual_site_index,
                 .residual_site_fingerprint = args.request.residual_site_fingerprint,
@@ -9321,6 +9324,7 @@ pub const Runspace = struct {
             mailbox_id: u64,
             request: Frame.Request,
             target_ref_fingerprint: u64,
+            expected_response_kind: ResponseKind = .@"resume",
             environment_certificate_fingerprint: ?u64 = null,
             run_permit_fingerprint: ?u64 = null,
             inserted_event_index: u64,
@@ -9338,6 +9342,7 @@ pub const Runspace = struct {
                 .mailbox_id = args.mailbox_id,
                 .request = request,
                 .target_ref_fingerprint = args.target_ref_fingerprint,
+                .expected_response_kind = args.expected_response_kind,
                 .environment_certificate_fingerprint = args.environment_certificate_fingerprint,
                 .run_permit_fingerprint = args.run_permit_fingerprint,
                 .inserted_event_index = args.inserted_event_index,
@@ -17296,6 +17301,7 @@ pub const Capsule = struct {
         environment_preflight_refs: []const u64 = &.{},
         guest_conformance_refs: []const u64 = &.{},
         receiver_run_permit_refs: []const u64 = &.{},
+        receiver_run_permit_fingerprint: ?u64 = null,
         handle_remapping_plan: []const u64 = &.{},
         mailbox_id_remapping_plan: []const u64 = &.{},
         blockers: []const Blocker = &.{},
@@ -17313,6 +17319,7 @@ pub const Capsule = struct {
             environment_preflight_refs: []const u64 = &.{},
             guest_conformance_refs: []const u64 = &.{},
             receiver_run_permit_refs: []const u64 = &.{},
+            receiver_run_permit_fingerprint: ?u64 = null,
             handle_remapping_plan: []const u64 = &.{},
             mailbox_id_remapping_plan: []const u64 = &.{},
             blockers: []const Blocker = &.{},
@@ -17330,6 +17337,7 @@ pub const Capsule = struct {
                 .environment_preflight_refs = args.environment_preflight_refs,
                 .guest_conformance_refs = args.guest_conformance_refs,
                 .receiver_run_permit_refs = args.receiver_run_permit_refs,
+                .receiver_run_permit_fingerprint = args.receiver_run_permit_fingerprint,
                 .handle_remapping_plan = args.handle_remapping_plan,
                 .mailbox_id_remapping_plan = args.mailbox_id_remapping_plan,
                 .blockers = args.blockers,
@@ -18119,6 +18127,7 @@ pub const Capsule = struct {
             .relink_status = if (accepted) if (link_status == .mismatched and options.allow_relink_drift) .drift_allowed else .matched else .rejected,
             .environment_preflight_refs = image.manifest.environment_certificate_fingerprints,
             .guest_conformance_refs = image.manifest.guest_conformance_report_fingerprints,
+            .receiver_run_permit_fingerprint = permit_fingerprint,
             .handle_remapping_plan = image.runspace_image.run_handle_mappings,
             .mailbox_id_remapping_plan = if (image.runspace_image.mailbox_image) |mailbox| mailbox.pending_port_fingerprints else &.{},
             .blockers = if (blocker) |value| blockerSlice(value) else &.{},
@@ -18264,6 +18273,7 @@ pub const Capsule = struct {
                     .mailbox_id = new_mailbox_id,
                     .request = pending_entry.request_frame,
                     .target_ref_fingerprint = pending_entry.target_ref_fingerprint,
+                    .expected_response_kind = pending_entry.expected_response_kind,
                     .environment_certificate_fingerprint = pending_entry.environment_certificate_fingerprint,
                     .run_permit_fingerprint = permit_fingerprint orelse pending_entry.run_permit_fingerprint,
                     .inserted_event_index = pending_entry.inserted_event_index,
@@ -18312,6 +18322,7 @@ pub const Capsule = struct {
             .restored_pending_port_mappings = mailbox_slice,
             .restored_fabric_invocation_mappings = fabric_slice,
             .guest_conformance_refs = guest_slice,
+            .environment_certificate_fingerprint = if (image.manifest.environment_certificate_fingerprints.len == 0) null else environment_fingerprint,
             .receiver_run_permit_fingerprint = permit_fingerprint,
             .accepted = true,
             .warnings = warning_slice,
@@ -19159,6 +19170,7 @@ pub const Capsule = struct {
         hashU64Slice(&hasher, plan.environment_preflight_refs);
         hashU64Slice(&hasher, plan.guest_conformance_refs);
         hashU64Slice(&hasher, plan.receiver_run_permit_refs);
+        hashOptionalU64(&hasher, plan.receiver_run_permit_fingerprint);
         hashU64Slice(&hasher, plan.handle_remapping_plan);
         hashU64Slice(&hasher, plan.mailbox_id_remapping_plan);
         hashEnumSlice(&hasher, Blocker, plan.blockers);

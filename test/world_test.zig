@@ -1131,6 +1131,9 @@ test "capsule thaw restores completed capsule with handle remap" {
     const thaw_plan = try world.Capsule.planThaw(image, 0, 0, 0x7775, .{ .mode = .restore_completed });
     try std.testing.expectEqual(@as(usize, 1), thaw_plan.handle_remapping_plan.len);
     try std.testing.expectEqual(handle.handle_fingerprint, thaw_plan.handle_remapping_plan[0]);
+    try std.testing.expectEqual(@as(?u64, 0x7775), thaw_plan.receiver_run_permit_fingerprint);
+    const other_permit_plan = try world.Capsule.planThaw(image, 0, 0, 0x7778, .{ .mode = .restore_completed });
+    try std.testing.expect(thaw_plan.thaw_plan_fingerprint != other_permit_plan.thaw_plan_fingerprint);
 
     var terminal_receiver = world.Runspace.init(allocator, .{ .max_runs = 0, .preserve_completed_runs = false });
     defer terminal_receiver.deinit();
@@ -1425,6 +1428,12 @@ test "capsule freezeRunspace preserves run image environment refs" {
     try std.testing.expectEqual(world.Capsule.Blocker.environment_mismatch, denied.blockers[0]);
     const accepted = try world.Capsule.planThaw(image, target_ref.target_ref_fingerprint, env_cert.certificate_fingerprint, 0x5150_3792, .{ .mode = .restore_completed });
     try std.testing.expectEqual(@as(usize, 0), accepted.blockers.len);
+    var env_receiver = world.Runspace.init(allocator, .{});
+    defer env_receiver.deinit();
+    var env_restore = try world.Capsule.thawIntoRunspace(image, &env_receiver, target_ref.target_ref_fingerprint, env_cert.certificate_fingerprint, 0x5150_3793, .{ .mode = .restore_completed });
+    defer env_restore.deinit(allocator);
+    try std.testing.expect(env_restore.accepted);
+    try std.testing.expectEqual(@as(?u64, env_cert.certificate_fingerprint), env_restore.environment_certificate_fingerprint);
 
     const missing_env_manifest = world.Capsule.Manifest.init(.{
         .kind = .completed_assembly,
@@ -1886,6 +1895,16 @@ test "capsule handoff admission binds restore witnesses and receiver permit" {
     try std.testing.expectEqual(cert.certificate_fingerprint, admission.capsule_certificate_fingerprint.?);
     try std.testing.expectEqual(thaw.thaw_plan_fingerprint, admission.capsule_thaw_plan_fingerprint.?);
     try std.testing.expectEqual(restore.restore_report_fingerprint, admission.capsule_restore_report_fingerprint.?);
+    const wrong_permit_thaw = try world.Capsule.planThaw(imported, target_ref.target_ref_fingerprint, 0, 0x5150_3804, .{ .mode = .restore_completed });
+    const wrong_permit_admission = world.Admission.capsuleAdmissionReport(.{
+        .mode = .restore_parked,
+        .image = imported,
+        .certificate = cert,
+        .thaw_plan = wrong_permit_thaw,
+        .restore_report = restore,
+    });
+    try std.testing.expect(!wrong_permit_admission.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, wrong_permit_admission.blockers[0]);
 
     var malformed_image = imported;
     malformed_image.image_fingerprint +%= 1;
@@ -2198,6 +2217,7 @@ test "capsule parked freeze embeds run image and thaw enforces receiver capacity
         .mailbox_id = 0,
         .request = request,
         .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .expected_response_kind = .return_now,
         .inserted_event_index = 0,
     });
     source.next_mailbox_id = 1;
@@ -2388,6 +2408,7 @@ test "capsule parked freeze embeds run image and thaw enforces receiver capacity
     const restored_slot = receiver.slots.items[0];
     const pending_mailbox_id = restored_slot.pending_mailbox_id orelse return error.ExpectedMailbox;
     const restored_pending = try receiver.mailbox.get(pending_mailbox_id);
+    try std.testing.expectEqual(world.ResponseKind.return_now, restored_pending.expected_response_kind);
     try std.testing.expectEqual(restored_pending.request_frame_fingerprint, restored_slot.current_state.pending_request_fingerprint.?);
     const expected_state = world.RunState.init(.{
         .target_ref_fingerprint = restored_slot.current_state.target_ref_fingerprint,
