@@ -1259,6 +1259,21 @@ test "capsule thaw restores completed capsule with handle remap" {
     try std.testing.expectEqual(@as(usize, 1), thaw_plan.handle_remapping_plan.len);
     try std.testing.expectEqual(handle.handle_fingerprint, thaw_plan.handle_remapping_plan[0]);
     try std.testing.expectEqual(@as(?u64, 0x7775), thaw_plan.receiver_run_permit_fingerprint);
+    const stale_handle_mappings = [_]u64{handle.handle_fingerprint +% 1};
+    const stale_mapping_runspace = world.Capsule.RunspaceImage.init(.{
+        .runspace_fingerprint = image.runspace_image.runspace_fingerprint,
+        .runspace_report_fingerprint = image.runspace_image.runspace_report_fingerprint,
+        .run_handle_mappings = &stale_handle_mappings,
+        .run_slots = image.runspace_image.run_slots,
+        .run_image_refs = image.runspace_image.run_image_refs,
+    });
+    const stale_mapping_image = world.Capsule.Image.init(.{
+        .manifest = image.manifest,
+        .runspace_image = stale_mapping_runspace,
+        .run_image_refs = image.run_image_refs,
+        .run_images = image.run_images,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, stale_mapping_image.validate(.{}));
     const other_permit_plan = try world.Capsule.planThaw(image, 0, 0, 0x7778, .{ .mode = .restore_completed });
     try std.testing.expect(thaw_plan.thaw_plan_fingerprint != other_permit_plan.thaw_plan_fingerprint);
 
@@ -1480,10 +1495,14 @@ test "capsule thaw preserves branch parent links" {
         image.runspace_image.run_slots[1],
         image.runspace_image.run_slots[0],
     };
+    const reversed_handle_mappings = [_]u64{
+        reversed_slots[0].original_run_handle_fingerprint,
+        reversed_slots[1].original_run_handle_fingerprint,
+    };
     const reversed_runspace_image = world.Capsule.RunspaceImage.init(.{
         .runspace_fingerprint = image.runspace_image.runspace_fingerprint,
         .runspace_report_fingerprint = image.runspace_image.runspace_report_fingerprint,
-        .run_handle_mappings = image.runspace_image.run_handle_mappings,
+        .run_handle_mappings = &reversed_handle_mappings,
         .run_slots = &reversed_slots,
         .mailbox_image = image.runspace_image.mailbox_image,
         .runspace_event_fingerprints = image.runspace_image.runspace_event_fingerprints,
@@ -1555,6 +1574,25 @@ test "capsule freezeRunspace preserves run image environment refs" {
     try std.testing.expectEqual(world.Capsule.Blocker.environment_mismatch, denied.blockers[0]);
     const accepted = try world.Capsule.planThaw(image, target_ref.target_ref_fingerprint, env_cert.certificate_fingerprint, 0x5150_3792, .{ .mode = .restore_completed });
     try std.testing.expectEqual(@as(usize, 0), accepted.blockers.len);
+    const multi_env_refs = [_]u64{ env_cert.certificate_fingerprint, env_cert.certificate_fingerprint +% 1 };
+    const multi_env_manifest = world.Capsule.Manifest.init(.{
+        .kind = .completed_assembly,
+        .root_target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .environment_certificate_fingerprints = &multi_env_refs,
+        .run_image_fingerprints = image.manifest.run_image_fingerprints,
+        .run_slot_count = image.runspace_image.run_slots.len,
+        .normal_form = .quiescent_completed,
+    });
+    const multi_env_image = world.Capsule.Image.init(.{
+        .manifest = multi_env_manifest,
+        .runspace_image = image.runspace_image,
+        .environment_refs = &multi_env_refs,
+        .run_image_refs = image.run_image_refs,
+        .run_images = image.run_images,
+    });
+    try multi_env_image.validate(.{});
+    const multi_env_denied = try world.Capsule.planThaw(multi_env_image, target_ref.target_ref_fingerprint, env_cert.certificate_fingerprint, 0x5150_3794, .{ .mode = .restore_completed });
+    try std.testing.expectEqual(world.Capsule.Blocker.environment_mismatch, multi_env_denied.blockers[0]);
     var env_receiver = world.Runspace.init(allocator, .{});
     defer env_receiver.deinit();
     var env_restore = try world.Capsule.thawIntoRunspace(image, &env_receiver, target_ref.target_ref_fingerprint, env_cert.certificate_fingerprint, 0x5150_3793, .{ .mode = .restore_completed });
@@ -1845,6 +1883,7 @@ test "capsule relink requires manifest fabric plan coverage" {
         .status = .completed,
     });
     const catalog_slots = [_]world.Capsule.RunSlotImage{catalog_slot};
+    const catalog_handle_mappings = [_]u64{catalog_slot.original_run_handle_fingerprint};
     const catalog_manifest = world.Capsule.Manifest.init(.{
         .kind = .completed_assembly,
         .root_target_ref_fingerprint = root_ref.target_ref_fingerprint,
@@ -1859,6 +1898,7 @@ test "capsule relink requires manifest fabric plan coverage" {
     const catalog_runspace_image = world.Capsule.RunspaceImage.init(.{
         .runspace_fingerprint = 0x5150_3712,
         .runspace_report_fingerprint = 0x5150_3713,
+        .run_handle_mappings = &catalog_handle_mappings,
         .run_slots = &catalog_slots,
         .run_image_refs = &catalog_run_image_refs,
     });

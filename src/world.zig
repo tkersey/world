@@ -16888,6 +16888,7 @@ pub const Capsule = struct {
             if (self.metadata.len > options.max_image_bytes) return error.InvalidFrameEncoding;
             if (self.run_slots.len > options.max_run_slots) return error.InvalidFrameEncoding;
             for (self.run_slots) |slot| try slot.validate(options);
+            if (self.run_handle_mappings.len != 0 and !runspaceImageHandleMappingsMatchSlots(self)) return error.InvalidFrameEncoding;
             if (self.mailbox_image) |mailbox| try mailbox.validate(options);
             if (self.image_fingerprint != fingerprintRunspaceImage(self)) return error.InvalidFrameEncoding;
         }
@@ -18600,6 +18601,7 @@ pub const Capsule = struct {
 
     fn thawBlocker(image: Image, registry_fingerprint: u64, environment_fingerprint: u64, permit_fingerprint: ?u64, options: ThawOptions) ?Blocker {
         if (!restoreModeAllowedForImage(image, options.mode)) return .malformed_image;
+        if (restoreModeRequiresRunHandleMappings(options.mode) and !runspaceImageHandleMappingsMatchSlots(image.runspace_image)) return .malformed_image;
         if (options.mode == .verify_and_restore) return .verification_witness_missing;
         if (options.require_local_permit and permit_fingerprint == null and options.mode != .inspect_only and options.mode != .replay_only) return .permit_denied;
         if (registry_fingerprint != 0 and registry_fingerprint != image.manifest.root_target_ref_fingerprint) {
@@ -18607,10 +18609,9 @@ pub const Capsule = struct {
                 if (link.catalog_fingerprint == null or link.catalog_fingerprint.? != registry_fingerprint) return .target_mismatch;
             } else return .target_mismatch;
         }
-        if (image.manifest.environment_certificate_fingerprints.len != 0 and
-            !u64SliceContains(image.manifest.environment_certificate_fingerprints, environment_fingerprint))
-        {
-            return .environment_mismatch;
+        if (image.manifest.environment_certificate_fingerprints.len != 0) {
+            if (image.manifest.environment_certificate_fingerprints.len != 1) return .environment_mismatch;
+            if (image.manifest.environment_certificate_fingerprints[0] != environment_fingerprint) return .environment_mismatch;
         }
         if (options.require_link_match) {
             if (image.link_image) |link| {
@@ -18690,6 +18691,22 @@ pub const Capsule = struct {
     fn pendingPortImageCount(image: RunspaceImage) usize {
         if (image.mailbox_image) |mailbox| return mailbox.pending_port_entries.len;
         return 0;
+    }
+
+    fn restoreModeRequiresRunHandleMappings(mode: RestoreMode) bool {
+        return switch (mode) {
+            .restore_completed, .restore_failed, .relink_and_restore, .verify_and_restore => true,
+            .inspect_only, .replay_only, .restore_parked => false,
+        };
+    }
+
+    fn runspaceImageHandleMappingsMatchSlots(image: RunspaceImage) bool {
+        if (image.run_slots.len == 0) return image.run_handle_mappings.len == 0;
+        if (image.run_handle_mappings.len != image.run_slots.len) return false;
+        for (image.run_slots, 0..) |slot, index| {
+            if (image.run_handle_mappings[index] != slot.original_run_handle_fingerprint) return false;
+        }
+        return true;
     }
 
     fn validateUniqueRunSlotHandleRefs(slots: []const RunSlotImage) !void {
