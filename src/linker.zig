@@ -2543,16 +2543,13 @@ pub fn Linker(comptime W: type) type {
 
         fn fingerprintAssembly(assembly: Assembly) u64 {
             var hasher = std.hash.Wyhash.init(0);
-            hashBytes(&hasher, "world.assembly.v1");
+            hashBytes(&hasher, "world.assembly.v2");
             hashU64(&hasher, W.world_assembly_fingerprint_version);
             hashU64(&hasher, assembly.root_target_ref.target_ref_fingerprint);
             hashOptionalU64(&hasher, assembly.root_admitted_run_fingerprint);
             hashU64(&hasher, assembly.link_plan_fingerprint);
             hashU64(&hasher, assembly.linker_certificate_fingerprint);
-            if (assembly.catalog_fingerprint) |catalog| {
-                hashBytes(&hasher, "catalog_fingerprint");
-                hashU64(&hasher, catalog);
-            }
+            hashOptionalU64(&hasher, assembly.catalog_fingerprint);
             hashOptionalU64(&hasher, assembly.environment_certificate_fingerprint);
             hashOptionalU64(&hasher, assembly.run_permit_fingerprint);
             hashU64(&hasher, assembly.fabric_plans.len);

@@ -180,7 +180,7 @@ test "linker namespace exposes kernel boundary and stable policy fingerprint" {
     try std.testing.expectEqual(@as(u32, 2), world.world_pending_port_fingerprint_version);
     try std.testing.expectEqual(@as(u32, 1), world.world_linker_policy_fingerprint_version);
     try std.testing.expectEqual(@as(u32, 1), world.world_linker_catalog_fingerprint_version);
-    try std.testing.expectEqual(@as(u32, 1), world.world_assembly_fingerprint_version);
+    try std.testing.expectEqual(@as(u32, 2), world.world_assembly_fingerprint_version);
     try std.testing.expect(world.Linker.Boundary.owns_algebra);
     try std.testing.expect(!world.Linker.Boundary.linker_calls_handlers);
     try std.testing.expect(!world.Linker.Boundary.linker_mutates_runspace_mailbox);
@@ -905,7 +905,7 @@ test "link image captures assembly linker provenance" {
         .external_import_requirements = &.{external},
         .provider_run_templates = &.{provider_ref.target_ref_fingerprint},
     });
-    try std.testing.expectEqual(@as(u64, 0x20dce25fe6216c44), assembly.assembly_fingerprint);
+    try std.testing.expectEqual(@as(u64, 0xc36af0bc83fa84c7), assembly.assembly_fingerprint);
     const catalog_scoped_assembly = world.Assembly.init(.{
         .root_target_ref = parent_ref,
         .link_plan_fingerprint = 0xaaaa,
