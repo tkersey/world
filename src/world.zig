@@ -18296,6 +18296,7 @@ pub const Capsule = struct {
         if (manifest.active_fabric_invocation_count != runspace_image_value.active_fabric_invocation_refs.len) return error.InvalidFrameEncoding;
         try validateKindNormalForm(manifest.kind, manifest.normal_form);
         try validateRunSlotNormalForm(manifest.normal_form, runspace_image_value.run_slots, manifest.pending_port_count, manifest.active_fabric_invocation_count);
+        try validateManifestRootSlotCoverage(image);
         try validateParkedSlotMailboxCoverage(runspace_image_value);
         if (image.link_image) |link| {
             if (manifest.link_plan_fingerprint == null or manifest.link_plan_fingerprint.? != link.link_plan_fingerprint) return error.InvalidFrameEncoding;
@@ -18350,7 +18351,39 @@ pub const Capsule = struct {
             } else if (slotRestoreRequiresRunImage(slot.status)) {
                 return error.InvalidFrameEncoding;
             }
+            if (slot.environment_certificate_fingerprint) |fingerprint| {
+                if (!u64SliceContains(image.manifest.environment_certificate_fingerprints, fingerprint)) return error.InvalidFrameEncoding;
+                if (!u64SliceContains(image.environment_refs, fingerprint)) return error.InvalidFrameEncoding;
+            }
         }
+        for (image.run_images) |run_image| {
+            if (run_image.environment_certificate_fingerprint) |fingerprint| {
+                if (!u64SliceContains(image.manifest.environment_certificate_fingerprints, fingerprint)) return error.InvalidFrameEncoding;
+                if (!u64SliceContains(image.environment_refs, fingerprint)) return error.InvalidFrameEncoding;
+            }
+        }
+    }
+
+    fn validateManifestRootSlotCoverage(image: Image) !void {
+        for (image.runspace_image.run_slots) |slot| {
+            if (slot.role != .root) continue;
+            if (slot.target_ref_fingerprint != image.manifest.root_target_ref_fingerprint) return error.InvalidFrameEncoding;
+            if (image.manifest.root_module_ref_fingerprint) |expected| {
+                const actual = rootSlotModuleRefFingerprint(image, slot) orelse return error.InvalidFrameEncoding;
+                if (actual != expected) return error.InvalidFrameEncoding;
+            }
+        }
+    }
+
+    fn rootSlotModuleRefFingerprint(image: Image, slot: RunSlotImage) ?u64 {
+        if (slot.module_ref_fingerprint) |fingerprint| return fingerprint;
+        if (slot.run_image_fingerprint) |fingerprint| {
+            for (image.run_images) |run_image| {
+                if (run_image.run_image_fingerprint != fingerprint) continue;
+                return run_image.module_ref_fingerprint orelse run_image.target_ref.boundary_module_fingerprint;
+            }
+        }
+        return null;
     }
 
     fn runImageSliceContains(images: []const RunImage, fingerprint: u64) bool {
@@ -19193,33 +19226,91 @@ pub const Capsule = struct {
     }
 
     fn decodeManifest(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, options: ValidateOptions) !Manifest {
+        const format_version = try readU32(bytes, cursor);
+        const fingerprint_version = try readU32(bytes, cursor);
+        const manifest_fingerprint = try readU64(bytes, cursor);
+        const kind = try enumFromByte(Kind, try readU8(bytes, cursor));
+        const root_target_ref_fingerprint = try readU64(bytes, cursor);
+        const root_module_ref_fingerprint = try readOptionalU64(bytes, cursor);
+        const link_plan_fingerprint = try readOptionalU64(bytes, cursor);
+        const link_certificate_fingerprint = try readOptionalU64(bytes, cursor);
+        const assembly_fingerprint = try readOptionalU64(bytes, cursor);
+        const admission_receipt_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var admission_receipt_fingerprints_owned = true;
+        errdefer if (admission_receipt_fingerprints_owned) allocator.free(admission_receipt_fingerprints);
+        const environment_certificate_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var environment_certificate_fingerprints_owned = true;
+        errdefer if (environment_certificate_fingerprints_owned) allocator.free(environment_certificate_fingerprints);
+        const run_permit_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var run_permit_fingerprints_owned = true;
+        errdefer if (run_permit_fingerprints_owned) allocator.free(run_permit_fingerprints);
+        const run_receipt_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var run_receipt_fingerprints_owned = true;
+        errdefer if (run_receipt_fingerprints_owned) allocator.free(run_receipt_fingerprints);
+        const run_image_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var run_image_fingerprints_owned = true;
+        errdefer if (run_image_fingerprints_owned) allocator.free(run_image_fingerprints);
+        const transcript_image_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var transcript_image_fingerprints_owned = true;
+        errdefer if (transcript_image_fingerprints_owned) allocator.free(transcript_image_fingerprints);
+        const fabric_plan_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var fabric_plan_fingerprints_owned = true;
+        errdefer if (fabric_plan_fingerprints_owned) allocator.free(fabric_plan_fingerprints);
+        const fabric_invocation_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var fabric_invocation_fingerprints_owned = true;
+        errdefer if (fabric_invocation_fingerprints_owned) allocator.free(fabric_invocation_fingerprints);
+        const fabric_receipt_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var fabric_receipt_fingerprints_owned = true;
+        errdefer if (fabric_receipt_fingerprints_owned) allocator.free(fabric_receipt_fingerprints);
+        const guest_conformance_report_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var guest_conformance_report_fingerprints_owned = true;
+        errdefer if (guest_conformance_report_fingerprints_owned) allocator.free(guest_conformance_report_fingerprints);
+        const pending_port_count = try readU64AsUsize(bytes, cursor);
+        const run_slot_count = try readU64AsUsize(bytes, cursor);
+        const active_fabric_invocation_count = try readU64AsUsize(bytes, cursor);
+        const normal_form = try enumFromByte(NormalForm, try readU8(bytes, cursor));
+        const metadata = try readBytesOwned(allocator, bytes, cursor);
+        var metadata_owned = true;
+        errdefer if (metadata_owned) allocator.free(metadata);
+
         var manifest = Manifest{
-            .format_version = try readU32(bytes, cursor),
-            .fingerprint_version = try readU32(bytes, cursor),
-            .manifest_fingerprint = try readU64(bytes, cursor),
-            .kind = try enumFromByte(Kind, try readU8(bytes, cursor)),
-            .root_target_ref_fingerprint = try readU64(bytes, cursor),
-            .root_module_ref_fingerprint = try readOptionalU64(bytes, cursor),
-            .link_plan_fingerprint = try readOptionalU64(bytes, cursor),
-            .link_certificate_fingerprint = try readOptionalU64(bytes, cursor),
-            .assembly_fingerprint = try readOptionalU64(bytes, cursor),
-            .admission_receipt_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies),
-            .environment_certificate_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies),
-            .run_permit_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies),
-            .run_receipt_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies),
-            .run_image_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies),
-            .transcript_image_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies),
-            .fabric_plan_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies),
-            .fabric_invocation_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies),
-            .fabric_receipt_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies),
-            .guest_conformance_report_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies),
-            .pending_port_count = try readU64AsUsize(bytes, cursor),
-            .run_slot_count = try readU64AsUsize(bytes, cursor),
-            .active_fabric_invocation_count = try readU64AsUsize(bytes, cursor),
-            .normal_form = try enumFromByte(NormalForm, try readU8(bytes, cursor)),
-            .metadata = try readBytesOwned(allocator, bytes, cursor),
+            .format_version = format_version,
+            .fingerprint_version = fingerprint_version,
+            .manifest_fingerprint = manifest_fingerprint,
+            .kind = kind,
+            .root_target_ref_fingerprint = root_target_ref_fingerprint,
+            .root_module_ref_fingerprint = root_module_ref_fingerprint,
+            .link_plan_fingerprint = link_plan_fingerprint,
+            .link_certificate_fingerprint = link_certificate_fingerprint,
+            .assembly_fingerprint = assembly_fingerprint,
+            .admission_receipt_fingerprints = admission_receipt_fingerprints,
+            .environment_certificate_fingerprints = environment_certificate_fingerprints,
+            .run_permit_fingerprints = run_permit_fingerprints,
+            .run_receipt_fingerprints = run_receipt_fingerprints,
+            .run_image_fingerprints = run_image_fingerprints,
+            .transcript_image_fingerprints = transcript_image_fingerprints,
+            .fabric_plan_fingerprints = fabric_plan_fingerprints,
+            .fabric_invocation_fingerprints = fabric_invocation_fingerprints,
+            .fabric_receipt_fingerprints = fabric_receipt_fingerprints,
+            .guest_conformance_report_fingerprints = guest_conformance_report_fingerprints,
+            .pending_port_count = pending_port_count,
+            .run_slot_count = run_slot_count,
+            .active_fabric_invocation_count = active_fabric_invocation_count,
+            .normal_form = normal_form,
+            .metadata = metadata,
             .owns_memory = true,
         };
+        admission_receipt_fingerprints_owned = false;
+        environment_certificate_fingerprints_owned = false;
+        run_permit_fingerprints_owned = false;
+        run_receipt_fingerprints_owned = false;
+        run_image_fingerprints_owned = false;
+        transcript_image_fingerprints_owned = false;
+        fabric_plan_fingerprints_owned = false;
+        fabric_invocation_fingerprints_owned = false;
+        fabric_receipt_fingerprints_owned = false;
+        guest_conformance_report_fingerprints_owned = false;
+        metadata_owned = false;
         errdefer manifest.deinit(allocator);
         try manifest.validate(options);
         return manifest;
@@ -19432,29 +19523,98 @@ pub const Capsule = struct {
     }
 
     fn decodeRunspaceImage(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, options: ValidateOptions) !RunspaceImage {
+        const format_version = try readU32(bytes, cursor);
+        const fingerprint_version = try readU32(bytes, cursor);
+        const image_fingerprint = try readU64(bytes, cursor);
+        const runspace_fingerprint = try readU64(bytes, cursor);
+        const runspace_report_fingerprint = try readU64(bytes, cursor);
+        const run_handle_mappings = try readU64SliceOwned(allocator, bytes, cursor, options.max_run_slots);
+        var run_handle_mappings_owned = true;
+        errdefer if (run_handle_mappings_owned) allocator.free(run_handle_mappings);
+        const run_slots = try readRunSlotImageSliceOwned(allocator, bytes, cursor, options);
+        var run_slots_owned = true;
+        errdefer if (run_slots_owned) {
+            for (run_slots) |*slot| slot.deinit(allocator);
+            allocator.free(run_slots);
+        };
+        var mailbox_image = try readOptionalMailboxImage(allocator, bytes, cursor, options);
+        var mailbox_image_owned = mailbox_image != null;
+        errdefer if (mailbox_image_owned) if (mailbox_image) |*mailbox| mailbox.deinit(allocator);
+        const runspace_event_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var runspace_event_fingerprints_owned = true;
+        errdefer if (runspace_event_fingerprints_owned) allocator.free(runspace_event_fingerprints);
+        const root_run_handle_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_run_slots);
+        var root_run_handle_fingerprints_owned = true;
+        errdefer if (root_run_handle_fingerprints_owned) allocator.free(root_run_handle_fingerprints);
+        const provider_run_handle_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_run_slots);
+        var provider_run_handle_fingerprints_owned = true;
+        errdefer if (provider_run_handle_fingerprints_owned) allocator.free(provider_run_handle_fingerprints);
+        const branch_refs = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var branch_refs_owned = true;
+        errdefer if (branch_refs_owned) allocator.free(branch_refs);
+        const checkpoint_refs = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var checkpoint_refs_owned = true;
+        errdefer if (checkpoint_refs_owned) allocator.free(checkpoint_refs);
+        const transcript_image_refs = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var transcript_image_refs_owned = true;
+        errdefer if (transcript_image_refs_owned) allocator.free(transcript_image_refs);
+        const run_image_refs = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var run_image_refs_owned = true;
+        errdefer if (run_image_refs_owned) allocator.free(run_image_refs);
+        const run_receipt_refs = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var run_receipt_refs_owned = true;
+        errdefer if (run_receipt_refs_owned) allocator.free(run_receipt_refs);
+        const admission_receipt_refs = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var admission_receipt_refs_owned = true;
+        errdefer if (admission_receipt_refs_owned) allocator.free(admission_receipt_refs);
+        const permit_refs = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var permit_refs_owned = true;
+        errdefer if (permit_refs_owned) allocator.free(permit_refs);
+        const active_fabric_invocation_refs = try readU64SliceOwned(allocator, bytes, cursor, options.max_fabric_invocations);
+        var active_fabric_invocation_refs_owned = true;
+        errdefer if (active_fabric_invocation_refs_owned) allocator.free(active_fabric_invocation_refs);
+        const metadata = try readBytesOwned(allocator, bytes, cursor);
+        var metadata_owned = true;
+        errdefer if (metadata_owned) allocator.free(metadata);
+
         var image = RunspaceImage{
-            .format_version = try readU32(bytes, cursor),
-            .fingerprint_version = try readU32(bytes, cursor),
-            .image_fingerprint = try readU64(bytes, cursor),
-            .runspace_fingerprint = try readU64(bytes, cursor),
-            .runspace_report_fingerprint = try readU64(bytes, cursor),
-            .run_handle_mappings = try readU64SliceOwned(allocator, bytes, cursor, options.max_run_slots),
-            .run_slots = try readRunSlotImageSliceOwned(allocator, bytes, cursor, options),
-            .mailbox_image = try readOptionalMailboxImage(allocator, bytes, cursor, options),
-            .runspace_event_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies),
-            .root_run_handle_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_run_slots),
-            .provider_run_handle_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_run_slots),
-            .branch_refs = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies),
-            .checkpoint_refs = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies),
-            .transcript_image_refs = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies),
-            .run_image_refs = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies),
-            .run_receipt_refs = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies),
-            .admission_receipt_refs = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies),
-            .permit_refs = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies),
-            .active_fabric_invocation_refs = try readU64SliceOwned(allocator, bytes, cursor, options.max_fabric_invocations),
-            .metadata = try readBytesOwned(allocator, bytes, cursor),
+            .format_version = format_version,
+            .fingerprint_version = fingerprint_version,
+            .image_fingerprint = image_fingerprint,
+            .runspace_fingerprint = runspace_fingerprint,
+            .runspace_report_fingerprint = runspace_report_fingerprint,
+            .run_handle_mappings = run_handle_mappings,
+            .run_slots = run_slots,
+            .mailbox_image = mailbox_image,
+            .runspace_event_fingerprints = runspace_event_fingerprints,
+            .root_run_handle_fingerprints = root_run_handle_fingerprints,
+            .provider_run_handle_fingerprints = provider_run_handle_fingerprints,
+            .branch_refs = branch_refs,
+            .checkpoint_refs = checkpoint_refs,
+            .transcript_image_refs = transcript_image_refs,
+            .run_image_refs = run_image_refs,
+            .run_receipt_refs = run_receipt_refs,
+            .admission_receipt_refs = admission_receipt_refs,
+            .permit_refs = permit_refs,
+            .active_fabric_invocation_refs = active_fabric_invocation_refs,
+            .metadata = metadata,
             .owns_memory = true,
         };
+        run_handle_mappings_owned = false;
+        run_slots_owned = false;
+        mailbox_image_owned = false;
+        runspace_event_fingerprints_owned = false;
+        root_run_handle_fingerprints_owned = false;
+        provider_run_handle_fingerprints_owned = false;
+        branch_refs_owned = false;
+        checkpoint_refs_owned = false;
+        transcript_image_refs_owned = false;
+        run_image_refs_owned = false;
+        run_receipt_refs_owned = false;
+        admission_receipt_refs_owned = false;
+        permit_refs_owned = false;
+        active_fabric_invocation_refs_owned = false;
+        metadata_owned = false;
         errdefer image.deinit(allocator);
         try image.validate(options);
         return image;

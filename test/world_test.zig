@@ -946,6 +946,52 @@ test "capsule thaw restores completed capsule with handle remap" {
     try std.testing.expect(report.restored_root_run_handles[0] != handle.handle_fingerprint);
 }
 
+test "capsule validation binds manifest root to restored root slots" {
+    const allowed_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const restored_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    const restored_state = world.RunState.init(.{
+        .target_ref_fingerprint = restored_ref.target_ref_fingerprint,
+        .status = .completed,
+    });
+    const restored_run_image = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = restored_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Strict.Target).import_set_fingerprint,
+        .current_state = restored_state,
+    });
+    const run_image_refs = [_]u64{restored_run_image.run_image_fingerprint};
+    const slot = world.Capsule.RunSlotImage.init(.{
+        .original_run_handle_fingerprint = 0x5150_3782,
+        .role = .root,
+        .target_ref_fingerprint = restored_ref.target_ref_fingerprint,
+        .run_state_fingerprint = restored_state.run_state_fingerprint,
+        .run_image_fingerprint = restored_run_image.run_image_fingerprint,
+        .status = .completed,
+    });
+    const slots = [_]world.Capsule.RunSlotImage{slot};
+    const manifest = world.Capsule.Manifest.init(.{
+        .kind = .completed_assembly,
+        .root_target_ref_fingerprint = allowed_ref.target_ref_fingerprint,
+        .run_image_fingerprints = &run_image_refs,
+        .run_slot_count = slots.len,
+        .normal_form = .quiescent_completed,
+    });
+    const runspace_image = world.Capsule.RunspaceImage.init(.{
+        .runspace_fingerprint = 0x5150_3783,
+        .runspace_report_fingerprint = 0x5150_3784,
+        .run_slots = &slots,
+        .run_image_refs = &run_image_refs,
+    });
+    const run_images = [_]world.RunImage{restored_run_image};
+    const image = world.Capsule.Image.init(.{
+        .manifest = manifest,
+        .runspace_image = runspace_image,
+        .run_image_refs = &run_image_refs,
+        .run_images = &run_images,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, image.validate(.{}));
+}
+
 test "capsule thaw preserves branch parent links" {
     const allocator = std.testing.allocator;
     const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
@@ -1038,9 +1084,26 @@ test "capsule freezeRunspace preserves run image environment refs" {
     const accepted = try world.Capsule.planThaw(image, target_ref.target_ref_fingerprint, env_cert.certificate_fingerprint, 0x5150_3792, .{ .mode = .restore_completed });
     try std.testing.expectEqual(@as(usize, 0), accepted.blockers.len);
 
+    const missing_env_manifest = world.Capsule.Manifest.init(.{
+        .kind = .completed_assembly,
+        .root_target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .run_image_fingerprints = image.manifest.run_image_fingerprints,
+        .run_slot_count = image.runspace_image.run_slots.len,
+        .normal_form = .quiescent_completed,
+    });
+    const missing_env_image = world.Capsule.Image.init(.{
+        .manifest = missing_env_manifest,
+        .runspace_image = image.runspace_image,
+        .run_image_refs = image.run_image_refs,
+        .run_images = image.run_images,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, missing_env_image.validate(.{}));
+
     const encoded = try image.encode(allocator);
     defer allocator.free(encoded);
-    try std.testing.expectError(error.InvalidFrameEncoding, world.Capsule.Image.decode(allocator, encoded[0 .. encoded.len - 1]));
+    for (0..encoded.len) |len| {
+        try std.testing.expectError(error.InvalidFrameEncoding, world.Capsule.Image.decode(allocator, encoded[0..len]));
+    }
 }
 
 test "capsule thaw denies restore before runspace mutation when permit is missing" {
