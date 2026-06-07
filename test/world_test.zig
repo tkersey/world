@@ -923,8 +923,13 @@ test "capsule thaw restores completed capsule with handle remap" {
         }),
         .status = .completed,
     }));
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Capsule.freezeRunspace(&source, .{ .include_run_images = false }));
+
     var image = try world.Capsule.freezeRunspace(&source, .{});
     defer image.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), image.run_images.len);
+    const slot_run_image_fingerprint = image.runspace_image.run_slots[0].run_image_fingerprint orelse return error.ExpectedRunImage;
+    try std.testing.expectEqual(image.run_images[0].run_image_fingerprint, slot_run_image_fingerprint);
 
     var destination = world.Runspace.init(allocator, .{});
     defer destination.deinit();
@@ -933,6 +938,9 @@ test "capsule thaw restores completed capsule with handle remap" {
     try std.testing.expect(report.accepted);
     try std.testing.expectEqual(@as(usize, 1), destination.slots.items.len);
     try std.testing.expectEqual(world.Runspace.RunStatus.completed, destination.slots.items[0].status);
+    try std.testing.expect(destination.slots.items[0].installed_run_image != null);
+    try std.testing.expectEqual(target_ref.world_surface_fingerprint, destination.slots.items[0].target_ref.world_surface_fingerprint);
+    try std.testing.expectEqual(target_ref.target_certificate_fingerprint, destination.slots.items[0].target_ref.target_certificate_fingerprint);
     try std.testing.expectEqual(@as(?u64, 0x7777), report.receiver_run_permit_fingerprint);
     try std.testing.expectEqual(@as(usize, 1), report.restored_root_run_handles.len);
     try std.testing.expect(report.restored_root_run_handles[0] != handle.handle_fingerprint);
@@ -1183,6 +1191,32 @@ test "capsule relink requires manifest fabric plan coverage" {
     try std.testing.expectEqual(world.Capsule.LinkCertificateMatchStatus.matched, accepted.link_certificate_match_status);
     try std.testing.expectEqual(world.Capsule.RelinkStatus.matched, accepted.relink_status);
     try std.testing.expectEqual(@as(usize, 0), accepted.blockers.len);
+    const guest_required = try world.Capsule.verifyLink(covered_image, 0, .{ .require_guest_conformance = true });
+    try std.testing.expectEqual(world.Capsule.LinkCertificateMatchStatus.mismatched, guest_required.link_certificate_match_status);
+    try std.testing.expectEqual(world.Capsule.RelinkStatus.rejected, guest_required.relink_status);
+    try std.testing.expectEqual(world.Capsule.Blocker.relink_drift_rejected, guest_required.blockers[0]);
+    const guest_refs = [_]u64{0x5150_3716};
+    const guest_manifest = world.Capsule.Manifest.init(.{
+        .kind = .completed_assembly,
+        .root_target_ref_fingerprint = root_ref.target_ref_fingerprint,
+        .link_plan_fingerprint = 0x1010,
+        .link_certificate_fingerprint = 0x2020,
+        .assembly_fingerprint = 0x3030,
+        .fabric_plan_fingerprints = &manifest_fabric_refs,
+        .guest_conformance_report_fingerprints = &guest_refs,
+        .normal_form = .quiescent_completed,
+    });
+    const guest_image = world.Capsule.Image.init(.{
+        .manifest = guest_manifest,
+        .runspace_image = runspace_image,
+        .link_image = covered_link,
+        .fabric_image = fabric_image,
+        .guest_conformance_refs = &guest_refs,
+    });
+    const guest_accepted = try world.Capsule.verifyLink(guest_image, 0, .{ .require_guest_conformance = true });
+    try std.testing.expectEqual(world.Capsule.LinkCertificateMatchStatus.matched, guest_accepted.link_certificate_match_status);
+    try std.testing.expectEqual(world.Capsule.RelinkStatus.matched, guest_accepted.relink_status);
+    try std.testing.expectEqual(@as(usize, 0), guest_accepted.blockers.len);
 
     const catalog_link = world.Capsule.LinkImage.init(.{
         .link_plan_fingerprint = 0x1010,
@@ -1196,11 +1230,19 @@ test "capsule relink requires manifest fabric plan coverage" {
         .target_ref_fingerprint = root_ref.target_ref_fingerprint,
         .status = .completed,
     });
+    const catalog_run_image = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = root_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = catalog_state,
+    });
+    const catalog_run_image_refs = [_]u64{catalog_run_image.run_image_fingerprint};
     const catalog_slot = world.Capsule.RunSlotImage.init(.{
         .original_run_handle_fingerprint = 0x5150_3711,
         .role = .root,
         .target_ref_fingerprint = root_ref.target_ref_fingerprint,
         .run_state_fingerprint = catalog_state.run_state_fingerprint,
+        .run_image_fingerprint = catalog_run_image.run_image_fingerprint,
         .status = .completed,
     });
     const catalog_slots = [_]world.Capsule.RunSlotImage{catalog_slot};
@@ -1211,6 +1253,7 @@ test "capsule relink requires manifest fabric plan coverage" {
         .link_certificate_fingerprint = 0x2020,
         .assembly_fingerprint = 0x3030,
         .fabric_plan_fingerprints = &manifest_fabric_refs,
+        .run_image_fingerprints = &catalog_run_image_refs,
         .run_slot_count = catalog_slots.len,
         .normal_form = .quiescent_completed,
     });
@@ -1218,12 +1261,16 @@ test "capsule relink requires manifest fabric plan coverage" {
         .runspace_fingerprint = 0x5150_3712,
         .runspace_report_fingerprint = 0x5150_3713,
         .run_slots = &catalog_slots,
+        .run_image_refs = &catalog_run_image_refs,
     });
+    const catalog_run_images = [_]world.RunImage{catalog_run_image};
     const catalog_image = world.Capsule.Image.init(.{
         .manifest = catalog_manifest,
         .runspace_image = catalog_runspace_image,
         .link_image = catalog_link,
         .fabric_image = fabric_image,
+        .run_image_refs = &catalog_run_image_refs,
+        .run_images = &catalog_run_images,
     });
     const drift_rejected = try world.Capsule.planThaw(catalog_image, root_ref.target_ref_fingerprint, 0, 0x5150_3714, .{ .mode = .restore_completed });
     try std.testing.expectEqual(world.Capsule.Blocker.link_plan_mismatch, drift_rejected.blockers[0]);

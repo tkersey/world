@@ -18231,7 +18231,8 @@ pub const Capsule = struct {
         const catalog_matched = link.catalog_fingerprint == null or local_catalog_fingerprint == 0 or link.catalog_fingerprint.? == local_catalog_fingerprint;
         const residual_matched = !policy.require_residual_import_match or image.manifest.link_plan_fingerprint == null or image.manifest.link_plan_fingerprint.? == link.link_plan_fingerprint;
         const fabric_matched = !policy.require_fabric_plan_match or fabricPlanRefsCovered(image.manifest.fabric_plan_fingerprints, link.route_synthesis_refs);
-        const matched = catalog_matched and residual_matched and fabric_matched;
+        const guest_conformance_matched = !policy.require_guest_conformance or guestConformanceRefsCovered(image.manifest.guest_conformance_report_fingerprints, image.guest_conformance_refs);
+        const matched = catalog_matched and residual_matched and fabric_matched and guest_conformance_matched;
         const accepted = matched or policy.allow_relink_drift;
         return ThawPlan.init(.{
             .capsule_image_fingerprint = image.image_fingerprint,
@@ -18446,10 +18447,18 @@ pub const Capsule = struct {
         return true;
     }
 
+    fn guestConformanceRefsCovered(manifest_refs: []const u64, image_refs: []const u64) bool {
+        if (manifest_refs.len == 0) return false;
+        for (manifest_refs) |manifest_ref| {
+            if (!u64SliceContains(image_refs, manifest_ref)) return false;
+        }
+        return true;
+    }
+
     fn slotRestoreRequiresRunImage(status: RunSlotStatus) bool {
         return switch (status) {
-            .parked_on_port, .parked_on_supervision => true,
-            .admitted, .runnable, .completed, .failed, .exported, .rejected => false,
+            .parked_on_port, .parked_on_supervision, .completed, .failed, .exported, .rejected => true,
+            .admitted, .runnable => false,
         };
     }
 
