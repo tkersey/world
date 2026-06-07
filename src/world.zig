@@ -16881,6 +16881,18 @@ pub const Capsule = struct {
         pub fn validate(self: @This(), options: ValidateOptions) !void {
             if (self.fingerprint_version != world_capsule_fabric_image_fingerprint_version) return error.InvalidFrameEncoding;
             if (self.active_invocation_fingerprints.len > options.max_fabric_invocations) return error.InvalidFrameEncoding;
+            if (self.parent_pending_port_refs.len > options.max_pending_ports) return error.InvalidFrameEncoding;
+            if (self.provider_run_refs.len > options.max_run_slots) return error.InvalidFrameEncoding;
+            if (self.provider_state_summary_fingerprints.len > options.max_run_slots) return error.InvalidFrameEncoding;
+            if (self.depth_route_stack.len > options.max_fabric_invocations) return error.InvalidFrameEncoding;
+            if (self.active_invocation_fingerprints.len != 0) {
+                if (self.parent_pending_port_refs.len != self.active_invocation_fingerprints.len) return error.InvalidFrameEncoding;
+                if (self.depth_route_stack.len != self.active_invocation_fingerprints.len) return error.InvalidFrameEncoding;
+                if (self.provider_run_refs.len < self.active_invocation_fingerprints.len) return error.InvalidFrameEncoding;
+                if (self.provider_state_summary_fingerprints.len < self.active_invocation_fingerprints.len) return error.InvalidFrameEncoding;
+                if (self.route_fingerprints.len == 0) return error.InvalidFrameEncoding;
+                if (self.value_mapping_fingerprints.len == 0) return error.InvalidFrameEncoding;
+            }
             if (self.fabric_image_fingerprint != fingerprintFabricImage(self)) return error.InvalidFrameEncoding;
         }
 

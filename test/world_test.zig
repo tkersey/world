@@ -1211,6 +1211,22 @@ test "capsule freeze active fabric requires parked allowance" {
     try std.testing.expectEqual(world.Capsule.NormalForm.active_fabric_parked, image.manifest.normal_form);
     try std.testing.expectEqual(@as(usize, 1), image.manifest.active_fabric_invocation_count);
     try std.testing.expectEqual(invocation.invocation_fingerprint, image.fabric_image.?.active_invocation_fingerprints[0]);
+    const missing_active_witnesses = world.Capsule.FabricImage.init(.{
+        .fabric_plan_fingerprints = image.fabric_image.?.fabric_plan_fingerprints,
+        .active_invocation_fingerprints = image.fabric_image.?.active_invocation_fingerprints,
+        .completed_receipt_fingerprints = image.fabric_image.?.completed_receipt_fingerprints,
+        .route_fingerprints = image.fabric_image.?.route_fingerprints,
+        .value_mapping_fingerprints = image.fabric_image.?.value_mapping_fingerprints,
+        .status_summary_fingerprint = image.fabric_image.?.status_summary_fingerprint,
+    });
+    const under_witnessed_image = world.Capsule.Image.init(.{
+        .manifest = image.manifest,
+        .runspace_image = image.runspace_image,
+        .fabric_image = missing_active_witnesses,
+        .run_image_refs = image.run_image_refs,
+        .run_images = image.run_images,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, under_witnessed_image.validate(.{}));
 }
 
 test "capsule thaw restores completed capsule with handle remap" {
