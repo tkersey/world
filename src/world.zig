@@ -18740,8 +18740,10 @@ pub const Capsule = struct {
         const catalog_matched = link.catalog_fingerprint == null or
             (local_catalog_fingerprint != 0 and link.catalog_fingerprint.? == local_catalog_fingerprint);
         const residual_matched = !policy.require_residual_import_match or
-            policy.expected_residual_import_set_fingerprint == null or
-            link.residual_import_set_fingerprint == policy.expected_residual_import_set_fingerprint.?;
+            if (policy.expected_residual_import_set_fingerprint) |expected|
+                link.residual_import_set_fingerprint == expected
+            else
+                link.residual_import_set_fingerprint == 0;
         const fabric_matched = !policy.require_fabric_plan_match or linkFabricPlanWitnessesCover(image.manifest.fabric_plan_fingerprints, link.route_synthesis_refs);
         const guest_conformance_matched = !policy.require_guest_conformance or guestConformanceRefsCovered(image.manifest.guest_conformance_report_fingerprints, image.guest_conformance_refs);
         const matched = catalog_matched and residual_matched and fabric_matched and guest_conformance_matched;

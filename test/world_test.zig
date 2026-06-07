@@ -1998,8 +1998,11 @@ test "capsule relink requires manifest fabric plan coverage" {
         .fabric_image = fabric_image,
     });
     const residual_default = try world.Capsule.verifyLink(residual_image, 0, .{});
-    try std.testing.expectEqual(world.Capsule.RelinkStatus.matched, residual_default.relink_status);
-    try std.testing.expectEqual(@as(usize, 0), residual_default.blockers.len);
+    try std.testing.expectEqual(world.Capsule.RelinkStatus.rejected, residual_default.relink_status);
+    try std.testing.expectEqual(world.Capsule.Blocker.residual_import_mismatch, residual_default.blockers[0]);
+    const residual_not_required = try world.Capsule.verifyLink(residual_image, 0, .{ .require_residual_import_match = false });
+    try std.testing.expectEqual(world.Capsule.RelinkStatus.matched, residual_not_required.relink_status);
+    try std.testing.expectEqual(@as(usize, 0), residual_not_required.blockers.len);
     const residual_rejected = try world.Capsule.verifyLink(residual_image, 0, .{ .expected_residual_import_set_fingerprint = 0x5150_3711 });
     try std.testing.expectEqual(world.Capsule.RelinkStatus.rejected, residual_rejected.relink_status);
     try std.testing.expectEqual(world.Capsule.Blocker.residual_import_mismatch, residual_rejected.blockers[0]);
