@@ -2549,7 +2549,10 @@ pub fn Linker(comptime W: type) type {
             hashOptionalU64(&hasher, assembly.root_admitted_run_fingerprint);
             hashU64(&hasher, assembly.link_plan_fingerprint);
             hashU64(&hasher, assembly.linker_certificate_fingerprint);
-            hashOptionalU64(&hasher, assembly.catalog_fingerprint);
+            if (assembly.catalog_fingerprint) |catalog| {
+                hashBytes(&hasher, "catalog_fingerprint");
+                hashU64(&hasher, catalog);
+            }
             hashOptionalU64(&hasher, assembly.environment_certificate_fingerprint);
             hashOptionalU64(&hasher, assembly.run_permit_fingerprint);
             hashU64(&hasher, assembly.fabric_plans.len);

@@ -904,6 +904,17 @@ test "link image captures assembly linker provenance" {
         .external_import_requirements = &.{external},
         .provider_run_templates = &.{provider_ref.target_ref_fingerprint},
     });
+    try std.testing.expectEqual(@as(u64, 0x20dce25fe6216c44), assembly.assembly_fingerprint);
+    const catalog_scoped_assembly = world.Assembly.init(.{
+        .root_target_ref = parent_ref,
+        .link_plan_fingerprint = 0xaaaa,
+        .linker_certificate_fingerprint = 0xbbbb,
+        .catalog_fingerprint = 0x2222,
+        .fabric_plans = &.{plan},
+        .external_import_requirements = &.{external},
+        .provider_run_templates = &.{provider_ref.target_ref_fingerprint},
+    });
+    try std.testing.expect(catalog_scoped_assembly.assembly_fingerprint != assembly.assembly_fingerprint);
     var image = try world.Capsule.linkImageFromAssembly(allocator, assembly, 0x1111, 0x2222);
     defer image.deinit(allocator);
     try std.testing.expectEqual(assembly.assembly_fingerprint, image.assembly_fingerprint);
