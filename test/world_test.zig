@@ -2234,6 +2234,24 @@ test "assembly preflights environment and installs into Runspace through Fabric 
         .fabric_plans = &non_root_plans,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, runspace.installAssembly(non_root_assembly));
+    var rollback_runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer rollback_runspace.deinit();
+    const conflicting_extra_assembly = world.Assembly.init(.{
+        .root_target_ref = linked.assembly.root_target_ref,
+        .link_plan_fingerprint = linked.assembly.link_plan_fingerprint +% 1,
+        .linker_certificate_fingerprint = linked.assembly.linker_certificate_fingerprint +% 1,
+        .fabric_plans = &.{extra_plan},
+    });
+    try rollback_runspace.installAssembly(conflicting_extra_assembly);
+    try std.testing.expectEqual(@as(usize, 1), rollback_runspace.fabric_plan_fingerprints.items.len);
+    const conflicting_multi_assembly = world.Assembly.init(.{
+        .root_target_ref = linked.assembly.root_target_ref,
+        .link_plan_fingerprint = linked.assembly.link_plan_fingerprint,
+        .linker_certificate_fingerprint = linked.assembly.linker_certificate_fingerprint,
+        .fabric_plans = &.{ linked.plan.fabric_plans[0], extra_plan },
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, rollback_runspace.installAssembly(conflicting_multi_assembly));
+    try std.testing.expectEqual(@as(usize, 1), rollback_runspace.fabric_plan_fingerprints.items.len);
 
     var stale_root_ref = linked.assembly.root_target_ref;
     stale_root_ref.boundary_module_fingerprint = (stale_root_ref.boundary_module_fingerprint orelse 0) +% 1;
@@ -8018,6 +8036,23 @@ test "runspace install consumes explicit fabric plan for missing environment bin
     const linker_scoped_direct_report = PortsEnv.acceptanceReportWithPermit(.fresh, false, linker_scoped_direct_permit);
     try std.testing.expect(!linker_scoped_direct_report.accepted);
     try std.testing.expectEqual(world.AcceptanceBlocker.SupervisionPolicyMismatch, linker_scoped_direct_report.blockers[0]);
+    const linker_scoped_direct_fabric_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .fabric_plan_fingerprint = fabric_plan.plan_fingerprint,
+        .link_plan_fingerprint = 0x11_aa,
+        .linker_certificate_fingerprint = 0x22_bb,
+        .assembly_fingerprint = 0x33_cc,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_native_adapters = true,
+            .allow_fabric_routes = true,
+            .allow_reject_routes = true,
+            .allow_rejected_responses = true,
+        }),
+    });
+    const linker_scoped_direct_fabric_report = PortsEnv.acceptanceReportWithFabricPlanAndPermit(.fresh, false, fabric_plan, linker_scoped_direct_fabric_permit);
+    try std.testing.expect(!linker_scoped_direct_fabric_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.SupervisionPolicyMismatch, linker_scoped_direct_fabric_report.blockers[0]);
     try std.testing.expectError(error.SupervisionDenied, PortsMachine.start(&no_env_runtime, .{}, .{
         .allocator = std.testing.allocator,
         .mode = world.Mode.fresh,
@@ -10052,6 +10087,41 @@ test "runspace enforces linker scoped permit against installed assembly plans" {
     try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
     const invocation = try runspace.routePending(0, owned_plan);
     try std.testing.expectEqual(world.Fabric.InvocationStatus.rejected, invocation.status);
+
+    const pinned_scoped_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .fabric_plan_fingerprint = unowned_plan.plan_fingerprint,
+        .link_plan_fingerprint = assembly.link_plan_fingerprint,
+        .linker_certificate_fingerprint = assembly.linker_certificate_fingerprint,
+        .assembly_fingerprint = assembly.assembly_fingerprint,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_handoff_accept = true,
+            .allow_native_adapters = true,
+            .allow_fabric_routes = true,
+            .allow_reject_routes = true,
+            .allow_rejected_responses = true,
+        }),
+    });
+    const pinned_scoped_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_aa02,
+        .target_ref = parent_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .environment_certificate_fingerprint = PortsEnv.certificate(.fresh, false).certificate_fingerprint,
+        .run_image = source_image,
+        .run_permit = pinned_scoped_permit,
+        .fabric_plan = unowned_plan,
+        .link_plan_fingerprint = assembly.link_plan_fingerprint,
+        .linker_certificate_fingerprint = assembly.linker_certificate_fingerprint,
+        .assembly_fingerprint = assembly.assembly_fingerprint,
+        .mode = .resume_parked,
+    });
+    var pinned_scoped_runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer pinned_scoped_runspace.deinit();
+    try pinned_scoped_runspace.installFabricPlan(parent_ref, unowned_plan);
+    _ = try pinned_scoped_runspace.installAdmitted(pinned_scoped_admitted);
+    try std.testing.expectError(error.SupervisionDenied, pinned_scoped_runspace.routePending(0, unowned_plan));
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try pinned_scoped_runspace.mailbox.get(0)).status);
 }
 
 test "runspace fabric response enforces parent value image policy" {
