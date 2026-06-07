@@ -1146,6 +1146,9 @@ test "capsule freezeRunspace classifies mixed terminal slots as failed assembly"
     try std.testing.expectEqual(world.Capsule.NormalForm.quiescent_failed, image.manifest.normal_form);
     try std.testing.expectEqual(@as(usize, 2), image.runspace_image.run_slots.len);
     try image.validate(.{});
+    const replay_plan = try world.Capsule.planThaw(image, 0, 0, null, .{ .mode = .replay_only });
+    try std.testing.expectEqual(@as(usize, 0), replay_plan.blockers.len);
+    try std.testing.expectEqual(world.Capsule.RestoreMode.replay_only, replay_plan.requested_mode);
 }
 
 test "capsule thaw preserves branch parent links" {
@@ -1708,6 +1711,13 @@ test "capsule handoff admission binds restore witnesses and receiver permit" {
     try std.testing.expectEqual(cert.certificate_fingerprint, admission.capsule_certificate_fingerprint.?);
     try std.testing.expectEqual(thaw.thaw_plan_fingerprint, admission.capsule_thaw_plan_fingerprint.?);
     try std.testing.expectEqual(restore.restore_report_fingerprint, admission.capsule_restore_report_fingerprint.?);
+
+    const unwitnessed_restore = world.Admission.capsuleAdmissionReport(.{
+        .mode = .restore_parked,
+        .image = imported,
+    });
+    try std.testing.expect(!unwitnessed_restore.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, unwitnessed_restore.blockers[0]);
 
     var mismatched_cert = cert;
     mismatched_cert.capsule_image_fingerprint +%= 1;

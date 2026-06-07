@@ -2241,18 +2241,24 @@ pub const Admission = struct {
             (args.thaw_plan == null or args.thaw_plan.?.capsule_image_fingerprint == args.image.image_fingerprint) and
             (args.restore_report == null or args.restore_report.?.capsule_image_fingerprint == args.image.image_fingerprint) and
             (args.thaw_plan == null or args.restore_report == null or args.restore_report.?.thaw_plan_fingerprint == args.thaw_plan.?.thaw_plan_fingerprint);
+        const has_required_witnesses = switch (args.mode) {
+            .inspect_only, .replay_only => true,
+            .verify => args.thaw_plan != null,
+            .restore_parked, .relink_and_restore => args.thaw_plan != null and args.restore_report != null,
+        };
+        const witnesses_accept = switch (args.mode) {
+            .inspect_only, .replay_only => if (args.thaw_plan) |plan| plan.blockers.len == 0 else true,
+            .verify => if (args.thaw_plan) |plan| plan.blockers.len == 0 else false,
+            .restore_parked, .relink_and_restore => if (args.thaw_plan) |plan| if (args.restore_report) |report| plan.blockers.len == 0 and report.accepted else false else false,
+        };
         const request = Admission.AdmissionRequest.init(.{
             .package_fingerprint = args.image.image_fingerprint,
             .mode = admissionModeForCapsuleAdmission(args.mode),
             .policy_fingerprint = 0,
         });
-        const accepted = witnesses_bound and if (args.restore_report) |restore|
-            restore.accepted
-        else if (args.thaw_plan) |plan|
-            plan.blockers.len == 0
-        else
-            true;
+        const accepted = witnesses_bound and has_required_witnesses and witnesses_accept;
         if (!accepted) {
+            const invalid_witnesses = !witnesses_bound or !has_required_witnesses;
             return Admission.AdmissionReport.rejected(.{
                 .request = request,
                 .package_fingerprint = args.image.image_fingerprint,
@@ -2265,8 +2271,8 @@ pub const Admission = struct {
                 .capsule_certificate_fingerprint = if (args.certificate) |cert| cert.certificate_fingerprint else null,
                 .capsule_thaw_plan_fingerprint = if (args.thaw_plan) |plan| plan.thaw_plan_fingerprint else null,
                 .capsule_restore_report_fingerprint = if (args.restore_report) |report| report.restore_report_fingerprint else null,
-                .blockers = if (witnesses_bound) &.{.AdmissionModeNotAllowed} else &.{.PackageInvalid},
-                .summary = if (witnesses_bound) "capsule admission rejected" else "capsule admission witness mismatch",
+                .blockers = if (invalid_witnesses) &.{.PackageInvalid} else &.{.AdmissionModeNotAllowed},
+                .summary = if (invalid_witnesses) "capsule admission witness mismatch" else "capsule admission rejected",
             });
         }
         return Admission.AdmissionReport.accept(.{
@@ -18325,7 +18331,7 @@ pub const Capsule = struct {
     fn restoreModeAllowedForImage(image: Image, mode: RestoreMode) bool {
         return switch (mode) {
             .inspect_only => true,
-            .replay_only => image.manifest.kind == .replay_only or image.manifest.kind == .completed_assembly or image.manifest.kind == .full_assembly,
+            .replay_only => image.manifest.kind == .replay_only or image.manifest.kind == .completed_assembly or image.manifest.kind == .failed_assembly or image.manifest.kind == .full_assembly,
             .restore_completed => imageHasRestorableSlots(image) and (image.manifest.kind == .completed_assembly or image.manifest.normal_form == .quiescent_completed),
             .restore_failed => imageHasRestorableSlots(image) and (image.manifest.kind == .failed_assembly or image.manifest.normal_form == .quiescent_failed),
             .restore_parked => image.manifest.kind == .parked_assembly and image.manifest.normal_form == .quiescent_parked,
