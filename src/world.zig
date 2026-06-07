@@ -16503,7 +16503,7 @@ pub const Capsule = struct {
             }
             if (self.status == .parked_on_port) {
                 if (self.current_pending_mailbox_id == null) return error.InvalidFrameEncoding;
-            } else if (self.current_pending_mailbox_id != null) return error.InvalidFrameEncoding;
+            } else if (self.current_pending_mailbox_id != null and self.status != .parked_on_supervision) return error.InvalidFrameEncoding;
             switch (self.role) {
                 .root => if (self.parent_run_handle_fingerprint != null) return error.InvalidFrameEncoding,
                 .branch, .provider => if (self.parent_run_handle_fingerprint == null) return error.InvalidFrameEncoding,
