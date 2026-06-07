@@ -18255,7 +18255,7 @@ pub const Capsule = struct {
             if (image.link_image) |link| {
                 if (link.catalog_fingerprint) |catalog| {
                     if (catalog != registry_fingerprint) return .target_mismatch;
-                }
+                } else return .target_mismatch;
             } else return .target_mismatch;
         }
         if (image.manifest.environment_certificate_fingerprints.len != 0 and
@@ -18365,14 +18365,17 @@ pub const Capsule = struct {
     }
 
     fn validateManifestRootSlotCoverage(image: Image) !void {
+        var root_count: usize = 0;
         for (image.runspace_image.run_slots) |slot| {
             if (slot.role != .root) continue;
+            root_count += 1;
             if (slot.target_ref_fingerprint != image.manifest.root_target_ref_fingerprint) return error.InvalidFrameEncoding;
             if (image.manifest.root_module_ref_fingerprint) |expected| {
                 const actual = rootSlotModuleRefFingerprint(image, slot) orelse return error.InvalidFrameEncoding;
                 if (actual != expected) return error.InvalidFrameEncoding;
             }
         }
+        if (image.runspace_image.run_slots.len != 0 and image.manifest.kind != .reference_only and image.manifest.kind != .inspect_only and root_count == 0) return error.InvalidFrameEncoding;
     }
 
     fn rootSlotModuleRefFingerprint(image: Image, slot: RunSlotImage) ?u64 {

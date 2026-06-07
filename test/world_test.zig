@@ -992,6 +992,52 @@ test "capsule validation binds manifest root to restored root slots" {
     try std.testing.expectError(error.InvalidFrameEncoding, image.validate(.{}));
 }
 
+test "capsule validation rejects restorable capsules without a root slot" {
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .completed,
+    });
+    const run_image = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = state,
+    });
+    const run_image_refs = [_]u64{run_image.run_image_fingerprint};
+    const slot = world.Capsule.RunSlotImage.init(.{
+        .original_run_handle_fingerprint = 0x5150_3785,
+        .parent_run_handle_fingerprint = 0x5150_3786,
+        .role = .provider,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .run_state_fingerprint = state.run_state_fingerprint,
+        .run_image_fingerprint = run_image.run_image_fingerprint,
+        .status = .completed,
+    });
+    const slots = [_]world.Capsule.RunSlotImage{slot};
+    const manifest = world.Capsule.Manifest.init(.{
+        .kind = .completed_assembly,
+        .root_target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .run_image_fingerprints = &run_image_refs,
+        .run_slot_count = slots.len,
+        .normal_form = .quiescent_completed,
+    });
+    const runspace_image = world.Capsule.RunspaceImage.init(.{
+        .runspace_fingerprint = 0x5150_3787,
+        .runspace_report_fingerprint = 0x5150_3788,
+        .run_slots = &slots,
+        .run_image_refs = &run_image_refs,
+    });
+    const run_images = [_]world.RunImage{run_image};
+    const image = world.Capsule.Image.init(.{
+        .manifest = manifest,
+        .runspace_image = runspace_image,
+        .run_image_refs = &run_image_refs,
+        .run_images = &run_images,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, image.validate(.{}));
+}
+
 test "capsule thaw preserves branch parent links" {
     const allocator = std.testing.allocator;
     const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
@@ -1335,6 +1381,16 @@ test "capsule relink requires manifest fabric plan coverage" {
         .run_image_refs = &catalog_run_image_refs,
         .run_images = &catalog_run_images,
     });
+    const catalogless_image = world.Capsule.Image.init(.{
+        .manifest = catalog_manifest,
+        .runspace_image = catalog_runspace_image,
+        .link_image = covered_link,
+        .fabric_image = fabric_image,
+        .run_image_refs = &catalog_run_image_refs,
+        .run_images = &catalog_run_images,
+    });
+    const catalogless_mismatch = try world.Capsule.planThaw(catalogless_image, 0x5150_3717, 0, 0x5150_3718, .{ .mode = .restore_completed });
+    try std.testing.expectEqual(world.Capsule.Blocker.target_mismatch, catalogless_mismatch.blockers[0]);
     const drift_rejected = try world.Capsule.planThaw(catalog_image, root_ref.target_ref_fingerprint, 0, 0x5150_3714, .{ .mode = .restore_completed });
     try std.testing.expectEqual(world.Capsule.Blocker.link_plan_mismatch, drift_rejected.blockers[0]);
     const drift_allowed_thaw = try world.Capsule.planThaw(catalog_image, root_ref.target_ref_fingerprint, 0, 0x5150_3715, .{ .mode = .restore_completed, .allow_relink_drift = true });
