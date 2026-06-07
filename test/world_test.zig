@@ -2568,6 +2568,72 @@ test "capsule handoff admission binds restore witnesses and receiver permit" {
     try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, restore_rejected.blockers[0]);
 }
 
+test "capsule admission rejects overflowing restored run id witness" {
+    const allocator = std.testing.allocator;
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    var source = world.Runspace.init(allocator, .{});
+    defer source.deinit();
+
+    for (0..2) |index| {
+        const handle = world.RunHandle.init(.{
+            .runspace_fingerprint = source.runspace_fingerprint,
+            .local_run_id = @intCast(index),
+            .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        });
+        try source.slots.append(allocator, world.Runspace.RunSlot.fromState(.{
+            .handle = handle,
+            .target_ref = target_ref,
+            .current_state = world.RunState.init(.{
+                .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+                .status = .completed,
+            }),
+            .status = .completed,
+        }));
+    }
+
+    var image = try world.Capsule.freezeRunspace(&source, .{});
+    defer image.deinit(allocator);
+    var receiver = world.Runspace.init(allocator, .{});
+    defer receiver.deinit();
+    var restore = try world.Capsule.thawIntoRunspace(image, &receiver, target_ref.target_ref_fingerprint, 0, 0x5150_3810, .{ .mode = .restore_completed });
+    defer restore.deinit(allocator);
+    try std.testing.expect(restore.accepted);
+    const thaw = try world.Capsule.planThaw(image, target_ref.target_ref_fingerprint, 0, 0x5150_3810, .{ .mode = .restore_completed });
+
+    const overflow_start = std.math.maxInt(u64);
+    const first_restored = world.RunHandle.init(.{
+        .runspace_fingerprint = restore.restored_runspace_fingerprint,
+        .local_run_id = overflow_start,
+        .target_ref_fingerprint = image.runspace_image.run_slots[0].target_ref_fingerprint,
+    }).handle_fingerprint;
+    const forged_mappings = [_]u64{
+        image.runspace_image.run_slots[0].original_run_handle_fingerprint,
+        first_restored,
+        image.runspace_image.run_slots[1].original_run_handle_fingerprint,
+        0x5150_bad1,
+    };
+    const forged_roots = [_]u64{ first_restored, 0x5150_bad1 };
+    const forged_restore = world.Capsule.RestoreReport.init(.{
+        .capsule_image_fingerprint = image.image_fingerprint,
+        .thaw_plan_fingerprint = thaw.thaw_plan_fingerprint,
+        .restored_runspace_fingerprint = restore.restored_runspace_fingerprint,
+        .restored_local_run_id_start = overflow_start,
+        .restored_run_handle_mappings = &forged_mappings,
+        .restored_root_run_handles = &forged_roots,
+        .guest_conformance_refs = restore.guest_conformance_refs,
+        .receiver_run_permit_fingerprint = restore.receiver_run_permit_fingerprint,
+        .accepted = true,
+    });
+    const admission = world.Admission.capsuleAdmissionReport(.{
+        .mode = .restore_completed,
+        .image = image,
+        .thaw_plan = thaw,
+        .restore_report = forged_restore,
+    });
+    try std.testing.expect(!admission.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, admission.blockers[0]);
+}
+
 test "capsule guest conformance refs are exposed during thaw and inspect restore" {
     const allocator = std.testing.allocator;
     const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
