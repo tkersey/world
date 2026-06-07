@@ -16236,6 +16236,7 @@ pub const Capsule = struct {
         require_local_permit: bool = true,
         require_link_match: bool = true,
         allow_relink_drift: bool = false,
+        local_catalog_fingerprint: ?u64 = null,
         rerun_guest_conformance: bool = false,
         max_image_bytes: usize = world_max_decoded_byte_field_len,
     };
@@ -17940,7 +17941,7 @@ pub const Capsule = struct {
         errdefer if (fabric_image_owned) if (maybe_fabric_image) |*image| image.deinit(allocator);
 
         var maybe_link_image: ?LinkImage = if (options.include_link_certificate) if (assembly) |value|
-            try linkImageFromAssembly(allocator, value, 0, null)
+            try linkImageFromAssembly(allocator, value, 0, value.catalog_fingerprint)
         else
             null else null;
         var link_image_owned = maybe_link_image != null;
@@ -18099,7 +18100,7 @@ pub const Capsule = struct {
         try image.validate(.{ .max_image_bytes = options.max_image_bytes });
         const blocker: ?Blocker = thawBlocker(image, registry_fingerprint, environment_fingerprint, permit_fingerprint, options);
         const accepted = blocker == null;
-        const link_status = linkMatchStatusForThaw(image, registry_fingerprint);
+        const link_status = linkMatchStatusForThaw(image, registry_fingerprint, options);
         return ThawPlan.init(.{
             .capsule_image_fingerprint = image.image_fingerprint,
             .requested_mode = options.mode,
@@ -18365,9 +18366,7 @@ pub const Capsule = struct {
         if (options.require_local_permit and permit_fingerprint == null and options.mode != .inspect_only and options.mode != .replay_only) return .permit_denied;
         if (registry_fingerprint != 0 and registry_fingerprint != image.manifest.root_target_ref_fingerprint) {
             if (image.link_image) |link| {
-                if (link.catalog_fingerprint) |catalog| {
-                    if (catalog != registry_fingerprint) return .target_mismatch;
-                } else return .target_mismatch;
+                if (link.catalog_fingerprint == null or link.catalog_fingerprint.? != registry_fingerprint) return .target_mismatch;
             } else return .target_mismatch;
         }
         if (image.manifest.environment_certificate_fingerprints.len != 0 and
@@ -18377,8 +18376,11 @@ pub const Capsule = struct {
         }
         if (options.require_link_match) {
             if (image.link_image) |link| {
+                const local_catalog = localCatalogFingerprintForThaw(image, registry_fingerprint, options);
                 if (link.catalog_fingerprint) |catalog| {
-                    if (registry_fingerprint != 0 and catalog != registry_fingerprint and !options.allow_relink_drift) return .link_plan_mismatch;
+                    if (local_catalog) |local| {
+                        if (catalog != local and !options.allow_relink_drift) return .link_plan_mismatch;
+                    }
                 }
                 if (!linkFabricPlanWitnessesCover(image.manifest.fabric_plan_fingerprints, link.route_synthesis_refs)) return .fabric_plan_mismatch;
             }
@@ -18418,7 +18420,7 @@ pub const Capsule = struct {
         try validateKindNormalForm(manifest.kind, manifest.normal_form);
         try validateRunSlotNormalForm(manifest.normal_form, runspace_image_value.run_slots, manifest.pending_port_count, manifest.active_fabric_invocation_count);
         try validateManifestRootSlotCoverage(image);
-        try validateParkedSlotMailboxCoverage(runspace_image_value);
+        try validateParkedSlotMailboxCoverage(image);
         if (image.link_image) |link| {
             if (manifest.link_plan_fingerprint == null or manifest.link_plan_fingerprint.? != link.link_plan_fingerprint) return error.InvalidFrameEncoding;
             if (manifest.link_certificate_fingerprint == null or manifest.link_certificate_fingerprint.? != link.link_certificate_fingerprint) return error.InvalidFrameEncoding;
@@ -18444,9 +18446,9 @@ pub const Capsule = struct {
         return 0;
     }
 
-    fn validateParkedSlotMailboxCoverage(image: RunspaceImage) !void {
-        const maybe_mailbox = image.mailbox_image;
-        for (image.run_slots) |slot| {
+    fn validateParkedSlotMailboxCoverage(image: Image) !void {
+        const maybe_mailbox = image.runspace_image.mailbox_image;
+        for (image.runspace_image.run_slots) |slot| {
             const mailbox_id = slot.current_pending_mailbox_id orelse {
                 if (slot.status == .parked_on_port) return error.InvalidFrameEncoding;
                 continue;
@@ -18457,6 +18459,15 @@ pub const Capsule = struct {
                 if (entry.mailbox_id != mailbox_id) continue;
                 if (entry.original_run_handle_fingerprint != slot.original_run_handle_fingerprint) return error.InvalidFrameEncoding;
                 if (entry.target_ref_fingerprint != slot.target_ref_fingerprint) return error.InvalidFrameEncoding;
+                if (slot.status == .parked_on_port) {
+                    const run_image_fingerprint = slot.run_image_fingerprint orelse return error.InvalidFrameEncoding;
+                    const run_image = capsuleRunImageByFingerprint(image.run_images, run_image_fingerprint) orelse return error.InvalidFrameEncoding;
+                    if (run_image.current_state.run_state_fingerprint != slot.run_state_fingerprint) return error.InvalidFrameEncoding;
+                    if ((run_image.current_state.pending_request_fingerprint orelse return error.InvalidFrameEncoding) != entry.request_frame.frame_fingerprint) return error.InvalidFrameEncoding;
+                    if (run_image.pending_request_frame) |frame| {
+                        if (frame.frame_fingerprint != entry.request_frame.frame_fingerprint) return error.InvalidFrameEncoding;
+                    }
+                }
                 found = true;
                 break;
             }
@@ -18527,6 +18538,13 @@ pub const Capsule = struct {
             if (image.run_image_fingerprint == fingerprint) return true;
         }
         return false;
+    }
+
+    fn capsuleRunImageByFingerprint(images: []const RunImage, fingerprint: u64) ?RunImage {
+        for (images) |image| {
+            if (image.run_image_fingerprint == fingerprint) return image;
+        }
+        return null;
     }
 
     fn normalFormIsRestorable(normal_form: NormalForm) bool {
@@ -18638,10 +18656,19 @@ pub const Capsule = struct {
         return error.InvalidFrameEncoding;
     }
 
-    fn linkMatchStatusForThaw(image: Image, registry_fingerprint: u64) LinkCertificateMatchStatus {
+    fn localCatalogFingerprintForThaw(image: Image, registry_fingerprint: u64, options: ThawOptions) ?u64 {
+        if (options.local_catalog_fingerprint) |catalog| return catalog;
+        if (registry_fingerprint != 0 and registry_fingerprint != image.manifest.root_target_ref_fingerprint) return registry_fingerprint;
+        return null;
+    }
+
+    fn linkMatchStatusForThaw(image: Image, registry_fingerprint: u64, options: ThawOptions) LinkCertificateMatchStatus {
         const link = image.link_image orelse return .missing;
+        const local_catalog = localCatalogFingerprintForThaw(image, registry_fingerprint, options);
         if (link.catalog_fingerprint) |catalog| {
-            if (registry_fingerprint != 0 and catalog != registry_fingerprint) return .mismatched;
+            if (local_catalog) |local| {
+                if (catalog != local) return .mismatched;
+            }
         }
         return .matched;
     }

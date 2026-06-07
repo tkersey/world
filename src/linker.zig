@@ -1191,6 +1191,7 @@ pub fn Linker(comptime W: type) type {
             root_admitted_run_fingerprint: ?u64 = null,
             link_plan_fingerprint: u64,
             linker_certificate_fingerprint: u64,
+            catalog_fingerprint: ?u64 = null,
             environment_certificate_fingerprint: ?u64 = null,
             run_permit_fingerprint: ?u64 = null,
             fabric_plans: []const W.Fabric.Plan = &.{},
@@ -1204,6 +1205,7 @@ pub fn Linker(comptime W: type) type {
                 root_admitted_run_fingerprint: ?u64 = null,
                 link_plan_fingerprint: u64,
                 linker_certificate_fingerprint: u64,
+                catalog_fingerprint: ?u64 = null,
                 environment_certificate_fingerprint: ?u64 = null,
                 run_permit_fingerprint: ?u64 = null,
                 fabric_plans: []const W.Fabric.Plan = &.{},
@@ -1218,6 +1220,7 @@ pub fn Linker(comptime W: type) type {
                     .root_admitted_run_fingerprint = args.root_admitted_run_fingerprint,
                     .link_plan_fingerprint = args.link_plan_fingerprint,
                     .linker_certificate_fingerprint = args.linker_certificate_fingerprint,
+                    .catalog_fingerprint = args.catalog_fingerprint,
                     .environment_certificate_fingerprint = args.environment_certificate_fingerprint,
                     .run_permit_fingerprint = args.run_permit_fingerprint,
                     .fabric_plans = args.fabric_plans,
@@ -1249,6 +1252,7 @@ pub fn Linker(comptime W: type) type {
                 if (fingerprintAssembly(self) != self.assembly_fingerprint) return error.InvalidFrameEncoding;
                 if (!targetRefIsValid(self.root_target_ref)) return error.InvalidFrameEncoding;
                 if (self.link_plan_fingerprint == 0 or self.linker_certificate_fingerprint == 0) return error.InvalidFrameEncoding;
+                if (self.catalog_fingerprint) |catalog| if (catalog == 0) return error.InvalidFrameEncoding;
                 for (self.fabric_plans) |plan| {
                     if (plan.target_ref_fingerprint != self.root_target_ref.target_ref_fingerprint) return error.InvalidFrameEncoding;
                     if (plan.world_surface_fingerprint != self.root_target_ref.world_surface_fingerprint) return error.InvalidFrameEncoding;
@@ -1849,6 +1853,7 @@ pub fn Linker(comptime W: type) type {
                 .root_target_ref = input.root_target_ref,
                 .link_plan_fingerprint = if (plan.accepted()) plan.plan_fingerprint else 0,
                 .linker_certificate_fingerprint = if (plan.accepted()) certificate.certificate_fingerprint else 0,
+                .catalog_fingerprint = if (plan.accepted()) catalog_fingerprint else null,
                 .run_permit_fingerprint = input.run_permit_fingerprint,
                 .fabric_plans = assembly_fabric_plans,
                 .external_import_requirements = assembly_external_imports,
@@ -2544,6 +2549,7 @@ pub fn Linker(comptime W: type) type {
             hashOptionalU64(&hasher, assembly.root_admitted_run_fingerprint);
             hashU64(&hasher, assembly.link_plan_fingerprint);
             hashU64(&hasher, assembly.linker_certificate_fingerprint);
+            hashOptionalU64(&hasher, assembly.catalog_fingerprint);
             hashOptionalU64(&hasher, assembly.environment_certificate_fingerprint);
             hashOptionalU64(&hasher, assembly.run_permit_fingerprint);
             hashU64(&hasher, assembly.fabric_plans.len);

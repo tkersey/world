@@ -1748,9 +1748,16 @@ test "capsule relink requires manifest fabric plan coverage" {
     const verify_restore = try world.Capsule.thawIntoRunspace(catalogless_image, &verify_receiver, root_ref.target_ref_fingerprint, 0, 0x5150_3721, .{ .mode = .verify_and_restore });
     try std.testing.expect(!verify_restore.accepted);
     try std.testing.expectEqual(@as(usize, 0), verify_receiver.slots.items.len);
-    const drift_rejected = try world.Capsule.planThaw(catalog_image, root_ref.target_ref_fingerprint, 0, 0x5150_3714, .{ .mode = .restore_completed });
+    const drift_rejected = try world.Capsule.planThaw(catalog_image, root_ref.target_ref_fingerprint, 0, 0x5150_3714, .{
+        .mode = .restore_completed,
+        .local_catalog_fingerprint = root_ref.target_ref_fingerprint,
+    });
     try std.testing.expectEqual(world.Capsule.Blocker.link_plan_mismatch, drift_rejected.blockers[0]);
-    const drift_allowed_thaw = try world.Capsule.planThaw(catalog_image, root_ref.target_ref_fingerprint, 0, 0x5150_3715, .{ .mode = .restore_completed, .allow_relink_drift = true });
+    const drift_allowed_thaw = try world.Capsule.planThaw(catalog_image, root_ref.target_ref_fingerprint, 0, 0x5150_3715, .{
+        .mode = .restore_completed,
+        .allow_relink_drift = true,
+        .local_catalog_fingerprint = root_ref.target_ref_fingerprint,
+    });
     try std.testing.expectEqual(@as(usize, 0), drift_allowed_thaw.blockers.len);
     try std.testing.expectEqual(world.Capsule.LinkCertificateMatchStatus.mismatched, drift_allowed_thaw.link_certificate_match_status);
     try std.testing.expectEqual(world.Capsule.RelinkStatus.drift_allowed, drift_allowed_thaw.relink_status);
@@ -2236,6 +2243,60 @@ test "capsule parked freeze embeds run image and thaw enforces receiver capacity
         .run_images = image.run_images,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, mismatched_image.validate(.{}));
+    const forged_request = world.Frame.Request.init(.{
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .world_surface_replay_scope_fingerprint = fixtures.Ports.Target.WorldSurface.replayScopeRef().fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .world_port_id = 0,
+        .residual_site_index = fixtures.Ports.ApprovalRequest.index,
+        .residual_site_fingerprint = fixtures.Ports.ApprovalRequest.fingerprint,
+        .request_fingerprint = request.request_fingerprint +% 1,
+        .turn_index = request.turn_index,
+        .payload_value_table_id = 0,
+        .expected_response_value_table_id = 1,
+    });
+    const forged_pending = world.Capsule.PendingPortImage.init(.{
+        .pending_port_fingerprint = image.runspace_image.mailbox_image.?.pending_port_entries[0].pending_port_fingerprint,
+        .original_run_handle_fingerprint = image.runspace_image.mailbox_image.?.pending_port_entries[0].original_run_handle_fingerprint,
+        .mailbox_id = image.runspace_image.mailbox_image.?.pending_port_entries[0].mailbox_id,
+        .request_frame = forged_request,
+        .target_ref_fingerprint = image.runspace_image.mailbox_image.?.pending_port_entries[0].target_ref_fingerprint,
+    });
+    const forged_pending_entries = [_]world.Capsule.PendingPortImage{forged_pending};
+    const forged_mailbox = world.Capsule.MailboxImage.init(.{
+        .pending_port_entries = &forged_pending_entries,
+        .pending_port_fingerprints = image.runspace_image.mailbox_image.?.pending_port_fingerprints,
+        .consumed_port_fingerprints = image.runspace_image.mailbox_image.?.consumed_port_fingerprints,
+        .next_mailbox_id = image.runspace_image.mailbox_image.?.next_mailbox_id,
+        .generation = image.runspace_image.mailbox_image.?.generation,
+        .single_use_status_fingerprints = image.runspace_image.mailbox_image.?.single_use_status_fingerprints,
+        .response_routing_status_fingerprints = image.runspace_image.mailbox_image.?.response_routing_status_fingerprints,
+    });
+    const forged_runspace_image = world.Capsule.RunspaceImage.init(.{
+        .runspace_fingerprint = image.runspace_image.runspace_fingerprint,
+        .runspace_report_fingerprint = image.runspace_image.runspace_report_fingerprint,
+        .run_handle_mappings = image.runspace_image.run_handle_mappings,
+        .run_slots = image.runspace_image.run_slots,
+        .mailbox_image = forged_mailbox,
+        .runspace_event_fingerprints = image.runspace_image.runspace_event_fingerprints,
+        .root_run_handle_fingerprints = image.runspace_image.root_run_handle_fingerprints,
+        .provider_run_handle_fingerprints = image.runspace_image.provider_run_handle_fingerprints,
+        .branch_refs = image.runspace_image.branch_refs,
+        .checkpoint_refs = image.runspace_image.checkpoint_refs,
+        .transcript_image_refs = image.runspace_image.transcript_image_refs,
+        .run_image_refs = image.runspace_image.run_image_refs,
+        .run_receipt_refs = image.runspace_image.run_receipt_refs,
+        .admission_receipt_refs = image.runspace_image.admission_receipt_refs,
+        .permit_refs = image.runspace_image.permit_refs,
+        .active_fabric_invocation_refs = image.runspace_image.active_fabric_invocation_refs,
+    });
+    const forged_image = world.Capsule.Image.init(.{
+        .manifest = image.manifest,
+        .runspace_image = forged_runspace_image,
+        .run_image_refs = image.run_image_refs,
+        .run_images = image.run_images,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_image.validate(.{}));
     var bad_pending = image.runspace_image.mailbox_image.?.pending_port_entries[0];
     bad_pending.pending_port_image_fingerprint +%= 1;
     const bad_pending_entries = [_]world.Capsule.PendingPortImage{bad_pending};
@@ -2492,6 +2553,10 @@ test "capsule agent transfer preserves residual external import" {
     var image = try world.Capsule.freezeAssembly(&source, linked.assembly, .{});
     defer image.deinit(allocator);
     try std.testing.expectEqual(linked.assembly.assembly_fingerprint, image.manifest.assembly_fingerprint.?);
+    try std.testing.expectEqual(linked.plan.catalog_fingerprint, image.link_image.?.catalog_fingerprint.?);
+    const stale_catalog = try world.Capsule.verifyLink(image, linked.plan.catalog_fingerprint +% 1, .{});
+    try std.testing.expectEqual(world.Capsule.RelinkStatus.rejected, stale_catalog.relink_status);
+    try std.testing.expectEqual(world.Capsule.Blocker.relink_drift_rejected, stale_catalog.blockers[0]);
     var receiver = world.Runspace.init(allocator, .{});
     defer receiver.deinit();
     var restore = try world.Capsule.thawIntoRunspace(image, &receiver, root_ref.target_ref_fingerprint, 0, 0x5150_3b01, .{ .mode = .restore_completed });
