@@ -194,6 +194,1035 @@ test "linker namespace exposes kernel boundary and stable policy fingerprint" {
     try std.testing.expect(strict.fingerprint() != external.fingerprint());
 }
 
+test "capsule namespace exposes kernel model and stable manifest fingerprint" {
+    const receipt_refs = [_]u64{ 11, 22 };
+    const manifest = world.Capsule.Manifest.init(.{
+        .kind = .completed_assembly,
+        .root_target_ref_fingerprint = 0xaaaa,
+        .root_module_ref_fingerprint = 0xbbbb,
+        .link_plan_fingerprint = 0xcccc,
+        .link_certificate_fingerprint = 0xdddd,
+        .assembly_fingerprint = 0xeeee,
+        .admission_receipt_fingerprints = &receipt_refs,
+        .run_slot_count = 2,
+        .pending_port_count = 1,
+        .normal_form = .quiescent_completed,
+        .metadata = "capsule manifest",
+    });
+    const again = world.Capsule.Manifest.init(.{
+        .kind = .completed_assembly,
+        .root_target_ref_fingerprint = 0xaaaa,
+        .root_module_ref_fingerprint = 0xbbbb,
+        .link_plan_fingerprint = 0xcccc,
+        .link_certificate_fingerprint = 0xdddd,
+        .assembly_fingerprint = 0xeeee,
+        .admission_receipt_fingerprints = &receipt_refs,
+        .run_slot_count = 2,
+        .pending_port_count = 1,
+        .normal_form = .quiescent_completed,
+        .metadata = "capsule manifest",
+    });
+    try std.testing.expectEqual(@as(u32, 1), world.world_capsule_manifest_format_version);
+    try std.testing.expectEqual(manifest.manifest_fingerprint, again.manifest_fingerprint);
+    try std.testing.expect(manifest.manifest_fingerprint != 0);
+    try std.testing.expectEqual(@as(u64, 0xaaaa), manifest.root_target_ref_fingerprint);
+    try std.testing.expectEqual(@as(?u64, 0xeeee), manifest.assembly_fingerprint);
+    try std.testing.expectEqual(@as(usize, 1), manifest.pending_port_count);
+}
+
+test "capsule image encode decode roundtrips dependency and object refs" {
+    const allocator = std.testing.allocator;
+    const manifest = world.Capsule.Manifest.init(.{
+        .kind = .full_assembly,
+        .root_target_ref_fingerprint = 0x100,
+        .run_slot_count = 1,
+        .normal_form = .quiescent_completed,
+    });
+    const mailbox = world.Capsule.MailboxImage.init(.{});
+    const runspace_image = world.Capsule.RunspaceImage.init(.{
+        .runspace_fingerprint = 0x200,
+        .runspace_report_fingerprint = 0x300,
+        .mailbox_image = mailbox,
+    });
+    const deps = [_]world.Capsule.DependencyRef{
+        world.Capsule.DependencyRef.init(world.Capsule.SectionKind.run_image, 0x400),
+    };
+    const refs = [_]world.Capsule.ObjectRef{
+        world.Capsule.ObjectRef.init(world.Capsule.ObjectKind.capsule_image, 0x500),
+    };
+    var image = world.Capsule.Image.init(.{
+        .manifest = manifest,
+        .runspace_image = runspace_image,
+        .dependency_refs = &deps,
+        .object_refs = &refs,
+        .metadata = "capsule image",
+    });
+    try image.validate(.{});
+    const encoded = try image.encode(allocator);
+    defer allocator.free(encoded);
+    var decoded = try world.Capsule.Image.decode(allocator, encoded);
+    defer decoded.deinit(allocator);
+    try std.testing.expectEqual(image.image_fingerprint, decoded.image_fingerprint);
+    try std.testing.expectEqual(image.manifest.manifest_fingerprint, decoded.manifest.manifest_fingerprint);
+    try std.testing.expectEqual(@as(usize, 1), decoded.dependency_refs.len);
+    try std.testing.expectEqual(@as(u64, 0x400), decoded.dependency_refs[0].fingerprint);
+    const copied_deps = decoded.dependencies();
+    try std.testing.expectEqual(@as(usize, 1), copied_deps.len);
+    const copied_refs = decoded.objectRefs();
+    try std.testing.expectEqual(@as(usize, 1), copied_refs.len);
+    try std.testing.expectEqual(@as(u64, decoded.image_fingerprint), decoded.asBundleRoot().fingerprint);
+}
+
+test "capsule certificate derives from image and quiescence without image hash cycle" {
+    const manifest = world.Capsule.Manifest.init(.{
+        .kind = .completed_assembly,
+        .root_target_ref_fingerprint = 0x1111,
+        .run_slot_count = 1,
+        .normal_form = .quiescent_completed,
+    });
+    const runspace_image = world.Capsule.RunspaceImage.init(.{
+        .runspace_fingerprint = 0x2222,
+        .runspace_report_fingerprint = 0x3333,
+    });
+    const image = world.Capsule.Image.init(.{
+        .manifest = manifest,
+        .runspace_image = runspace_image,
+    });
+    const report = world.Capsule.QuiescenceReport.init(.{
+        .runspace_fingerprint = 0x2222,
+        .quiescent = true,
+        .normal_form = .quiescent_completed,
+        .run_count = 1,
+        .completed_run_count = 1,
+    });
+    const cert = try world.Capsule.certificate(image, report);
+    try std.testing.expect(cert.certificate_fingerprint != 0);
+    try std.testing.expectEqual(image.image_fingerprint, cert.capsule_image_fingerprint);
+    try std.testing.expectEqual(image.manifest.manifest_fingerprint, cert.capsule_manifest_fingerprint);
+    try std.testing.expectEqual(report.report_fingerprint, cert.quiescence_report_fingerprint);
+}
+
+test "capsule namespace excludes forbidden native execution fields" {
+    try std.testing.expect(!@hasField(world.Capsule.Image, "handler"));
+    try std.testing.expect(!@hasField(world.Capsule.Image, "allocator"));
+    try std.testing.expect(!@hasField(world.Capsule.Image, "runtime"));
+    try std.testing.expect(!@hasField(world.Capsule.Image, "thread"));
+    try std.testing.expect(!@hasField(world.Capsule.Image, "request_token"));
+    try std.testing.expect(!@hasField(world.Capsule.Image, "credentials"));
+    try std.testing.expect(!@hasField(world.Capsule.Image, "url"));
+    try std.testing.expect(!@hasField(world.Capsule.Image, "file_handle"));
+    try std.testing.expect(!@hasField(world.Capsule.Image, "network_handle"));
+}
+
+test "capsule quiescence report classifies completed parked and running runspaces" {
+    const allocator = std.testing.allocator;
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+
+    var completed_runspace = world.Runspace.init(allocator, .{});
+    defer completed_runspace.deinit();
+    const completed_handle = world.RunHandle.init(.{
+        .runspace_fingerprint = completed_runspace.runspace_fingerprint,
+        .local_run_id = 0,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+    });
+    const completed_state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .completed,
+    });
+    try completed_runspace.slots.append(allocator, world.Runspace.RunSlot.fromState(.{
+        .handle = completed_handle,
+        .target_ref = target_ref,
+        .current_state = completed_state,
+        .status = .completed,
+    }));
+    var completed_report = try world.Capsule.quiescenceReport(allocator, &completed_runspace, null);
+    defer completed_report.deinit(allocator);
+    try std.testing.expect(completed_report.quiescent);
+    try std.testing.expectEqual(world.Capsule.NormalForm.quiescent_completed, completed_report.normal_form);
+    try std.testing.expectEqual(@as(usize, 1), completed_report.completed_run_count);
+
+    var parked_runspace = world.Runspace.init(allocator, .{});
+    defer parked_runspace.deinit();
+    const parked_handle = world.RunHandle.init(.{
+        .runspace_fingerprint = parked_runspace.runspace_fingerprint,
+        .local_run_id = 0,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+    });
+    const request = testRunspaceRequestFrame();
+    const parked_state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .pending_request_fingerprint = request.request_fingerprint,
+        .status = .parked_on_port,
+    });
+    try parked_runspace.slots.append(allocator, world.Runspace.RunSlot.fromState(.{
+        .handle = parked_handle,
+        .target_ref = target_ref,
+        .current_state = parked_state,
+        .status = .parked_on_port,
+        .pending_mailbox_id = 0,
+    }));
+    _ = try parked_runspace.mailbox.push(.{
+        .run_handle = parked_handle,
+        .mailbox_id = 0,
+        .request = request,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .inserted_event_index = 0,
+    });
+    parked_runspace.next_mailbox_id = 1;
+    var parked_report = try world.Capsule.quiescenceReport(allocator, &parked_runspace, null);
+    defer parked_report.deinit(allocator);
+    try std.testing.expect(parked_report.quiescent);
+    try std.testing.expectEqual(world.Capsule.NormalForm.quiescent_parked, parked_report.normal_form);
+    try std.testing.expectEqual(@as(usize, 1), parked_report.pending_port_count);
+
+    var running_runspace = world.Runspace.init(allocator, .{});
+    defer running_runspace.deinit();
+    const running_handle = world.RunHandle.init(.{
+        .runspace_fingerprint = running_runspace.runspace_fingerprint,
+        .local_run_id = 0,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+    });
+    const running_state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .running,
+    });
+    try running_runspace.slots.append(allocator, world.Runspace.RunSlot.fromState(.{
+        .handle = running_handle,
+        .target_ref = target_ref,
+        .current_state = running_state,
+        .status = .running,
+    }));
+    var running_report = try world.Capsule.quiescenceReport(allocator, &running_runspace, null);
+    defer running_report.deinit(allocator);
+    try std.testing.expect(!running_report.quiescent);
+    try std.testing.expect(running_report.blockers.len >= 1);
+}
+
+test "capsule runspace and mailbox images capture slots pending ports and events" {
+    const allocator = std.testing.allocator;
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    var runspace = world.Runspace.init(allocator, .{});
+    defer runspace.deinit();
+
+    const handle = world.RunHandle.init(.{
+        .runspace_fingerprint = runspace.runspace_fingerprint,
+        .local_run_id = 0,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .admission_receipt_fingerprint = 0xadd1,
+        .permit_fingerprint = 0x900d,
+    });
+    const request = testRunspaceRequestFrame();
+    const state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .pending_request_fingerprint = request.request_fingerprint,
+        .status = .parked_on_port,
+    });
+    try runspace.slots.append(allocator, world.Runspace.RunSlot.fromState(.{
+        .handle = handle,
+        .target_ref = target_ref,
+        .current_state = state,
+        .status = .parked_on_port,
+        .admission_receipt_fingerprint = 0xadd1,
+        .run_permit_fingerprint = 0x900d,
+        .pending_mailbox_id = 0,
+    }));
+    const pending = try runspace.mailbox.push(.{
+        .run_handle = handle,
+        .mailbox_id = 0,
+        .request = request,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .run_permit_fingerprint = 0x900d,
+        .inserted_event_index = 0,
+    });
+    runspace.next_mailbox_id = 1;
+    const event = world.Runspace.RunspaceEvent.init(.{
+        .kind = .port_enqueued,
+        .runspace_fingerprint = runspace.runspace_fingerprint,
+        .event_index = 0,
+        .run_handle = handle,
+        .pending_port_fingerprint = pending.pending_port_fingerprint,
+        .request_frame_fingerprint = request.frame_fingerprint,
+        .run_state_fingerprint = state.run_state_fingerprint,
+        .admission_receipt_fingerprint = 0xadd1,
+        .run_permit_fingerprint = 0x900d,
+    });
+    try runspace.events.append(allocator, event);
+    runspace.next_event_index = 1;
+
+    var mailbox_image = try world.Capsule.mailboxImage(allocator, &runspace);
+    defer mailbox_image.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), mailbox_image.pending_port_fingerprints.len);
+    try std.testing.expectEqual(pending.pending_port_fingerprint, mailbox_image.pending_port_fingerprints[0]);
+    try std.testing.expectEqual(@as(u64, 1), mailbox_image.next_mailbox_id);
+    try std.testing.expectEqual(@as(usize, 1), mailbox_image.single_use_status_fingerprints.len);
+    try std.testing.expectEqual(@as(usize, 1), mailbox_image.response_routing_status_fingerprints.len);
+
+    var image = try world.Capsule.runspaceImage(allocator, &runspace);
+    defer image.deinit(allocator);
+    try std.testing.expectEqual(runspace.runspace_fingerprint, image.runspace_fingerprint);
+    try std.testing.expectEqual(@as(usize, 1), image.run_slots.len);
+    try std.testing.expectEqual(world.Capsule.RunSlotStatus.parked_on_port, image.run_slots[0].status);
+    try std.testing.expectEqual(handle.handle_fingerprint, image.run_slots[0].original_run_handle_fingerprint);
+    try std.testing.expectEqual(@as(?u64, 0), image.run_slots[0].current_pending_mailbox_id);
+    try std.testing.expectEqual(@as(usize, 1), image.runspace_event_fingerprints.len);
+    try std.testing.expectEqual(event.event_fingerprint, image.runspace_event_fingerprints[0]);
+    try std.testing.expectEqual(@as(usize, 1), image.admission_receipt_refs.len);
+    try std.testing.expectEqual(@as(usize, 1), image.permit_refs.len);
+
+    try runspace.mailbox.pending.items[0].transition(.responded);
+    var consumed_mailbox_image = try world.Capsule.mailboxImage(allocator, &runspace);
+    defer consumed_mailbox_image.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 0), consumed_mailbox_image.pending_port_fingerprints.len);
+    try std.testing.expectEqual(@as(usize, 1), consumed_mailbox_image.consumed_port_fingerprints.len);
+}
+
+test "fabric image captures active invocation completed receipt and witnesses" {
+    const allocator = std.testing.allocator;
+    const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    var runspace = world.Runspace.init(allocator, .{});
+    defer runspace.deinit();
+
+    const parent_handle = world.RunHandle.init(.{
+        .runspace_fingerprint = runspace.runspace_fingerprint,
+        .local_run_id = 0,
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+    });
+    const provider_handle = world.RunHandle.init(.{
+        .runspace_fingerprint = runspace.runspace_fingerprint,
+        .local_run_id = 1,
+        .target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+    });
+    const request = testRunspaceRequestFrame();
+    const parent_state = world.RunState.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .pending_request_fingerprint = request.request_fingerprint,
+        .status = .parked_on_port,
+    });
+    const provider_state = world.RunState.init(.{
+        .target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+        .status = .parked_on_port,
+    });
+    try runspace.slots.append(allocator, world.Runspace.RunSlot.fromState(.{
+        .handle = parent_handle,
+        .target_ref = parent_ref,
+        .current_state = parent_state,
+        .status = .parked_on_port,
+        .pending_mailbox_id = 0,
+    }));
+    try runspace.slots.append(allocator, world.Runspace.RunSlot.fromState(.{
+        .handle = provider_handle,
+        .target_ref = provider_ref,
+        .current_state = provider_state,
+        .status = .parked_on_port,
+        .pending_mailbox_id = 1,
+        .parent_run_handle_fingerprint = parent_handle.handle_fingerprint,
+    }));
+    const pending = try runspace.mailbox.push(.{
+        .run_handle = parent_handle,
+        .mailbox_id = 0,
+        .request = request,
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .inserted_event_index = 0,
+    });
+    const mapping = fabricTestMapping(.provider_result_to_parent_response);
+    const route = fabricTestRoute(.target_export, provider_ref.target_ref_fingerprint);
+    const plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .routes = &.{route},
+        .value_mappings = &.{mapping},
+    });
+    try runspace.fabric_plan_fingerprints.append(allocator, plan.plan_fingerprint);
+    try runspace.fabric_routes.append(allocator, route);
+    try runspace.fabric_value_mappings.append(allocator, mapping);
+    const invocation = world.Fabric.Invocation.init(.{
+        .plan_fingerprint = plan.plan_fingerprint,
+        .route_fingerprint = route.route_fingerprint,
+        .parent_run_handle_fingerprint = parent_handle.handle_fingerprint,
+        .parent_pending_port_fingerprint = pending.pending_port_fingerprint,
+        .parent_mailbox_id = 0,
+        .request_frame_fingerprint = request.frame_fingerprint,
+        .provider_run_handle_fingerprint = provider_handle.handle_fingerprint,
+        .depth = 1,
+        .sequence = 0,
+        .status = .provider_parked,
+    });
+    try runspace.fabric_invocations.append(allocator, invocation);
+    const receipt = world.Fabric.Receipt.init(.{
+        .invocation_fingerprint = invocation.invocation_fingerprint,
+        .route_fingerprint = route.route_fingerprint,
+        .parent_pending_port_fingerprint = pending.pending_port_fingerprint,
+        .parent_response_frame_fingerprint = 0xfeed_0001,
+        .provider_run_handle_fingerprint = provider_handle.handle_fingerprint,
+        .status = .completed,
+    });
+    try runspace.fabric_receipts.append(allocator, receipt);
+
+    var image = try world.Capsule.fabricImage(allocator, &runspace);
+    defer image.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), image.fabric_plan_fingerprints.len);
+    try std.testing.expectEqual(plan.plan_fingerprint, image.fabric_plan_fingerprints[0]);
+    try std.testing.expectEqual(@as(usize, 1), image.active_invocation_fingerprints.len);
+    try std.testing.expectEqual(invocation.invocation_fingerprint, image.active_invocation_fingerprints[0]);
+    try std.testing.expectEqual(@as(usize, 1), image.completed_receipt_fingerprints.len);
+    try std.testing.expectEqual(receipt.receipt_fingerprint, image.completed_receipt_fingerprints[0]);
+    try std.testing.expectEqual(@as(usize, 1), image.route_fingerprints.len);
+    try std.testing.expectEqual(route.route_fingerprint, image.route_fingerprints[0]);
+    try std.testing.expectEqual(@as(usize, 1), image.value_mapping_fingerprints.len);
+    try std.testing.expectEqual(mapping.mapping_fingerprint, image.value_mapping_fingerprints[0]);
+    try std.testing.expectEqual(@as(usize, 1), image.provider_run_refs.len);
+    try std.testing.expectEqual(provider_handle.handle_fingerprint, image.provider_run_refs[0]);
+}
+
+test "fabric image rejects missing active route witness" {
+    const allocator = std.testing.allocator;
+    const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    var runspace = world.Runspace.init(allocator, .{});
+    defer runspace.deinit();
+    const parent_handle = world.RunHandle.init(.{
+        .runspace_fingerprint = runspace.runspace_fingerprint,
+        .local_run_id = 0,
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+    });
+    const provider_handle = world.RunHandle.init(.{
+        .runspace_fingerprint = runspace.runspace_fingerprint,
+        .local_run_id = 1,
+        .target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+    });
+    try runspace.slots.append(allocator, world.Runspace.RunSlot.fromState(.{
+        .handle = provider_handle,
+        .target_ref = provider_ref,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+            .status = .parked_on_port,
+        }),
+        .status = .parked_on_port,
+        .parent_run_handle_fingerprint = parent_handle.handle_fingerprint,
+    }));
+    const request = testRunspaceRequestFrame();
+    const pending = try runspace.mailbox.push(.{
+        .run_handle = parent_handle,
+        .mailbox_id = 0,
+        .request = request,
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .inserted_event_index = 0,
+    });
+    const invocation = world.Fabric.Invocation.init(.{
+        .plan_fingerprint = 0x51ace,
+        .route_fingerprint = 0xdead,
+        .parent_run_handle_fingerprint = parent_handle.handle_fingerprint,
+        .parent_pending_port_fingerprint = pending.pending_port_fingerprint,
+        .parent_mailbox_id = 0,
+        .request_frame_fingerprint = request.frame_fingerprint,
+        .provider_run_handle_fingerprint = provider_handle.handle_fingerprint,
+        .status = .provider_parked,
+    });
+    try runspace.fabric_invocations.append(allocator, invocation);
+    try std.testing.expectError(error.FabricWitnessMissing, world.Capsule.fabricImage(allocator, &runspace));
+}
+
+test "link image captures assembly linker provenance" {
+    const allocator = std.testing.allocator;
+    const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    const mapping = fabricTestMapping(.provider_result_to_parent_response);
+    const route = world.Fabric.Route.init(.{
+        .route_id = 0x51ace_1,
+        .kind = .target_export,
+        .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .parent_world_port_id = 0,
+        .provider_target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+        .provider_world_surface_fingerprint = provider_ref.world_surface_fingerprint,
+        .provider_target_certificate_fingerprint = provider_ref.target_certificate_fingerprint,
+        .response_value_mapping_fingerprint = mapping.mapping_fingerprint,
+        .metadata = "capsule-link-image",
+    });
+    const plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .routes = &.{route},
+        .value_mappings = &.{mapping},
+    });
+    const external = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
+    const assembly = world.Assembly.init(.{
+        .root_target_ref = parent_ref,
+        .link_plan_fingerprint = 0xaaaa,
+        .linker_certificate_fingerprint = 0xbbbb,
+        .fabric_plans = &.{plan},
+        .external_import_requirements = &.{external},
+        .provider_run_templates = &.{provider_ref.target_ref_fingerprint},
+    });
+    var image = try world.Capsule.linkImageFromAssembly(allocator, assembly, 0x1111, 0x2222);
+    defer image.deinit(allocator);
+    try std.testing.expectEqual(assembly.assembly_fingerprint, image.assembly_fingerprint);
+    try std.testing.expectEqual(assembly.link_plan_fingerprint, image.link_plan_fingerprint);
+    try std.testing.expectEqual(assembly.linker_certificate_fingerprint, image.link_certificate_fingerprint);
+    try std.testing.expectEqual(@as(u64, 0x1111), image.linker_policy_fingerprint);
+    try std.testing.expectEqual(@as(?u64, 0x2222), image.catalog_fingerprint);
+    try std.testing.expectEqual(assembly.residualImportSet().residual_import_set_fingerprint, image.residual_import_set_fingerprint);
+    try std.testing.expect(image.route_synthesis_refs.len >= 3);
+    try std.testing.expectEqual(provider_ref.target_ref_fingerprint, image.provider_target_refs[0]);
+    try std.testing.expectEqual(external.requirement_fingerprint, image.external_environment_requirements[0]);
+}
+
+test "capsule freeze freezes completed linked assembly" {
+    const allocator = std.testing.allocator;
+    const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    var runspace = world.Runspace.init(allocator, .{});
+    defer runspace.deinit();
+
+    const handle = world.RunHandle.init(.{
+        .runspace_fingerprint = runspace.runspace_fingerprint,
+        .local_run_id = 0,
+        .target_ref_fingerprint = root_ref.target_ref_fingerprint,
+    });
+    try runspace.slots.append(allocator, world.Runspace.RunSlot.fromState(.{
+        .handle = handle,
+        .target_ref = root_ref,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = root_ref.target_ref_fingerprint,
+            .status = .completed,
+        }),
+        .status = .completed,
+    }));
+
+    const mapping = fabricTestMapping(.provider_result_to_parent_response);
+    const route = world.Fabric.Route.init(.{
+        .route_id = 0x51ace_1,
+        .kind = .target_export,
+        .parent_world_surface_fingerprint = root_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = root_ref.target_certificate_fingerprint,
+        .parent_world_port_id = 0,
+        .provider_target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+        .provider_world_surface_fingerprint = provider_ref.world_surface_fingerprint,
+        .provider_target_certificate_fingerprint = provider_ref.target_certificate_fingerprint,
+        .response_value_mapping_fingerprint = mapping.mapping_fingerprint,
+        .metadata = "capsule-freeze-linked",
+    });
+    const plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = root_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = root_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = root_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .routes = &.{route},
+        .value_mappings = &.{mapping},
+    });
+    const assembly = world.Assembly.init(.{
+        .root_target_ref = root_ref,
+        .link_plan_fingerprint = 0xaaaa,
+        .linker_certificate_fingerprint = 0xbbbb,
+        .fabric_plans = &.{plan},
+        .provider_run_templates = &.{provider_ref.target_ref_fingerprint},
+    });
+
+    var image = try world.Capsule.freezeAssembly(&runspace, assembly, .{});
+    defer image.deinit(allocator);
+    try std.testing.expectEqual(world.Capsule.Kind.completed_assembly, image.manifest.kind);
+    try std.testing.expectEqual(world.Capsule.NormalForm.quiescent_completed, image.manifest.normal_form);
+    try std.testing.expectEqual(root_ref.target_ref_fingerprint, image.manifest.root_target_ref_fingerprint);
+    try std.testing.expectEqual(assembly.assembly_fingerprint, image.manifest.assembly_fingerprint.?);
+    try std.testing.expect(image.link_image != null);
+    try std.testing.expectEqual(@as(usize, 1), image.runspace_image.run_slots.len);
+    try std.testing.expectEqual(@as(usize, 0), image.manifest.pending_port_count);
+    try image.validate(.{});
+
+    var report = try world.Capsule.quiescenceReport(allocator, &runspace, assembly);
+    defer report.deinit(allocator);
+    const cert = try world.Capsule.certificate(image, report);
+    try cert.validate();
+    try std.testing.expectEqual(image.image_fingerprint, cert.capsule_image_fingerprint);
+    try std.testing.expectEqual(image.link_image.?.link_image_fingerprint, cert.link_image_fingerprint.?);
+}
+
+test "capsule freeze rejects non-quiescent runspace" {
+    const allocator = std.testing.allocator;
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    var runspace = world.Runspace.init(allocator, .{});
+    defer runspace.deinit();
+
+    const handle = world.RunHandle.init(.{
+        .runspace_fingerprint = runspace.runspace_fingerprint,
+        .local_run_id = 0,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+    });
+    try runspace.slots.append(allocator, world.Runspace.RunSlot.fromState(.{
+        .handle = handle,
+        .target_ref = target_ref,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+            .status = .running,
+        }),
+        .status = .running,
+    }));
+
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Capsule.freezeRunspace(&runspace, .{}));
+}
+
+test "capsule freeze active fabric requires parked allowance" {
+    const allocator = std.testing.allocator;
+    const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    var runspace = world.Runspace.init(allocator, .{});
+    defer runspace.deinit();
+
+    const parent_handle = world.RunHandle.init(.{
+        .runspace_fingerprint = runspace.runspace_fingerprint,
+        .local_run_id = 0,
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+    });
+    const provider_handle = world.RunHandle.init(.{
+        .runspace_fingerprint = runspace.runspace_fingerprint,
+        .local_run_id = 1,
+        .target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+    });
+    const request = testRunspaceRequestFrame();
+    try runspace.slots.append(allocator, world.Runspace.RunSlot.fromState(.{
+        .handle = parent_handle,
+        .target_ref = parent_ref,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+            .pending_request_fingerprint = request.request_fingerprint,
+            .status = .parked_on_port,
+        }),
+        .status = .parked_on_port,
+        .pending_mailbox_id = 0,
+    }));
+    try runspace.slots.append(allocator, world.Runspace.RunSlot.fromState(.{
+        .handle = provider_handle,
+        .target_ref = provider_ref,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+            .status = .parked_on_port,
+        }),
+        .status = .parked_on_port,
+        .parent_run_handle_fingerprint = parent_handle.handle_fingerprint,
+    }));
+    const pending = try runspace.mailbox.push(.{
+        .run_handle = parent_handle,
+        .mailbox_id = 0,
+        .request = request,
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .inserted_event_index = 0,
+    });
+    runspace.next_mailbox_id = 1;
+    const mapping = fabricTestMapping(.provider_result_to_parent_response);
+    const route = fabricTestRoute(.target_export, provider_ref.target_ref_fingerprint);
+    const plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .routes = &.{route},
+        .value_mappings = &.{mapping},
+    });
+    try runspace.fabric_plan_fingerprints.append(allocator, plan.plan_fingerprint);
+    try runspace.fabric_routes.append(allocator, route);
+    try runspace.fabric_value_mappings.append(allocator, mapping);
+    const invocation = world.Fabric.Invocation.init(.{
+        .plan_fingerprint = plan.plan_fingerprint,
+        .route_fingerprint = route.route_fingerprint,
+        .parent_run_handle_fingerprint = parent_handle.handle_fingerprint,
+        .parent_pending_port_fingerprint = pending.pending_port_fingerprint,
+        .parent_mailbox_id = 0,
+        .request_frame_fingerprint = request.frame_fingerprint,
+        .provider_run_handle_fingerprint = provider_handle.handle_fingerprint,
+        .depth = 1,
+        .sequence = 0,
+        .status = .provider_parked,
+    });
+    try runspace.fabric_invocations.append(allocator, invocation);
+
+    try std.testing.expectError(error.ActiveFabricUnsupported, world.Capsule.freezeRunspace(&runspace, .{}));
+    var image = try world.Capsule.freezeRunspace(&runspace, .{ .allow_active_fabric_parked = true });
+    defer image.deinit(allocator);
+    try std.testing.expectEqual(world.Capsule.NormalForm.active_fabric_parked, image.manifest.normal_form);
+    try std.testing.expectEqual(@as(usize, 1), image.manifest.active_fabric_invocation_count);
+    try std.testing.expectEqual(invocation.invocation_fingerprint, image.fabric_image.?.active_invocation_fingerprints[0]);
+}
+
+test "capsule thaw restores completed capsule with handle remap" {
+    const allocator = std.testing.allocator;
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    var source = world.Runspace.init(allocator, .{});
+    defer source.deinit();
+    const handle = world.RunHandle.init(.{
+        .runspace_fingerprint = source.runspace_fingerprint,
+        .local_run_id = 0,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+    });
+    try source.slots.append(allocator, world.Runspace.RunSlot.fromState(.{
+        .handle = handle,
+        .target_ref = target_ref,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+            .status = .completed,
+        }),
+        .status = .completed,
+    }));
+    var image = try world.Capsule.freezeRunspace(&source, .{});
+    defer image.deinit(allocator);
+
+    var destination = world.Runspace.init(allocator, .{});
+    defer destination.deinit();
+    var report = try world.Capsule.thawIntoRunspace(image, &destination, 0, 0, 0x7777, .{ .mode = .restore_completed });
+    defer report.deinit(allocator);
+    try std.testing.expect(report.accepted);
+    try std.testing.expectEqual(@as(usize, 1), destination.slots.items.len);
+    try std.testing.expectEqual(world.Runspace.RunStatus.completed, destination.slots.items[0].status);
+    try std.testing.expectEqual(@as(?u64, 0x7777), report.receiver_run_permit_fingerprint);
+    try std.testing.expectEqual(@as(usize, 1), report.restored_root_run_handles.len);
+    try std.testing.expect(report.restored_root_run_handles[0] != handle.handle_fingerprint);
+}
+
+test "capsule thaw denies restore before runspace mutation when permit is missing" {
+    const allocator = std.testing.allocator;
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    var source = world.Runspace.init(allocator, .{});
+    defer source.deinit();
+    const handle = world.RunHandle.init(.{
+        .runspace_fingerprint = source.runspace_fingerprint,
+        .local_run_id = 0,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+    });
+    try source.slots.append(allocator, world.Runspace.RunSlot.fromState(.{
+        .handle = handle,
+        .target_ref = target_ref,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+            .status = .completed,
+        }),
+        .status = .completed,
+    }));
+    var image = try world.Capsule.freezeRunspace(&source, .{});
+    defer image.deinit(allocator);
+
+    var destination = world.Runspace.init(allocator, .{});
+    defer destination.deinit();
+    var report = try world.Capsule.thawIntoRunspace(image, &destination, 0, 0, null, .{ .mode = .restore_completed });
+    defer report.deinit(allocator);
+    try std.testing.expect(!report.accepted);
+    try std.testing.expectEqual(world.Capsule.Blocker.permit_denied, report.blockers[0]);
+    try std.testing.expectEqual(@as(usize, 0), destination.slots.items.len);
+}
+
+test "capsule relink rejects mismatched local catalog" {
+    const allocator = std.testing.allocator;
+    const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    const mapping = fabricTestMapping(.provider_result_to_parent_response);
+    const route = world.Fabric.Route.init(.{
+        .route_id = 0x51ace_2,
+        .kind = .target_export,
+        .parent_world_surface_fingerprint = root_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = root_ref.target_certificate_fingerprint,
+        .parent_world_port_id = 0,
+        .provider_target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+        .provider_world_surface_fingerprint = provider_ref.world_surface_fingerprint,
+        .provider_target_certificate_fingerprint = provider_ref.target_certificate_fingerprint,
+        .response_value_mapping_fingerprint = mapping.mapping_fingerprint,
+        .metadata = "capsule-relink-mismatch",
+    });
+    const plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = root_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = root_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = root_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .routes = &.{route},
+        .value_mappings = &.{mapping},
+    });
+    const assembly = world.Assembly.init(.{
+        .root_target_ref = root_ref,
+        .link_plan_fingerprint = 0xaaaa,
+        .linker_certificate_fingerprint = 0xbbbb,
+        .fabric_plans = &.{plan},
+        .provider_run_templates = &.{provider_ref.target_ref_fingerprint},
+    });
+    var link_image = try world.Capsule.linkImageFromAssembly(allocator, assembly, 0x1010, 0x2020);
+    defer link_image.deinit(allocator);
+    const manifest = world.Capsule.Manifest.init(.{
+        .kind = .completed_assembly,
+        .root_target_ref_fingerprint = root_ref.target_ref_fingerprint,
+        .link_plan_fingerprint = assembly.link_plan_fingerprint,
+        .link_certificate_fingerprint = assembly.linker_certificate_fingerprint,
+        .assembly_fingerprint = assembly.assembly_fingerprint,
+        .normal_form = .quiescent_completed,
+    });
+    const runspace_image = world.Capsule.RunspaceImage.init(.{
+        .runspace_fingerprint = 0x3030,
+        .runspace_report_fingerprint = 0x4040,
+    });
+    const image = world.Capsule.Image.init(.{
+        .manifest = manifest,
+        .runspace_image = runspace_image,
+        .link_image = link_image,
+    });
+    const plan_result = try world.Capsule.verifyLink(image, 0x9999, .{});
+    try std.testing.expectEqual(world.Capsule.LinkCertificateMatchStatus.mismatched, plan_result.link_certificate_match_status);
+    try std.testing.expectEqual(world.Capsule.RelinkStatus.rejected, plan_result.relink_status);
+    try std.testing.expectEqual(world.Capsule.Blocker.relink_drift_rejected, plan_result.blockers[0]);
+}
+
+test "capsule handoff admission binds restore witnesses and receiver permit" {
+    const allocator = std.testing.allocator;
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    var source = world.Runspace.init(allocator, .{});
+    defer source.deinit();
+    const handle = world.RunHandle.init(.{
+        .runspace_fingerprint = source.runspace_fingerprint,
+        .local_run_id = 0,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+    });
+    try source.slots.append(allocator, world.Runspace.RunSlot.fromState(.{
+        .handle = handle,
+        .target_ref = target_ref,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+            .status = .completed,
+        }),
+        .status = .completed,
+    }));
+    var image = try world.Capsule.freezeRunspace(&source, .{});
+    defer image.deinit(allocator);
+    var quiescence = try world.Capsule.quiescenceReport(allocator, &source, null);
+    defer quiescence.deinit(allocator);
+    const cert = try world.Capsule.certificate(image, quiescence);
+
+    const bytes = try world.Handoff.exportCapsule(allocator, image);
+    defer allocator.free(bytes);
+    var imported = try world.Handoff.fromCapsule(allocator, bytes);
+    defer imported.deinit(allocator);
+    try std.testing.expectEqual(image.image_fingerprint, imported.image_fingerprint);
+
+    var receiver = world.Runspace.init(allocator, .{});
+    defer receiver.deinit();
+    var restore = try world.Handoff.acceptCapsule(imported, &receiver, target_ref.target_ref_fingerprint, 0, 0x5150_3803, .{ .mode = .restore_completed });
+    defer restore.deinit(allocator);
+    try std.testing.expect(restore.accepted);
+    try std.testing.expectEqual(@as(?u64, 0x5150_3803), restore.receiver_run_permit_fingerprint);
+
+    const thaw = try world.Capsule.planThaw(imported, target_ref.target_ref_fingerprint, 0, 0x5150_3803, .{ .mode = .restore_completed });
+    const admission = world.Admission.capsuleAdmissionReport(.{
+        .mode = .restore_parked,
+        .image = imported,
+        .certificate = cert,
+        .thaw_plan = thaw,
+        .restore_report = restore,
+    });
+    try std.testing.expect(admission.accepted);
+    try std.testing.expectEqual(imported.image_fingerprint, admission.capsule_image_fingerprint.?);
+    try std.testing.expectEqual(cert.certificate_fingerprint, admission.capsule_certificate_fingerprint.?);
+    try std.testing.expectEqual(thaw.thaw_plan_fingerprint, admission.capsule_thaw_plan_fingerprint.?);
+    try std.testing.expectEqual(restore.restore_report_fingerprint, admission.capsule_restore_report_fingerprint.?);
+}
+
+test "capsule guest conformance refs are exposed during thaw and inspect restore" {
+    const allocator = std.testing.allocator;
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const vector = world.Guest.ConformanceVector.init(.{
+        .name = "capsule-guest",
+        .kind = .one_port,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .expected_status_sequence = &.{ .initialized, .done },
+    });
+    const guest_report = world.Guest.ConformanceReport.init(.{
+        .vector_fingerprint = vector.vector_fingerprint,
+        .native_run_result = .{ .status = .done },
+        .native_abi_result = .{ .status = .done },
+        .status_sequence_match = true,
+    });
+    const guest_refs = [_]u64{guest_report.report_fingerprint};
+    const manifest = world.Capsule.Manifest.init(.{
+        .kind = .inspect_only,
+        .root_target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .guest_conformance_report_fingerprints = &guest_refs,
+        .normal_form = .quiescent_completed,
+    });
+    const runspace_image = world.Capsule.RunspaceImage.init(.{
+        .runspace_fingerprint = 0x5150_3901,
+        .runspace_report_fingerprint = 0x5150_3902,
+    });
+    const image = world.Capsule.Image.init(.{
+        .manifest = manifest,
+        .runspace_image = runspace_image,
+        .guest_conformance_refs = &guest_refs,
+    });
+
+    const thaw = try world.Capsule.planThaw(image, 0, 0, null, .{ .mode = .inspect_only, .rerun_guest_conformance = true });
+    try std.testing.expectEqual(guest_report.report_fingerprint, thaw.guest_conformance_refs[0]);
+    var receiver = world.Runspace.init(allocator, .{});
+    defer receiver.deinit();
+    var restore = try world.Capsule.thawIntoRunspace(image, &receiver, 0, 0, null, .{ .mode = .inspect_only, .rerun_guest_conformance = true });
+    defer restore.deinit(allocator);
+    try std.testing.expect(restore.accepted);
+    try std.testing.expectEqual(guest_report.report_fingerprint, restore.guest_conformance_refs[0]);
+    try std.testing.expectEqual(@as(usize, 0), receiver.slots.items.len);
+}
+
+test "capsule active fabric restore rehydrates pending mailbox entries" {
+    const allocator = std.testing.allocator;
+    const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    var source = world.Runspace.init(allocator, .{});
+    defer source.deinit();
+    const parent_handle = world.RunHandle.init(.{
+        .runspace_fingerprint = source.runspace_fingerprint,
+        .local_run_id = 0,
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+    });
+    const provider_handle = world.RunHandle.init(.{
+        .runspace_fingerprint = source.runspace_fingerprint,
+        .local_run_id = 1,
+        .target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+    });
+    const parent_request = testRunspaceRequestFrame();
+    const provider_request = world.Frame.Request.init(.{
+        .world_surface_fingerprint = provider_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = provider_ref.target_certificate_fingerprint,
+        .world_port_id = 0,
+        .residual_site_index = 0,
+        .residual_site_fingerprint = 0x5150_3a01,
+        .request_fingerprint = 0x5150_3a02,
+        .turn_index = 0,
+        .expected_response_value_table_id = 1,
+    });
+    try source.slots.append(allocator, world.Runspace.RunSlot.fromState(.{
+        .handle = parent_handle,
+        .target_ref = parent_ref,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+            .pending_request_fingerprint = parent_request.frame_fingerprint,
+            .status = .parked_on_port,
+        }),
+        .status = .parked_on_port,
+        .pending_mailbox_id = 0,
+    }));
+    try source.slots.append(allocator, world.Runspace.RunSlot.fromState(.{
+        .handle = provider_handle,
+        .target_ref = provider_ref,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+            .pending_request_fingerprint = provider_request.frame_fingerprint,
+            .status = .parked_on_port,
+        }),
+        .status = .parked_on_port,
+        .pending_mailbox_id = 1,
+        .parent_run_handle_fingerprint = parent_handle.handle_fingerprint,
+    }));
+    const parent_pending = try source.mailbox.push(.{
+        .run_handle = parent_handle,
+        .mailbox_id = 0,
+        .request = parent_request,
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .inserted_event_index = 0,
+    });
+    _ = try source.mailbox.push(.{
+        .run_handle = provider_handle,
+        .mailbox_id = 1,
+        .request = provider_request,
+        .target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+        .inserted_event_index = 1,
+    });
+    source.next_mailbox_id = 2;
+    const mapping = fabricTestMapping(.provider_result_to_parent_response);
+    const route = fabricTestRoute(.target_export, provider_ref.target_ref_fingerprint);
+    const plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .routes = &.{route},
+        .value_mappings = &.{mapping},
+    });
+    try source.fabric_plan_fingerprints.append(allocator, plan.plan_fingerprint);
+    try source.fabric_routes.append(allocator, route);
+    try source.fabric_value_mappings.append(allocator, mapping);
+    try source.fabric_invocations.append(allocator, world.Fabric.Invocation.init(.{
+        .plan_fingerprint = plan.plan_fingerprint,
+        .route_fingerprint = route.route_fingerprint,
+        .parent_run_handle_fingerprint = parent_handle.handle_fingerprint,
+        .parent_pending_port_fingerprint = parent_pending.pending_port_fingerprint,
+        .parent_mailbox_id = 0,
+        .request_frame_fingerprint = parent_request.frame_fingerprint,
+        .provider_run_handle_fingerprint = provider_handle.handle_fingerprint,
+        .depth = 1,
+        .sequence = 0,
+        .status = .provider_parked,
+    }));
+    var image = try world.Capsule.freezeRunspace(&source, .{ .allow_active_fabric_parked = true });
+    defer image.deinit(allocator);
+    var receiver = world.Runspace.init(allocator, .{});
+    defer receiver.deinit();
+    var restore = try world.Capsule.thawIntoRunspace(image, &receiver, parent_ref.target_ref_fingerprint, 0, 0x5150_3a03, .{ .mode = .restore_parked });
+    defer restore.deinit(allocator);
+    try std.testing.expect(restore.accepted);
+    try std.testing.expectEqual(@as(usize, 2), receiver.mailbox.pendingCount());
+    try std.testing.expectEqual(@as(usize, 4), restore.restored_pending_port_mappings.len);
+}
+
+test "capsule agent transfer preserves residual external import" {
+    const allocator = std.testing.allocator;
+    const root_ref = world.TargetRef.fromTarget(fixtures.Agent.Target);
+    const decide_import = world.ImportRequirement.fromTargetPort(fixtures.Agent.Target, 0);
+    const tool_import = world.ImportRequirement.fromTargetPort(fixtures.Agent.Target, 1);
+    const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    const provider_export = world.Linker.ExportDescriptor.init(.{
+        .target_ref = provider_ref,
+        .result_ref = .{ .value_table_id = tool_import.response_value_table_id, .value_ref_fingerprint = tool_import.response_value_ref_fingerprint },
+        .label = "tool-provider",
+    });
+    const entries = [_]world.Linker.Catalog.Entry{
+        world.Linker.Catalog.Entry.generatedTarget(.{
+            .target_ref = provider_ref,
+            .export_descriptor = provider_export,
+            .import_set = world.ImportSet.fromTarget(fixtures.Strict.Target),
+            .label = "tool-provider",
+        }),
+    };
+    var linked = try world.Linker.link(allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = world.ImportSet.fromTarget(fixtures.Agent.Target),
+        .root_imports = &.{ decide_import, tool_import },
+        .catalog = world.Linker.Catalog.init(&entries),
+        .policy = .allow_external_ports,
+    });
+    defer linked.deinit();
+    try std.testing.expectEqual(@as(usize, 1), linked.assembly.residualImportSet().required_count);
+    var source = world.Runspace.init(allocator, .{});
+    defer source.deinit();
+    try linked.assembly.installIntoRunspace(&source);
+    const handle = world.RunHandle.init(.{
+        .runspace_fingerprint = source.runspace_fingerprint,
+        .local_run_id = 0,
+        .target_ref_fingerprint = root_ref.target_ref_fingerprint,
+    });
+    try source.slots.append(allocator, world.Runspace.RunSlot.fromState(.{
+        .handle = handle,
+        .target_ref = root_ref,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = root_ref.target_ref_fingerprint,
+            .status = .completed,
+        }),
+        .status = .completed,
+    }));
+    var image = try world.Capsule.freezeAssembly(&source, linked.assembly, .{});
+    defer image.deinit(allocator);
+    try std.testing.expectEqual(linked.assembly.assembly_fingerprint, image.manifest.assembly_fingerprint.?);
+    var receiver = world.Runspace.init(allocator, .{});
+    defer receiver.deinit();
+    var restore = try world.Capsule.thawIntoRunspace(image, &receiver, root_ref.target_ref_fingerprint, 0, 0x5150_3b01, .{ .mode = .restore_completed });
+    defer restore.deinit(allocator);
+    try std.testing.expect(restore.accepted);
+    try std.testing.expectEqual(@as(usize, 1), restore.restored_root_run_handles.len);
+}
+
 test "link catalog entry fingerprint is stable and excludes pointer identity" {
     const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
     const result_ref = world.Linker.ValueRef{ .value_table_id = 1, .value_ref_fingerprint = 0x1234 };

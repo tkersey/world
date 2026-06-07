@@ -631,6 +631,81 @@ pub fn build(b: *std.Build) void {
             ,
         },
         .{
+            .name = "world-capsule-linked-restore",
+            .path = "examples/world_capsule_linked_restore.zig",
+            .step = "run-world-capsule-linked-restore",
+            .desc = "Run the World Assembly Capsule linked restore example.",
+            .expected_stdout =
+            \\capsule_fingerprint=768b60bd410af025
+            \\link_certificate_fingerprint=2045220a5ff7a9fd
+            \\restore_report_fingerprint=aa58d2ca9527bcd5
+            \\final_result=7
+            \\
+            ,
+        },
+        .{
+            .name = "world-capsule-active-fabric",
+            .path = "examples/world_capsule_active_fabric.zig",
+            .step = "run-world-capsule-active-fabric",
+            .desc = "Run the World Assembly Capsule active Fabric restore example.",
+            .expected_stdout =
+            \\active_fabric_invocation_fingerprint=8d055b4f4a23bde
+            \\pending_provider_port_fingerprint=82826af2d53f2782
+            \\restore_report_fingerprint=7720ab87fd61ba70
+            \\final_result=active-fabric-restored
+            \\
+            ,
+        },
+        .{
+            .name = "world-capsule-agent-transfer",
+            .path = "examples/world_capsule_agent_transfer.zig",
+            .step = "run-world-capsule-agent-transfer",
+            .desc = "Run the World Assembly Capsule agent transfer example.",
+            .expected_stdout =
+            \\capsule_fingerprint=ffd63e2fb737f6f6
+            \\residual_external_import_count=1
+            \\receiver_permit_fingerprint=e9600a9c50625a17
+            \\final_result=final=actuate skeleton complete
+            \\
+            ,
+        },
+        .{
+            .name = "world-capsule-relink-mismatch",
+            .path = "examples/world_capsule_relink_mismatch.zig",
+            .step = "run-world-capsule-relink-mismatch",
+            .desc = "Run the World Assembly Capsule relink mismatch example.",
+            .expected_stdout =
+            \\relink_rejected=true
+            \\blocker_tag=relink_drift_rejected
+            \\thaw_plan_fingerprint=6befe9212c49fd25
+            \\
+            ,
+        },
+        .{
+            .name = "world-capsule-guest-verify",
+            .path = "examples/world_capsule_guest_verify.zig",
+            .step = "run-world-capsule-guest-verify",
+            .desc = "Run the World Assembly Capsule guest verify example.",
+            .expected_stdout =
+            \\guest_report_fingerprint=d35a6d645e4511ea
+            \\restore_report_fingerprint=1e4765fc3b02a981
+            \\conformance=true
+            \\
+            ,
+        },
+        .{
+            .name = "world-capsule-supervised-restore",
+            .path = "examples/world_capsule_supervised_restore.zig",
+            .step = "run-world-capsule-supervised-restore",
+            .desc = "Run the World Assembly Capsule supervised restore example.",
+            .expected_stdout =
+            \\sender_permit_fingerprint=905f7ae1b780bb33
+            \\receiver_permit_fingerprint=cec182f086daf454
+            \\restore_allowed=true
+            \\
+            ,
+        },
+        .{
             .name = "world-supervised-budget",
             .path = "examples/world_supervised_budget.zig",
             .step = "run-world-supervised-budget",
