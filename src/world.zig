@@ -4741,18 +4741,50 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
         }
 
         fn acceptanceReportWithAssemblyFabricPlans(requested_mode: Mode, transcript_image_available: bool, fabric_replay_transcript_available: bool, assembly: Assembly) AcceptanceReport {
-            var report = acceptanceReport(requested_mode, transcript_image_available);
-            var found_plan = false;
+            const base_report = acceptanceReport(requested_mode, transcript_image_available);
+            var report = base_report;
+            var found_plan: ?Fabric.Plan = null;
+            var has_replay_route = false;
             for (assembly.fabric_plans) |plan| {
                 if (!fabricPlanTargetsEnvironment(plan)) continue;
-                const plan_report = acceptanceReportWithFabricPlanEvidence(requested_mode, transcript_image_available, fabric_replay_transcript_available, plan);
-                if (!plan_report.accepted) return plan_report;
-                if (!found_plan) {
-                    report = plan_report;
-                    found_plan = true;
-                }
+                if (!assemblyFabricPlanValidForEnvironment(plan)) return rejectedReport(report, &.{.SupervisionPolicyMismatch});
+                if (found_plan == null) found_plan = plan;
+                if (fabricPlanHasReplayRoute(plan)) has_replay_route = true;
             }
+            const first_plan = found_plan orelse return report;
+            if (report.accepted) {
+                report.fabric_plan_fingerprint = first_plan.plan_fingerprint;
+                report.report_fingerprint = fingerprintAcceptanceReport(report);
+                if (!fabric_replay_transcript_available and has_replay_route) return rejectedReport(report, &.{.TranscriptImageRequired});
+                return report;
+            }
+            if (!acceptanceReportHasOnlyMissingBinding(report)) return report;
+            const fabric_covered_missing = assemblyFabricCoveredMissingEnvironmentPortCount(Target, bindings, assembly) catch {
+                return rejectedReport(report, &.{.SupervisionPolicyMismatch});
+            } orelse return base_report;
+            report.accepted = true;
+            report.bound_port_count = bindings.len + fabric_covered_missing;
+            report.missing_port_count = 0;
+            report.blockers = &.{};
+            report.summary = "accepted by fabric assembly";
+            report.fabric_plan_fingerprint = first_plan.plan_fingerprint;
+            if (!fabric_replay_transcript_available and has_replay_route) return rejectedReport(report, &.{.TranscriptImageRequired});
+            if (requested_mode == .fresh and !transcript_image_available and !policy.allow_fresh_without_transcript) return rejectedReport(report, &.{.TranscriptImageRequired});
+            if (requested_mode == .replay and !transcript_image_available and policy.require_frame_images_for_replay) return rejectedReport(report, &.{.TranscriptImageRequired});
+            if (requested_mode == .verify and !transcript_image_available and !policy.allow_verify_without_transcript) return rejectedReport(report, &.{.VerifyTranscriptMissing});
+            report.report_fingerprint = fingerprintAcceptanceReport(report);
             return report;
+        }
+
+        fn assemblyFabricPlanValidForEnvironment(plan: Fabric.Plan) bool {
+            plan.validate() catch return false;
+            plan.assertNoCyclesForTargetRef(target_ref) catch return false;
+            plan.assertDeterministicRouteOrder() catch return false;
+            plan.assertExecutableMappings() catch return false;
+            if (plan.import_set_fingerprint) |fingerprint| {
+                if (fingerprint != import_set.import_set_fingerprint) return false;
+            }
+            return true;
         }
 
         fn acceptanceReportWithAssemblyFabricPlanPermitRoutes(report: AcceptanceReport, requested_mode: Mode, assembly: Assembly, permit: RunPermit) AcceptanceReport {
@@ -18738,6 +18770,36 @@ fn fabricCoveredMissingEnvironmentPortCount(comptime Target: type, comptime bind
         if (!host_bound) {
             const route = plan.findRouteForPort(@intCast(world_port_id)) orelse return null;
             if (route.kind == .unsupported or route.kind == .adapter) return null;
+            fabric_covered_missing += 1;
+        }
+    }
+    if (bindings.len + fabric_covered_missing < Target.WorldPortTable.entries.len) return null;
+    return fabric_covered_missing;
+}
+
+fn assemblyFabricCoveredMissingEnvironmentPortCount(comptime Target: type, comptime bindings: anytype, assembly: Assembly) !?usize {
+    const target_ref = TargetRef.fromTarget(Target);
+    var fabric_covered_missing: usize = 0;
+    inline for (0..Target.WorldPortTable.entries.len) |world_port_id| {
+        comptime var host_bound = false;
+        inline for (bindings) |BindingDecl| {
+            if (BindingDecl.TargetType == Target and BindingDecl.world_port_id == world_port_id) host_bound = true;
+        }
+        if (!host_bound) {
+            var covered = false;
+            for (assembly.fabric_plans) |plan| {
+                if (plan.target_ref_fingerprint != target_ref.target_ref_fingerprint or
+                    plan.world_surface_fingerprint != target_ref.world_surface_fingerprint or
+                    plan.target_certificate_fingerprint != target_ref.target_certificate_fingerprint)
+                {
+                    continue;
+                }
+                const route = plan.findRouteForPort(@intCast(world_port_id)) orelse continue;
+                if (route.kind == .unsupported or route.kind == .adapter) return error.InvalidFrameEncoding;
+                if (covered) return error.InvalidFrameEncoding;
+                covered = true;
+            }
+            if (!covered) return null;
             fabric_covered_missing += 1;
         }
     }

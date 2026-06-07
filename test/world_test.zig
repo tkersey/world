@@ -2246,6 +2246,68 @@ test "assembly preflights environment and installs into Runspace through Fabric 
     try std.testing.expectError(error.InvalidFrameEncoding, stale_root_assembly.validate());
 }
 
+test "assembly preflight aggregates split root fabric plan coverage" {
+    const AgentMissingEnv = world.Environment(fixtures.Agent.Target, .{
+        .bindings = .{},
+        .policy = world.EnvironmentPolicy.strict_fresh,
+    });
+    const root_ref = world.TargetRef.fromTarget(fixtures.Agent.Target);
+    const decide_route = world.Fabric.Route.init(.{
+        .route_id = 0x5150_0001,
+        .kind = .reject,
+        .parent_world_surface_fingerprint = root_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = root_ref.target_certificate_fingerprint,
+        .parent_world_port_id = AgentDecideDecl.world_port_id,
+        .response_status = .rejected,
+        .metadata = "split-decide-route",
+    });
+    const decide_plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = root_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = root_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = root_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Agent.Target).import_set_fingerprint,
+        .routes = &.{decide_route},
+    });
+    const tool_route = world.Fabric.Route.init(.{
+        .route_id = 0x5150_0002,
+        .kind = .reject,
+        .parent_world_surface_fingerprint = root_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = root_ref.target_certificate_fingerprint,
+        .parent_world_port_id = AgentToolDecl.world_port_id,
+        .response_status = .rejected,
+        .metadata = "split-tool-route",
+    });
+    const tool_plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = root_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = root_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = root_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Agent.Target).import_set_fingerprint,
+        .routes = &.{tool_route},
+    });
+    const split_assembly = world.Assembly.init(.{
+        .root_target_ref = root_ref,
+        .link_plan_fingerprint = 0x5150_1001,
+        .linker_certificate_fingerprint = 0x5150_1002,
+        .fabric_plans = &.{ decide_plan, tool_plan },
+    });
+
+    const split_report = AgentMissingEnv.preflightAssembly(.fresh, true, split_assembly);
+    try std.testing.expect(split_report.accepted);
+    try std.testing.expectEqual(@as(usize, 0), split_report.missing_port_count);
+    try std.testing.expectEqual(split_assembly.assembly_fingerprint, split_report.assembly_fingerprint.?);
+    try std.testing.expectEqual(decide_plan.plan_fingerprint, split_report.fabric_plan_fingerprint.?);
+
+    const duplicate_assembly = world.Assembly.init(.{
+        .root_target_ref = root_ref,
+        .link_plan_fingerprint = 0x5150_1001,
+        .linker_certificate_fingerprint = 0x5150_1002,
+        .fabric_plans = &.{ decide_plan, decide_plan },
+    });
+    const duplicate_report = AgentMissingEnv.preflightAssembly(.fresh, true, duplicate_assembly);
+    try std.testing.expect(!duplicate_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.SupervisionPolicyMismatch, duplicate_report.blockers[0]);
+}
+
 test "assembly preserves linker run permit scope" {
     const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
