@@ -2368,8 +2368,6 @@ pub const Admission = struct {
     }
 
     fn capsuleAcceptedRestoreHasLocalAuthority(image: Capsule.Image, plan: Capsule.ThawPlan, report: Capsule.RestoreReport) bool {
-        if (image.manifest.environment_certificate_fingerprints.len != 0) return false;
-        if (image.link_image != null) return false;
         const environment_fingerprint = report.environment_certificate_fingerprint orelse 0;
         return Capsule.thawBlocker(
             image,
@@ -16844,6 +16842,7 @@ pub const Capsule = struct {
             if (self.fingerprint_version != world_capsule_pending_port_image_fingerprint_version) return error.InvalidFrameEncoding;
             if (self.status != .pending) return error.PendingPortConsumed;
             try validateRequestFrameImage(self.request_frame);
+            try validateRequestFramePolicy(self.request_frame, .portable);
             if (self.request_frame.expected_response_value_table_id != self.expected_response_value_table_id) return error.InvalidFrameEncoding;
             if (self.pending_port_fingerprint != fingerprintPendingPortImageProjection(self)) return error.InvalidFrameEncoding;
             if (self.pending_port_image_fingerprint != fingerprint(self)) return error.InvalidFrameEncoding;
@@ -17279,7 +17278,7 @@ pub const Capsule = struct {
                 try validateTranscriptImageFingerprint(transcript);
                 try transcript.validateValuePolicy(.portable);
             }
-            for (self.run_images) |run_image| try run_image.validate(.{});
+            for (self.run_images) |run_image| try run_image.validate(.{ .require_portable_values = true });
             for (self.value_images) |value_image| try validateValueImage(value_image);
             if (self.image_fingerprint != fingerprintImage(self)) return error.InvalidFrameEncoding;
         }

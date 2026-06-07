@@ -681,6 +681,77 @@ test "capsule validation rejects slot status drift from embedded run image" {
     try std.testing.expectError(error.InvalidFrameEncoding, image.validate(.{}));
 }
 
+test "capsule validation rejects native-only embedded run image values" {
+    const allocator = std.testing.allocator;
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    var final_result = try world.Frame.ValueImage.fromValue(allocator, 1, 0x5150_3360, null, @as(i32, 7), .native_compatible);
+    defer final_result.deinit(allocator);
+    const run_state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .final_value_image_fingerprint = final_result.value_image_fingerprint,
+        .status = .completed,
+    });
+    const run_image = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = run_state,
+        .final_result_image = final_result,
+    });
+    const run_image_refs = [_]u64{run_image.run_image_fingerprint};
+    const manifest = world.Capsule.Manifest.init(.{
+        .kind = .completed_assembly,
+        .root_target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .run_image_fingerprints = &run_image_refs,
+        .normal_form = .quiescent_completed,
+    });
+    const runspace_image = world.Capsule.RunspaceImage.init(.{
+        .runspace_fingerprint = 0x5150_3361,
+        .runspace_report_fingerprint = 0x5150_3362,
+        .run_image_refs = &run_image_refs,
+    });
+    const run_images = [_]world.RunImage{run_image};
+    const image = world.Capsule.Image.init(.{
+        .manifest = manifest,
+        .runspace_image = runspace_image,
+        .run_image_refs = &run_image_refs,
+        .run_images = &run_images,
+    });
+
+    const encoded = try image.encode(allocator);
+    defer allocator.free(encoded);
+    try std.testing.expectError(error.UnsupportedValueImage, world.Capsule.Image.decode(allocator, encoded));
+}
+
+test "capsule pending port image rejects native-only request payloads" {
+    const allocator = std.testing.allocator;
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    var payload = try world.Frame.ValueImage.fromValue(allocator, 0, null, null, @as([]const u8, "deploy-prod"), .native_compatible);
+    defer payload.deinit(allocator);
+    const request = world.Frame.Request.init(.{
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .world_surface_replay_scope_fingerprint = fixtures.Ports.Target.WorldSurface.replayScopeRef().fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .world_port_id = 0,
+        .residual_site_index = fixtures.Ports.ApprovalRequest.index,
+        .residual_site_fingerprint = fixtures.Ports.ApprovalRequest.fingerprint,
+        .request_fingerprint = 0x1234_5678,
+        .turn_index = 3,
+        .payload_value_table_id = 0,
+        .expected_response_value_table_id = 1,
+        .payload_image = payload,
+    });
+    const pending = world.Capsule.PendingPortImage.init(.{
+        .pending_port_fingerprint = 0x5150_3363,
+        .original_run_handle_fingerprint = 0x5150_3364,
+        .mailbox_id = 0,
+        .request_frame = request,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+    });
+
+    try std.testing.expectError(error.UnsupportedValueImage, pending.validate());
+}
+
 test "capsule namespace excludes forbidden native execution fields" {
     try std.testing.expect(!@hasField(world.Capsule.Image, "handler"));
     try std.testing.expect(!@hasField(world.Capsule.Image, "allocator"));
@@ -1217,6 +1288,22 @@ test "capsule freeze freezes completed linked assembly" {
     try cert.validate();
     try std.testing.expectEqual(image.image_fingerprint, cert.capsule_image_fingerprint);
     try std.testing.expectEqual(image.link_image.?.link_image_fingerprint, cert.link_image_fingerprint.?);
+    const linked_thaw = try world.Capsule.planThaw(image, root_ref.target_ref_fingerprint, 0, 0x5150_3503, .{ .mode = .restore_completed });
+    try std.testing.expectEqual(@as(usize, 0), linked_thaw.blockers.len);
+    var linked_receiver = world.Runspace.init(allocator, .{});
+    defer linked_receiver.deinit();
+    var linked_restore = try world.Capsule.thawIntoRunspace(image, &linked_receiver, root_ref.target_ref_fingerprint, 0, 0x5150_3503, .{ .mode = .restore_completed });
+    defer linked_restore.deinit(allocator);
+    try std.testing.expect(linked_restore.accepted);
+    const linked_admission = world.Admission.capsuleAdmissionReport(.{
+        .mode = .restore_completed,
+        .image = image,
+        .certificate = cert,
+        .thaw_plan = linked_thaw,
+        .restore_report = linked_restore,
+    });
+    try std.testing.expect(linked_admission.accepted);
+    try std.testing.expectEqual(linked_restore.restore_report_fingerprint, linked_admission.capsule_restore_report_fingerprint.?);
 
     var omitted_link = try world.Capsule.freezeAssembly(&runspace, assembly, .{ .include_link_certificate = false });
     defer omitted_link.deinit(allocator);
@@ -1749,7 +1836,7 @@ test "capsule freezeRunspace preserves run image environment refs" {
 
     const denied = try world.Capsule.planThaw(image, target_ref.target_ref_fingerprint, 0, 0x5150_3791, .{ .mode = .restore_completed });
     try std.testing.expectEqual(world.Capsule.Blocker.environment_mismatch, denied.blockers[0]);
-    const accepted = try world.Capsule.planThaw(image, target_ref.target_ref_fingerprint, env_cert.certificate_fingerprint, 0x5150_3792, .{ .mode = .restore_completed });
+    const accepted = try world.Capsule.planThaw(image, target_ref.target_ref_fingerprint, env_cert.certificate_fingerprint, 0x5150_3793, .{ .mode = .restore_completed });
     try std.testing.expectEqual(@as(usize, 0), accepted.blockers.len);
     const multi_env_refs = [_]u64{ env_cert.certificate_fingerprint, env_cert.certificate_fingerprint +% 1 };
     const multi_env_manifest = world.Capsule.Manifest.init(.{
@@ -1776,6 +1863,14 @@ test "capsule freezeRunspace preserves run image environment refs" {
     defer env_restore.deinit(allocator);
     try std.testing.expect(env_restore.accepted);
     try std.testing.expectEqual(@as(?u64, env_cert.certificate_fingerprint), env_restore.environment_certificate_fingerprint);
+    const env_admission = world.Admission.capsuleAdmissionReport(.{
+        .mode = .restore_completed,
+        .image = image,
+        .thaw_plan = accepted,
+        .restore_report = env_restore,
+    });
+    try std.testing.expect(env_admission.accepted);
+    try std.testing.expectEqual(env_restore.restore_report_fingerprint, env_admission.capsule_restore_report_fingerprint.?);
 
     const missing_env_manifest = world.Capsule.Manifest.init(.{
         .kind = .completed_assembly,
@@ -2328,6 +2423,7 @@ test "capsule handoff admission binds restore witnesses and receiver permit" {
         .link_certificate_fingerprint = 0x5150_e102,
         .assembly_fingerprint = 0x5150_e103,
         .linker_policy_fingerprint = 0x5150_e104,
+        .catalog_fingerprint = 0x5150_e105,
     });
     const linked_image = world.Capsule.Image.init(.{
         .manifest = linked_manifest,
