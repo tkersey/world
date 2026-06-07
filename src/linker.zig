@@ -2110,7 +2110,7 @@ pub fn Linker(comptime W: type) type {
             return W.Fabric.ValueMapping.init(.{
                 .kind = .provider_result_to_parent_response,
                 .provider_result_value_table_id = provider_value,
-                .provider_result_value_fingerprint = if (entry.imports.len == 0) descriptor.result_ref.value_ref_fingerprint else null,
+                .provider_result_value_fingerprint = descriptor.result_ref.value_ref_fingerprint,
                 .parent_response_value_table_id = parent_value,
                 .parent_response_value_fingerprint = requirement.response_value_ref_fingerprint,
             });

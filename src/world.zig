@@ -7433,11 +7433,6 @@ pub const Fabric = struct {
                     }
                     if (self.parent_payload_value_table_id != null or self.provider_argument_value_table_id != null) return error.UnsupportedMapping;
                     if (self.parent_payload_value_fingerprint != null or self.provider_argument_value_fingerprint != null) return error.UnsupportedMapping;
-                    if (self.provider_result_value_fingerprint != null and self.parent_response_value_fingerprint != null and
-                        self.provider_result_value_fingerprint.? != self.parent_response_value_fingerprint.?)
-                    {
-                        return error.UnsupportedMapping;
-                    }
                 },
             }
         }
@@ -8265,6 +8260,7 @@ pub const Runspace = struct {
         response_frame_fingerprint: ?u64 = null,
         response_value_table_id: ?u32 = null,
         response_value_image_fingerprint: ?u64 = null,
+        response_boundary_value_fingerprint: ?u64 = null,
     };
 
     const SlotDriver = struct {
@@ -10270,6 +10266,7 @@ pub const Runspace = struct {
                 .response_frame_fingerprint = response.frame_fingerprint,
                 .response_value_table_id = response.response_value_table_id,
                 .response_value_image_fingerprint = response.response_value_fingerprint,
+                .response_boundary_value_fingerprint = if (response.response_image) |image| image.boundary_value_fingerprint else null,
             };
         } else return error.InvalidRunspaceTransition;
         if (response.status == .pending) return error.HandlerPending;
@@ -17430,7 +17427,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                                 final_result_image = Frame.ValueImage.fromValue(
                                     self.allocator,
                                     evidence.response_value_table_id,
-                                    evidence.response_fingerprint,
+                                    evidence.response_boundary_value_fingerprint orelse evidence.response_fingerprint,
                                     null,
                                     self.done_value,
                                     ValuePolicy.portable,
@@ -17824,6 +17821,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         .response_frame_fingerprint = effective_response_frame.frame_fingerprint,
                         .response_value_table_id = effective_response_frame.response_value_table_id,
                         .response_value_image_fingerprint = effective_response_frame.response_value_fingerprint,
+                        .response_boundary_value_fingerprint = if (effective_response_frame.response_image) |image| image.boundary_value_fingerprint else null,
                     };
                     return effective_response_frame.frame_fingerprint;
                 }
@@ -17902,6 +17900,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         .response_frame_fingerprint = effective_response_frame.frame_fingerprint,
                         .response_value_table_id = effective_response_frame.response_value_table_id,
                         .response_value_image_fingerprint = effective_response_frame.response_value_fingerprint,
+                        .response_boundary_value_fingerprint = if (effective_response_frame.response_image) |image| image.boundary_value_fingerprint else null,
                     };
                     return effective_response_frame.frame_fingerprint;
                 }

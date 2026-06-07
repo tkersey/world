@@ -75,7 +75,7 @@ pub fn main(init: std.process.Init) !void {
     const strict_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
     const provider_export = world.Linker.ExportDescriptor.init(.{
         .target_ref = provider_ref,
-        .result_ref = .{ .value_table_id = root_import.response_value_table_id, .value_ref_fingerprint = root_import.response_value_ref_fingerprint },
+        .result_ref = .{ .value_table_id = provider_import.response_value_table_id, .value_ref_fingerprint = provider_import.response_value_ref_fingerprint },
         .label = "provider-main",
     });
     const entries = [_]world.Linker.Catalog.Entry{
@@ -87,12 +87,14 @@ pub fn main(init: std.process.Init) !void {
             .label = "nested-provider",
         }),
     };
+    var root_policy = world.Linker.Policy.allow_external_ports;
+    root_policy.require_exact_value_refs = false;
     var root_link = try world.Linker.link(allocator, .{
         .root_target_ref = root_ref,
         .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
         .root_imports = &.{root_import},
         .catalog = world.Linker.Catalog.init(&entries),
-        .policy = .allow_external_ports,
+        .policy = root_policy,
     });
     defer root_link.deinit();
     const nested_export = world.Linker.ExportDescriptor.init(.{

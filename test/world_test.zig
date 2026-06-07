@@ -2646,7 +2646,7 @@ test "fabric value mapping enforces exact supported conversions" {
         .parent_response_value_table_id = 1,
         .parent_response_value_fingerprint = response.response_fingerprint +% 1,
     });
-    try std.testing.expectError(error.UnsupportedMapping, distinct_parent_response.validate());
+    try distinct_parent_response.validate();
     const conflicting_response_alias = world.Fabric.ValueMapping.init(.{
         .kind = .provider_result_to_parent_response,
         .provider_value_table_id = 7,
@@ -9753,7 +9753,7 @@ test "runspace fabric response honors pinned parent response fingerprint" {
     try std.testing.expectEqual(@as(usize, 1), runspace.report().fabric_receipt_count);
 }
 
-test "runspace fabric response rejects remapped parent fingerprint" {
+test "runspace fabric response remaps checked provider result witness" {
     var parent_runtime = boundary.Runtime.init(std.testing.allocator);
     defer parent_runtime.deinit();
     var runspace = world.Runspace.init(std.testing.allocator, .{});
@@ -9809,12 +9809,15 @@ test "runspace fabric response rejects remapped parent fingerprint" {
         .value_mappings = &.{mapping},
     });
 
-    _ = parent_handle;
-    _ = provider_handle;
-    try std.testing.expectError(error.UnsupportedMapping, runspace.installFabricPlan(parent_ref, plan));
-    try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_invocation_count);
-    try std.testing.expectEqual(@as(usize, 0), runspace.report().fabric_receipt_count);
-    try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+    try runspace.installFabricPlan(parent_ref, plan);
+    const invocation = try runspace.routePendingToProviderRun(0, plan, provider_handle);
+    _ = try runspace.respondFromFabric(invocation);
+    _ = try runspace.tick();
+    var image = try runspace.exportRun(parent_handle);
+    defer image.deinit(std.testing.allocator);
+    try std.testing.expectEqual(world.RunImage.Kind.completed_run, image.kind);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().fabric_receipt_count);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
 }
 
 test "runspace fabric response enforces portable provider result mapping" {
