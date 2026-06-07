@@ -434,6 +434,12 @@ pub fn Linker(comptime W: type) type {
                     if (!linkerCanSynthesizeRouteKind(policy, entry)) continue;
                     const expected = valueRefForRequirement(import_requirement);
                     if (expected.compatibleWith(descriptor.result_ref, policy)) {
+                        if (descriptor.argument_refs.len != 0) continue;
+                        if ((entry.provider_kind == .target or entry.provider_kind == .module_ref or entry.provider_kind == .admitted_run) and
+                            !canSynthesizeExecutableResponseMapping(import_requirement, entry, expected, descriptor.result_ref))
+                        {
+                            continue;
+                        }
                         try candidates.append(allocator, entry);
                         if (candidates.items.len > policy.max_candidates_per_import) break;
                     }

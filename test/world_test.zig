@@ -873,6 +873,13 @@ test "link filters response witnesses before candidate cap" {
         .result_ref = .{ .value_table_id = root_import.response_value_table_id, .value_ref_fingerprint = root_import.response_value_ref_fingerprint.? +% 2 },
         .label = "bad-two",
     });
+    const bad_argument_refs = [_]world.Linker.ValueRef{.{ .value_table_id = root_import.payload_value_table_id }};
+    const bad_argument_export = world.Linker.ExportDescriptor.init(.{
+        .target_ref = bad_ref,
+        .argument_refs = &bad_argument_refs,
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id, .value_ref_fingerprint = root_import.response_value_ref_fingerprint },
+        .label = "bad-argument",
+    });
     const valid_export = world.Linker.ExportDescriptor.init(.{
         .target_ref = valid_ref,
         .result_ref = .{ .value_table_id = root_import.response_value_table_id, .value_ref_fingerprint = root_import.response_value_ref_fingerprint },
@@ -890,6 +897,12 @@ test "link filters response witnesses before candidate cap" {
             .export_descriptor = bad_export_two,
             .import_set = world.ImportSet.fromTarget(fixtures.ProviderPorts.Target),
             .label = "bad-two",
+        }),
+        world.Linker.Catalog.Entry.generatedTarget(.{
+            .target_ref = bad_ref,
+            .export_descriptor = bad_argument_export,
+            .import_set = world.ImportSet.fromTarget(fixtures.ProviderPorts.Target),
+            .label = "bad-argument",
         }),
         world.Linker.Catalog.Entry.generatedTarget(.{
             .target_ref = valid_ref,
