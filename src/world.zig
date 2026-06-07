@@ -2255,13 +2255,13 @@ pub const Admission = struct {
         const has_required_witnesses = switch (args.mode) {
             .inspect_only => true,
             .replay_only => args.thaw_plan != null,
-            .verify => args.thaw_plan != null,
+            .verify => false,
             .restore_parked, .restore_completed, .restore_failed, .relink_and_restore => args.thaw_plan != null and args.restore_report != null,
         };
         const witnesses_accept = switch (args.mode) {
             .inspect_only => if (args.thaw_plan) |plan| plan.blockers.len == 0 else true,
             .replay_only => if (args.thaw_plan) |plan| plan.blockers.len == 0 else false,
-            .verify => if (args.thaw_plan) |plan| plan.blockers.len == 0 else false,
+            .verify => false,
             .restore_parked, .restore_completed, .restore_failed, .relink_and_restore => if (args.thaw_plan) |plan| if (args.restore_report) |report| plan.blockers.len == 0 and capsuleRestoreReportAccepted(report) else false else false,
         };
         const request = Admission.AdmissionRequest.init(.{
