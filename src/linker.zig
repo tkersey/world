@@ -696,6 +696,7 @@ pub fn Linker(comptime W: type) type {
             if (hint) |present| {
                 if (providerTargetMatches(present, entry) and present.route_kind != routeKindForEntry(entry)) try blockers.append(allocator, .UnsupportedRouteKind);
             }
+            if (entry.provider_kind == .admitted_run and entry.admission_receipt_fingerprint == null) try blockers.append(allocator, .ProviderNotAdmitted);
             if (policy.require_admission_for_provider_targets and (entry.provider_kind == .target or entry.provider_kind == .module_ref) and entry.admission_receipt_fingerprint == null) try blockers.append(allocator, .ProviderNotAdmitted);
             if (policy.require_supervision_compatible_routes and routeKindRequiresProviderRun(routeKindForEntry(entry))) {
                 if (run_permit_fingerprint) |expected_permit| {

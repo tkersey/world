@@ -2487,6 +2487,29 @@ test "assembly preserves linker run permit scope" {
     try std.testing.expectEqual(@as(?u64, admitted_receipt_fingerprint), mixed_linked.plan.fabric_plans[0].routes[0].provider_admission_receipt_fingerprint);
     try std.testing.expectEqual(@as(?u64, null), mixed_linked.plan.fabric_plans[0].routes[0].provider_module_fingerprint);
     try std.testing.expectEqual(@as(usize, 1), mixed_linked.assembly.admission_receipts_used.len);
+
+    const missing_receipt_entries = [_]world.Linker.Catalog.Entry{
+        world.Linker.Catalog.Entry.init(.{
+            .provider_kind = .admitted_run,
+            .target_ref = provider_ref,
+            .export_descriptor = provider_export,
+            .import_set = world.ImportSet.fromTarget(fixtures.Strict.Target),
+            .run_permit_fingerprint = permit_fingerprint,
+            .label = "missing-admission-receipt",
+        }),
+    };
+    var missing_receipt_linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
+        .root_imports = &.{root_import},
+        .catalog = world.Linker.Catalog.init(&missing_receipt_entries),
+        .policy = .strict_closed,
+        .run_permit_fingerprint = permit_fingerprint,
+    });
+    defer missing_receipt_linked.deinit();
+    try std.testing.expect(!missing_receipt_linked.plan.accepted());
+    try std.testing.expect(missing_receipt_linked.graph.hasBlocker(.ProviderNotAdmitted));
+    try std.testing.expectEqual(@as(usize, 0), missing_receipt_linked.plan.fabric_plans.len);
 }
 
 test "assembly witnesses admitted-run provider receipts" {
