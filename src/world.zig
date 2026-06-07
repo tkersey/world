@@ -17620,16 +17620,16 @@ pub const Capsule = struct {
     }
 
     pub fn runspaceImage(allocator: std.mem.Allocator, runspace: *const Runspace) !RunspaceImage {
-        return runspaceImageWithRunImageFingerprints(allocator, runspace, null, true, true);
+        return runspaceImageWithRunImageFingerprints(allocator, runspace, null, true, true, true);
     }
 
-    fn runspaceImageWithRunImageFingerprints(allocator: std.mem.Allocator, runspace: *const Runspace, slot_run_image_fingerprints: ?[]const ?u64, include_transcripts: bool, include_receipts: bool) !RunspaceImage {
+    fn runspaceImageWithRunImageFingerprints(allocator: std.mem.Allocator, runspace: *const Runspace, slot_run_image_fingerprints: ?[]const ?u64, include_transcripts: bool, include_receipts: bool, require_quiescent: bool) !RunspaceImage {
         if (slot_run_image_fingerprints) |fingerprints| {
             if (fingerprints.len != runspace.slots.items.len) return error.InvalidFrameEncoding;
         }
         var report = try quiescenceReport(allocator, runspace, null);
         defer report.deinit(allocator);
-        if (!report.quiescent) return error.InvalidFrameEncoding;
+        if (require_quiescent and !report.quiescent) return error.InvalidFrameEncoding;
 
         var run_handle_refs: std.ArrayList(u64) = .empty;
         errdefer run_handle_refs.deinit(allocator);
@@ -17938,6 +17938,7 @@ pub const Capsule = struct {
 
     pub fn freezeRun(handle: RunHandle, options: FreezeOptions) !Image {
         if (options.max_run_slots == 0) return error.InvalidFrameEncoding;
+        const validate_options = validateOptionsForFreeze(options);
         const manifest = Manifest.init(.{
             .kind = .reference_only,
             .root_target_ref_fingerprint = handle.target_ref_fingerprint,
@@ -17951,7 +17952,7 @@ pub const Capsule = struct {
             .manifest = manifest,
             .runspace_image = runspace_image_value,
         });
-        try image.validate(.{ .max_image_bytes = options.max_image_bytes });
+        try image.validate(validate_options);
         return image;
     }
 
@@ -17978,7 +17979,7 @@ pub const Capsule = struct {
             allocator.free(run_images);
         };
 
-        var runspace_image_value = try runspaceImageWithRunImageFingerprints(allocator, runspace, slot_run_image_fingerprints, options.include_transcripts, options.include_receipts);
+        var runspace_image_value = try runspaceImageWithRunImageFingerprints(allocator, runspace, slot_run_image_fingerprints, options.include_transcripts, options.include_receipts, options.require_quiescent);
         var runspace_image_owned = true;
         errdefer if (runspace_image_owned) runspace_image_value.deinit(allocator);
 
@@ -18138,7 +18139,7 @@ pub const Capsule = struct {
         const encoded = try image.encode(allocator);
         defer allocator.free(encoded);
         if (encoded.len > options.max_image_bytes) return error.InvalidFrameEncoding;
-        try image.validate(.{ .max_image_bytes = options.max_image_bytes });
+        try image.validate(validateOptionsForFreeze(options));
         const cert = try certificate(image, report);
         try cert.validate();
         image_owned = false;
@@ -18986,8 +18987,17 @@ pub const Capsule = struct {
             .quiescent_failed => if (!options.allow_failed) return error.InvalidFrameEncoding,
             .quiescent_parked => if (!options.allow_parked) return error.InvalidFrameEncoding,
             .active_fabric_parked => if (!options.allow_active_fabric_parked) return error.ActiveFabricUnsupported,
-            .unsupported_running, .partial_with_blockers => return error.InvalidFrameEncoding,
+            .unsupported_running, .partial_with_blockers => if (options.require_quiescent) return error.InvalidFrameEncoding,
         }
+    }
+
+    fn validateOptionsForFreeze(options: FreezeOptions) ValidateOptions {
+        return .{
+            .max_image_bytes = options.max_image_bytes,
+            .max_run_slots = options.max_run_slots,
+            .max_pending_ports = options.max_pending_ports,
+            .max_fabric_invocations = options.max_fabric_invocations,
+        };
     }
 
     fn capsuleKindForNormalForm(normal_form: NormalForm) Kind {
@@ -19010,7 +19020,10 @@ pub const Capsule = struct {
 
     fn rootModuleRefFingerprintForFreeze(runspace: *const Runspace) ?u64 {
         for (runspace.slots.items) |slot| {
-            if (slot.parent_run_handle_fingerprint == null) return slot.module_ref_fingerprint orelse slot.target_ref.boundary_module_fingerprint;
+            if (slot.parent_run_handle_fingerprint != null) continue;
+            if (slot.module_ref_fingerprint) |fingerprint| return fingerprint;
+            if (slot.installed_run_image) |image| return image.module_ref_fingerprint orelse image.target_ref.boundary_module_fingerprint;
+            return null;
         }
         return null;
     }

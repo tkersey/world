@@ -689,6 +689,59 @@ test "capsule quiescence report classifies completed parked and running runspace
     try std.testing.expect(running_report.blockers.len >= 1);
 }
 
+test "capsule freezeRunspace honors partial freeze and caller count limits" {
+    const allocator = std.testing.allocator;
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .not_started,
+    });
+
+    var partial_runspace = world.Runspace.init(allocator, .{});
+    defer partial_runspace.deinit();
+    const partial_handle = world.RunHandle.init(.{
+        .runspace_fingerprint = partial_runspace.runspace_fingerprint,
+        .local_run_id = 0,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+    });
+    try partial_runspace.slots.append(allocator, world.Runspace.RunSlot.fromState(.{
+        .handle = partial_handle,
+        .target_ref = target_ref,
+        .current_state = state,
+        .status = .admitted,
+    }));
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Capsule.freezeRunspace(&partial_runspace, .{}));
+    var partial_image = try world.Capsule.freezeRunspace(&partial_runspace, .{ .require_quiescent = false });
+    defer partial_image.deinit(allocator);
+    try std.testing.expectEqual(world.Capsule.Kind.inspect_only, partial_image.manifest.kind);
+    try std.testing.expectEqual(world.Capsule.NormalForm.partial_with_blockers, partial_image.manifest.normal_form);
+
+    const slot_count: usize = 4097;
+    var large_runspace = world.Runspace.init(allocator, .{});
+    defer large_runspace.deinit();
+    try large_runspace.slots.ensureTotalCapacity(allocator, slot_count);
+    for (0..slot_count) |index| {
+        const handle = world.RunHandle.init(.{
+            .runspace_fingerprint = large_runspace.runspace_fingerprint,
+            .local_run_id = @intCast(index),
+            .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        });
+        large_runspace.slots.appendAssumeCapacity(world.Runspace.RunSlot.fromState(.{
+            .handle = handle,
+            .target_ref = target_ref,
+            .current_state = state,
+            .status = .admitted,
+        }));
+    }
+    var large_image = try world.Capsule.freezeRunspace(&large_runspace, .{
+        .require_quiescent = false,
+        .max_run_slots = slot_count,
+    });
+    defer large_image.deinit(allocator);
+    try std.testing.expectEqual(slot_count, large_image.manifest.run_slot_count);
+    try std.testing.expectEqual(slot_count, large_image.runspace_image.run_slots.len);
+}
+
 test "capsule runspace and mailbox images capture slots pending ports and events" {
     const allocator = std.testing.allocator;
     const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
