@@ -16609,7 +16609,10 @@ pub const Capsule = struct {
             if (self.pending_port_entries.len > options.max_pending_ports) return error.InvalidFrameEncoding;
             if (self.pending_port_fingerprints.len > options.max_pending_ports) return error.InvalidFrameEncoding;
             if (self.pending_port_entries.len != self.pending_port_fingerprints.len) return error.InvalidFrameEncoding;
-            for (self.pending_port_entries) |entry| try entry.validate();
+            for (self.pending_port_entries, 0..) |entry, index| {
+                try entry.validate();
+                if (self.pending_port_fingerprints[index] != entry.pending_port_fingerprint) return error.InvalidFrameEncoding;
+            }
             if (self.mailbox_image_fingerprint != fingerprintMailboxImage(self)) return error.InvalidFrameEncoding;
         }
 
@@ -17505,10 +17508,10 @@ pub const Capsule = struct {
     }
 
     pub fn runspaceImage(allocator: std.mem.Allocator, runspace: *const Runspace) !RunspaceImage {
-        return runspaceImageWithRunImageFingerprints(allocator, runspace, null);
+        return runspaceImageWithRunImageFingerprints(allocator, runspace, null, true, true);
     }
 
-    fn runspaceImageWithRunImageFingerprints(allocator: std.mem.Allocator, runspace: *const Runspace, slot_run_image_fingerprints: ?[]const ?u64) !RunspaceImage {
+    fn runspaceImageWithRunImageFingerprints(allocator: std.mem.Allocator, runspace: *const Runspace, slot_run_image_fingerprints: ?[]const ?u64, include_transcripts: bool, include_receipts: bool) !RunspaceImage {
         if (slot_run_image_fingerprints) |fingerprints| {
             if (fingerprints.len != runspace.slots.items.len) return error.InvalidFrameEncoding;
         }
@@ -17537,7 +17540,7 @@ pub const Capsule = struct {
                 fingerprints[index]
             else
                 runImageFingerprintForSlot(slot);
-            var slot_image = try runSlotImageForSlot(allocator, runspace, slot, run_image_fingerprint);
+            var slot_image = try runSlotImageForSlot(allocator, runspace, slot, run_image_fingerprint, include_transcripts);
             var slot_image_owned = true;
             errdefer if (slot_image_owned) slot_image.deinit(allocator);
             try slot_images.append(allocator, slot_image);
@@ -17570,13 +17573,13 @@ pub const Capsule = struct {
         for (runspace.slots.items, 0..) |slot, index| {
             if (slot.branch_id) |branch| try branch_refs.append(allocator, branch);
             if (slot.checkpoint_fingerprint) |checkpoint| try checkpoint_refs.append(allocator, checkpoint);
-            if (slot.current_state.transcript_image_fingerprint) |transcript| try transcript_refs.append(allocator, transcript);
+            if (include_transcripts) if (slot.current_state.transcript_image_fingerprint) |transcript| try transcript_refs.append(allocator, transcript);
             const slot_run_image_fingerprint = if (slot_run_image_fingerprints) |fingerprints|
                 fingerprints[index]
             else
                 runImageFingerprintForSlot(slot);
             if (slot_run_image_fingerprint) |fingerprint| try run_image_refs.append(allocator, fingerprint);
-            if (slot.run_receipt_fingerprint) |receipt| try receipt_refs.append(allocator, receipt);
+            if (include_receipts) if (slot.run_receipt_fingerprint) |receipt| try receipt_refs.append(allocator, receipt);
             if (slot.admission_receipt_fingerprint) |admission| try admission_refs.append(allocator, admission);
             if (slot.run_permit_fingerprint) |permit| try permit_refs.append(allocator, permit);
         }
@@ -17644,6 +17647,10 @@ pub const Capsule = struct {
     }
 
     pub fn fabricImage(allocator: std.mem.Allocator, runspace: *const Runspace) !FabricImage {
+        return fabricImageWithReceiptPolicy(allocator, runspace, true);
+    }
+
+    fn fabricImageWithReceiptPolicy(allocator: std.mem.Allocator, runspace: *const Runspace, include_receipts: bool) !FabricImage {
         var plan_refs: std.ArrayList(u64) = .empty;
         errdefer plan_refs.deinit(allocator);
         for (runspace.fabric_plan_fingerprints.items) |fingerprint| try plan_refs.append(allocator, fingerprint);
@@ -17679,18 +17686,20 @@ pub const Capsule = struct {
             }
         }
 
-        for (runspace.fabric_receipts.items) |receipt| {
-            try receipt.validate();
-            hashU64(&status_hasher, receipt.receipt_fingerprint);
-            hashU64(&status_hasher, @intFromEnum(receipt.status));
-            if (!fabricRouteWitnessExists(runspace, receipt.route_fingerprint)) return error.FabricWitnessMissing;
-            if (receipt.status == .completed or receipt.status == .parent_responded) {
-                try completed_receipt_refs.append(allocator, receipt.receipt_fingerprint);
-            }
-            if (receipt.provider_run_handle_fingerprint) |provider| {
-                try appendUniqueU64(&provider_run_refs, allocator, provider);
-                if (providerStateFingerprintForHandle(runspace, provider)) |state| {
-                    try appendUniqueU64(&provider_state_refs, allocator, state);
+        if (include_receipts) {
+            for (runspace.fabric_receipts.items) |receipt| {
+                try receipt.validate();
+                hashU64(&status_hasher, receipt.receipt_fingerprint);
+                hashU64(&status_hasher, @intFromEnum(receipt.status));
+                if (!fabricRouteWitnessExists(runspace, receipt.route_fingerprint)) return error.FabricWitnessMissing;
+                if (receipt.status == .completed or receipt.status == .parent_responded) {
+                    try completed_receipt_refs.append(allocator, receipt.receipt_fingerprint);
+                }
+                if (receipt.provider_run_handle_fingerprint) |provider| {
+                    try appendUniqueU64(&provider_run_refs, allocator, provider);
+                    if (providerStateFingerprintForHandle(runspace, provider)) |state| {
+                        try appendUniqueU64(&provider_state_refs, allocator, state);
+                    }
                 }
             }
         }
@@ -17857,12 +17866,12 @@ pub const Capsule = struct {
             allocator.free(run_images);
         };
 
-        var runspace_image_value = try runspaceImageWithRunImageFingerprints(allocator, runspace, slot_run_image_fingerprints);
+        var runspace_image_value = try runspaceImageWithRunImageFingerprints(allocator, runspace, slot_run_image_fingerprints, options.include_transcripts, options.include_receipts);
         var runspace_image_owned = true;
         errdefer if (runspace_image_owned) runspace_image_value.deinit(allocator);
 
-        var maybe_fabric_image: ?FabricImage = if (runspace.fabric_plan_fingerprints.items.len != 0 or runspace.fabric_invocations.items.len != 0 or runspace.fabric_receipts.items.len != 0)
-            try fabricImage(allocator, runspace)
+        var maybe_fabric_image: ?FabricImage = if (runspace.fabric_plan_fingerprints.items.len != 0 or runspace.fabric_invocations.items.len != 0 or (options.include_receipts and runspace.fabric_receipts.items.len != 0))
+            try fabricImageWithReceiptPolicy(allocator, runspace, options.include_receipts)
         else
             null;
         var fabric_image_owned = maybe_fabric_image != null;
@@ -18244,7 +18253,18 @@ pub const Capsule = struct {
 
     pub fn verifyLink(image: Image, local_catalog_fingerprint: u64, policy: RelinkPolicy) !ThawPlan {
         try image.validate(.{});
-        const link = image.link_image orelse return error.InvalidFrameEncoding;
+        const link = image.link_image orelse {
+            const accepted = !policy.require_link_certificate;
+            return ThawPlan.init(.{
+                .capsule_image_fingerprint = image.image_fingerprint,
+                .requested_mode = .relink_and_restore,
+                .local_target_registry_fingerprint = local_catalog_fingerprint,
+                .link_certificate_match_status = .missing,
+                .relink_status = if (accepted) .matched else .blocked,
+                .blockers = if (accepted) &.{} else &.{.link_certificate_missing},
+                .warnings = if (accepted) &.{.relink_not_performed} else &.{},
+            });
+        };
         const catalog_matched = link.catalog_fingerprint == null or local_catalog_fingerprint == 0 or link.catalog_fingerprint.? == local_catalog_fingerprint;
         const residual_matched = !policy.require_residual_import_match or image.manifest.link_plan_fingerprint == null or image.manifest.link_plan_fingerprint.? == link.link_plan_fingerprint;
         const fabric_matched = !policy.require_fabric_plan_match or fabricPlanRefsCovered(image.manifest.fabric_plan_fingerprints, link.route_synthesis_refs);
@@ -19063,7 +19083,7 @@ pub const Capsule = struct {
         try values.append(allocator, value);
     }
 
-    fn runSlotImageForSlot(allocator: std.mem.Allocator, runspace: *const Runspace, slot: Runspace.RunSlot, run_image_fingerprint: ?u64) !RunSlotImage {
+    fn runSlotImageForSlot(allocator: std.mem.Allocator, runspace: *const Runspace, slot: Runspace.RunSlot, run_image_fingerprint: ?u64, include_transcripts: bool) !RunSlotImage {
         const checkpoint_refs = if (slot.checkpoint_fingerprint) |checkpoint| refs: {
             const refs = try allocator.alloc(u64, 1);
             refs[0] = checkpoint;
@@ -19094,7 +19114,7 @@ pub const Capsule = struct {
             .run_permit_fingerprint = slot.run_permit_fingerprint,
             .run_state_fingerprint = slot.current_state.run_state_fingerprint,
             .run_image_fingerprint = run_image_fingerprint,
-            .transcript_image_fingerprint = slot.current_state.transcript_image_fingerprint,
+            .transcript_image_fingerprint = if (include_transcripts) slot.current_state.transcript_image_fingerprint else null,
             .current_pending_mailbox_id = slot.pending_mailbox_id,
             .branch_id = slot.branch_id,
             .checkpoint_refs = checkpoint_refs,

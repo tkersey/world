@@ -320,6 +320,48 @@ test "capsule freezeRun produces consistent reference image" {
     try std.testing.expectEqual(world.Capsule.Blocker.malformed_image, denied.blockers[0]);
 }
 
+test "capsule freezeRunspace honors receipt and transcript exclusion flags" {
+    const allocator = std.testing.allocator;
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    var source = world.Runspace.init(allocator, .{});
+    defer source.deinit();
+    const handle = world.RunHandle.init(.{
+        .runspace_fingerprint = source.runspace_fingerprint,
+        .local_run_id = 0,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+    });
+    const state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .transcript_image_fingerprint = 0x5150_3340,
+        .status = .completed,
+    });
+    try source.slots.append(allocator, world.Runspace.RunSlot.fromState(.{
+        .handle = handle,
+        .target_ref = target_ref,
+        .current_state = state,
+        .status = .completed,
+        .run_receipt_fingerprint = 0x5150_3341,
+    }));
+
+    var full = try world.Capsule.freezeRunspace(&source, .{});
+    defer full.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), full.runspace_image.transcript_image_refs.len);
+    try std.testing.expectEqual(@as(usize, 1), full.runspace_image.run_receipt_refs.len);
+    try std.testing.expectEqual(@as(?u64, 0x5150_3340), full.runspace_image.run_slots[0].transcript_image_fingerprint);
+    try std.testing.expectEqual(@as(usize, 1), full.manifest.transcript_image_fingerprints.len);
+    try std.testing.expectEqual(@as(usize, 1), full.manifest.run_receipt_fingerprints.len);
+    try std.testing.expectEqual(@as(usize, 1), full.transcript_image_refs.len);
+
+    var excluded = try world.Capsule.freezeRunspace(&source, .{ .include_receipts = false, .include_transcripts = false });
+    defer excluded.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 0), excluded.runspace_image.transcript_image_refs.len);
+    try std.testing.expectEqual(@as(usize, 0), excluded.runspace_image.run_receipt_refs.len);
+    try std.testing.expectEqual(@as(?u64, null), excluded.runspace_image.run_slots[0].transcript_image_fingerprint);
+    try std.testing.expectEqual(@as(usize, 0), excluded.manifest.transcript_image_fingerprints.len);
+    try std.testing.expectEqual(@as(usize, 0), excluded.manifest.run_receipt_fingerprints.len);
+    try std.testing.expectEqual(@as(usize, 0), excluded.transcript_image_refs.len);
+}
+
 test "capsule image validation rejects completed manifest with parked slot" {
     const allocator = std.testing.allocator;
     const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
@@ -1408,6 +1450,15 @@ test "capsule relink requires manifest fabric plan coverage" {
         .runspace_image = runspace_image,
         .fabric_image = fabric_image,
     });
+    const missing_link_allowed = try world.Capsule.verifyLink(fabric_only_image, 0x9999, .{ .require_link_certificate = false });
+    try std.testing.expectEqual(world.Capsule.LinkCertificateMatchStatus.missing, missing_link_allowed.link_certificate_match_status);
+    try std.testing.expectEqual(world.Capsule.RelinkStatus.matched, missing_link_allowed.relink_status);
+    try std.testing.expectEqual(@as(usize, 0), missing_link_allowed.blockers.len);
+    try std.testing.expectEqual(world.Capsule.Warning.relink_not_performed, missing_link_allowed.warnings[0]);
+    const missing_link_required = try world.Capsule.verifyLink(fabric_only_image, 0x9999, .{});
+    try std.testing.expectEqual(world.Capsule.LinkCertificateMatchStatus.missing, missing_link_required.link_certificate_match_status);
+    try std.testing.expectEqual(world.Capsule.RelinkStatus.blocked, missing_link_required.relink_status);
+    try std.testing.expectEqual(world.Capsule.Blocker.link_certificate_missing, missing_link_required.blockers[0]);
     const encoded_fabric = try fabric_only_image.encode(std.testing.allocator);
     defer std.testing.allocator.free(encoded_fabric);
     for (0..encoded_fabric.len) |len| {
@@ -1807,6 +1858,41 @@ test "capsule parked freeze embeds run image and thaw enforces receiver capacity
     const parked_plan = try world.Capsule.planThaw(image, target_ref.target_ref_fingerprint, 0, 0x5150_3990, .{ .mode = .restore_parked });
     try std.testing.expectEqual(@as(usize, 1), parked_plan.mailbox_id_remapping_plan.len);
     try std.testing.expectEqual(image.runspace_image.mailbox_image.?.pending_port_fingerprints[0], parked_plan.mailbox_id_remapping_plan[0]);
+    const mismatched_pending_refs = [_]u64{image.runspace_image.mailbox_image.?.pending_port_fingerprints[0] +% 1};
+    const mismatched_mailbox = world.Capsule.MailboxImage.init(.{
+        .pending_port_entries = image.runspace_image.mailbox_image.?.pending_port_entries,
+        .pending_port_fingerprints = &mismatched_pending_refs,
+        .consumed_port_fingerprints = image.runspace_image.mailbox_image.?.consumed_port_fingerprints,
+        .next_mailbox_id = image.runspace_image.mailbox_image.?.next_mailbox_id,
+        .generation = image.runspace_image.mailbox_image.?.generation,
+        .single_use_status_fingerprints = image.runspace_image.mailbox_image.?.single_use_status_fingerprints,
+        .response_routing_status_fingerprints = image.runspace_image.mailbox_image.?.response_routing_status_fingerprints,
+    });
+    const mismatched_runspace_image = world.Capsule.RunspaceImage.init(.{
+        .runspace_fingerprint = image.runspace_image.runspace_fingerprint,
+        .runspace_report_fingerprint = image.runspace_image.runspace_report_fingerprint,
+        .run_handle_mappings = image.runspace_image.run_handle_mappings,
+        .run_slots = image.runspace_image.run_slots,
+        .mailbox_image = mismatched_mailbox,
+        .runspace_event_fingerprints = image.runspace_image.runspace_event_fingerprints,
+        .root_run_handle_fingerprints = image.runspace_image.root_run_handle_fingerprints,
+        .provider_run_handle_fingerprints = image.runspace_image.provider_run_handle_fingerprints,
+        .branch_refs = image.runspace_image.branch_refs,
+        .checkpoint_refs = image.runspace_image.checkpoint_refs,
+        .transcript_image_refs = image.runspace_image.transcript_image_refs,
+        .run_image_refs = image.runspace_image.run_image_refs,
+        .run_receipt_refs = image.runspace_image.run_receipt_refs,
+        .admission_receipt_refs = image.runspace_image.admission_receipt_refs,
+        .permit_refs = image.runspace_image.permit_refs,
+        .active_fabric_invocation_refs = image.runspace_image.active_fabric_invocation_refs,
+    });
+    const mismatched_image = world.Capsule.Image.init(.{
+        .manifest = image.manifest,
+        .runspace_image = mismatched_runspace_image,
+        .run_image_refs = image.run_image_refs,
+        .run_images = image.run_images,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, mismatched_image.validate(.{}));
     var bad_pending = image.runspace_image.mailbox_image.?.pending_port_entries[0];
     bad_pending.pending_port_image_fingerprint +%= 1;
     const bad_pending_entries = [_]world.Capsule.PendingPortImage{bad_pending};
