@@ -1932,6 +1932,29 @@ test "capsule handoff admission binds restore witnesses and receiver permit" {
     try std.testing.expect(!corrupt_cert_rejected.accepted);
     try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, corrupt_cert_rejected.blockers[0]);
 
+    const stale_section_cert = world.Capsule.Certificate.init(.{
+        .capsule_image_fingerprint = imported.image_fingerprint,
+        .capsule_manifest_fingerprint = cert.capsule_manifest_fingerprint,
+        .quiescence_report_fingerprint = cert.quiescence_report_fingerprint,
+        .runspace_image_fingerprint = cert.runspace_image_fingerprint +% 1,
+        .link_image_fingerprint = cert.link_image_fingerprint,
+        .fabric_image_fingerprint = cert.fabric_image_fingerprint,
+        .root_target_ref_fingerprint = cert.root_target_ref_fingerprint,
+        .assembly_fingerprint = cert.assembly_fingerprint,
+        .blocker_summary = cert.blocker_summary,
+        .warning_summary = cert.warning_summary,
+    });
+    try stale_section_cert.validate();
+    const stale_section_cert_rejected = world.Admission.capsuleAdmissionReport(.{
+        .mode = .restore_parked,
+        .image = imported,
+        .certificate = stale_section_cert,
+        .thaw_plan = thaw,
+        .restore_report = restore,
+    });
+    try std.testing.expect(!stale_section_cert_rejected.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, stale_section_cert_rejected.blockers[0]);
+
     var corrupt_thaw = thaw;
     corrupt_thaw.thaw_plan_fingerprint +%= 1;
     const corrupt_thaw_rejected = world.Admission.capsuleAdmissionReport(.{

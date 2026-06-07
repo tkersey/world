@@ -2242,7 +2242,7 @@ pub const Admission = struct {
             (args.thaw_plan == null or capsuleThawPlanValid(args.thaw_plan.?)) and
             (args.restore_report == null or capsuleRestoreReportValid(args.restore_report.?));
         const witnesses_bound =
-            (args.certificate == null or args.certificate.?.capsule_image_fingerprint == args.image.image_fingerprint) and
+            (args.certificate == null or capsuleCertificateMatchesImage(args.image, args.certificate.?)) and
             (args.thaw_plan == null or args.thaw_plan.?.capsule_image_fingerprint == args.image.image_fingerprint) and
             (args.restore_report == null or args.restore_report.?.capsule_image_fingerprint == args.image.image_fingerprint) and
             (args.thaw_plan == null or args.restore_report == null or args.restore_report.?.thaw_plan_fingerprint == args.thaw_plan.?.thaw_plan_fingerprint);
@@ -2315,6 +2315,16 @@ pub const Admission = struct {
     fn capsuleRestoreReportValid(report: Capsule.RestoreReport) bool {
         report.validate() catch return false;
         return true;
+    }
+
+    fn capsuleCertificateMatchesImage(image: Capsule.Image, cert: Capsule.Certificate) bool {
+        return cert.capsule_image_fingerprint == image.image_fingerprint and
+            cert.capsule_manifest_fingerprint == image.manifest.manifest_fingerprint and
+            cert.runspace_image_fingerprint == image.runspace_image.image_fingerprint and
+            cert.link_image_fingerprint == (if (image.link_image) |link| link.link_image_fingerprint else null) and
+            cert.fabric_image_fingerprint == (if (image.fabric_image) |fabric| fabric.fabric_image_fingerprint else null) and
+            cert.root_target_ref_fingerprint == image.manifest.root_target_ref_fingerprint and
+            cert.assembly_fingerprint == image.manifest.assembly_fingerprint;
     }
 
     fn capsuleAdmissionModeAllowsThaw(mode: CapsuleAdmissionMode, thaw_mode: Capsule.RestoreMode) bool {
