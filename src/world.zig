@@ -18978,6 +18978,9 @@ pub const Capsule = struct {
                 .not_started, .running => false,
             };
         }
+        if (slot_image.status == .parked_on_supervision and run_image.current_state.status == .parked_on_port) {
+            return slot_image.current_pending_mailbox_id != null;
+        }
         return run_image.current_state.status == runStateStatusForCapsuleStatus(slot_image.status);
     }
 

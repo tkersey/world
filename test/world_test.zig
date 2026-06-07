@@ -2872,6 +2872,16 @@ test "capsule freeze preserves supervised port parked mailbox" {
     try std.testing.expectEqual(@as(usize, 1), image.runspace_image.mailbox_image.?.pending_port_entries.len);
     try std.testing.expectEqual(world.RunImage.Kind.parked_run, image.run_images[0].kind);
     try std.testing.expectEqual(world.RunState.Status.parked_on_port, image.run_images[0].current_state.status);
+    var receiver = world.Runspace.init(allocator, .{});
+    defer receiver.deinit();
+    var restore = try world.Capsule.thawIntoRunspace(image, &receiver, target_ref.target_ref_fingerprint, 0, 0x5150_3a04, .{ .mode = .restore_parked });
+    defer restore.deinit(allocator);
+    try std.testing.expect(restore.accepted);
+    try std.testing.expectEqual(@as(usize, 1), receiver.slots.items.len);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_supervision, receiver.slots.items[0].status);
+    const restored_mailbox_id = receiver.slots.items[0].pending_mailbox_id orelse return error.ExpectedMailbox;
+    const restored_pending = try receiver.mailbox.get(restored_mailbox_id);
+    try std.testing.expectEqual(request.frame_fingerprint, restored_pending.request_frame_fingerprint);
 }
 
 test "capsule active fabric restore rejects mutation without fabric state image" {
