@@ -18199,6 +18199,7 @@ pub const Capsule = struct {
 
         if (runspace.config.require_admission) return error.RunspaceAdmissionRequired;
         if (!runspace.config.allow_handoff_install) return error.RunspaceInstallDenied;
+        if (runspace.config.require_supervision) return error.SupervisionDenied;
         try ensureRestoreRunCapacity(runspace, image);
 
         const slot_count_before = runspace.slots.items.len;

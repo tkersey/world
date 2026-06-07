@@ -56,15 +56,15 @@ It never serializes Machine pointers, allocators, handlers, request tokens, nati
 
 ## Thaw
 
-`Capsule.validate`, `Capsule.planThaw`, and `Capsule.thawIntoRunspace` validate image format, match local targets/modules/catalog, preflight environment refs, require receiver permits when configured, plan handle/mailbox remaps, reject blockers before mutation, and restore supported slot/mailbox metadata into the destination Runspace.
+`Capsule.validate`, `Capsule.planThaw`, and `Capsule.thawIntoRunspace` validate image format, match local targets/modules/catalog, preflight environment refs, require receiver permits when configured, plan handle/mailbox remaps, reject blockers before mutation, and restore supported completed/failed slot metadata into the destination Runspace. Receivers configured with `require_supervision` reject capsule restore until a receiver-local permit object can be validated, not just a permit fingerprint.
 
 ## Relink verification
 
 `Capsule.verifyLink` and `Capsule.relink` compare local catalog/link evidence against capsule LinkImage data. Default policy rejects drift through blockers such as `link_certificate_missing`, `local_provider_missing`, `link_plan_mismatch`, `assembly_mismatch`, `residual_import_mismatch`, `fabric_plan_mismatch`, `guest_conformance_missing`, and `relink_drift_rejected`.
 
-## Active Fabric restore
+## Active Fabric / parked restore
 
-Active Fabric restore requires parent and provider parked or terminal states, an active invocation witness, route witness, value mapping, remappable handles, preserved mailbox ownership, and safe or absent replay cursor state. Missing proof reports blockers such as `active_fabric_unsupported`, `non_quiescent_fabric`, `fabric_witness_missing`, `provider_state_unsupported`, or `mailbox_ownership_mismatch`.
+Active Fabric and parked capsules are fail-closed for mutating restore in this API surface. They can be frozen and inspected, but `restore_parked` and parked relink restore reject before destination mutation until capsules carry an executable continuation witness. Active Fabric proofs still report blockers such as `active_fabric_unsupported`, `non_quiescent_fabric`, `fabric_witness_missing`, `provider_state_unsupported`, or `mailbox_ownership_mismatch`.
 
 ## Replay/verify restore
 
@@ -84,7 +84,7 @@ Sender permits and receipts are evidence, not authority. A receiver can require 
 
 ## Agent transfer example
 
-`examples/world_capsule_agent_transfer.zig` links an agent root to a tool provider while leaving the model port residual. It freezes the parked assembly, thaws it under a receiver permit, and prints capsule, residual import, permit, and final output witnesses.
+`examples/world_capsule_agent_transfer.zig` links an agent root to a tool provider while leaving the model port residual. It freezes the parked assembly, attempts receiver thaw, and prints capsule, residual import, permit, restore-denial, and final-output witnesses.
 
 ## Non-goals
 
