@@ -20064,6 +20064,20 @@ test "step frame nextFrame resumeFrame and verify adapter image path work" {
             defer stale_frame_response.deinit(std.testing.allocator);
             stale_frame_response.flags = 1;
             try std.testing.expectError(error.InvalidFrameEncoding, run.resumeFrame(stale_frame_response));
+            const forged_deferred_image = try world.Frame.ValueImage.fromValue(std.testing.allocator, 1, response_fingerprint, null, @as(i32, 7), .portable);
+            var forged_deferred_response = world.Frame.Response.init(.{
+                .world_surface_fingerprint = request.world_surface_fingerprint,
+                .target_certificate_fingerprint = request.target_certificate_fingerprint,
+                .world_port_id = request.world_port_id,
+                .request_fingerprint = request.request_fingerprint,
+                .response_value_table_id = 1,
+                .response_fingerprint = 0,
+                .response_image = forged_deferred_image,
+                .replay_key = 0,
+                .flags = 1,
+            });
+            defer forged_deferred_response.deinit(std.testing.allocator);
+            try std.testing.expectError(error.InvalidFrameEncoding, run.resumeFrame(forged_deferred_response));
             var response = try world.Frame.Response.fromValue(std.testing.allocator, request, 1, response_fingerprint, .@"resume", @as(i32, 7), .portable);
             defer response.deinit(std.testing.allocator);
             expected_response_frame_fingerprint = response.frame_fingerprint;

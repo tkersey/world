@@ -8319,6 +8319,7 @@ pub const Runspace = struct {
         const VTable = struct {
             nextFrame: *const fn (*anyopaque) anyerror!DriverStep,
             resumeFrame: *const fn (*anyopaque, Frame.Response) anyerror!ResponseEvidence,
+            resumeFabricFrame: *const fn (*anyopaque, Frame.Response) anyerror!ResponseEvidence,
             beforeResponse: *const fn (*anyopaque, u32, ResponseStatus, usize, usize) anyerror!void,
             beforeTerminalResponse: *const fn (*anyopaque, u32, ResponseStatus, usize, usize) anyerror!void,
             beforeFabricInvocation: *const fn (*anyopaque, u32, Fabric.RouteKind, usize, usize) anyerror!void,
@@ -8349,6 +8350,10 @@ pub const Runspace = struct {
 
         fn resumeFrame(self: @This(), response: Frame.Response) !ResponseEvidence {
             return self.vtable.resumeFrame(self.ptr, response);
+        }
+
+        fn resumeFabricFrame(self: @This(), response: Frame.Response) !ResponseEvidence {
+            return self.vtable.resumeFabricFrame(self.ptr, response);
         }
 
         fn beforeResponse(self: @This(), world_port_id: u32, status: ResponseStatus, response_bytes: usize, value_image_bytes: usize) !void {
@@ -8501,6 +8506,12 @@ pub const Runspace = struct {
                         .response_value_table_id = response.response_value_table_id,
                         .response_value_image_fingerprint = response.response_value_fingerprint,
                     };
+                }
+
+                fn runResumeFabricFrame(ptr: *anyopaque, response: Frame.Response) anyerror!ResponseEvidence {
+                    const active: *RunType = @ptrCast(@alignCast(ptr));
+                    if (@hasDecl(RunType, "runspaceResumeFabricFrame")) return active.runspaceResumeFabricFrame(response);
+                    return runResumeFrame(ptr, response);
                 }
 
                 fn runBeforeResponse(ptr: *anyopaque, world_port_id: u32, status: ResponseStatus, response_bytes: usize, value_image_bytes: usize) anyerror!void {
@@ -8672,6 +8683,7 @@ pub const Runspace = struct {
                 const vtable = VTable{
                     .nextFrame = runNextFrame,
                     .resumeFrame = runResumeFrame,
+                    .resumeFabricFrame = runResumeFabricFrame,
                     .beforeResponse = runBeforeResponse,
                     .beforeTerminalResponse = runBeforeTerminalResponse,
                     .beforeFabricInvocation = runBeforeFabricInvocation,
@@ -10274,7 +10286,7 @@ pub const Runspace = struct {
             .failed => return self.finishTerminalResponse(index, mailbox_id, pending, slot, response, .failed),
         }
         const response_evidence = if (slot.driver) |driver|
-            driver.resumeFrame(response) catch |err| {
+            (if (allow_active_fabric) driver.resumeFabricFrame(response) else driver.resumeFrame(response)) catch |err| {
                 if (err == error.HandlerPending) {
                     if (driver.supervisionInterrupted()) {
                         return self.parkPendingOnSupervision(index, pending, mailbox_id, "manual response parked on supervision");
@@ -17437,16 +17449,27 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 }
 
                 pub fn resumeFrame(self: *Self, response_frame: Frame.Response) !void {
-                    _ = try self.resumeFrameWithProvenance(response_frame, false, true);
+                    _ = try self.resumeFrameWithProvenance(response_frame, false, true, false);
                 }
 
                 pub fn runspaceResumeFrame(self: *Self, response_frame: Frame.Response) !Runspace.ResponseEvidence {
-                    const response_frame_fingerprint = try self.resumeFrameWithProvenance(response_frame, false, false);
+                    const response_frame_fingerprint = try self.resumeFrameWithProvenance(response_frame, false, false, false);
                     return self.last_response_evidence orelse .{
                         .response_fingerprint = response_frame.response_fingerprint,
                         .response_frame_fingerprint = response_frame_fingerprint,
                         .response_value_table_id = response_frame.response_value_table_id,
                         .response_value_image_fingerprint = response_frame.response_value_fingerprint,
+                    };
+                }
+
+                pub fn runspaceResumeFabricFrame(self: *Self, response_frame: Frame.Response) !Runspace.ResponseEvidence {
+                    const response_frame_fingerprint = try self.resumeFrameWithProvenance(response_frame, false, false, true);
+                    return self.last_response_evidence orelse .{
+                        .response_fingerprint = response_frame.response_fingerprint,
+                        .response_frame_fingerprint = response_frame_fingerprint,
+                        .response_value_table_id = response_frame.response_value_table_id,
+                        .response_value_image_fingerprint = response_frame.response_value_fingerprint,
+                        .response_boundary_value_fingerprint = if (response_frame.response_image) |image| image.boundary_value_fingerprint else null,
                     };
                 }
 
@@ -17476,19 +17499,19 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 pub fn runspaceResumeTerminalFrame(self: *Self, response_frame: Frame.Response) !void {
                     switch (response_frame.status) {
                         .rejected => {
-                            _ = self.resumeFrameWithProvenance(response_frame, false, false) catch |err| switch (err) {
+                            _ = self.resumeFrameWithProvenance(response_frame, false, false, false) catch |err| switch (err) {
                                 Error.HandlerRejected => {},
                                 else => return err,
                             };
                         },
                         .failed => {
-                            _ = self.resumeFrameWithProvenance(response_frame, false, false) catch |err| switch (err) {
+                            _ = self.resumeFrameWithProvenance(response_frame, false, false, false) catch |err| switch (err) {
                                 Error.HandlerFailed => {},
                                 else => return err,
                             };
                         },
                         else => {
-                            _ = try self.resumeFrameWithProvenance(response_frame, false, true);
+                            _ = try self.resumeFrameWithProvenance(response_frame, false, true, false);
                         },
                     }
                 }
@@ -17679,10 +17702,10 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 }
 
                 fn resumeReplayedFrame(self: *Self, response_frame: Frame.Response) !void {
-                    _ = try self.resumeFrameWithProvenance(response_frame, true, true);
+                    _ = try self.resumeFrameWithProvenance(response_frame, true, true, false);
                 }
 
-                fn resumeFrameWithProvenance(self: *Self, response_frame: Frame.Response, comptime replayed: bool, comptime account_supervisor: bool) !u64 {
+                fn resumeFrameWithProvenance(self: *Self, response_frame: Frame.Response, comptime replayed: bool, comptime account_supervisor: bool, comptime allow_mapped_boundary_value: bool) !u64 {
                     const request = self.pending_request orelse return error.UnknownResidualSite;
                     const world_port_id = self.pending_port_id orelse return error.UnknownWorldPort;
                     var frame = try self.pendingRequestFrame(false);
@@ -17694,7 +17717,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     if (response_frame.status == .pending) {
                         if (account_supervisor) {
                             if (self.supervisor) |*supervisor| {
-                                try validateResponseFrameImage(response_frame, false);
+                                try validateResponseFrameImage(response_frame, allow_mapped_boundary_value);
                                 const accounting = try self.responseFrameAccounting(response_frame);
                                 supervisor.afterAdapterResponse(.{
                                     .world_port_id = world_port_id,
@@ -17711,12 +17734,12 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     }
                     if (self.effective_mode != .fresh) return Error.InvalidMode;
                     if (response_frame.status == .responded and response_frame.response_value_table_id != frame.expected_response_value_table_id) return error.FrameValueTableMismatch;
-                    try validateResponseFrameImage(response_frame, false);
+                    try validateResponseFrameImage(response_frame, allow_mapped_boundary_value);
                     const deferred_response_fingerprint = response_frame.responseFingerprintDeferred();
                     if (!deferred_response_fingerprint and response_frame.replay_key != frame.replay_key_seed.withResponse(response_frame.response_fingerprint).fingerprint()) return error.ReplayMissing;
                     if (account_supervisor) {
                         if (self.supervisor) |*supervisor| {
-                            try validateResponseFrameImage(response_frame, false);
+                            try validateResponseFrameImage(response_frame, allow_mapped_boundary_value);
                             const accounting = try self.responseFrameAccounting(response_frame);
                             supervisor.afterAdapterResponse(.{
                                 .world_port_id = world_port_id,
@@ -19404,6 +19427,7 @@ fn validateResponseFrameImage(frame: Frame.Response, allow_mapped_boundary_value
         if (frame.response_fingerprint != 0) return error.InvalidFrameEncoding;
         if (frame.replay_key != 0) return error.InvalidFrameEncoding;
         if (frame.response_image == null) return error.MissingValueImage;
+        if (!allow_mapped_boundary_value and frame.response_image.?.boundary_value_fingerprint != null) return error.InvalidFrameEncoding;
     }
     if (frame.response_image) |image| {
         try validateValueImage(image);
