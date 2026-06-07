@@ -17629,6 +17629,63 @@ pub const Capsule = struct {
 
     pub const AssemblyImage = Image;
 
+    const RestoreTransaction = struct {
+        runspace: *Runspace,
+        plan: ThawPlan,
+        slot_count_before: usize,
+        next_run_id_before: u64,
+        mailbox_count_before: usize,
+        next_mailbox_id_before: u64,
+        committed: bool = false,
+
+        pub fn prepare(
+            image: Image,
+            runspace: *Runspace,
+            registry_fingerprint: u64,
+            environment_fingerprint: u64,
+            permit_fingerprint: ?u64,
+            options: ThawOptions,
+        ) !@This() {
+            return .{
+                .runspace = runspace,
+                .plan = try planThaw(image, registry_fingerprint, environment_fingerprint, permit_fingerprint, options),
+                .slot_count_before = runspace.slots.items.len,
+                .next_run_id_before = runspace.next_run_id,
+                .mailbox_count_before = runspace.mailbox.pending.items.len,
+                .next_mailbox_id_before = runspace.next_mailbox_id,
+            };
+        }
+
+        pub fn validateAuthority(self: @This(), options: ThawOptions) !void {
+            if (self.plan.blockers.len != 0) return error.InvalidFrameEncoding;
+            if (options.mode == .inspect_only or options.mode == .replay_only) return;
+            if (self.runspace.config.require_admission) return error.RunspaceAdmissionRequired;
+            if (!self.runspace.config.allow_handoff_install) return error.RunspaceInstallDenied;
+            if (self.runspace.config.require_supervision) return error.SupervisionDenied;
+        }
+
+        pub fn preMutationCheck(self: @This(), image: Image, options: ThawOptions) !void {
+            try self.validateAuthority(options);
+            if (options.mode == .inspect_only or options.mode == .replay_only) return;
+            try ensureRestoreRunCapacity(self.runspace, image);
+        }
+
+        pub fn commit(self: *@This()) void {
+            self.committed = true;
+        }
+
+        pub fn rollbackUnlessCommitted(self: *@This()) void {
+            if (self.committed) return;
+            const allocator = self.runspace.allocator;
+            for (self.runspace.mailbox.pending.items[self.mailbox_count_before..]) |*pending| pending.deinit(allocator);
+            self.runspace.mailbox.pending.shrinkRetainingCapacity(self.mailbox_count_before);
+            self.runspace.next_mailbox_id = self.next_mailbox_id_before;
+            for (self.runspace.slots.items[self.slot_count_before..]) |*slot| slot.deinit(allocator);
+            self.runspace.slots.shrinkRetainingCapacity(self.slot_count_before);
+            self.runspace.next_run_id = self.next_run_id_before;
+        }
+    };
+
     pub fn certificate(image: Image, report: QuiescenceReport) !Certificate {
         return try Certificate.fromImage(image, report);
     }
@@ -18120,6 +18177,9 @@ pub const Capsule = struct {
         defer report.deinit(allocator);
         if (options.require_quiescent and !report.quiescent) return error.InvalidFrameEncoding;
         try validateFreezePolicy(report, options);
+        if (options.include_link_certificate) {
+            if (assembly) |value| try validateAssemblyBoundToRunspace(runspace, value);
+        }
 
         const slot_run_image_fingerprints = try allocator.alloc(?u64, runspace.slots.items.len);
         defer allocator.free(slot_run_image_fingerprints);
@@ -18322,7 +18382,9 @@ pub const Capsule = struct {
 
     pub fn thawIntoRunspace(image: Image, runspace: *Runspace, registry_fingerprint: u64, environment_fingerprint: u64, permit_fingerprint: ?u64, options: ThawOptions) !RestoreReport {
         const allocator = runspace.allocator;
-        const plan = try planThaw(image, registry_fingerprint, environment_fingerprint, permit_fingerprint, options);
+        var transaction = try RestoreTransaction.prepare(image, runspace, registry_fingerprint, environment_fingerprint, permit_fingerprint, options);
+        defer transaction.rollbackUnlessCommitted();
+        const plan = transaction.plan;
         if (plan.blockers.len != 0) {
             return restoreReportOwned(allocator, .{
                 .capsule_image_fingerprint = image.image_fingerprint,
@@ -18346,23 +18408,7 @@ pub const Capsule = struct {
             });
         }
 
-        if (runspace.config.require_admission) return error.RunspaceAdmissionRequired;
-        if (!runspace.config.allow_handoff_install) return error.RunspaceInstallDenied;
-        if (runspace.config.require_supervision) return error.SupervisionDenied;
-        try ensureRestoreRunCapacity(runspace, image);
-
-        const slot_count_before = runspace.slots.items.len;
-        const next_run_id_before = runspace.next_run_id;
-        const mailbox_count_before = runspace.mailbox.pending.items.len;
-        const next_mailbox_id_before = runspace.next_mailbox_id;
-        errdefer {
-            for (runspace.mailbox.pending.items[mailbox_count_before..]) |*pending| pending.deinit(allocator);
-            runspace.mailbox.pending.shrinkRetainingCapacity(mailbox_count_before);
-            runspace.next_mailbox_id = next_mailbox_id_before;
-            for (runspace.slots.items[slot_count_before..]) |*slot| slot.deinit(allocator);
-            runspace.slots.shrinkRetainingCapacity(slot_count_before);
-            runspace.next_run_id = next_run_id_before;
-        }
+        try transaction.preMutationCheck(image, options);
 
         var root_refs: std.ArrayList(u64) = .empty;
         errdefer root_refs.deinit(allocator);
@@ -18505,7 +18551,7 @@ pub const Capsule = struct {
             .capsule_image_fingerprint = image.image_fingerprint,
             .thaw_plan_fingerprint = plan.thaw_plan_fingerprint,
             .restored_runspace_fingerprint = runspace.runspace_fingerprint,
-            .restored_local_run_id_start = next_run_id_before,
+            .restored_local_run_id_start = transaction.next_run_id_before,
             .restored_run_handle_mappings = handle_slice,
             .restored_root_run_handles = root_slice,
             .restored_provider_run_handles = provider_slice,
@@ -18519,6 +18565,7 @@ pub const Capsule = struct {
             .summary = summary,
         });
         report.owns_memory = true;
+        transaction.commit();
         return report;
     }
 
@@ -18692,6 +18739,17 @@ pub const Capsule = struct {
 
     fn imageHasRestorableSlots(image: Image) bool {
         return image.manifest.kind != .reference_only and image.manifest.kind != .inspect_only and image.manifest.run_slot_count != 0 and image.runspace_image.run_slots.len != 0;
+    }
+
+    fn validateAssemblyBoundToRunspace(runspace: *const Runspace, assembly: Assembly) !void {
+        try assembly.validate();
+        if (assembly.fabric_plans.len == 0) return error.InvalidFrameEncoding;
+        for (assembly.fabric_plans) |plan| {
+            const index = runspace.installedFabricPlanIndex(plan.plan_fingerprint) orelse return error.InvalidFrameEncoding;
+            if ((runspace.fabric_plan_link_plan_fingerprints.items[index] orelse return error.InvalidFrameEncoding) != assembly.link_plan_fingerprint) return error.InvalidFrameEncoding;
+            if ((runspace.fabric_plan_linker_certificate_fingerprints.items[index] orelse return error.InvalidFrameEncoding) != assembly.linker_certificate_fingerprint) return error.InvalidFrameEncoding;
+            if ((runspace.fabric_plan_assembly_fingerprints.items[index] orelse return error.InvalidFrameEncoding) != assembly.assembly_fingerprint) return error.InvalidFrameEncoding;
+        }
     }
 
     fn validateImageManifestConsistency(image: Image) !void {
@@ -18979,13 +19037,6 @@ pub const Capsule = struct {
         return null;
     }
 
-    fn runImageSliceContains(images: []const RunImage, fingerprint: u64) bool {
-        for (images) |image| {
-            if (image.run_image_fingerprint == fingerprint) return true;
-        }
-        return false;
-    }
-
     fn capsuleRunImageByFingerprint(images: []const RunImage, fingerprint: u64) ?RunImage {
         for (images) |image| {
             if (image.run_image_fingerprint == fingerprint) return image;
@@ -18997,13 +19048,6 @@ pub const Capsule = struct {
         if (!u64SliceContains(image.manifest.transcript_image_fingerprints, fingerprint)) return error.InvalidFrameEncoding;
         if (!u64SliceContains(image.runspace_image.transcript_image_refs, fingerprint)) return error.InvalidFrameEncoding;
         if (!u64SliceContains(image.transcript_image_refs, fingerprint)) return error.InvalidFrameEncoding;
-    }
-
-    fn normalFormIsRestorable(normal_form: NormalForm) bool {
-        return switch (normal_form) {
-            .quiescent_completed, .quiescent_failed, .quiescent_parked => true,
-            .active_fabric_parked, .unsupported_running, .partial_with_blockers => false,
-        };
     }
 
     fn u64SlicesEqual(left: []const u64, right: []const u64) bool {
@@ -21208,6 +21252,30 @@ test "capsule thaw denies before mutation and restores completed slot metadata" 
     const denied = try Capsule.thawIntoRunspace(image, &receiver, target_ref.target_ref_fingerprint, 0, null, .{ .mode = .restore_completed });
     try std.testing.expect(!denied.accepted);
     try std.testing.expectEqual(before_slots, receiver.slots.items.len);
+
+    var rollback_receiver = Runspace.init(allocator, .{});
+    defer rollback_receiver.deinit();
+    var transaction = try Capsule.RestoreTransaction.prepare(image, &rollback_receiver, target_ref.target_ref_fingerprint, 0, 0x5150_3604, .{ .mode = .restore_completed });
+    try transaction.preMutationCheck(image, .{ .mode = .restore_completed });
+    const rollback_handle = RunHandle.init(.{
+        .runspace_fingerprint = rollback_receiver.runspace_fingerprint,
+        .local_run_id = rollback_receiver.next_run_id,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .permit_fingerprint = 0x5150_3604,
+    });
+    rollback_receiver.next_run_id += 1;
+    try rollback_receiver.slots.append(allocator, Runspace.RunSlot.fromState(.{
+        .handle = rollback_handle,
+        .target_ref = target_ref,
+        .current_state = RunState.init(.{
+            .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+            .status = .completed,
+        }),
+        .status = .completed,
+    }));
+    transaction.rollbackUnlessCommitted();
+    try std.testing.expectEqual(@as(usize, 0), rollback_receiver.slots.items.len);
+    try std.testing.expectEqual(transaction.next_run_id_before, rollback_receiver.next_run_id);
 
     var restored = try Capsule.thawIntoRunspace(image, &receiver, target_ref.target_ref_fingerprint, 0, 0x5150_3603, .{ .mode = .restore_completed });
     defer restored.deinit(allocator);
