@@ -10,9 +10,10 @@ Toolchain:
 - zig version => 0.16.0
 
 Current-tree refresh:
-- refreshed_at => 2026-06-07T22:53:20Z
+- refreshed_at => 2026-06-07T23:10:35Z
 - regression => capsule link images without linker policy fingerprints reject through LinkImage.validate and Image.validate
 - regression => default relink residual-import matching rejects nonzero residual imports without an expected fingerprint
+- regression => accepted capsule restore admission rejects forged environment/link thaw witnesses without local authority
 
 Completed commands:
 - zig fmt --check build.zig src examples test

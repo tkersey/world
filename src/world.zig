@@ -2347,6 +2347,7 @@ pub const Admission = struct {
         if (report.receiver_run_permit_fingerprint != plan.receiver_run_permit_fingerprint) return false;
         if (plan.blockers.len != 0 or report.blockers.len != 0 or !report.accepted) return false;
         if (!Capsule.restoreModeAllowedForImage(image, plan.requested_mode)) return false;
+        if (!capsuleAcceptedRestoreHasLocalAuthority(image, plan, report)) return false;
         if (!Capsule.u64SlicesEqual(plan.handle_remapping_plan, image.runspace_image.run_handle_mappings)) return false;
         if (!Capsule.u64SlicesEqual(plan.guest_conformance_refs, report.guest_conformance_refs)) return false;
         if (plan.environment_preflight_refs.len == 0) {
@@ -2364,6 +2365,19 @@ pub const Admission = struct {
                 capsuleRestoreReportFabricMappingsMatchImage(image, report),
             .inspect_only, .replay_only, .restore_parked, .verify_and_restore => false,
         };
+    }
+
+    fn capsuleAcceptedRestoreHasLocalAuthority(image: Capsule.Image, plan: Capsule.ThawPlan, report: Capsule.RestoreReport) bool {
+        if (image.manifest.environment_certificate_fingerprints.len != 0) return false;
+        if (image.link_image != null) return false;
+        const environment_fingerprint = report.environment_certificate_fingerprint orelse 0;
+        return Capsule.thawBlocker(
+            image,
+            plan.local_target_registry_fingerprint,
+            environment_fingerprint,
+            plan.receiver_run_permit_fingerprint,
+            .{ .mode = plan.requested_mode },
+        ) == null;
     }
 
     fn capsuleRestoreReportRunMappingsMatchImage(image: Capsule.Image, report: Capsule.RestoreReport) bool {

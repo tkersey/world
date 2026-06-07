@@ -2272,6 +2272,98 @@ test "capsule handoff admission binds restore witnesses and receiver permit" {
     try std.testing.expect(completed_admission.accepted);
     try std.testing.expectEqual(restore.restore_report_fingerprint, completed_admission.capsule_restore_report_fingerprint.?);
     try std.testing.expectEqual(@as(usize, imported.runspace_image.run_slots.len * 2), restore.restored_run_handle_mappings.len);
+    const forged_environment_refs = [_]u64{0x5150_e001};
+    const environment_manifest = world.Capsule.Manifest.init(.{
+        .kind = .completed_assembly,
+        .root_target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .environment_certificate_fingerprints = &forged_environment_refs,
+        .normal_form = .quiescent_completed,
+    });
+    const environment_image = world.Capsule.Image.init(.{
+        .manifest = environment_manifest,
+        .runspace_image = imported.runspace_image,
+    });
+    const forged_environment_thaw = world.Capsule.ThawPlan.init(.{
+        .capsule_image_fingerprint = environment_image.image_fingerprint,
+        .requested_mode = .restore_completed,
+        .local_target_registry_fingerprint = target_ref.target_ref_fingerprint,
+        .environment_preflight_refs = &forged_environment_refs,
+        .receiver_run_permit_fingerprint = restore.receiver_run_permit_fingerprint,
+        .handle_remapping_plan = environment_image.runspace_image.run_handle_mappings,
+    });
+    const forged_environment_restore_report = world.Capsule.RestoreReport.init(.{
+        .capsule_image_fingerprint = environment_image.image_fingerprint,
+        .thaw_plan_fingerprint = forged_environment_thaw.thaw_plan_fingerprint,
+        .restored_runspace_fingerprint = restore.restored_runspace_fingerprint,
+        .restored_local_run_id_start = restore.restored_local_run_id_start,
+        .restored_run_handle_mappings = restore.restored_run_handle_mappings,
+        .restored_root_run_handles = restore.restored_root_run_handles,
+        .restored_provider_run_handles = restore.restored_provider_run_handles,
+        .restored_pending_port_mappings = restore.restored_pending_port_mappings,
+        .restored_fabric_invocation_mappings = restore.restored_fabric_invocation_mappings,
+        .environment_certificate_fingerprint = forged_environment_refs[0],
+        .receiver_run_permit_fingerprint = restore.receiver_run_permit_fingerprint,
+        .accepted = true,
+        .warnings = restore.warnings,
+        .summary = "forged environment thaw accepted",
+    });
+    const forged_environment_admission = world.Admission.capsuleAdmissionReport(.{
+        .mode = .restore_completed,
+        .image = environment_image,
+        .thaw_plan = forged_environment_thaw,
+        .restore_report = forged_environment_restore_report,
+    });
+    try std.testing.expect(!forged_environment_admission.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, forged_environment_admission.blockers[0]);
+    const linked_manifest = world.Capsule.Manifest.init(.{
+        .kind = .completed_assembly,
+        .root_target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .link_plan_fingerprint = 0x5150_e101,
+        .link_certificate_fingerprint = 0x5150_e102,
+        .assembly_fingerprint = 0x5150_e103,
+        .normal_form = .quiescent_completed,
+    });
+    const forged_link_image = world.Capsule.LinkImage.init(.{
+        .link_plan_fingerprint = 0x5150_e101,
+        .link_certificate_fingerprint = 0x5150_e102,
+        .assembly_fingerprint = 0x5150_e103,
+        .linker_policy_fingerprint = 0x5150_e104,
+    });
+    const linked_image = world.Capsule.Image.init(.{
+        .manifest = linked_manifest,
+        .runspace_image = imported.runspace_image,
+        .link_image = forged_link_image,
+    });
+    const forged_link_thaw = world.Capsule.ThawPlan.init(.{
+        .capsule_image_fingerprint = linked_image.image_fingerprint,
+        .requested_mode = .restore_completed,
+        .local_target_registry_fingerprint = target_ref.target_ref_fingerprint,
+        .receiver_run_permit_fingerprint = restore.receiver_run_permit_fingerprint,
+        .handle_remapping_plan = linked_image.runspace_image.run_handle_mappings,
+    });
+    const forged_link_restore_report = world.Capsule.RestoreReport.init(.{
+        .capsule_image_fingerprint = linked_image.image_fingerprint,
+        .thaw_plan_fingerprint = forged_link_thaw.thaw_plan_fingerprint,
+        .restored_runspace_fingerprint = restore.restored_runspace_fingerprint,
+        .restored_local_run_id_start = restore.restored_local_run_id_start,
+        .restored_run_handle_mappings = restore.restored_run_handle_mappings,
+        .restored_root_run_handles = restore.restored_root_run_handles,
+        .restored_provider_run_handles = restore.restored_provider_run_handles,
+        .restored_pending_port_mappings = restore.restored_pending_port_mappings,
+        .restored_fabric_invocation_mappings = restore.restored_fabric_invocation_mappings,
+        .receiver_run_permit_fingerprint = restore.receiver_run_permit_fingerprint,
+        .accepted = true,
+        .warnings = restore.warnings,
+        .summary = "forged link thaw accepted",
+    });
+    const forged_link_admission = world.Admission.capsuleAdmissionReport(.{
+        .mode = .restore_completed,
+        .image = linked_image,
+        .thaw_plan = forged_link_thaw,
+        .restore_report = forged_link_restore_report,
+    });
+    try std.testing.expect(!forged_link_admission.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, forged_link_admission.blockers[0]);
     const replay_without_thaw = world.Admission.capsuleAdmissionReport(.{
         .mode = .replay_only,
         .image = imported,
