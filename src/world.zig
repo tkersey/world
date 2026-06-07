@@ -18778,7 +18778,7 @@ pub const Capsule = struct {
                     } else if (!options.allow_relink_drift) return .link_plan_mismatch;
                 }
                 if (!linkFabricPlanWitnessesCover(image.manifest.fabric_plan_fingerprints, link.route_synthesis_refs)) return .fabric_plan_mismatch;
-            } else if (options.mode == .relink_and_restore) {
+            } else if (options.mode == .relink_and_restore or imageRequiresLinkMatchWitness(image)) {
                 return .link_certificate_missing;
             }
         }
@@ -18806,6 +18806,14 @@ pub const Capsule = struct {
 
     fn imageHasRestorableSlots(image: Image) bool {
         return image.manifest.kind != .reference_only and image.manifest.kind != .inspect_only and image.manifest.run_slot_count != 0 and image.runspace_image.run_slots.len != 0;
+    }
+
+    fn imageRequiresLinkMatchWitness(image: Image) bool {
+        return image.manifest.link_plan_fingerprint != null or
+            image.manifest.link_certificate_fingerprint != null or
+            image.manifest.assembly_fingerprint != null or
+            image.manifest.fabric_plan_fingerprints.len != 0 or
+            image.fabric_image != null;
     }
 
     fn validateAssemblyBoundToRunspace(runspace: *const Runspace, assembly: Assembly) !void {

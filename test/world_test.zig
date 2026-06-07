@@ -1212,6 +1212,8 @@ test "capsule freeze freezes completed linked assembly" {
     try std.testing.expect(omitted_link.manifest.link_certificate_fingerprint == null);
     try std.testing.expect(omitted_link.manifest.assembly_fingerprint == null);
     try omitted_link.validate(.{});
+    const omitted_link_thaw = try world.Capsule.planThaw(omitted_link, root_ref.target_ref_fingerprint, 0, 0x5150_3502, .{ .mode = .restore_completed });
+    try std.testing.expectEqual(world.Capsule.Blocker.link_certificate_missing, omitted_link_thaw.blockers[0]);
 }
 
 test "capsule freeze rejects non-quiescent runspace" {
