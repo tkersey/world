@@ -19520,27 +19520,51 @@ pub const Capsule = struct {
     }
 
     fn decodeRunSlotImage(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, options: ValidateOptions) !RunSlotImage {
+        const fingerprint_version = try readU32(bytes, cursor);
+        const slot_image_fingerprint = try readU64(bytes, cursor);
+        const original_run_handle_fingerprint = try readU64(bytes, cursor);
+        const parent_run_handle_fingerprint = try readOptionalU64(bytes, cursor);
+        const role = try enumFromByte(RunRole, try readU8(bytes, cursor));
+        const target_ref_fingerprint = try readU64(bytes, cursor);
+        const module_ref_fingerprint = try readOptionalU64(bytes, cursor);
+        const admission_receipt_fingerprint = try readOptionalU64(bytes, cursor);
+        const environment_certificate_fingerprint = try readOptionalU64(bytes, cursor);
+        const run_permit_fingerprint = try readOptionalU64(bytes, cursor);
+        const run_state_fingerprint = try readU64(bytes, cursor);
+        const run_image_fingerprint = try readOptionalU64(bytes, cursor);
+        const transcript_image_fingerprint = try readOptionalU64(bytes, cursor);
+        const current_pending_mailbox_id = try readOptionalU64(bytes, cursor);
+        const branch_id = try readOptionalU64(bytes, cursor);
+        const checkpoint_refs = try readU64SliceOwned(allocator, bytes, cursor, options.max_run_slots);
+        var checkpoint_refs_owned = true;
+        errdefer if (checkpoint_refs_owned) allocator.free(checkpoint_refs);
+        const fabric_invocation_refs = try readU64SliceOwned(allocator, bytes, cursor, options.max_fabric_invocations);
+        var fabric_invocation_refs_owned = true;
+        errdefer if (fabric_invocation_refs_owned) allocator.free(fabric_invocation_refs);
+        const status = try enumFromByte(RunSlotStatus, try readU8(bytes, cursor));
         var image = RunSlotImage{
-            .fingerprint_version = try readU32(bytes, cursor),
-            .slot_image_fingerprint = try readU64(bytes, cursor),
-            .original_run_handle_fingerprint = try readU64(bytes, cursor),
-            .parent_run_handle_fingerprint = try readOptionalU64(bytes, cursor),
-            .role = try enumFromByte(RunRole, try readU8(bytes, cursor)),
-            .target_ref_fingerprint = try readU64(bytes, cursor),
-            .module_ref_fingerprint = try readOptionalU64(bytes, cursor),
-            .admission_receipt_fingerprint = try readOptionalU64(bytes, cursor),
-            .environment_certificate_fingerprint = try readOptionalU64(bytes, cursor),
-            .run_permit_fingerprint = try readOptionalU64(bytes, cursor),
-            .run_state_fingerprint = try readU64(bytes, cursor),
-            .run_image_fingerprint = try readOptionalU64(bytes, cursor),
-            .transcript_image_fingerprint = try readOptionalU64(bytes, cursor),
-            .current_pending_mailbox_id = try readOptionalU64(bytes, cursor),
-            .branch_id = try readOptionalU64(bytes, cursor),
-            .checkpoint_refs = try readU64SliceOwned(allocator, bytes, cursor, options.max_run_slots),
-            .fabric_invocation_refs = try readU64SliceOwned(allocator, bytes, cursor, options.max_fabric_invocations),
-            .status = try enumFromByte(RunSlotStatus, try readU8(bytes, cursor)),
+            .fingerprint_version = fingerprint_version,
+            .slot_image_fingerprint = slot_image_fingerprint,
+            .original_run_handle_fingerprint = original_run_handle_fingerprint,
+            .parent_run_handle_fingerprint = parent_run_handle_fingerprint,
+            .role = role,
+            .target_ref_fingerprint = target_ref_fingerprint,
+            .module_ref_fingerprint = module_ref_fingerprint,
+            .admission_receipt_fingerprint = admission_receipt_fingerprint,
+            .environment_certificate_fingerprint = environment_certificate_fingerprint,
+            .run_permit_fingerprint = run_permit_fingerprint,
+            .run_state_fingerprint = run_state_fingerprint,
+            .run_image_fingerprint = run_image_fingerprint,
+            .transcript_image_fingerprint = transcript_image_fingerprint,
+            .current_pending_mailbox_id = current_pending_mailbox_id,
+            .branch_id = branch_id,
+            .checkpoint_refs = checkpoint_refs,
+            .fabric_invocation_refs = fabric_invocation_refs,
+            .status = status,
             .owns_memory = true,
         };
+        checkpoint_refs_owned = false;
+        fabric_invocation_refs_owned = false;
         errdefer image.deinit(allocator);
         try image.validate(options);
         return image;
@@ -19652,18 +19676,45 @@ pub const Capsule = struct {
     }
 
     fn decodeMailboxImage(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, options: ValidateOptions) !MailboxImage {
+        const fingerprint_version = try readU32(bytes, cursor);
+        const mailbox_image_fingerprint = try readU64(bytes, cursor);
+        const pending_port_entries = try readPendingPortImageSliceOwned(allocator, bytes, cursor, options);
+        var pending_port_entries_owned = true;
+        errdefer if (pending_port_entries_owned) {
+            for (pending_port_entries) |*entry| entry.deinit(allocator);
+            allocator.free(pending_port_entries);
+        };
+        const pending_port_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_pending_ports);
+        var pending_port_fingerprints_owned = true;
+        errdefer if (pending_port_fingerprints_owned) allocator.free(pending_port_fingerprints);
+        const consumed_port_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_pending_ports);
+        var consumed_port_fingerprints_owned = true;
+        errdefer if (consumed_port_fingerprints_owned) allocator.free(consumed_port_fingerprints);
+        const next_mailbox_id = try readU64(bytes, cursor);
+        const generation = try readU64(bytes, cursor);
+        const single_use_status_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_pending_ports);
+        var single_use_status_fingerprints_owned = true;
+        errdefer if (single_use_status_fingerprints_owned) allocator.free(single_use_status_fingerprints);
+        const response_routing_status_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_pending_ports);
+        var response_routing_status_fingerprints_owned = true;
+        errdefer if (response_routing_status_fingerprints_owned) allocator.free(response_routing_status_fingerprints);
         var image = MailboxImage{
-            .fingerprint_version = try readU32(bytes, cursor),
-            .mailbox_image_fingerprint = try readU64(bytes, cursor),
-            .pending_port_entries = try readPendingPortImageSliceOwned(allocator, bytes, cursor, options),
-            .pending_port_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_pending_ports),
-            .consumed_port_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_pending_ports),
-            .next_mailbox_id = try readU64(bytes, cursor),
-            .generation = try readU64(bytes, cursor),
-            .single_use_status_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_pending_ports),
-            .response_routing_status_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_pending_ports),
+            .fingerprint_version = fingerprint_version,
+            .mailbox_image_fingerprint = mailbox_image_fingerprint,
+            .pending_port_entries = pending_port_entries,
+            .pending_port_fingerprints = pending_port_fingerprints,
+            .consumed_port_fingerprints = consumed_port_fingerprints,
+            .next_mailbox_id = next_mailbox_id,
+            .generation = generation,
+            .single_use_status_fingerprints = single_use_status_fingerprints,
+            .response_routing_status_fingerprints = response_routing_status_fingerprints,
             .owns_memory = true,
         };
+        pending_port_entries_owned = false;
+        pending_port_fingerprints_owned = false;
+        consumed_port_fingerprints_owned = false;
+        single_use_status_fingerprints_owned = false;
+        response_routing_status_fingerprints_owned = false;
         errdefer image.deinit(allocator);
         try image.validate(options);
         return image;
