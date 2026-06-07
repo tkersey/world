@@ -1211,7 +1211,7 @@ pub fn Linker(comptime W: type) type {
             pub fn installIntoRunspace(self: Assembly, runspace: anytype) !void {
                 try self.validate();
                 for (self.fabric_plans) |fabric_plan| {
-                    try runspace.installFabricPlan(self.root_target_ref, fabric_plan);
+                    try runspace.installFabricPlanFromAssembly(self, fabric_plan);
                 }
             }
 

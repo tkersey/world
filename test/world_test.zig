@@ -9960,6 +9960,82 @@ test "runspace fabric response enforces portable provider result mapping" {
     try std.testing.expectEqual(@as(usize, 1), runspace.report().fabric_receipt_count);
 }
 
+test "runspace enforces linker scoped permit against installed assembly plans" {
+    const PortablePendingEnv = world.Environment(fixtures.Ports.Target, .{
+        .bindings = .{PortsPortablePendingNativeBinding},
+        .policy = world.EnvironmentPolicy.test_fixture,
+    });
+    const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const owned_route = world.Fabric.Route.init(.{
+        .route_id = 0x5150_aa01,
+        .kind = .reject,
+        .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .parent_world_port_id = 0,
+        .response_status = .rejected,
+        .metadata = "owned-linker-scoped-route",
+    });
+    const owned_plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .routes = &.{owned_route},
+    });
+    const assembly = world.Assembly.init(.{
+        .root_target_ref = parent_ref,
+        .link_plan_fingerprint = 0x5150_aa10,
+        .linker_certificate_fingerprint = 0x5150_aa11,
+        .fabric_plans = &.{owned_plan},
+    });
+    const unowned_route = world.Fabric.Route.init(.{
+        .route_id = 0x5150_aa02,
+        .kind = .reject,
+        .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .parent_world_port_id = 0,
+        .response_status = .rejected,
+        .metadata = "unowned-linker-scoped-route",
+    });
+    const unowned_plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .routes = &.{unowned_route},
+    });
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortablePendingEnv, .{
+        .mode = .fresh,
+        .link_plan_fingerprint = assembly.link_plan_fingerprint,
+        .linker_certificate_fingerprint = assembly.linker_certificate_fingerprint,
+        .assembly_fingerprint = assembly.assembly_fingerprint,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_native_adapters = true,
+            .allow_fabric_routes = true,
+            .allow_reject_routes = true,
+            .allow_rejected_responses = true,
+        }),
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+    try runspace.installAssembly(assembly);
+    try runspace.installFabricPlan(parent_ref, unowned_plan);
+    _ = try runspace.installMachineRun(fixtures.Ports.Target, PortablePendingEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .permit = permit,
+    });
+    _ = try runspace.tick();
+
+    try std.testing.expectError(error.SupervisionDenied, runspace.routePending(0, unowned_plan));
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
+    const invocation = try runspace.routePending(0, owned_plan);
+    try std.testing.expectEqual(world.Fabric.InvocationStatus.rejected, invocation.status);
+}
+
 test "runspace fabric response enforces parent value image policy" {
     const PortablePendingEnv = world.Environment(fixtures.Ports.Target, .{
         .bindings = .{PortsPortablePendingNativeBinding},

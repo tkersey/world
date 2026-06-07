@@ -8213,6 +8213,9 @@ pub const Runspace = struct {
     events: std.ArrayList(@This().RunspaceEvent) = .empty,
     mailbox: @This().Mailbox,
     fabric_plan_fingerprints: std.ArrayList(u64) = .empty,
+    fabric_plan_link_plan_fingerprints: std.ArrayList(?u64) = .empty,
+    fabric_plan_linker_certificate_fingerprints: std.ArrayList(?u64) = .empty,
+    fabric_plan_assembly_fingerprints: std.ArrayList(?u64) = .empty,
     fabric_routes: std.ArrayList(Fabric.Route) = .empty,
     fabric_route_plan_fingerprints: std.ArrayList(u64) = .empty,
     fabric_value_mappings: std.ArrayList(Fabric.ValueMapping) = .empty,
@@ -9383,6 +9386,9 @@ pub const Runspace = struct {
         self.events.deinit(self.allocator);
         self.mailbox.deinit();
         self.fabric_plan_fingerprints.deinit(self.allocator);
+        self.fabric_plan_link_plan_fingerprints.deinit(self.allocator);
+        self.fabric_plan_linker_certificate_fingerprints.deinit(self.allocator);
+        self.fabric_plan_assembly_fingerprints.deinit(self.allocator);
         self.fabric_routes.deinit(self.allocator);
         self.fabric_route_plan_fingerprints.deinit(self.allocator);
         self.fabric_value_mappings.deinit(self.allocator);
@@ -9681,6 +9687,9 @@ pub const Runspace = struct {
         var installed = false;
         errdefer if (!installed) {
             self.fabric_plan_fingerprints.shrinkRetainingCapacity(fabric_plan_count_before);
+            self.fabric_plan_link_plan_fingerprints.shrinkRetainingCapacity(fabric_plan_count_before);
+            self.fabric_plan_linker_certificate_fingerprints.shrinkRetainingCapacity(fabric_plan_count_before);
+            self.fabric_plan_assembly_fingerprints.shrinkRetainingCapacity(fabric_plan_count_before);
             self.fabric_routes.shrinkRetainingCapacity(fabric_route_count_before);
             self.fabric_route_plan_fingerprints.shrinkRetainingCapacity(fabric_route_plan_count_before);
             self.fabric_value_mappings.shrinkRetainingCapacity(fabric_value_mapping_count_before);
@@ -10385,6 +10394,26 @@ pub const Runspace = struct {
     }
 
     pub fn installFabricPlan(self: *@This(), parent_target_ref: TargetRef, plan: Fabric.Plan) !void {
+        try self.installFabricPlanWithLinkerScope(parent_target_ref, plan, null, null, null);
+    }
+
+    pub fn installFabricPlanFromAssembly(self: *@This(), assembly: Assembly, plan: Fabric.Plan) !void {
+        try self.installFabricPlanWithLinkerScope(
+            assembly.root_target_ref,
+            plan,
+            assembly.link_plan_fingerprint,
+            assembly.linker_certificate_fingerprint,
+            assembly.assembly_fingerprint,
+        );
+    }
+
+    fn recordInstalledFabricPlanLinkerScope(self: *@This(), index: usize, link_plan_fingerprint: ?u64, linker_certificate_fingerprint: ?u64, assembly_fingerprint: ?u64) !void {
+        try mergeOptionalFingerprint(&self.fabric_plan_link_plan_fingerprints.items[index], link_plan_fingerprint);
+        try mergeOptionalFingerprint(&self.fabric_plan_linker_certificate_fingerprints.items[index], linker_certificate_fingerprint);
+        try mergeOptionalFingerprint(&self.fabric_plan_assembly_fingerprints.items[index], assembly_fingerprint);
+    }
+
+    fn installFabricPlanWithLinkerScope(self: *@This(), parent_target_ref: TargetRef, plan: Fabric.Plan, link_plan_fingerprint: ?u64, linker_certificate_fingerprint: ?u64, assembly_fingerprint: ?u64) !void {
         try validateTargetRef(parent_target_ref);
         if (plan.target_ref_fingerprint != parent_target_ref.target_ref_fingerprint) return error.HandoffTargetMismatch;
         if (plan.world_surface_fingerprint != parent_target_ref.world_surface_fingerprint) return error.WrongWorldSurface;
@@ -10393,12 +10422,21 @@ pub const Runspace = struct {
         try plan.assertNoCyclesForTargetRef(parent_target_ref);
         try plan.assertDeterministicRouteOrder();
         try plan.assertExecutableMappings();
-        if (self.hasInstalledFabricPlan(plan.plan_fingerprint)) return;
+        if (self.installedFabricPlanIndex(plan.plan_fingerprint)) |index| {
+            try self.recordInstalledFabricPlanLinkerScope(index, link_plan_fingerprint, linker_certificate_fingerprint, assembly_fingerprint);
+            return;
+        }
         try self.fabric_plan_fingerprints.ensureUnusedCapacity(self.allocator, 1);
+        try self.fabric_plan_link_plan_fingerprints.ensureUnusedCapacity(self.allocator, 1);
+        try self.fabric_plan_linker_certificate_fingerprints.ensureUnusedCapacity(self.allocator, 1);
+        try self.fabric_plan_assembly_fingerprints.ensureUnusedCapacity(self.allocator, 1);
         try self.fabric_routes.ensureUnusedCapacity(self.allocator, plan.routes.len);
         try self.fabric_route_plan_fingerprints.ensureUnusedCapacity(self.allocator, plan.routes.len);
         try self.fabric_value_mappings.ensureUnusedCapacity(self.allocator, plan.value_mappings.len);
         self.fabric_plan_fingerprints.appendAssumeCapacity(plan.plan_fingerprint);
+        self.fabric_plan_link_plan_fingerprints.appendAssumeCapacity(link_plan_fingerprint);
+        self.fabric_plan_linker_certificate_fingerprints.appendAssumeCapacity(linker_certificate_fingerprint);
+        self.fabric_plan_assembly_fingerprints.appendAssumeCapacity(assembly_fingerprint);
         for (plan.routes) |route| {
             self.fabric_routes.appendAssumeCapacity(route);
             self.fabric_route_plan_fingerprints.appendAssumeCapacity(plan.plan_fingerprint);
@@ -10408,7 +10446,10 @@ pub const Runspace = struct {
 
     pub fn installAssembly(self: *@This(), assembly: Assembly) !void {
         try validateTargetRef(assembly.root_target_ref);
-        try assembly.installIntoRunspace(self);
+        try assembly.validate();
+        for (assembly.fabric_plans) |fabric_plan| {
+            try self.installFabricPlanFromAssembly(assembly, fabric_plan);
+        }
     }
 
     pub fn routePending(self: *@This(), mailbox_id: u64, plan: Fabric.Plan) !Fabric.Invocation {
@@ -10946,10 +10987,35 @@ pub const Runspace = struct {
         const parent_slot = self.slots.items[try self.slotIndex(pending.handle)];
         if (fabricPlanFingerprintForSlot(parent_slot)) |expected_fingerprint| {
             if (plan.plan_fingerprint != expected_fingerprint) return error.SupervisionDenied;
+        } else {
+            try self.validateLinkerScopedFabricPlanForSlot(parent_slot, plan.plan_fingerprint);
         }
         try plan.validate();
         try plan.assertNoCycles();
         try plan.assertDeterministicRouteOrder();
+    }
+
+    fn validateLinkerScopedFabricPlanForSlot(self: *@This(), slot: Runspace.RunSlot, plan_fingerprint: u64) !void {
+        var cloned_supervisor: ?Supervision.Supervisor = null;
+        defer if (cloned_supervisor) |*supervisor| supervisor.deinit();
+        const permit = if (slot.supervisor) |supervisor|
+            supervisor.permit
+        else if (slot.driver) |driver| permit: {
+            cloned_supervisor = try driver.cloneSupervisor(self.allocator);
+            const supervisor = cloned_supervisor orelse return;
+            break :permit supervisor.permit;
+        } else return;
+        if (permit.fabric_plan_fingerprint != null or !permitHasLinkerScope(permit)) return;
+        const index = self.installedFabricPlanIndex(plan_fingerprint) orelse return error.FabricMissingRoute;
+        if (permit.link_plan_fingerprint) |fingerprint| {
+            if (self.fabric_plan_link_plan_fingerprints.items[index] != fingerprint) return error.SupervisionDenied;
+        }
+        if (permit.linker_certificate_fingerprint) |fingerprint| {
+            if (self.fabric_plan_linker_certificate_fingerprints.items[index] != fingerprint) return error.SupervisionDenied;
+        }
+        if (permit.assembly_fingerprint) |fingerprint| {
+            if (self.fabric_plan_assembly_fingerprints.items[index] != fingerprint) return error.SupervisionDenied;
+        }
     }
 
     fn fabricPlanFingerprintForSlot(slot: Runspace.RunSlot) ?u64 {
@@ -10974,10 +11040,14 @@ pub const Runspace = struct {
     }
 
     fn hasInstalledFabricPlan(self: *const @This(), plan_fingerprint: u64) bool {
-        for (self.fabric_plan_fingerprints.items) |installed| {
-            if (installed == plan_fingerprint) return true;
+        return self.installedFabricPlanIndex(plan_fingerprint) != null;
+    }
+
+    fn installedFabricPlanIndex(self: *const @This(), plan_fingerprint: u64) ?usize {
+        for (self.fabric_plan_fingerprints.items, 0..) |installed, index| {
+            if (installed == plan_fingerprint) return index;
         }
-        return false;
+        return null;
     }
 
     fn installedFabricRoute(self: *const @This(), route_fingerprint: u64) !Fabric.Route {
@@ -18769,6 +18839,15 @@ fn permitHasLinkerScope(permit: RunPermit) bool {
     return permit.link_plan_fingerprint != null or
         permit.linker_certificate_fingerprint != null or
         permit.assembly_fingerprint != null;
+}
+
+fn mergeOptionalFingerprint(existing: *?u64, incoming: ?u64) !void {
+    const value = incoming orelse return;
+    if (existing.*) |current| {
+        if (current != value) return error.InvalidFrameEncoding;
+    } else {
+        existing.* = value;
+    }
 }
 
 fn acceptanceReportHasOnlyMissingBinding(report: AcceptanceReport) bool {
