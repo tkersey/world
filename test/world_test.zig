@@ -2297,6 +2297,17 @@ test "assembly preflight aggregates split root fabric plan coverage" {
     try std.testing.expectEqual(split_assembly.assembly_fingerprint, split_report.assembly_fingerprint.?);
     try std.testing.expectEqual(decide_plan.plan_fingerprint, split_report.fabric_plan_fingerprint.?);
 
+    const assembly_permit = world.Supervision.issue(fixtures.Agent.Target, AgentMissingEnv, .{
+        .mode = .fresh,
+        .transcript_image_available = true,
+        .link_plan_fingerprint = split_assembly.link_plan_fingerprint,
+        .linker_certificate_fingerprint = split_assembly.linker_certificate_fingerprint,
+        .assembly_fingerprint = split_assembly.assembly_fingerprint,
+        .policy = world.SupervisionPolicy.audit_only,
+    });
+    const assembly_permit_report = AgentMissingEnv.preflightAssemblyWithPermit(.fresh, true, split_assembly, assembly_permit);
+    try std.testing.expect(assembly_permit_report.accepted);
+
     const duplicate_assembly = world.Assembly.init(.{
         .root_target_ref = root_ref,
         .link_plan_fingerprint = 0x5150_1001,
@@ -12309,6 +12320,29 @@ test "runspace pending port validates response identity and consumes once" {
     var wrong_replay_key = response_2;
     wrong_replay_key.replay_key += 1;
     try std.testing.expectError(error.ReplayMissing, (try mailbox.get(12)).validateResponse(wrong_replay_key));
+
+    var forged_image = try world.Frame.ValueImage.fromValue(
+        std.testing.allocator,
+        request_2.expected_response_value_table_id,
+        response_2.response_fingerprint +% 1,
+        null,
+        @as(i32, 7),
+        world.ValuePolicy.portable,
+    );
+    defer forged_image.deinit(std.testing.allocator);
+    const forged_response_boundary = world.Frame.Response.init(.{
+        .world_surface_fingerprint = request_2.world_surface_fingerprint,
+        .target_certificate_fingerprint = request_2.target_certificate_fingerprint,
+        .world_port_id = request_2.world_port_id,
+        .request_fingerprint = request_2.request_fingerprint,
+        .response_kind = response_2.response_kind,
+        .response_value_table_id = request_2.expected_response_value_table_id,
+        .response_fingerprint = response_2.response_fingerprint,
+        .response_image = forged_image,
+        .replay_key = response_2.replay_key,
+        .status = .responded,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, (try mailbox.get(12)).validateResponse(forged_response_boundary));
 }
 
 test "runspace event fingerprints include kind handle mailbox and status" {

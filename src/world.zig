@@ -4672,7 +4672,7 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
         }
 
         pub fn acceptanceReportWithPermit(requested_mode: Mode, transcript_image_available: bool, permit: RunPermit) AcceptanceReport {
-            return acceptanceReportWithPermitFromReport(acceptanceReportFor(Target, bindings, policy, requested_mode, transcript_image_available), requested_mode, transcript_image_available, permit, null, false);
+            return acceptanceReportWithPermitFromReport(acceptanceReportFor(Target, bindings, policy, requested_mode, transcript_image_available), requested_mode, transcript_image_available, permit, null, false, false);
         }
 
         pub fn acceptanceReportWithFabricPlanAndPermit(requested_mode: Mode, transcript_image_available: bool, plan: Fabric.Plan, permit: RunPermit) AcceptanceReport {
@@ -4681,7 +4681,7 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
 
         pub fn acceptanceReportWithFabricPlanAndPermitEvidence(requested_mode: Mode, transcript_image_available: bool, fabric_replay_transcript_available: bool, plan: Fabric.Plan, permit: RunPermit) AcceptanceReport {
             const base_report = acceptanceReportWithFabricPlanEvidence(requested_mode, transcript_image_available, fabric_replay_transcript_available, plan);
-            const report = acceptanceReportWithPermitFromReport(base_report, requested_mode, transcript_image_available, permit, plan, false);
+            const report = acceptanceReportWithPermitFromReport(base_report, requested_mode, transcript_image_available, permit, plan, false, false);
             return acceptanceReportWithFabricPlanPermitRoutes(report, requested_mode, plan, permit);
         }
 
@@ -4698,7 +4698,7 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
             const base_report = preflightAssemblyEvidence(requested_mode, transcript_image_available, fabric_replay_transcript_available, assembly);
             if (!base_report.accepted) return base_report;
             const maybe_plan = assemblyFabricPlanForTarget(assembly);
-            const permit_report = acceptanceReportWithPermitFromReport(base_report, requested_mode, transcript_image_available, permit, maybe_plan, false);
+            const permit_report = acceptanceReportWithPermitFromReport(base_report, requested_mode, transcript_image_available, permit, maybe_plan, false, true);
             return reportWithAssemblyEvidence(acceptanceReportWithAssemblyFabricPlanPermitRoutes(permit_report, requested_mode, assembly, permit), assembly);
         }
 
@@ -4708,7 +4708,7 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
 
         pub fn acceptanceReportWithFabricPlanAndPermitForHandoffEvidence(requested_mode: Mode, transcript_image_available: bool, fabric_replay_transcript_available: bool, plan: Fabric.Plan, permit: RunPermit) AcceptanceReport {
             const base_report = acceptanceReportWithFabricPlanEvidence(requested_mode, transcript_image_available, fabric_replay_transcript_available, plan);
-            const report = acceptanceReportWithPermitFromReport(base_report, requested_mode, transcript_image_available, permit, plan, true);
+            const report = acceptanceReportWithPermitFromReport(base_report, requested_mode, transcript_image_available, permit, plan, true, false);
             return acceptanceReportWithFabricPlanPermitRoutes(report, requested_mode, plan, permit);
         }
 
@@ -4790,9 +4790,12 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
         fn acceptanceReportWithAssemblyFabricPlanPermitRoutes(report: AcceptanceReport, requested_mode: Mode, assembly: Assembly, permit: RunPermit) AcceptanceReport {
             if (!report.accepted) return report;
             var result = report;
+            const linker_scoped_plans = permit.fabric_plan_fingerprint == null and permitHasLinkerScope(permit);
             for (assembly.fabric_plans) |plan| {
                 if (!fabricPlanTargetsEnvironment(plan)) continue;
-                if (permit.fabric_plan_fingerprint == null or permit.fabric_plan_fingerprint.? != plan.plan_fingerprint) {
+                if (permit.fabric_plan_fingerprint) |fingerprint| {
+                    if (fingerprint != plan.plan_fingerprint) return rejectedReport(result, &.{.SupervisionPolicyMismatch});
+                } else if (!linker_scoped_plans) {
                     return rejectedReport(result, &.{.SupervisionPolicyMismatch});
                 }
                 result = acceptanceReportWithFabricPlanPermitRoutes(result, requested_mode, plan, permit);
@@ -4823,7 +4826,7 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
             return result;
         }
 
-        fn acceptanceReportWithPermitFromReport(base_report: AcceptanceReport, requested_mode: Mode, transcript_image_available: bool, permit: RunPermit, fabric_plan: ?Fabric.Plan, comptime fabric_owns_bound_ports: bool) AcceptanceReport {
+        fn acceptanceReportWithPermitFromReport(base_report: AcceptanceReport, requested_mode: Mode, transcript_image_available: bool, permit: RunPermit, fabric_plan: ?Fabric.Plan, comptime fabric_owns_bound_ports: bool, comptime allow_linker_scoped_fabric_plan: bool) AcceptanceReport {
             const environment_target_ref = TargetRef.fromTarget(Target);
             if (permit.mode != requested_mode) {
                 return rejectedAcceptance(environment_target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
@@ -4844,7 +4847,8 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
             if (permit.binding_plan_fingerprint != cert.binding_plan_fingerprint) {
                 return rejectedAcceptance(environment_target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
             }
-            if (base_report.fabric_plan_fingerprint != permit.fabric_plan_fingerprint) {
+            const linker_scoped_fabric_plan = allow_linker_scoped_fabric_plan and permit.fabric_plan_fingerprint == null and permitHasLinkerScope(permit);
+            if (!linker_scoped_fabric_plan and base_report.fabric_plan_fingerprint != permit.fabric_plan_fingerprint) {
                 return rejectedAcceptance(environment_target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
             }
             const report = acceptanceReportWithSupervisionFromReport(base_report, requested_mode, transcript_image_available, permit.policy, fabric_plan, fabric_owns_bound_ports);
@@ -5553,7 +5557,7 @@ pub const Frame = struct {
             });
             result.owns_error_tag = error_tag != null;
             result.owns_reason = reason != null;
-            try validateResponseFrameImage(result);
+            try validateResponseFrameImage(result, false);
             if (result.frame_fingerprint != frame_fingerprint) return error.InvalidFrameEncoding;
             return result;
         }
@@ -9075,6 +9079,14 @@ pub const Runspace = struct {
         }
 
         pub fn validateResponse(self: @This(), response: Frame.Response) !void {
+            try self.validateResponseCommon(response, false);
+        }
+
+        fn validateFabricResponse(self: @This(), response: Frame.Response) !void {
+            try self.validateResponseCommon(response, true);
+        }
+
+        fn validateResponseCommon(self: @This(), response: Frame.Response, allow_mapped_boundary_value: bool) !void {
             if (self.status != .pending) return error.PendingPortConsumed;
             if (response.world_surface_fingerprint != self.world_surface_fingerprint) return error.FrameSurfaceMismatch;
             if (response.target_certificate_fingerprint != self.target_certificate_fingerprint) return error.FrameTargetCertificateMismatch;
@@ -9088,7 +9100,7 @@ pub const Runspace = struct {
                     if (response.replay_key != expected_replay_key) return error.ReplayMissing;
                 }
             }
-            try validateResponseFrameImage(response);
+            try validateResponseFrameImage(response, allow_mapped_boundary_value);
         }
 
         pub fn validate(self: @This()) !void {
@@ -10114,7 +10126,11 @@ pub const Runspace = struct {
 
     fn respondWithFabricOwnership(self: *@This(), mailbox_id: u64, response: Frame.Response, allow_active_fabric: bool) !Runspace.RunspaceEvent {
         const pending = try self.mailbox.get(mailbox_id);
-        try pending.validateResponse(response);
+        if (allow_active_fabric) {
+            try pending.validateFabricResponse(response);
+        } else {
+            try pending.validateResponse(response);
+        }
         const index = try self.slotIndex(pending.handle);
         const slot = &self.slots.items[index];
         const fabric_owned_supervision_park = allow_active_fabric and
@@ -17561,7 +17577,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     if (response_frame.status == .pending) {
                         if (account_supervisor) {
                             if (self.supervisor) |*supervisor| {
-                                try validateResponseFrameImage(response_frame);
+                                try validateResponseFrameImage(response_frame, false);
                                 const accounting = try self.responseFrameAccounting(response_frame);
                                 supervisor.afterAdapterResponse(.{
                                     .world_port_id = world_port_id,
@@ -17578,12 +17594,12 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     }
                     if (self.effective_mode != .fresh) return Error.InvalidMode;
                     if (response_frame.status == .responded and response_frame.response_value_table_id != frame.expected_response_value_table_id) return error.FrameValueTableMismatch;
-                    try validateResponseFrameImage(response_frame);
+                    try validateResponseFrameImage(response_frame, false);
                     const deferred_response_fingerprint = response_frame.responseFingerprintDeferred();
                     if (!deferred_response_fingerprint and response_frame.replay_key != frame.replay_key_seed.withResponse(response_frame.response_fingerprint).fingerprint()) return error.ReplayMissing;
                     if (account_supervisor) {
                         if (self.supervisor) |*supervisor| {
-                            try validateResponseFrameImage(response_frame);
+                            try validateResponseFrameImage(response_frame, false);
                             const accounting = try self.responseFrameAccounting(response_frame);
                             supervisor.afterAdapterResponse(.{
                                 .world_port_id = world_port_id,
@@ -18150,7 +18166,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         try stored.as(self.allocator, Decl.Response)
                     else if (event.response_frame) |frame| value: {
                         if (frame.response_value_table_id != valueIdForRuntime(Target, Decl.world_port_id, .@"resume")) return error.FrameValueTableMismatch;
-                        try validateResponseFrameImage(frame);
+                        try validateResponseFrameImage(frame, false);
                         replay_response_frame = frame;
                         break :value try frame.decodeValue(self.allocator, Decl.Response);
                     } else return Error.ReplayMissing;
@@ -18207,7 +18223,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         return err;
                     };
                     if (frame.response_value_table_id != valueIdForRuntime(Target, Decl.world_port_id, .@"resume")) return error.FrameValueTableMismatch;
-                    try validateResponseFrameImage(frame.*);
+                    try validateResponseFrameImage(frame.*, false);
                     const value = try frame.decodeValue(self.allocator, Decl.Response);
                     var value_owned = true;
                     errdefer if (value_owned) deinitOwnedValue(self.allocator, value);
@@ -18305,7 +18321,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         else if (event.response_frame) |frame| value: {
                             expected_response_frame = frame;
                             if (frame.response_value_table_id != valueIdForRuntime(Target, Decl.world_port_id, .@"resume")) return error.FrameValueTableMismatch;
-                            try validateResponseFrameImage(frame);
+                            try validateResponseFrameImage(frame, false);
                             if (frame.response_image) |response_image| {
                                 expected_value_image_fingerprint = response_image.value_image_fingerprint;
                                 expected_value_table_id = response_image.value_table_id;
@@ -18415,7 +18431,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         self.audit.replay_mismatch_count += 1;
                         return err;
                     };
-                    try validateResponseFrameImage(frame.*);
+                    try validateResponseFrameImage(frame.*, false);
                     expected_response_frame.* = frame.*;
                     expected_response_fingerprint.* = frame.response_fingerprint;
                     if (frame.response_value_table_id != valueIdForRuntime(Target, Decl.world_port_id, .@"resume")) return error.FrameValueTableMismatch;
@@ -18747,6 +18763,12 @@ fn fabricRouteRequiresProviderRun(route_kind: Fabric.RouteKind) bool {
         .target_export, .admitted_run, .guest => true,
         .adapter, .replay, .reject, .unsupported => false,
     };
+}
+
+fn permitHasLinkerScope(permit: RunPermit) bool {
+    return permit.link_plan_fingerprint != null or
+        permit.linker_certificate_fingerprint != null or
+        permit.assembly_fingerprint != null;
 }
 
 fn acceptanceReportHasOnlyMissingBinding(report: AcceptanceReport) bool {
@@ -19231,7 +19253,7 @@ fn validateAdmissionEventWitness(event: TranscriptImage.EventImage) !void {
     }
 }
 
-fn validateResponseFrameImage(frame: Frame.Response) !void {
+fn validateResponseFrameImage(frame: Frame.Response, allow_mapped_boundary_value: bool) !void {
     if (frame.format_version != world_frame_response_format_version) return error.InvalidFrameEncoding;
     if (frame.fingerprint_version != world_frame_response_fingerprint_version) return error.InvalidFrameEncoding;
     if (fingerprintResponse(frame) != frame.frame_fingerprint) return error.InvalidFrameEncoding;
@@ -19246,8 +19268,11 @@ fn validateResponseFrameImage(frame: Frame.Response) !void {
         try validateValueImage(image);
         if (frame.response_value_fingerprint != image.value_image_fingerprint) return error.InvalidFrameEncoding;
         if (image.value_table_id != frame.response_value_table_id) return error.InvalidFrameEncoding;
-        if (!deferred_response_fingerprint and image.boundary_value_fingerprint == null) {
-            return error.InvalidFrameEncoding;
+        if (!deferred_response_fingerprint) {
+            const boundary_value_fingerprint = image.boundary_value_fingerprint orelse return error.InvalidFrameEncoding;
+            if (!allow_mapped_boundary_value and boundary_value_fingerprint != frame.response_fingerprint) {
+                return error.InvalidFrameEncoding;
+            }
         }
     } else if (frame.response_value_fingerprint != null) {
         return error.InvalidFrameEncoding;
@@ -19370,7 +19395,7 @@ fn validateTranscriptEventFrameBindings(event: TranscriptImage.EventImage) !void
     }
     if (event.response_frame) |frame| {
         if (!eventKindAllowsResponseFrame(event.kind)) return error.InvalidFrameEncoding;
-        try validateResponseFrameImage(frame);
+        try validateResponseFrameImage(frame, false);
         if (frame.responseFingerprintDeferred()) return error.InvalidFrameEncoding;
         if (frame.world_surface_fingerprint != event.world_surface_fingerprint) return error.InvalidFrameEncoding;
         if (frame.target_certificate_fingerprint != event.target_certificate_fingerprint) return error.InvalidFrameEncoding;
@@ -19540,7 +19565,7 @@ fn eventImageFromTranscriptEvent(allocator: std.mem.Allocator, event: Transcript
     else
         null;
     if (response_frame) |frame| {
-        try validateResponseFrameImage(frame);
+        try validateResponseFrameImage(frame, false);
         try validateResponseFramePolicy(frame, policy);
     }
     const source_response_event = switch (event.kind) {
