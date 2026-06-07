@@ -2240,7 +2240,8 @@ pub const Admission = struct {
         const witnesses_valid =
             (args.certificate == null or capsuleCertificateValid(args.certificate.?)) and
             (args.thaw_plan == null or capsuleThawPlanValid(args.thaw_plan.?)) and
-            (args.restore_report == null or capsuleRestoreReportValid(args.restore_report.?));
+            (args.restore_report == null or capsuleRestoreReportValid(args.restore_report.?)) and
+            (args.restore_report == null or !args.restore_report.?.accepted or capsuleRestoreReportAccepted(args.restore_report.?));
         const witnesses_bound =
             (args.certificate == null or capsuleCertificateMatchesImage(args.image, args.certificate.?)) and
             (args.thaw_plan == null or args.thaw_plan.?.capsule_image_fingerprint == args.image.image_fingerprint) and
@@ -2256,7 +2257,7 @@ pub const Admission = struct {
         const witnesses_accept = switch (args.mode) {
             .inspect_only, .replay_only => if (args.thaw_plan) |plan| plan.blockers.len == 0 else true,
             .verify => if (args.thaw_plan) |plan| plan.blockers.len == 0 else false,
-            .restore_parked, .relink_and_restore => if (args.thaw_plan) |plan| if (args.restore_report) |report| plan.blockers.len == 0 and report.accepted else false else false,
+            .restore_parked, .relink_and_restore => if (args.thaw_plan) |plan| if (args.restore_report) |report| plan.blockers.len == 0 and capsuleRestoreReportAccepted(report) else false else false,
         };
         const request = Admission.AdmissionRequest.init(.{
             .package_fingerprint = args.image.image_fingerprint,
@@ -2316,6 +2317,10 @@ pub const Admission = struct {
     fn capsuleRestoreReportValid(report: Capsule.RestoreReport) bool {
         report.validate() catch return false;
         return true;
+    }
+
+    fn capsuleRestoreReportAccepted(report: Capsule.RestoreReport) bool {
+        return report.accepted and report.blockers.len == 0;
     }
 
     fn capsuleCertificateMatchesImage(image: Capsule.Image, cert: Capsule.Certificate) bool {
@@ -18235,7 +18240,7 @@ pub const Capsule = struct {
                 return error.InvalidFrameEncoding;
             }
             const new_handle = restored_handles[index];
-            const status = runspaceStatusForCapsuleStatus(slot_image.status);
+            const status = try restoredRunspaceStatusForCapsuleSlot(image, slot_image, installed_run_image);
             const parent_run_handle_fingerprint = if (slot_image.parent_run_handle_fingerprint) |parent|
                 try mappedHandleFingerprint(handle_mappings.items, parent)
             else
@@ -18532,7 +18537,7 @@ pub const Capsule = struct {
                 if (entry.mailbox_id != mailbox_id) continue;
                 if (entry.original_run_handle_fingerprint != slot.original_run_handle_fingerprint) return error.InvalidFrameEncoding;
                 if (entry.target_ref_fingerprint != slot.target_ref_fingerprint) return error.InvalidFrameEncoding;
-                if (slot.status == .parked_on_port) {
+                if (slot.status == .parked_on_port or slot.status == .exported) {
                     const run_image_fingerprint = slot.run_image_fingerprint orelse return error.InvalidFrameEncoding;
                     const run_image = capsuleRunImageByFingerprint(image.run_images, run_image_fingerprint) orelse return error.InvalidFrameEncoding;
                     if (run_image.current_state.run_state_fingerprint != slot.run_state_fingerprint) return error.InvalidFrameEncoding;
@@ -18549,7 +18554,7 @@ pub const Capsule = struct {
             for (mailbox.pending_port_entries) |entry| {
                 var coverage_count: usize = 0;
                 for (image.runspace_image.run_slots) |slot| {
-                    if (slot.status != .parked_on_port and slot.status != .parked_on_supervision) continue;
+                    if (!(try slotCoversPendingMailboxEntry(image, slot))) continue;
                     const mailbox_id = slot.current_pending_mailbox_id orelse continue;
                     if (mailbox_id != entry.mailbox_id) continue;
                     if (slot.original_run_handle_fingerprint != entry.original_run_handle_fingerprint) continue;
@@ -18559,6 +18564,18 @@ pub const Capsule = struct {
                 if (coverage_count != 1) return error.InvalidFrameEncoding;
             }
         }
+    }
+
+    fn slotCoversPendingMailboxEntry(image: Image, slot: RunSlotImage) !bool {
+        return switch (slot.status) {
+            .parked_on_port, .parked_on_supervision => true,
+            .exported => switch (capturedRunStateStatus(image, slot) orelse return error.InvalidFrameEncoding) {
+                .parked_on_port, .parked_on_supervision => true,
+                .completed, .failed => false,
+                .not_started, .running => return error.InvalidFrameEncoding,
+            },
+            .admitted, .runnable, .completed, .failed, .rejected => false,
+        };
     }
 
     fn validateRunImageCoverage(image: Image) !void {
@@ -18897,6 +18914,30 @@ pub const Capsule = struct {
             .exported => .exported,
             .rejected => .rejected,
         };
+    }
+
+    fn restoredRunspaceStatusForCapsuleSlot(image: Image, slot_image: RunSlotImage, run_image: ?RunImage) !Runspace.RunStatus {
+        if (slot_image.status != .exported) return runspaceStatusForCapsuleStatus(slot_image.status);
+        const restored = run_image orelse return error.InvalidFrameEncoding;
+        return switch (restored.current_state.status) {
+            .completed => .completed,
+            .parked_on_port => if (capsuleSlotHasPendingMailboxEntry(image, slot_image)) .parked_on_port else .exported,
+            .parked_on_supervision => if (capsuleSlotHasPendingMailboxEntry(image, slot_image)) .parked_on_supervision else .exported,
+            .failed => .failed,
+            .not_started, .running => error.InvalidFrameEncoding,
+        };
+    }
+
+    fn capsuleSlotHasPendingMailboxEntry(image: Image, slot: RunSlotImage) bool {
+        const mailbox_id = slot.current_pending_mailbox_id orelse return false;
+        const mailbox = image.runspace_image.mailbox_image orelse return false;
+        for (mailbox.pending_port_entries) |entry| {
+            if (entry.mailbox_id != mailbox_id) continue;
+            if (entry.original_run_handle_fingerprint != slot.original_run_handle_fingerprint) continue;
+            if (entry.target_ref_fingerprint != slot.target_ref_fingerprint) continue;
+            return true;
+        }
+        return false;
     }
 
     fn runStateStatusForCapsuleStatus(status: RunSlotStatus) RunState.Status {

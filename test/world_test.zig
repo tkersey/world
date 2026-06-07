@@ -2020,6 +2020,32 @@ test "capsule handoff admission binds restore witnesses and receiver permit" {
     try std.testing.expect(!corrupt_restore_rejected.accepted);
     try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, corrupt_restore_rejected.blockers[0]);
 
+    const blocked_accepted_restore = world.Capsule.RestoreReport.init(.{
+        .capsule_image_fingerprint = restore.capsule_image_fingerprint,
+        .thaw_plan_fingerprint = restore.thaw_plan_fingerprint,
+        .restored_runspace_fingerprint = restore.restored_runspace_fingerprint,
+        .restored_root_run_handles = restore.restored_root_run_handles,
+        .restored_provider_run_handles = restore.restored_provider_run_handles,
+        .restored_pending_port_mappings = restore.restored_pending_port_mappings,
+        .restored_fabric_invocation_mappings = restore.restored_fabric_invocation_mappings,
+        .guest_conformance_refs = restore.guest_conformance_refs,
+        .environment_certificate_fingerprint = restore.environment_certificate_fingerprint,
+        .receiver_run_permit_fingerprint = restore.receiver_run_permit_fingerprint,
+        .accepted = true,
+        .blockers = &.{.malformed_image},
+        .warnings = restore.warnings,
+        .summary = "contradictory accepted restore",
+    });
+    const blocked_restore_rejected = world.Admission.capsuleAdmissionReport(.{
+        .mode = .restore_parked,
+        .image = imported,
+        .certificate = cert,
+        .thaw_plan = thaw,
+        .restore_report = blocked_accepted_restore,
+    });
+    try std.testing.expect(!blocked_restore_rejected.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, blocked_restore_rejected.blockers[0]);
+
     var mismatched_cert = cert;
     mismatched_cert.capsule_image_fingerprint +%= 1;
     const cert_rejected = world.Admission.capsuleAdmissionReport(.{
@@ -2572,6 +2598,61 @@ test "capsule parked freeze embeds run image and thaw enforces receiver capacity
     defer handoff_denied_receiver.deinit();
     try std.testing.expectError(error.RunspaceInstallDenied, world.Capsule.thawIntoRunspace(image, &handoff_denied_receiver, target_ref.target_ref_fingerprint, 0, 0x5150_3991, .{ .mode = .restore_parked }));
     try std.testing.expectEqual(@as(usize, 0), handoff_denied_receiver.slots.items.len);
+
+    const original_exported_slot = image.runspace_image.run_slots[0];
+    const exported_slot = world.Capsule.RunSlotImage.init(.{
+        .original_run_handle_fingerprint = original_exported_slot.original_run_handle_fingerprint,
+        .parent_run_handle_fingerprint = original_exported_slot.parent_run_handle_fingerprint,
+        .role = original_exported_slot.role,
+        .target_ref_fingerprint = original_exported_slot.target_ref_fingerprint,
+        .module_ref_fingerprint = original_exported_slot.module_ref_fingerprint,
+        .admission_receipt_fingerprint = original_exported_slot.admission_receipt_fingerprint,
+        .environment_certificate_fingerprint = original_exported_slot.environment_certificate_fingerprint,
+        .run_permit_fingerprint = original_exported_slot.run_permit_fingerprint,
+        .run_state_fingerprint = original_exported_slot.run_state_fingerprint,
+        .run_image_fingerprint = original_exported_slot.run_image_fingerprint,
+        .transcript_image_fingerprint = original_exported_slot.transcript_image_fingerprint,
+        .current_pending_mailbox_id = original_exported_slot.current_pending_mailbox_id,
+        .branch_id = original_exported_slot.branch_id,
+        .checkpoint_refs = original_exported_slot.checkpoint_refs,
+        .fabric_invocation_refs = original_exported_slot.fabric_invocation_refs,
+        .status = .exported,
+    });
+    const exported_slots = [_]world.Capsule.RunSlotImage{exported_slot};
+    const exported_runspace_image = world.Capsule.RunspaceImage.init(.{
+        .runspace_fingerprint = image.runspace_image.runspace_fingerprint,
+        .runspace_report_fingerprint = image.runspace_image.runspace_report_fingerprint,
+        .run_handle_mappings = image.runspace_image.run_handle_mappings,
+        .run_slots = &exported_slots,
+        .mailbox_image = image.runspace_image.mailbox_image,
+        .runspace_event_fingerprints = image.runspace_image.runspace_event_fingerprints,
+        .root_run_handle_fingerprints = image.runspace_image.root_run_handle_fingerprints,
+        .provider_run_handle_fingerprints = image.runspace_image.provider_run_handle_fingerprints,
+        .branch_refs = image.runspace_image.branch_refs,
+        .checkpoint_refs = image.runspace_image.checkpoint_refs,
+        .transcript_image_refs = image.runspace_image.transcript_image_refs,
+        .run_image_refs = image.runspace_image.run_image_refs,
+        .run_receipt_refs = image.runspace_image.run_receipt_refs,
+        .admission_receipt_refs = image.runspace_image.admission_receipt_refs,
+        .permit_refs = image.runspace_image.permit_refs,
+        .active_fabric_invocation_refs = image.runspace_image.active_fabric_invocation_refs,
+    });
+    const exported_image = world.Capsule.Image.init(.{
+        .manifest = image.manifest,
+        .runspace_image = exported_runspace_image,
+        .run_image_refs = image.run_image_refs,
+        .run_images = image.run_images,
+    });
+    try exported_image.validate(.{});
+    var exported_receiver = world.Runspace.init(allocator, .{});
+    defer exported_receiver.deinit();
+    var exported_restore = try world.Capsule.thawIntoRunspace(exported_image, &exported_receiver, target_ref.target_ref_fingerprint, 0, 0x5150_3992, .{ .mode = .restore_parked });
+    defer exported_restore.deinit(allocator);
+    try std.testing.expect(exported_restore.accepted);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, exported_receiver.slots.items[0].status);
+    const exported_mailbox_id = exported_receiver.slots.items[0].pending_mailbox_id orelse return error.ExpectedMailbox;
+    _ = try exported_receiver.reject(exported_mailbox_id, "restored pending rejected");
+    try std.testing.expectEqual(world.Runspace.RunStatus.failed, exported_receiver.slots.items[0].status);
 
     var receiver = world.Runspace.init(allocator, .{});
     defer receiver.deinit();
@@ -20743,6 +20824,20 @@ test "runspace supervised export events carry receipt witnesses" {
         .{ .mode = .restore_parked },
     ));
     try std.testing.expectEqual(@as(usize, 0), capped_receiver.slots.items.len);
+
+    var parked_receiver = world.Runspace.init(std.testing.allocator, .{});
+    defer parked_receiver.deinit();
+    var parked_restore = try world.Capsule.thawIntoRunspace(
+        parked_capsule,
+        &parked_receiver,
+        world.TargetRef.fromTarget(fixtures.Ports.Target).target_ref_fingerprint,
+        PortsEnv.certificate(.fresh, false).certificate_fingerprint,
+        0x5150_3d02,
+        .{ .mode = .restore_parked },
+    );
+    defer parked_restore.deinit(std.testing.allocator);
+    try std.testing.expect(parked_restore.accepted);
+    try std.testing.expectEqual(world.Runspace.RunStatus.exported, parked_receiver.slots.items[0].status);
 
     const sender_receipt_fingerprint: u64 = 0x5eed_cafe;
     const admitted_permit = world.Supervision.issue(fixtures.Strict.Target, StrictEnv, .{
