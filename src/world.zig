@@ -2236,6 +2236,10 @@ pub const Admission = struct {
         thaw_plan: ?Capsule.ThawPlan = null,
         restore_report: ?Capsule.RestoreReport = null,
     }) Admission.AdmissionReport {
+        const witnesses_valid =
+            (args.certificate == null or capsuleCertificateValid(args.certificate.?)) and
+            (args.thaw_plan == null or capsuleThawPlanValid(args.thaw_plan.?)) and
+            (args.restore_report == null or capsuleRestoreReportValid(args.restore_report.?));
         const witnesses_bound =
             (args.certificate == null or args.certificate.?.capsule_image_fingerprint == args.image.image_fingerprint) and
             (args.thaw_plan == null or args.thaw_plan.?.capsule_image_fingerprint == args.image.image_fingerprint) and
@@ -2256,9 +2260,9 @@ pub const Admission = struct {
             .mode = admissionModeForCapsuleAdmission(args.mode),
             .policy_fingerprint = 0,
         });
-        const accepted = witnesses_bound and has_required_witnesses and witnesses_accept;
+        const accepted = witnesses_valid and witnesses_bound and has_required_witnesses and witnesses_accept;
         if (!accepted) {
-            const invalid_witnesses = !witnesses_bound or !has_required_witnesses;
+            const invalid_witnesses = !witnesses_valid or !witnesses_bound or !has_required_witnesses;
             return Admission.AdmissionReport.rejected(.{
                 .request = request,
                 .package_fingerprint = args.image.image_fingerprint,
@@ -2289,6 +2293,21 @@ pub const Admission = struct {
             .capsule_restore_report_fingerprint = if (args.restore_report) |report| report.restore_report_fingerprint else null,
             .summary = "capsule admission accepted",
         });
+    }
+
+    fn capsuleCertificateValid(certificate: Capsule.Certificate) bool {
+        certificate.validate() catch return false;
+        return true;
+    }
+
+    fn capsuleThawPlanValid(plan: Capsule.ThawPlan) bool {
+        plan.validate() catch return false;
+        return true;
+    }
+
+    fn capsuleRestoreReportValid(report: Capsule.RestoreReport) bool {
+        report.validate() catch return false;
+        return true;
     }
 
     pub const AdmissionReceipt = struct {
@@ -17302,6 +17321,11 @@ pub const Capsule = struct {
             }
             self.* = undefined;
         }
+
+        pub fn validate(self: @This()) !void {
+            if (self.fingerprint_version != world_capsule_thaw_plan_fingerprint_version) return error.InvalidFrameEncoding;
+            if (self.thaw_plan_fingerprint != fingerprintThawPlan(self)) return error.InvalidFrameEncoding;
+        }
     };
 
     pub const RestoreReport = struct {
@@ -17372,6 +17396,11 @@ pub const Capsule = struct {
                 allocator.free(self.summary);
             }
             self.* = undefined;
+        }
+
+        pub fn validate(self: @This()) !void {
+            if (self.fingerprint_version != world_capsule_restore_report_fingerprint_version) return error.InvalidFrameEncoding;
+            if (self.restore_report_fingerprint != fingerprintRestoreReport(self)) return error.InvalidFrameEncoding;
         }
     };
 

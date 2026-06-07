@@ -1767,6 +1767,42 @@ test "capsule handoff admission binds restore witnesses and receiver permit" {
     try std.testing.expect(!unwitnessed_restore.accepted);
     try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, unwitnessed_restore.blockers[0]);
 
+    var corrupt_cert = cert;
+    corrupt_cert.certificate_fingerprint +%= 1;
+    const corrupt_cert_rejected = world.Admission.capsuleAdmissionReport(.{
+        .mode = .restore_parked,
+        .image = imported,
+        .certificate = corrupt_cert,
+        .thaw_plan = thaw,
+        .restore_report = restore,
+    });
+    try std.testing.expect(!corrupt_cert_rejected.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, corrupt_cert_rejected.blockers[0]);
+
+    var corrupt_thaw = thaw;
+    corrupt_thaw.thaw_plan_fingerprint +%= 1;
+    const corrupt_thaw_rejected = world.Admission.capsuleAdmissionReport(.{
+        .mode = .restore_parked,
+        .image = imported,
+        .certificate = cert,
+        .thaw_plan = corrupt_thaw,
+        .restore_report = restore,
+    });
+    try std.testing.expect(!corrupt_thaw_rejected.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, corrupt_thaw_rejected.blockers[0]);
+
+    var corrupt_restore = restore;
+    corrupt_restore.restore_report_fingerprint +%= 1;
+    const corrupt_restore_rejected = world.Admission.capsuleAdmissionReport(.{
+        .mode = .restore_parked,
+        .image = imported,
+        .certificate = cert,
+        .thaw_plan = thaw,
+        .restore_report = corrupt_restore,
+    });
+    try std.testing.expect(!corrupt_restore_rejected.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, corrupt_restore_rejected.blockers[0]);
+
     var mismatched_cert = cert;
     mismatched_cert.capsule_image_fingerprint +%= 1;
     const cert_rejected = world.Admission.capsuleAdmissionReport(.{
