@@ -48,6 +48,8 @@ The public root is intentionally small:
 - `world.RunHandle`
 - `world.Guest`
 - `world.Fabric`
+- `world.Linker`
+- `world.Assembly`
 - `world.ConduitPlan`
 - `world.ConduitRoute`
 - `world.AuditImage`
@@ -250,6 +252,22 @@ Fabric is local composition only. It does not implement Boundary provider linkin
 
 See `docs/fabric.md`.
 
+## World Linker
+
+Fabric executes explicit routes. Linker synthesizes explicit routes from a closed set of known modules.
+
+`world.Linker.Catalog` is an in-memory closed provider set: generated targets, module refs, admitted runs, guest providers, replay providers, reject routes, and environment adapters when policy allows. Catalog entries fingerprint provider identity, import/export summaries, admission/environment/permit witnesses, labels, and metadata. Fingerprints exclude handler pointers, runtime pointers, allocator/thread identity, request tokens, credentials, storage, transport, and discovery state.
+
+`world.Linker.ImportIndex` and `world.Linker.ExportIndex` expose root and provider import requirements plus candidate exports. `world.Linker.Match` records why one export can satisfy one parent import: exact value refs, same-schema compatibility when policy allows, explicit hint, replay, adapter, guest, reject, or unsupported. Hints are deterministic tie-breakers; they cannot bypass value compatibility, cycle/depth policy, admission, supervision, or guest-conformance policy.
+
+`world.Linker.link` builds a `LinkGraph`, synthesizes ordinary `world.Fabric.Route` and `world.Fabric.Plan` records, derives residual environment requirements for imports not covered by Fabric, and returns a `LinkPlan`, `LinkReport`, `LinkCertificate`, and executable `world.Assembly`. The certificate is deterministic witness metadata, not a cryptographic signature.
+
+`world.Assembly` does not execute. It installs synthesized Fabric plans into Runspace through the Fabric API and exposes residual imports for Environment preflight. Supervision and Guest conformance can bind the LinkPlan, LinkCertificate, and Assembly fingerprints as provenance.
+
+Linker is closed-world assembly linking only. It does not implement service discovery, package management, artifact registries, storage, xitdb, network transport, schedulers, async runtimes, real integrations, provider lifecycle, Boundary normalization, TreatyResolver/ProviderHarness hot paths, Boundary loaded-module execution, signing, encryption, or an agent framework.
+
+See `docs/linker.md`.
+
 ## World Guest Conformance
 
 Runspace makes execution local and deterministic. Guest Conformance proves that local execution can cross a runtime boundary.
@@ -301,6 +319,17 @@ zig build run-world-guest-one-port
 zig build run-world-guest-conformance
 zig build run-world-wasm-export-check
 zig build run-world-guest-agent-conformance
+zig build run-world-fabric-target-provider
+zig build run-world-fabric-agent-tool
+zig build run-world-fabric-nested
+zig build run-world-fabric-supervised
+zig build run-world-fabric-cycle-blocked
+zig build run-world-linker-one-provider
+zig build run-world-linker-agent-tool
+zig build run-world-linker-nested-provider
+zig build run-world-linker-ambiguity
+zig build run-world-linker-cycle-blocked
+zig build run-world-linker-guest-conformance
 zig build run-world-supervised-budget
 zig build run-world-supervised-agent
 zig build run-world-supervised-handoff
@@ -333,6 +362,28 @@ zig build check-world-wasm
 `world_wasm_export_check` inspects the freestanding wasm guest artifact for ABI exports and forbidden imports.
 
 `world_guest_agent_conformance` drives an agent-shaped target through model/tool pending frames using canonical response bytes.
+
+`world_fabric_target_provider` routes a parent pending port to an explicit provider target route.
+
+`world_fabric_agent_tool` routes an agent `tool.call` port through Fabric while the model port remains manually answered.
+
+`world_fabric_nested` demonstrates a provider run that parks on its own nested WorldPort.
+
+`world_fabric_supervised` shows Fabric invocation/provider/depth accounting under a permit.
+
+`world_fabric_cycle_blocked` shows same-target cycle rejection before provider mutation.
+
+`world_linker_one_provider` builds a closed catalog with one compatible provider, installs the synthesized assembly into Runspace, and completes without calling the native handler.
+
+`world_linker_agent_tool` links an agent tool provider, routes `tool.call` through the synthesized Fabric plan, and leaves the model port as a residual Environment requirement.
+
+`world_linker_nested_provider` installs root and nested linked assemblies and completes through a two-route provider chain.
+
+`world_linker_ambiguity` shows strict ambiguity rejection and explicit-hint acceptance.
+
+`world_linker_cycle_blocked` reports a LinkGraph cycle blocker before Runspace mutation.
+
+`world_linker_guest_conformance` binds a linked assembly fingerprint to a Guest conformance report fingerprint.
 
 `world_agent_loop` demonstrates an agent-shaped residual surface with `model.decide` and `tool.call` ports. It is not an agent framework; it is a port dispatch and replay fixture.
 

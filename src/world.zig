@@ -216,14 +216,14 @@ pub const world_audit_image_format_version: u32 = 1;
 pub const world_audit_image_fingerprint_version: u32 = 1;
 pub const world_target_ref_format_version: u32 = 2;
 pub const world_target_ref_fingerprint_version: u32 = 1;
-pub const world_import_requirement_fingerprint_version: u32 = 1;
+pub const world_import_requirement_fingerprint_version: u32 = 2;
 pub const world_import_set_fingerprint_version: u32 = 1;
 pub const world_binding_format_version: u32 = 1;
 pub const world_binding_fingerprint_version: u32 = 1;
 pub const world_port_authority_fingerprint_version: u32 = 1;
 pub const world_environment_policy_fingerprint_version: u32 = 1;
 pub const world_binding_plan_fingerprint_version: u32 = 1;
-pub const world_acceptance_report_fingerprint_version: u32 = 2;
+pub const world_acceptance_report_fingerprint_version: u32 = 3;
 pub const world_environment_certificate_format_version: u32 = 1;
 pub const world_environment_certificate_fingerprint_version: u32 = 1;
 pub const world_adapter_descriptor_fingerprint_version: u32 = 1;
@@ -282,6 +282,21 @@ pub const world_fabric_report_format_version: u32 = 1;
 pub const world_fabric_report_fingerprint_version: u32 = 1;
 pub const world_fabric_coverage_report_format_version: u32 = 1;
 pub const world_fabric_coverage_report_fingerprint_version: u32 = 1;
+pub const world_linker_policy_fingerprint_version: u32 = 1;
+pub const world_linker_catalog_fingerprint_version: u32 = 1;
+pub const world_linker_catalog_entry_fingerprint_version: u32 = 1;
+pub const world_linker_import_index_fingerprint_version: u32 = 1;
+pub const world_linker_export_index_fingerprint_version: u32 = 1;
+pub const world_linker_match_fingerprint_version: u32 = 1;
+pub const world_linker_hint_fingerprint_version: u32 = 1;
+pub const world_linker_route_synthesis_fingerprint_version: u32 = 1;
+pub const world_linker_graph_fingerprint_version: u32 = 1;
+pub const world_linker_plan_format_version: u32 = 1;
+pub const world_linker_plan_fingerprint_version: u32 = 1;
+pub const world_linker_report_fingerprint_version: u32 = 1;
+pub const world_linker_certificate_format_version: u32 = 1;
+pub const world_linker_certificate_fingerprint_version: u32 = 1;
+pub const world_assembly_fingerprint_version: u32 = 1;
 pub const world_guest_abi_version: u32 = 1;
 pub const world_guest_abi_contract_fingerprint_version: u32 = 1;
 pub const world_guest_conformance_vector_fingerprint_version: u32 = 2;
@@ -414,10 +429,16 @@ pub const TargetRef = struct {
             self.target_ref_fingerprint == expected.target_ref_fingerprint and
             self.residual_program_plan_hash == expected.residual_program_plan_hash;
     }
+
+    pub fn validate(self: @This()) !void {
+        try validateTargetRef(self);
+    }
 };
 
 pub const ImportRequirement = struct {
     requirement_fingerprint: u64,
+    target_ref_fingerprint: ?u64 = null,
+    world_value_table_fingerprint: ?u64 = null,
     world_surface_fingerprint: u64,
     world_port_id: u32,
     world_port_ref_fingerprint: ?u64 = null,
@@ -425,7 +446,9 @@ pub const ImportRequirement = struct {
     residual_site_index: usize,
     residual_site_fingerprint: u64,
     payload_value_table_id: ?u32 = null,
+    payload_value_ref_fingerprint: ?u64 = null,
     response_value_table_id: ?u32 = null,
+    response_value_ref_fingerprint: ?u64 = null,
     mode: BindingModePolicy = .all,
     allowed_response_kinds: ResponseKindMask = .resume_only,
     replay_key_recipe_fingerprint: ?u64 = null,
@@ -443,8 +466,11 @@ pub const ImportRequirement = struct {
     pub fn fromTargetPort(comptime Target: type, comptime world_port_id: u32) @This() {
         if (world_port_id >= Target.WorldPortTable.entries.len) @compileError("world_port_id out of range");
         const entry = Target.WorldPortTable.entries[world_port_id];
+        const target_ref = TargetRef.fromTarget(Target);
         var result = @This(){
             .requirement_fingerprint = 0,
+            .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+            .world_value_table_fingerprint = target_ref.world_value_table_fingerprint,
             .world_surface_fingerprint = Target.WorldSurface.surface_fingerprint,
             .world_port_id = world_port_id,
             .world_port_ref_fingerprint = refFingerprint(entry.world_port_ref),
@@ -452,7 +478,9 @@ pub const ImportRequirement = struct {
             .residual_site_index = entry.residual_site_index,
             .residual_site_fingerprint = entry.residual_site_fingerprint,
             .payload_value_table_id = valueIdFor(Target, world_port_id, .payload),
+            .payload_value_ref_fingerprint = valueRefFingerprintForTargetPort(Target, world_port_id, .payload),
             .response_value_table_id = valueIdFor(Target, world_port_id, .@"resume"),
+            .response_value_ref_fingerprint = valueRefFingerprintForTargetPort(Target, world_port_id, .@"resume"),
             .replay_key_recipe_fingerprint = replayKeyRecipeFingerprint(Target),
             .suggested_symbolic_name = if (entry.semantic_label) |label| label else entry.op_name,
         };
@@ -874,6 +902,9 @@ pub const AcceptanceReport = struct {
     world_surface_fingerprint: u64,
     target_certificate_fingerprint: u64,
     fabric_plan_fingerprint: ?u64 = null,
+    link_plan_fingerprint: ?u64 = null,
+    linker_certificate_fingerprint: ?u64 = null,
+    assembly_fingerprint: ?u64 = null,
     requested_mode: Mode,
     accepted: bool,
     required_port_count: usize = 0,
@@ -888,6 +919,57 @@ pub const AcceptanceReport = struct {
     blockers: []const AcceptanceBlocker = &.{},
     warnings: []const AcceptanceBlocker = &.{},
     summary: []const u8 = "",
+
+    pub fn init(args: struct {
+        target_ref_fingerprint: u64,
+        world_surface_fingerprint: u64,
+        target_certificate_fingerprint: u64,
+        fabric_plan_fingerprint: ?u64 = null,
+        link_plan_fingerprint: ?u64 = null,
+        linker_certificate_fingerprint: ?u64 = null,
+        assembly_fingerprint: ?u64 = null,
+        requested_mode: Mode,
+        accepted: bool,
+        required_port_count: usize = 0,
+        bound_port_count: usize = 0,
+        missing_port_count: usize = 0,
+        extra_binding_count: usize = 0,
+        replay_only_port_count: usize = 0,
+        native_port_count: usize = 0,
+        byte_adapter_port_count: usize = 0,
+        portable_value_compatible_count: usize = 0,
+        native_only_value_count: usize = 0,
+        blockers: []const AcceptanceBlocker = &.{},
+        warnings: []const AcceptanceBlocker = &.{},
+        summary: []const u8 = "",
+    }) AcceptanceReport {
+        var report = AcceptanceReport{
+            .report_fingerprint = 0,
+            .target_ref_fingerprint = args.target_ref_fingerprint,
+            .world_surface_fingerprint = args.world_surface_fingerprint,
+            .target_certificate_fingerprint = args.target_certificate_fingerprint,
+            .fabric_plan_fingerprint = args.fabric_plan_fingerprint,
+            .link_plan_fingerprint = args.link_plan_fingerprint,
+            .linker_certificate_fingerprint = args.linker_certificate_fingerprint,
+            .assembly_fingerprint = args.assembly_fingerprint,
+            .requested_mode = args.requested_mode,
+            .accepted = args.accepted,
+            .required_port_count = args.required_port_count,
+            .bound_port_count = args.bound_port_count,
+            .missing_port_count = args.missing_port_count,
+            .extra_binding_count = args.extra_binding_count,
+            .replay_only_port_count = args.replay_only_port_count,
+            .native_port_count = args.native_port_count,
+            .byte_adapter_port_count = args.byte_adapter_port_count,
+            .portable_value_compatible_count = args.portable_value_compatible_count,
+            .native_only_value_count = args.native_only_value_count,
+            .blockers = args.blockers,
+            .warnings = args.warnings,
+            .summary = args.summary,
+        };
+        report.report_fingerprint = fingerprintAcceptanceReport(report);
+        return report;
+    }
 };
 
 pub const EnvironmentCertificate = struct {
@@ -930,6 +1012,24 @@ pub const RunReceipt = Supervision.RunReceipt;
 
 pub const ConduitPlan = Fabric.Plan;
 pub const ConduitRoute = Fabric.Route;
+pub const Linker = @import("linker.zig").Linker(@This());
+pub const Assembly = Linker.Assembly;
+
+test "linker kernel boundary source guard rejects forbidden hot path imports" {
+    const source = @embedFile("linker.zig");
+    inline for (.{
+        "Treaty" ++ "Resolver",
+        "Provider" ++ "Harness",
+        "provider_" ++ "catalog",
+        "morphism_" ++ "catalog",
+        "closure_" ++ "graph",
+        "string_match_" ++ "dispatch",
+        "request_" ++ "token",
+        "thread_" ++ "id",
+    }) |forbidden| {
+        try std.testing.expect(std.mem.indexOf(u8, source, forbidden) == null);
+    }
+}
 
 pub const Admission = struct {
     pub const PackageKind = enum {
@@ -1086,6 +1186,12 @@ pub const Admission = struct {
                 .world_dispatch_table_fingerprint = target_ref.world_dispatch_table_fingerprint,
                 .label = target_ref.target_label,
             });
+        }
+
+        pub fn validate(self: Admission.ModuleRef) !void {
+            if (self.format_version != world_module_ref_format_version) return error.InvalidFrameEncoding;
+            if (self.fingerprint_version != world_module_ref_fingerprint_version) return error.InvalidFrameEncoding;
+            if (self.module_ref_fingerprint != fingerprintModuleRef(self)) return error.InvalidFrameEncoding;
         }
     };
 
@@ -1933,6 +2039,9 @@ pub const Admission = struct {
         environment_certificate_fingerprint: ?u64 = null,
         run_permit_fingerprint: ?u64 = null,
         fabric_plan_fingerprint: ?u64 = null,
+        link_plan_fingerprint: ?u64 = null,
+        linker_certificate_fingerprint: ?u64 = null,
+        assembly_fingerprint: ?u64 = null,
         requested_branch_id: ?u64 = null,
         requested_checkpoint_ref: ?u64 = null,
         metadata: []const u8 = "",
@@ -1945,6 +2054,9 @@ pub const Admission = struct {
             environment_certificate_fingerprint: ?u64 = null,
             run_permit_fingerprint: ?u64 = null,
             fabric_plan_fingerprint: ?u64 = null,
+            link_plan_fingerprint: ?u64 = null,
+            linker_certificate_fingerprint: ?u64 = null,
+            assembly_fingerprint: ?u64 = null,
             requested_branch_id: ?u64 = null,
             requested_checkpoint_ref: ?u64 = null,
             metadata: []const u8 = "",
@@ -1958,6 +2070,9 @@ pub const Admission = struct {
                 .environment_certificate_fingerprint = args.environment_certificate_fingerprint,
                 .run_permit_fingerprint = args.run_permit_fingerprint,
                 .fabric_plan_fingerprint = args.fabric_plan_fingerprint,
+                .link_plan_fingerprint = args.link_plan_fingerprint,
+                .linker_certificate_fingerprint = args.linker_certificate_fingerprint,
+                .assembly_fingerprint = args.assembly_fingerprint,
                 .requested_branch_id = args.requested_branch_id,
                 .requested_checkpoint_ref = args.requested_checkpoint_ref,
                 .metadata = args.metadata,
@@ -1979,6 +2094,9 @@ pub const Admission = struct {
         import_set_fingerprint: ?u64 = null,
         environment_acceptance_report_fingerprint: ?u64 = null,
         run_permit_fingerprint: ?u64 = null,
+        link_plan_fingerprint: ?u64 = null,
+        linker_certificate_fingerprint: ?u64 = null,
+        assembly_fingerprint: ?u64 = null,
         handoff_preflight_report_fingerprint: ?u64 = null,
         blockers: []const AdmissionBlocker = &.{},
         warnings: []const AdmissionBlocker = &.{},
@@ -1994,6 +2112,9 @@ pub const Admission = struct {
             import_set_fingerprint: ?u64 = null,
             environment_acceptance_report_fingerprint: ?u64 = null,
             run_permit_fingerprint: ?u64 = null,
+            link_plan_fingerprint: ?u64 = null,
+            linker_certificate_fingerprint: ?u64 = null,
+            assembly_fingerprint: ?u64 = null,
             handoff_preflight_report_fingerprint: ?u64 = null,
             warnings: []const AdmissionBlocker = &.{},
             summary: []const u8 = "admission accepted",
@@ -2010,6 +2131,9 @@ pub const Admission = struct {
                 .import_set_fingerprint = args.import_set_fingerprint,
                 .environment_acceptance_report_fingerprint = args.environment_acceptance_report_fingerprint,
                 .run_permit_fingerprint = args.run_permit_fingerprint,
+                .link_plan_fingerprint = args.link_plan_fingerprint,
+                .linker_certificate_fingerprint = args.linker_certificate_fingerprint,
+                .assembly_fingerprint = args.assembly_fingerprint,
                 .handoff_preflight_report_fingerprint = args.handoff_preflight_report_fingerprint,
                 .warnings = args.warnings,
                 .summary = args.summary,
@@ -2028,6 +2152,9 @@ pub const Admission = struct {
             import_set_fingerprint: ?u64 = null,
             environment_acceptance_report_fingerprint: ?u64 = null,
             run_permit_fingerprint: ?u64 = null,
+            link_plan_fingerprint: ?u64 = null,
+            linker_certificate_fingerprint: ?u64 = null,
+            assembly_fingerprint: ?u64 = null,
             handoff_preflight_report_fingerprint: ?u64 = null,
             blockers: []const AdmissionBlocker,
             warnings: []const AdmissionBlocker = &.{},
@@ -2045,6 +2172,9 @@ pub const Admission = struct {
                 .import_set_fingerprint = args.import_set_fingerprint,
                 .environment_acceptance_report_fingerprint = args.environment_acceptance_report_fingerprint,
                 .run_permit_fingerprint = args.run_permit_fingerprint,
+                .link_plan_fingerprint = args.link_plan_fingerprint,
+                .linker_certificate_fingerprint = args.linker_certificate_fingerprint,
+                .assembly_fingerprint = args.assembly_fingerprint,
                 .handoff_preflight_report_fingerprint = args.handoff_preflight_report_fingerprint,
                 .blockers = args.blockers,
                 .warnings = args.warnings,
@@ -2068,6 +2198,9 @@ pub const Admission = struct {
         target_match_fingerprint: ?u64 = null,
         environment_certificate_fingerprint: ?u64 = null,
         run_permit_fingerprint: ?u64 = null,
+        link_plan_fingerprint: ?u64 = null,
+        linker_certificate_fingerprint: ?u64 = null,
+        assembly_fingerprint: ?u64 = null,
         admitted_run_fingerprint: ?u64 = null,
         accepted_mode: Admission.AdmissionMode,
         warnings: []const AdmissionBlocker = &.{},
@@ -2082,6 +2215,9 @@ pub const Admission = struct {
             target_match_fingerprint: ?u64 = null,
             environment_certificate_fingerprint: ?u64 = null,
             run_permit_fingerprint: ?u64 = null,
+            link_plan_fingerprint: ?u64 = null,
+            linker_certificate_fingerprint: ?u64 = null,
+            assembly_fingerprint: ?u64 = null,
             admitted_run_fingerprint: ?u64 = null,
             warnings: []const AdmissionBlocker = &.{},
             metadata: []const u8 = "",
@@ -2097,6 +2233,9 @@ pub const Admission = struct {
                 .target_match_fingerprint = args.target_match_fingerprint,
                 .environment_certificate_fingerprint = args.environment_certificate_fingerprint,
                 .run_permit_fingerprint = args.run_permit_fingerprint,
+                .link_plan_fingerprint = args.link_plan_fingerprint,
+                .linker_certificate_fingerprint = args.linker_certificate_fingerprint,
+                .assembly_fingerprint = args.assembly_fingerprint,
                 .admitted_run_fingerprint = args.admitted_run_fingerprint,
                 .accepted_mode = args.request.mode,
                 .warnings = args.warnings,
@@ -2117,6 +2256,9 @@ pub const Admission = struct {
         environment_certificate_fingerprint: ?u64 = null,
         environment_acceptance_report_fingerprint: ?u64 = null,
         run_permit: ?RunPermit = null,
+        link_plan_fingerprint: ?u64 = null,
+        linker_certificate_fingerprint: ?u64 = null,
+        assembly_fingerprint: ?u64 = null,
         fabric_plan: ?Fabric.Plan = null,
         run_image: ?RunImage = null,
         owns_run_image: bool = false,
@@ -2135,6 +2277,9 @@ pub const Admission = struct {
             environment_certificate_fingerprint: ?u64 = null,
             environment_acceptance_report_fingerprint: ?u64 = null,
             run_permit: ?RunPermit = null,
+            link_plan_fingerprint: ?u64 = null,
+            linker_certificate_fingerprint: ?u64 = null,
+            assembly_fingerprint: ?u64 = null,
             fabric_plan: ?Fabric.Plan = null,
             run_image: ?RunImage = null,
             owns_run_image: bool = false,
@@ -2154,6 +2299,9 @@ pub const Admission = struct {
                 .environment_certificate_fingerprint = args.environment_certificate_fingerprint,
                 .environment_acceptance_report_fingerprint = args.environment_acceptance_report_fingerprint,
                 .run_permit = args.run_permit,
+                .link_plan_fingerprint = args.link_plan_fingerprint,
+                .linker_certificate_fingerprint = args.linker_certificate_fingerprint,
+                .assembly_fingerprint = args.assembly_fingerprint,
                 .fabric_plan = args.fabric_plan,
                 .run_image = args.run_image,
                 .owns_run_image = args.owns_run_image,
@@ -2307,6 +2455,9 @@ pub const Admission = struct {
             mode: ?Admission.AdmissionMode = null,
             permit: ?RunPermit = null,
             fabric_plan: ?Fabric.Plan = null,
+            link_plan_fingerprint: ?u64 = null,
+            linker_certificate_fingerprint: ?u64 = null,
+            assembly_fingerprint: ?u64 = null,
             requested_branch_id: ?u64 = null,
             requested_checkpoint_ref: ?u64 = null,
             fresh_transcript_sink_available: bool = false,
@@ -2337,6 +2488,9 @@ pub const Admission = struct {
                 .environment_certificate_fingerprint = environment_certificate_fingerprint,
                 .run_permit_fingerprint = if (args.permit) |permit| permit.permit_fingerprint else null,
                 .fabric_plan_fingerprint = if (args.fabric_plan) |plan| plan.plan_fingerprint else null,
+                .link_plan_fingerprint = args.link_plan_fingerprint,
+                .linker_certificate_fingerprint = args.linker_certificate_fingerprint,
+                .assembly_fingerprint = args.assembly_fingerprint,
                 .requested_branch_id = args.requested_branch_id,
                 .requested_checkpoint_ref = args.requested_checkpoint_ref,
                 .metadata = args.metadata,
@@ -2522,12 +2676,30 @@ pub const Admission = struct {
             if (policy.require_supervision_permit and args.permit == null) {
                 return rejectedResult(request, package, target_ref, module_ref, match, &.{.PermitMissing}, "receiver permit is required");
             }
+            if (args.link_plan_fingerprint != null or args.linker_certificate_fingerprint != null or args.assembly_fingerprint != null) {
+                return rejectedResult(request, package, target_ref, module_ref, match, &.{.PermitRejected}, "linker-scoped admission requires assembly preflight");
+            }
             if (args.permit) |permit| {
                 if (permit.target_ref_fingerprint != local_target_ref.target_ref_fingerprint) {
                     return rejectedResult(request, package, target_ref, module_ref, match, &.{.PermitRejected}, "permit target mismatch");
                 }
                 if (permit.admission_receipt_fingerprint != null) {
                     return rejectedResult(request, package, target_ref, module_ref, match, &.{.PermitRejected}, "permit admission scope mismatch");
+                }
+                if (permit.link_plan_fingerprint) |fingerprint| {
+                    if (args.link_plan_fingerprint == null or args.link_plan_fingerprint.? != fingerprint) {
+                        return rejectedResult(request, package, target_ref, module_ref, match, &.{.PermitRejected}, "permit link plan scope mismatch");
+                    }
+                }
+                if (permit.linker_certificate_fingerprint) |fingerprint| {
+                    if (args.linker_certificate_fingerprint == null or args.linker_certificate_fingerprint.? != fingerprint) {
+                        return rejectedResult(request, package, target_ref, module_ref, match, &.{.PermitRejected}, "permit linker certificate scope mismatch");
+                    }
+                }
+                if (permit.assembly_fingerprint) |fingerprint| {
+                    if (args.assembly_fingerprint == null or args.assembly_fingerprint.? != fingerprint) {
+                        return rejectedResult(request, package, target_ref, module_ref, match, &.{.PermitRejected}, "permit assembly scope mismatch");
+                    }
                 }
                 if (permit.module_ref_fingerprint) |permit_module_ref| {
                     if (module_ref == null or module_ref.?.module_ref_fingerprint != permit_module_ref) {
@@ -2604,6 +2776,9 @@ pub const Admission = struct {
                 else
                     Env.acceptanceReport(admissionModeToRunMode(mode), transcript_available).report_fingerprint,
                 .run_permit_fingerprint = if (args.permit) |permit| permit.permit_fingerprint else null,
+                .link_plan_fingerprint = args.link_plan_fingerprint,
+                .linker_certificate_fingerprint = args.linker_certificate_fingerprint,
+                .assembly_fingerprint = args.assembly_fingerprint,
                 .handoff_preflight_report_fingerprint = handoff_preflight_report_fingerprint,
                 .summary = "admission accepted for local execution",
             });
@@ -2616,6 +2791,9 @@ pub const Admission = struct {
                 .target_match_fingerprint = match.match_fingerprint,
                 .environment_certificate_fingerprint = cert.certificate_fingerprint,
                 .run_permit_fingerprint = if (args.permit) |permit| permit.permit_fingerprint else null,
+                .link_plan_fingerprint = args.link_plan_fingerprint,
+                .linker_certificate_fingerprint = args.linker_certificate_fingerprint,
+                .assembly_fingerprint = args.assembly_fingerprint,
             });
             var admitted_run_image: ?RunImage = null;
             var admitted_owns_run_image = false;
@@ -2653,6 +2831,9 @@ pub const Admission = struct {
                 .environment_certificate_fingerprint = cert.certificate_fingerprint,
                 .environment_acceptance_report_fingerprint = report.environment_acceptance_report_fingerprint,
                 .run_permit = args.permit,
+                .link_plan_fingerprint = args.link_plan_fingerprint,
+                .linker_certificate_fingerprint = args.linker_certificate_fingerprint,
+                .assembly_fingerprint = args.assembly_fingerprint,
                 .fabric_plan = args.fabric_plan,
                 .run_image = admitted_run_image,
                 .owns_run_image = admitted_owns_run_image,
@@ -3290,6 +3471,9 @@ pub const Supervision = struct {
         mode: Mode,
         transcript_image_available: bool = false,
         fabric_plan_fingerprint: ?u64 = null,
+        link_plan_fingerprint: ?u64 = null,
+        linker_certificate_fingerprint: ?u64 = null,
+        assembly_fingerprint: ?u64 = null,
         admission_receipt_fingerprint: ?u64 = null,
         module_ref_fingerprint: ?u64 = null,
         supervision_policy_fingerprint: u64,
@@ -3313,6 +3497,9 @@ pub const Supervision = struct {
             mode: Mode,
             transcript_image_available: bool = false,
             fabric_plan_fingerprint: ?u64 = null,
+            link_plan_fingerprint: ?u64 = null,
+            linker_certificate_fingerprint: ?u64 = null,
+            assembly_fingerprint: ?u64 = null,
             admission_receipt_fingerprint: ?u64 = null,
             module_ref_fingerprint: ?u64 = null,
             policy: Supervision.SupervisionPolicy = Supervision.SupervisionPolicy.strict_fresh,
@@ -3337,6 +3524,9 @@ pub const Supervision = struct {
                 .mode = args.mode,
                 .transcript_image_available = args.transcript_image_available,
                 .fabric_plan_fingerprint = args.fabric_plan_fingerprint,
+                .link_plan_fingerprint = args.link_plan_fingerprint,
+                .linker_certificate_fingerprint = args.linker_certificate_fingerprint,
+                .assembly_fingerprint = args.assembly_fingerprint,
                 .admission_receipt_fingerprint = args.admission_receipt_fingerprint,
                 .module_ref_fingerprint = args.module_ref_fingerprint,
                 .supervision_policy_fingerprint = policy.policy_fingerprint,
@@ -3375,6 +3565,9 @@ pub const Supervision = struct {
         const branch_policy: PermitBranchPolicy = if (@hasField(Args, "branch_policy")) args.branch_policy else .inherit;
         const handoff_policy: PermitHandoffPolicy = if (@hasField(Args, "handoff_policy")) args.handoff_policy else .require_new_permit;
         const fabric_plan_fingerprint: ?u64 = if (@hasField(Args, "fabric_plan_fingerprint")) args.fabric_plan_fingerprint else null;
+        const link_plan_fingerprint: ?u64 = if (@hasField(Args, "link_plan_fingerprint")) args.link_plan_fingerprint else null;
+        const linker_certificate_fingerprint: ?u64 = if (@hasField(Args, "linker_certificate_fingerprint")) args.linker_certificate_fingerprint else null;
+        const assembly_fingerprint: ?u64 = if (@hasField(Args, "assembly_fingerprint")) args.assembly_fingerprint else null;
         const admission_receipt_fingerprint: ?u64 = if (@hasField(Args, "admission_receipt_fingerprint")) args.admission_receipt_fingerprint else null;
         const module_ref_fingerprint: ?u64 = if (@hasField(Args, "module_ref_fingerprint")) args.module_ref_fingerprint else null;
         const metadata: []const u8 = if (@hasField(Args, "metadata")) args.metadata else "";
@@ -3389,6 +3582,9 @@ pub const Supervision = struct {
             .mode = mode,
             .transcript_image_available = transcript_available,
             .fabric_plan_fingerprint = fabric_plan_fingerprint,
+            .link_plan_fingerprint = link_plan_fingerprint,
+            .linker_certificate_fingerprint = linker_certificate_fingerprint,
+            .assembly_fingerprint = assembly_fingerprint,
             .admission_receipt_fingerprint = admission_receipt_fingerprint,
             .module_ref_fingerprint = module_ref_fingerprint,
             .policy = policy,
@@ -4431,6 +4627,25 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
             return accepted;
         }
 
+        pub fn preflightAssembly(requested_mode: Mode, transcript_image_available: bool, assembly: Assembly) AcceptanceReport {
+            return preflightAssemblyEvidence(requested_mode, transcript_image_available, transcript_image_available, assembly);
+        }
+
+        pub fn preflightAssemblyEvidence(requested_mode: Mode, transcript_image_available: bool, fabric_replay_transcript_available: bool, assembly: Assembly) AcceptanceReport {
+            assembly.validate() catch return rejectedAcceptance(target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
+            if (assembly.root_target_ref.target_ref_fingerprint != target_ref.target_ref_fingerprint) {
+                return rejectedAcceptance(target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
+            }
+            if (assembly.root_target_ref.world_surface_fingerprint != target_ref.world_surface_fingerprint) {
+                return rejectedAcceptance(target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
+            }
+            if (assembly.root_target_ref.target_certificate_fingerprint != target_ref.target_certificate_fingerprint) {
+                return rejectedAcceptance(target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
+            }
+            const report = acceptanceReportWithAssemblyFabricPlans(requested_mode, transcript_image_available, fabric_replay_transcript_available, assembly);
+            return reportWithAssemblyEvidence(report, assembly);
+        }
+
         pub fn acceptanceReportWithSupervision(requested_mode: Mode, transcript_image_available: bool, supervision_policy: SupervisionPolicy) AcceptanceReport {
             const report = acceptanceReportFor(Target, bindings, policy, requested_mode, transcript_image_available);
             return acceptanceReportWithSupervisionFromReport(report, requested_mode, transcript_image_available, supervision_policy, null, false);
@@ -4460,7 +4675,7 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
         }
 
         pub fn acceptanceReportWithPermit(requested_mode: Mode, transcript_image_available: bool, permit: RunPermit) AcceptanceReport {
-            return acceptanceReportWithPermitFromReport(acceptanceReportFor(Target, bindings, policy, requested_mode, transcript_image_available), requested_mode, transcript_image_available, permit, null, false);
+            return acceptanceReportWithPermitFromReport(acceptanceReportFor(Target, bindings, policy, requested_mode, transcript_image_available), requested_mode, transcript_image_available, permit, null, false, false);
         }
 
         pub fn acceptanceReportWithFabricPlanAndPermit(requested_mode: Mode, transcript_image_available: bool, plan: Fabric.Plan, permit: RunPermit) AcceptanceReport {
@@ -4469,8 +4684,26 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
 
         pub fn acceptanceReportWithFabricPlanAndPermitEvidence(requested_mode: Mode, transcript_image_available: bool, fabric_replay_transcript_available: bool, plan: Fabric.Plan, permit: RunPermit) AcceptanceReport {
             const base_report = acceptanceReportWithFabricPlanEvidence(requested_mode, transcript_image_available, fabric_replay_transcript_available, plan);
-            const report = acceptanceReportWithPermitFromReport(base_report, requested_mode, transcript_image_available, permit, plan, false);
+            const report = acceptanceReportWithPermitFromReport(base_report, requested_mode, transcript_image_available, permit, plan, false, false);
             return acceptanceReportWithFabricPlanPermitRoutes(report, requested_mode, plan, permit);
+        }
+
+        pub fn preflightAssemblyWithPermit(requested_mode: Mode, transcript_image_available: bool, assembly: Assembly, permit: RunPermit) AcceptanceReport {
+            return preflightAssemblyWithPermitEvidence(requested_mode, transcript_image_available, transcript_image_available, assembly, permit);
+        }
+
+        pub fn preflightAssemblyWithPermitEvidence(requested_mode: Mode, transcript_image_available: bool, fabric_replay_transcript_available: bool, assembly: Assembly, permit: RunPermit) AcceptanceReport {
+            assembly.validate() catch return rejectedAcceptance(target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
+            if (assembly.run_permit_fingerprint != null and assembly.run_permit_fingerprint.? != permit.permit_fingerprint) return rejectedAcceptance(target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
+            if (permit.link_plan_fingerprint != null and permit.link_plan_fingerprint.? != assembly.link_plan_fingerprint) return rejectedAcceptance(target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
+            if (permit.linker_certificate_fingerprint != null and permit.linker_certificate_fingerprint.? != assembly.linker_certificate_fingerprint) return rejectedAcceptance(target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
+            if (permit.assembly_fingerprint != null and permit.assembly_fingerprint.? != assembly.assembly_fingerprint) return rejectedAcceptance(target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
+            if (permitRequiresAssemblyFingerprintForLinkerScopedPlans(permit)) return rejectedAcceptance(target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
+            const base_report = preflightAssemblyEvidence(requested_mode, transcript_image_available, fabric_replay_transcript_available, assembly);
+            if (!base_report.accepted) return base_report;
+            const maybe_plan = assemblyFabricPlanForTarget(assembly);
+            const permit_report = acceptanceReportWithPermitFromReport(base_report, requested_mode, transcript_image_available, permit, maybe_plan, false, true);
+            return reportWithAssemblyEvidence(acceptanceReportWithAssemblyFabricPlanPermitRoutes(permit_report, requested_mode, assembly, permit), assembly);
         }
 
         pub fn acceptanceReportWithFabricPlanAndPermitForHandoff(requested_mode: Mode, transcript_image_available: bool, plan: Fabric.Plan, permit: RunPermit) AcceptanceReport {
@@ -4479,7 +4712,7 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
 
         pub fn acceptanceReportWithFabricPlanAndPermitForHandoffEvidence(requested_mode: Mode, transcript_image_available: bool, fabric_replay_transcript_available: bool, plan: Fabric.Plan, permit: RunPermit) AcceptanceReport {
             const base_report = acceptanceReportWithFabricPlanEvidence(requested_mode, transcript_image_available, fabric_replay_transcript_available, plan);
-            const report = acceptanceReportWithPermitFromReport(base_report, requested_mode, transcript_image_available, permit, plan, true);
+            const report = acceptanceReportWithPermitFromReport(base_report, requested_mode, transcript_image_available, permit, plan, true, false);
             return acceptanceReportWithFabricPlanPermitRoutes(report, requested_mode, plan, permit);
         }
 
@@ -4502,7 +4735,102 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
             return report;
         }
 
-        fn acceptanceReportWithPermitFromReport(base_report: AcceptanceReport, requested_mode: Mode, transcript_image_available: bool, permit: RunPermit, fabric_plan: ?Fabric.Plan, comptime fabric_owns_bound_ports: bool) AcceptanceReport {
+        fn assemblyFabricPlanForTarget(assembly: Assembly) ?Fabric.Plan {
+            for (assembly.fabric_plans) |plan| {
+                if (fabricPlanTargetsEnvironment(plan)) {
+                    return plan;
+                }
+            }
+            return null;
+        }
+
+        fn acceptanceReportWithAssemblyFabricPlans(requested_mode: Mode, transcript_image_available: bool, fabric_replay_transcript_available: bool, assembly: Assembly) AcceptanceReport {
+            const base_report = acceptanceReport(requested_mode, transcript_image_available);
+            var report = base_report;
+            var found_plan: ?Fabric.Plan = null;
+            var has_replay_route = false;
+            for (assembly.fabric_plans) |plan| {
+                if (!fabricPlanTargetsEnvironment(plan)) continue;
+                if (!assemblyFabricPlanValidForEnvironment(plan)) return rejectedReport(report, &.{.SupervisionPolicyMismatch});
+                if (found_plan == null) found_plan = plan;
+                if (fabricPlanHasReplayRoute(plan)) has_replay_route = true;
+            }
+            const first_plan = found_plan orelse return report;
+            if (report.accepted) {
+                report.fabric_plan_fingerprint = first_plan.plan_fingerprint;
+                report.report_fingerprint = fingerprintAcceptanceReport(report);
+                if (!fabric_replay_transcript_available and has_replay_route) return rejectedReport(report, &.{.TranscriptImageRequired});
+                return report;
+            }
+            if (!acceptanceReportHasOnlyMissingBinding(report)) return report;
+            const fabric_covered_missing = assemblyFabricCoveredMissingEnvironmentPortCount(Target, bindings, assembly) catch {
+                return rejectedReport(report, &.{.SupervisionPolicyMismatch});
+            } orelse return base_report;
+            report.accepted = true;
+            report.bound_port_count = bindings.len + fabric_covered_missing;
+            report.missing_port_count = 0;
+            report.blockers = &.{};
+            report.summary = "accepted by fabric assembly";
+            report.fabric_plan_fingerprint = first_plan.plan_fingerprint;
+            if (!fabric_replay_transcript_available and has_replay_route) return rejectedReport(report, &.{.TranscriptImageRequired});
+            if (requested_mode == .fresh and !transcript_image_available and !policy.allow_fresh_without_transcript) return rejectedReport(report, &.{.TranscriptImageRequired});
+            if (requested_mode == .replay and !transcript_image_available and policy.require_frame_images_for_replay) return rejectedReport(report, &.{.TranscriptImageRequired});
+            if (requested_mode == .verify and !transcript_image_available and !policy.allow_verify_without_transcript) return rejectedReport(report, &.{.VerifyTranscriptMissing});
+            report.report_fingerprint = fingerprintAcceptanceReport(report);
+            return report;
+        }
+
+        fn assemblyFabricPlanValidForEnvironment(plan: Fabric.Plan) bool {
+            plan.validate() catch return false;
+            plan.assertNoCyclesForTargetRef(target_ref) catch return false;
+            plan.assertDeterministicRouteOrder() catch return false;
+            plan.assertExecutableMappings() catch return false;
+            if (plan.import_set_fingerprint) |fingerprint| {
+                if (fingerprint != import_set.import_set_fingerprint) return false;
+            }
+            return true;
+        }
+
+        fn acceptanceReportWithAssemblyFabricPlanPermitRoutes(report: AcceptanceReport, requested_mode: Mode, assembly: Assembly, permit: RunPermit) AcceptanceReport {
+            if (!report.accepted) return report;
+            var result = report;
+            const linker_scoped_plans = permit.fabric_plan_fingerprint == null and permitHasLinkerScope(permit) and permit.assembly_fingerprint != null;
+            for (assembly.fabric_plans) |plan| {
+                if (!fabricPlanTargetsEnvironment(plan)) continue;
+                if (permit.fabric_plan_fingerprint) |fingerprint| {
+                    if (fingerprint != plan.plan_fingerprint) return rejectedReport(result, &.{.SupervisionPolicyMismatch});
+                } else if (!linker_scoped_plans) {
+                    return rejectedReport(result, &.{.SupervisionPolicyMismatch});
+                }
+                result = acceptanceReportWithFabricPlanPermitRoutes(result, requested_mode, plan, permit);
+                if (!result.accepted) return result;
+            }
+            return result;
+        }
+
+        fn fabricPlanTargetsEnvironment(plan: Fabric.Plan) bool {
+            return plan.target_ref_fingerprint == target_ref.target_ref_fingerprint and
+                plan.world_surface_fingerprint == target_ref.world_surface_fingerprint and
+                plan.target_certificate_fingerprint == target_ref.target_certificate_fingerprint;
+        }
+
+        fn reportWithLinkerCertificate(report: AcceptanceReport, linker_certificate_fingerprint: u64) AcceptanceReport {
+            var result = report;
+            result.linker_certificate_fingerprint = linker_certificate_fingerprint;
+            result.report_fingerprint = fingerprintAcceptanceReport(result);
+            return result;
+        }
+
+        fn reportWithAssemblyEvidence(report: AcceptanceReport, assembly: Assembly) AcceptanceReport {
+            var result = report;
+            result.link_plan_fingerprint = assembly.link_plan_fingerprint;
+            result.linker_certificate_fingerprint = assembly.linker_certificate_fingerprint;
+            result.assembly_fingerprint = assembly.assembly_fingerprint;
+            result.report_fingerprint = fingerprintAcceptanceReport(result);
+            return result;
+        }
+
+        fn acceptanceReportWithPermitFromReport(base_report: AcceptanceReport, requested_mode: Mode, transcript_image_available: bool, permit: RunPermit, fabric_plan: ?Fabric.Plan, comptime fabric_owns_bound_ports: bool, comptime allow_linker_scoped_fabric_plan: bool) AcceptanceReport {
             const environment_target_ref = TargetRef.fromTarget(Target);
             if (permit.mode != requested_mode) {
                 return rejectedAcceptance(environment_target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
@@ -4523,7 +4851,14 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
             if (permit.binding_plan_fingerprint != cert.binding_plan_fingerprint) {
                 return rejectedAcceptance(environment_target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
             }
-            if (base_report.fabric_plan_fingerprint != permit.fabric_plan_fingerprint) {
+            if (!allow_linker_scoped_fabric_plan and permitHasLinkerScope(permit)) {
+                return rejectedAcceptance(environment_target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
+            }
+            const linker_scoped_fabric_plan = allow_linker_scoped_fabric_plan and permit.fabric_plan_fingerprint == null and permitHasLinkerScope(permit);
+            if (linker_scoped_fabric_plan and permitRequiresAssemblyFingerprintForLinkerScopedPlans(permit)) {
+                return rejectedAcceptance(environment_target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
+            }
+            if (!linker_scoped_fabric_plan and base_report.fabric_plan_fingerprint != permit.fabric_plan_fingerprint) {
                 return rejectedAcceptance(environment_target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
             }
             const report = acceptanceReportWithSupervisionFromReport(base_report, requested_mode, transcript_image_available, permit.policy, fabric_plan, fabric_owns_bound_ports);
@@ -5209,8 +5544,8 @@ pub const Frame = struct {
             if (response_image) |image| {
                 if (image.value_table_id != response_value_table_id) return error.InvalidFrameEncoding;
                 if (deferred_response_fingerprint) {
-                    if (image.boundary_value_fingerprint != null) return error.InvalidFrameEncoding;
-                } else if (image.boundary_value_fingerprint != response_fingerprint) {
+                    // Deferred responses may carry a temporary boundary value witness.
+                } else if (image.boundary_value_fingerprint == null) {
                     return error.InvalidFrameEncoding;
                 }
             }
@@ -5231,7 +5566,7 @@ pub const Frame = struct {
             });
             result.owns_error_tag = error_tag != null;
             result.owns_reason = reason != null;
-            try validateResponseFrameImage(result);
+            try validateResponseFrameImage(result, false);
             if (result.frame_fingerprint != frame_fingerprint) return error.InvalidFrameEncoding;
             return result;
         }
@@ -7135,6 +7470,7 @@ pub const Fabric = struct {
                 },
                 .provider_result_to_parent_response => {
                     if (self.provider_result_value_table_id == null or self.parent_response_value_table_id == null) return error.UnsupportedMapping;
+                    if (self.parent_response_value_fingerprint != null and self.provider_result_value_fingerprint == null) return error.UnsupportedMapping;
                     if (self.provider_value_table_id) |generic| {
                         if (generic != self.provider_result_value_table_id.?) return error.UnsupportedMapping;
                     }
@@ -7143,10 +7479,6 @@ pub const Fabric = struct {
                     }
                     if (self.parent_payload_value_table_id != null or self.provider_argument_value_table_id != null) return error.UnsupportedMapping;
                     if (self.parent_payload_value_fingerprint != null or self.provider_argument_value_fingerprint != null) return error.UnsupportedMapping;
-                    if (self.parent_response_value_fingerprint) |parent| {
-                        const provider = self.provider_result_value_fingerprint orelse return error.UnsupportedMapping;
-                        if (provider != parent) return error.UnsupportedMapping;
-                    }
                 },
             }
         }
@@ -7891,6 +8223,9 @@ pub const Runspace = struct {
     events: std.ArrayList(@This().RunspaceEvent) = .empty,
     mailbox: @This().Mailbox,
     fabric_plan_fingerprints: std.ArrayList(u64) = .empty,
+    fabric_plan_link_plan_fingerprints: std.ArrayList(?u64) = .empty,
+    fabric_plan_linker_certificate_fingerprints: std.ArrayList(?u64) = .empty,
+    fabric_plan_assembly_fingerprints: std.ArrayList(?u64) = .empty,
     fabric_routes: std.ArrayList(Fabric.Route) = .empty,
     fabric_route_plan_fingerprints: std.ArrayList(u64) = .empty,
     fabric_value_mappings: std.ArrayList(Fabric.ValueMapping) = .empty,
@@ -7974,6 +8309,7 @@ pub const Runspace = struct {
         response_frame_fingerprint: ?u64 = null,
         response_value_table_id: ?u32 = null,
         response_value_image_fingerprint: ?u64 = null,
+        response_boundary_value_fingerprint: ?u64 = null,
     };
 
     const SlotDriver = struct {
@@ -7983,6 +8319,7 @@ pub const Runspace = struct {
         const VTable = struct {
             nextFrame: *const fn (*anyopaque) anyerror!DriverStep,
             resumeFrame: *const fn (*anyopaque, Frame.Response) anyerror!ResponseEvidence,
+            resumeFabricFrame: *const fn (*anyopaque, Frame.Response) anyerror!ResponseEvidence,
             beforeResponse: *const fn (*anyopaque, u32, ResponseStatus, usize, usize) anyerror!void,
             beforeTerminalResponse: *const fn (*anyopaque, u32, ResponseStatus, usize, usize) anyerror!void,
             beforeFabricInvocation: *const fn (*anyopaque, u32, Fabric.RouteKind, usize, usize) anyerror!void,
@@ -8013,6 +8350,10 @@ pub const Runspace = struct {
 
         fn resumeFrame(self: @This(), response: Frame.Response) !ResponseEvidence {
             return self.vtable.resumeFrame(self.ptr, response);
+        }
+
+        fn resumeFabricFrame(self: @This(), response: Frame.Response) !ResponseEvidence {
+            return self.vtable.resumeFabricFrame(self.ptr, response);
         }
 
         fn beforeResponse(self: @This(), world_port_id: u32, status: ResponseStatus, response_bytes: usize, value_image_bytes: usize) !void {
@@ -8165,6 +8506,12 @@ pub const Runspace = struct {
                         .response_value_table_id = response.response_value_table_id,
                         .response_value_image_fingerprint = response.response_value_fingerprint,
                     };
+                }
+
+                fn runResumeFabricFrame(ptr: *anyopaque, response: Frame.Response) anyerror!ResponseEvidence {
+                    const active: *RunType = @ptrCast(@alignCast(ptr));
+                    if (@hasDecl(RunType, "runspaceResumeFabricFrame")) return active.runspaceResumeFabricFrame(response);
+                    return runResumeFrame(ptr, response);
                 }
 
                 fn runBeforeResponse(ptr: *anyopaque, world_port_id: u32, status: ResponseStatus, response_bytes: usize, value_image_bytes: usize) anyerror!void {
@@ -8336,6 +8683,7 @@ pub const Runspace = struct {
                 const vtable = VTable{
                     .nextFrame = runNextFrame,
                     .resumeFrame = runResumeFrame,
+                    .resumeFabricFrame = runResumeFabricFrame,
                     .beforeResponse = runBeforeResponse,
                     .beforeTerminalResponse = runBeforeTerminalResponse,
                     .beforeFabricInvocation = runBeforeFabricInvocation,
@@ -8756,6 +9104,14 @@ pub const Runspace = struct {
         }
 
         pub fn validateResponse(self: @This(), response: Frame.Response) !void {
+            try self.validateResponseCommon(response, false);
+        }
+
+        fn validateFabricResponse(self: @This(), response: Frame.Response) !void {
+            try self.validateResponseCommon(response, true);
+        }
+
+        fn validateResponseCommon(self: @This(), response: Frame.Response, allow_mapped_boundary_value: bool) !void {
             if (self.status != .pending) return error.PendingPortConsumed;
             if (response.world_surface_fingerprint != self.world_surface_fingerprint) return error.FrameSurfaceMismatch;
             if (response.target_certificate_fingerprint != self.target_certificate_fingerprint) return error.FrameTargetCertificateMismatch;
@@ -8769,7 +9125,7 @@ pub const Runspace = struct {
                     if (response.replay_key != expected_replay_key) return error.ReplayMissing;
                 }
             }
-            try validateResponseFrameImage(response);
+            try validateResponseFrameImage(response, allow_mapped_boundary_value);
         }
 
         pub fn validate(self: @This()) !void {
@@ -9052,6 +9408,9 @@ pub const Runspace = struct {
         self.events.deinit(self.allocator);
         self.mailbox.deinit();
         self.fabric_plan_fingerprints.deinit(self.allocator);
+        self.fabric_plan_link_plan_fingerprints.deinit(self.allocator);
+        self.fabric_plan_linker_certificate_fingerprints.deinit(self.allocator);
+        self.fabric_plan_assembly_fingerprints.deinit(self.allocator);
         self.fabric_routes.deinit(self.allocator);
         self.fabric_route_plan_fingerprints.deinit(self.allocator);
         self.fabric_value_mappings.deinit(self.allocator);
@@ -9083,6 +9442,15 @@ pub const Runspace = struct {
         if (permit.fabric_plan_fingerprint != if (admitted_run.fabric_plan) |plan| plan.plan_fingerprint else null) return error.SupervisionDenied;
         if (permit.admission_receipt_fingerprint) |receipt_fingerprint| {
             if (receipt_fingerprint != admitted_run.admission_receipt_fingerprint) return error.SupervisionDenied;
+        }
+        if (permit.link_plan_fingerprint) |fingerprint| {
+            if (admitted_run.link_plan_fingerprint == null or admitted_run.link_plan_fingerprint.? != fingerprint) return error.SupervisionDenied;
+        }
+        if (permit.linker_certificate_fingerprint) |fingerprint| {
+            if (admitted_run.linker_certificate_fingerprint == null or admitted_run.linker_certificate_fingerprint.? != fingerprint) return error.SupervisionDenied;
+        }
+        if (permit.assembly_fingerprint) |fingerprint| {
+            if (admitted_run.assembly_fingerprint == null or admitted_run.assembly_fingerprint.? != fingerprint) return error.SupervisionDenied;
         }
         if (permit.module_ref_fingerprint) |permit_module_ref| {
             const admitted_module_ref = admitted_run.module_ref_fingerprint orelse if (admitted_run.run_image) |image| image.module_ref_fingerprint else null;
@@ -9149,6 +9517,9 @@ pub const Runspace = struct {
         if (receipt.module_ref_fingerprint != admitted_run.module_ref_fingerprint) return error.InvalidFrameEncoding;
         if (receipt.environment_certificate_fingerprint != admitted_run.environment_certificate_fingerprint) return error.InvalidFrameEncoding;
         if (receipt.run_permit_fingerprint != if (admitted_run.run_permit) |permit| permit.permit_fingerprint else null) return error.InvalidFrameEncoding;
+        if (receipt.link_plan_fingerprint != admitted_run.link_plan_fingerprint) return error.InvalidFrameEncoding;
+        if (receipt.linker_certificate_fingerprint != admitted_run.linker_certificate_fingerprint) return error.InvalidFrameEncoding;
+        if (receipt.assembly_fingerprint != admitted_run.assembly_fingerprint) return error.InvalidFrameEncoding;
         if (receipt.accepted_mode != admitted_run.mode) return error.InvalidFrameEncoding;
     }
 
@@ -9338,6 +9709,9 @@ pub const Runspace = struct {
         var installed = false;
         errdefer if (!installed) {
             self.fabric_plan_fingerprints.shrinkRetainingCapacity(fabric_plan_count_before);
+            self.fabric_plan_link_plan_fingerprints.shrinkRetainingCapacity(fabric_plan_count_before);
+            self.fabric_plan_linker_certificate_fingerprints.shrinkRetainingCapacity(fabric_plan_count_before);
+            self.fabric_plan_assembly_fingerprints.shrinkRetainingCapacity(fabric_plan_count_before);
             self.fabric_routes.shrinkRetainingCapacity(fabric_route_count_before);
             self.fabric_route_plan_fingerprints.shrinkRetainingCapacity(fabric_route_plan_count_before);
             self.fabric_value_mappings.shrinkRetainingCapacity(fabric_value_mapping_count_before);
@@ -9467,7 +9841,12 @@ pub const Runspace = struct {
         if (permit.world_surface_fingerprint != Target.WorldSurface.surface_fingerprint) return error.SupervisionDenied;
         if (permit.target_certificate_fingerprint != Target.Certificate.certificate_fingerprint) return error.SupervisionDenied;
         if (permit.mode != expected_mode) return error.SupervisionDenied;
-        if (permit.admission_receipt_fingerprint != null or permit.module_ref_fingerprint != null or permit.fabric_plan_fingerprint != null) return error.SupervisionDenied;
+        if (permit.admission_receipt_fingerprint != null or
+            permit.module_ref_fingerprint != null or
+            permit.fabric_plan_fingerprint != null or
+            permit.link_plan_fingerprint != null or
+            permit.linker_certificate_fingerprint != null or
+            permit.assembly_fingerprint != null) return error.SupervisionDenied;
         const transcript_available: bool = if (@hasField(Args, "transcript_image_available")) @field(args, "transcript_image_available") else false;
         const Env = if (@TypeOf(env) == type) env else @TypeOf(env);
         if (@hasDecl(Env, "certificate")) {
@@ -9613,7 +9992,12 @@ pub const Runspace = struct {
         if (permit.world_surface_fingerprint != Target.WorldSurface.surface_fingerprint) return error.SupervisionDenied;
         if (permit.target_certificate_fingerprint != Target.Certificate.certificate_fingerprint) return error.SupervisionDenied;
         if (permit.mode != .replay) return error.SupervisionDenied;
-        if (permit.admission_receipt_fingerprint != null or permit.module_ref_fingerprint != null or permit.fabric_plan_fingerprint != null) return error.SupervisionDenied;
+        if (permit.admission_receipt_fingerprint != null or
+            permit.module_ref_fingerprint != null or
+            permit.fabric_plan_fingerprint != null or
+            permit.link_plan_fingerprint != null or
+            permit.linker_certificate_fingerprint != null or
+            permit.assembly_fingerprint != null) return error.SupervisionDenied;
         if (permit.policy.require_environment_certificate) return error.SupervisionDenied;
         if (!permit.transcript_image_available) {
             if (permit.policy.require_transcript_image_for_replay) return error.TranscriptImageRequired;
@@ -9773,7 +10157,11 @@ pub const Runspace = struct {
 
     fn respondWithFabricOwnership(self: *@This(), mailbox_id: u64, response: Frame.Response, allow_active_fabric: bool) !Runspace.RunspaceEvent {
         const pending = try self.mailbox.get(mailbox_id);
-        try pending.validateResponse(response);
+        if (allow_active_fabric) {
+            try pending.validateFabricResponse(response);
+        } else {
+            try pending.validateResponse(response);
+        }
         const index = try self.slotIndex(pending.handle);
         const slot = &self.slots.items[index];
         const fabric_owned_supervision_park = allow_active_fabric and
@@ -9898,7 +10286,7 @@ pub const Runspace = struct {
             .failed => return self.finishTerminalResponse(index, mailbox_id, pending, slot, response, .failed),
         }
         const response_evidence = if (slot.driver) |driver|
-            driver.resumeFrame(response) catch |err| {
+            (if (allow_active_fabric) driver.resumeFabricFrame(response) else driver.resumeFrame(response)) catch |err| {
                 if (err == error.HandlerPending) {
                     if (driver.supervisionInterrupted()) {
                         return self.parkPendingOnSupervision(index, pending, mailbox_id, "manual response parked on supervision");
@@ -9957,6 +10345,7 @@ pub const Runspace = struct {
                 .response_frame_fingerprint = response.frame_fingerprint,
                 .response_value_table_id = response.response_value_table_id,
                 .response_value_image_fingerprint = response.response_value_fingerprint,
+                .response_boundary_value_fingerprint = if (response.response_image) |image| image.boundary_value_fingerprint else null,
             };
         } else return error.InvalidRunspaceTransition;
         if (response.status == .pending) return error.HandlerPending;
@@ -10027,6 +10416,32 @@ pub const Runspace = struct {
     }
 
     pub fn installFabricPlan(self: *@This(), parent_target_ref: TargetRef, plan: Fabric.Plan) !void {
+        try self.installFabricPlanWithLinkerScope(parent_target_ref, plan, null, null, null);
+    }
+
+    pub fn installFabricPlanFromAssembly(self: *@This(), assembly: Assembly, plan: Fabric.Plan) !void {
+        try self.installFabricPlanWithLinkerScope(
+            assembly.root_target_ref,
+            plan,
+            assembly.link_plan_fingerprint,
+            assembly.linker_certificate_fingerprint,
+            assembly.assembly_fingerprint,
+        );
+    }
+
+    fn recordInstalledFabricPlanLinkerScope(self: *@This(), index: usize, link_plan_fingerprint: ?u64, linker_certificate_fingerprint: ?u64, assembly_fingerprint: ?u64) !void {
+        try mergeOptionalFingerprint(&self.fabric_plan_link_plan_fingerprints.items[index], link_plan_fingerprint);
+        try mergeOptionalFingerprint(&self.fabric_plan_linker_certificate_fingerprints.items[index], linker_certificate_fingerprint);
+        try mergeOptionalFingerprint(&self.fabric_plan_assembly_fingerprints.items[index], assembly_fingerprint);
+    }
+
+    fn validateInstalledFabricPlanLinkerScope(self: *const @This(), index: usize, link_plan_fingerprint: ?u64, linker_certificate_fingerprint: ?u64, assembly_fingerprint: ?u64) !void {
+        try validateOptionalFingerprintMerge(self.fabric_plan_link_plan_fingerprints.items[index], link_plan_fingerprint);
+        try validateOptionalFingerprintMerge(self.fabric_plan_linker_certificate_fingerprints.items[index], linker_certificate_fingerprint);
+        try validateOptionalFingerprintMerge(self.fabric_plan_assembly_fingerprints.items[index], assembly_fingerprint);
+    }
+
+    fn validateFabricPlanInstallWithLinkerScope(self: *const @This(), parent_target_ref: TargetRef, plan: Fabric.Plan, link_plan_fingerprint: ?u64, linker_certificate_fingerprint: ?u64, assembly_fingerprint: ?u64) !void {
         try validateTargetRef(parent_target_ref);
         if (plan.target_ref_fingerprint != parent_target_ref.target_ref_fingerprint) return error.HandoffTargetMismatch;
         if (plan.world_surface_fingerprint != parent_target_ref.world_surface_fingerprint) return error.WrongWorldSurface;
@@ -10035,17 +10450,65 @@ pub const Runspace = struct {
         try plan.assertNoCyclesForTargetRef(parent_target_ref);
         try plan.assertDeterministicRouteOrder();
         try plan.assertExecutableMappings();
-        if (self.hasInstalledFabricPlan(plan.plan_fingerprint)) return;
+        if (self.installedFabricPlanIndex(plan.plan_fingerprint)) |index| {
+            try self.validateInstalledFabricPlanLinkerScope(index, link_plan_fingerprint, linker_certificate_fingerprint, assembly_fingerprint);
+        }
+    }
+
+    fn installFabricPlanWithLinkerScope(self: *@This(), parent_target_ref: TargetRef, plan: Fabric.Plan, link_plan_fingerprint: ?u64, linker_certificate_fingerprint: ?u64, assembly_fingerprint: ?u64) !void {
+        try self.validateFabricPlanInstallWithLinkerScope(parent_target_ref, plan, link_plan_fingerprint, linker_certificate_fingerprint, assembly_fingerprint);
+        if (self.installedFabricPlanIndex(plan.plan_fingerprint)) |index| {
+            try self.recordInstalledFabricPlanLinkerScope(index, link_plan_fingerprint, linker_certificate_fingerprint, assembly_fingerprint);
+            return;
+        }
         try self.fabric_plan_fingerprints.ensureUnusedCapacity(self.allocator, 1);
+        try self.fabric_plan_link_plan_fingerprints.ensureUnusedCapacity(self.allocator, 1);
+        try self.fabric_plan_linker_certificate_fingerprints.ensureUnusedCapacity(self.allocator, 1);
+        try self.fabric_plan_assembly_fingerprints.ensureUnusedCapacity(self.allocator, 1);
         try self.fabric_routes.ensureUnusedCapacity(self.allocator, plan.routes.len);
         try self.fabric_route_plan_fingerprints.ensureUnusedCapacity(self.allocator, plan.routes.len);
         try self.fabric_value_mappings.ensureUnusedCapacity(self.allocator, plan.value_mappings.len);
         self.fabric_plan_fingerprints.appendAssumeCapacity(plan.plan_fingerprint);
+        self.fabric_plan_link_plan_fingerprints.appendAssumeCapacity(link_plan_fingerprint);
+        self.fabric_plan_linker_certificate_fingerprints.appendAssumeCapacity(linker_certificate_fingerprint);
+        self.fabric_plan_assembly_fingerprints.appendAssumeCapacity(assembly_fingerprint);
         for (plan.routes) |route| {
             self.fabric_routes.appendAssumeCapacity(route);
             self.fabric_route_plan_fingerprints.appendAssumeCapacity(plan.plan_fingerprint);
         }
         for (plan.value_mappings) |mapping| self.fabric_value_mappings.appendAssumeCapacity(mapping);
+    }
+
+    pub fn installAssembly(self: *@This(), assembly: Assembly) !void {
+        try validateTargetRef(assembly.root_target_ref);
+        try assembly.validate();
+        var new_plan_count: usize = 0;
+        var new_route_count: usize = 0;
+        var new_mapping_count: usize = 0;
+        for (assembly.fabric_plans) |fabric_plan| {
+            try self.validateFabricPlanInstallWithLinkerScope(
+                assembly.root_target_ref,
+                fabric_plan,
+                assembly.link_plan_fingerprint,
+                assembly.linker_certificate_fingerprint,
+                assembly.assembly_fingerprint,
+            );
+            if (self.installedFabricPlanIndex(fabric_plan.plan_fingerprint) == null) {
+                new_plan_count += 1;
+                new_route_count += fabric_plan.routes.len;
+                new_mapping_count += fabric_plan.value_mappings.len;
+            }
+        }
+        try self.fabric_plan_fingerprints.ensureUnusedCapacity(self.allocator, new_plan_count);
+        try self.fabric_plan_link_plan_fingerprints.ensureUnusedCapacity(self.allocator, new_plan_count);
+        try self.fabric_plan_linker_certificate_fingerprints.ensureUnusedCapacity(self.allocator, new_plan_count);
+        try self.fabric_plan_assembly_fingerprints.ensureUnusedCapacity(self.allocator, new_plan_count);
+        try self.fabric_routes.ensureUnusedCapacity(self.allocator, new_route_count);
+        try self.fabric_route_plan_fingerprints.ensureUnusedCapacity(self.allocator, new_route_count);
+        try self.fabric_value_mappings.ensureUnusedCapacity(self.allocator, new_mapping_count);
+        for (assembly.fabric_plans) |fabric_plan| {
+            try self.installFabricPlanFromAssembly(assembly, fabric_plan);
+        }
     }
 
     pub fn routePending(self: *@This(), mailbox_id: u64, plan: Fabric.Plan) !Fabric.Invocation {
@@ -10474,7 +10937,7 @@ pub const Runspace = struct {
         var response_image = try provider_result.cloneForValueContract(self.allocator, mapped_contract.value_table_id, mapped_contract.boundary_value_fingerprint);
         var response_image_owned = true;
         errdefer if (response_image_owned) response_image.deinit(self.allocator);
-        var response = try fabricMappedResponseForPending(pending, response_image, mapped_contract.boundary_value_fingerprint);
+        var response = try fabricMappedResponseForPending(pending, response_image, null);
         response_image_owned = false;
         defer response.deinit(self.allocator);
         const event = self.respondWithFabricOwnership(invocation.parent_mailbox_id, response, true) catch |err| {
@@ -10584,9 +11047,34 @@ pub const Runspace = struct {
         if (fabricPlanFingerprintForSlot(parent_slot)) |expected_fingerprint| {
             if (plan.plan_fingerprint != expected_fingerprint) return error.SupervisionDenied;
         }
+        try self.validateLinkerScopedFabricPlanForSlot(parent_slot, plan.plan_fingerprint);
         try plan.validate();
         try plan.assertNoCycles();
         try plan.assertDeterministicRouteOrder();
+    }
+
+    fn validateLinkerScopedFabricPlanForSlot(self: *@This(), slot: Runspace.RunSlot, plan_fingerprint: u64) !void {
+        var cloned_supervisor: ?Supervision.Supervisor = null;
+        defer if (cloned_supervisor) |*supervisor| supervisor.deinit();
+        const permit = if (slot.supervisor) |supervisor|
+            supervisor.permit
+        else if (slot.driver) |driver| permit: {
+            cloned_supervisor = try driver.cloneSupervisor(self.allocator);
+            const supervisor = cloned_supervisor orelse return;
+            break :permit supervisor.permit;
+        } else return;
+        if (!permitHasLinkerScope(permit)) return;
+        if (permitRequiresAssemblyFingerprintForLinkerScopedPlans(permit)) return error.SupervisionDenied;
+        const index = self.installedFabricPlanIndex(plan_fingerprint) orelse return error.FabricMissingRoute;
+        if (permit.link_plan_fingerprint) |fingerprint| {
+            if (self.fabric_plan_link_plan_fingerprints.items[index] != fingerprint) return error.SupervisionDenied;
+        }
+        if (permit.linker_certificate_fingerprint) |fingerprint| {
+            if (self.fabric_plan_linker_certificate_fingerprints.items[index] != fingerprint) return error.SupervisionDenied;
+        }
+        if (permit.assembly_fingerprint) |fingerprint| {
+            if (self.fabric_plan_assembly_fingerprints.items[index] != fingerprint) return error.SupervisionDenied;
+        }
     }
 
     fn fabricPlanFingerprintForSlot(slot: Runspace.RunSlot) ?u64 {
@@ -10611,10 +11099,14 @@ pub const Runspace = struct {
     }
 
     fn hasInstalledFabricPlan(self: *const @This(), plan_fingerprint: u64) bool {
-        for (self.fabric_plan_fingerprints.items) |installed| {
-            if (installed == plan_fingerprint) return true;
+        return self.installedFabricPlanIndex(plan_fingerprint) != null;
+    }
+
+    fn installedFabricPlanIndex(self: *const @This(), plan_fingerprint: u64) ?usize {
+        for (self.fabric_plan_fingerprints.items, 0..) |installed, index| {
+            if (installed == plan_fingerprint) return index;
         }
-        return false;
+        return null;
     }
 
     fn installedFabricRoute(self: *const @This(), route_fingerprint: u64) !Fabric.Route {
@@ -10687,7 +11179,7 @@ pub const Runspace = struct {
             if (parent_table_id != expected_response_value_table_id) return error.CrossTypeConversionRejected;
             return .{
                 .value_table_id = parent_table_id,
-                .boundary_value_fingerprint = mapping.parent_response_value_fingerprint,
+                .boundary_value_fingerprint = if (mapping.provider_result_value_fingerprint != null) mapping.parent_response_value_fingerprint else null,
             };
         }
         if (provider_result.value_table_id != expected_response_value_table_id) return error.ProviderResultMismatch;
@@ -16328,6 +16820,12 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
         }
 
         fn startWithPermit(runtime: anytype, args: anytype, options: anytype, permit: RunPermit) !Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)) {
+            if (permit.link_plan_fingerprint != null or
+                permit.linker_certificate_fingerprint != null or
+                permit.assembly_fingerprint != null)
+            {
+                return Error.SupervisionDenied;
+            }
             return Run(@TypeOf(runtime), @TypeOf(args), @TypeOf(options)).startWithTranscriptAvailablePermit(runtime, args, options, false, permit, null, null);
         }
 
@@ -16951,16 +17449,27 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 }
 
                 pub fn resumeFrame(self: *Self, response_frame: Frame.Response) !void {
-                    _ = try self.resumeFrameWithProvenance(response_frame, false, true);
+                    _ = try self.resumeFrameWithProvenance(response_frame, false, true, false);
                 }
 
                 pub fn runspaceResumeFrame(self: *Self, response_frame: Frame.Response) !Runspace.ResponseEvidence {
-                    const response_frame_fingerprint = try self.resumeFrameWithProvenance(response_frame, false, false);
+                    const response_frame_fingerprint = try self.resumeFrameWithProvenance(response_frame, false, false, false);
                     return self.last_response_evidence orelse .{
                         .response_fingerprint = response_frame.response_fingerprint,
                         .response_frame_fingerprint = response_frame_fingerprint,
                         .response_value_table_id = response_frame.response_value_table_id,
                         .response_value_image_fingerprint = response_frame.response_value_fingerprint,
+                    };
+                }
+
+                pub fn runspaceResumeFabricFrame(self: *Self, response_frame: Frame.Response) !Runspace.ResponseEvidence {
+                    const response_frame_fingerprint = try self.resumeFrameWithProvenance(response_frame, false, false, true);
+                    return self.last_response_evidence orelse .{
+                        .response_fingerprint = response_frame.response_fingerprint,
+                        .response_frame_fingerprint = response_frame_fingerprint,
+                        .response_value_table_id = response_frame.response_value_table_id,
+                        .response_value_image_fingerprint = response_frame.response_value_fingerprint,
+                        .response_boundary_value_fingerprint = if (response_frame.response_image) |image| image.boundary_value_fingerprint else null,
                     };
                 }
 
@@ -16990,19 +17499,19 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 pub fn runspaceResumeTerminalFrame(self: *Self, response_frame: Frame.Response) !void {
                     switch (response_frame.status) {
                         .rejected => {
-                            _ = self.resumeFrameWithProvenance(response_frame, false, false) catch |err| switch (err) {
+                            _ = self.resumeFrameWithProvenance(response_frame, false, false, false) catch |err| switch (err) {
                                 Error.HandlerRejected => {},
                                 else => return err,
                             };
                         },
                         .failed => {
-                            _ = self.resumeFrameWithProvenance(response_frame, false, false) catch |err| switch (err) {
+                            _ = self.resumeFrameWithProvenance(response_frame, false, false, false) catch |err| switch (err) {
                                 Error.HandlerFailed => {},
                                 else => return err,
                             };
                         },
                         else => {
-                            _ = try self.resumeFrameWithProvenance(response_frame, false, true);
+                            _ = try self.resumeFrameWithProvenance(response_frame, false, true, false);
                         },
                     }
                 }
@@ -17106,7 +17615,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                                 final_result_image = Frame.ValueImage.fromValue(
                                     self.allocator,
                                     evidence.response_value_table_id,
-                                    evidence.response_fingerprint,
+                                    evidence.response_boundary_value_fingerprint orelse evidence.response_fingerprint,
                                     null,
                                     self.done_value,
                                     ValuePolicy.portable,
@@ -17193,10 +17702,10 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                 }
 
                 fn resumeReplayedFrame(self: *Self, response_frame: Frame.Response) !void {
-                    _ = try self.resumeFrameWithProvenance(response_frame, true, true);
+                    _ = try self.resumeFrameWithProvenance(response_frame, true, true, false);
                 }
 
-                fn resumeFrameWithProvenance(self: *Self, response_frame: Frame.Response, comptime replayed: bool, comptime account_supervisor: bool) !u64 {
+                fn resumeFrameWithProvenance(self: *Self, response_frame: Frame.Response, comptime replayed: bool, comptime account_supervisor: bool, comptime allow_mapped_boundary_value: bool) !u64 {
                     const request = self.pending_request orelse return error.UnknownResidualSite;
                     const world_port_id = self.pending_port_id orelse return error.UnknownWorldPort;
                     var frame = try self.pendingRequestFrame(false);
@@ -17208,7 +17717,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     if (response_frame.status == .pending) {
                         if (account_supervisor) {
                             if (self.supervisor) |*supervisor| {
-                                try validateResponseFrameImage(response_frame);
+                                try validateResponseFrameImage(response_frame, allow_mapped_boundary_value);
                                 const accounting = try self.responseFrameAccounting(response_frame);
                                 supervisor.afterAdapterResponse(.{
                                     .world_port_id = world_port_id,
@@ -17225,12 +17734,12 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     }
                     if (self.effective_mode != .fresh) return Error.InvalidMode;
                     if (response_frame.status == .responded and response_frame.response_value_table_id != frame.expected_response_value_table_id) return error.FrameValueTableMismatch;
-                    try validateResponseFrameImage(response_frame);
+                    try validateResponseFrameImage(response_frame, allow_mapped_boundary_value);
                     const deferred_response_fingerprint = response_frame.responseFingerprintDeferred();
                     if (!deferred_response_fingerprint and response_frame.replay_key != frame.replay_key_seed.withResponse(response_frame.response_fingerprint).fingerprint()) return error.ReplayMissing;
                     if (account_supervisor) {
                         if (self.supervisor) |*supervisor| {
-                            try validateResponseFrameImage(response_frame);
+                            try validateResponseFrameImage(response_frame, allow_mapped_boundary_value);
                             const accounting = try self.responseFrameAccounting(response_frame);
                             supervisor.afterAdapterResponse(.{
                                 .world_port_id = world_port_id,
@@ -17435,6 +17944,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     const value = try response_frame.decodeValue(self.allocator, Decl.Response);
                     defer deinitOwnedValue(self.allocator, value);
                     const response_trace = try typed_request.responseTrace(.@"resume", value);
+                    const response_boundary_value_fingerprint = if (response_frame.response_image) |image| image.boundary_value_fingerprint else null;
                     var resolved_response_frame: ?Frame.Response = null;
                     if (response_frame.responseFingerprintDeferred()) {
                         resolved_response_frame = try response_frame.bindDeferredResponseFingerprint(self.allocator, request_frame, response_trace.fingerprint);
@@ -17500,6 +18010,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         .response_frame_fingerprint = effective_response_frame.frame_fingerprint,
                         .response_value_table_id = effective_response_frame.response_value_table_id,
                         .response_value_image_fingerprint = effective_response_frame.response_value_fingerprint,
+                        .response_boundary_value_fingerprint = response_boundary_value_fingerprint orelse if (effective_response_frame.response_image) |image| image.boundary_value_fingerprint else null,
                     };
                     return effective_response_frame.frame_fingerprint;
                 }
@@ -17513,6 +18024,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     const value = try response_frame.decodeValue(self.allocator, Site.Resume);
                     defer deinitOwnedValue(self.allocator, value);
                     const response_trace = try typed_request.responseTrace(.@"resume", value);
+                    const response_boundary_value_fingerprint = if (response_frame.response_image) |image| image.boundary_value_fingerprint else null;
                     var resolved_response_frame: ?Frame.Response = null;
                     if (response_frame.responseFingerprintDeferred()) {
                         resolved_response_frame = try response_frame.bindDeferredResponseFingerprint(self.allocator, request_frame, response_trace.fingerprint);
@@ -17578,6 +18090,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         .response_frame_fingerprint = effective_response_frame.frame_fingerprint,
                         .response_value_table_id = effective_response_frame.response_value_table_id,
                         .response_value_image_fingerprint = effective_response_frame.response_value_fingerprint,
+                        .response_boundary_value_fingerprint = response_boundary_value_fingerprint orelse if (effective_response_frame.response_image) |image| image.boundary_value_fingerprint else null,
                     };
                     return effective_response_frame.frame_fingerprint;
                 }
@@ -17795,7 +18308,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         try stored.as(self.allocator, Decl.Response)
                     else if (event.response_frame) |frame| value: {
                         if (frame.response_value_table_id != valueIdForRuntime(Target, Decl.world_port_id, .@"resume")) return error.FrameValueTableMismatch;
-                        try validateResponseFrameImage(frame);
+                        try validateResponseFrameImage(frame, false);
                         replay_response_frame = frame;
                         break :value try frame.decodeValue(self.allocator, Decl.Response);
                     } else return Error.ReplayMissing;
@@ -17852,7 +18365,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         return err;
                     };
                     if (frame.response_value_table_id != valueIdForRuntime(Target, Decl.world_port_id, .@"resume")) return error.FrameValueTableMismatch;
-                    try validateResponseFrameImage(frame.*);
+                    try validateResponseFrameImage(frame.*, false);
                     const value = try frame.decodeValue(self.allocator, Decl.Response);
                     var value_owned = true;
                     errdefer if (value_owned) deinitOwnedValue(self.allocator, value);
@@ -17950,7 +18463,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         else if (event.response_frame) |frame| value: {
                             expected_response_frame = frame;
                             if (frame.response_value_table_id != valueIdForRuntime(Target, Decl.world_port_id, .@"resume")) return error.FrameValueTableMismatch;
-                            try validateResponseFrameImage(frame);
+                            try validateResponseFrameImage(frame, false);
                             if (frame.response_image) |response_image| {
                                 expected_value_image_fingerprint = response_image.value_image_fingerprint;
                                 expected_value_table_id = response_image.value_table_id;
@@ -18060,7 +18573,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         self.audit.replay_mismatch_count += 1;
                         return err;
                     };
-                    try validateResponseFrameImage(frame.*);
+                    try validateResponseFrameImage(frame.*, false);
                     expected_response_frame.* = frame.*;
                     expected_response_fingerprint.* = frame.response_fingerprint;
                     if (frame.response_value_table_id != valueIdForRuntime(Target, Decl.world_port_id, .@"resume")) return error.FrameValueTableMismatch;
@@ -18394,6 +18907,34 @@ fn fabricRouteRequiresProviderRun(route_kind: Fabric.RouteKind) bool {
     };
 }
 
+fn permitHasLinkerScope(permit: RunPermit) bool {
+    return permit.link_plan_fingerprint != null or
+        permit.linker_certificate_fingerprint != null or
+        permit.assembly_fingerprint != null;
+}
+
+fn permitRequiresAssemblyFingerprintForLinkerScopedPlans(permit: RunPermit) bool {
+    return permit.fabric_plan_fingerprint == null and
+        permit.assembly_fingerprint == null and
+        permitHasLinkerScope(permit);
+}
+
+fn mergeOptionalFingerprint(existing: *?u64, incoming: ?u64) !void {
+    const value = incoming orelse return;
+    if (existing.*) |current| {
+        if (current != value) return error.InvalidFrameEncoding;
+    } else {
+        existing.* = value;
+    }
+}
+
+fn validateOptionalFingerprintMerge(existing: ?u64, incoming: ?u64) !void {
+    const value = incoming orelse return;
+    if (existing) |current| {
+        if (current != value) return error.InvalidFrameEncoding;
+    }
+}
+
 fn acceptanceReportHasOnlyMissingBinding(report: AcceptanceReport) bool {
     if (report.accepted) return false;
     if (report.blockers.len != 1) return false;
@@ -18415,6 +18956,36 @@ fn fabricCoveredMissingEnvironmentPortCount(comptime Target: type, comptime bind
         if (!host_bound) {
             const route = plan.findRouteForPort(@intCast(world_port_id)) orelse return null;
             if (route.kind == .unsupported or route.kind == .adapter) return null;
+            fabric_covered_missing += 1;
+        }
+    }
+    if (bindings.len + fabric_covered_missing < Target.WorldPortTable.entries.len) return null;
+    return fabric_covered_missing;
+}
+
+fn assemblyFabricCoveredMissingEnvironmentPortCount(comptime Target: type, comptime bindings: anytype, assembly: Assembly) !?usize {
+    const target_ref = TargetRef.fromTarget(Target);
+    var fabric_covered_missing: usize = 0;
+    inline for (0..Target.WorldPortTable.entries.len) |world_port_id| {
+        comptime var host_bound = false;
+        inline for (bindings) |BindingDecl| {
+            if (BindingDecl.TargetType == Target and BindingDecl.world_port_id == world_port_id) host_bound = true;
+        }
+        if (!host_bound) {
+            var covered = false;
+            for (assembly.fabric_plans) |plan| {
+                if (plan.target_ref_fingerprint != target_ref.target_ref_fingerprint or
+                    plan.world_surface_fingerprint != target_ref.world_surface_fingerprint or
+                    plan.target_certificate_fingerprint != target_ref.target_certificate_fingerprint)
+                {
+                    continue;
+                }
+                const route = plan.findRouteForPort(@intCast(world_port_id)) orelse continue;
+                if (route.kind == .unsupported or route.kind == .adapter) return error.InvalidFrameEncoding;
+                if (covered) return error.InvalidFrameEncoding;
+                covered = true;
+            }
+            if (!covered) return null;
             fabric_covered_missing += 1;
         }
     }
@@ -18618,6 +19189,13 @@ fn valueIdFor(comptime Target: type, comptime world_port_id: u32, comptime kind:
 fn valueIdForRuntime(comptime Target: type, world_port_id: u32, comptime kind: anytype) ?u32 {
     for (Target.WorldValueTable.entries) |entry| {
         if (entry.world_port_id == world_port_id and entry.kind == kind) return entry.value_id;
+    }
+    return null;
+}
+
+pub fn valueRefFingerprintForTargetPort(comptime Target: type, comptime world_port_id: u32, comptime kind: anytype) ?u64 {
+    inline for (Target.WorldValueTable.entries) |entry| {
+        if (entry.world_port_id == world_port_id and entry.kind == kind) return fingerprintBoundaryValueRef(entry.ref);
     }
     return null;
 }
@@ -18839,7 +19417,7 @@ fn validateAdmissionEventWitness(event: TranscriptImage.EventImage) !void {
     }
 }
 
-fn validateResponseFrameImage(frame: Frame.Response) !void {
+fn validateResponseFrameImage(frame: Frame.Response, allow_mapped_boundary_value: bool) !void {
     if (frame.format_version != world_frame_response_format_version) return error.InvalidFrameEncoding;
     if (frame.fingerprint_version != world_frame_response_fingerprint_version) return error.InvalidFrameEncoding;
     if (fingerprintResponse(frame) != frame.frame_fingerprint) return error.InvalidFrameEncoding;
@@ -18849,15 +19427,17 @@ fn validateResponseFrameImage(frame: Frame.Response) !void {
         if (frame.response_fingerprint != 0) return error.InvalidFrameEncoding;
         if (frame.replay_key != 0) return error.InvalidFrameEncoding;
         if (frame.response_image == null) return error.MissingValueImage;
+        if (!allow_mapped_boundary_value and frame.response_image.?.boundary_value_fingerprint != null) return error.InvalidFrameEncoding;
     }
     if (frame.response_image) |image| {
         try validateValueImage(image);
         if (frame.response_value_fingerprint != image.value_image_fingerprint) return error.InvalidFrameEncoding;
         if (image.value_table_id != frame.response_value_table_id) return error.InvalidFrameEncoding;
-        if (deferred_response_fingerprint) {
-            if (image.boundary_value_fingerprint != null) return error.InvalidFrameEncoding;
-        } else if (image.boundary_value_fingerprint != frame.response_fingerprint) {
-            return error.InvalidFrameEncoding;
+        if (!deferred_response_fingerprint) {
+            const boundary_value_fingerprint = image.boundary_value_fingerprint orelse return error.InvalidFrameEncoding;
+            if (!allow_mapped_boundary_value and boundary_value_fingerprint != frame.response_fingerprint) {
+                return error.InvalidFrameEncoding;
+            }
         }
     } else if (frame.response_value_fingerprint != null) {
         return error.InvalidFrameEncoding;
@@ -18980,7 +19560,7 @@ fn validateTranscriptEventFrameBindings(event: TranscriptImage.EventImage) !void
     }
     if (event.response_frame) |frame| {
         if (!eventKindAllowsResponseFrame(event.kind)) return error.InvalidFrameEncoding;
-        try validateResponseFrameImage(frame);
+        try validateResponseFrameImage(frame, false);
         if (frame.responseFingerprintDeferred()) return error.InvalidFrameEncoding;
         if (frame.world_surface_fingerprint != event.world_surface_fingerprint) return error.InvalidFrameEncoding;
         if (frame.target_certificate_fingerprint != event.target_certificate_fingerprint) return error.InvalidFrameEncoding;
@@ -19150,7 +19730,7 @@ fn eventImageFromTranscriptEvent(allocator: std.mem.Allocator, event: Transcript
     else
         null;
     if (response_frame) |frame| {
-        try validateResponseFrameImage(frame);
+        try validateResponseFrameImage(frame, false);
         try validateResponseFramePolicy(frame, policy);
     }
     const source_response_event = switch (event.kind) {
@@ -20667,6 +21247,8 @@ fn fingerprintImportRequirement(requirement: ImportRequirement) u64 {
     var hasher = std.hash.Wyhash.init(0);
     hashBytes(&hasher, "world.import_requirement.fingerprint");
     hashU64(&hasher, world_import_requirement_fingerprint_version);
+    hashOptionalU64(&hasher, requirement.target_ref_fingerprint);
+    hashOptionalU64(&hasher, requirement.world_value_table_fingerprint);
     hashU64(&hasher, requirement.world_surface_fingerprint);
     hashU64(&hasher, requirement.world_port_id);
     hashOptionalU64(&hasher, requirement.world_port_ref_fingerprint);
@@ -20674,7 +21256,9 @@ fn fingerprintImportRequirement(requirement: ImportRequirement) u64 {
     hashU64(&hasher, requirement.residual_site_index);
     hashU64(&hasher, requirement.residual_site_fingerprint);
     hashOptionalU32(&hasher, requirement.payload_value_table_id);
+    hashOptionalU64(&hasher, requirement.payload_value_ref_fingerprint);
     hashOptionalU32(&hasher, requirement.response_value_table_id);
+    hashOptionalU64(&hasher, requirement.response_value_ref_fingerprint);
     hashU64(&hasher, @intFromEnum(requirement.mode));
     hashU64(&hasher, @intFromEnum(requirement.allowed_response_kinds));
     hashOptionalU64(&hasher, requirement.replay_key_recipe_fingerprint);
@@ -20687,6 +21271,15 @@ fn fingerprintImportRequirement(requirement: ImportRequirement) u64 {
     }
     hashU64(&hasher, requirement.metadata.len);
     hashBytes(&hasher, requirement.metadata);
+    return hasher.final();
+}
+
+fn fingerprintBoundaryValueRef(ref: anytype) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.boundary_value_ref.fingerprint");
+    hashBytes(&hasher, ref.codec);
+    const schema_index: ?u64 = if (ref.schema_index) |index| @as(u64, index) else null;
+    hashOptionalU64(&hasher, schema_index);
     return hasher.final();
 }
 
@@ -20822,7 +21415,10 @@ fn fingerprintAcceptanceReport(report: AcceptanceReport) u64 {
     hashU64(&hasher, report.target_ref_fingerprint);
     hashU64(&hasher, report.world_surface_fingerprint);
     hashU64(&hasher, report.target_certificate_fingerprint);
-    if (report.fabric_plan_fingerprint) |fingerprint| hashU64(&hasher, fingerprint);
+    hashOptionalU64(&hasher, report.fabric_plan_fingerprint);
+    hashOptionalU64(&hasher, report.link_plan_fingerprint);
+    hashOptionalU64(&hasher, report.linker_certificate_fingerprint);
+    hashOptionalU64(&hasher, report.assembly_fingerprint);
     hashU64(&hasher, @intFromEnum(report.requested_mode));
     hashBool(&hasher, report.accepted);
     hashU64(&hasher, report.required_port_count);
@@ -20841,6 +21437,24 @@ fn fingerprintAcceptanceReport(report: AcceptanceReport) u64 {
     hashU64(&hasher, report.summary.len);
     hashBytes(&hasher, report.summary);
     return hasher.final();
+}
+
+test "AcceptanceReport fingerprint tags optional linker evidence fields" {
+    var fabric_only = AcceptanceReport{
+        .report_fingerprint = 0,
+        .target_ref_fingerprint = 0x51ace_7a96,
+        .world_surface_fingerprint = 0x51ace_500f,
+        .target_certificate_fingerprint = 0x51ace_c07e,
+        .fabric_plan_fingerprint = 0xabcd,
+        .requested_mode = .fresh,
+        .accepted = true,
+    };
+    fabric_only.report_fingerprint = fingerprintAcceptanceReport(fabric_only);
+    var link_only = fabric_only;
+    link_only.fabric_plan_fingerprint = null;
+    link_only.link_plan_fingerprint = 0xabcd;
+    link_only.report_fingerprint = fingerprintAcceptanceReport(link_only);
+    try std.testing.expect(fabric_only.report_fingerprint != link_only.report_fingerprint);
 }
 
 fn fingerprintEnvironmentCertificate(cert: EnvironmentCertificate) u64 {
@@ -21045,6 +21659,18 @@ fn fingerprintRunPermit(permit: RunPermit) u64 {
     hashBool(&hasher, permit.transcript_image_available);
     if (permit.fabric_plan_fingerprint) |fingerprint| {
         hashBytes(&hasher, "fabric_plan_fingerprint");
+        hashU64(&hasher, fingerprint);
+    }
+    if (permit.link_plan_fingerprint) |fingerprint| {
+        hashBytes(&hasher, "link_plan_fingerprint");
+        hashU64(&hasher, fingerprint);
+    }
+    if (permit.linker_certificate_fingerprint) |fingerprint| {
+        hashBytes(&hasher, "linker_certificate_fingerprint");
+        hashU64(&hasher, fingerprint);
+    }
+    if (permit.assembly_fingerprint) |fingerprint| {
+        hashBytes(&hasher, "assembly_fingerprint");
         hashU64(&hasher, fingerprint);
     }
     if (permit.admission_receipt_fingerprint) |fingerprint| {
@@ -21704,6 +22330,7 @@ fn fingerprintAdmissionRequest(request: Admission.AdmissionRequest) u64 {
     hashOptionalU64(&hasher, request.environment_certificate_fingerprint);
     hashOptionalU64(&hasher, request.run_permit_fingerprint);
     hashOptionalU64(&hasher, request.fabric_plan_fingerprint);
+    hashLinkerMetadataIfPresent(&hasher, request.link_plan_fingerprint, request.linker_certificate_fingerprint, request.assembly_fingerprint);
     hashOptionalU64(&hasher, request.requested_branch_id);
     hashOptionalU64(&hasher, request.requested_checkpoint_ref);
     hashU64(&hasher, request.metadata.len);
@@ -21725,6 +22352,7 @@ fn fingerprintAdmissionReport(report: Admission.AdmissionReport) u64 {
     hashOptionalU64(&hasher, report.import_set_fingerprint);
     hashOptionalU64(&hasher, report.environment_acceptance_report_fingerprint);
     hashOptionalU64(&hasher, report.run_permit_fingerprint);
+    hashLinkerMetadataIfPresent(&hasher, report.link_plan_fingerprint, report.linker_certificate_fingerprint, report.assembly_fingerprint);
     hashOptionalU64(&hasher, report.handoff_preflight_report_fingerprint);
     hashU64(&hasher, report.blockers.len);
     for (report.blockers) |blocker| hashU64(&hasher, @intFromEnum(blocker));
@@ -21748,6 +22376,7 @@ fn fingerprintAdmissionReceipt(receipt: Admission.AdmissionReceipt) u64 {
     hashOptionalU64(&hasher, receipt.target_match_fingerprint);
     hashOptionalU64(&hasher, receipt.environment_certificate_fingerprint);
     hashOptionalU64(&hasher, receipt.run_permit_fingerprint);
+    hashLinkerMetadataIfPresent(&hasher, receipt.link_plan_fingerprint, receipt.linker_certificate_fingerprint, receipt.assembly_fingerprint);
     hashOptionalU64(&hasher, receipt.admitted_run_fingerprint);
     hashU64(&hasher, @intFromEnum(receipt.accepted_mode));
     hashU64(&hasher, receipt.warnings.len);
@@ -21767,6 +22396,7 @@ fn fingerprintAdmittedRun(run: Admission.AdmittedRun) u64 {
     hashOptionalU64(&hasher, run.environment_certificate_fingerprint);
     hashOptionalU64(&hasher, run.environment_acceptance_report_fingerprint);
     hashOptionalU64(&hasher, if (run.run_permit) |permit| permit.permit_fingerprint else null);
+    hashLinkerMetadataIfPresent(&hasher, run.link_plan_fingerprint, run.linker_certificate_fingerprint, run.assembly_fingerprint);
     hashOptionalU64(&hasher, if (run.fabric_plan) |plan| plan.plan_fingerprint else null);
     hashOptionalU64(&hasher, if (run.run_image) |image| image.run_image_fingerprint else null);
     hashOptionalU64(&hasher, if (run.transcript_image) |image| image.transcript_image_fingerprint else null);
@@ -21774,6 +22404,14 @@ fn fingerprintAdmittedRun(run: Admission.AdmittedRun) u64 {
     hashOptionalU64(&hasher, run.selected_checkpoint_ref);
     hashU64(&hasher, @intFromEnum(run.mode));
     return hasher.final();
+}
+
+fn hashLinkerMetadataIfPresent(hasher: *std.hash.Wyhash, link_plan_fingerprint: ?u64, linker_certificate_fingerprint: ?u64, assembly_fingerprint: ?u64) void {
+    if (link_plan_fingerprint == null and linker_certificate_fingerprint == null and assembly_fingerprint == null) return;
+    hashBytes(hasher, "world.linker.metadata");
+    hashOptionalU64(hasher, link_plan_fingerprint);
+    hashOptionalU64(hasher, linker_certificate_fingerprint);
+    hashOptionalU64(hasher, assembly_fingerprint);
 }
 
 fn fingerprintValueImage(
