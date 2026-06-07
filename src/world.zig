@@ -16611,6 +16611,7 @@ pub const Capsule = struct {
             if (self.status != .pending) return error.PendingPortConsumed;
             try validateRequestFrameImage(self.request_frame);
             if (self.request_frame.expected_response_value_table_id != self.expected_response_value_table_id) return error.InvalidFrameEncoding;
+            if (self.pending_port_fingerprint != fingerprintPendingPortImageProjection(self)) return error.InvalidFrameEncoding;
             if (self.pending_port_image_fingerprint != fingerprint(self)) return error.InvalidFrameEncoding;
         }
 
@@ -26676,26 +26677,88 @@ fn fingerprintRunspaceConfig(config: Runspace.Config, runspace_instance_id: u64)
 }
 
 fn fingerprintPendingPort(pending_port: PendingPort) u64 {
+    return fingerprintPendingPortFields(.{
+        .handle_fingerprint = pending_port.handle.handle_fingerprint,
+        .mailbox_id = pending_port.mailbox_id,
+        .world_surface_fingerprint = pending_port.world_surface_fingerprint,
+        .target_certificate_fingerprint = pending_port.target_certificate_fingerprint,
+        .world_port_id = pending_port.world_port_id,
+        .request_fingerprint = pending_port.request_fingerprint,
+        .request_frame_fingerprint = pending_port.request_frame_fingerprint,
+        .expected_response_kind = pending_port.expected_response_kind,
+        .expected_response_value_table_id = pending_port.expected_response_value_table_id,
+        .residual_site_index = pending_port.residual_site_index,
+        .residual_site_fingerprint = pending_port.residual_site_fingerprint,
+        .target_ref_fingerprint = pending_port.target_ref_fingerprint,
+        .environment_certificate_fingerprint = pending_port.environment_certificate_fingerprint,
+        .run_permit_fingerprint = pending_port.run_permit_fingerprint,
+        .turn_index = pending_port.turn_index,
+        .inserted_event_index = pending_port.inserted_event_index,
+        .status = pending_port.status,
+    });
+}
+
+fn fingerprintPendingPortImageProjection(image: Capsule.PendingPortImage) u64 {
+    return fingerprintPendingPortFields(.{
+        .handle_fingerprint = image.original_run_handle_fingerprint,
+        .mailbox_id = image.mailbox_id,
+        .world_surface_fingerprint = image.request_frame.world_surface_fingerprint,
+        .target_certificate_fingerprint = image.request_frame.target_certificate_fingerprint,
+        .world_port_id = image.request_frame.world_port_id,
+        .request_fingerprint = image.request_frame.request_fingerprint,
+        .request_frame_fingerprint = image.request_frame.frame_fingerprint,
+        .expected_response_kind = image.expected_response_kind,
+        .expected_response_value_table_id = image.expected_response_value_table_id,
+        .residual_site_index = image.request_frame.residual_site_index,
+        .residual_site_fingerprint = image.request_frame.residual_site_fingerprint,
+        .target_ref_fingerprint = image.target_ref_fingerprint,
+        .environment_certificate_fingerprint = image.environment_certificate_fingerprint,
+        .run_permit_fingerprint = image.run_permit_fingerprint,
+        .turn_index = image.request_frame.turn_index,
+        .inserted_event_index = image.inserted_event_index,
+        .status = image.status,
+    });
+}
+
+fn fingerprintPendingPortFields(args: struct {
+    handle_fingerprint: u64,
+    mailbox_id: u64,
+    world_surface_fingerprint: u64,
+    target_certificate_fingerprint: u64,
+    world_port_id: u32,
+    request_fingerprint: u64,
+    request_frame_fingerprint: u64,
+    expected_response_kind: ResponseKind,
+    expected_response_value_table_id: ?u32,
+    residual_site_index: usize,
+    residual_site_fingerprint: u64,
+    target_ref_fingerprint: u64,
+    environment_certificate_fingerprint: ?u64,
+    run_permit_fingerprint: ?u64,
+    turn_index: usize,
+    inserted_event_index: u64,
+    status: Runspace.PendingStatus,
+}) u64 {
     var hasher = std.hash.Wyhash.init(0);
     hashBytes(&hasher, "world.pending_port.fingerprint");
     hashU64(&hasher, world_pending_port_fingerprint_version);
-    hashU64(&hasher, pending_port.handle.handle_fingerprint);
-    hashU64(&hasher, pending_port.mailbox_id);
-    hashU64(&hasher, pending_port.world_surface_fingerprint);
-    hashU64(&hasher, pending_port.target_certificate_fingerprint);
-    hashU64(&hasher, pending_port.world_port_id);
-    hashU64(&hasher, pending_port.request_fingerprint);
-    hashU64(&hasher, pending_port.request_frame_fingerprint);
-    hashU64(&hasher, @intFromEnum(pending_port.expected_response_kind));
-    hashOptionalU32(&hasher, pending_port.expected_response_value_table_id);
-    hashU64(&hasher, pending_port.residual_site_index);
-    hashU64(&hasher, pending_port.residual_site_fingerprint);
-    hashU64(&hasher, pending_port.target_ref_fingerprint);
-    hashOptionalU64(&hasher, pending_port.environment_certificate_fingerprint);
-    hashOptionalU64(&hasher, pending_port.run_permit_fingerprint);
-    hashU64(&hasher, pending_port.turn_index);
-    hashU64(&hasher, pending_port.inserted_event_index);
-    hashU64(&hasher, @intFromEnum(pending_port.status));
+    hashU64(&hasher, args.handle_fingerprint);
+    hashU64(&hasher, args.mailbox_id);
+    hashU64(&hasher, args.world_surface_fingerprint);
+    hashU64(&hasher, args.target_certificate_fingerprint);
+    hashU64(&hasher, args.world_port_id);
+    hashU64(&hasher, args.request_fingerprint);
+    hashU64(&hasher, args.request_frame_fingerprint);
+    hashU64(&hasher, @intFromEnum(args.expected_response_kind));
+    hashOptionalU32(&hasher, args.expected_response_value_table_id);
+    hashU64(&hasher, args.residual_site_index);
+    hashU64(&hasher, args.residual_site_fingerprint);
+    hashU64(&hasher, args.target_ref_fingerprint);
+    hashOptionalU64(&hasher, args.environment_certificate_fingerprint);
+    hashOptionalU64(&hasher, args.run_permit_fingerprint);
+    hashU64(&hasher, args.turn_index);
+    hashU64(&hasher, args.inserted_event_index);
+    hashU64(&hasher, @intFromEnum(args.status));
     return hasher.final();
 }
 

@@ -2286,6 +2286,56 @@ test "capsule parked freeze embeds run image and thaw enforces receiver capacity
         .run_images = image.run_images,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, mismatched_image.validate(.{}));
+    const original_pending = image.runspace_image.mailbox_image.?.pending_port_entries[0];
+    try std.testing.expectEqual(world.ResponseKind.return_now, original_pending.expected_response_kind);
+    const forged_kind_pending = world.Capsule.PendingPortImage.init(.{
+        .pending_port_fingerprint = original_pending.pending_port_fingerprint,
+        .original_run_handle_fingerprint = original_pending.original_run_handle_fingerprint,
+        .mailbox_id = original_pending.mailbox_id,
+        .request_frame = original_pending.request_frame,
+        .expected_response_kind = .@"resume",
+        .expected_response_value_table_id = original_pending.expected_response_value_table_id,
+        .target_ref_fingerprint = original_pending.target_ref_fingerprint,
+        .environment_certificate_fingerprint = original_pending.environment_certificate_fingerprint,
+        .run_permit_fingerprint = original_pending.run_permit_fingerprint,
+        .inserted_event_index = original_pending.inserted_event_index,
+        .status = original_pending.status,
+    });
+    const forged_kind_entries = [_]world.Capsule.PendingPortImage{forged_kind_pending};
+    const forged_kind_mailbox = world.Capsule.MailboxImage.init(.{
+        .pending_port_entries = &forged_kind_entries,
+        .pending_port_fingerprints = image.runspace_image.mailbox_image.?.pending_port_fingerprints,
+        .consumed_port_fingerprints = image.runspace_image.mailbox_image.?.consumed_port_fingerprints,
+        .next_mailbox_id = image.runspace_image.mailbox_image.?.next_mailbox_id,
+        .generation = image.runspace_image.mailbox_image.?.generation,
+        .single_use_status_fingerprints = image.runspace_image.mailbox_image.?.single_use_status_fingerprints,
+        .response_routing_status_fingerprints = image.runspace_image.mailbox_image.?.response_routing_status_fingerprints,
+    });
+    const forged_kind_runspace_image = world.Capsule.RunspaceImage.init(.{
+        .runspace_fingerprint = image.runspace_image.runspace_fingerprint,
+        .runspace_report_fingerprint = image.runspace_image.runspace_report_fingerprint,
+        .run_handle_mappings = image.runspace_image.run_handle_mappings,
+        .run_slots = image.runspace_image.run_slots,
+        .mailbox_image = forged_kind_mailbox,
+        .runspace_event_fingerprints = image.runspace_image.runspace_event_fingerprints,
+        .root_run_handle_fingerprints = image.runspace_image.root_run_handle_fingerprints,
+        .provider_run_handle_fingerprints = image.runspace_image.provider_run_handle_fingerprints,
+        .branch_refs = image.runspace_image.branch_refs,
+        .checkpoint_refs = image.runspace_image.checkpoint_refs,
+        .transcript_image_refs = image.runspace_image.transcript_image_refs,
+        .run_image_refs = image.runspace_image.run_image_refs,
+        .run_receipt_refs = image.runspace_image.run_receipt_refs,
+        .admission_receipt_refs = image.runspace_image.admission_receipt_refs,
+        .permit_refs = image.runspace_image.permit_refs,
+        .active_fabric_invocation_refs = image.runspace_image.active_fabric_invocation_refs,
+    });
+    const forged_kind_image = world.Capsule.Image.init(.{
+        .manifest = image.manifest,
+        .runspace_image = forged_kind_runspace_image,
+        .run_image_refs = image.run_image_refs,
+        .run_images = image.run_images,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_kind_image.validate(.{}));
     const forged_request = world.Frame.Request.init(.{
         .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
         .world_surface_replay_scope_fingerprint = fixtures.Ports.Target.WorldSurface.replayScopeRef().fingerprint,
