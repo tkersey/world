@@ -20876,7 +20876,8 @@ test "capsule handoff exports accepts and admission report binds witnesses" {
         .thaw_plan = thaw,
         .restore_report = restore,
     });
-    try std.testing.expect(admission.accepted);
+    try std.testing.expect(!admission.accepted);
+    try std.testing.expectEqual(Admission.AdmissionBlocker.PackageInvalid, admission.blockers[0]);
     try std.testing.expectEqual(imported.image_fingerprint, admission.capsule_image_fingerprint.?);
     try std.testing.expectEqual(cert.certificate_fingerprint, admission.capsule_certificate_fingerprint.?);
     try std.testing.expectEqual(thaw.thaw_plan_fingerprint, admission.capsule_thaw_plan_fingerprint.?);
