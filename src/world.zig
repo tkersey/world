@@ -18103,12 +18103,7 @@ pub const Capsule = struct {
             } else if (slotRestoreRequiresRunImage(slot_image.status)) {
                 return error.InvalidFrameEncoding;
             }
-            const new_handle = try runspace.nextHandle(.{
-                .target_ref_fingerprint = slot_image.target_ref_fingerprint,
-                .admission_receipt_fingerprint = slot_image.admission_receipt_fingerprint,
-                .permit_fingerprint = permit_fingerprint orelse slot_image.run_permit_fingerprint,
-                .branch_id = slot_image.branch_id,
-            });
+            const new_handle = restoredSlotHandle(runspace, slot_image, permit_fingerprint);
             try handle_mappings.append(allocator, slot_image.original_run_handle_fingerprint);
             try handle_mappings.append(allocator, new_handle.handle_fingerprint);
             const status = runspaceStatusForCapsuleStatus(slot_image.status);
@@ -18151,10 +18146,10 @@ pub const Capsule = struct {
                 .owns_installed_run_image = installed_run_image_owned,
             }));
             installed_run_image_owned = false;
-            if (slot_image.role == .provider) {
-                try provider_refs.append(allocator, new_handle.handle_fingerprint);
-            } else {
-                try root_refs.append(allocator, new_handle.handle_fingerprint);
+            switch (slot_image.role) {
+                .root => try root_refs.append(allocator, new_handle.handle_fingerprint),
+                .provider => try provider_refs.append(allocator, new_handle.handle_fingerprint),
+                .branch, .guest, .replay, .verify => {},
             }
         }
         if (image.runspace_image.mailbox_image) |mailbox| {
@@ -18223,6 +18218,19 @@ pub const Capsule = struct {
         });
         report.owns_memory = true;
         return report;
+    }
+
+    fn restoredSlotHandle(runspace: *Runspace, slot_image: RunSlotImage, permit_fingerprint: ?u64) RunHandle {
+        const handle = RunHandle.init(.{
+            .runspace_fingerprint = runspace.runspace_fingerprint,
+            .local_run_id = runspace.next_run_id,
+            .target_ref_fingerprint = slot_image.target_ref_fingerprint,
+            .admission_receipt_fingerprint = slot_image.admission_receipt_fingerprint,
+            .permit_fingerprint = permit_fingerprint orelse slot_image.run_permit_fingerprint,
+            .branch_id = slot_image.branch_id,
+        });
+        runspace.next_run_id += 1;
+        return handle;
     }
 
     pub fn verifyLink(image: Image, local_catalog_fingerprint: u64, policy: RelinkPolicy) !ThawPlan {
@@ -19415,7 +19423,8 @@ pub const Capsule = struct {
         const request_bytes = try readBytesOwned(allocator, bytes, cursor);
         defer allocator.free(request_bytes);
         var request = try Frame.Request.decode(allocator, request_bytes);
-        errdefer request.deinit(allocator);
+        var request_owned = true;
+        errdefer if (request_owned) request.deinit(allocator);
         var image = PendingPortImage{
             .fingerprint_version = fingerprint_version,
             .pending_port_image_fingerprint = pending_port_image_fingerprint,
@@ -19432,6 +19441,7 @@ pub const Capsule = struct {
             .status = try enumFromByte(Runspace.PendingStatus, try readU8(bytes, cursor)),
             .owns_memory = true,
         };
+        request_owned = false;
         errdefer image.deinit(allocator);
         try image.validate();
         return image;

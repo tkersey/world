@@ -931,6 +931,14 @@ test "capsule thaw restores completed capsule with handle remap" {
     const slot_run_image_fingerprint = image.runspace_image.run_slots[0].run_image_fingerprint orelse return error.ExpectedRunImage;
     try std.testing.expectEqual(image.run_images[0].run_image_fingerprint, slot_run_image_fingerprint);
 
+    var terminal_receiver = world.Runspace.init(allocator, .{ .max_runs = 0, .preserve_completed_runs = false });
+    defer terminal_receiver.deinit();
+    var terminal_restore = try world.Capsule.thawIntoRunspace(image, &terminal_receiver, 0, 0, 0x7776, .{ .mode = .restore_completed });
+    defer terminal_restore.deinit(allocator);
+    try std.testing.expect(terminal_restore.accepted);
+    try std.testing.expectEqual(@as(usize, 1), terminal_receiver.slots.items.len);
+    try std.testing.expectEqual(world.Runspace.RunStatus.completed, terminal_receiver.slots.items[0].status);
+
     var destination = world.Runspace.init(allocator, .{});
     defer destination.deinit();
     var report = try world.Capsule.thawIntoRunspace(image, &destination, 0, 0, 0x7777, .{ .mode = .restore_completed });
@@ -1088,6 +1096,9 @@ test "capsule thaw preserves branch parent links" {
     try std.testing.expectEqual(@as(usize, 2), destination.slots.items.len);
     try std.testing.expectEqual(destination.slots.items[0].handle.handle_fingerprint, destination.slots.items[1].parent_run_handle_fingerprint.?);
     try std.testing.expect(destination.slots.items[0].handle.handle_fingerprint != parent_handle.handle_fingerprint);
+    try std.testing.expectEqual(@as(usize, 1), report.restored_root_run_handles.len);
+    try std.testing.expectEqual(destination.slots.items[0].handle.handle_fingerprint, report.restored_root_run_handles[0]);
+    try std.testing.expectEqual(@as(usize, 0), report.restored_provider_run_handles.len);
 }
 
 test "capsule freezeRunspace preserves run image environment refs" {
@@ -1713,6 +1724,45 @@ test "capsule parked freeze embeds run image and thaw enforces receiver capacity
     const slot_run_image_fingerprint = image.runspace_image.run_slots[0].run_image_fingerprint orelse return error.ExpectedRunImage;
     try std.testing.expectEqual(image.run_images[0].run_image_fingerprint, slot_run_image_fingerprint);
     try image.validate(.{});
+    var bad_pending = image.runspace_image.mailbox_image.?.pending_port_entries[0];
+    bad_pending.pending_port_image_fingerprint +%= 1;
+    const bad_pending_entries = [_]world.Capsule.PendingPortImage{bad_pending};
+    const bad_mailbox = world.Capsule.MailboxImage.init(.{
+        .pending_port_entries = &bad_pending_entries,
+        .pending_port_fingerprints = image.runspace_image.mailbox_image.?.pending_port_fingerprints,
+        .consumed_port_fingerprints = image.runspace_image.mailbox_image.?.consumed_port_fingerprints,
+        .next_mailbox_id = image.runspace_image.mailbox_image.?.next_mailbox_id,
+        .generation = image.runspace_image.mailbox_image.?.generation,
+        .single_use_status_fingerprints = image.runspace_image.mailbox_image.?.single_use_status_fingerprints,
+        .response_routing_status_fingerprints = image.runspace_image.mailbox_image.?.response_routing_status_fingerprints,
+    });
+    const bad_runspace_image = world.Capsule.RunspaceImage.init(.{
+        .runspace_fingerprint = image.runspace_image.runspace_fingerprint,
+        .runspace_report_fingerprint = image.runspace_image.runspace_report_fingerprint,
+        .run_handle_mappings = image.runspace_image.run_handle_mappings,
+        .run_slots = image.runspace_image.run_slots,
+        .mailbox_image = bad_mailbox,
+        .runspace_event_fingerprints = image.runspace_image.runspace_event_fingerprints,
+        .root_run_handle_fingerprints = image.runspace_image.root_run_handle_fingerprints,
+        .provider_run_handle_fingerprints = image.runspace_image.provider_run_handle_fingerprints,
+        .branch_refs = image.runspace_image.branch_refs,
+        .checkpoint_refs = image.runspace_image.checkpoint_refs,
+        .transcript_image_refs = image.runspace_image.transcript_image_refs,
+        .run_image_refs = image.runspace_image.run_image_refs,
+        .run_receipt_refs = image.runspace_image.run_receipt_refs,
+        .admission_receipt_refs = image.runspace_image.admission_receipt_refs,
+        .permit_refs = image.runspace_image.permit_refs,
+        .active_fabric_invocation_refs = image.runspace_image.active_fabric_invocation_refs,
+    });
+    const bad_image = world.Capsule.Image.init(.{
+        .manifest = image.manifest,
+        .runspace_image = bad_runspace_image,
+        .run_image_refs = image.run_image_refs,
+        .run_images = image.run_images,
+    });
+    const bad_encoded = try bad_image.encode(allocator);
+    defer allocator.free(bad_encoded);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Capsule.Image.decode(allocator, bad_encoded));
 
     var capped_receiver = world.Runspace.init(allocator, .{ .max_runs = 0 });
     defer capped_receiver.deinit();
