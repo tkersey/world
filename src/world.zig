@@ -16384,6 +16384,47 @@ pub const Capsule = struct {
         require_guest_conformance: bool = false,
     };
 
+    pub const GuestRestoreOptions = struct {
+        rerun_conformance: bool = false,
+        require_conformance_refs: bool = false,
+    };
+
+    pub const HandleRemap = struct {
+        original_run_handle_fingerprint: u64,
+        restored_run_handle_fingerprint: u64,
+
+        pub fn init(original_run_handle_fingerprint: u64, restored_run_handle_fingerprint: u64) @This() {
+            return .{
+                .original_run_handle_fingerprint = original_run_handle_fingerprint,
+                .restored_run_handle_fingerprint = restored_run_handle_fingerprint,
+            };
+        }
+    };
+
+    pub const MailboxRemap = struct {
+        original_pending_port_fingerprint: u64,
+        restored_pending_port_fingerprint: u64,
+
+        pub fn init(original_pending_port_fingerprint: u64, restored_pending_port_fingerprint: u64) @This() {
+            return .{
+                .original_pending_port_fingerprint = original_pending_port_fingerprint,
+                .restored_pending_port_fingerprint = restored_pending_port_fingerprint,
+            };
+        }
+    };
+
+    pub const FabricInvocationRemap = struct {
+        original_invocation_fingerprint: u64,
+        restored_invocation_fingerprint: u64,
+
+        pub fn init(original_invocation_fingerprint: u64, restored_invocation_fingerprint: u64) @This() {
+            return .{
+                .original_invocation_fingerprint = original_invocation_fingerprint,
+                .restored_invocation_fingerprint = restored_invocation_fingerprint,
+            };
+        }
+    };
+
     pub const DependencyRef = struct {
         section: SectionKind,
         fingerprint: u64,
@@ -16399,6 +16440,32 @@ pub const Capsule = struct {
 
         pub fn init(kind: ObjectKind, fingerprint: u64) @This() {
             return .{ .kind = kind, .fingerprint = fingerprint };
+        }
+    };
+
+    pub const FreezePlan = struct {
+        runspace_fingerprint: u64,
+        assembly_fingerprint: ?u64 = null,
+        normal_form: NormalForm,
+        run_count: usize = 0,
+        pending_port_count: usize = 0,
+        active_fabric_invocation_count: usize = 0,
+        allow_active_fabric_parked: bool = false,
+        blockers: []const Blocker = &.{},
+        warnings: []const Warning = &.{},
+
+        pub fn fromQuiescence(report: QuiescenceReport, options: FreezeOptions) @This() {
+            return .{
+                .runspace_fingerprint = report.runspace_fingerprint,
+                .assembly_fingerprint = report.assembly_fingerprint,
+                .normal_form = report.normal_form,
+                .run_count = report.run_count,
+                .pending_port_count = report.pending_port_count,
+                .active_fabric_invocation_count = report.active_fabric_invocation_count,
+                .allow_active_fabric_parked = options.allow_active_fabric_parked,
+                .blockers = report.blockers,
+                .warnings = report.warnings,
+            };
         }
     };
 
@@ -18743,12 +18810,24 @@ pub const Capsule = struct {
 
     fn validateAssemblyBoundToRunspace(runspace: *const Runspace, assembly: Assembly) !void {
         try assembly.validate();
-        if (assembly.fabric_plans.len == 0) return error.InvalidFrameEncoding;
+        try validateAssemblyRootBoundToRunspace(runspace, assembly);
+        if (assembly.fabric_plans.len == 0) return;
         for (assembly.fabric_plans) |plan| {
             const index = runspace.installedFabricPlanIndex(plan.plan_fingerprint) orelse return error.InvalidFrameEncoding;
             if ((runspace.fabric_plan_link_plan_fingerprints.items[index] orelse return error.InvalidFrameEncoding) != assembly.link_plan_fingerprint) return error.InvalidFrameEncoding;
             if ((runspace.fabric_plan_linker_certificate_fingerprints.items[index] orelse return error.InvalidFrameEncoding) != assembly.linker_certificate_fingerprint) return error.InvalidFrameEncoding;
             if ((runspace.fabric_plan_assembly_fingerprints.items[index] orelse return error.InvalidFrameEncoding) != assembly.assembly_fingerprint) return error.InvalidFrameEncoding;
+        }
+    }
+
+    fn validateAssemblyRootBoundToRunspace(runspace: *const Runspace, assembly: Assembly) !void {
+        const root_slot = rootSlotForFreeze(runspace) orelse return;
+        if (root_slot.target_ref.target_ref_fingerprint != assembly.root_target_ref.target_ref_fingerprint) return error.InvalidFrameEncoding;
+        if (root_slot.target_ref.world_surface_fingerprint != assembly.root_target_ref.world_surface_fingerprint) return error.InvalidFrameEncoding;
+        if (root_slot.target_ref.target_certificate_fingerprint != assembly.root_target_ref.target_certificate_fingerprint) return error.InvalidFrameEncoding;
+        if (assembly.root_target_ref.boundary_module_fingerprint) |expected| {
+            const actual = root_slot.module_ref_fingerprint orelse root_slot.target_ref.boundary_module_fingerprint orelse return error.InvalidFrameEncoding;
+            if (actual != expected) return error.InvalidFrameEncoding;
         }
     }
 
@@ -19384,18 +19463,21 @@ pub const Capsule = struct {
 
     fn rootTargetRefFingerprintForFreeze(runspace: *const Runspace, assembly: ?Assembly) u64 {
         if (assembly) |value| return value.root_target_ref.target_ref_fingerprint;
+        if (rootSlotForFreeze(runspace)) |slot| return slot.target_ref.target_ref_fingerprint;
+        return 0;
+    }
+
+    fn rootSlotForFreeze(runspace: *const Runspace) ?Runspace.RunSlot {
         for (runspace.slots.items) |slot| {
-            if (slot.parent_run_handle_fingerprint == null) return slot.target_ref.target_ref_fingerprint;
+            if (slot.parent_run_handle_fingerprint == null) return slot;
         }
-        return if (runspace.slots.items.len == 0) 0 else runspace.slots.items[0].target_ref.target_ref_fingerprint;
+        return if (runspace.slots.items.len == 0) null else runspace.slots.items[0];
     }
 
     fn rootModuleRefFingerprintForFreeze(runspace: *const Runspace) ?u64 {
-        for (runspace.slots.items) |slot| {
-            if (slot.parent_run_handle_fingerprint != null) continue;
+        if (rootSlotForFreeze(runspace)) |slot| {
             if (slot.module_ref_fingerprint) |fingerprint| return fingerprint;
             if (slot.installed_run_image) |image| return image.module_ref_fingerprint orelse image.target_ref.boundary_module_fingerprint;
-            return null;
         }
         return null;
     }

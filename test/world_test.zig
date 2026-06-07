@@ -229,6 +229,25 @@ test "capsule namespace exposes kernel model and stable manifest fingerprint" {
     try std.testing.expectEqual(@as(u64, 0xaaaa), manifest.root_target_ref_fingerprint);
     try std.testing.expectEqual(@as(?u64, 0xeeee), manifest.assembly_fingerprint);
     try std.testing.expectEqual(@as(usize, 1), manifest.pending_port_count);
+
+    const freeze_plan = world.Capsule.FreezePlan.fromQuiescence(world.Capsule.QuiescenceReport.init(.{
+        .runspace_fingerprint = 0x5150_c100,
+        .quiescent = true,
+        .normal_form = .quiescent_completed,
+        .run_count = 1,
+    }), .{});
+    try std.testing.expectEqual(world.Capsule.NormalForm.quiescent_completed, freeze_plan.normal_form);
+    try std.testing.expectEqual(@as(usize, 1), freeze_plan.run_count);
+
+    const handle_remap = world.Capsule.HandleRemap.init(0x5150_c101, 0x5150_c102);
+    try std.testing.expectEqual(@as(u64, 0x5150_c101), handle_remap.original_run_handle_fingerprint);
+    try std.testing.expectEqual(@as(u64, 0x5150_c102), handle_remap.restored_run_handle_fingerprint);
+    const mailbox_remap = world.Capsule.MailboxRemap.init(0x5150_c103, 0x5150_c104);
+    try std.testing.expectEqual(@as(u64, 0x5150_c104), mailbox_remap.restored_pending_port_fingerprint);
+    const fabric_remap = world.Capsule.FabricInvocationRemap.init(0x5150_c105, 0x5150_c106);
+    try std.testing.expectEqual(@as(u64, 0x5150_c105), fabric_remap.original_invocation_fingerprint);
+    const guest_options = world.Capsule.GuestRestoreOptions{ .rerun_conformance = true };
+    try std.testing.expect(guest_options.rerun_conformance);
 }
 
 test "capsule image encode decode roundtrips dependency and object refs" {
@@ -5375,6 +5394,68 @@ test "link plan reports residual external environment imports" {
     try std.testing.expectEqual(@as(usize, 1), linked.report.external_import_count);
     try std.testing.expectEqual(@as(usize, 1), linked.plan.externalImportSet().required_count);
     try std.testing.expectEqual(root_import.requirement_fingerprint, linked.plan.externalImportSet().requirements[0].requirement_fingerprint);
+}
+
+test "capsule freezes external-only linked assembly without Fabric install" {
+    const allocator = std.testing.allocator;
+    const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
+    var linked = try world.Linker.link(allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
+        .root_imports = &.{root_import},
+        .catalog = world.Linker.Catalog.init(&.{}),
+        .policy = .allow_external_ports,
+    });
+    defer linked.deinit();
+
+    try std.testing.expect(linked.plan.accepted());
+    try std.testing.expectEqual(@as(usize, 0), linked.assembly.fabric_plans.len);
+    try std.testing.expectEqual(@as(usize, 1), linked.assembly.residualImportSet().required_count);
+
+    var source = world.Runspace.init(allocator, .{});
+    defer source.deinit();
+    try linked.assembly.installIntoRunspace(&source);
+    try source.slots.append(allocator, world.Runspace.RunSlot.fromState(.{
+        .handle = world.RunHandle.init(.{
+            .runspace_fingerprint = source.runspace_fingerprint,
+            .local_run_id = 0,
+            .target_ref_fingerprint = root_ref.target_ref_fingerprint,
+        }),
+        .target_ref = root_ref,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = root_ref.target_ref_fingerprint,
+            .status = .completed,
+        }),
+        .status = .completed,
+    }));
+
+    var image = try world.Capsule.freezeAssembly(&source, linked.assembly, .{});
+    defer image.deinit(allocator);
+    try std.testing.expect(image.fabric_image == null);
+    try std.testing.expectEqual(@as(usize, 0), image.manifest.fabric_plan_fingerprints.len);
+    try std.testing.expectEqual(linked.assembly.assembly_fingerprint, image.manifest.assembly_fingerprint.?);
+    try std.testing.expectEqual(linked.assembly.residualImportSet().residual_import_set_fingerprint, image.link_image.?.residual_import_set_fingerprint);
+    try std.testing.expectEqual(@as(usize, 1), image.link_image.?.external_environment_requirements.len);
+    try image.validate(.{});
+
+    var wrong_source = world.Runspace.init(allocator, .{});
+    defer wrong_source.deinit();
+    const wrong_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    try wrong_source.slots.append(allocator, world.Runspace.RunSlot.fromState(.{
+        .handle = world.RunHandle.init(.{
+            .runspace_fingerprint = wrong_source.runspace_fingerprint,
+            .local_run_id = 0,
+            .target_ref_fingerprint = wrong_ref.target_ref_fingerprint,
+        }),
+        .target_ref = wrong_ref,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = wrong_ref.target_ref_fingerprint,
+            .status = .completed,
+        }),
+        .status = .completed,
+    }));
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Capsule.freezeAssembly(&wrong_source, linked.assembly, .{}));
 }
 
 test "assembly preflights environment and installs into Runspace through Fabric API" {
