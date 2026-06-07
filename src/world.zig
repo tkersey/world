@@ -18339,7 +18339,7 @@ pub const Capsule = struct {
         const catalog_matched = link.catalog_fingerprint == null or local_catalog_fingerprint == 0 or link.catalog_fingerprint.? == local_catalog_fingerprint;
         const residual_matched = !policy.require_residual_import_match or
             link.residual_import_set_fingerprint == (policy.expected_residual_import_set_fingerprint orelse 0);
-        const fabric_matched = !policy.require_fabric_plan_match or fabricPlanRefsCovered(image.manifest.fabric_plan_fingerprints, link.route_synthesis_refs);
+        const fabric_matched = !policy.require_fabric_plan_match or linkFabricPlanWitnessesCover(image.manifest.fabric_plan_fingerprints, link.route_synthesis_refs);
         const guest_conformance_matched = !policy.require_guest_conformance or guestConformanceRefsCovered(image.manifest.guest_conformance_report_fingerprints, image.guest_conformance_refs);
         const matched = catalog_matched and residual_matched and fabric_matched and guest_conformance_matched;
         const accepted = matched or policy.allow_relink_drift;
@@ -18390,7 +18390,10 @@ pub const Capsule = struct {
             .restore_completed => imageHasRestorableSlots(image) and (image.manifest.kind == .completed_assembly or image.manifest.normal_form == .quiescent_completed),
             .restore_failed => imageHasRestorableSlots(image) and (image.manifest.kind == .failed_assembly or image.manifest.normal_form == .quiescent_failed),
             .restore_parked => image.manifest.kind == .parked_assembly and image.manifest.normal_form == .quiescent_parked,
-            .relink_and_restore, .verify_and_restore => false,
+            .relink_and_restore, .verify_and_restore => imageHasRestorableSlots(image) and switch (image.manifest.normal_form) {
+                .quiescent_completed, .quiescent_failed, .quiescent_parked => true,
+                else => false,
+            },
         };
     }
 
@@ -18436,8 +18439,10 @@ pub const Capsule = struct {
     fn validateParkedSlotMailboxCoverage(image: RunspaceImage) !void {
         const maybe_mailbox = image.mailbox_image;
         for (image.run_slots) |slot| {
-            if (slot.status != .parked_on_port) continue;
-            const mailbox_id = slot.current_pending_mailbox_id orelse return error.InvalidFrameEncoding;
+            const mailbox_id = slot.current_pending_mailbox_id orelse {
+                if (slot.status == .parked_on_port) return error.InvalidFrameEncoding;
+                continue;
+            };
             const mailbox = maybe_mailbox orelse return error.InvalidFrameEncoding;
             var found = false;
             for (mailbox.pending_port_entries) |entry| {
@@ -18596,9 +18601,9 @@ pub const Capsule = struct {
         }
     }
 
-    fn fabricPlanRefsCovered(manifest_refs: []const u64, route_synthesis_refs: []const u64) bool {
+    fn linkFabricPlanWitnessesCover(manifest_refs: []const u64, link_plan_witness_refs: []const u64) bool {
         for (manifest_refs) |manifest_ref| {
-            if (!u64SliceContains(route_synthesis_refs, manifest_ref)) return false;
+            if (!u64SliceContains(link_plan_witness_refs, manifest_ref)) return false;
         }
         return true;
     }

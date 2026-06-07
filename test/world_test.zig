@@ -444,6 +444,23 @@ test "capsule image validation rejects completed manifest with parked slot" {
         .status = .parked_on_supervision,
     });
     try supervision_parked_with_mailbox.validate(.{});
+    const supervision_slots = [_]world.Capsule.RunSlotImage{supervision_parked_with_mailbox};
+    const supervision_manifest = world.Capsule.Manifest.init(.{
+        .kind = .parked_assembly,
+        .root_target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .run_slot_count = supervision_slots.len,
+        .normal_form = .quiescent_parked,
+    });
+    const supervision_runspace_image = world.Capsule.RunspaceImage.init(.{
+        .runspace_fingerprint = 0x4445,
+        .runspace_report_fingerprint = 0x5556,
+        .run_slots = &supervision_slots,
+    });
+    const supervision_image = world.Capsule.Image.init(.{
+        .manifest = supervision_manifest,
+        .runspace_image = supervision_runspace_image,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, supervision_image.validate(.{}));
     const slot = world.Capsule.RunSlotImage.init(.{
         .original_run_handle_fingerprint = 0x1111,
         .role = .root,
@@ -1720,10 +1737,10 @@ test "capsule relink requires manifest fabric plan coverage" {
     });
     const catalogless_mismatch = try world.Capsule.planThaw(catalogless_image, 0x5150_3717, 0, 0x5150_3718, .{ .mode = .restore_completed });
     try std.testing.expectEqual(world.Capsule.Blocker.target_mismatch, catalogless_mismatch.blockers[0]);
-    const relink_denied = try world.Capsule.planThaw(catalogless_image, root_ref.target_ref_fingerprint, 0, 0x5150_3719, .{ .mode = .relink_and_restore });
-    try std.testing.expectEqual(world.Capsule.Blocker.malformed_image, relink_denied.blockers[0]);
-    const verify_denied = try world.Capsule.planThaw(catalogless_image, root_ref.target_ref_fingerprint, 0, 0x5150_3720, .{ .mode = .verify_and_restore });
-    try std.testing.expectEqual(world.Capsule.Blocker.malformed_image, verify_denied.blockers[0]);
+    const relink_allowed = try world.Capsule.planThaw(catalogless_image, root_ref.target_ref_fingerprint, 0, 0x5150_3719, .{ .mode = .relink_and_restore });
+    try std.testing.expectEqual(@as(usize, 0), relink_allowed.blockers.len);
+    const verify_allowed = try world.Capsule.planThaw(catalogless_image, root_ref.target_ref_fingerprint, 0, 0x5150_3720, .{ .mode = .verify_and_restore });
+    try std.testing.expectEqual(@as(usize, 0), verify_allowed.blockers.len);
     const drift_rejected = try world.Capsule.planThaw(catalog_image, root_ref.target_ref_fingerprint, 0, 0x5150_3714, .{ .mode = .restore_completed });
     try std.testing.expectEqual(world.Capsule.Blocker.link_plan_mismatch, drift_rejected.blockers[0]);
     const drift_allowed_thaw = try world.Capsule.planThaw(catalog_image, root_ref.target_ref_fingerprint, 0, 0x5150_3715, .{ .mode = .restore_completed, .allow_relink_drift = true });
