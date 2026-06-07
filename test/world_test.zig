@@ -490,6 +490,18 @@ test "import index and export index expose closed catalog requirements" {
     const export_index = world.Linker.ExportIndex.init(catalog);
     const same_export_index = world.Linker.ExportIndex.init(catalog);
     try std.testing.expectEqual(export_index.index_fingerprint, same_export_index.index_fingerprint);
+    var stale_catalog = catalog;
+    stale_catalog.catalog_fingerprint = 0;
+    const stale_input = world.Linker.Input{
+        .root_target_ref = root_ref,
+        .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
+        .root_imports = &.{root_import},
+        .catalog = stale_catalog,
+    };
+    const stale_import_index = world.Linker.ImportIndex.init(stale_input);
+    const stale_export_index = world.Linker.ExportIndex.init(stale_catalog);
+    try std.testing.expectEqual(import_index.index_fingerprint, stale_import_index.index_fingerprint);
+    try std.testing.expectEqual(export_index.index_fingerprint, stale_export_index.index_fingerprint);
 
     const provider_exports = try export_index.exportsFor(std.testing.allocator, provider_ref);
     defer std.testing.allocator.free(provider_exports);
@@ -1426,6 +1438,20 @@ test "route synthesis emits Fabric plan and certificate binds witnesses" {
     try std.testing.expect(!conflicting_hints_linked.plan.accepted());
     try std.testing.expect(conflicting_hints_linked.graph.hasBlocker(.AmbiguousProvider));
     try std.testing.expectEqual(@as(usize, 0), conflicting_hints_linked.plan.fabric_plans.len);
+    var stale_fingerprint_conflicting_hint = conflicting_hint;
+    stale_fingerprint_conflicting_hint.hint_fingerprint = hint.hint_fingerprint;
+    var stale_conflicting_hints_linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = root_import_set,
+        .root_imports = &.{root_import},
+        .catalog = catalog,
+        .hints = &.{ hint, stale_fingerprint_conflicting_hint },
+        .policy = .strict_closed,
+    });
+    defer stale_conflicting_hints_linked.deinit();
+    try std.testing.expect(!stale_conflicting_hints_linked.plan.accepted());
+    try std.testing.expect(stale_conflicting_hints_linked.graph.hasBlocker(.AmbiguousProvider));
+    try std.testing.expectEqual(@as(usize, 0), stale_conflicting_hints_linked.plan.fabric_plans.len);
 
     var capped_policy = world.Linker.Policy.strict_closed;
     capped_policy.max_provider_runs = 1;

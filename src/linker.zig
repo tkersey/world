@@ -612,6 +612,10 @@ pub fn Linker(comptime W: type) type {
             fn hasProviderSelector(self: Hint) bool {
                 return self.provider_target_ref_fingerprint != null or self.provider_module_ref_fingerprint != null or self.provider_export_fingerprint != null;
             }
+
+            pub fn fingerprint(self: Hint) u64 {
+                return fingerprintHint(self);
+            }
         };
 
         pub fn matchEntry(allocator: std.mem.Allocator, policy: Policy, requirement: W.ImportRequirement, entry: Catalog.Entry, hint: ?Hint) !Match {
@@ -1375,7 +1379,7 @@ pub fn Linker(comptime W: type) type {
             errdefer hint_fingerprints.deinit(allocator);
 
             const references_valid = try validateInputReferences(allocator, input, &blockers);
-            for (input.hints) |hint| try hint_fingerprints.append(allocator, hint.hint_fingerprint);
+            for (input.hints) |hint| try hint_fingerprints.append(allocator, hint.fingerprint());
             const root_node = Graph.Node.init(.{
                 .kind = .target_module,
                 .target_ref_fingerprint = input.root_target_ref.target_ref_fingerprint,
@@ -1467,7 +1471,7 @@ pub fn Linker(comptime W: type) type {
                     }
                     if (!hint_selects_requirement) continue;
                     if (selected_hint) |present| {
-                        if (present.hint_fingerprint != hint.hint_fingerprint) {
+                        if (present.fingerprint() != hint.fingerprint()) {
                             conflicting_hint = true;
                             break;
                         }
@@ -2290,7 +2294,7 @@ pub fn Linker(comptime W: type) type {
             hashU64(&hasher, index.root_target_ref_fingerprint);
             hashU64(&hasher, index.root_imports.len);
             for (index.root_imports) |requirement| hashU64(&hasher, requirement.requirement_fingerprint);
-            hashU64(&hasher, index.catalog.catalog_fingerprint);
+            hashU64(&hasher, index.catalog.fingerprint());
             return hasher.final();
         }
 
@@ -2342,7 +2346,7 @@ pub fn Linker(comptime W: type) type {
             var hasher = std.hash.Wyhash.init(0);
             hashBytes(&hasher, "world.linker.export.index.v1");
             hashU64(&hasher, W.world_linker_export_index_fingerprint_version);
-            hashU64(&hasher, index.catalog.catalog_fingerprint);
+            hashU64(&hasher, index.catalog.fingerprint());
             return hasher.final();
         }
 
