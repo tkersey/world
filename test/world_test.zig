@@ -936,6 +936,51 @@ test "capsule thaw restores completed capsule with handle remap" {
     try std.testing.expect(report.restored_root_run_handles[0] != handle.handle_fingerprint);
 }
 
+test "capsule freezeRunspace preserves run image environment refs" {
+    const allocator = std.testing.allocator;
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const env_cert = PortsEnv.certificate(.fresh, false);
+    const state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .completed,
+    });
+    const run_image = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = state,
+        .environment_certificate_fingerprint = env_cert.certificate_fingerprint,
+    });
+    var source = world.Runspace.init(allocator, .{});
+    defer source.deinit();
+    const handle = world.RunHandle.init(.{
+        .runspace_fingerprint = source.runspace_fingerprint,
+        .local_run_id = 0,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+    });
+    try source.slots.append(allocator, world.Runspace.RunSlot.fromState(.{
+        .handle = handle,
+        .target_ref = target_ref,
+        .current_state = state,
+        .status = .completed,
+        .installed_run_image = run_image,
+        .owns_installed_run_image = true,
+    }));
+    var image = try world.Capsule.freezeRunspace(&source, .{});
+    defer image.deinit(allocator);
+    try std.testing.expectEqual(env_cert.certificate_fingerprint, image.manifest.environment_certificate_fingerprints[0]);
+    try std.testing.expectEqual(env_cert.certificate_fingerprint, image.environment_refs[0]);
+
+    const denied = try world.Capsule.planThaw(image, target_ref.target_ref_fingerprint, 0, 0x5150_3791, .{ .mode = .restore_completed });
+    try std.testing.expectEqual(world.Capsule.Blocker.environment_mismatch, denied.blockers[0]);
+    const accepted = try world.Capsule.planThaw(image, target_ref.target_ref_fingerprint, env_cert.certificate_fingerprint, 0x5150_3792, .{ .mode = .restore_completed });
+    try std.testing.expectEqual(@as(usize, 0), accepted.blockers.len);
+
+    const encoded = try image.encode(allocator);
+    defer allocator.free(encoded);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Capsule.Image.decode(allocator, encoded[0 .. encoded.len - 1]));
+}
+
 test "capsule thaw denies restore before runspace mutation when permit is missing" {
     const allocator = std.testing.allocator;
     const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);

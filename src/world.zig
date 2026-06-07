@@ -16981,29 +16981,119 @@ pub const Capsule = struct {
         pub fn decodeWithOptions(allocator: std.mem.Allocator, bytes: []const u8, options: ValidateOptions) !@This() {
             if (bytes.len > options.max_image_bytes) return error.InvalidFrameEncoding;
             var cursor: usize = 0;
+            const format_version = try readU32(bytes, &cursor);
+            const fingerprint_version = try readU32(bytes, &cursor);
+            const image_fingerprint = try readU64(bytes, &cursor);
+            var manifest = try decodeManifest(allocator, bytes, &cursor, options);
+            var manifest_owned = true;
+            errdefer if (manifest_owned) manifest.deinit(allocator);
+            var runspace_image = try decodeRunspaceImage(allocator, bytes, &cursor, options);
+            var runspace_image_owned = true;
+            errdefer if (runspace_image_owned) runspace_image.deinit(allocator);
+            var link_image = try readOptionalLinkImage(allocator, bytes, &cursor);
+            var link_image_owned = link_image != null;
+            errdefer if (link_image_owned) if (link_image) |*link| link.deinit(allocator);
+            var fabric_image = try readOptionalFabricImage(allocator, bytes, &cursor, options);
+            var fabric_image_owned = fabric_image != null;
+            errdefer if (fabric_image_owned) if (fabric_image) |*fabric| fabric.deinit(allocator);
+            const admission_refs = try readU64SliceOwned(allocator, bytes, &cursor, options.max_dependencies);
+            var admission_refs_owned = true;
+            errdefer if (admission_refs_owned) allocator.free(admission_refs);
+            const environment_refs = try readU64SliceOwned(allocator, bytes, &cursor, options.max_dependencies);
+            var environment_refs_owned = true;
+            errdefer if (environment_refs_owned) allocator.free(environment_refs);
+            const supervision_refs = try readU64SliceOwned(allocator, bytes, &cursor, options.max_dependencies);
+            var supervision_refs_owned = true;
+            errdefer if (supervision_refs_owned) allocator.free(supervision_refs);
+            const guest_conformance_refs = try readU64SliceOwned(allocator, bytes, &cursor, options.max_dependencies);
+            var guest_conformance_refs_owned = true;
+            errdefer if (guest_conformance_refs_owned) allocator.free(guest_conformance_refs);
+            const transcript_image_refs = try readU64SliceOwned(allocator, bytes, &cursor, options.max_dependencies);
+            var transcript_image_refs_owned = true;
+            errdefer if (transcript_image_refs_owned) allocator.free(transcript_image_refs);
+            const run_image_refs = try readU64SliceOwned(allocator, bytes, &cursor, options.max_dependencies);
+            var run_image_refs_owned = true;
+            errdefer if (run_image_refs_owned) allocator.free(run_image_refs);
+            const value_image_refs = try readU64SliceOwned(allocator, bytes, &cursor, options.max_dependencies);
+            var value_image_refs_owned = true;
+            errdefer if (value_image_refs_owned) allocator.free(value_image_refs);
+            const transcript_images = try readTranscriptImageSliceOwned(allocator, bytes, &cursor, options.max_embedded_images);
+            var transcript_images_owned = true;
+            errdefer if (transcript_images_owned) {
+                for (transcript_images) |*transcript_const| {
+                    var transcript = transcript_const.*;
+                    transcript.deinit(allocator);
+                }
+                allocator.free(transcript_images);
+            };
+            const run_images = try readRunImageSliceOwned(allocator, bytes, &cursor, options.max_embedded_images);
+            var run_images_owned = true;
+            errdefer if (run_images_owned) {
+                for (run_images) |*run_const| {
+                    var run_image = run_const.*;
+                    run_image.deinit(allocator);
+                }
+                allocator.free(run_images);
+            };
+            const value_images = try readValueImageSliceOwned(allocator, bytes, &cursor, options.max_embedded_images);
+            var value_images_owned = true;
+            errdefer if (value_images_owned) {
+                for (value_images) |*value_const| {
+                    var value_image = value_const.*;
+                    value_image.deinit(allocator);
+                }
+                allocator.free(value_images);
+            };
+            const dependency_refs = try readDependencyRefSliceOwned(allocator, bytes, &cursor, options.max_dependencies);
+            var dependency_refs_owned = true;
+            errdefer if (dependency_refs_owned) allocator.free(dependency_refs);
+            const object_refs = try readObjectRefSliceOwned(allocator, bytes, &cursor, options.max_dependencies);
+            var object_refs_owned = true;
+            errdefer if (object_refs_owned) allocator.free(object_refs);
+            const metadata = try readBytesOwned(allocator, bytes, &cursor);
+            var metadata_owned = true;
+            errdefer if (metadata_owned) allocator.free(metadata);
+
             var image = @This(){
-                .format_version = try readU32(bytes, &cursor),
-                .fingerprint_version = try readU32(bytes, &cursor),
-                .image_fingerprint = try readU64(bytes, &cursor),
-                .manifest = try decodeManifest(allocator, bytes, &cursor, options),
-                .runspace_image = try decodeRunspaceImage(allocator, bytes, &cursor, options),
-                .link_image = try readOptionalLinkImage(allocator, bytes, &cursor),
-                .fabric_image = try readOptionalFabricImage(allocator, bytes, &cursor, options),
-                .admission_refs = try readU64SliceOwned(allocator, bytes, &cursor, options.max_dependencies),
-                .environment_refs = try readU64SliceOwned(allocator, bytes, &cursor, options.max_dependencies),
-                .supervision_refs = try readU64SliceOwned(allocator, bytes, &cursor, options.max_dependencies),
-                .guest_conformance_refs = try readU64SliceOwned(allocator, bytes, &cursor, options.max_dependencies),
-                .transcript_image_refs = try readU64SliceOwned(allocator, bytes, &cursor, options.max_dependencies),
-                .run_image_refs = try readU64SliceOwned(allocator, bytes, &cursor, options.max_dependencies),
-                .value_image_refs = try readU64SliceOwned(allocator, bytes, &cursor, options.max_dependencies),
-                .transcript_images = try readTranscriptImageSliceOwned(allocator, bytes, &cursor, options.max_embedded_images),
-                .run_images = try readRunImageSliceOwned(allocator, bytes, &cursor, options.max_embedded_images),
-                .value_images = try readValueImageSliceOwned(allocator, bytes, &cursor, options.max_embedded_images),
-                .dependency_refs = try readDependencyRefSliceOwned(allocator, bytes, &cursor, options.max_dependencies),
-                .object_refs = try readObjectRefSliceOwned(allocator, bytes, &cursor, options.max_dependencies),
-                .metadata = try readBytesOwned(allocator, bytes, &cursor),
+                .format_version = format_version,
+                .fingerprint_version = fingerprint_version,
+                .image_fingerprint = image_fingerprint,
+                .manifest = manifest,
+                .runspace_image = runspace_image,
+                .link_image = link_image,
+                .fabric_image = fabric_image,
+                .admission_refs = admission_refs,
+                .environment_refs = environment_refs,
+                .supervision_refs = supervision_refs,
+                .guest_conformance_refs = guest_conformance_refs,
+                .transcript_image_refs = transcript_image_refs,
+                .run_image_refs = run_image_refs,
+                .value_image_refs = value_image_refs,
+                .transcript_images = transcript_images,
+                .run_images = run_images,
+                .value_images = value_images,
+                .dependency_refs = dependency_refs,
+                .object_refs = object_refs,
+                .metadata = metadata,
                 .owns_memory = true,
             };
+            manifest_owned = false;
+            runspace_image_owned = false;
+            link_image_owned = false;
+            fabric_image_owned = false;
+            admission_refs_owned = false;
+            environment_refs_owned = false;
+            supervision_refs_owned = false;
+            guest_conformance_refs_owned = false;
+            transcript_image_refs_owned = false;
+            run_image_refs_owned = false;
+            value_image_refs_owned = false;
+            transcript_images_owned = false;
+            run_images_owned = false;
+            value_images_owned = false;
+            dependency_refs_owned = false;
+            object_refs_owned = false;
+            metadata_owned = false;
             errdefer image.deinit(allocator);
             if (cursor != bytes.len) return error.InvalidFrameEncoding;
             try image.validate(options);
@@ -17773,7 +17863,7 @@ pub const Capsule = struct {
         const admission_refs = try allocator.dupe(u64, runspace_image_value.admission_receipt_refs);
         var admission_refs_owned = true;
         errdefer if (admission_refs_owned) allocator.free(admission_refs);
-        const environment_refs = try environmentRefsForFreeze(allocator, assembly);
+        const environment_refs = try environmentRefsForFreeze(allocator, assembly, run_images);
         var environment_refs_owned = true;
         errdefer if (environment_refs_owned) allocator.free(environment_refs);
         const permit_refs = try allocator.dupe(u64, runspace_image_value.permit_refs);
@@ -18491,11 +18581,14 @@ pub const Capsule = struct {
         return null;
     }
 
-    fn environmentRefsForFreeze(allocator: std.mem.Allocator, assembly: ?Assembly) ![]u64 {
+    fn environmentRefsForFreeze(allocator: std.mem.Allocator, assembly: ?Assembly, run_images: []const RunImage) ![]u64 {
         var refs: std.ArrayList(u64) = .empty;
         errdefer refs.deinit(allocator);
         if (assembly) |value| {
-            if (value.environment_certificate_fingerprint) |fingerprint| try refs.append(allocator, fingerprint);
+            if (value.environment_certificate_fingerprint) |fingerprint| try appendUniqueU64(&refs, allocator, fingerprint);
+        }
+        for (run_images) |image| {
+            if (image.environment_certificate_fingerprint) |fingerprint| try appendUniqueU64(&refs, allocator, fingerprint);
         }
         return refs.toOwnedSlice(allocator);
     }
