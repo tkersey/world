@@ -8015,6 +8015,9 @@ test "runspace install consumes explicit fabric plan for missing environment bin
             .allow_native_adapters = true,
         }),
     });
+    const linker_scoped_direct_report = PortsEnv.acceptanceReportWithPermit(.fresh, false, linker_scoped_direct_permit);
+    try std.testing.expect(!linker_scoped_direct_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.SupervisionPolicyMismatch, linker_scoped_direct_report.blockers[0]);
     try std.testing.expectError(error.SupervisionDenied, PortsMachine.start(&no_env_runtime, .{}, .{
         .allocator = std.testing.allocator,
         .mode = world.Mode.fresh,
@@ -9961,10 +9964,6 @@ test "runspace fabric response enforces portable provider result mapping" {
 }
 
 test "runspace enforces linker scoped permit against installed assembly plans" {
-    const PortablePendingEnv = world.Environment(fixtures.Ports.Target, .{
-        .bindings = .{PortsPortablePendingNativeBinding},
-        .policy = world.EnvironmentPolicy.test_fixture,
-    });
     const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const owned_route = world.Fabric.Route.init(.{
         .route_id = 0x5150_aa01,
@@ -10004,31 +10003,50 @@ test "runspace enforces linker scoped permit against installed assembly plans" {
         .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
         .routes = &.{unowned_route},
     });
-    const permit = world.Supervision.issue(fixtures.Ports.Target, PortablePendingEnv, .{
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
         .mode = .fresh,
         .link_plan_fingerprint = assembly.link_plan_fingerprint,
         .linker_certificate_fingerprint = assembly.linker_certificate_fingerprint,
         .assembly_fingerprint = assembly.assembly_fingerprint,
         .policy = world.SupervisionPolicy.init(.{
             .allow_fresh_calls = true,
+            .allow_handoff_accept = true,
             .allow_native_adapters = true,
             .allow_fabric_routes = true,
             .allow_reject_routes = true,
             .allow_rejected_responses = true,
         }),
     });
-    var runtime = boundary.Runtime.init(std.testing.allocator);
-    defer runtime.deinit();
+    var source_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer source_runtime.deinit();
+    var source = world.Runspace.init(std.testing.allocator, .{});
+    defer source.deinit();
+    var source_ctx: PortsCtx = .{};
+    const source_handle = try source.installMachineRun(fixtures.Ports.Target, PortsEnv, &source_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .ctx = &source_ctx,
+    });
+    _ = try source.tick();
+    var source_image = try source.exportRun(source_handle);
+    defer source_image.deinit(std.testing.allocator);
+    const admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_aa01,
+        .target_ref = parent_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .environment_certificate_fingerprint = PortsEnv.certificate(.fresh, false).certificate_fingerprint,
+        .run_image = source_image,
+        .run_permit = permit,
+        .link_plan_fingerprint = assembly.link_plan_fingerprint,
+        .linker_certificate_fingerprint = assembly.linker_certificate_fingerprint,
+        .assembly_fingerprint = assembly.assembly_fingerprint,
+        .mode = .resume_parked,
+    });
     var runspace = world.Runspace.init(std.testing.allocator, .{});
     defer runspace.deinit();
     try runspace.installAssembly(assembly);
     try runspace.installFabricPlan(parent_ref, unowned_plan);
-    _ = try runspace.installMachineRun(fixtures.Ports.Target, PortablePendingEnv, &runtime, .{}, .{
-        .allocator = std.testing.allocator,
-        .mode = world.Mode.fresh,
-        .permit = permit,
-    });
-    _ = try runspace.tick();
+    _ = try runspace.installAdmitted(admitted);
 
     try std.testing.expectError(error.SupervisionDenied, runspace.routePending(0, unowned_plan));
     try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);

@@ -4847,6 +4847,9 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
             if (permit.binding_plan_fingerprint != cert.binding_plan_fingerprint) {
                 return rejectedAcceptance(environment_target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
             }
+            if (!allow_linker_scoped_fabric_plan and permit.fabric_plan_fingerprint == null and permitHasLinkerScope(permit)) {
+                return rejectedAcceptance(environment_target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
+            }
             const linker_scoped_fabric_plan = allow_linker_scoped_fabric_plan and permit.fabric_plan_fingerprint == null and permitHasLinkerScope(permit);
             if (!linker_scoped_fabric_plan and base_report.fabric_plan_fingerprint != permit.fabric_plan_fingerprint) {
                 return rejectedAcceptance(environment_target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
@@ -5427,8 +5430,7 @@ pub const Frame = struct {
             if (!self.responseFingerprintDeferred()) return error.InvalidFrameEncoding;
             if (self.status != .responded) return error.InvalidFrameEncoding;
             const response_image = self.response_image orelse return error.MissingValueImage;
-            const boundary_value_fingerprint = response_image.boundary_value_fingerprint orelse response_fingerprint;
-            var rebound_image = try response_image.cloneWithBoundaryValueFingerprint(allocator, boundary_value_fingerprint);
+            var rebound_image = try response_image.cloneWithBoundaryValueFingerprint(allocator, response_fingerprint);
             errdefer rebound_image.deinit(allocator);
             return init(.{
                 .world_surface_fingerprint = self.world_surface_fingerprint,
@@ -17874,6 +17876,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     const value = try response_frame.decodeValue(self.allocator, Decl.Response);
                     defer deinitOwnedValue(self.allocator, value);
                     const response_trace = try typed_request.responseTrace(.@"resume", value);
+                    const response_boundary_value_fingerprint = if (response_frame.response_image) |image| image.boundary_value_fingerprint else null;
                     var resolved_response_frame: ?Frame.Response = null;
                     if (response_frame.responseFingerprintDeferred()) {
                         resolved_response_frame = try response_frame.bindDeferredResponseFingerprint(self.allocator, request_frame, response_trace.fingerprint);
@@ -17939,7 +17942,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         .response_frame_fingerprint = effective_response_frame.frame_fingerprint,
                         .response_value_table_id = effective_response_frame.response_value_table_id,
                         .response_value_image_fingerprint = effective_response_frame.response_value_fingerprint,
-                        .response_boundary_value_fingerprint = if (effective_response_frame.response_image) |image| image.boundary_value_fingerprint else null,
+                        .response_boundary_value_fingerprint = response_boundary_value_fingerprint orelse if (effective_response_frame.response_image) |image| image.boundary_value_fingerprint else null,
                     };
                     return effective_response_frame.frame_fingerprint;
                 }
@@ -17953,6 +17956,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     const value = try response_frame.decodeValue(self.allocator, Site.Resume);
                     defer deinitOwnedValue(self.allocator, value);
                     const response_trace = try typed_request.responseTrace(.@"resume", value);
+                    const response_boundary_value_fingerprint = if (response_frame.response_image) |image| image.boundary_value_fingerprint else null;
                     var resolved_response_frame: ?Frame.Response = null;
                     if (response_frame.responseFingerprintDeferred()) {
                         resolved_response_frame = try response_frame.bindDeferredResponseFingerprint(self.allocator, request_frame, response_trace.fingerprint);
@@ -18018,7 +18022,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         .response_frame_fingerprint = effective_response_frame.frame_fingerprint,
                         .response_value_table_id = effective_response_frame.response_value_table_id,
                         .response_value_image_fingerprint = effective_response_frame.response_value_fingerprint,
-                        .response_boundary_value_fingerprint = if (effective_response_frame.response_image) |image| image.boundary_value_fingerprint else null,
+                        .response_boundary_value_fingerprint = response_boundary_value_fingerprint orelse if (effective_response_frame.response_image) |image| image.boundary_value_fingerprint else null,
                     };
                     return effective_response_frame.frame_fingerprint;
                 }
