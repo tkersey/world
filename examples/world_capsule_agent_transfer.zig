@@ -116,6 +116,11 @@ pub fn main(init: std.process.Init) !void {
     try stdout.print("capsule_fingerprint={x}\n", .{capsule.image_fingerprint});
     try stdout.print("residual_external_import_count={d}\n", .{linked.assembly.residualImportSet().required_count});
     try stdout.print("receiver_permit_fingerprint={x}\n", .{receiver_permit.permit_fingerprint});
-    try stdout.print("final_result=final=actuate skeleton complete\n", .{});
+    try stdout.print("restore_accepted={}\n", .{restore.accepted});
+    if (restore.accepted) {
+        try stdout.print("final_result=final=actuate skeleton complete\n", .{});
+    } else {
+        try stdout.print("final_result=parked-restore-denied\n", .{});
+    }
     try stdout.flush();
 }

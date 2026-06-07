@@ -666,7 +666,8 @@ pub fn build(b: *std.Build) void {
             \\capsule_fingerprint=d88c63d9ec9cd61a
             \\residual_external_import_count=1
             \\receiver_permit_fingerprint=e9600a9c50625a17
-            \\final_result=final=actuate skeleton complete
+            \\restore_accepted=false
+            \\final_result=parked-restore-denied
             \\
             ,
         },
