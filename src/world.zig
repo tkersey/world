@@ -4695,6 +4695,7 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
             if (permit.link_plan_fingerprint != null and permit.link_plan_fingerprint.? != assembly.link_plan_fingerprint) return rejectedAcceptance(target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
             if (permit.linker_certificate_fingerprint != null and permit.linker_certificate_fingerprint.? != assembly.linker_certificate_fingerprint) return rejectedAcceptance(target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
             if (permit.assembly_fingerprint != null and permit.assembly_fingerprint.? != assembly.assembly_fingerprint) return rejectedAcceptance(target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
+            if (permitRequiresAssemblyFingerprintForLinkerScopedPlans(permit)) return rejectedAcceptance(target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
             const base_report = preflightAssemblyEvidence(requested_mode, transcript_image_available, fabric_replay_transcript_available, assembly);
             if (!base_report.accepted) return base_report;
             const maybe_plan = assemblyFabricPlanForTarget(assembly);
@@ -4790,7 +4791,7 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
         fn acceptanceReportWithAssemblyFabricPlanPermitRoutes(report: AcceptanceReport, requested_mode: Mode, assembly: Assembly, permit: RunPermit) AcceptanceReport {
             if (!report.accepted) return report;
             var result = report;
-            const linker_scoped_plans = permit.fabric_plan_fingerprint == null and permitHasLinkerScope(permit);
+            const linker_scoped_plans = permit.fabric_plan_fingerprint == null and permitHasLinkerScope(permit) and permit.assembly_fingerprint != null;
             for (assembly.fabric_plans) |plan| {
                 if (!fabricPlanTargetsEnvironment(plan)) continue;
                 if (permit.fabric_plan_fingerprint) |fingerprint| {
@@ -4851,6 +4852,9 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
                 return rejectedAcceptance(environment_target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
             }
             const linker_scoped_fabric_plan = allow_linker_scoped_fabric_plan and permit.fabric_plan_fingerprint == null and permitHasLinkerScope(permit);
+            if (linker_scoped_fabric_plan and permitRequiresAssemblyFingerprintForLinkerScopedPlans(permit)) {
+                return rejectedAcceptance(environment_target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
+            }
             if (!linker_scoped_fabric_plan and base_report.fabric_plan_fingerprint != permit.fabric_plan_fingerprint) {
                 return rejectedAcceptance(environment_target_ref, requested_mode, &.{.SupervisionPolicyMismatch});
             }
@@ -7463,6 +7467,7 @@ pub const Fabric = struct {
                 },
                 .provider_result_to_parent_response => {
                     if (self.provider_result_value_table_id == null or self.parent_response_value_table_id == null) return error.UnsupportedMapping;
+                    if (self.parent_response_value_fingerprint != null and self.provider_result_value_fingerprint == null) return error.UnsupportedMapping;
                     if (self.provider_value_table_id) |generic| {
                         if (generic != self.provider_result_value_table_id.?) return error.UnsupportedMapping;
                     }
@@ -11044,6 +11049,7 @@ pub const Runspace = struct {
             break :permit supervisor.permit;
         } else return;
         if (!permitHasLinkerScope(permit)) return;
+        if (permitRequiresAssemblyFingerprintForLinkerScopedPlans(permit)) return error.SupervisionDenied;
         const index = self.installedFabricPlanIndex(plan_fingerprint) orelse return error.FabricMissingRoute;
         if (permit.link_plan_fingerprint) |fingerprint| {
             if (self.fabric_plan_link_plan_fingerprints.items[index] != fingerprint) return error.SupervisionDenied;
@@ -18879,6 +18885,12 @@ fn permitHasLinkerScope(permit: RunPermit) bool {
     return permit.link_plan_fingerprint != null or
         permit.linker_certificate_fingerprint != null or
         permit.assembly_fingerprint != null;
+}
+
+fn permitRequiresAssemblyFingerprintForLinkerScopedPlans(permit: RunPermit) bool {
+    return permit.fabric_plan_fingerprint == null and
+        permit.assembly_fingerprint == null and
+        permitHasLinkerScope(permit);
 }
 
 fn mergeOptionalFingerprint(existing: *?u64, incoming: ?u64) !void {

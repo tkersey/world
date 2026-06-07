@@ -2225,6 +2225,26 @@ test "assembly preflights environment and installs into Runspace through Fabric 
     });
     const bound_permit_report = PortsMissingEnv.preflightAssemblyWithPermit(.fresh, true, bound_assembly, scope_permit);
     try std.testing.expect(bound_permit_report.accepted);
+    const assembly_scoped_permit = world.Supervision.issue(fixtures.Ports.Target, PortsMissingEnv, .{
+        .mode = .fresh,
+        .transcript_image_available = true,
+        .link_plan_fingerprint = linked.plan.plan_fingerprint,
+        .linker_certificate_fingerprint = linked.certificate.certificate_fingerprint,
+        .assembly_fingerprint = linked.assembly.assembly_fingerprint,
+        .policy = world.SupervisionPolicy.strict_fresh,
+    });
+    const assembly_scoped_report = PortsMissingEnv.preflightAssemblyWithPermit(.fresh, true, linked.assembly, assembly_scoped_permit);
+    try std.testing.expect(assembly_scoped_report.accepted);
+    const unbound_scope_permit = world.Supervision.issue(fixtures.Ports.Target, PortsMissingEnv, .{
+        .mode = .fresh,
+        .transcript_image_available = true,
+        .link_plan_fingerprint = linked.plan.plan_fingerprint,
+        .linker_certificate_fingerprint = linked.certificate.certificate_fingerprint,
+        .policy = world.SupervisionPolicy.strict_fresh,
+    });
+    const unbound_scope_report = PortsMissingEnv.preflightAssemblyWithPermit(.fresh, true, linked.assembly, unbound_scope_permit);
+    try std.testing.expect(!unbound_scope_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.SupervisionPolicyMismatch, unbound_scope_report.blockers[0]);
     const extra_route = world.Fabric.Route.init(.{
         .route_id = 0xbee5,
         .kind = .reject,
@@ -2794,8 +2814,7 @@ test "fabric value mapping enforces exact supported conversions" {
         .parent_response_value_table_id = 1,
         .parent_response_value_fingerprint = response.response_fingerprint,
     });
-    try unwitnessed_parent_response.validate();
-    try std.testing.expectEqual(@as(?u32, 1), try unwitnessed_parent_response.parentResponseValueTableId(response));
+    try std.testing.expectError(error.UnsupportedMapping, unwitnessed_parent_response.validate());
     const distinct_parent_response = world.Fabric.ValueMapping.init(.{
         .kind = .provider_result_to_parent_response,
         .provider_result_value_table_id = 1,
@@ -10182,6 +10201,37 @@ test "runspace enforces linker scoped permit against installed assembly plans" {
     _ = try pinned_scoped_runspace.installAdmitted(pinned_scoped_admitted);
     try std.testing.expectError(error.SupervisionDenied, pinned_scoped_runspace.routePending(0, unowned_plan));
     try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try pinned_scoped_runspace.mailbox.get(0)).status);
+
+    const unbound_scoped_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .link_plan_fingerprint = assembly.link_plan_fingerprint,
+        .linker_certificate_fingerprint = assembly.linker_certificate_fingerprint,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_handoff_accept = true,
+            .allow_native_adapters = true,
+            .allow_fabric_routes = true,
+            .allow_reject_routes = true,
+            .allow_rejected_responses = true,
+        }),
+    });
+    const unbound_scoped_admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_aa03,
+        .target_ref = parent_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .environment_certificate_fingerprint = PortsEnv.certificate(.fresh, false).certificate_fingerprint,
+        .run_image = source_image,
+        .run_permit = unbound_scoped_permit,
+        .link_plan_fingerprint = assembly.link_plan_fingerprint,
+        .linker_certificate_fingerprint = assembly.linker_certificate_fingerprint,
+        .mode = .resume_parked,
+    });
+    var unbound_scoped_runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer unbound_scoped_runspace.deinit();
+    try unbound_scoped_runspace.installAssembly(assembly);
+    _ = try unbound_scoped_runspace.installAdmitted(unbound_scoped_admitted);
+    try std.testing.expectError(error.SupervisionDenied, unbound_scoped_runspace.routePending(0, owned_plan));
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try unbound_scoped_runspace.mailbox.get(0)).status);
 }
 
 test "runspace fabric response enforces parent value image policy" {
