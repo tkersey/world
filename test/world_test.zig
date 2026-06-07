@@ -1944,8 +1944,7 @@ test "link non executable descriptor providers are ignored before Fabric synthes
 
     try std.testing.expect(!linked.plan.accepted());
     try std.testing.expectEqual(@as(usize, 0), linked.plan.fabric_plans.len);
-    try std.testing.expect(linked.graph.hasBlocker(.MissingProvider));
-    try std.testing.expect(!linked.graph.hasBlocker(.UnsupportedRouteKind));
+    try std.testing.expect(linked.graph.hasBlocker(.UnsupportedRouteKind));
     try std.testing.expectEqual(@as(usize, 0), linked.report.guest_conformance_blockers);
 }
 
@@ -2001,7 +2000,7 @@ test "link descriptorless replay and reject providers synthesize terminal routes
     try std.testing.expectEqual(@as(usize, 1), reject_linked.plan.reject_routes_used.len);
 }
 
-test "link descriptorless adapter is ignored as non viable provider" {
+test "link descriptorless adapter reports unsupported route kind" {
     const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
     const entries = [_]world.Linker.Catalog.Entry{
@@ -2025,8 +2024,7 @@ test "link descriptorless adapter is ignored as non viable provider" {
     try std.testing.expect(!linked.plan.accepted());
     try std.testing.expectEqual(world.Linker.NormalForm.partial_with_blockers, linked.plan.normal_form);
     try std.testing.expectEqual(@as(usize, 0), linked.plan.fabric_plans.len);
-    try std.testing.expect(linked.graph.hasBlocker(.MissingProvider));
-    try std.testing.expect(!linked.graph.hasBlocker(.UnsupportedRouteKind));
+    try std.testing.expect(linked.graph.hasBlocker(.UnsupportedRouteKind));
 }
 
 test "link unsupported descriptorless providers do not consume candidate cap" {

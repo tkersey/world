@@ -423,18 +423,26 @@ pub fn Linker(comptime W: type) type {
             pub fn candidateProvidersForPolicy(self: ExportIndex, allocator: std.mem.Allocator, import_requirement: W.ImportRequirement, policy: Policy) ![]Catalog.Entry {
                 var candidates: std.ArrayList(Catalog.Entry) = .empty;
                 errdefer candidates.deinit(allocator);
+                var unsupported_policy_candidate: ?Catalog.Entry = null;
                 for (self.catalog.entries) |entry| {
                     const descriptor = entry.export_descriptor orelse {
                         if ((entry.provider_kind == .replay_provider or entry.provider_kind == .reject_route or entry.provider_kind == .environment_adapter) and linkerCanSynthesizeRouteKind(policy, entry)) {
                             try candidates.append(allocator, entry);
                             if (candidates.items.len > policy.max_candidates_per_import) break;
+                        } else if (unsupported_policy_candidate == null and linkerPolicyPermitsUnsupportedRouteKind(policy, entry)) {
+                            unsupported_policy_candidate = entry;
                         }
                         continue;
                     };
-                    if (!linkerCanSynthesizeRouteKind(policy, entry)) continue;
                     const expected = valueRefForRequirement(import_requirement);
                     if (expected.compatibleWith(descriptor.result_ref, policy)) {
                         if (descriptor.argument_refs.len != 0) continue;
+                        if (!linkerCanSynthesizeRouteKind(policy, entry)) {
+                            if (unsupported_policy_candidate == null and linkerPolicyPermitsUnsupportedRouteKind(policy, entry)) {
+                                unsupported_policy_candidate = entry;
+                            }
+                            continue;
+                        }
                         if ((entry.provider_kind == .target or entry.provider_kind == .module_ref or entry.provider_kind == .admitted_run) and
                             !canSynthesizeExecutableResponseMapping(import_requirement, entry, expected, descriptor.result_ref))
                         {
@@ -443,6 +451,9 @@ pub fn Linker(comptime W: type) type {
                         try candidates.append(allocator, entry);
                         if (candidates.items.len > policy.max_candidates_per_import) break;
                     }
+                }
+                if (candidates.items.len == 0) {
+                    if (unsupported_policy_candidate) |candidate| try candidates.append(allocator, candidate);
                 }
                 return candidates.toOwnedSlice(allocator);
             }
@@ -1982,6 +1993,14 @@ pub fn Linker(comptime W: type) type {
                 .replay_provider => policy.allow_replay_routes,
                 .reject_route => policy.allow_reject_routes,
                 .guest_provider, .environment_adapter => false,
+            };
+        }
+
+        fn linkerPolicyPermitsUnsupportedRouteKind(policy: Policy, entry: Catalog.Entry) bool {
+            return switch (entry.provider_kind) {
+                .guest_provider => policy.allow_guest_routes,
+                .environment_adapter => policy.allow_adapter_fallback,
+                else => false,
             };
         }
 
