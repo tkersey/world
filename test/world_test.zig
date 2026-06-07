@@ -298,6 +298,20 @@ test "capsule certificate derives from image and quiescence without image hash c
     try std.testing.expectEqual(report.report_fingerprint, cert.quiescence_report_fingerprint);
 }
 
+test "capsule freezeRun produces consistent reference image" {
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const handle = world.RunHandle.init(.{
+        .runspace_fingerprint = 0x5150_3301,
+        .local_run_id = 7,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+    });
+    const image = try world.Capsule.freezeRun(handle, .{});
+    try image.validate(.{});
+    try std.testing.expectEqual(world.Capsule.Kind.reference_only, image.manifest.kind);
+    try std.testing.expectEqual(@as(usize, 0), image.manifest.run_slot_count);
+    try std.testing.expectEqual(@as(usize, 0), image.runspace_image.run_slots.len);
+}
+
 test "capsule image validation rejects completed manifest with parked slot" {
     const allocator = std.testing.allocator;
     const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
@@ -1038,6 +1052,10 @@ test "capsule relink requires manifest fabric plan coverage" {
     try std.testing.expectEqual(world.Capsule.LinkCertificateMatchStatus.mismatched, rejected.link_certificate_match_status);
     try std.testing.expectEqual(world.Capsule.RelinkStatus.rejected, rejected.relink_status);
     try std.testing.expectEqual(world.Capsule.Blocker.relink_drift_rejected, rejected.blockers[0]);
+    const drift_allowed = try world.Capsule.verifyLink(mismatched_image, 0, .{ .allow_relink_drift = true });
+    try std.testing.expectEqual(world.Capsule.LinkCertificateMatchStatus.mismatched, drift_allowed.link_certificate_match_status);
+    try std.testing.expectEqual(world.Capsule.RelinkStatus.drift_allowed, drift_allowed.relink_status);
+    try std.testing.expectEqual(@as(usize, 0), drift_allowed.blockers.len);
 
     const covered_link = world.Capsule.LinkImage.init(.{
         .link_plan_fingerprint = 0x1010,
@@ -1154,6 +1172,60 @@ test "capsule guest conformance refs are exposed during thaw and inspect restore
     try std.testing.expectEqual(@as(usize, 0), receiver.slots.items.len);
 }
 
+test "capsule parked thaw rejects missing run image before mutation" {
+    const allocator = std.testing.allocator;
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const request = testRunspaceRequestFrame();
+    const slot = world.Capsule.RunSlotImage.init(.{
+        .original_run_handle_fingerprint = 0x5150_3981,
+        .role = .root,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .run_state_fingerprint = world.RunState.init(.{
+            .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+            .pending_request_fingerprint = request.frame_fingerprint,
+            .status = .parked_on_port,
+        }).run_state_fingerprint,
+        .current_pending_mailbox_id = 0,
+        .status = .parked_on_port,
+    });
+    const slots = [_]world.Capsule.RunSlotImage{slot};
+    const pending = world.Capsule.PendingPortImage.init(.{
+        .pending_port_fingerprint = 0x5150_3982,
+        .original_run_handle_fingerprint = slot.original_run_handle_fingerprint,
+        .mailbox_id = 0,
+        .request_frame = request,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+    });
+    const pending_entries = [_]world.Capsule.PendingPortImage{pending};
+    const pending_refs = [_]u64{pending.pending_port_fingerprint};
+    const mailbox = world.Capsule.MailboxImage.init(.{
+        .pending_port_entries = &pending_entries,
+        .pending_port_fingerprints = &pending_refs,
+    });
+    const manifest = world.Capsule.Manifest.init(.{
+        .kind = .parked_assembly,
+        .root_target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .pending_port_count = pending_entries.len,
+        .run_slot_count = slots.len,
+        .normal_form = .quiescent_parked,
+    });
+    const runspace_image = world.Capsule.RunspaceImage.init(.{
+        .runspace_fingerprint = 0x5150_3983,
+        .runspace_report_fingerprint = 0x5150_3984,
+        .run_slots = &slots,
+        .mailbox_image = mailbox,
+    });
+    const image = world.Capsule.Image.init(.{
+        .manifest = manifest,
+        .runspace_image = runspace_image,
+    });
+    var receiver = world.Runspace.init(allocator, .{});
+    defer receiver.deinit();
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Capsule.thawIntoRunspace(image, &receiver, target_ref.target_ref_fingerprint, 0, 0x5150_3985, .{ .mode = .restore_parked }));
+    try std.testing.expectEqual(@as(usize, 0), receiver.slots.items.len);
+    try std.testing.expectEqual(@as(usize, 0), receiver.mailbox.pendingCount());
+}
+
 test "capsule active fabric restore rehydrates pending mailbox entries" {
     const allocator = std.testing.allocator;
     const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
@@ -1171,6 +1243,19 @@ test "capsule active fabric restore rehydrates pending mailbox entries" {
         .target_ref_fingerprint = provider_ref.target_ref_fingerprint,
     });
     const parent_request = testRunspaceRequestFrame();
+    const parent_state = world.RunState.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .pending_request_fingerprint = parent_request.frame_fingerprint,
+        .turn_index = parent_request.turn_index,
+        .status = .parked_on_port,
+    });
+    const parent_run_image = world.RunImage.init(.{
+        .kind = .parked_run,
+        .target_ref = parent_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = parent_state,
+        .pending_request_frame = parent_request,
+    });
     const provider_request = world.Frame.Request.init(.{
         .world_surface_fingerprint = provider_ref.world_surface_fingerprint,
         .target_certificate_fingerprint = provider_ref.target_certificate_fingerprint,
@@ -1181,28 +1266,37 @@ test "capsule active fabric restore rehydrates pending mailbox entries" {
         .turn_index = 0,
         .expected_response_value_table_id = 1,
     });
+    const provider_state = world.RunState.init(.{
+        .target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+        .pending_request_fingerprint = provider_request.frame_fingerprint,
+        .turn_index = provider_request.turn_index,
+        .status = .parked_on_port,
+    });
+    const provider_run_image = world.RunImage.init(.{
+        .kind = .parked_run,
+        .target_ref = provider_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Strict.Target).import_set_fingerprint,
+        .current_state = provider_state,
+        .pending_request_frame = provider_request,
+    });
     try source.slots.append(allocator, world.Runspace.RunSlot.fromState(.{
         .handle = parent_handle,
         .target_ref = parent_ref,
-        .current_state = world.RunState.init(.{
-            .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
-            .pending_request_fingerprint = parent_request.frame_fingerprint,
-            .status = .parked_on_port,
-        }),
+        .current_state = parent_state,
         .status = .parked_on_port,
         .pending_mailbox_id = 0,
+        .installed_run_image = parent_run_image,
+        .owns_installed_run_image = true,
     }));
     try source.slots.append(allocator, world.Runspace.RunSlot.fromState(.{
         .handle = provider_handle,
         .target_ref = provider_ref,
-        .current_state = world.RunState.init(.{
-            .target_ref_fingerprint = provider_ref.target_ref_fingerprint,
-            .pending_request_fingerprint = provider_request.frame_fingerprint,
-            .status = .parked_on_port,
-        }),
+        .current_state = provider_state,
         .status = .parked_on_port,
         .pending_mailbox_id = 1,
         .parent_run_handle_fingerprint = parent_handle.handle_fingerprint,
+        .installed_run_image = provider_run_image,
+        .owns_installed_run_image = true,
     }));
     const parent_pending = try source.mailbox.push(.{
         .run_handle = parent_handle,
@@ -1252,6 +1346,8 @@ test "capsule active fabric restore rehydrates pending mailbox entries" {
     defer restore.deinit(allocator);
     try std.testing.expect(restore.accepted);
     try std.testing.expectEqual(@as(usize, 2), receiver.mailbox.pendingCount());
+    try std.testing.expect(receiver.slots.items[0].installed_run_image != null);
+    try std.testing.expect(receiver.slots.items[1].installed_run_image != null);
     try std.testing.expectEqual(@as(usize, 4), restore.restored_pending_port_mappings.len);
 }
 

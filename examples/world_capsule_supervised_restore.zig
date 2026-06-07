@@ -31,17 +31,29 @@ fn parkedSource(allocator: std.mem.Allocator, runspace: *world.Runspace, target_
         .turn_index = 0,
         .expected_response_value_table_id = 1,
     });
+    const parked_state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .pending_request_fingerprint = request.frame_fingerprint,
+        .turn_index = request.turn_index,
+        .status = .parked_on_port,
+    });
+    const parked_image = world.RunImage.init(.{
+        .kind = .parked_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = parked_state,
+        .pending_request_frame = request,
+        .prior_run_permit_fingerprint = permit_fingerprint,
+    });
     try runspace.slots.append(allocator, world.Runspace.RunSlot.fromState(.{
         .handle = handle,
         .target_ref = target_ref,
-        .current_state = world.RunState.init(.{
-            .target_ref_fingerprint = target_ref.target_ref_fingerprint,
-            .pending_request_fingerprint = request.frame_fingerprint,
-            .status = .parked_on_port,
-        }),
+        .current_state = parked_state,
         .status = .parked_on_port,
         .run_permit_fingerprint = permit_fingerprint,
         .pending_mailbox_id = 0,
+        .installed_run_image = parked_image,
+        .owns_installed_run_image = true,
     }));
     _ = try runspace.mailbox.push(.{
         .run_handle = handle,

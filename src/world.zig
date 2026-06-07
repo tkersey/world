@@ -17693,12 +17693,11 @@ pub const Capsule = struct {
         return freezeRunspaceWithAssembly(runspace, assembly, options);
     }
 
-    pub fn freezeRun(handle: Runspace.RunHandle, options: FreezeOptions) !Image {
+    pub fn freezeRun(handle: RunHandle, options: FreezeOptions) !Image {
         if (options.max_run_slots == 0) return error.InvalidFrameEncoding;
         const manifest = Manifest.init(.{
             .kind = .reference_only,
             .root_target_ref_fingerprint = handle.target_ref_fingerprint,
-            .run_slot_count = 1,
             .normal_form = .quiescent_completed,
         });
         const runspace_image_value = RunspaceImage.init(.{
@@ -17968,6 +17967,19 @@ pub const Capsule = struct {
         try runspace.slots.ensureUnusedCapacity(allocator, image.runspace_image.run_slots.len);
         for (image.runspace_image.run_slots) |slot_image| {
             try slot_image.validate(.{});
+            var installed_run_image: ?RunImage = null;
+            var installed_run_image_owned = false;
+            errdefer if (installed_run_image_owned) {
+                if (installed_run_image) |*run_image| run_image.deinit(allocator);
+            };
+            if (slot_image.run_image_fingerprint) |fingerprint| {
+                installed_run_image = try cloneCapsuleRunImageByFingerprint(allocator, image.run_images, fingerprint);
+                installed_run_image_owned = true;
+                if (installed_run_image.?.target_ref.target_ref_fingerprint != slot_image.target_ref_fingerprint) return error.InvalidFrameEncoding;
+                if (installed_run_image.?.current_state.run_state_fingerprint != slot_image.run_state_fingerprint) return error.InvalidFrameEncoding;
+            } else if (slotRestoreRequiresRunImage(slot_image.status)) {
+                return error.InvalidFrameEncoding;
+            }
             const new_handle = RunHandle.init(.{
                 .runspace_fingerprint = runspace.runspace_fingerprint,
                 .local_run_id = runspace.next_run_id,
@@ -17980,21 +17992,29 @@ pub const Capsule = struct {
             try handle_mappings.append(allocator, slot_image.original_run_handle_fingerprint);
             try handle_mappings.append(allocator, new_handle.handle_fingerprint);
             const status = runspaceStatusForCapsuleStatus(slot_image.status);
-            runspace.slots.appendAssumeCapacity(Runspace.RunSlot.fromState(.{
-                .handle = new_handle,
-                .target_ref = .{
+            const restored_target_ref = if (installed_run_image) |run_image|
+                run_image.target_ref
+            else
+                TargetRef{
                     .target_ref_fingerprint = slot_image.target_ref_fingerprint,
                     .world_surface_fingerprint = 0,
                     .target_certificate_fingerprint = 0,
                     .boundary_module_fingerprint = slot_image.module_ref_fingerprint,
-                },
-                .current_state = RunState.init(.{
+                };
+            const restored_state = if (installed_run_image) |run_image|
+                run_image.current_state
+            else
+                RunState.init(.{
                     .target_ref_fingerprint = slot_image.target_ref_fingerprint,
                     .transcript_image_fingerprint = slot_image.transcript_image_fingerprint,
                     .branch_id = slot_image.branch_id orelse 0,
                     .checkpoint_fingerprint = if (slot_image.checkpoint_refs.len == 0) null else slot_image.checkpoint_refs[0],
                     .status = runStateStatusForCapsuleStatus(slot_image.status),
-                }),
+                });
+            runspace.slots.appendAssumeCapacity(Runspace.RunSlot.fromState(.{
+                .handle = new_handle,
+                .target_ref = restored_target_ref,
+                .current_state = restored_state,
                 .status = status,
                 .admission_receipt_fingerprint = slot_image.admission_receipt_fingerprint,
                 .run_permit_fingerprint = permit_fingerprint orelse slot_image.run_permit_fingerprint,
@@ -18002,7 +18022,10 @@ pub const Capsule = struct {
                 .branch_id = slot_image.branch_id,
                 .checkpoint_fingerprint = if (slot_image.checkpoint_refs.len == 0) null else slot_image.checkpoint_refs[0],
                 .module_ref_fingerprint = slot_image.module_ref_fingerprint,
+                .installed_run_image = installed_run_image,
+                .owns_installed_run_image = installed_run_image_owned,
             }));
+            installed_run_image_owned = false;
             if (slot_image.role == .provider) {
                 try provider_refs.append(allocator, new_handle.handle_fingerprint);
             } else {
@@ -18084,13 +18107,14 @@ pub const Capsule = struct {
         const residual_matched = !policy.require_residual_import_match or image.manifest.link_plan_fingerprint == null or image.manifest.link_plan_fingerprint.? == link.link_plan_fingerprint;
         const fabric_matched = !policy.require_fabric_plan_match or fabricPlanRefsCovered(image.manifest.fabric_plan_fingerprints, link.route_synthesis_refs);
         const matched = catalog_matched and residual_matched and fabric_matched;
+        const accepted = matched or policy.allow_relink_drift;
         return ThawPlan.init(.{
             .capsule_image_fingerprint = image.image_fingerprint,
             .requested_mode = .relink_and_restore,
             .local_target_registry_fingerprint = local_catalog_fingerprint,
             .link_certificate_match_status = if (matched) .matched else .mismatched,
-            .relink_status = if (matched) .matched else .rejected,
-            .blockers = if (matched) &.{} else &.{.relink_drift_rejected},
+            .relink_status = if (matched) .matched else if (policy.allow_relink_drift) .drift_allowed else .rejected,
+            .blockers = if (accepted) &.{} else &.{.relink_drift_rejected},
         });
     }
 
@@ -18213,6 +18237,20 @@ pub const Capsule = struct {
             if (!u64SliceContains(route_synthesis_refs, manifest_ref)) return false;
         }
         return true;
+    }
+
+    fn slotRestoreRequiresRunImage(status: RunSlotStatus) bool {
+        return switch (status) {
+            .parked_on_port, .parked_on_supervision => true,
+            .admitted, .runnable, .completed, .failed, .exported, .rejected => false,
+        };
+    }
+
+    fn cloneCapsuleRunImageByFingerprint(allocator: std.mem.Allocator, run_images: []const RunImage, fingerprint: u64) !RunImage {
+        for (run_images) |run_image| {
+            if (run_image.run_image_fingerprint == fingerprint) return cloneCapsuleRunImage(allocator, run_image);
+        }
+        return error.InvalidFrameEncoding;
     }
 
     fn linkMatchStatusForThaw(image: Image, registry_fingerprint: u64) LinkCertificateMatchStatus {

@@ -651,7 +651,7 @@ pub fn build(b: *std.Build) void {
             .expected_stdout =
             \\active_fabric_invocation_fingerprint=8d055b4f4a23bde
             \\pending_provider_port_fingerprint=82826af2d53f2782
-            \\restore_report_fingerprint=7720ab87fd61ba70
+            \\restore_report_fingerprint=7eb35000408e73f0
             \\final_result=active-fabric-restored
             \\
             ,
@@ -662,7 +662,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-capsule-agent-transfer",
             .desc = "Run the World Assembly Capsule agent transfer example.",
             .expected_stdout =
-            \\capsule_fingerprint=ffd63e2fb737f6f6
+            \\capsule_fingerprint=bb317e4275f7a047
             \\residual_external_import_count=1
             \\receiver_permit_fingerprint=e9600a9c50625a17
             \\final_result=final=actuate skeleton complete

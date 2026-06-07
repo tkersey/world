@@ -38,28 +38,50 @@ pub fn main(init: std.process.Init) !void {
     });
     const parent_request = requestFor(parent_ref, 0, 0x5150_a001);
     const provider_request = requestFor(provider_ref, 0, 0x5150_a002);
+    const parent_state = world.RunState.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .pending_request_fingerprint = parent_request.frame_fingerprint,
+        .turn_index = parent_request.turn_index,
+        .status = .parked_on_port,
+    });
+    const provider_state = world.RunState.init(.{
+        .target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+        .pending_request_fingerprint = provider_request.frame_fingerprint,
+        .turn_index = provider_request.turn_index,
+        .status = .parked_on_port,
+    });
+    const parent_run_image = world.RunImage.init(.{
+        .kind = .parked_run,
+        .target_ref = parent_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = parent_state,
+        .pending_request_frame = parent_request,
+    });
+    const provider_run_image = world.RunImage.init(.{
+        .kind = .parked_run,
+        .target_ref = provider_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Strict.Target).import_set_fingerprint,
+        .current_state = provider_state,
+        .pending_request_frame = provider_request,
+    });
     try source.slots.append(allocator, world.Runspace.RunSlot.fromState(.{
         .handle = parent_handle,
         .target_ref = parent_ref,
-        .current_state = world.RunState.init(.{
-            .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
-            .pending_request_fingerprint = parent_request.frame_fingerprint,
-            .status = .parked_on_port,
-        }),
+        .current_state = parent_state,
         .status = .parked_on_port,
         .pending_mailbox_id = 0,
+        .installed_run_image = parent_run_image,
+        .owns_installed_run_image = true,
     }));
     try source.slots.append(allocator, world.Runspace.RunSlot.fromState(.{
         .handle = provider_handle,
         .target_ref = provider_ref,
-        .current_state = world.RunState.init(.{
-            .target_ref_fingerprint = provider_ref.target_ref_fingerprint,
-            .pending_request_fingerprint = provider_request.frame_fingerprint,
-            .status = .parked_on_port,
-        }),
+        .current_state = provider_state,
         .status = .parked_on_port,
         .pending_mailbox_id = 1,
         .parent_run_handle_fingerprint = parent_handle.handle_fingerprint,
+        .installed_run_image = provider_run_image,
+        .owns_installed_run_image = true,
     }));
     const parent_pending = try source.mailbox.push(.{
         .run_handle = parent_handle,

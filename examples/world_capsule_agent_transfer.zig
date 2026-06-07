@@ -72,16 +72,27 @@ pub fn main(init: std.process.Init) !void {
         .turn_index = 0,
         .expected_response_value_table_id = decide_import.response_value_table_id,
     });
+    const parked_state = world.RunState.init(.{
+        .target_ref_fingerprint = root_ref.target_ref_fingerprint,
+        .pending_request_fingerprint = request.frame_fingerprint,
+        .turn_index = request.turn_index,
+        .status = .parked_on_port,
+    });
+    const parked_image = world.RunImage.init(.{
+        .kind = .parked_run,
+        .target_ref = root_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Agent.Target).import_set_fingerprint,
+        .current_state = parked_state,
+        .pending_request_frame = request,
+    });
     try source.slots.append(allocator, world.Runspace.RunSlot.fromState(.{
         .handle = handle,
         .target_ref = root_ref,
-        .current_state = world.RunState.init(.{
-            .target_ref_fingerprint = root_ref.target_ref_fingerprint,
-            .pending_request_fingerprint = request.frame_fingerprint,
-            .status = .parked_on_port,
-        }),
+        .current_state = parked_state,
         .status = .parked_on_port,
         .pending_mailbox_id = 0,
+        .installed_run_image = parked_image,
+        .owns_installed_run_image = true,
     }));
     _ = try source.mailbox.push(.{
         .run_handle = handle,
