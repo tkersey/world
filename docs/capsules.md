@@ -68,7 +68,7 @@ Active Fabric restore requires parent and provider parked or terminal states, an
 
 ## Replay/verify restore
 
-Replay-only thaw restores enough capsule metadata and transcript refs to inspect or replay without native handlers. Verify mode is for receiver-local fresh handlers and transcript comparison; changed handler behavior must fail as divergence.
+Replay-only thaw restores enough capsule metadata and transcript refs to inspect or replay without native handlers. Verify-and-restore is fail-closed in this API surface: until a receiver-local verifier supplies fresh handler replay and transcript comparison evidence, thaw returns `verification_witness_missing` before mutating the destination Runspace.
 
 ## Guest conformance restore
 

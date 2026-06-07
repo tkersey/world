@@ -16193,6 +16193,7 @@ pub const Capsule = struct {
         stale_pending_port = 30,
         duplicate_response = 31,
         forbidden_native_state = 32,
+        verification_witness_missing = 33,
     };
 
     pub const Warning = enum(u8) {
@@ -18360,6 +18361,7 @@ pub const Capsule = struct {
 
     fn thawBlocker(image: Image, registry_fingerprint: u64, environment_fingerprint: u64, permit_fingerprint: ?u64, options: ThawOptions) ?Blocker {
         if (!restoreModeAllowedForImage(image, options.mode)) return .malformed_image;
+        if (options.mode == .verify_and_restore) return .verification_witness_missing;
         if (options.require_local_permit and permit_fingerprint == null and options.mode != .inspect_only and options.mode != .replay_only) return .permit_denied;
         if (registry_fingerprint != 0 and registry_fingerprint != image.manifest.root_target_ref_fingerprint) {
             if (image.link_image) |link| {
@@ -18679,6 +18681,7 @@ pub const Capsule = struct {
             .stale_pending_port => &.{.stale_pending_port},
             .duplicate_response => &.{.duplicate_response},
             .forbidden_native_state => &.{.forbidden_native_state},
+            .verification_witness_missing => &.{.verification_witness_missing},
         };
     }
 

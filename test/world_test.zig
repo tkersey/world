@@ -1741,8 +1741,13 @@ test "capsule relink requires manifest fabric plan coverage" {
     try std.testing.expectEqual(world.Capsule.Blocker.target_mismatch, catalogless_mismatch.blockers[0]);
     const relink_allowed = try world.Capsule.planThaw(catalogless_image, root_ref.target_ref_fingerprint, 0, 0x5150_3719, .{ .mode = .relink_and_restore });
     try std.testing.expectEqual(@as(usize, 0), relink_allowed.blockers.len);
-    const verify_allowed = try world.Capsule.planThaw(catalogless_image, root_ref.target_ref_fingerprint, 0, 0x5150_3720, .{ .mode = .verify_and_restore });
-    try std.testing.expectEqual(@as(usize, 0), verify_allowed.blockers.len);
+    const verify_rejected = try world.Capsule.planThaw(catalogless_image, root_ref.target_ref_fingerprint, 0, 0x5150_3720, .{ .mode = .verify_and_restore });
+    try std.testing.expectEqual(world.Capsule.Blocker.verification_witness_missing, verify_rejected.blockers[0]);
+    var verify_receiver = world.Runspace.init(std.testing.allocator, .{});
+    defer verify_receiver.deinit();
+    const verify_restore = try world.Capsule.thawIntoRunspace(catalogless_image, &verify_receiver, root_ref.target_ref_fingerprint, 0, 0x5150_3721, .{ .mode = .verify_and_restore });
+    try std.testing.expect(!verify_restore.accepted);
+    try std.testing.expectEqual(@as(usize, 0), verify_receiver.slots.items.len);
     const drift_rejected = try world.Capsule.planThaw(catalog_image, root_ref.target_ref_fingerprint, 0, 0x5150_3714, .{ .mode = .restore_completed });
     try std.testing.expectEqual(world.Capsule.Blocker.link_plan_mismatch, drift_rejected.blockers[0]);
     const drift_allowed_thaw = try world.Capsule.planThaw(catalog_image, root_ref.target_ref_fingerprint, 0, 0x5150_3715, .{ .mode = .restore_completed, .allow_relink_drift = true });
