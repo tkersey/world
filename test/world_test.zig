@@ -1627,6 +1627,23 @@ test "capsule relink requires manifest fabric plan coverage" {
     try std.testing.expectEqual(world.Capsule.LinkCertificateMatchStatus.matched, accepted.link_certificate_match_status);
     try std.testing.expectEqual(world.Capsule.RelinkStatus.matched, accepted.relink_status);
     try std.testing.expectEqual(@as(usize, 0), accepted.blockers.len);
+    const unwitnessed_fabric_manifest = world.Capsule.Manifest.init(.{
+        .kind = .completed_assembly,
+        .root_target_ref_fingerprint = root_ref.target_ref_fingerprint,
+        .link_plan_fingerprint = 0x1010,
+        .link_certificate_fingerprint = 0x2020,
+        .assembly_fingerprint = 0x3030,
+        .normal_form = .quiescent_completed,
+    });
+    const unwitnessed_fabric_image = world.Capsule.Image.init(.{
+        .manifest = unwitnessed_fabric_manifest,
+        .runspace_image = runspace_image,
+        .link_image = covered_link,
+    });
+    const unwitnessed_fabric = try world.Capsule.verifyLink(unwitnessed_fabric_image, 0, .{});
+    try std.testing.expectEqual(world.Capsule.LinkCertificateMatchStatus.mismatched, unwitnessed_fabric.link_certificate_match_status);
+    try std.testing.expectEqual(world.Capsule.RelinkStatus.rejected, unwitnessed_fabric.relink_status);
+    try std.testing.expectEqual(world.Capsule.Blocker.fabric_plan_mismatch, unwitnessed_fabric.blockers[0]);
     const guest_required = try world.Capsule.verifyLink(covered_image, 0, .{ .require_guest_conformance = true });
     try std.testing.expectEqual(world.Capsule.LinkCertificateMatchStatus.mismatched, guest_required.link_certificate_match_status);
     try std.testing.expectEqual(world.Capsule.RelinkStatus.rejected, guest_required.relink_status);
@@ -1912,7 +1929,8 @@ test "capsule handoff admission binds restore witnesses and receiver permit" {
         .thaw_plan = thaw,
         .restore_report = restore,
     });
-    try std.testing.expect(admission.accepted);
+    try std.testing.expect(!admission.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, admission.blockers[0]);
     try std.testing.expectEqual(imported.image_fingerprint, admission.capsule_image_fingerprint.?);
     try std.testing.expectEqual(cert.certificate_fingerprint, admission.capsule_certificate_fingerprint.?);
     try std.testing.expectEqual(thaw.thaw_plan_fingerprint, admission.capsule_thaw_plan_fingerprint.?);

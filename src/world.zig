@@ -2338,10 +2338,7 @@ pub const Admission = struct {
             .inspect_only => thaw_mode == .inspect_only,
             .replay_only => thaw_mode == .replay_only,
             .verify => thaw_mode == .verify_and_restore,
-            .restore_parked => switch (thaw_mode) {
-                .restore_parked, .restore_completed, .restore_failed => true,
-                else => false,
-            },
+            .restore_parked => thaw_mode == .restore_parked,
             .relink_and_restore => thaw_mode == .relink_and_restore,
         };
     }
@@ -18778,6 +18775,7 @@ pub const Capsule = struct {
     }
 
     fn linkFabricPlanWitnessesCover(manifest_refs: []const u64, link_plan_witness_refs: []const u64) bool {
+        if (manifest_refs.len == 0 and link_plan_witness_refs.len != 0) return false;
         for (manifest_refs) |manifest_ref| {
             if (!u64SliceContains(link_plan_witness_refs, manifest_ref)) return false;
         }
