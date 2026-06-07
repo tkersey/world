@@ -18378,7 +18378,13 @@ pub const Capsule = struct {
                 if (link.catalog_fingerprint) |catalog| {
                     if (registry_fingerprint != 0 and catalog != registry_fingerprint and !options.allow_relink_drift) return .link_plan_mismatch;
                 }
+                if (!linkFabricPlanWitnessesCover(image.manifest.fabric_plan_fingerprints, link.route_synthesis_refs)) return .fabric_plan_mismatch;
             }
+        }
+        if (options.rerun_guest_conformance and
+            !guestConformanceRefsCovered(image.manifest.guest_conformance_report_fingerprints, image.guest_conformance_refs))
+        {
+            return .guest_conformance_missing;
         }
         return null;
     }

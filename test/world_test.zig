@@ -1639,6 +1639,8 @@ test "capsule relink requires manifest fabric plan coverage" {
     const residual_rejected = try world.Capsule.verifyLink(residual_image, 0, .{});
     try std.testing.expectEqual(world.Capsule.RelinkStatus.rejected, residual_rejected.relink_status);
     try std.testing.expectEqual(world.Capsule.Blocker.residual_import_mismatch, residual_rejected.blockers[0]);
+    const fabric_thaw_rejected = try world.Capsule.planThaw(mismatched_image, root_ref.target_ref_fingerprint, 0, null, .{ .mode = .inspect_only });
+    try std.testing.expectEqual(world.Capsule.Blocker.fabric_plan_mismatch, fabric_thaw_rejected.blockers[0]);
     const residual_accepted = try world.Capsule.verifyLink(residual_image, 0, .{ .expected_residual_import_set_fingerprint = 0x5150_3710 });
     try std.testing.expectEqual(world.Capsule.RelinkStatus.matched, residual_accepted.relink_status);
     try std.testing.expectEqual(@as(usize, 0), residual_accepted.blockers.len);
@@ -2010,6 +2012,12 @@ test "capsule guest conformance refs are exposed during thaw and inspect restore
         .runspace_image = runspace_image,
         .guest_conformance_refs = &guest_refs,
     });
+    const missing_guest_image = world.Capsule.Image.init(.{
+        .manifest = manifest,
+        .runspace_image = runspace_image,
+    });
+    const missing_guest_thaw = try world.Capsule.planThaw(missing_guest_image, 0, 0, null, .{ .mode = .inspect_only, .rerun_guest_conformance = true });
+    try std.testing.expectEqual(world.Capsule.Blocker.guest_conformance_missing, missing_guest_thaw.blockers[0]);
 
     const thaw = try world.Capsule.planThaw(image, 0, 0, null, .{ .mode = .inspect_only, .rerun_guest_conformance = true });
     try std.testing.expectEqual(guest_report.report_fingerprint, thaw.guest_conformance_refs[0]);
