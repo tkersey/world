@@ -16978,8 +16978,15 @@ pub const Capsule = struct {
                 if (self.depth_route_stack.len != self.active_invocation_fingerprints.len) return error.InvalidFrameEncoding;
                 if (self.provider_run_refs.len < self.active_invocation_fingerprints.len) return error.InvalidFrameEncoding;
                 if (self.provider_state_summary_fingerprints.len < self.active_invocation_fingerprints.len) return error.InvalidFrameEncoding;
-                if (self.route_fingerprints.len == 0) return error.InvalidFrameEncoding;
-                if (self.value_mapping_fingerprints.len == 0) return error.InvalidFrameEncoding;
+                if (self.route_fingerprints.len < self.active_invocation_fingerprints.len) return error.InvalidFrameEncoding;
+                if (self.value_mapping_fingerprints.len < self.active_invocation_fingerprints.len) return error.InvalidFrameEncoding;
+                for (self.active_invocation_fingerprints, 0..) |invocation, index| {
+                    if (self.depth_route_stack[index] != fingerprintFabricActiveInvocationWitness(
+                        invocation,
+                        self.route_fingerprints[index],
+                        self.value_mapping_fingerprints[index],
+                    )) return error.InvalidFrameEncoding;
+                }
             }
             if (self.fabric_image_fingerprint != fingerprintFabricImage(self)) return error.InvalidFrameEncoding;
         }
@@ -17890,6 +17897,10 @@ pub const Capsule = struct {
         errdefer provider_state_refs.deinit(allocator);
         var depth_route_stack: std.ArrayList(u64) = .empty;
         errdefer depth_route_stack.deinit(allocator);
+        var route_refs: std.ArrayList(u64) = .empty;
+        errdefer route_refs.deinit(allocator);
+        var mapping_refs: std.ArrayList(u64) = .empty;
+        errdefer mapping_refs.deinit(allocator);
 
         var status_hasher = std.hash.Wyhash.init(0x6361_7073_6662_7374);
         for (runspace.fabric_invocations.items) |invocation| {
@@ -17897,7 +17908,8 @@ pub const Capsule = struct {
             hashU64(&status_hasher, invocation.invocation_fingerprint);
             hashU64(&status_hasher, @intFromEnum(invocation.status));
             if (isActiveFabricStatus(invocation.status)) {
-                if (!fabricRouteWitnessExists(runspace, invocation.route_fingerprint)) return error.FabricWitnessMissing;
+                const route = fabricRouteWitness(runspace, invocation.route_fingerprint) orelse return error.FabricWitnessMissing;
+                const mapping_fingerprint = fabricValueMappingWitness(runspace, route) orelse return error.FabricWitnessMissing;
                 if (!mailboxContainsPendingFingerprint(runspace, invocation.parent_pending_port_fingerprint)) return error.MailboxOwnershipMismatch;
                 const provider_handle = invocation.provider_run_handle_fingerprint orelse return error.ProviderStateUnsupported;
                 const provider_state = providerStateFingerprintForHandle(runspace, provider_handle) orelse return error.ProviderStateUnsupported;
@@ -17905,7 +17917,13 @@ pub const Capsule = struct {
                 try parent_pending_refs.append(allocator, invocation.parent_pending_port_fingerprint);
                 try provider_run_refs.append(allocator, provider_handle);
                 try provider_state_refs.append(allocator, provider_state);
-                try depth_route_stack.append(allocator, fingerprintFabricDepthRoute(invocation));
+                try route_refs.append(allocator, route.route_fingerprint);
+                try mapping_refs.append(allocator, mapping_fingerprint);
+                try depth_route_stack.append(allocator, fingerprintFabricActiveInvocationWitness(
+                    invocation.invocation_fingerprint,
+                    route.route_fingerprint,
+                    mapping_fingerprint,
+                ));
             }
         }
 
@@ -17914,7 +17932,7 @@ pub const Capsule = struct {
                 try receipt.validate();
                 hashU64(&status_hasher, receipt.receipt_fingerprint);
                 hashU64(&status_hasher, @intFromEnum(receipt.status));
-                if (!fabricRouteWitnessExists(runspace, receipt.route_fingerprint)) return error.FabricWitnessMissing;
+                if (fabricRouteWitness(runspace, receipt.route_fingerprint) == null) return error.FabricWitnessMissing;
                 if (receipt.status == .completed or receipt.status == .parent_responded) {
                     try completed_receipt_refs.append(allocator, receipt.receipt_fingerprint);
                 }
@@ -17927,18 +17945,14 @@ pub const Capsule = struct {
             }
         }
 
-        var route_refs: std.ArrayList(u64) = .empty;
-        errdefer route_refs.deinit(allocator);
         for (runspace.fabric_routes.items) |route| {
             try route.validate();
-            try route_refs.append(allocator, route.route_fingerprint);
+            try appendUniqueU64(&route_refs, allocator, route.route_fingerprint);
         }
 
-        var mapping_refs: std.ArrayList(u64) = .empty;
-        errdefer mapping_refs.deinit(allocator);
         for (runspace.fabric_value_mappings.items) |mapping| {
             try mapping.validate();
-            try mapping_refs.append(allocator, mapping.mapping_fingerprint);
+            try appendUniqueU64(&mapping_refs, allocator, mapping.mapping_fingerprint);
         }
 
         const plan_slice = try plan_refs.toOwnedSlice(allocator);
@@ -18799,6 +18813,10 @@ pub const Capsule = struct {
                 if (run_image.target_ref.target_ref_fingerprint != slot.target_ref_fingerprint) return error.InvalidFrameEncoding;
                 if (run_image.current_state.run_state_fingerprint != slot.run_state_fingerprint) return error.InvalidFrameEncoding;
                 if (!runImageStateMatchesCapsuleSlot(run_image, slot)) return error.InvalidFrameEncoding;
+                if (run_image.current_state.transcript_image_fingerprint != slot.transcript_image_fingerprint) return error.InvalidFrameEncoding;
+                if (run_image.current_state.transcript_image_fingerprint) |state_transcript| {
+                    try validateCapsuleTranscriptRefCoverage(image, state_transcript);
+                }
             } else if (slotRestoreRequiresRunImage(slot.status)) {
                 return error.InvalidFrameEncoding;
             }
@@ -18807,9 +18825,7 @@ pub const Capsule = struct {
                 if (!u64SliceContains(image.environment_refs, fingerprint)) return error.InvalidFrameEncoding;
             }
             if (slot.transcript_image_fingerprint) |fingerprint| {
-                if (!u64SliceContains(image.manifest.transcript_image_fingerprints, fingerprint)) return error.InvalidFrameEncoding;
-                if (!u64SliceContains(image.runspace_image.transcript_image_refs, fingerprint)) return error.InvalidFrameEncoding;
-                if (!u64SliceContains(image.transcript_image_refs, fingerprint)) return error.InvalidFrameEncoding;
+                try validateCapsuleTranscriptRefCoverage(image, fingerprint);
             }
             if (slot.admission_receipt_fingerprint) |fingerprint| {
                 if (!u64SliceContains(image.manifest.admission_receipt_fingerprints, fingerprint)) return error.InvalidFrameEncoding;
@@ -18877,6 +18893,12 @@ pub const Capsule = struct {
             if (image.run_image_fingerprint == fingerprint) return image;
         }
         return null;
+    }
+
+    fn validateCapsuleTranscriptRefCoverage(image: Image, fingerprint: u64) !void {
+        if (!u64SliceContains(image.manifest.transcript_image_fingerprints, fingerprint)) return error.InvalidFrameEncoding;
+        if (!u64SliceContains(image.runspace_image.transcript_image_refs, fingerprint)) return error.InvalidFrameEncoding;
+        if (!u64SliceContains(image.transcript_image_refs, fingerprint)) return error.InvalidFrameEncoding;
     }
 
     fn normalFormIsRestorable(normal_form: NormalForm) bool {
@@ -19642,11 +19664,36 @@ pub const Capsule = struct {
         return false;
     }
 
-    fn fabricRouteWitnessExists(runspace: *const Runspace, route_fingerprint: u64) bool {
+    fn fabricRouteWitness(runspace: *const Runspace, route_fingerprint: u64) ?Fabric.Route {
         for (runspace.fabric_routes.items) |route| {
-            if (route.route_fingerprint == route_fingerprint) return true;
+            if (route.route_fingerprint == route_fingerprint) return route;
         }
-        return false;
+        return null;
+    }
+
+    fn fabricRouteMappingWitnessFingerprint(route: Fabric.Route) ?u64 {
+        return route.response_value_mapping_fingerprint orelse route.value_mapping_fingerprint;
+    }
+
+    fn fabricValueMappingWitness(runspace: *const Runspace, route: Fabric.Route) ?u64 {
+        if (fabricRouteMappingWitnessFingerprint(route)) |fingerprint| {
+            for (runspace.fabric_value_mappings.items) |mapping| {
+                if (mapping.mapping_fingerprint == fingerprint) return fingerprint;
+            }
+            return null;
+        }
+        for (runspace.fabric_value_mappings.items) |mapping| {
+            return mapping.mapping_fingerprint;
+        }
+        return null;
+    }
+
+    fn fingerprintFabricActiveInvocationWitness(invocation_fingerprint: u64, route_fingerprint: u64, mapping_fingerprint: u64) u64 {
+        var hasher = std.hash.Wyhash.init(0x6361_7073_6662_6177);
+        hashU64(&hasher, invocation_fingerprint);
+        hashU64(&hasher, route_fingerprint);
+        hashU64(&hasher, mapping_fingerprint);
+        return hasher.final();
     }
 
     fn providerStateFingerprintForHandle(runspace: *const Runspace, provider_run_handle_fingerprint: u64) ?u64 {
@@ -19654,16 +19701,6 @@ pub const Capsule = struct {
             if (slot.handle.handle_fingerprint == provider_run_handle_fingerprint) return slot.current_state.run_state_fingerprint;
         }
         return null;
-    }
-
-    fn fingerprintFabricDepthRoute(invocation: Fabric.Invocation) u64 {
-        var hasher = std.hash.Wyhash.init(0x6361_7073_6662_6472);
-        hashU64(&hasher, invocation.invocation_fingerprint);
-        hashU64(&hasher, invocation.plan_fingerprint);
-        hashU64(&hasher, invocation.route_fingerprint);
-        hashU64(&hasher, invocation.depth);
-        hashU64(&hasher, invocation.sequence);
-        return hasher.final();
     }
 
     fn appendUniqueU64(values: *std.ArrayList(u64), allocator: std.mem.Allocator, value: u64) !void {

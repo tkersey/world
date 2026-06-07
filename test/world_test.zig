@@ -449,6 +449,52 @@ test "capsule freezeRunspace honors receipt and transcript exclusion flags" {
         .run_images = full.run_images,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, missing_transcript_ref_image.validate(.{}));
+    const transcriptless_slot = world.Capsule.RunSlotImage.init(.{
+        .original_run_handle_fingerprint = full.runspace_image.run_slots[0].original_run_handle_fingerprint,
+        .parent_run_handle_fingerprint = full.runspace_image.run_slots[0].parent_run_handle_fingerprint,
+        .role = full.runspace_image.run_slots[0].role,
+        .target_ref_fingerprint = full.runspace_image.run_slots[0].target_ref_fingerprint,
+        .module_ref_fingerprint = full.runspace_image.run_slots[0].module_ref_fingerprint,
+        .admission_receipt_fingerprint = full.runspace_image.run_slots[0].admission_receipt_fingerprint,
+        .environment_certificate_fingerprint = full.runspace_image.run_slots[0].environment_certificate_fingerprint,
+        .run_permit_fingerprint = full.runspace_image.run_slots[0].run_permit_fingerprint,
+        .run_state_fingerprint = full.runspace_image.run_slots[0].run_state_fingerprint,
+        .run_image_fingerprint = full.runspace_image.run_slots[0].run_image_fingerprint,
+        .transcript_image_fingerprint = null,
+        .current_pending_mailbox_id = full.runspace_image.run_slots[0].current_pending_mailbox_id,
+        .branch_id = full.runspace_image.run_slots[0].branch_id,
+        .checkpoint_refs = full.runspace_image.run_slots[0].checkpoint_refs,
+        .fabric_invocation_refs = full.runspace_image.run_slots[0].fabric_invocation_refs,
+        .status = full.runspace_image.run_slots[0].status,
+    });
+    const transcriptless_slots = [_]world.Capsule.RunSlotImage{transcriptless_slot};
+    const transcriptless_runspace = world.Capsule.RunspaceImage.init(.{
+        .runspace_fingerprint = full.runspace_image.runspace_fingerprint,
+        .runspace_report_fingerprint = full.runspace_image.runspace_report_fingerprint,
+        .run_handle_mappings = full.runspace_image.run_handle_mappings,
+        .run_slots = &transcriptless_slots,
+        .mailbox_image = full.runspace_image.mailbox_image,
+        .runspace_event_fingerprints = full.runspace_image.runspace_event_fingerprints,
+        .root_run_handle_fingerprints = full.runspace_image.root_run_handle_fingerprints,
+        .provider_run_handle_fingerprints = full.runspace_image.provider_run_handle_fingerprints,
+        .branch_refs = full.runspace_image.branch_refs,
+        .checkpoint_refs = full.runspace_image.checkpoint_refs,
+        .transcript_image_refs = full.runspace_image.transcript_image_refs,
+        .run_image_refs = full.runspace_image.run_image_refs,
+        .run_receipt_refs = full.runspace_image.run_receipt_refs,
+        .admission_receipt_refs = full.runspace_image.admission_receipt_refs,
+        .permit_refs = full.runspace_image.permit_refs,
+        .active_fabric_invocation_refs = full.runspace_image.active_fabric_invocation_refs,
+        .metadata = full.runspace_image.metadata,
+    });
+    const transcriptless_slot_image = world.Capsule.Image.init(.{
+        .manifest = full.manifest,
+        .runspace_image = transcriptless_runspace,
+        .transcript_image_refs = full.transcript_image_refs,
+        .run_image_refs = full.run_image_refs,
+        .run_images = full.run_images,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, transcriptless_slot_image.validate(.{}));
 
     var excluded = try world.Capsule.freezeRunspace(&source, .{ .include_receipts = false, .include_transcripts = false });
     defer excluded.deinit(allocator);
@@ -868,7 +914,7 @@ test "fabric image captures active invocation completed receipt and witnesses" {
         .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
         .inserted_event_index = 0,
     });
-    const mapping = fabricTestMapping(.provider_result_to_parent_response);
+    const mapping = fabricTestMapping(.payload_to_provider_args);
     const route = fabricTestRoute(.target_export, provider_ref.target_ref_fingerprint);
     const plan = world.Fabric.Plan.init(.{
         .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
@@ -1178,7 +1224,7 @@ test "capsule freeze active fabric requires parked allowance" {
         .inserted_event_index = 0,
     });
     runspace.next_mailbox_id = 1;
-    const mapping = fabricTestMapping(.provider_result_to_parent_response);
+    const mapping = fabricTestMapping(.payload_to_provider_args);
     const route = fabricTestRoute(.target_export, provider_ref.target_ref_fingerprint);
     const plan = world.Fabric.Plan.init(.{
         .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
@@ -1227,6 +1273,28 @@ test "capsule freeze active fabric requires parked allowance" {
         .run_images = image.run_images,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, under_witnessed_image.validate(.{}));
+    const wrong_mapping = fabricTestMapping(.unit_args);
+    const wrong_mapping_refs = [_]u64{wrong_mapping.mapping_fingerprint};
+    const mismatched_active_witnesses = world.Capsule.FabricImage.init(.{
+        .fabric_plan_fingerprints = image.fabric_image.?.fabric_plan_fingerprints,
+        .active_invocation_fingerprints = image.fabric_image.?.active_invocation_fingerprints,
+        .completed_receipt_fingerprints = image.fabric_image.?.completed_receipt_fingerprints,
+        .parent_pending_port_refs = image.fabric_image.?.parent_pending_port_refs,
+        .provider_run_refs = image.fabric_image.?.provider_run_refs,
+        .provider_state_summary_fingerprints = image.fabric_image.?.provider_state_summary_fingerprints,
+        .route_fingerprints = image.fabric_image.?.route_fingerprints,
+        .value_mapping_fingerprints = &wrong_mapping_refs,
+        .depth_route_stack = image.fabric_image.?.depth_route_stack,
+        .status_summary_fingerprint = image.fabric_image.?.status_summary_fingerprint,
+    });
+    const mismatched_witness_image = world.Capsule.Image.init(.{
+        .manifest = image.manifest,
+        .runspace_image = image.runspace_image,
+        .fabric_image = mismatched_active_witnesses,
+        .run_image_refs = image.run_image_refs,
+        .run_images = image.run_images,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, mismatched_witness_image.validate(.{}));
 
     const missing_fabric_image = world.Capsule.Image.init(.{
         .manifest = image.manifest,
@@ -3165,7 +3233,7 @@ test "capsule active fabric restore rejects mutation without fabric state image"
         .inserted_event_index = 1,
     });
     source.next_mailbox_id = 2;
-    const mapping = fabricTestMapping(.provider_result_to_parent_response);
+    const mapping = fabricTestMapping(.payload_to_provider_args);
     const route = fabricTestRoute(.target_export, provider_ref.target_ref_fingerprint);
     const plan = world.Fabric.Plan.init(.{
         .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
