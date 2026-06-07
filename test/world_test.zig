@@ -1594,7 +1594,7 @@ test "capsule relink requires manifest fabric plan coverage" {
     const rejected = try world.Capsule.verifyLink(mismatched_image, 0, .{});
     try std.testing.expectEqual(world.Capsule.LinkCertificateMatchStatus.mismatched, rejected.link_certificate_match_status);
     try std.testing.expectEqual(world.Capsule.RelinkStatus.rejected, rejected.relink_status);
-    try std.testing.expectEqual(world.Capsule.Blocker.relink_drift_rejected, rejected.blockers[0]);
+    try std.testing.expectEqual(world.Capsule.Blocker.fabric_plan_mismatch, rejected.blockers[0]);
     const drift_allowed = try world.Capsule.verifyLink(mismatched_image, 0, .{ .allow_relink_drift = true });
     try std.testing.expectEqual(world.Capsule.LinkCertificateMatchStatus.mismatched, drift_allowed.link_certificate_match_status);
     try std.testing.expectEqual(world.Capsule.RelinkStatus.drift_allowed, drift_allowed.relink_status);
@@ -1620,7 +1620,7 @@ test "capsule relink requires manifest fabric plan coverage" {
     const guest_required = try world.Capsule.verifyLink(covered_image, 0, .{ .require_guest_conformance = true });
     try std.testing.expectEqual(world.Capsule.LinkCertificateMatchStatus.mismatched, guest_required.link_certificate_match_status);
     try std.testing.expectEqual(world.Capsule.RelinkStatus.rejected, guest_required.relink_status);
-    try std.testing.expectEqual(world.Capsule.Blocker.relink_drift_rejected, guest_required.blockers[0]);
+    try std.testing.expectEqual(world.Capsule.Blocker.guest_conformance_missing, guest_required.blockers[0]);
     const guest_refs = [_]u64{0x5150_3716};
     const guest_manifest = world.Capsule.Manifest.init(.{
         .kind = .completed_assembly,

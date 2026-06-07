@@ -18370,7 +18370,16 @@ pub const Capsule = struct {
         const guest_conformance_matched = !policy.require_guest_conformance or guestConformanceRefsCovered(image.manifest.guest_conformance_report_fingerprints, image.guest_conformance_refs);
         const matched = catalog_matched and residual_matched and fabric_matched and guest_conformance_matched;
         const accepted = matched or policy.allow_relink_drift;
-        const blocker: Blocker = if (!catalog_matched) .relink_drift_rejected else if (!residual_matched) .residual_import_mismatch else .relink_drift_rejected;
+        const blocker: Blocker = if (!catalog_matched)
+            .relink_drift_rejected
+        else if (!residual_matched)
+            .residual_import_mismatch
+        else if (!fabric_matched)
+            .fabric_plan_mismatch
+        else if (!guest_conformance_matched)
+            .guest_conformance_missing
+        else
+            .relink_drift_rejected;
         return ThawPlan.init(.{
             .capsule_image_fingerprint = image.image_fingerprint,
             .requested_mode = .relink_and_restore,
