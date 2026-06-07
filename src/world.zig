@@ -18705,6 +18705,7 @@ pub const Capsule = struct {
             if (!u64SlicesEqual(manifest.fabric_invocation_fingerprints, fabric.active_invocation_fingerprints)) return error.InvalidFrameEncoding;
             if (!u64SlicesEqual(manifest.fabric_receipt_fingerprints, fabric.completed_receipt_fingerprints)) return error.InvalidFrameEncoding;
             if (manifest.active_fabric_invocation_count != fabric.active_invocation_fingerprints.len) return error.InvalidFrameEncoding;
+            try validateActiveFabricRunspaceCoverage(runspace_image_value, fabric);
         } else if (manifest.fabric_plan_fingerprints.len != 0 or
             manifest.fabric_invocation_fingerprints.len != 0 or
             manifest.fabric_receipt_fingerprints.len != 0 or
@@ -18712,6 +18713,15 @@ pub const Capsule = struct {
             runspace_image_value.active_fabric_invocation_refs.len != 0)
         {
             return error.InvalidFrameEncoding;
+        }
+    }
+
+    fn validateActiveFabricRunspaceCoverage(runspace_image: RunspaceImage, fabric: FabricImage) !void {
+        if (!u64SlicesEqual(runspace_image.active_fabric_invocation_refs, fabric.active_invocation_fingerprints)) return error.InvalidFrameEncoding;
+        if (fabric.active_invocation_fingerprints.len == 0) return;
+        const mailbox = runspace_image.mailbox_image orelse return error.InvalidFrameEncoding;
+        for (fabric.parent_pending_port_refs) |pending| {
+            if (!mailboxImageContainsPendingFingerprint(mailbox, pending)) return error.InvalidFrameEncoding;
         }
     }
 
@@ -18920,6 +18930,13 @@ pub const Capsule = struct {
 
     fn u64SlicesEqual(left: []const u64, right: []const u64) bool {
         return std.mem.eql(u64, left, right);
+    }
+
+    fn mailboxImageContainsPendingFingerprint(mailbox: MailboxImage, pending_port_fingerprint: u64) bool {
+        for (mailbox.pending_port_fingerprints) |fingerprint| {
+            if (fingerprint == pending_port_fingerprint) return true;
+        }
+        return false;
     }
 
     fn ensureRestoreRunCapacity(runspace: *const Runspace, image: Image) !void {
@@ -20784,9 +20801,9 @@ test "capsule fabric image captures active invocation and completed receipt" {
         .target_ref = provider_ref,
         .current_state = RunState.init(.{
             .target_ref_fingerprint = provider_ref.target_ref_fingerprint,
-            .status = .parked_on_port,
+            .status = .parked_on_supervision,
         }),
-        .status = .parked_on_port,
+        .status = .parked_on_supervision,
         .parent_run_handle_fingerprint = parent_handle.handle_fingerprint,
     }));
 
@@ -20849,6 +20866,73 @@ test "capsule fabric image captures active invocation and completed receipt" {
     try std.testing.expectEqual(provider_handle.handle_fingerprint, image.provider_run_refs[0]);
     try std.testing.expectEqual(route.route_fingerprint, image.route_fingerprints[0]);
     try std.testing.expectEqual(mapping.mapping_fingerprint, image.value_mapping_fingerprints[0]);
+
+    var runspace_image = try Capsule.runspaceImage(allocator, &runspace);
+    defer runspace_image.deinit(allocator);
+    const manifest = Capsule.Manifest.init(.{
+        .kind = .parked_assembly,
+        .root_target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .fabric_plan_fingerprints = &.{plan.plan_fingerprint},
+        .fabric_invocation_fingerprints = &.{invocation.invocation_fingerprint},
+        .fabric_receipt_fingerprints = &.{runspace.fabric_receipts.items[0].receipt_fingerprint},
+        .pending_port_count = runspace_image.mailbox_image.?.pending_port_fingerprints.len,
+        .run_slot_count = runspace_image.run_slots.len,
+        .active_fabric_invocation_count = 1,
+        .normal_form = .active_fabric_parked,
+    });
+    const capsule_image = Capsule.Image.init(.{
+        .manifest = manifest,
+        .runspace_image = runspace_image,
+        .fabric_image = image,
+    });
+    try capsule_image.validate(.{});
+
+    const forged_active_refs = [_]u64{invocation.invocation_fingerprint ^ 1};
+    const forged_runspace_image = Capsule.RunspaceImage.init(.{
+        .runspace_fingerprint = runspace_image.runspace_fingerprint,
+        .runspace_report_fingerprint = runspace_image.runspace_report_fingerprint,
+        .run_handle_mappings = runspace_image.run_handle_mappings,
+        .run_slots = runspace_image.run_slots,
+        .mailbox_image = runspace_image.mailbox_image,
+        .runspace_event_fingerprints = runspace_image.runspace_event_fingerprints,
+        .root_run_handle_fingerprints = runspace_image.root_run_handle_fingerprints,
+        .provider_run_handle_fingerprints = runspace_image.provider_run_handle_fingerprints,
+        .branch_refs = runspace_image.branch_refs,
+        .checkpoint_refs = runspace_image.checkpoint_refs,
+        .transcript_image_refs = runspace_image.transcript_image_refs,
+        .run_image_refs = runspace_image.run_image_refs,
+        .run_receipt_refs = runspace_image.run_receipt_refs,
+        .admission_receipt_refs = runspace_image.admission_receipt_refs,
+        .permit_refs = runspace_image.permit_refs,
+        .active_fabric_invocation_refs = &forged_active_refs,
+    });
+    const forged_runspace_capsule = Capsule.Image.init(.{
+        .manifest = manifest,
+        .runspace_image = forged_runspace_image,
+        .fabric_image = image,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_runspace_capsule.validate(.{}));
+
+    const forged_parent_pending_refs = [_]u64{pending.pending_port_fingerprint ^ 1};
+    const forged_fabric_image = Capsule.FabricImage.init(.{
+        .fabric_plan_fingerprints = image.fabric_plan_fingerprints,
+        .active_invocation_fingerprints = image.active_invocation_fingerprints,
+        .completed_receipt_fingerprints = image.completed_receipt_fingerprints,
+        .parent_pending_port_refs = &forged_parent_pending_refs,
+        .provider_run_refs = image.provider_run_refs,
+        .provider_state_summary_fingerprints = image.provider_state_summary_fingerprints,
+        .route_fingerprints = image.route_fingerprints,
+        .value_mapping_fingerprints = image.value_mapping_fingerprints,
+        .depth_route_stack = image.depth_route_stack,
+        .replay_cursor_state_refs = image.replay_cursor_state_refs,
+        .status_summary_fingerprint = image.status_summary_fingerprint,
+    });
+    const forged_parent_pending_capsule = Capsule.Image.init(.{
+        .manifest = manifest,
+        .runspace_image = runspace_image,
+        .fabric_image = forged_fabric_image,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_parent_pending_capsule.validate(.{}));
 
     _ = runspace.fabric_routes.pop().?;
     try std.testing.expectError(error.FabricWitnessMissing, Capsule.fabricImage(allocator, &runspace));
