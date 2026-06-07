@@ -272,6 +272,39 @@ test "capsule image encode decode roundtrips dependency and object refs" {
     try std.testing.expectEqual(@as(u64, decoded.image_fingerprint), decoded.asBundleRoot().fingerprint);
 }
 
+test "capsule decode applies dependency limits to link image refs" {
+    const allocator = std.testing.allocator;
+    const route_refs = [_]u64{ 0x401, 0x402 };
+    const manifest = world.Capsule.Manifest.init(.{
+        .kind = .full_assembly,
+        .root_target_ref_fingerprint = 0x100,
+        .link_plan_fingerprint = 0x501,
+        .link_certificate_fingerprint = 0x502,
+        .assembly_fingerprint = 0x503,
+        .normal_form = .quiescent_completed,
+    });
+    const runspace_image = world.Capsule.RunspaceImage.init(.{
+        .runspace_fingerprint = 0x200,
+        .runspace_report_fingerprint = 0x300,
+    });
+    const link_image = world.Capsule.LinkImage.init(.{
+        .link_plan_fingerprint = 0x501,
+        .link_certificate_fingerprint = 0x502,
+        .assembly_fingerprint = 0x503,
+        .linker_policy_fingerprint = 0x504,
+        .route_synthesis_refs = &route_refs,
+    });
+    const image = world.Capsule.Image.init(.{
+        .manifest = manifest,
+        .runspace_image = runspace_image,
+        .link_image = link_image,
+    });
+    try image.validate(.{});
+    const encoded = try image.encode(allocator);
+    defer allocator.free(encoded);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Capsule.Image.decodeWithOptions(allocator, encoded, .{ .max_dependencies = 1 }));
+}
+
 test "capsule certificate derives from image and quiescence without image hash cycle" {
     const manifest = world.Capsule.Manifest.init(.{
         .kind = .completed_assembly,
@@ -431,6 +464,60 @@ test "capsule image validation rejects completed manifest with parked slot" {
     var destination = world.Runspace.init(allocator, .{});
     defer destination.deinit();
     try std.testing.expectError(error.InvalidFrameEncoding, world.Capsule.thawIntoRunspace(image, &destination, 0, 0, 0x7777, .{ .mode = .restore_completed }));
+    try std.testing.expectEqual(@as(usize, 0), destination.slots.items.len);
+}
+
+test "capsule thaw rejects slot status drift from embedded run image" {
+    const allocator = std.testing.allocator;
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const request = testRunspaceRequestFrame();
+    const parked_state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .pending_request_fingerprint = request.frame_fingerprint,
+        .turn_index = request.turn_index,
+        .status = .parked_on_port,
+    });
+    const run_image = world.RunImage.init(.{
+        .kind = .parked_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = parked_state,
+        .pending_request_frame = request,
+    });
+    const run_image_refs = [_]u64{run_image.run_image_fingerprint};
+    const slot = world.Capsule.RunSlotImage.init(.{
+        .original_run_handle_fingerprint = 0x5150_3345,
+        .role = .root,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .run_state_fingerprint = parked_state.run_state_fingerprint,
+        .run_image_fingerprint = run_image.run_image_fingerprint,
+        .status = .completed,
+    });
+    const slots = [_]world.Capsule.RunSlotImage{slot};
+    const manifest = world.Capsule.Manifest.init(.{
+        .kind = .completed_assembly,
+        .root_target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .run_image_fingerprints = &run_image_refs,
+        .run_slot_count = slots.len,
+        .normal_form = .quiescent_completed,
+    });
+    const runspace_image = world.Capsule.RunspaceImage.init(.{
+        .runspace_fingerprint = 0x5150_3346,
+        .runspace_report_fingerprint = 0x5150_3347,
+        .run_slots = &slots,
+        .run_image_refs = &run_image_refs,
+    });
+    const run_images = [_]world.RunImage{run_image};
+    const image = world.Capsule.Image.init(.{
+        .manifest = manifest,
+        .runspace_image = runspace_image,
+        .run_image_refs = &run_image_refs,
+        .run_images = &run_images,
+    });
+    try image.validate(.{});
+    var destination = world.Runspace.init(allocator, .{});
+    defer destination.deinit();
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Capsule.thawIntoRunspace(image, &destination, target_ref.target_ref_fingerprint, 0, 0x5150_3348, .{ .mode = .restore_completed }));
     try std.testing.expectEqual(@as(usize, 0), destination.slots.items.len);
 }
 

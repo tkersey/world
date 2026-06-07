@@ -17055,7 +17055,7 @@ pub const Capsule = struct {
             var runspace_image = try decodeRunspaceImage(allocator, bytes, &cursor, options);
             var runspace_image_owned = true;
             errdefer if (runspace_image_owned) runspace_image.deinit(allocator);
-            var link_image = try readOptionalLinkImage(allocator, bytes, &cursor);
+            var link_image = try readOptionalLinkImage(allocator, bytes, &cursor, options);
             var link_image_owned = link_image != null;
             errdefer if (link_image_owned) if (link_image) |*link| link.deinit(allocator);
             var fabric_image = try readOptionalFabricImage(allocator, bytes, &cursor, options);
@@ -18190,6 +18190,7 @@ pub const Capsule = struct {
                 installed_run_image_owned = true;
                 if (installed_run_image.?.target_ref.target_ref_fingerprint != slot_image.target_ref_fingerprint) return error.InvalidFrameEncoding;
                 if (installed_run_image.?.current_state.run_state_fingerprint != slot_image.run_state_fingerprint) return error.InvalidFrameEncoding;
+                if (!runImageStateMatchesCapsuleSlot(installed_run_image.?, slot_image)) return error.InvalidFrameEncoding;
             } else if (slotRestoreRequiresRunImage(slot_image.status)) {
                 return error.InvalidFrameEncoding;
             }
@@ -18737,6 +18738,10 @@ pub const Capsule = struct {
             .completed, .exported => .completed,
             .failed, .rejected => .failed,
         };
+    }
+
+    fn runImageStateMatchesCapsuleSlot(run_image: RunImage, slot_image: RunSlotImage) bool {
+        return run_image.current_state.status == runStateStatusForCapsuleStatus(slot_image.status);
     }
 
     fn validateFreezePolicy(report: QuiescenceReport, options: FreezeOptions) !void {
@@ -19904,8 +19909,8 @@ pub const Capsule = struct {
         try writeU64Slice(out, allocator, image.external_environment_requirements);
     }
 
-    fn decodeLinkImage(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) !LinkImage {
-        const max = 8192;
+    fn decodeLinkImage(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, options: ValidateOptions) !LinkImage {
+        const max = options.max_dependencies;
         const fingerprint_version = try readU32(bytes, cursor);
         const link_image_fingerprint = try readU64(bytes, cursor);
         const link_plan_fingerprint = try readU64(bytes, cursor);
@@ -19960,9 +19965,9 @@ pub const Capsule = struct {
         }
     }
 
-    fn readOptionalLinkImage(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) !?LinkImage {
+    fn readOptionalLinkImage(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, options: ValidateOptions) !?LinkImage {
         if (!try readBool(bytes, cursor)) return null;
-        return try decodeLinkImage(allocator, bytes, cursor);
+        return try decodeLinkImage(allocator, bytes, cursor, options);
     }
 
     fn writeTranscriptImageSlice(out: *std.ArrayList(u8), allocator: std.mem.Allocator, values: []const TranscriptImage) !void {
