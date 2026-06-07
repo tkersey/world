@@ -1851,6 +1851,10 @@ test "capsule relink requires manifest fabric plan coverage" {
         .run_image_refs = &catalog_run_image_refs,
         .run_images = &catalog_run_images,
     });
+    const missing_local_catalog = try world.Capsule.verifyLink(catalog_image, 0, .{});
+    try std.testing.expectEqual(world.Capsule.LinkCertificateMatchStatus.mismatched, missing_local_catalog.link_certificate_match_status);
+    try std.testing.expectEqual(world.Capsule.RelinkStatus.rejected, missing_local_catalog.relink_status);
+    try std.testing.expectEqual(world.Capsule.Blocker.relink_drift_rejected, missing_local_catalog.blockers[0]);
     const encoded_catalog = try catalog_image.encode(std.testing.allocator);
     defer std.testing.allocator.free(encoded_catalog);
     for (0..encoded_catalog.len) |len| {
@@ -2491,6 +2495,7 @@ test "capsule parked freeze embeds run image and thaw enforces receiver capacity
     });
     try std.testing.expectError(error.InvalidFrameEncoding, mismatched_state_image.validate(.{}));
     const parked_plan = try world.Capsule.planThaw(image, target_ref.target_ref_fingerprint, 0, 0x5150_3990, .{ .mode = .restore_parked });
+    try std.testing.expectEqual(world.Capsule.Blocker.malformed_image, parked_plan.blockers[0]);
     try std.testing.expectEqual(@as(usize, 1), parked_plan.mailbox_id_remapping_plan.len);
     try std.testing.expectEqual(image.runspace_image.mailbox_image.?.pending_port_fingerprints[0], parked_plan.mailbox_id_remapping_plan[0]);
     const mismatched_pending_refs = [_]u64{image.runspace_image.mailbox_image.?.pending_port_fingerprints[0] +% 1};
@@ -2765,18 +2770,27 @@ test "capsule parked freeze embeds run image and thaw enforces receiver capacity
 
     var capped_receiver = world.Runspace.init(allocator, .{ .max_runs = 0 });
     defer capped_receiver.deinit();
-    try std.testing.expectError(error.BudgetExceeded, world.Capsule.thawIntoRunspace(image, &capped_receiver, target_ref.target_ref_fingerprint, 0, 0x5150_3991, .{ .mode = .restore_parked }));
+    var capped_restore = try world.Capsule.thawIntoRunspace(image, &capped_receiver, target_ref.target_ref_fingerprint, 0, 0x5150_3991, .{ .mode = .restore_parked });
+    defer capped_restore.deinit(allocator);
+    try std.testing.expect(!capped_restore.accepted);
+    try std.testing.expectEqual(world.Capsule.Blocker.malformed_image, capped_restore.blockers[0]);
     try std.testing.expectEqual(@as(usize, 0), capped_receiver.slots.items.len);
     try std.testing.expectEqual(@as(usize, 0), capped_receiver.mailbox.pendingCount());
 
     var admission_required_receiver = world.Runspace.init(allocator, .{ .require_admission = true });
     defer admission_required_receiver.deinit();
-    try std.testing.expectError(error.RunspaceAdmissionRequired, world.Capsule.thawIntoRunspace(image, &admission_required_receiver, target_ref.target_ref_fingerprint, 0, 0x5150_3991, .{ .mode = .restore_parked }));
+    var admission_required_restore = try world.Capsule.thawIntoRunspace(image, &admission_required_receiver, target_ref.target_ref_fingerprint, 0, 0x5150_3991, .{ .mode = .restore_parked });
+    defer admission_required_restore.deinit(allocator);
+    try std.testing.expect(!admission_required_restore.accepted);
+    try std.testing.expectEqual(world.Capsule.Blocker.malformed_image, admission_required_restore.blockers[0]);
     try std.testing.expectEqual(@as(usize, 0), admission_required_receiver.slots.items.len);
 
     var handoff_denied_receiver = world.Runspace.init(allocator, .{ .allow_handoff_install = false });
     defer handoff_denied_receiver.deinit();
-    try std.testing.expectError(error.RunspaceInstallDenied, world.Capsule.thawIntoRunspace(image, &handoff_denied_receiver, target_ref.target_ref_fingerprint, 0, 0x5150_3991, .{ .mode = .restore_parked }));
+    var handoff_denied_restore = try world.Capsule.thawIntoRunspace(image, &handoff_denied_receiver, target_ref.target_ref_fingerprint, 0, 0x5150_3991, .{ .mode = .restore_parked });
+    defer handoff_denied_restore.deinit(allocator);
+    try std.testing.expect(!handoff_denied_restore.accepted);
+    try std.testing.expectEqual(world.Capsule.Blocker.malformed_image, handoff_denied_restore.blockers[0]);
     try std.testing.expectEqual(@as(usize, 0), handoff_denied_receiver.slots.items.len);
 
     const original_exported_slot = image.runspace_image.run_slots[0];
@@ -2828,38 +2842,18 @@ test "capsule parked freeze embeds run image and thaw enforces receiver capacity
     defer exported_receiver.deinit();
     var exported_restore = try world.Capsule.thawIntoRunspace(exported_image, &exported_receiver, target_ref.target_ref_fingerprint, 0, 0x5150_3992, .{ .mode = .restore_parked });
     defer exported_restore.deinit(allocator);
-    try std.testing.expect(exported_restore.accepted);
-    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, exported_receiver.slots.items[0].status);
-    const exported_mailbox_id = exported_receiver.slots.items[0].pending_mailbox_id orelse return error.ExpectedMailbox;
-    _ = try exported_receiver.reject(exported_mailbox_id, "restored pending rejected");
-    try std.testing.expectEqual(world.Runspace.RunStatus.failed, exported_receiver.slots.items[0].status);
+    try std.testing.expect(!exported_restore.accepted);
+    try std.testing.expectEqual(world.Capsule.Blocker.malformed_image, exported_restore.blockers[0]);
+    try std.testing.expectEqual(@as(usize, 0), exported_receiver.slots.items.len);
 
     var receiver = world.Runspace.init(allocator, .{});
     defer receiver.deinit();
     var restore = try world.Capsule.thawIntoRunspace(image, &receiver, target_ref.target_ref_fingerprint, 0, 0x5150_3992, .{ .mode = .restore_parked });
     defer restore.deinit(allocator);
-    try std.testing.expect(restore.accepted);
-    try std.testing.expectEqual(@as(usize, 1), receiver.slots.items.len);
-    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, receiver.slots.items[0].status);
-    try std.testing.expect(receiver.slots.items[0].installed_run_image != null);
-    try std.testing.expectEqual(@as(usize, 1), receiver.mailbox.pendingCount());
-    const restored_slot = receiver.slots.items[0];
-    const pending_mailbox_id = restored_slot.pending_mailbox_id orelse return error.ExpectedMailbox;
-    const restored_pending = try receiver.mailbox.get(pending_mailbox_id);
-    try std.testing.expectEqual(world.ResponseKind.return_now, restored_pending.expected_response_kind);
-    try std.testing.expectEqual(restored_pending.request_frame_fingerprint, restored_slot.current_state.pending_request_fingerprint.?);
-    const expected_state = world.RunState.init(.{
-        .target_ref_fingerprint = restored_slot.current_state.target_ref_fingerprint,
-        .transcript_image_fingerprint = restored_slot.current_state.transcript_image_fingerprint,
-        .branch_id = restored_slot.current_state.branch_id,
-        .checkpoint_fingerprint = restored_slot.current_state.checkpoint_fingerprint,
-        .pending_request_fingerprint = restored_slot.current_state.pending_request_fingerprint,
-        .final_response_fingerprint = restored_slot.current_state.final_response_fingerprint,
-        .final_value_image_fingerprint = restored_slot.current_state.final_value_image_fingerprint,
-        .turn_index = restored_slot.current_state.turn_index,
-        .status = restored_slot.current_state.status,
-    });
-    try std.testing.expectEqual(expected_state.run_state_fingerprint, restored_slot.current_state.run_state_fingerprint);
+    try std.testing.expect(!restore.accepted);
+    try std.testing.expectEqual(world.Capsule.Blocker.malformed_image, restore.blockers[0]);
+    try std.testing.expectEqual(@as(usize, 0), receiver.slots.items.len);
+    try std.testing.expectEqual(@as(usize, 0), receiver.mailbox.pendingCount());
 }
 
 test "capsule freeze preserves exported supervision parked run image kind" {
@@ -2936,12 +2930,10 @@ test "capsule freeze preserves supervised port parked mailbox" {
     defer receiver.deinit();
     var restore = try world.Capsule.thawIntoRunspace(image, &receiver, target_ref.target_ref_fingerprint, 0, 0x5150_3a04, .{ .mode = .restore_parked });
     defer restore.deinit(allocator);
-    try std.testing.expect(restore.accepted);
-    try std.testing.expectEqual(@as(usize, 1), receiver.slots.items.len);
-    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_supervision, receiver.slots.items[0].status);
-    const restored_mailbox_id = receiver.slots.items[0].pending_mailbox_id orelse return error.ExpectedMailbox;
-    const restored_pending = try receiver.mailbox.get(restored_mailbox_id);
-    try std.testing.expectEqual(request.frame_fingerprint, restored_pending.request_frame_fingerprint);
+    try std.testing.expect(!restore.accepted);
+    try std.testing.expectEqual(world.Capsule.Blocker.malformed_image, restore.blockers[0]);
+    try std.testing.expectEqual(@as(usize, 0), receiver.slots.items.len);
+    try std.testing.expectEqual(@as(usize, 0), receiver.mailbox.pendingCount());
 }
 
 test "capsule active fabric restore rejects mutation without fabric state image" {
@@ -21077,14 +21069,17 @@ test "runspace supervised export events carry receipt witnesses" {
     try parked_capsule.validate(.{});
     var capped_receiver = world.Runspace.init(std.testing.allocator, .{ .max_runs = 0, .preserve_completed_runs = false });
     defer capped_receiver.deinit();
-    try std.testing.expectError(error.BudgetExceeded, world.Capsule.thawIntoRunspace(
+    var capped_restore = try world.Capsule.thawIntoRunspace(
         parked_capsule,
         &capped_receiver,
         world.TargetRef.fromTarget(fixtures.Ports.Target).target_ref_fingerprint,
         PortsEnv.certificate(.fresh, false).certificate_fingerprint,
         0x5150_3d01,
         .{ .mode = .restore_parked },
-    ));
+    );
+    defer capped_restore.deinit(std.testing.allocator);
+    try std.testing.expect(!capped_restore.accepted);
+    try std.testing.expectEqual(world.Capsule.Blocker.malformed_image, capped_restore.blockers[0]);
     try std.testing.expectEqual(@as(usize, 0), capped_receiver.slots.items.len);
 
     var parked_receiver = world.Runspace.init(std.testing.allocator, .{});
@@ -21098,8 +21093,9 @@ test "runspace supervised export events carry receipt witnesses" {
         .{ .mode = .restore_parked },
     );
     defer parked_restore.deinit(std.testing.allocator);
-    try std.testing.expect(parked_restore.accepted);
-    try std.testing.expectEqual(world.Runspace.RunStatus.exported, parked_receiver.slots.items[0].status);
+    try std.testing.expect(!parked_restore.accepted);
+    try std.testing.expectEqual(world.Capsule.Blocker.malformed_image, parked_restore.blockers[0]);
+    try std.testing.expectEqual(@as(usize, 0), parked_receiver.slots.items.len);
 
     const sender_receipt_fingerprint: u64 = 0x5eed_cafe;
     const admitted_permit = world.Supervision.issue(fixtures.Strict.Target, StrictEnv, .{

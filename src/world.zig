@@ -18448,7 +18448,8 @@ pub const Capsule = struct {
                 .warnings = if (accepted) &.{.relink_not_performed} else &.{},
             });
         };
-        const catalog_matched = link.catalog_fingerprint == null or local_catalog_fingerprint == 0 or link.catalog_fingerprint.? == local_catalog_fingerprint;
+        const catalog_matched = link.catalog_fingerprint == null or
+            (local_catalog_fingerprint != 0 and link.catalog_fingerprint.? == local_catalog_fingerprint);
         const residual_matched = !policy.require_residual_import_match or
             policy.expected_residual_import_set_fingerprint == null or
             link.residual_import_set_fingerprint == policy.expected_residual_import_set_fingerprint.?;
@@ -18521,9 +18522,9 @@ pub const Capsule = struct {
             .replay_only => image.manifest.kind == .replay_only or image.manifest.kind == .completed_assembly or image.manifest.kind == .failed_assembly or image.manifest.kind == .full_assembly,
             .restore_completed => imageHasRestorableSlots(image) and (image.manifest.kind == .completed_assembly or image.manifest.normal_form == .quiescent_completed),
             .restore_failed => imageHasRestorableSlots(image) and (image.manifest.kind == .failed_assembly or image.manifest.normal_form == .quiescent_failed),
-            .restore_parked => image.manifest.kind == .parked_assembly and image.manifest.normal_form == .quiescent_parked,
+            .restore_parked => false,
             .relink_and_restore, .verify_and_restore => imageHasRestorableSlots(image) and switch (image.manifest.normal_form) {
-                .quiescent_completed, .quiescent_failed, .quiescent_parked => true,
+                .quiescent_completed, .quiescent_failed => true,
                 else => false,
             },
         };
@@ -20904,6 +20905,10 @@ test "capsule relink verification rejects catalog drift" {
     try std.testing.expectEqual(Capsule.LinkCertificateMatchStatus.mismatched, rejected.link_certificate_match_status);
     try std.testing.expectEqual(Capsule.RelinkStatus.rejected, rejected.relink_status);
     try std.testing.expectEqual(Capsule.Blocker.relink_drift_rejected, rejected.blockers[0]);
+    const missing_local_catalog = try Capsule.verifyLink(image, 0, .{});
+    try std.testing.expectEqual(Capsule.LinkCertificateMatchStatus.mismatched, missing_local_catalog.link_certificate_match_status);
+    try std.testing.expectEqual(Capsule.RelinkStatus.rejected, missing_local_catalog.relink_status);
+    try std.testing.expectEqual(Capsule.Blocker.relink_drift_rejected, missing_local_catalog.blockers[0]);
 }
 
 test "capsule handoff exports accepts and admission report binds witnesses" {

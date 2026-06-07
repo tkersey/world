@@ -702,7 +702,7 @@ pub fn build(b: *std.Build) void {
             .expected_stdout =
             \\sender_permit_fingerprint=905f7ae1b780bb33
             \\receiver_permit_fingerprint=cec182f086daf454
-            \\restore_allowed=true
+            \\restore_allowed=false
             \\
             ,
         },
