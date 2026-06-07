@@ -18072,6 +18072,7 @@ pub const Capsule = struct {
         if (runspace.slots.items.len > options.max_run_slots) return error.InvalidFrameEncoding;
         if (runspace.mailbox.pending.items.len > options.max_pending_ports) return error.InvalidFrameEncoding;
         if (runspace.fabric_invocations.items.len > options.max_fabric_invocations) return error.InvalidFrameEncoding;
+        if (!options.include_value_images) return error.InvalidFrameEncoding;
 
         const report_assembly = if (options.include_link_certificate) assembly else null;
         var report = try quiescenceReport(allocator, runspace, report_assembly);
@@ -18682,7 +18683,9 @@ pub const Capsule = struct {
             if (manifest.active_fabric_invocation_count != fabric.active_invocation_fingerprints.len) return error.InvalidFrameEncoding;
         } else if (manifest.fabric_plan_fingerprints.len != 0 or
             manifest.fabric_invocation_fingerprints.len != 0 or
-            manifest.fabric_receipt_fingerprints.len != 0)
+            manifest.fabric_receipt_fingerprints.len != 0 or
+            manifest.active_fabric_invocation_count != 0 or
+            runspace_image_value.active_fabric_invocation_refs.len != 0)
         {
             return error.InvalidFrameEncoding;
         }

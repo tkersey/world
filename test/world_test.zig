@@ -1227,6 +1227,38 @@ test "capsule freeze active fabric requires parked allowance" {
         .run_images = image.run_images,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, under_witnessed_image.validate(.{}));
+
+    const missing_fabric_image = world.Capsule.Image.init(.{
+        .manifest = image.manifest,
+        .runspace_image = image.runspace_image,
+        .run_image_refs = image.run_image_refs,
+        .run_images = image.run_images,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, missing_fabric_image.validate(.{}));
+}
+
+test "capsule freeze rejects unsupported value image omission" {
+    const allocator = std.testing.allocator;
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    var runspace = world.Runspace.init(allocator, .{});
+    defer runspace.deinit();
+
+    const handle = world.RunHandle.init(.{
+        .runspace_fingerprint = runspace.runspace_fingerprint,
+        .local_run_id = 0,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+    });
+    try runspace.slots.append(allocator, world.Runspace.RunSlot.fromState(.{
+        .handle = handle,
+        .target_ref = target_ref,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+            .status = .completed,
+        }),
+        .status = .completed,
+    }));
+
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Capsule.freezeRunspace(&runspace, .{ .include_value_images = false }));
 }
 
 test "capsule thaw restores completed capsule with handle remap" {
