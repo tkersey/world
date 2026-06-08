@@ -1200,6 +1200,7 @@ pub fn Linker(comptime W: type) type {
             admission_receipts_used: []const u64 = &.{},
             provider_run_templates: []const u64 = &.{},
             guest_provider_templates: []const u64 = &.{},
+            guest_conformance_report_fingerprints: []const u64 = &.{},
 
             pub fn init(args: struct {
                 root_target_ref: W.TargetRef,
@@ -1215,6 +1216,7 @@ pub fn Linker(comptime W: type) type {
                 admission_receipts_used: []const u64 = &.{},
                 provider_run_templates: []const u64 = &.{},
                 guest_provider_templates: []const u64 = &.{},
+                guest_conformance_report_fingerprints: []const u64 = &.{},
             }) Assembly {
                 var result = Assembly{
                     .assembly_fingerprint = 0,
@@ -1231,6 +1233,7 @@ pub fn Linker(comptime W: type) type {
                     .admission_receipts_used = args.admission_receipts_used,
                     .provider_run_templates = args.provider_run_templates,
                     .guest_provider_templates = args.guest_provider_templates,
+                    .guest_conformance_report_fingerprints = args.guest_conformance_report_fingerprints,
                 };
                 result.assembly_fingerprint = fingerprintAssembly(result);
                 return result;
@@ -1315,6 +1318,7 @@ pub fn Linker(comptime W: type) type {
             owned_external_imports: []W.ImportRequirement = &.{},
             owned_provider_targets_used: []u64 = &.{},
             owned_guest_providers_used: []u64 = &.{},
+            owned_guest_conformance_report_fingerprints: []u64 = &.{},
             owned_replay_routes_used: []u64 = &.{},
             owned_reject_routes_used: []u64 = &.{},
             owned_admission_receipts_used: []u64 = &.{},
@@ -1342,6 +1346,7 @@ pub fn Linker(comptime W: type) type {
                 self.allocator.free(self.owned_external_imports);
                 self.allocator.free(self.owned_provider_targets_used);
                 self.allocator.free(self.owned_guest_providers_used);
+                self.allocator.free(self.owned_guest_conformance_report_fingerprints);
                 self.allocator.free(self.owned_replay_routes_used);
                 self.allocator.free(self.owned_reject_routes_used);
                 self.allocator.free(self.owned_admission_receipts_used);
@@ -1375,6 +1380,7 @@ pub fn Linker(comptime W: type) type {
             var external: std.ArrayList(W.ImportRequirement) = .empty;
             var provider_targets: std.ArrayList(u64) = .empty;
             var guest_targets: std.ArrayList(u64) = .empty;
+            var guest_conformance_reports: std.ArrayList(u64) = .empty;
             var replay_routes: std.ArrayList(u64) = .empty;
             var reject_routes: std.ArrayList(u64) = .empty;
             var admission_receipts: std.ArrayList(u64) = .empty;
@@ -1395,6 +1401,7 @@ pub fn Linker(comptime W: type) type {
             errdefer external.deinit(allocator);
             errdefer provider_targets.deinit(allocator);
             errdefer guest_targets.deinit(allocator);
+            errdefer guest_conformance_reports.deinit(allocator);
             errdefer replay_routes.deinit(allocator);
             errdefer reject_routes.deinit(allocator);
             errdefer admission_receipts.deinit(allocator);
@@ -1628,7 +1635,12 @@ pub fn Linker(comptime W: type) type {
                 }));
                 if (requires_provider_run) try provider_targets.append(allocator, provider_ref.target_ref_fingerprint);
                 try route_fingerprints.append(allocator, route.route_fingerprint);
-                if (route_kind == .guest) try guest_targets.append(allocator, provider_ref.target_ref_fingerprint);
+                if (route_kind == .guest) {
+                    try guest_targets.append(allocator, provider_ref.target_ref_fingerprint);
+                    if (entry.guest_conformance_report_fingerprint) |report_fingerprint| {
+                        try appendUniqueU64(allocator, &guest_conformance_reports, report_fingerprint);
+                    }
+                }
                 if (route_kind == .replay) try replay_routes.append(allocator, route.route_fingerprint);
                 if (route_kind == .reject) try reject_routes.append(allocator, route.route_fingerprint);
                 if (entry.admission_receipt_fingerprint) |receipt| try appendUniqueU64(allocator, &admission_receipts, receipt);
@@ -1736,6 +1748,9 @@ pub fn Linker(comptime W: type) type {
             const owned_guest_targets = try guest_targets.toOwnedSlice(allocator);
             errdefer allocator.free(owned_guest_targets);
             guest_targets = .empty;
+            const owned_guest_conformance_reports = try guest_conformance_reports.toOwnedSlice(allocator);
+            errdefer allocator.free(owned_guest_conformance_reports);
+            guest_conformance_reports = .empty;
             const owned_replay_routes = try replay_routes.toOwnedSlice(allocator);
             errdefer allocator.free(owned_replay_routes);
             replay_routes = .empty;
@@ -1851,6 +1866,7 @@ pub fn Linker(comptime W: type) type {
             const assembly_external_imports = if (plan.accepted()) owned_external else &.{};
             const assembly_provider_targets = if (plan.accepted()) owned_provider_targets else &.{};
             const assembly_guest_targets = if (plan.accepted()) owned_guest_targets else &.{};
+            const assembly_guest_conformance_reports = if (plan.accepted()) owned_guest_conformance_reports else &.{};
             const assembly_admission_receipts = if (plan.accepted()) owned_admission_receipts else &.{};
             const assembly = Assembly.init(.{
                 .root_target_ref = input.root_target_ref,
@@ -1864,6 +1880,7 @@ pub fn Linker(comptime W: type) type {
                 .admission_receipts_used = assembly_admission_receipts,
                 .provider_run_templates = assembly_provider_targets,
                 .guest_provider_templates = assembly_guest_targets,
+                .guest_conformance_report_fingerprints = assembly_guest_conformance_reports,
             });
             return .{
                 .allocator = allocator,
@@ -1889,6 +1906,7 @@ pub fn Linker(comptime W: type) type {
                 .owned_external_imports = owned_external,
                 .owned_provider_targets_used = owned_provider_targets,
                 .owned_guest_providers_used = owned_guest_targets,
+                .owned_guest_conformance_report_fingerprints = owned_guest_conformance_reports,
                 .owned_replay_routes_used = owned_replay_routes,
                 .owned_reject_routes_used = owned_reject_routes,
                 .owned_admission_receipts_used = owned_admission_receipts,
@@ -2564,6 +2582,7 @@ pub fn Linker(comptime W: type) type {
             hashU64Slice(&hasher, assembly.admission_receipts_used);
             hashU64Slice(&hasher, assembly.provider_run_templates);
             hashU64Slice(&hasher, assembly.guest_provider_templates);
+            hashU64Slice(&hasher, assembly.guest_conformance_report_fingerprints);
             return hasher.final();
         }
     };

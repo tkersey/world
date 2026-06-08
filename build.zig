@@ -563,7 +563,7 @@ pub fn build(b: *std.Build) void {
             .expected_stdout =
             \\link_plan_fingerprint=1ba238a635990090
             \\fabric_route_count=1
-            \\assembly_fingerprint=9e3657a3beadf7d5
+            \\assembly_fingerprint=bb15a8935e2760db
             \\final_result=7
             \\native_handler_calls=0
             \\
@@ -624,8 +624,8 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-linker-guest-conformance",
             .desc = "Run the World Linker guest conformance example.",
             .expected_stdout =
-            \\assembly_fingerprint=29175e0a6795ca77
-            \\conformance_report_fingerprint=c3e96f3aa93a518a
+            \\assembly_fingerprint=9dd84e749e687387
+            \\conformance_report_fingerprint=58221d8c8e24e275
             \\conformance=true
             \\
             ,
@@ -636,9 +636,9 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-capsule-linked-restore",
             .desc = "Run the World Assembly Capsule linked restore example.",
             .expected_stdout =
-            \\capsule_fingerprint=1c162ff9cf0a1759
+            \\capsule_fingerprint=6449041ef0225991
             \\link_certificate_fingerprint=2045220a5ff7a9fd
-            \\restore_report_fingerprint=126616d46836f122
+            \\restore_report_fingerprint=6d09ac90404384a3
             \\final_result=7
             \\
             ,
@@ -663,7 +663,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-capsule-agent-transfer",
             .desc = "Run the World Assembly Capsule agent transfer example.",
             .expected_stdout =
-            \\capsule_fingerprint=d88c63d9ec9cd61a
+            \\capsule_fingerprint=32c33e5c253635b2
             \\residual_external_import_count=1
             \\receiver_permit_fingerprint=e9600a9c50625a17
             \\restore_accepted=false

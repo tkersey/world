@@ -296,7 +296,7 @@ pub const world_linker_plan_fingerprint_version: u32 = 1;
 pub const world_linker_report_fingerprint_version: u32 = 1;
 pub const world_linker_certificate_format_version: u32 = 1;
 pub const world_linker_certificate_fingerprint_version: u32 = 1;
-pub const world_assembly_fingerprint_version: u32 = 3;
+pub const world_assembly_fingerprint_version: u32 = 4;
 pub const world_capsule_manifest_format_version: u32 = 1;
 pub const world_capsule_manifest_fingerprint_version: u32 = 1;
 pub const world_capsule_quiescence_report_fingerprint_version: u32 = 1;
@@ -18463,7 +18463,10 @@ pub const Capsule = struct {
         const fabric_receipt_refs = if (maybe_fabric_image) |image| try allocator.dupe(u64, image.completed_receipt_fingerprints) else try allocator.alloc(u64, 0);
         var fabric_receipt_refs_owned = true;
         errdefer if (fabric_receipt_refs_owned) allocator.free(fabric_receipt_refs);
-        const guest_refs = try allocator.alloc(u64, 0);
+        const guest_refs = if (options.include_guest_conformance) if (assembly) |value|
+            try allocator.dupe(u64, value.guest_conformance_report_fingerprints)
+        else
+            try allocator.alloc(u64, 0) else try allocator.alloc(u64, 0);
         var guest_refs_owned = true;
         errdefer if (guest_refs_owned) allocator.free(guest_refs);
         const supervision_refs = try allocator.dupe(u64, permit_refs);

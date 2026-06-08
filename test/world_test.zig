@@ -180,7 +180,7 @@ test "linker namespace exposes kernel boundary and stable policy fingerprint" {
     try std.testing.expectEqual(@as(u32, 2), world.world_pending_port_fingerprint_version);
     try std.testing.expectEqual(@as(u32, 1), world.world_linker_policy_fingerprint_version);
     try std.testing.expectEqual(@as(u32, 1), world.world_linker_catalog_fingerprint_version);
-    try std.testing.expectEqual(@as(u32, 3), world.world_assembly_fingerprint_version);
+    try std.testing.expectEqual(@as(u32, 4), world.world_assembly_fingerprint_version);
     try std.testing.expect(world.Linker.Boundary.owns_algebra);
     try std.testing.expect(!world.Linker.Boundary.linker_calls_handlers);
     try std.testing.expect(!world.Linker.Boundary.linker_mutates_runspace_mailbox);
@@ -1264,7 +1264,7 @@ test "link image captures assembly linker provenance" {
         .external_import_requirements = &.{external},
         .provider_run_templates = &.{provider_ref.target_ref_fingerprint},
     });
-    try std.testing.expectEqual(@as(u64, 0x911200297141f215), assembly.assembly_fingerprint);
+    try std.testing.expectEqual(@as(u64, 0xb3c16774f97644d6), assembly.assembly_fingerprint);
     const catalog_scoped_assembly = world.Assembly.init(.{
         .root_target_ref = parent_ref,
         .link_plan_fingerprint = 0xaaaa,
@@ -1341,6 +1341,7 @@ test "capsule freeze freezes completed linked assembly" {
         .routes = &.{route},
         .value_mappings = &.{mapping},
     });
+    const guest_conformance_refs = [_]u64{0x5150_3504};
     const assembly = world.Assembly.init(.{
         .root_target_ref = root_ref,
         .link_plan_fingerprint = 0xaaaa,
@@ -1348,6 +1349,7 @@ test "capsule freeze freezes completed linked assembly" {
         .linker_policy_fingerprint = 0x5150_3501,
         .fabric_plans = &.{plan},
         .provider_run_templates = &.{provider_ref.target_ref_fingerprint},
+        .guest_conformance_report_fingerprints = &guest_conformance_refs,
     });
 
     try std.testing.expectError(error.InvalidFrameEncoding, world.Capsule.freezeAssembly(&runspace, assembly, .{}));
@@ -1359,6 +1361,7 @@ test "capsule freeze freezes completed linked assembly" {
         .linker_policy_fingerprint = 0x5150_3501,
         .fabric_plans = &.{plan},
         .provider_run_templates = &.{provider_ref.target_ref_fingerprint},
+        .guest_conformance_report_fingerprints = &guest_conformance_refs,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, world.Capsule.freezeAssembly(&runspace, forged_assembly, .{}));
 
@@ -1371,8 +1374,13 @@ test "capsule freeze freezes completed linked assembly" {
     try std.testing.expect(image.link_image != null);
     try std.testing.expectEqual(@as(u64, 0x5150_3501), image.link_image.?.linker_policy_fingerprint);
     try std.testing.expectEqual(@as(u64, 0), image.link_image.?.residual_import_set_fingerprint);
+    try std.testing.expectEqual(guest_conformance_refs[0], image.manifest.guest_conformance_report_fingerprints[0]);
+    try std.testing.expectEqual(guest_conformance_refs[0], image.guest_conformance_refs[0]);
     const generated_link = try world.Capsule.verifyLink(image, 0, .{});
     try std.testing.expectEqual(world.Capsule.RelinkStatus.matched, generated_link.relink_status);
+    const guest_required_link = try world.Capsule.verifyLink(image, 0, .{ .require_guest_conformance = true });
+    try std.testing.expectEqual(world.Capsule.RelinkStatus.matched, guest_required_link.relink_status);
+    try std.testing.expectEqual(@as(usize, 0), guest_required_link.blockers.len);
     try std.testing.expectEqual(@as(usize, 1), image.runspace_image.run_slots.len);
     try std.testing.expectEqual(@as(usize, 0), image.manifest.pending_port_count);
     try image.validate(.{});
