@@ -318,6 +318,18 @@ test "capsule image encode decode roundtrips dependency and object refs" {
         .dependency_refs = &missing_value_deps,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, missing_value_dep_capsule.validate(.{}));
+    var native_value_image = try world.Frame.ValueImage.fromValue(allocator, 0, null, null, @as(i32, 7), world.ValuePolicy.native_compatible);
+    defer native_value_image.deinit(allocator);
+    try std.testing.expect(native_value_image.diagnostic_type_label != null);
+    const native_value_refs = [_]u64{native_value_image.value_image_fingerprint};
+    const native_value_images = [_]world.Frame.ValueImage{native_value_image};
+    const native_value_capsule = world.Capsule.Image.init(.{
+        .manifest = manifest,
+        .runspace_image = runspace_image,
+        .value_image_refs = &native_value_refs,
+        .value_images = &native_value_images,
+    });
+    try std.testing.expectError(error.UnsupportedValueImage, native_value_capsule.validate(.{}));
 
     const stale_deps = [_]world.Capsule.DependencyRef{
         world.Capsule.DependencyRef.init(world.Capsule.SectionKind.run_image, 0x400),

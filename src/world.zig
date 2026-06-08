@@ -17425,7 +17425,10 @@ pub const Capsule = struct {
                 try transcript.validateValuePolicy(.portable);
             }
             for (self.run_images) |run_image| try run_image.validate(.{ .require_portable_values = true });
-            for (self.value_images) |value_image| try validateValueImage(value_image);
+            for (self.value_images) |value_image| {
+                try validateValueImage(value_image);
+                try validateValueImagePolicy(value_image, ValuePolicy.portable);
+            }
             if (self.image_fingerprint != fingerprintImage(self)) return error.InvalidFrameEncoding;
         }
 
