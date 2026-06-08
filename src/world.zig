@@ -2344,6 +2344,7 @@ pub const Admission = struct {
     }
 
     fn capsulePlanOnlyThawMatchesPolicy(image: Capsule.Image, plan: Capsule.ThawPlan) bool {
+        const environment_fingerprint = if (plan.environment_preflight_refs.len == 1) plan.environment_preflight_refs[0] else 0;
         const options = Capsule.ThawOptions{
             .mode = plan.requested_mode,
             .require_local_permit = plan.require_local_permit,
@@ -2355,7 +2356,7 @@ pub const Admission = struct {
         return Capsule.thawBlocker(
             image,
             plan.local_root_target_ref_fingerprint,
-            0,
+            environment_fingerprint,
             plan.receiver_run_permit_fingerprint,
             options,
         ) == null;

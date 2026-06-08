@@ -2639,6 +2639,28 @@ test "capsule handoff admission binds restore witnesses and receiver permit" {
     });
     try std.testing.expect(replay_admission.accepted);
     try std.testing.expectEqual(replay_thaw.thaw_plan_fingerprint, replay_admission.capsule_thaw_plan_fingerprint.?);
+    const environment_replay_manifest = world.Capsule.Manifest.init(.{
+        .kind = imported.manifest.kind,
+        .root_target_ref_fingerprint = imported.manifest.root_target_ref_fingerprint,
+        .environment_certificate_fingerprints = &forged_environment_refs,
+        .run_image_fingerprints = imported.manifest.run_image_fingerprints,
+        .run_slot_count = imported.manifest.run_slot_count,
+        .normal_form = imported.manifest.normal_form,
+    });
+    const environment_replay_image = world.Capsule.Image.init(.{
+        .manifest = environment_replay_manifest,
+        .runspace_image = imported.runspace_image,
+        .run_image_refs = imported.run_image_refs,
+        .run_images = imported.run_images,
+    });
+    const environment_replay_thaw = try world.Capsule.planThaw(environment_replay_image, target_ref.target_ref_fingerprint, forged_environment_refs[0], null, .{ .mode = .replay_only });
+    const environment_replay_admission = world.Admission.capsuleAdmissionReport(.{
+        .mode = .replay_only,
+        .image = environment_replay_image,
+        .thaw_plan = environment_replay_thaw,
+    });
+    try std.testing.expect(environment_replay_admission.accepted);
+    try std.testing.expectEqual(environment_replay_thaw.thaw_plan_fingerprint, environment_replay_admission.capsule_thaw_plan_fingerprint.?);
     const forged_target_replay_thaw = world.Capsule.ThawPlan.init(.{
         .capsule_image_fingerprint = imported.image_fingerprint,
         .requested_mode = .replay_only,
