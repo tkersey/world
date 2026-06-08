@@ -16478,6 +16478,11 @@ pub const Capsule = struct {
         local_catalog_fingerprint: ?u64 = null,
         rerun_guest_conformance: bool = false,
         max_image_bytes: usize = world_max_decoded_byte_field_len,
+        max_run_slots: usize = 4096,
+        max_pending_ports: usize = 4096,
+        max_fabric_invocations: usize = 4096,
+        max_dependencies: usize = 8192,
+        max_embedded_images: usize = 4096,
     };
 
     pub const RelinkPolicy = struct {
@@ -18621,7 +18626,7 @@ pub const Capsule = struct {
     }
 
     pub fn planThaw(image: Image, local_root_target_ref_fingerprint: u64, environment_fingerprint: u64, permit_fingerprint: ?u64, options: ThawOptions) !ThawPlan {
-        try image.validate(.{ .max_image_bytes = options.max_image_bytes });
+        try image.validate(validateOptionsForThaw(options));
         const blocker: ?Blocker = thawBlocker(image, local_root_target_ref_fingerprint, environment_fingerprint, permit_fingerprint, options);
         const accepted = blocker == null;
         const link_status = linkMatchStatusForThaw(image, options);
@@ -19793,11 +19798,25 @@ pub const Capsule = struct {
     }
 
     fn validateOptionsForFreeze(options: FreezeOptions) ValidateOptions {
+        const max_top_level_refs = @max(options.max_run_slots, @max(options.max_pending_ports, options.max_fabric_invocations));
         return .{
             .max_image_bytes = options.max_image_bytes,
             .max_run_slots = options.max_run_slots,
             .max_pending_ports = options.max_pending_ports,
             .max_fabric_invocations = options.max_fabric_invocations,
+            .max_dependencies = @max((ValidateOptions{}).max_dependencies, max_top_level_refs),
+            .max_embedded_images = @max((ValidateOptions{}).max_embedded_images, options.max_run_slots),
+        };
+    }
+
+    fn validateOptionsForThaw(options: ThawOptions) ValidateOptions {
+        return .{
+            .max_image_bytes = options.max_image_bytes,
+            .max_run_slots = options.max_run_slots,
+            .max_pending_ports = options.max_pending_ports,
+            .max_fabric_invocations = options.max_fabric_invocations,
+            .max_dependencies = options.max_dependencies,
+            .max_embedded_images = options.max_embedded_images,
         };
     }
 

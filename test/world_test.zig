@@ -1093,29 +1093,60 @@ test "capsule freezeRunspace honors partial freeze and caller count limits" {
     try std.testing.expectEqual(world.RunState.Status.failed, rejected_image.run_images[0].current_state.status);
 
     const slot_count: usize = 4097;
-    var large_runspace = world.Runspace.init(allocator, .{});
-    defer large_runspace.deinit();
-    try large_runspace.slots.ensureTotalCapacity(allocator, slot_count);
+    var large_partial_runspace = world.Runspace.init(allocator, .{});
+    defer large_partial_runspace.deinit();
+    try large_partial_runspace.slots.ensureTotalCapacity(allocator, slot_count);
     for (0..slot_count) |index| {
         const handle = world.RunHandle.init(.{
-            .runspace_fingerprint = large_runspace.runspace_fingerprint,
+            .runspace_fingerprint = large_partial_runspace.runspace_fingerprint,
             .local_run_id = @intCast(index),
             .target_ref_fingerprint = target_ref.target_ref_fingerprint,
         });
-        large_runspace.slots.appendAssumeCapacity(world.Runspace.RunSlot.fromState(.{
+        large_partial_runspace.slots.appendAssumeCapacity(world.Runspace.RunSlot.fromState(.{
             .handle = handle,
             .target_ref = target_ref,
             .current_state = state,
             .status = .admitted,
         }));
     }
-    var large_image = try world.Capsule.freezeRunspace(&large_runspace, .{
+    var large_image = try world.Capsule.freezeRunspace(&large_partial_runspace, .{
         .require_quiescent = false,
         .max_run_slots = slot_count,
     });
     defer large_image.deinit(allocator);
     try std.testing.expectEqual(slot_count, large_image.manifest.run_slot_count);
     try std.testing.expectEqual(slot_count, large_image.runspace_image.run_slots.len);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Capsule.planThaw(large_image, target_ref.target_ref_fingerprint, 0, null, .{ .mode = .inspect_only }));
+    const large_thaw = try world.Capsule.planThaw(large_image, target_ref.target_ref_fingerprint, 0, null, .{
+        .mode = .inspect_only,
+        .max_run_slots = slot_count,
+    });
+    try std.testing.expectEqual(@as(usize, 0), large_thaw.blockers.len);
+
+    var large_completed_runspace = world.Runspace.init(allocator, .{});
+    defer large_completed_runspace.deinit();
+    try large_completed_runspace.slots.ensureTotalCapacity(allocator, slot_count);
+    for (0..slot_count) |index| {
+        const handle = world.RunHandle.init(.{
+            .runspace_fingerprint = large_completed_runspace.runspace_fingerprint,
+            .local_run_id = @intCast(index),
+            .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        });
+        large_completed_runspace.slots.appendAssumeCapacity(world.Runspace.RunSlot.fromState(.{
+            .handle = handle,
+            .target_ref = target_ref,
+            .current_state = world.RunState.init(.{
+                .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+                .status = .completed,
+            }),
+            .status = .completed,
+        }));
+    }
+    var large_completed_image = try world.Capsule.freezeRunspace(&large_completed_runspace, .{
+        .max_run_slots = slot_count,
+    });
+    defer large_completed_image.deinit(allocator);
+    try std.testing.expectEqual(slot_count, large_completed_image.run_images.len);
 }
 
 test "capsule runspace and mailbox images capture slots pending ports and events" {
