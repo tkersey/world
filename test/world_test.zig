@@ -471,6 +471,24 @@ test "capsule certificate derives from image and quiescence without image hash c
     try std.testing.expectEqual(image.image_fingerprint, cert.capsule_image_fingerprint);
     try std.testing.expectEqual(image.manifest.manifest_fingerprint, cert.capsule_manifest_fingerprint);
     try std.testing.expectEqual(report.report_fingerprint, cert.quiescence_report_fingerprint);
+    try std.testing.expectEqual(@as(usize, 0), cert.blocker_summary.len);
+    try std.testing.expectEqual(@as(usize, 0), cert.warning_summary.len);
+
+    const warnings = try std.testing.allocator.dupe(world.Capsule.Warning, &.{.metadata_only});
+    var owning_warning_report = world.Capsule.QuiescenceReport.init(.{
+        .runspace_fingerprint = 0x2222,
+        .quiescent = true,
+        .normal_form = .quiescent_completed,
+        .warnings = warnings,
+    });
+    owning_warning_report.owns_memory = true;
+    errdefer owning_warning_report.deinit(std.testing.allocator);
+    const owning_warning_cert = try world.Capsule.certificate(image, owning_warning_report);
+    owning_warning_report.deinit(std.testing.allocator);
+    try owning_warning_cert.validate();
+    try std.testing.expectEqual(@as(usize, 0), owning_warning_cert.blocker_summary.len);
+    try std.testing.expectEqual(@as(usize, 0), owning_warning_cert.warning_summary.len);
+
     const wrong_report = world.Capsule.QuiescenceReport.init(.{
         .runspace_fingerprint = 0x9999,
         .quiescent = true,

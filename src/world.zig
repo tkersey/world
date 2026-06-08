@@ -17647,8 +17647,6 @@ pub const Capsule = struct {
                 .fabric_image_fingerprint = if (image.fabric_image) |fabric| fabric.fabric_image_fingerprint else null,
                 .root_target_ref_fingerprint = image.manifest.root_target_ref_fingerprint,
                 .assembly_fingerprint = image.manifest.assembly_fingerprint,
-                .blocker_summary = report.blockers,
-                .warning_summary = report.warnings,
             });
         }
 
