@@ -18932,7 +18932,8 @@ pub const Capsule = struct {
         const fabric_matched = !policy.require_fabric_plan_match or linkFabricPlanWitnessesCover(image.manifest.fabric_plan_fingerprints, link.route_synthesis_refs);
         const guest_conformance_matched = !policy.require_guest_conformance or guestConformanceRefsCovered(image.manifest.guest_conformance_report_fingerprints, image.guest_conformance_refs);
         const matched = catalog_matched and residual_matched and fabric_matched and guest_conformance_matched;
-        const accepted = matched or policy.allow_relink_drift;
+        const catalog_drift_allowed = policy.allow_relink_drift and !catalog_matched and residual_matched and fabric_matched and guest_conformance_matched;
+        const accepted = matched or catalog_drift_allowed;
         const blocker: Blocker = if (!catalog_matched)
             .relink_drift_rejected
         else if (!residual_matched)
@@ -18951,7 +18952,7 @@ pub const Capsule = struct {
             .allow_relink_drift = policy.allow_relink_drift,
             .local_catalog_fingerprint = local_catalog_fingerprint,
             .link_certificate_match_status = if (matched) .matched else .mismatched,
-            .relink_status = if (matched) .matched else if (policy.allow_relink_drift) .drift_allowed else .rejected,
+            .relink_status = if (matched) .matched else if (catalog_drift_allowed) .drift_allowed else .rejected,
             .blockers = if (accepted) &.{} else blockerSlice(blocker),
         });
     }

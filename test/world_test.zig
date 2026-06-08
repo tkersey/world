@@ -2365,10 +2365,19 @@ test "capsule relink requires manifest fabric plan coverage" {
     try std.testing.expectEqual(world.Capsule.LinkCertificateMatchStatus.mismatched, unwitnessed_fabric.link_certificate_match_status);
     try std.testing.expectEqual(world.Capsule.RelinkStatus.rejected, unwitnessed_fabric.relink_status);
     try std.testing.expectEqual(world.Capsule.Blocker.fabric_plan_mismatch, unwitnessed_fabric.blockers[0]);
+    const unwitnessed_fabric_drift_allowed = try world.Capsule.verifyLink(unwitnessed_fabric_image, 0, .{ .allow_relink_drift = true });
+    try std.testing.expectEqual(world.Capsule.RelinkStatus.rejected, unwitnessed_fabric_drift_allowed.relink_status);
+    try std.testing.expectEqual(world.Capsule.Blocker.fabric_plan_mismatch, unwitnessed_fabric_drift_allowed.blockers[0]);
     const guest_required = try world.Capsule.verifyLink(covered_image, 0, .{ .require_guest_conformance = true });
     try std.testing.expectEqual(world.Capsule.LinkCertificateMatchStatus.mismatched, guest_required.link_certificate_match_status);
     try std.testing.expectEqual(world.Capsule.RelinkStatus.rejected, guest_required.relink_status);
     try std.testing.expectEqual(world.Capsule.Blocker.guest_conformance_missing, guest_required.blockers[0]);
+    const guest_required_drift_allowed = try world.Capsule.verifyLink(covered_image, 0, .{
+        .allow_relink_drift = true,
+        .require_guest_conformance = true,
+    });
+    try std.testing.expectEqual(world.Capsule.RelinkStatus.rejected, guest_required_drift_allowed.relink_status);
+    try std.testing.expectEqual(world.Capsule.Blocker.guest_conformance_missing, guest_required_drift_allowed.blockers[0]);
     const guest_refs = [_]u64{0x5150_3716};
     const guest_manifest = world.Capsule.Manifest.init(.{
         .kind = .completed_assembly,
@@ -2408,6 +2417,9 @@ test "capsule relink requires manifest fabric plan coverage" {
     const residual_default = try world.Capsule.verifyLink(residual_image, 0, .{});
     try std.testing.expectEqual(world.Capsule.RelinkStatus.rejected, residual_default.relink_status);
     try std.testing.expectEqual(world.Capsule.Blocker.residual_import_mismatch, residual_default.blockers[0]);
+    const residual_drift_allowed = try world.Capsule.verifyLink(residual_image, 0, .{ .allow_relink_drift = true });
+    try std.testing.expectEqual(world.Capsule.RelinkStatus.rejected, residual_drift_allowed.relink_status);
+    try std.testing.expectEqual(world.Capsule.Blocker.residual_import_mismatch, residual_drift_allowed.blockers[0]);
     const residual_not_required = try world.Capsule.verifyLink(residual_image, 0, .{ .require_residual_import_match = false });
     try std.testing.expectEqual(world.Capsule.RelinkStatus.matched, residual_not_required.relink_status);
     try std.testing.expectEqual(@as(usize, 0), residual_not_required.blockers.len);
