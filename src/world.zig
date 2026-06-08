@@ -208,8 +208,8 @@ pub const world_transcript_image_format_version: u32 = 3;
 pub const world_transcript_image_fingerprint_version: u32 = 1;
 pub const world_timeline_event_format_version: u32 = 1;
 pub const world_timeline_event_fingerprint_version: u32 = 1;
-pub const world_timeline_checkpoint_format_version: u32 = 1;
-pub const world_timeline_checkpoint_fingerprint_version: u32 = 1;
+pub const world_timeline_checkpoint_format_version: u32 = 2;
+pub const world_timeline_checkpoint_fingerprint_version: u32 = 2;
 pub const world_timeline_branch_format_version: u32 = 1;
 pub const world_timeline_branch_fingerprint_version: u32 = 1;
 pub const world_audit_image_format_version: u32 = 1;
@@ -259,7 +259,7 @@ pub const world_admitted_run_fingerprint_version: u32 = 6;
 pub const world_run_handle_format_version: u32 = 1;
 pub const world_run_handle_fingerprint_version: u32 = 1;
 pub const world_pending_port_format_version: u32 = 1;
-pub const world_pending_port_fingerprint_version: u32 = 1;
+pub const world_pending_port_fingerprint_version: u32 = 2;
 pub const world_runspace_config_fingerprint_version: u32 = 1;
 pub const world_runspace_event_fingerprint_version: u32 = 2;
 pub const world_fabric_format_version: u32 = 1;
@@ -296,7 +296,23 @@ pub const world_linker_plan_fingerprint_version: u32 = 1;
 pub const world_linker_report_fingerprint_version: u32 = 1;
 pub const world_linker_certificate_format_version: u32 = 1;
 pub const world_linker_certificate_fingerprint_version: u32 = 1;
-pub const world_assembly_fingerprint_version: u32 = 1;
+pub const world_assembly_fingerprint_version: u32 = 4;
+pub const world_capsule_manifest_format_version: u32 = 1;
+pub const world_capsule_manifest_fingerprint_version: u32 = 1;
+pub const world_capsule_quiescence_report_fingerprint_version: u32 = 1;
+pub const world_capsule_runspace_image_format_version: u32 = 1;
+pub const world_capsule_runspace_image_fingerprint_version: u32 = 1;
+pub const world_capsule_run_slot_image_fingerprint_version: u32 = 1;
+pub const world_capsule_pending_port_image_fingerprint_version: u32 = 1;
+pub const world_capsule_mailbox_image_fingerprint_version: u32 = 1;
+pub const world_capsule_fabric_image_fingerprint_version: u32 = 1;
+pub const world_capsule_link_image_fingerprint_version: u32 = 1;
+pub const world_capsule_image_format_version: u32 = 1;
+pub const world_capsule_image_fingerprint_version: u32 = 1;
+pub const world_capsule_certificate_format_version: u32 = 1;
+pub const world_capsule_certificate_fingerprint_version: u32 = 1;
+pub const world_capsule_thaw_plan_fingerprint_version: u32 = 1;
+pub const world_capsule_restore_report_fingerprint_version: u32 = 1;
 pub const world_guest_abi_version: u32 = 1;
 pub const world_guest_abi_contract_fingerprint_version: u32 = 1;
 pub const world_guest_conformance_vector_fingerprint_version: u32 = 2;
@@ -2098,6 +2114,10 @@ pub const Admission = struct {
         linker_certificate_fingerprint: ?u64 = null,
         assembly_fingerprint: ?u64 = null,
         handoff_preflight_report_fingerprint: ?u64 = null,
+        capsule_image_fingerprint: ?u64 = null,
+        capsule_certificate_fingerprint: ?u64 = null,
+        capsule_thaw_plan_fingerprint: ?u64 = null,
+        capsule_restore_report_fingerprint: ?u64 = null,
         blockers: []const AdmissionBlocker = &.{},
         warnings: []const AdmissionBlocker = &.{},
         summary: []const u8 = "",
@@ -2116,6 +2136,10 @@ pub const Admission = struct {
             linker_certificate_fingerprint: ?u64 = null,
             assembly_fingerprint: ?u64 = null,
             handoff_preflight_report_fingerprint: ?u64 = null,
+            capsule_image_fingerprint: ?u64 = null,
+            capsule_certificate_fingerprint: ?u64 = null,
+            capsule_thaw_plan_fingerprint: ?u64 = null,
+            capsule_restore_report_fingerprint: ?u64 = null,
             warnings: []const AdmissionBlocker = &.{},
             summary: []const u8 = "admission accepted",
         }) Admission.AdmissionReport {
@@ -2135,6 +2159,10 @@ pub const Admission = struct {
                 .linker_certificate_fingerprint = args.linker_certificate_fingerprint,
                 .assembly_fingerprint = args.assembly_fingerprint,
                 .handoff_preflight_report_fingerprint = args.handoff_preflight_report_fingerprint,
+                .capsule_image_fingerprint = args.capsule_image_fingerprint,
+                .capsule_certificate_fingerprint = args.capsule_certificate_fingerprint,
+                .capsule_thaw_plan_fingerprint = args.capsule_thaw_plan_fingerprint,
+                .capsule_restore_report_fingerprint = args.capsule_restore_report_fingerprint,
                 .warnings = args.warnings,
                 .summary = args.summary,
             };
@@ -2156,6 +2184,10 @@ pub const Admission = struct {
             linker_certificate_fingerprint: ?u64 = null,
             assembly_fingerprint: ?u64 = null,
             handoff_preflight_report_fingerprint: ?u64 = null,
+            capsule_image_fingerprint: ?u64 = null,
+            capsule_certificate_fingerprint: ?u64 = null,
+            capsule_thaw_plan_fingerprint: ?u64 = null,
+            capsule_restore_report_fingerprint: ?u64 = null,
             blockers: []const AdmissionBlocker,
             warnings: []const AdmissionBlocker = &.{},
             summary: []const u8 = "admission rejected",
@@ -2176,6 +2208,10 @@ pub const Admission = struct {
                 .linker_certificate_fingerprint = args.linker_certificate_fingerprint,
                 .assembly_fingerprint = args.assembly_fingerprint,
                 .handoff_preflight_report_fingerprint = args.handoff_preflight_report_fingerprint,
+                .capsule_image_fingerprint = args.capsule_image_fingerprint,
+                .capsule_certificate_fingerprint = args.capsule_certificate_fingerprint,
+                .capsule_thaw_plan_fingerprint = args.capsule_thaw_plan_fingerprint,
+                .capsule_restore_report_fingerprint = args.capsule_restore_report_fingerprint,
                 .blockers = args.blockers,
                 .warnings = args.warnings,
                 .summary = args.summary,
@@ -2184,6 +2220,292 @@ pub const Admission = struct {
             return result;
         }
     };
+
+    pub const CapsuleAdmissionMode = enum {
+        inspect_only,
+        replay_only,
+        restore_parked,
+        restore_completed,
+        restore_failed,
+        relink_and_restore,
+        verify,
+    };
+
+    pub fn capsuleAdmissionReport(args: struct {
+        mode: CapsuleAdmissionMode,
+        image: Capsule.Image,
+        certificate: ?Capsule.Certificate = null,
+        thaw_plan: ?Capsule.ThawPlan = null,
+        restore_report: ?Capsule.RestoreReport = null,
+    }) Admission.AdmissionReport {
+        const image_valid = capsuleImageValid(args.image);
+        const witnesses_valid =
+            (args.certificate == null or capsuleCertificateValid(args.certificate.?)) and
+            (args.thaw_plan == null or capsuleThawPlanValid(args.thaw_plan.?)) and
+            (args.restore_report == null or capsuleRestoreReportValid(args.restore_report.?)) and
+            (args.restore_report == null or !args.restore_report.?.accepted or capsuleRestoreReportAccepted(args.restore_report.?));
+        const witnesses_bound =
+            (args.certificate == null or capsuleCertificateMatchesImage(args.image, args.certificate.?)) and
+            (args.thaw_plan == null or capsuleThawPlanMatchesImage(args.image, args.thaw_plan.?)) and
+            (args.restore_report == null or args.thaw_plan != null) and
+            (args.restore_report == null or capsuleAdmissionModeAllowsRestoreReport(args.mode)) and
+            (args.restore_report == null or args.restore_report.?.capsule_image_fingerprint == args.image.image_fingerprint) and
+            (args.thaw_plan == null or args.restore_report == null or args.restore_report.?.thaw_plan_fingerprint == args.thaw_plan.?.thaw_plan_fingerprint) and
+            (args.thaw_plan == null or args.restore_report == null or args.thaw_plan.?.receiver_run_permit_fingerprint == args.restore_report.?.receiver_run_permit_fingerprint) and
+            (args.thaw_plan == null or args.restore_report == null or !args.restore_report.?.accepted or capsuleRestoreReportMatchesImageAndPlan(args.image, args.thaw_plan.?, args.restore_report.?));
+        const witness_modes_bound = args.thaw_plan == null or capsuleAdmissionModeAllowsThaw(args.mode, args.thaw_plan.?.requested_mode);
+        const has_required_witnesses = switch (args.mode) {
+            .inspect_only => true,
+            .replay_only => args.thaw_plan != null,
+            .verify => false,
+            .restore_parked, .restore_completed, .restore_failed, .relink_and_restore => args.thaw_plan != null and args.restore_report != null,
+        };
+        const witnesses_accept = switch (args.mode) {
+            .inspect_only => if (args.thaw_plan) |plan| plan.blockers.len == 0 else true,
+            .replay_only => if (args.thaw_plan) |plan| plan.blockers.len == 0 else false,
+            .verify => false,
+            .restore_parked, .restore_completed, .restore_failed, .relink_and_restore => if (args.thaw_plan) |plan| if (args.restore_report) |report| plan.blockers.len == 0 and capsuleRestoreReportAccepted(report) else false else false,
+        };
+        const request = Admission.AdmissionRequest.init(.{
+            .package_fingerprint = args.image.image_fingerprint,
+            .mode = admissionModeForCapsuleAdmission(args.mode),
+            .policy_fingerprint = 0,
+        });
+        const accepted = image_valid and witnesses_valid and witnesses_bound and witness_modes_bound and has_required_witnesses and witnesses_accept;
+        if (!accepted) {
+            const invalid_witnesses = !image_valid or !witnesses_valid or !witnesses_bound or !witness_modes_bound or !has_required_witnesses;
+            return Admission.AdmissionReport.rejected(.{
+                .request = request,
+                .package_fingerprint = args.image.image_fingerprint,
+                .manifest_fingerprint = args.image.manifest.manifest_fingerprint,
+                .target_ref_fingerprint = args.image.manifest.root_target_ref_fingerprint,
+                .link_plan_fingerprint = args.image.manifest.link_plan_fingerprint,
+                .linker_certificate_fingerprint = args.image.manifest.link_certificate_fingerprint,
+                .assembly_fingerprint = args.image.manifest.assembly_fingerprint,
+                .capsule_image_fingerprint = args.image.image_fingerprint,
+                .capsule_certificate_fingerprint = if (args.certificate) |cert| cert.certificate_fingerprint else null,
+                .capsule_thaw_plan_fingerprint = if (args.thaw_plan) |plan| plan.thaw_plan_fingerprint else null,
+                .capsule_restore_report_fingerprint = if (args.restore_report) |report| report.restore_report_fingerprint else null,
+                .blockers = if (invalid_witnesses) &.{.PackageInvalid} else &.{.AdmissionModeNotAllowed},
+                .summary = if (invalid_witnesses) "capsule admission witness mismatch" else "capsule admission rejected",
+            });
+        }
+        return Admission.AdmissionReport.accept(.{
+            .request = request,
+            .package_fingerprint = args.image.image_fingerprint,
+            .manifest_fingerprint = args.image.manifest.manifest_fingerprint,
+            .target_ref_fingerprint = args.image.manifest.root_target_ref_fingerprint,
+            .link_plan_fingerprint = args.image.manifest.link_plan_fingerprint,
+            .linker_certificate_fingerprint = args.image.manifest.link_certificate_fingerprint,
+            .assembly_fingerprint = args.image.manifest.assembly_fingerprint,
+            .capsule_image_fingerprint = args.image.image_fingerprint,
+            .capsule_certificate_fingerprint = if (args.certificate) |cert| cert.certificate_fingerprint else null,
+            .capsule_thaw_plan_fingerprint = if (args.thaw_plan) |plan| plan.thaw_plan_fingerprint else null,
+            .capsule_restore_report_fingerprint = if (args.restore_report) |report| report.restore_report_fingerprint else null,
+            .summary = "capsule admission accepted",
+        });
+    }
+
+    fn capsuleImageValid(image: Capsule.Image) bool {
+        image.validate(.{}) catch return false;
+        return true;
+    }
+
+    fn capsuleCertificateValid(certificate: Capsule.Certificate) bool {
+        certificate.validate() catch return false;
+        return true;
+    }
+
+    fn capsuleThawPlanValid(plan: Capsule.ThawPlan) bool {
+        plan.validate() catch return false;
+        return true;
+    }
+
+    fn capsuleThawPlanMatchesImage(image: Capsule.Image, plan: Capsule.ThawPlan) bool {
+        if (plan.capsule_image_fingerprint != image.image_fingerprint) return false;
+        if (!Capsule.restoreModeAllowedForImage(image, plan.requested_mode)) return false;
+        if (plan.target_matches.len != 0 or plan.module_matches.len != 0 or plan.receiver_run_permit_refs.len != 0) return false;
+        if (!Capsule.u64SlicesEqual(plan.environment_preflight_refs, image.manifest.environment_certificate_fingerprints)) return false;
+        if (!Capsule.u64SlicesEqual(plan.guest_conformance_refs, image.guest_conformance_refs)) return false;
+        if (!Capsule.u64SlicesEqual(plan.handle_remapping_plan, image.runspace_image.run_handle_mappings)) return false;
+        const mailbox_refs = if (image.runspace_image.mailbox_image) |mailbox| mailbox.pending_port_fingerprints else &.{};
+        if (!Capsule.u64SlicesEqual(plan.mailbox_id_remapping_plan, mailbox_refs)) return false;
+        return capsuleThawPlanMatchesCanonical(image, plan);
+    }
+
+    fn capsuleRestoreReportValid(report: Capsule.RestoreReport) bool {
+        report.validate() catch return false;
+        return true;
+    }
+
+    fn capsuleRestoreReportAccepted(report: Capsule.RestoreReport) bool {
+        return report.accepted and report.blockers.len == 0;
+    }
+
+    fn capsuleThawPlanMatchesCanonical(image: Capsule.Image, plan: Capsule.ThawPlan) bool {
+        const environment_fingerprint = if (plan.environment_preflight_refs.len == 1) plan.environment_preflight_refs[0] else 0;
+        const options = Capsule.ThawOptions{
+            .mode = plan.requested_mode,
+            .require_local_permit = plan.require_local_permit,
+            .require_link_match = plan.require_link_match,
+            .allow_relink_drift = plan.allow_relink_drift,
+            .local_catalog_fingerprint = plan.local_catalog_fingerprint,
+            .rerun_guest_conformance = plan.rerun_guest_conformance,
+        };
+        const canonical = Capsule.planThaw(
+            image,
+            plan.local_root_target_ref_fingerprint,
+            environment_fingerprint,
+            plan.receiver_run_permit_fingerprint,
+            options,
+        ) catch return false;
+        return canonical.thaw_plan_fingerprint == plan.thaw_plan_fingerprint;
+    }
+
+    fn capsuleRestoreReportMatchesImageAndPlan(image: Capsule.Image, plan: Capsule.ThawPlan, report: Capsule.RestoreReport) bool {
+        if (plan.capsule_image_fingerprint != image.image_fingerprint) return false;
+        if (report.capsule_image_fingerprint != image.image_fingerprint) return false;
+        if (report.thaw_plan_fingerprint != plan.thaw_plan_fingerprint) return false;
+        if (report.receiver_run_permit_fingerprint != plan.receiver_run_permit_fingerprint) return false;
+        if (plan.blockers.len != 0 or report.blockers.len != 0 or !report.accepted) return false;
+        if (!Capsule.restoreModeAllowedForImage(image, plan.requested_mode)) return false;
+        if (!capsuleAcceptedRestoreHasLocalAuthority(image, plan, report)) return false;
+        if (!Capsule.u64SlicesEqual(plan.handle_remapping_plan, image.runspace_image.run_handle_mappings)) return false;
+        if (!Capsule.u64SlicesEqual(plan.guest_conformance_refs, report.guest_conformance_refs)) return false;
+        if (plan.environment_preflight_refs.len == 0) {
+            if (report.environment_certificate_fingerprint != null) return false;
+        } else {
+            if (plan.environment_preflight_refs.len != 1) return false;
+            if (report.environment_certificate_fingerprint != plan.environment_preflight_refs[0]) return false;
+        }
+        const mailbox_refs = if (image.runspace_image.mailbox_image) |mailbox| mailbox.pending_port_fingerprints else &.{};
+        if (!Capsule.u64SlicesEqual(plan.mailbox_id_remapping_plan, mailbox_refs)) return false;
+
+        return switch (plan.requested_mode) {
+            .restore_completed, .restore_failed, .relink_and_restore => capsuleRestoreReportRunMappingsMatchImage(image, report) and
+                capsuleRestoreReportPendingMappingsMatchImage(image, report) and
+                capsuleRestoreReportFabricMappingsMatchImage(image, report),
+            .inspect_only, .replay_only, .restore_parked, .verify_and_restore => false,
+        };
+    }
+
+    fn capsuleAcceptedRestoreHasLocalAuthority(image: Capsule.Image, plan: Capsule.ThawPlan, report: Capsule.RestoreReport) bool {
+        const environment_fingerprint = report.environment_certificate_fingerprint orelse 0;
+        const options = Capsule.ThawOptions{
+            .mode = plan.requested_mode,
+            .require_local_permit = plan.require_local_permit,
+            .require_link_match = plan.require_link_match,
+            .allow_relink_drift = plan.allow_relink_drift,
+            .local_catalog_fingerprint = plan.local_catalog_fingerprint,
+            .rerun_guest_conformance = plan.rerun_guest_conformance,
+        };
+        const canonical = Capsule.planThaw(
+            image,
+            plan.local_root_target_ref_fingerprint,
+            environment_fingerprint,
+            plan.receiver_run_permit_fingerprint,
+            options,
+        ) catch return false;
+        return canonical.thaw_plan_fingerprint == plan.thaw_plan_fingerprint;
+    }
+
+    fn capsuleRestoreReportRunMappingsMatchImage(image: Capsule.Image, report: Capsule.RestoreReport) bool {
+        const slots = image.runspace_image.run_slots;
+        const mappings = report.restored_run_handle_mappings;
+        if (slots.len == 0 or mappings.len != slots.len * 2) return false;
+        var root_index: usize = 0;
+        var provider_index: usize = 0;
+        for (slots, 0..) |slot, index| {
+            const mapped_original = mappings[index * 2];
+            const mapped_restored = mappings[index * 2 + 1];
+            if (mapped_original != slot.original_run_handle_fingerprint) return false;
+            const index_u64 = std.math.cast(u64, index) orelse return false;
+            const restored_local_run_id = std.math.add(u64, report.restored_local_run_id_start, index_u64) catch return false;
+            const expected_restored = RunHandle.init(.{
+                .runspace_fingerprint = report.restored_runspace_fingerprint,
+                .local_run_id = restored_local_run_id,
+                .target_ref_fingerprint = slot.target_ref_fingerprint,
+                .admission_receipt_fingerprint = slot.admission_receipt_fingerprint,
+                .permit_fingerprint = report.receiver_run_permit_fingerprint orelse slot.run_permit_fingerprint,
+                .branch_id = slot.branch_id,
+            }).handle_fingerprint;
+            if (mapped_restored != expected_restored) return false;
+            var previous_index: usize = 0;
+            while (previous_index < index) : (previous_index += 1) {
+                if (mappings[previous_index * 2 + 1] == mapped_restored) return false;
+            }
+            switch (slot.role) {
+                .root => {
+                    if (root_index >= report.restored_root_run_handles.len) return false;
+                    if (report.restored_root_run_handles[root_index] != mapped_restored) return false;
+                    root_index += 1;
+                },
+                .provider => {
+                    if (provider_index >= report.restored_provider_run_handles.len) return false;
+                    if (report.restored_provider_run_handles[provider_index] != mapped_restored) return false;
+                    provider_index += 1;
+                },
+                .branch, .guest, .replay, .verify => {},
+            }
+        }
+        return root_index == report.restored_root_run_handles.len and provider_index == report.restored_provider_run_handles.len;
+    }
+
+    fn capsuleRestoreReportPendingMappingsMatchImage(image: Capsule.Image, report: Capsule.RestoreReport) bool {
+        const refs = if (image.runspace_image.mailbox_image) |mailbox| mailbox.pending_port_fingerprints else &.{};
+        const mappings = report.restored_pending_port_mappings;
+        if (mappings.len != refs.len * 2) return false;
+        for (refs, 0..) |pending, index| {
+            const mapped_original = mappings[index * 2];
+            const mapped_restored = mappings[index * 2 + 1];
+            if (mapped_original != pending) return false;
+            var previous_index: usize = 0;
+            while (previous_index < index) : (previous_index += 1) {
+                if (mappings[previous_index * 2 + 1] == mapped_restored) return false;
+            }
+        }
+        return true;
+    }
+
+    fn capsuleRestoreReportFabricMappingsMatchImage(image: Capsule.Image, report: Capsule.RestoreReport) bool {
+        const refs = if (image.fabric_image) |fabric| fabric.active_invocation_fingerprints else &.{};
+        const mappings = report.restored_fabric_invocation_mappings;
+        if (mappings.len != refs.len * 2) return false;
+        for (refs, 0..) |invocation, index| {
+            if (mappings[index * 2] != invocation) return false;
+            if (mappings[index * 2 + 1] != invocation) return false;
+        }
+        return true;
+    }
+
+    fn capsuleCertificateMatchesImage(image: Capsule.Image, cert: Capsule.Certificate) bool {
+        return cert.capsule_image_fingerprint == image.image_fingerprint and
+            cert.capsule_manifest_fingerprint == image.manifest.manifest_fingerprint and
+            cert.runspace_image_fingerprint == image.runspace_image.image_fingerprint and
+            cert.link_image_fingerprint == (if (image.link_image) |link| link.link_image_fingerprint else null) and
+            cert.fabric_image_fingerprint == (if (image.fabric_image) |fabric| fabric.fabric_image_fingerprint else null) and
+            cert.root_target_ref_fingerprint == image.manifest.root_target_ref_fingerprint and
+            cert.assembly_fingerprint == image.manifest.assembly_fingerprint;
+    }
+
+    fn capsuleAdmissionModeAllowsThaw(mode: CapsuleAdmissionMode, thaw_mode: Capsule.RestoreMode) bool {
+        return switch (mode) {
+            .inspect_only => thaw_mode == .inspect_only,
+            .replay_only => thaw_mode == .replay_only,
+            .verify => thaw_mode == .verify_and_restore,
+            .restore_parked => thaw_mode == .restore_parked,
+            .restore_completed => thaw_mode == .restore_completed,
+            .restore_failed => thaw_mode == .restore_failed,
+            .relink_and_restore => thaw_mode == .relink_and_restore,
+        };
+    }
+
+    fn capsuleAdmissionModeAllowsRestoreReport(mode: CapsuleAdmissionMode) bool {
+        return switch (mode) {
+            .restore_completed, .restore_failed, .relink_and_restore => true,
+            .inspect_only, .replay_only, .restore_parked, .verify => false,
+        };
+    }
 
     pub const AdmissionReceipt = struct {
         format_version: u32 = world_admission_receipt_format_version,
@@ -7013,6 +7335,7 @@ pub const RunImage = struct {
                 .failed => if (self.current_state.status != .failed) return error.HandoffTargetMismatch,
                 .running => if (self.current_state.status != .running and self.current_state.status != .parked_on_port and self.current_state.status != .parked_on_supervision) return error.HandoffTargetMismatch,
             }
+            try validateTranscriptImageFingerprint(image);
             try image.validateValuePolicy(value_policy);
         }
         try validateRunImageKindState(self);
@@ -7028,6 +7351,10 @@ pub const RunImage = struct {
             if (!found_checkpoint and (self.kind == .branched_run or self.checkpoints.len != 0)) return error.HandoffCheckpointMismatch;
         }
         for (self.checkpoints) |checkpoint| {
+            if (!isSupportedTimelineCheckpointFormatVersion(checkpoint.format_version)) return error.InvalidFrameEncoding;
+            if (!isSupportedTimelineCheckpointFingerprintVersion(checkpoint.fingerprint_version)) return error.InvalidFrameEncoding;
+            if (checkpoint.format_version != checkpoint.fingerprint_version) return error.InvalidFrameEncoding;
+            if (fingerprintCheckpoint(checkpoint) != checkpoint.checkpoint_fingerprint) return error.InvalidFrameEncoding;
             if (checkpoint.world_surface_fingerprint != self.target_ref.world_surface_fingerprint) return error.HandoffCheckpointMismatch;
             if (checkpoint.target_certificate_fingerprint != self.target_ref.target_certificate_fingerprint) return error.HandoffCheckpointMismatch;
         }
@@ -9046,7 +9373,7 @@ pub const Runspace = struct {
         run_permit_fingerprint: ?u64 = null,
         turn_index: usize,
         inserted_event_index: u64,
-        status: PendingStatus = .pending,
+        status: Runspace.PendingStatus = .pending,
 
         pub const Status = PendingStatus;
 
@@ -9055,6 +9382,7 @@ pub const Runspace = struct {
             mailbox_id: u64,
             request: Frame.Request,
             target_ref_fingerprint: u64 = 0,
+            expected_response_kind: ResponseKind = .@"resume",
             environment_certificate_fingerprint: ?u64 = null,
             run_permit_fingerprint: ?u64 = null,
             inserted_event_index: u64 = 0,
@@ -9070,6 +9398,7 @@ pub const Runspace = struct {
                 .request_frame_fingerprint = args.request.frame_fingerprint,
                 .request_frame = args.request,
                 .owns_request_frame = true,
+                .expected_response_kind = args.expected_response_kind,
                 .expected_response_value_table_id = args.request.expected_response_value_table_id,
                 .residual_site_index = args.request.residual_site_index,
                 .residual_site_fingerprint = args.request.residual_site_fingerprint,
@@ -9166,6 +9495,7 @@ pub const Runspace = struct {
             mailbox_id: u64,
             request: Frame.Request,
             target_ref_fingerprint: u64,
+            expected_response_kind: ResponseKind = .@"resume",
             environment_certificate_fingerprint: ?u64 = null,
             run_permit_fingerprint: ?u64 = null,
             inserted_event_index: u64,
@@ -9183,6 +9513,7 @@ pub const Runspace = struct {
                 .mailbox_id = args.mailbox_id,
                 .request = request,
                 .target_ref_fingerprint = args.target_ref_fingerprint,
+                .expected_response_kind = args.expected_response_kind,
                 .environment_certificate_fingerprint = args.environment_certificate_fingerprint,
                 .run_permit_fingerprint = args.run_permit_fingerprint,
                 .inserted_event_index = args.inserted_event_index,
@@ -12886,22 +13217,21 @@ pub const Runspace = struct {
     fn snapshotSlotImage(self: *@This(), index: usize) !RunImage {
         const slot = &self.slots.items[index];
         if (slot.driver) |driver| return driver.snapshotRunImage();
+        const snapshot_state = runStateForSlotSnapshot(slot.*);
         const run_receipt_fingerprint = if (slot.supervisor) |*supervisor|
             supervisor.receipt(
-                receiptFinalStatusForRunState(slot.current_state),
-                slot.current_state.run_state_fingerprint,
-                slot.current_state.transcript_image_fingerprint,
+                receiptFinalStatusForRunState(snapshot_state),
+                snapshot_state.run_state_fingerprint,
+                snapshot_state.transcript_image_fingerprint,
                 null,
             ).receipt_fingerprint
         else
             slot.run_receipt_fingerprint;
         if (slot.installed_run_image) |installed_image| {
             var image = try cloneRunImage(self.allocator, installed_image);
-            image.kind = switch (slot.status) {
-                .completed, .exported => if (installed_image.kind == .parked_run) .completed_run else installed_image.kind,
-                else => installed_image.kind,
-            };
-            image.current_state = slot.current_state;
+            image.kind = try runImageKindForSlotSnapshot(slot.*, installed_image.kind);
+            image.current_state = snapshot_state;
+            scrubTerminalInstalledSlotSnapshot(self.allocator, &image, slot.status);
             image.prior_run_permit_fingerprint = slot.run_permit_fingerprint;
             image.prior_run_receipt_fingerprint = run_receipt_fingerprint;
             image.module_ref_fingerprint = slot.module_ref_fingerprint;
@@ -12924,13 +13254,14 @@ pub const Runspace = struct {
             .kind = switch (slot.status) {
                 .parked_on_port => .parked_run,
                 .parked_on_supervision => if (slot.current_state.status == .parked_on_port) .parked_run else .full_target_run,
-                .completed, .exported => .completed_run,
+                .completed => .completed_run,
+                .exported => try runImageKindForExportedSlot(slot.*),
                 .failed, .rejected => .replay_only_run,
                 .admitted, .runnable, .running => .full_target_run,
             },
             .target_ref = slot.target_ref,
             .import_set_fingerprint = 0,
-            .current_state = slot.current_state,
+            .current_state = snapshot_state,
             .pending_request_frame = pending_frame,
             .prior_run_permit_fingerprint = slot.run_permit_fingerprint,
             .prior_run_receipt_fingerprint = run_receipt_fingerprint,
@@ -12939,6 +13270,64 @@ pub const Runspace = struct {
         image.owns_pending_request_frame = owns_pending_frame;
         owns_pending_frame = false;
         return image;
+    }
+
+    fn runStateForSlotSnapshot(slot: Runspace.RunSlot) RunState {
+        return RunState.init(.{
+            .target_ref_fingerprint = slot.current_state.target_ref_fingerprint,
+            .transcript_image_fingerprint = slot.current_state.transcript_image_fingerprint,
+            .branch_id = slot.current_state.branch_id,
+            .checkpoint_fingerprint = slot.current_state.checkpoint_fingerprint,
+            .pending_request_fingerprint = slot.current_state.pending_request_fingerprint,
+            .final_response_fingerprint = slot.current_state.final_response_fingerprint,
+            .final_value_image_fingerprint = slot.current_state.final_value_image_fingerprint,
+            .turn_index = slot.current_state.turn_index,
+            .status = runStateStatusForSlotSnapshot(slot),
+        });
+    }
+
+    fn runImageKindForSlotSnapshot(slot: Runspace.RunSlot, installed_kind: RunImage.Kind) !RunImage.Kind {
+        return switch (slot.status) {
+            .completed => if (installed_kind == .parked_run) .completed_run else installed_kind,
+            .exported => try runImageKindForExportedSlot(slot),
+            .failed, .rejected => .replay_only_run,
+            else => installed_kind,
+        };
+    }
+
+    fn runStateStatusForSlotSnapshot(slot: Runspace.RunSlot) RunState.Status {
+        return switch (slot.status) {
+            .completed => .completed,
+            .failed, .rejected => .failed,
+            .parked_on_port => .parked_on_port,
+            .parked_on_supervision => if (slot.current_state.status == .parked_on_port) .parked_on_port else slot.current_state.status,
+            .admitted, .runnable, .running, .exported => slot.current_state.status,
+        };
+    }
+
+    fn scrubTerminalInstalledSlotSnapshot(allocator: std.mem.Allocator, image: *RunImage, slot_status: Runspace.RunStatus) void {
+        switch (slot_status) {
+            .failed, .rejected => {
+                if (image.owns_pending_request_frame) {
+                    if (image.pending_request_frame) |*frame| frame.deinit(allocator);
+                }
+                image.pending_request_frame = null;
+                image.owns_pending_request_frame = false;
+                image.current_state.pending_request_fingerprint = null;
+                image.current_state.run_state_fingerprint = fingerprintRunState(image.current_state);
+            },
+            else => {},
+        }
+    }
+
+    fn runImageKindForExportedSlot(slot: Runspace.RunSlot) !RunImage.Kind {
+        return switch (slot.current_state.status) {
+            .completed => .completed_run,
+            .parked_on_port => .parked_run,
+            .parked_on_supervision => .full_target_run,
+            .failed => .replay_only_run,
+            .not_started, .running => error.InvalidFrameEncoding,
+        };
     }
 
     fn enqueueInstalledPending(self: *@This(), index: usize, request: Frame.Request) !void {
@@ -15921,6 +16310,5829 @@ pub const PendingPort = Runspace.PendingPort;
 pub const RunspaceEvent = Runspace.RunspaceEvent;
 pub const RunspaceReport = Runspace.RunspaceReport;
 
+pub const Capsule = struct {
+    pub const Kind = enum(u8) {
+        reference_only = 0,
+        full_assembly = 1,
+        parked_assembly = 2,
+        completed_assembly = 3,
+        failed_assembly = 4,
+        replay_only = 5,
+        inspect_only = 6,
+    };
+
+    pub const NormalForm = enum(u8) {
+        quiescent_completed = 0,
+        quiescent_parked = 1,
+        quiescent_failed = 2,
+        active_fabric_parked = 3,
+        unsupported_running = 4,
+        partial_with_blockers = 5,
+    };
+
+    pub const RunRole = enum(u8) {
+        root = 0,
+        provider = 1,
+        replay = 2,
+        verify = 3,
+        guest = 4,
+        branch = 5,
+    };
+
+    pub const RunSlotStatus = enum(u8) {
+        admitted = 0,
+        runnable = 1,
+        parked_on_port = 2,
+        parked_on_supervision = 3,
+        completed = 4,
+        failed = 5,
+        exported = 6,
+        rejected = 7,
+    };
+
+    pub const RestoreMode = enum(u8) {
+        inspect_only = 0,
+        replay_only = 1,
+        restore_parked = 2,
+        restore_completed = 3,
+        restore_failed = 4,
+        relink_and_restore = 5,
+        verify_and_restore = 6,
+    };
+
+    pub const LinkCertificateMatchStatus = enum(u8) {
+        unchecked = 0,
+        matched = 1,
+        missing = 2,
+        mismatched = 3,
+        relink_required = 4,
+    };
+
+    pub const RelinkStatus = enum(u8) {
+        not_requested = 0,
+        matched = 1,
+        drift_allowed = 2,
+        rejected = 3,
+        blocked = 4,
+    };
+
+    pub const SectionKind = enum(u8) {
+        manifest = 0,
+        runspace_image = 1,
+        link_image = 2,
+        fabric_image = 3,
+        admission = 4,
+        environment = 5,
+        supervision = 6,
+        guest_conformance = 7,
+        transcript_image = 8,
+        run_image = 9,
+        value_image = 10,
+        dependency = 11,
+        run_receipt = 12,
+        fabric_receipt = 13,
+    };
+
+    pub const ObjectKind = enum(u8) {
+        capsule_image = 0,
+        capsule_manifest = 1,
+        runspace_image = 2,
+        link_image = 3,
+        fabric_image = 4,
+        run_image = 5,
+        transcript_image = 6,
+        value_image = 7,
+        certificate = 8,
+    };
+
+    pub const Blocker = enum(u8) {
+        non_quiescent_run = 0,
+        run_currently_stepping = 1,
+        mailbox_mutation_in_progress = 2,
+        fabric_response_transaction_in_progress = 3,
+        provider_run_unwitnessed = 4,
+        replay_cursor_mutation_in_progress = 5,
+        receipt_write_in_progress = 6,
+        active_route_invocation_witness_missing = 7,
+        active_route_provider_witness_missing = 8,
+        active_route_parent_pending_witness_missing = 9,
+        active_fabric_unsupported = 10,
+        non_quiescent_fabric = 11,
+        fabric_witness_missing = 12,
+        provider_state_unsupported = 13,
+        mailbox_ownership_mismatch = 14,
+        link_certificate_missing = 15,
+        local_provider_missing = 16,
+        link_plan_mismatch = 17,
+        assembly_mismatch = 18,
+        residual_import_mismatch = 19,
+        fabric_plan_mismatch = 20,
+        guest_conformance_missing = 21,
+        relink_drift_rejected = 22,
+        target_mismatch = 23,
+        module_mismatch = 24,
+        environment_mismatch = 25,
+        permit_denied = 26,
+        malformed_image = 27,
+        oversized_image = 28,
+        unsupported_running_state = 29,
+        stale_pending_port = 30,
+        duplicate_response = 31,
+        forbidden_native_state = 32,
+        verification_witness_missing = 33,
+    };
+
+    pub const Warning = enum(u8) {
+        sender_permit_not_authority = 0,
+        relink_not_performed = 1,
+        guest_conformance_not_rerun = 2,
+        replay_only_no_native_handlers = 3,
+        metadata_only = 4,
+    };
+
+    pub const FreezeOptions = struct {
+        require_quiescent: bool = true,
+        allow_completed: bool = true,
+        allow_failed: bool = true,
+        allow_parked: bool = true,
+        allow_active_fabric_parked: bool = false,
+        include_transcripts: bool = true,
+        include_run_images: bool = true,
+        include_receipts: bool = true,
+        include_guest_conformance: bool = true,
+        include_link_certificate: bool = true,
+        include_value_images: bool = true,
+        max_image_bytes: usize = world_max_decoded_byte_field_len,
+        max_run_slots: usize = 4096,
+        max_pending_ports: usize = 4096,
+        max_fabric_invocations: usize = 4096,
+    };
+
+    pub const ValidateOptions = struct {
+        max_image_bytes: usize = world_max_decoded_byte_field_len,
+        max_run_slots: usize = 4096,
+        max_pending_ports: usize = 4096,
+        max_fabric_invocations: usize = 4096,
+        max_dependencies: usize = 8192,
+        max_embedded_images: usize = 4096,
+    };
+
+    pub const ThawOptions = struct {
+        mode: RestoreMode = .inspect_only,
+        require_local_permit: bool = true,
+        require_link_match: bool = true,
+        allow_relink_drift: bool = false,
+        local_catalog_fingerprint: ?u64 = null,
+        rerun_guest_conformance: bool = false,
+        max_image_bytes: usize = world_max_decoded_byte_field_len,
+        max_run_slots: usize = 4096,
+        max_pending_ports: usize = 4096,
+        max_fabric_invocations: usize = 4096,
+        max_dependencies: usize = 8192,
+        max_embedded_images: usize = 4096,
+    };
+
+    pub const RelinkPolicy = struct {
+        require_link_certificate: bool = true,
+        allow_relink_drift: bool = false,
+        require_residual_import_match: bool = true,
+        expected_residual_import_set_fingerprint: ?u64 = null,
+        require_fabric_plan_match: bool = true,
+        require_guest_conformance: bool = false,
+    };
+
+    pub const GuestRestoreOptions = struct {
+        rerun_conformance: bool = false,
+        require_conformance_refs: bool = false,
+    };
+
+    pub const HandleRemap = struct {
+        original_run_handle_fingerprint: u64,
+        restored_run_handle_fingerprint: u64,
+
+        pub fn init(original_run_handle_fingerprint: u64, restored_run_handle_fingerprint: u64) @This() {
+            return .{
+                .original_run_handle_fingerprint = original_run_handle_fingerprint,
+                .restored_run_handle_fingerprint = restored_run_handle_fingerprint,
+            };
+        }
+    };
+
+    pub const MailboxRemap = struct {
+        original_pending_port_fingerprint: u64,
+        restored_pending_port_fingerprint: u64,
+
+        pub fn init(original_pending_port_fingerprint: u64, restored_pending_port_fingerprint: u64) @This() {
+            return .{
+                .original_pending_port_fingerprint = original_pending_port_fingerprint,
+                .restored_pending_port_fingerprint = restored_pending_port_fingerprint,
+            };
+        }
+    };
+
+    pub const FabricInvocationRemap = struct {
+        original_invocation_fingerprint: u64,
+        restored_invocation_fingerprint: u64,
+
+        pub fn init(original_invocation_fingerprint: u64, restored_invocation_fingerprint: u64) @This() {
+            return .{
+                .original_invocation_fingerprint = original_invocation_fingerprint,
+                .restored_invocation_fingerprint = restored_invocation_fingerprint,
+            };
+        }
+    };
+
+    pub const DependencyRef = struct {
+        section: SectionKind,
+        fingerprint: u64,
+
+        pub fn init(section: SectionKind, fingerprint: u64) @This() {
+            return .{ .section = section, .fingerprint = fingerprint };
+        }
+    };
+
+    pub const ObjectRef = struct {
+        kind: ObjectKind,
+        fingerprint: u64,
+
+        pub fn init(kind: ObjectKind, fingerprint: u64) @This() {
+            return .{ .kind = kind, .fingerprint = fingerprint };
+        }
+    };
+
+    pub const FreezePlan = struct {
+        runspace_fingerprint: u64,
+        assembly_fingerprint: ?u64 = null,
+        normal_form: NormalForm,
+        run_count: usize = 0,
+        pending_port_count: usize = 0,
+        active_fabric_invocation_count: usize = 0,
+        allow_active_fabric_parked: bool = false,
+        blockers: []const Blocker = &.{},
+        warnings: []const Warning = &.{},
+
+        pub fn fromQuiescence(report: QuiescenceReport, options: FreezeOptions) @This() {
+            return .{
+                .runspace_fingerprint = report.runspace_fingerprint,
+                .assembly_fingerprint = report.assembly_fingerprint,
+                .normal_form = report.normal_form,
+                .run_count = report.run_count,
+                .pending_port_count = report.pending_port_count,
+                .active_fabric_invocation_count = report.active_fabric_invocation_count,
+                .allow_active_fabric_parked = options.allow_active_fabric_parked,
+                .blockers = report.blockers,
+                .warnings = report.warnings,
+            };
+        }
+    };
+
+    pub const Manifest = struct {
+        format_version: u32 = world_capsule_manifest_format_version,
+        fingerprint_version: u32 = world_capsule_manifest_fingerprint_version,
+        manifest_fingerprint: u64,
+        kind: Kind,
+        root_target_ref_fingerprint: u64,
+        root_module_ref_fingerprint: ?u64 = null,
+        link_plan_fingerprint: ?u64 = null,
+        link_certificate_fingerprint: ?u64 = null,
+        assembly_fingerprint: ?u64 = null,
+        admission_receipt_fingerprints: []const u64 = &.{},
+        environment_certificate_fingerprints: []const u64 = &.{},
+        run_permit_fingerprints: []const u64 = &.{},
+        run_receipt_fingerprints: []const u64 = &.{},
+        run_image_fingerprints: []const u64 = &.{},
+        transcript_image_fingerprints: []const u64 = &.{},
+        fabric_plan_fingerprints: []const u64 = &.{},
+        fabric_invocation_fingerprints: []const u64 = &.{},
+        fabric_receipt_fingerprints: []const u64 = &.{},
+        guest_conformance_report_fingerprints: []const u64 = &.{},
+        pending_port_count: usize = 0,
+        run_slot_count: usize = 0,
+        active_fabric_invocation_count: usize = 0,
+        normal_form: NormalForm,
+        metadata: []const u8 = "",
+        owns_memory: bool = false,
+
+        pub fn init(args: struct {
+            kind: Kind,
+            root_target_ref_fingerprint: u64,
+            root_module_ref_fingerprint: ?u64 = null,
+            link_plan_fingerprint: ?u64 = null,
+            link_certificate_fingerprint: ?u64 = null,
+            assembly_fingerprint: ?u64 = null,
+            admission_receipt_fingerprints: []const u64 = &.{},
+            environment_certificate_fingerprints: []const u64 = &.{},
+            run_permit_fingerprints: []const u64 = &.{},
+            run_receipt_fingerprints: []const u64 = &.{},
+            run_image_fingerprints: []const u64 = &.{},
+            transcript_image_fingerprints: []const u64 = &.{},
+            fabric_plan_fingerprints: []const u64 = &.{},
+            fabric_invocation_fingerprints: []const u64 = &.{},
+            fabric_receipt_fingerprints: []const u64 = &.{},
+            guest_conformance_report_fingerprints: []const u64 = &.{},
+            pending_port_count: usize = 0,
+            run_slot_count: usize = 0,
+            active_fabric_invocation_count: usize = 0,
+            normal_form: NormalForm,
+            metadata: []const u8 = "",
+        }) @This() {
+            var manifest = @This(){
+                .manifest_fingerprint = 0,
+                .kind = args.kind,
+                .root_target_ref_fingerprint = args.root_target_ref_fingerprint,
+                .root_module_ref_fingerprint = args.root_module_ref_fingerprint,
+                .link_plan_fingerprint = args.link_plan_fingerprint,
+                .link_certificate_fingerprint = args.link_certificate_fingerprint,
+                .assembly_fingerprint = args.assembly_fingerprint,
+                .admission_receipt_fingerprints = args.admission_receipt_fingerprints,
+                .environment_certificate_fingerprints = args.environment_certificate_fingerprints,
+                .run_permit_fingerprints = args.run_permit_fingerprints,
+                .run_receipt_fingerprints = args.run_receipt_fingerprints,
+                .run_image_fingerprints = args.run_image_fingerprints,
+                .transcript_image_fingerprints = args.transcript_image_fingerprints,
+                .fabric_plan_fingerprints = args.fabric_plan_fingerprints,
+                .fabric_invocation_fingerprints = args.fabric_invocation_fingerprints,
+                .fabric_receipt_fingerprints = args.fabric_receipt_fingerprints,
+                .guest_conformance_report_fingerprints = args.guest_conformance_report_fingerprints,
+                .pending_port_count = args.pending_port_count,
+                .run_slot_count = args.run_slot_count,
+                .active_fabric_invocation_count = args.active_fabric_invocation_count,
+                .normal_form = args.normal_form,
+                .metadata = args.metadata,
+            };
+            manifest.manifest_fingerprint = fingerprintManifest(manifest);
+            return manifest;
+        }
+
+        pub fn validate(self: @This(), options: ValidateOptions) !void {
+            if (self.format_version != world_capsule_manifest_format_version) return error.InvalidFrameEncoding;
+            if (self.fingerprint_version != world_capsule_manifest_fingerprint_version) return error.InvalidFrameEncoding;
+            if (self.metadata.len > options.max_image_bytes) return error.InvalidFrameEncoding;
+            if (self.run_slot_count > options.max_run_slots) return error.InvalidFrameEncoding;
+            if (self.pending_port_count > options.max_pending_ports) return error.InvalidFrameEncoding;
+            if (self.active_fabric_invocation_count > options.max_fabric_invocations) return error.InvalidFrameEncoding;
+            if (self.admission_receipt_fingerprints.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.environment_certificate_fingerprints.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.run_permit_fingerprints.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.run_receipt_fingerprints.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.run_image_fingerprints.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.transcript_image_fingerprints.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.fabric_plan_fingerprints.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.fabric_invocation_fingerprints.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.fabric_receipt_fingerprints.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.guest_conformance_report_fingerprints.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.manifest_fingerprint != fingerprintManifest(self)) return error.InvalidFrameEncoding;
+        }
+
+        pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+            if (self.owns_memory) {
+                allocator.free(self.admission_receipt_fingerprints);
+                allocator.free(self.environment_certificate_fingerprints);
+                allocator.free(self.run_permit_fingerprints);
+                allocator.free(self.run_receipt_fingerprints);
+                allocator.free(self.run_image_fingerprints);
+                allocator.free(self.transcript_image_fingerprints);
+                allocator.free(self.fabric_plan_fingerprints);
+                allocator.free(self.fabric_invocation_fingerprints);
+                allocator.free(self.fabric_receipt_fingerprints);
+                allocator.free(self.guest_conformance_report_fingerprints);
+                allocator.free(self.metadata);
+            }
+            self.* = undefined;
+        }
+    };
+
+    pub const QuiescenceReport = struct {
+        fingerprint_version: u32 = world_capsule_quiescence_report_fingerprint_version,
+        report_fingerprint: u64,
+        runspace_fingerprint: u64,
+        assembly_fingerprint: ?u64 = null,
+        quiescent: bool,
+        normal_form: NormalForm,
+        run_count: usize = 0,
+        parked_run_count: usize = 0,
+        completed_run_count: usize = 0,
+        failed_run_count: usize = 0,
+        pending_port_count: usize = 0,
+        active_fabric_invocation_count: usize = 0,
+        blockers: []const Blocker = &.{},
+        warnings: []const Warning = &.{},
+        owns_memory: bool = false,
+
+        pub fn init(args: struct {
+            runspace_fingerprint: u64,
+            assembly_fingerprint: ?u64 = null,
+            quiescent: bool,
+            normal_form: NormalForm,
+            run_count: usize = 0,
+            parked_run_count: usize = 0,
+            completed_run_count: usize = 0,
+            failed_run_count: usize = 0,
+            pending_port_count: usize = 0,
+            active_fabric_invocation_count: usize = 0,
+            blockers: []const Blocker = &.{},
+            warnings: []const Warning = &.{},
+        }) @This() {
+            var report = @This(){
+                .report_fingerprint = 0,
+                .runspace_fingerprint = args.runspace_fingerprint,
+                .assembly_fingerprint = args.assembly_fingerprint,
+                .quiescent = args.quiescent,
+                .normal_form = args.normal_form,
+                .run_count = args.run_count,
+                .parked_run_count = args.parked_run_count,
+                .completed_run_count = args.completed_run_count,
+                .failed_run_count = args.failed_run_count,
+                .pending_port_count = args.pending_port_count,
+                .active_fabric_invocation_count = args.active_fabric_invocation_count,
+                .blockers = args.blockers,
+                .warnings = args.warnings,
+            };
+            report.report_fingerprint = fingerprintQuiescenceReport(report);
+            return report;
+        }
+
+        pub fn validate(self: @This()) !void {
+            if (self.fingerprint_version != world_capsule_quiescence_report_fingerprint_version) return error.InvalidFrameEncoding;
+            if (self.report_fingerprint != fingerprintQuiescenceReport(self)) return error.InvalidFrameEncoding;
+            if (self.quiescent != (self.blockers.len == 0)) return error.InvalidFrameEncoding;
+            if (self.parked_run_count > self.run_count) return error.InvalidFrameEncoding;
+            if (self.completed_run_count > self.run_count - self.parked_run_count) return error.InvalidFrameEncoding;
+            if (self.failed_run_count > self.run_count - self.parked_run_count - self.completed_run_count) return error.InvalidFrameEncoding;
+            if (self.normal_form != normalFormForQuiescence(
+                self.run_count,
+                self.parked_run_count,
+                self.completed_run_count,
+                self.failed_run_count,
+                self.active_fabric_invocation_count,
+                self.blockers.len,
+            )) return error.InvalidFrameEncoding;
+        }
+
+        pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+            if (self.owns_memory) {
+                allocator.free(self.blockers);
+                allocator.free(self.warnings);
+            }
+            self.* = undefined;
+        }
+    };
+
+    pub const RunSlotImage = struct {
+        fingerprint_version: u32 = world_capsule_run_slot_image_fingerprint_version,
+        slot_image_fingerprint: u64,
+        original_run_handle_fingerprint: u64,
+        parent_run_handle_fingerprint: ?u64 = null,
+        role: RunRole,
+        target_ref_fingerprint: u64,
+        module_ref_fingerprint: ?u64 = null,
+        admission_receipt_fingerprint: ?u64 = null,
+        environment_certificate_fingerprint: ?u64 = null,
+        run_permit_fingerprint: ?u64 = null,
+        run_state_fingerprint: u64,
+        run_image_fingerprint: ?u64 = null,
+        transcript_image_fingerprint: ?u64 = null,
+        current_pending_mailbox_id: ?u64 = null,
+        branch_id: ?u64 = null,
+        checkpoint_refs: []const u64 = &.{},
+        fabric_invocation_refs: []const u64 = &.{},
+        status: RunSlotStatus,
+        owns_memory: bool = false,
+
+        pub fn init(args: struct {
+            original_run_handle_fingerprint: u64,
+            parent_run_handle_fingerprint: ?u64 = null,
+            role: RunRole,
+            target_ref_fingerprint: u64,
+            module_ref_fingerprint: ?u64 = null,
+            admission_receipt_fingerprint: ?u64 = null,
+            environment_certificate_fingerprint: ?u64 = null,
+            run_permit_fingerprint: ?u64 = null,
+            run_state_fingerprint: u64,
+            run_image_fingerprint: ?u64 = null,
+            transcript_image_fingerprint: ?u64 = null,
+            current_pending_mailbox_id: ?u64 = null,
+            branch_id: ?u64 = null,
+            checkpoint_refs: []const u64 = &.{},
+            fabric_invocation_refs: []const u64 = &.{},
+            status: RunSlotStatus,
+        }) @This() {
+            var image = @This(){
+                .slot_image_fingerprint = 0,
+                .original_run_handle_fingerprint = args.original_run_handle_fingerprint,
+                .parent_run_handle_fingerprint = args.parent_run_handle_fingerprint,
+                .role = args.role,
+                .target_ref_fingerprint = args.target_ref_fingerprint,
+                .module_ref_fingerprint = args.module_ref_fingerprint,
+                .admission_receipt_fingerprint = args.admission_receipt_fingerprint,
+                .environment_certificate_fingerprint = args.environment_certificate_fingerprint,
+                .run_permit_fingerprint = args.run_permit_fingerprint,
+                .run_state_fingerprint = args.run_state_fingerprint,
+                .run_image_fingerprint = args.run_image_fingerprint,
+                .transcript_image_fingerprint = args.transcript_image_fingerprint,
+                .current_pending_mailbox_id = args.current_pending_mailbox_id,
+                .branch_id = args.branch_id,
+                .checkpoint_refs = args.checkpoint_refs,
+                .fabric_invocation_refs = args.fabric_invocation_refs,
+                .status = args.status,
+            };
+            image.slot_image_fingerprint = fingerprintRunSlotImage(image);
+            return image;
+        }
+
+        pub fn validate(self: @This(), options: ValidateOptions) !void {
+            if (self.fingerprint_version != world_capsule_run_slot_image_fingerprint_version) return error.InvalidFrameEncoding;
+            if (self.checkpoint_refs.len > options.max_run_slots) return error.InvalidFrameEncoding;
+            if (self.fabric_invocation_refs.len > options.max_fabric_invocations) return error.InvalidFrameEncoding;
+            switch (self.status) {
+                .admitted, .runnable, .parked_on_port, .parked_on_supervision, .completed, .failed, .exported, .rejected => {},
+            }
+            if (self.status == .parked_on_port) {
+                if (self.current_pending_mailbox_id == null) return error.InvalidFrameEncoding;
+            } else if (self.current_pending_mailbox_id != null) switch (self.status) {
+                .parked_on_supervision, .exported => {},
+                else => return error.InvalidFrameEncoding,
+            };
+            switch (self.role) {
+                .root => if (self.parent_run_handle_fingerprint != null) return error.InvalidFrameEncoding,
+                .branch, .provider => if (self.parent_run_handle_fingerprint == null) return error.InvalidFrameEncoding,
+                .replay, .verify, .guest => {},
+            }
+            if (self.slot_image_fingerprint != fingerprintRunSlotImage(self)) return error.InvalidFrameEncoding;
+        }
+
+        pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+            if (self.owns_memory) {
+                allocator.free(self.checkpoint_refs);
+                allocator.free(self.fabric_invocation_refs);
+            }
+            self.* = undefined;
+        }
+    };
+
+    pub const PendingPortImage = struct {
+        fingerprint_version: u32 = world_capsule_pending_port_image_fingerprint_version,
+        pending_port_image_fingerprint: u64,
+        pending_port_fingerprint: u64,
+        original_run_handle_fingerprint: u64,
+        mailbox_id: u64,
+        request_frame: Frame.Request,
+        expected_response_kind: ResponseKind = .@"resume",
+        expected_response_value_table_id: ?u32 = null,
+        target_ref_fingerprint: u64,
+        environment_certificate_fingerprint: ?u64 = null,
+        run_permit_fingerprint: ?u64 = null,
+        inserted_event_index: u64 = 0,
+        status: Runspace.PendingStatus = .pending,
+        owns_memory: bool = false,
+
+        pub fn init(args: struct {
+            pending_port_fingerprint: u64,
+            original_run_handle_fingerprint: u64,
+            mailbox_id: u64,
+            request_frame: Frame.Request,
+            expected_response_kind: ResponseKind = .@"resume",
+            expected_response_value_table_id: ?u32 = null,
+            target_ref_fingerprint: u64,
+            environment_certificate_fingerprint: ?u64 = null,
+            run_permit_fingerprint: ?u64 = null,
+            inserted_event_index: u64 = 0,
+            status: Runspace.PendingStatus = .pending,
+        }) @This() {
+            var image = @This(){
+                .pending_port_image_fingerprint = 0,
+                .pending_port_fingerprint = args.pending_port_fingerprint,
+                .original_run_handle_fingerprint = args.original_run_handle_fingerprint,
+                .mailbox_id = args.mailbox_id,
+                .request_frame = args.request_frame,
+                .expected_response_kind = args.expected_response_kind,
+                .expected_response_value_table_id = args.expected_response_value_table_id,
+                .target_ref_fingerprint = args.target_ref_fingerprint,
+                .environment_certificate_fingerprint = args.environment_certificate_fingerprint,
+                .run_permit_fingerprint = args.run_permit_fingerprint,
+                .inserted_event_index = args.inserted_event_index,
+                .status = args.status,
+            };
+            image.pending_port_image_fingerprint = fingerprint(image);
+            return image;
+        }
+
+        pub fn fromPending(allocator: std.mem.Allocator, pending_port: Runspace.PendingPort) !@This() {
+            const request = pending_port.request_frame orelse return error.InvalidPendingPortTransition;
+            var cloned = try cloneRequestFrame(allocator, request);
+            errdefer cloned.deinit(allocator);
+            var image = PendingPortImage.init(.{
+                .pending_port_fingerprint = pending_port.pending_port_fingerprint,
+                .original_run_handle_fingerprint = pending_port.handle.handle_fingerprint,
+                .mailbox_id = pending_port.mailbox_id,
+                .request_frame = cloned,
+                .expected_response_kind = pending_port.expected_response_kind,
+                .expected_response_value_table_id = pending_port.expected_response_value_table_id,
+                .target_ref_fingerprint = pending_port.target_ref_fingerprint,
+                .environment_certificate_fingerprint = pending_port.environment_certificate_fingerprint,
+                .run_permit_fingerprint = pending_port.run_permit_fingerprint,
+                .inserted_event_index = pending_port.inserted_event_index,
+                .status = pending_port.status,
+            });
+            image.owns_memory = true;
+            return image;
+        }
+
+        pub fn validate(self: @This()) !void {
+            if (self.fingerprint_version != world_capsule_pending_port_image_fingerprint_version) return error.InvalidFrameEncoding;
+            if (self.status != .pending) return error.PendingPortConsumed;
+            try validateRequestFrameImage(self.request_frame);
+            try validateRequestFramePolicy(self.request_frame, .portable);
+            if (self.request_frame.expected_response_value_table_id != self.expected_response_value_table_id) return error.InvalidFrameEncoding;
+            if (self.pending_port_fingerprint != fingerprintPendingPortImageProjection(self)) return error.InvalidFrameEncoding;
+            if (self.pending_port_image_fingerprint != fingerprint(self)) return error.InvalidFrameEncoding;
+        }
+
+        pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+            if (self.owns_memory) self.request_frame.deinit(allocator);
+            self.* = undefined;
+        }
+
+        fn fingerprint(image: @This()) u64 {
+            var hasher = std.hash.Wyhash.init(0x6361_7073_7065_6e64);
+            hashU64(&hasher, image.fingerprint_version);
+            hashU64(&hasher, image.pending_port_fingerprint);
+            hashU64(&hasher, image.original_run_handle_fingerprint);
+            hashU64(&hasher, image.mailbox_id);
+            hashU64(&hasher, image.request_frame.frame_fingerprint);
+            hashU64(&hasher, @intFromEnum(image.expected_response_kind));
+            hashOptionalU32(&hasher, image.expected_response_value_table_id);
+            hashU64(&hasher, image.target_ref_fingerprint);
+            hashOptionalU64(&hasher, image.environment_certificate_fingerprint);
+            hashOptionalU64(&hasher, image.run_permit_fingerprint);
+            hashU64(&hasher, image.inserted_event_index);
+            hashU64(&hasher, @intFromEnum(image.status));
+            return hasher.final();
+        }
+    };
+
+    pub const MailboxImage = struct {
+        fingerprint_version: u32 = world_capsule_mailbox_image_fingerprint_version,
+        mailbox_image_fingerprint: u64,
+        pending_port_entries: []const PendingPortImage = &.{},
+        pending_port_fingerprints: []const u64 = &.{},
+        consumed_port_fingerprints: []const u64 = &.{},
+        next_mailbox_id: u64 = 0,
+        generation: u64 = 0,
+        single_use_status_fingerprints: []const u64 = &.{},
+        response_routing_status_fingerprints: []const u64 = &.{},
+        owns_memory: bool = false,
+
+        pub fn init(args: struct {
+            pending_port_entries: []const PendingPortImage = &.{},
+            pending_port_fingerprints: []const u64 = &.{},
+            consumed_port_fingerprints: []const u64 = &.{},
+            next_mailbox_id: u64 = 0,
+            generation: u64 = 0,
+            single_use_status_fingerprints: []const u64 = &.{},
+            response_routing_status_fingerprints: []const u64 = &.{},
+        }) @This() {
+            var image = @This(){
+                .mailbox_image_fingerprint = 0,
+                .pending_port_entries = args.pending_port_entries,
+                .pending_port_fingerprints = args.pending_port_fingerprints,
+                .consumed_port_fingerprints = args.consumed_port_fingerprints,
+                .next_mailbox_id = args.next_mailbox_id,
+                .generation = args.generation,
+                .single_use_status_fingerprints = args.single_use_status_fingerprints,
+                .response_routing_status_fingerprints = args.response_routing_status_fingerprints,
+            };
+            image.mailbox_image_fingerprint = fingerprintMailboxImage(image);
+            return image;
+        }
+
+        pub fn validate(self: @This(), options: ValidateOptions) !void {
+            if (self.fingerprint_version != world_capsule_mailbox_image_fingerprint_version) return error.InvalidFrameEncoding;
+            if (self.pending_port_entries.len > options.max_pending_ports) return error.InvalidFrameEncoding;
+            if (self.pending_port_fingerprints.len > options.max_pending_ports) return error.InvalidFrameEncoding;
+            if (self.consumed_port_fingerprints.len > options.max_pending_ports) return error.InvalidFrameEncoding;
+            const status_count = self.pending_port_fingerprints.len + self.consumed_port_fingerprints.len;
+            if (status_count > options.max_pending_ports) return error.InvalidFrameEncoding;
+            if (self.single_use_status_fingerprints.len != status_count) return error.InvalidFrameEncoding;
+            if (self.response_routing_status_fingerprints.len != status_count) return error.InvalidFrameEncoding;
+            if (self.pending_port_entries.len != self.pending_port_fingerprints.len) return error.InvalidFrameEncoding;
+            for (self.pending_port_entries, 0..) |entry, index| {
+                try entry.validate();
+                if (self.pending_port_fingerprints[index] != entry.pending_port_fingerprint) return error.InvalidFrameEncoding;
+                if (self.single_use_status_fingerprints[index] != fingerprintPendingPortImageSingleUseStatus(entry)) return error.InvalidFrameEncoding;
+                if (self.response_routing_status_fingerprints[index] != fingerprintPendingPortImageRoutingStatus(entry)) return error.InvalidFrameEncoding;
+            }
+            try validateUniqueU64Slice(self.pending_port_fingerprints);
+            try validateUniqueU64Slice(self.consumed_port_fingerprints);
+            for (self.pending_port_fingerprints) |pending| {
+                if (u64SliceContains(self.consumed_port_fingerprints, pending)) return error.InvalidFrameEncoding;
+            }
+            if (self.mailbox_image_fingerprint != fingerprintMailboxImage(self)) return error.InvalidFrameEncoding;
+        }
+
+        pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+            if (self.owns_memory) {
+                for (self.pending_port_entries) |*entry_const| {
+                    var entry = entry_const.*;
+                    entry.deinit(allocator);
+                }
+                allocator.free(self.pending_port_entries);
+                allocator.free(self.pending_port_fingerprints);
+                allocator.free(self.consumed_port_fingerprints);
+                allocator.free(self.single_use_status_fingerprints);
+                allocator.free(self.response_routing_status_fingerprints);
+            }
+            self.* = undefined;
+        }
+    };
+
+    pub const RunspaceImage = struct {
+        format_version: u32 = world_capsule_runspace_image_format_version,
+        fingerprint_version: u32 = world_capsule_runspace_image_fingerprint_version,
+        image_fingerprint: u64,
+        runspace_fingerprint: u64,
+        runspace_report_fingerprint: u64,
+        run_handle_mappings: []const u64 = &.{},
+        run_slots: []const RunSlotImage = &.{},
+        mailbox_image: ?MailboxImage = null,
+        runspace_event_fingerprints: []const u64 = &.{},
+        root_run_handle_fingerprints: []const u64 = &.{},
+        provider_run_handle_fingerprints: []const u64 = &.{},
+        branch_refs: []const u64 = &.{},
+        checkpoint_refs: []const u64 = &.{},
+        transcript_image_refs: []const u64 = &.{},
+        run_image_refs: []const u64 = &.{},
+        run_receipt_refs: []const u64 = &.{},
+        admission_receipt_refs: []const u64 = &.{},
+        permit_refs: []const u64 = &.{},
+        active_fabric_invocation_refs: []const u64 = &.{},
+        metadata: []const u8 = "",
+        owns_memory: bool = false,
+
+        pub fn init(args: struct {
+            runspace_fingerprint: u64,
+            runspace_report_fingerprint: u64,
+            run_handle_mappings: []const u64 = &.{},
+            run_slots: []const RunSlotImage = &.{},
+            mailbox_image: ?MailboxImage = null,
+            runspace_event_fingerprints: []const u64 = &.{},
+            root_run_handle_fingerprints: []const u64 = &.{},
+            provider_run_handle_fingerprints: []const u64 = &.{},
+            branch_refs: []const u64 = &.{},
+            checkpoint_refs: []const u64 = &.{},
+            transcript_image_refs: []const u64 = &.{},
+            run_image_refs: []const u64 = &.{},
+            run_receipt_refs: []const u64 = &.{},
+            admission_receipt_refs: []const u64 = &.{},
+            permit_refs: []const u64 = &.{},
+            active_fabric_invocation_refs: []const u64 = &.{},
+            metadata: []const u8 = "",
+        }) @This() {
+            var image = @This(){
+                .image_fingerprint = 0,
+                .runspace_fingerprint = args.runspace_fingerprint,
+                .runspace_report_fingerprint = args.runspace_report_fingerprint,
+                .run_handle_mappings = args.run_handle_mappings,
+                .run_slots = args.run_slots,
+                .mailbox_image = args.mailbox_image,
+                .runspace_event_fingerprints = args.runspace_event_fingerprints,
+                .root_run_handle_fingerprints = args.root_run_handle_fingerprints,
+                .provider_run_handle_fingerprints = args.provider_run_handle_fingerprints,
+                .branch_refs = args.branch_refs,
+                .checkpoint_refs = args.checkpoint_refs,
+                .transcript_image_refs = args.transcript_image_refs,
+                .run_image_refs = args.run_image_refs,
+                .run_receipt_refs = args.run_receipt_refs,
+                .admission_receipt_refs = args.admission_receipt_refs,
+                .permit_refs = args.permit_refs,
+                .active_fabric_invocation_refs = args.active_fabric_invocation_refs,
+                .metadata = args.metadata,
+            };
+            image.image_fingerprint = fingerprintRunspaceImage(image);
+            return image;
+        }
+
+        pub fn validate(self: @This(), options: ValidateOptions) !void {
+            if (self.format_version != world_capsule_runspace_image_format_version) return error.InvalidFrameEncoding;
+            if (self.fingerprint_version != world_capsule_runspace_image_fingerprint_version) return error.InvalidFrameEncoding;
+            if (self.metadata.len > options.max_image_bytes) return error.InvalidFrameEncoding;
+            if (self.run_handle_mappings.len > options.max_run_slots) return error.InvalidFrameEncoding;
+            if (self.run_slots.len > options.max_run_slots) return error.InvalidFrameEncoding;
+            if (self.runspace_event_fingerprints.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.root_run_handle_fingerprints.len > options.max_run_slots) return error.InvalidFrameEncoding;
+            if (self.provider_run_handle_fingerprints.len > options.max_run_slots) return error.InvalidFrameEncoding;
+            if (self.branch_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.checkpoint_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.transcript_image_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.run_image_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.run_receipt_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.admission_receipt_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.permit_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.active_fabric_invocation_refs.len > options.max_fabric_invocations) return error.InvalidFrameEncoding;
+            for (self.run_slots) |slot| try slot.validate(options);
+            if (self.run_handle_mappings.len != 0 and !runspaceImageHandleMappingsMatchSlots(self)) return error.InvalidFrameEncoding;
+            if (!runspaceImageRoleRefsMatchSlots(self)) return error.InvalidFrameEncoding;
+            if (self.mailbox_image) |mailbox| try mailbox.validate(options);
+            if (self.image_fingerprint != fingerprintRunspaceImage(self)) return error.InvalidFrameEncoding;
+        }
+
+        pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+            if (self.owns_memory) {
+                allocator.free(self.run_handle_mappings);
+                for (self.run_slots) |*slot_const| {
+                    var slot = slot_const.*;
+                    slot.deinit(allocator);
+                }
+                allocator.free(self.run_slots);
+                if (self.mailbox_image) |*mailbox| mailbox.deinit(allocator);
+                allocator.free(self.runspace_event_fingerprints);
+                allocator.free(self.root_run_handle_fingerprints);
+                allocator.free(self.provider_run_handle_fingerprints);
+                allocator.free(self.branch_refs);
+                allocator.free(self.checkpoint_refs);
+                allocator.free(self.transcript_image_refs);
+                allocator.free(self.run_image_refs);
+                allocator.free(self.run_receipt_refs);
+                allocator.free(self.admission_receipt_refs);
+                allocator.free(self.permit_refs);
+                allocator.free(self.active_fabric_invocation_refs);
+                allocator.free(self.metadata);
+            }
+            self.* = undefined;
+        }
+    };
+
+    pub const FabricImage = struct {
+        fingerprint_version: u32 = world_capsule_fabric_image_fingerprint_version,
+        fabric_image_fingerprint: u64,
+        fabric_plan_fingerprints: []const u64 = &.{},
+        active_invocation_fingerprints: []const u64 = &.{},
+        completed_receipt_fingerprints: []const u64 = &.{},
+        parent_pending_port_refs: []const u64 = &.{},
+        provider_run_refs: []const u64 = &.{},
+        provider_state_summary_fingerprints: []const u64 = &.{},
+        route_fingerprints: []const u64 = &.{},
+        value_mapping_fingerprints: []const u64 = &.{},
+        depth_route_stack: []const u64 = &.{},
+        replay_cursor_state_refs: []const u64 = &.{},
+        status_summary_fingerprint: u64 = 0,
+        owns_memory: bool = false,
+
+        pub fn init(args: struct {
+            fabric_plan_fingerprints: []const u64 = &.{},
+            active_invocation_fingerprints: []const u64 = &.{},
+            completed_receipt_fingerprints: []const u64 = &.{},
+            parent_pending_port_refs: []const u64 = &.{},
+            provider_run_refs: []const u64 = &.{},
+            provider_state_summary_fingerprints: []const u64 = &.{},
+            route_fingerprints: []const u64 = &.{},
+            value_mapping_fingerprints: []const u64 = &.{},
+            depth_route_stack: []const u64 = &.{},
+            replay_cursor_state_refs: []const u64 = &.{},
+            status_summary_fingerprint: u64 = 0,
+        }) @This() {
+            var image = @This(){
+                .fabric_image_fingerprint = 0,
+                .fabric_plan_fingerprints = args.fabric_plan_fingerprints,
+                .active_invocation_fingerprints = args.active_invocation_fingerprints,
+                .completed_receipt_fingerprints = args.completed_receipt_fingerprints,
+                .parent_pending_port_refs = args.parent_pending_port_refs,
+                .provider_run_refs = args.provider_run_refs,
+                .provider_state_summary_fingerprints = args.provider_state_summary_fingerprints,
+                .route_fingerprints = args.route_fingerprints,
+                .value_mapping_fingerprints = args.value_mapping_fingerprints,
+                .depth_route_stack = args.depth_route_stack,
+                .replay_cursor_state_refs = args.replay_cursor_state_refs,
+                .status_summary_fingerprint = args.status_summary_fingerprint,
+            };
+            image.fabric_image_fingerprint = fingerprintFabricImage(image);
+            return image;
+        }
+
+        pub fn validate(self: @This(), options: ValidateOptions) !void {
+            if (self.fingerprint_version != world_capsule_fabric_image_fingerprint_version) return error.InvalidFrameEncoding;
+            if (self.fabric_plan_fingerprints.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.active_invocation_fingerprints.len > options.max_fabric_invocations) return error.InvalidFrameEncoding;
+            if (self.completed_receipt_fingerprints.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.parent_pending_port_refs.len > options.max_pending_ports) return error.InvalidFrameEncoding;
+            if (self.provider_run_refs.len > options.max_run_slots) return error.InvalidFrameEncoding;
+            if (self.provider_state_summary_fingerprints.len > options.max_run_slots) return error.InvalidFrameEncoding;
+            if (self.route_fingerprints.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.value_mapping_fingerprints.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.depth_route_stack.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.replay_cursor_state_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.active_invocation_fingerprints.len != 0) {
+                if (self.parent_pending_port_refs.len != self.active_invocation_fingerprints.len) return error.InvalidFrameEncoding;
+                if (self.depth_route_stack.len != self.active_invocation_fingerprints.len) return error.InvalidFrameEncoding;
+                if (self.provider_run_refs.len < self.active_invocation_fingerprints.len) return error.InvalidFrameEncoding;
+                if (self.provider_state_summary_fingerprints.len < self.active_invocation_fingerprints.len) return error.InvalidFrameEncoding;
+                if (self.route_fingerprints.len < self.active_invocation_fingerprints.len) return error.InvalidFrameEncoding;
+                if (self.value_mapping_fingerprints.len < self.active_invocation_fingerprints.len) return error.InvalidFrameEncoding;
+                for (self.active_invocation_fingerprints, 0..) |invocation, index| {
+                    if (self.depth_route_stack[index] != fingerprintFabricActiveInvocationWitness(
+                        invocation,
+                        self.route_fingerprints[index],
+                        self.value_mapping_fingerprints[index],
+                    )) return error.InvalidFrameEncoding;
+                }
+            }
+            if (self.fabric_image_fingerprint != fingerprintFabricImage(self)) return error.InvalidFrameEncoding;
+        }
+
+        pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+            if (self.owns_memory) {
+                allocator.free(self.fabric_plan_fingerprints);
+                allocator.free(self.active_invocation_fingerprints);
+                allocator.free(self.completed_receipt_fingerprints);
+                allocator.free(self.parent_pending_port_refs);
+                allocator.free(self.provider_run_refs);
+                allocator.free(self.provider_state_summary_fingerprints);
+                allocator.free(self.route_fingerprints);
+                allocator.free(self.value_mapping_fingerprints);
+                allocator.free(self.depth_route_stack);
+                allocator.free(self.replay_cursor_state_refs);
+            }
+            self.* = undefined;
+        }
+    };
+
+    pub const LinkImage = struct {
+        fingerprint_version: u32 = world_capsule_link_image_fingerprint_version,
+        link_image_fingerprint: u64,
+        link_plan_fingerprint: u64,
+        link_certificate_fingerprint: u64,
+        assembly_fingerprint: u64,
+        linker_policy_fingerprint: u64,
+        catalog_fingerprint: ?u64 = null,
+        route_synthesis_refs: []const u64 = &.{},
+        residual_import_set_fingerprint: u64 = 0,
+        provider_target_refs: []const u64 = &.{},
+        guest_provider_refs: []const u64 = &.{},
+        external_environment_requirements: []const u64 = &.{},
+        owns_memory: bool = false,
+
+        pub fn init(args: struct {
+            link_plan_fingerprint: u64,
+            link_certificate_fingerprint: u64,
+            assembly_fingerprint: u64,
+            linker_policy_fingerprint: u64,
+            catalog_fingerprint: ?u64 = null,
+            route_synthesis_refs: []const u64 = &.{},
+            residual_import_set_fingerprint: u64 = 0,
+            provider_target_refs: []const u64 = &.{},
+            guest_provider_refs: []const u64 = &.{},
+            external_environment_requirements: []const u64 = &.{},
+        }) @This() {
+            var image = @This(){
+                .link_image_fingerprint = 0,
+                .link_plan_fingerprint = args.link_plan_fingerprint,
+                .link_certificate_fingerprint = args.link_certificate_fingerprint,
+                .assembly_fingerprint = args.assembly_fingerprint,
+                .linker_policy_fingerprint = args.linker_policy_fingerprint,
+                .catalog_fingerprint = args.catalog_fingerprint,
+                .route_synthesis_refs = args.route_synthesis_refs,
+                .residual_import_set_fingerprint = args.residual_import_set_fingerprint,
+                .provider_target_refs = args.provider_target_refs,
+                .guest_provider_refs = args.guest_provider_refs,
+                .external_environment_requirements = args.external_environment_requirements,
+            };
+            image.link_image_fingerprint = fingerprintLinkImage(image);
+            return image;
+        }
+
+        pub fn validate(self: @This()) !void {
+            try self.validateWithOptions(.{});
+        }
+
+        fn validateWithOptions(self: @This(), options: ValidateOptions) !void {
+            if (self.fingerprint_version != world_capsule_link_image_fingerprint_version) return error.InvalidFrameEncoding;
+            if (self.link_plan_fingerprint == 0) return error.InvalidFrameEncoding;
+            if (self.link_certificate_fingerprint == 0) return error.InvalidFrameEncoding;
+            if (self.assembly_fingerprint == 0) return error.InvalidFrameEncoding;
+            if (self.linker_policy_fingerprint == 0) return error.InvalidFrameEncoding;
+            if (self.route_synthesis_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.provider_target_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.guest_provider_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.external_environment_requirements.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.catalog_fingerprint) |catalog| {
+                if (catalog == 0) return error.InvalidFrameEncoding;
+            }
+            if (self.link_image_fingerprint != fingerprintLinkImage(self)) return error.InvalidFrameEncoding;
+        }
+
+        pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+            if (self.owns_memory) {
+                allocator.free(self.route_synthesis_refs);
+                allocator.free(self.provider_target_refs);
+                allocator.free(self.guest_provider_refs);
+                allocator.free(self.external_environment_requirements);
+            }
+            self.* = undefined;
+        }
+    };
+
+    pub const Image = struct {
+        format_version: u32 = world_capsule_image_format_version,
+        fingerprint_version: u32 = world_capsule_image_fingerprint_version,
+        image_fingerprint: u64,
+        manifest: Manifest,
+        runspace_image: RunspaceImage,
+        link_image: ?LinkImage = null,
+        fabric_image: ?FabricImage = null,
+        admission_refs: []const u64 = &.{},
+        environment_refs: []const u64 = &.{},
+        supervision_refs: []const u64 = &.{},
+        guest_conformance_refs: []const u64 = &.{},
+        transcript_image_refs: []const u64 = &.{},
+        run_image_refs: []const u64 = &.{},
+        value_image_refs: []const u64 = &.{},
+        transcript_images: []const TranscriptImage = &.{},
+        run_images: []const RunImage = &.{},
+        value_images: []const Frame.ValueImage = &.{},
+        dependency_refs: []const DependencyRef = &.{},
+        object_refs: []const ObjectRef = &.{},
+        metadata: []const u8 = "",
+        owns_memory: bool = false,
+
+        pub fn init(args: struct {
+            manifest: Manifest,
+            runspace_image: RunspaceImage,
+            link_image: ?LinkImage = null,
+            fabric_image: ?FabricImage = null,
+            admission_refs: []const u64 = &.{},
+            environment_refs: []const u64 = &.{},
+            supervision_refs: []const u64 = &.{},
+            guest_conformance_refs: []const u64 = &.{},
+            transcript_image_refs: []const u64 = &.{},
+            run_image_refs: []const u64 = &.{},
+            value_image_refs: []const u64 = &.{},
+            transcript_images: []const TranscriptImage = &.{},
+            run_images: []const RunImage = &.{},
+            value_images: []const Frame.ValueImage = &.{},
+            dependency_refs: []const DependencyRef = &.{},
+            object_refs: []const ObjectRef = &.{},
+            metadata: []const u8 = "",
+        }) @This() {
+            var image = @This(){
+                .image_fingerprint = 0,
+                .manifest = args.manifest,
+                .runspace_image = args.runspace_image,
+                .link_image = args.link_image,
+                .fabric_image = args.fabric_image,
+                .admission_refs = args.admission_refs,
+                .environment_refs = args.environment_refs,
+                .supervision_refs = args.supervision_refs,
+                .guest_conformance_refs = args.guest_conformance_refs,
+                .transcript_image_refs = args.transcript_image_refs,
+                .run_image_refs = args.run_image_refs,
+                .value_image_refs = args.value_image_refs,
+                .transcript_images = args.transcript_images,
+                .run_images = args.run_images,
+                .value_images = args.value_images,
+                .dependency_refs = args.dependency_refs,
+                .object_refs = args.object_refs,
+                .metadata = args.metadata,
+            };
+            image.image_fingerprint = fingerprintImage(image);
+            return image;
+        }
+
+        pub fn validate(self: @This(), options: ValidateOptions) !void {
+            if (self.format_version != world_capsule_image_format_version) return error.InvalidFrameEncoding;
+            if (self.fingerprint_version != world_capsule_image_fingerprint_version) return error.InvalidFrameEncoding;
+            if (self.metadata.len > options.max_image_bytes) return error.InvalidFrameEncoding;
+            if (self.admission_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.environment_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.supervision_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.guest_conformance_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.transcript_image_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.run_image_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.value_image_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.dependency_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.object_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.transcript_images.len > options.max_embedded_images) return error.InvalidFrameEncoding;
+            if (self.run_images.len > options.max_embedded_images) return error.InvalidFrameEncoding;
+            if (self.value_images.len > options.max_embedded_images) return error.InvalidFrameEncoding;
+            try self.manifest.validate(options);
+            try self.runspace_image.validate(options);
+            if (self.link_image) |link| try link.validateWithOptions(options);
+            if (self.fabric_image) |fabric| try fabric.validate(options);
+            try validateImageManifestConsistency(self);
+            try validateRunImageCoverage(self);
+            try validateCapsuleRefIndexes(self);
+            for (self.transcript_images) |transcript| {
+                try validateTranscriptImageFingerprint(transcript);
+                try transcript.validateValuePolicy(.portable);
+            }
+            for (self.run_images) |run_image| try run_image.validate(.{ .require_portable_values = true });
+            for (self.value_images) |value_image| {
+                try validateValueImage(value_image);
+                try validateValueImagePolicy(value_image, ValuePolicy.portable);
+            }
+            if (self.image_fingerprint != fingerprintImage(self)) return error.InvalidFrameEncoding;
+        }
+
+        pub fn asBundleRoot(self: @This()) ObjectRef {
+            return .{ .kind = .capsule_image, .fingerprint = self.image_fingerprint };
+        }
+
+        pub fn encode(self: @This(), allocator: std.mem.Allocator) ![]const u8 {
+            var out: std.ArrayList(u8) = .empty;
+            errdefer out.deinit(allocator);
+            try writeU32(&out, allocator, self.format_version);
+            try writeU32(&out, allocator, self.fingerprint_version);
+            try writeU64(&out, allocator, self.image_fingerprint);
+            try encodeManifest(&out, allocator, self.manifest);
+            try encodeRunspaceImage(&out, allocator, self.runspace_image);
+            try writeOptionalLinkImage(&out, allocator, self.link_image);
+            try writeOptionalFabricImage(&out, allocator, self.fabric_image);
+            try writeU64Slice(&out, allocator, self.admission_refs);
+            try writeU64Slice(&out, allocator, self.environment_refs);
+            try writeU64Slice(&out, allocator, self.supervision_refs);
+            try writeU64Slice(&out, allocator, self.guest_conformance_refs);
+            try writeU64Slice(&out, allocator, self.transcript_image_refs);
+            try writeU64Slice(&out, allocator, self.run_image_refs);
+            try writeU64Slice(&out, allocator, self.value_image_refs);
+            try writeTranscriptImageSlice(&out, allocator, self.transcript_images);
+            try writeRunImageSlice(&out, allocator, self.run_images);
+            try writeValueImageSlice(&out, allocator, self.value_images);
+            try writeDependencyRefSlice(&out, allocator, self.dependency_refs);
+            try writeObjectRefSlice(&out, allocator, self.object_refs);
+            try writeBytes(&out, allocator, self.metadata);
+            return out.toOwnedSlice(allocator);
+        }
+
+        pub fn decode(allocator: std.mem.Allocator, bytes: []const u8) !@This() {
+            return decodeWithOptions(allocator, bytes, .{});
+        }
+
+        pub fn decodeWithOptions(allocator: std.mem.Allocator, bytes: []const u8, options: ValidateOptions) !@This() {
+            if (bytes.len > options.max_image_bytes) return error.InvalidFrameEncoding;
+            var cursor: usize = 0;
+            const format_version = try readU32(bytes, &cursor);
+            const fingerprint_version = try readU32(bytes, &cursor);
+            const image_fingerprint = try readU64(bytes, &cursor);
+            var manifest = try decodeManifest(allocator, bytes, &cursor, options);
+            var manifest_owned = true;
+            errdefer if (manifest_owned) manifest.deinit(allocator);
+            var runspace_image = try decodeRunspaceImage(allocator, bytes, &cursor, options);
+            var runspace_image_owned = true;
+            errdefer if (runspace_image_owned) runspace_image.deinit(allocator);
+            var link_image = try readOptionalLinkImage(allocator, bytes, &cursor, options);
+            var link_image_owned = link_image != null;
+            errdefer if (link_image_owned) if (link_image) |*link| link.deinit(allocator);
+            var fabric_image = try readOptionalFabricImage(allocator, bytes, &cursor, options);
+            var fabric_image_owned = fabric_image != null;
+            errdefer if (fabric_image_owned) if (fabric_image) |*fabric| fabric.deinit(allocator);
+            const admission_refs = try readU64SliceOwned(allocator, bytes, &cursor, options.max_dependencies);
+            var admission_refs_owned = true;
+            errdefer if (admission_refs_owned) allocator.free(admission_refs);
+            const environment_refs = try readU64SliceOwned(allocator, bytes, &cursor, options.max_dependencies);
+            var environment_refs_owned = true;
+            errdefer if (environment_refs_owned) allocator.free(environment_refs);
+            const supervision_refs = try readU64SliceOwned(allocator, bytes, &cursor, options.max_dependencies);
+            var supervision_refs_owned = true;
+            errdefer if (supervision_refs_owned) allocator.free(supervision_refs);
+            const guest_conformance_refs = try readU64SliceOwned(allocator, bytes, &cursor, options.max_dependencies);
+            var guest_conformance_refs_owned = true;
+            errdefer if (guest_conformance_refs_owned) allocator.free(guest_conformance_refs);
+            const transcript_image_refs = try readU64SliceOwned(allocator, bytes, &cursor, options.max_dependencies);
+            var transcript_image_refs_owned = true;
+            errdefer if (transcript_image_refs_owned) allocator.free(transcript_image_refs);
+            const run_image_refs = try readU64SliceOwned(allocator, bytes, &cursor, options.max_dependencies);
+            var run_image_refs_owned = true;
+            errdefer if (run_image_refs_owned) allocator.free(run_image_refs);
+            const value_image_refs = try readU64SliceOwned(allocator, bytes, &cursor, options.max_dependencies);
+            var value_image_refs_owned = true;
+            errdefer if (value_image_refs_owned) allocator.free(value_image_refs);
+            const transcript_images = try readTranscriptImageSliceOwned(allocator, bytes, &cursor, options.max_embedded_images);
+            var transcript_images_owned = true;
+            errdefer if (transcript_images_owned) {
+                for (transcript_images) |*transcript_const| {
+                    var transcript = transcript_const.*;
+                    transcript.deinit(allocator);
+                }
+                allocator.free(transcript_images);
+            };
+            const run_images = try readRunImageSliceOwned(allocator, bytes, &cursor, options.max_embedded_images);
+            var run_images_owned = true;
+            errdefer if (run_images_owned) {
+                for (run_images) |*run_const| {
+                    var run_image = run_const.*;
+                    run_image.deinit(allocator);
+                }
+                allocator.free(run_images);
+            };
+            const value_images = try readValueImageSliceOwned(allocator, bytes, &cursor, options.max_embedded_images);
+            var value_images_owned = true;
+            errdefer if (value_images_owned) {
+                for (value_images) |*value_const| {
+                    var value_image = value_const.*;
+                    value_image.deinit(allocator);
+                }
+                allocator.free(value_images);
+            };
+            const dependency_refs = try readDependencyRefSliceOwned(allocator, bytes, &cursor, options.max_dependencies);
+            var dependency_refs_owned = true;
+            errdefer if (dependency_refs_owned) allocator.free(dependency_refs);
+            const object_refs = try readObjectRefSliceOwned(allocator, bytes, &cursor, options.max_dependencies);
+            var object_refs_owned = true;
+            errdefer if (object_refs_owned) allocator.free(object_refs);
+            const metadata = try readBytesOwned(allocator, bytes, &cursor);
+            var metadata_owned = true;
+            errdefer if (metadata_owned) allocator.free(metadata);
+
+            var image = @This(){
+                .format_version = format_version,
+                .fingerprint_version = fingerprint_version,
+                .image_fingerprint = image_fingerprint,
+                .manifest = manifest,
+                .runspace_image = runspace_image,
+                .link_image = link_image,
+                .fabric_image = fabric_image,
+                .admission_refs = admission_refs,
+                .environment_refs = environment_refs,
+                .supervision_refs = supervision_refs,
+                .guest_conformance_refs = guest_conformance_refs,
+                .transcript_image_refs = transcript_image_refs,
+                .run_image_refs = run_image_refs,
+                .value_image_refs = value_image_refs,
+                .transcript_images = transcript_images,
+                .run_images = run_images,
+                .value_images = value_images,
+                .dependency_refs = dependency_refs,
+                .object_refs = object_refs,
+                .metadata = metadata,
+                .owns_memory = true,
+            };
+            manifest_owned = false;
+            runspace_image_owned = false;
+            link_image_owned = false;
+            fabric_image_owned = false;
+            admission_refs_owned = false;
+            environment_refs_owned = false;
+            supervision_refs_owned = false;
+            guest_conformance_refs_owned = false;
+            transcript_image_refs_owned = false;
+            run_image_refs_owned = false;
+            value_image_refs_owned = false;
+            transcript_images_owned = false;
+            run_images_owned = false;
+            value_images_owned = false;
+            dependency_refs_owned = false;
+            object_refs_owned = false;
+            metadata_owned = false;
+            errdefer image.deinit(allocator);
+            if (cursor != bytes.len) return error.InvalidFrameEncoding;
+            try image.validate(options);
+            return image;
+        }
+
+        pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+            if (self.owns_memory) {
+                self.manifest.deinit(allocator);
+                self.runspace_image.deinit(allocator);
+                if (self.link_image) |*link| link.deinit(allocator);
+                if (self.fabric_image) |*fabric| fabric.deinit(allocator);
+                allocator.free(self.admission_refs);
+                allocator.free(self.environment_refs);
+                allocator.free(self.supervision_refs);
+                allocator.free(self.guest_conformance_refs);
+                allocator.free(self.transcript_image_refs);
+                allocator.free(self.run_image_refs);
+                allocator.free(self.value_image_refs);
+                for (self.transcript_images) |*transcript_const| {
+                    var transcript = transcript_const.*;
+                    transcript.deinit(allocator);
+                }
+                allocator.free(self.transcript_images);
+                for (self.run_images) |*run_const| {
+                    var run_image = run_const.*;
+                    run_image.deinit(allocator);
+                }
+                allocator.free(self.run_images);
+                for (self.value_images) |*value_const| {
+                    var value_image = value_const.*;
+                    value_image.deinit(allocator);
+                }
+                allocator.free(self.value_images);
+                allocator.free(self.dependency_refs);
+                allocator.free(self.object_refs);
+                allocator.free(self.metadata);
+            }
+            self.* = undefined;
+        }
+    };
+
+    pub const Certificate = struct {
+        format_version: u32 = world_capsule_certificate_format_version,
+        fingerprint_version: u32 = world_capsule_certificate_fingerprint_version,
+        certificate_fingerprint: u64,
+        capsule_image_fingerprint: u64,
+        capsule_manifest_fingerprint: u64,
+        quiescence_report_fingerprint: u64,
+        runspace_image_fingerprint: u64,
+        link_image_fingerprint: ?u64 = null,
+        fabric_image_fingerprint: ?u64 = null,
+        root_target_ref_fingerprint: u64,
+        assembly_fingerprint: ?u64 = null,
+        blocker_summary: []const Blocker = &.{},
+        warning_summary: []const Warning = &.{},
+        owns_memory: bool = false,
+
+        pub fn init(args: struct {
+            capsule_image_fingerprint: u64,
+            capsule_manifest_fingerprint: u64,
+            quiescence_report_fingerprint: u64,
+            runspace_image_fingerprint: u64,
+            link_image_fingerprint: ?u64 = null,
+            fabric_image_fingerprint: ?u64 = null,
+            root_target_ref_fingerprint: u64,
+            assembly_fingerprint: ?u64 = null,
+            blocker_summary: []const Blocker = &.{},
+            warning_summary: []const Warning = &.{},
+        }) @This() {
+            var cert = @This(){
+                .certificate_fingerprint = 0,
+                .capsule_image_fingerprint = args.capsule_image_fingerprint,
+                .capsule_manifest_fingerprint = args.capsule_manifest_fingerprint,
+                .quiescence_report_fingerprint = args.quiescence_report_fingerprint,
+                .runspace_image_fingerprint = args.runspace_image_fingerprint,
+                .link_image_fingerprint = args.link_image_fingerprint,
+                .fabric_image_fingerprint = args.fabric_image_fingerprint,
+                .root_target_ref_fingerprint = args.root_target_ref_fingerprint,
+                .assembly_fingerprint = args.assembly_fingerprint,
+                .blocker_summary = args.blocker_summary,
+                .warning_summary = args.warning_summary,
+            };
+            cert.certificate_fingerprint = fingerprintCertificate(cert);
+            return cert;
+        }
+
+        pub fn fromImage(image: Image, report: QuiescenceReport) !@This() {
+            return fromImageWithOptions(image, report, .{});
+        }
+
+        fn fromImageWithOptions(image: Image, report: QuiescenceReport, options: ValidateOptions) !@This() {
+            try image.validate(options);
+            try report.validate();
+            try validateQuiescenceReportImageConsistency(image, report);
+            return init(.{
+                .capsule_image_fingerprint = image.image_fingerprint,
+                .capsule_manifest_fingerprint = image.manifest.manifest_fingerprint,
+                .quiescence_report_fingerprint = report.report_fingerprint,
+                .runspace_image_fingerprint = image.runspace_image.image_fingerprint,
+                .link_image_fingerprint = if (image.link_image) |link| link.link_image_fingerprint else null,
+                .fabric_image_fingerprint = if (image.fabric_image) |fabric| fabric.fabric_image_fingerprint else null,
+                .root_target_ref_fingerprint = image.manifest.root_target_ref_fingerprint,
+                .assembly_fingerprint = image.manifest.assembly_fingerprint,
+            });
+        }
+
+        pub fn validate(self: @This()) !void {
+            if (self.format_version != world_capsule_certificate_format_version) return error.InvalidFrameEncoding;
+            if (self.fingerprint_version != world_capsule_certificate_fingerprint_version) return error.InvalidFrameEncoding;
+            if (self.certificate_fingerprint != fingerprintCertificate(self)) return error.InvalidFrameEncoding;
+        }
+    };
+
+    pub const ThawPlan = struct {
+        fingerprint_version: u32 = world_capsule_thaw_plan_fingerprint_version,
+        thaw_plan_fingerprint: u64,
+        capsule_image_fingerprint: u64,
+        requested_mode: RestoreMode,
+        local_root_target_ref_fingerprint: u64 = 0,
+        require_local_permit: bool = true,
+        require_link_match: bool = true,
+        allow_relink_drift: bool = false,
+        local_catalog_fingerprint: ?u64 = null,
+        rerun_guest_conformance: bool = false,
+        target_matches: []const u64 = &.{},
+        module_matches: []const u64 = &.{},
+        link_certificate_match_status: LinkCertificateMatchStatus = .unchecked,
+        relink_status: RelinkStatus = .not_requested,
+        environment_preflight_refs: []const u64 = &.{},
+        guest_conformance_refs: []const u64 = &.{},
+        receiver_run_permit_refs: []const u64 = &.{},
+        receiver_run_permit_fingerprint: ?u64 = null,
+        handle_remapping_plan: []const u64 = &.{},
+        mailbox_id_remapping_plan: []const u64 = &.{},
+        blockers: []const Blocker = &.{},
+        warnings: []const Warning = &.{},
+        owns_memory: bool = false,
+
+        pub fn init(args: struct {
+            capsule_image_fingerprint: u64,
+            requested_mode: RestoreMode,
+            local_root_target_ref_fingerprint: u64 = 0,
+            require_local_permit: bool = true,
+            require_link_match: bool = true,
+            allow_relink_drift: bool = false,
+            local_catalog_fingerprint: ?u64 = null,
+            rerun_guest_conformance: bool = false,
+            target_matches: []const u64 = &.{},
+            module_matches: []const u64 = &.{},
+            link_certificate_match_status: LinkCertificateMatchStatus = .unchecked,
+            relink_status: RelinkStatus = .not_requested,
+            environment_preflight_refs: []const u64 = &.{},
+            guest_conformance_refs: []const u64 = &.{},
+            receiver_run_permit_refs: []const u64 = &.{},
+            receiver_run_permit_fingerprint: ?u64 = null,
+            handle_remapping_plan: []const u64 = &.{},
+            mailbox_id_remapping_plan: []const u64 = &.{},
+            blockers: []const Blocker = &.{},
+            warnings: []const Warning = &.{},
+        }) @This() {
+            var plan = @This(){
+                .thaw_plan_fingerprint = 0,
+                .capsule_image_fingerprint = args.capsule_image_fingerprint,
+                .requested_mode = args.requested_mode,
+                .local_root_target_ref_fingerprint = args.local_root_target_ref_fingerprint,
+                .require_local_permit = args.require_local_permit,
+                .require_link_match = args.require_link_match,
+                .allow_relink_drift = args.allow_relink_drift,
+                .local_catalog_fingerprint = args.local_catalog_fingerprint,
+                .rerun_guest_conformance = args.rerun_guest_conformance,
+                .target_matches = args.target_matches,
+                .module_matches = args.module_matches,
+                .link_certificate_match_status = args.link_certificate_match_status,
+                .relink_status = args.relink_status,
+                .environment_preflight_refs = args.environment_preflight_refs,
+                .guest_conformance_refs = args.guest_conformance_refs,
+                .receiver_run_permit_refs = args.receiver_run_permit_refs,
+                .receiver_run_permit_fingerprint = args.receiver_run_permit_fingerprint,
+                .handle_remapping_plan = args.handle_remapping_plan,
+                .mailbox_id_remapping_plan = args.mailbox_id_remapping_plan,
+                .blockers = args.blockers,
+                .warnings = args.warnings,
+            };
+            plan.thaw_plan_fingerprint = fingerprintThawPlan(plan);
+            return plan;
+        }
+
+        pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+            if (self.owns_memory) {
+                allocator.free(self.target_matches);
+                allocator.free(self.module_matches);
+                allocator.free(self.environment_preflight_refs);
+                allocator.free(self.guest_conformance_refs);
+                allocator.free(self.receiver_run_permit_refs);
+                allocator.free(self.handle_remapping_plan);
+                allocator.free(self.mailbox_id_remapping_plan);
+                allocator.free(self.blockers);
+                allocator.free(self.warnings);
+            }
+            self.* = undefined;
+        }
+
+        pub fn validate(self: @This()) !void {
+            if (self.fingerprint_version != world_capsule_thaw_plan_fingerprint_version) return error.InvalidFrameEncoding;
+            if (self.thaw_plan_fingerprint != fingerprintThawPlan(self)) return error.InvalidFrameEncoding;
+        }
+    };
+
+    pub const RestoreReport = struct {
+        fingerprint_version: u32 = world_capsule_restore_report_fingerprint_version,
+        restore_report_fingerprint: u64,
+        capsule_image_fingerprint: u64,
+        thaw_plan_fingerprint: u64,
+        restored_runspace_fingerprint: u64,
+        restored_local_run_id_start: u64 = 0,
+        restored_run_handle_mappings: []const u64 = &.{},
+        restored_root_run_handles: []const u64 = &.{},
+        restored_provider_run_handles: []const u64 = &.{},
+        restored_pending_port_mappings: []const u64 = &.{},
+        restored_fabric_invocation_mappings: []const u64 = &.{},
+        guest_conformance_refs: []const u64 = &.{},
+        environment_certificate_fingerprint: ?u64 = null,
+        receiver_run_permit_fingerprint: ?u64 = null,
+        accepted: bool,
+        blockers: []const Blocker = &.{},
+        warnings: []const Warning = &.{},
+        summary: []const u8 = "",
+        owns_memory: bool = false,
+
+        pub fn init(args: struct {
+            capsule_image_fingerprint: u64,
+            thaw_plan_fingerprint: u64,
+            restored_runspace_fingerprint: u64,
+            restored_local_run_id_start: u64 = 0,
+            restored_run_handle_mappings: []const u64 = &.{},
+            restored_root_run_handles: []const u64 = &.{},
+            restored_provider_run_handles: []const u64 = &.{},
+            restored_pending_port_mappings: []const u64 = &.{},
+            restored_fabric_invocation_mappings: []const u64 = &.{},
+            guest_conformance_refs: []const u64 = &.{},
+            environment_certificate_fingerprint: ?u64 = null,
+            receiver_run_permit_fingerprint: ?u64 = null,
+            accepted: bool,
+            blockers: []const Blocker = &.{},
+            warnings: []const Warning = &.{},
+            summary: []const u8 = "",
+        }) @This() {
+            var report = @This(){
+                .restore_report_fingerprint = 0,
+                .capsule_image_fingerprint = args.capsule_image_fingerprint,
+                .thaw_plan_fingerprint = args.thaw_plan_fingerprint,
+                .restored_runspace_fingerprint = args.restored_runspace_fingerprint,
+                .restored_local_run_id_start = args.restored_local_run_id_start,
+                .restored_run_handle_mappings = args.restored_run_handle_mappings,
+                .restored_root_run_handles = args.restored_root_run_handles,
+                .restored_provider_run_handles = args.restored_provider_run_handles,
+                .restored_pending_port_mappings = args.restored_pending_port_mappings,
+                .restored_fabric_invocation_mappings = args.restored_fabric_invocation_mappings,
+                .guest_conformance_refs = args.guest_conformance_refs,
+                .environment_certificate_fingerprint = args.environment_certificate_fingerprint,
+                .receiver_run_permit_fingerprint = args.receiver_run_permit_fingerprint,
+                .accepted = args.accepted,
+                .blockers = args.blockers,
+                .warnings = args.warnings,
+                .summary = args.summary,
+            };
+            report.restore_report_fingerprint = fingerprintRestoreReport(report);
+            return report;
+        }
+
+        pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+            if (self.owns_memory) {
+                allocator.free(self.restored_run_handle_mappings);
+                allocator.free(self.restored_root_run_handles);
+                allocator.free(self.restored_provider_run_handles);
+                allocator.free(self.restored_pending_port_mappings);
+                allocator.free(self.restored_fabric_invocation_mappings);
+                allocator.free(self.guest_conformance_refs);
+                allocator.free(self.blockers);
+                allocator.free(self.warnings);
+                allocator.free(self.summary);
+            }
+            self.* = undefined;
+        }
+
+        pub fn validate(self: @This()) !void {
+            if (self.fingerprint_version != world_capsule_restore_report_fingerprint_version) return error.InvalidFrameEncoding;
+            if (self.restore_report_fingerprint != fingerprintRestoreReport(self)) return error.InvalidFrameEncoding;
+        }
+    };
+
+    pub const ValidationReport = struct {
+        image_fingerprint: u64,
+        accepted: bool,
+        blockers: []const Blocker = &.{},
+        warnings: []const Warning = &.{},
+    };
+
+    pub const AssemblyImage = Image;
+
+    const RestoreTransaction = struct {
+        runspace: *Runspace,
+        plan: ThawPlan,
+        slot_count_before: usize,
+        next_run_id_before: u64,
+        mailbox_count_before: usize,
+        next_mailbox_id_before: u64,
+        committed: bool = false,
+
+        pub fn prepare(
+            image: Image,
+            runspace: *Runspace,
+            local_root_target_ref_fingerprint: u64,
+            environment_fingerprint: u64,
+            permit_fingerprint: ?u64,
+            options: ThawOptions,
+        ) !@This() {
+            return .{
+                .runspace = runspace,
+                .plan = try planThaw(image, local_root_target_ref_fingerprint, environment_fingerprint, permit_fingerprint, options),
+                .slot_count_before = runspace.slots.items.len,
+                .next_run_id_before = runspace.next_run_id,
+                .mailbox_count_before = runspace.mailbox.pending.items.len,
+                .next_mailbox_id_before = runspace.next_mailbox_id,
+            };
+        }
+
+        pub fn validateAuthority(self: @This(), options: ThawOptions) !void {
+            if (self.plan.blockers.len != 0) return error.InvalidFrameEncoding;
+            if (options.mode == .inspect_only or options.mode == .replay_only) return;
+            if (self.runspace.config.require_admission) return error.RunspaceAdmissionRequired;
+            if (!self.runspace.config.allow_handoff_install) return error.RunspaceInstallDenied;
+            if (self.runspace.config.require_supervision) return error.SupervisionDenied;
+        }
+
+        pub fn preMutationCheck(self: @This(), image: Image, options: ThawOptions) !void {
+            try self.validateAuthority(options);
+            if (options.mode == .inspect_only or options.mode == .replay_only) return;
+            try ensureRestoreRunCapacity(self.runspace, image);
+        }
+
+        pub fn commit(self: *@This()) void {
+            self.committed = true;
+        }
+
+        pub fn rollbackUnlessCommitted(self: *@This()) void {
+            if (self.committed) return;
+            const allocator = self.runspace.allocator;
+            for (self.runspace.mailbox.pending.items[self.mailbox_count_before..]) |*pending| pending.deinit(allocator);
+            self.runspace.mailbox.pending.shrinkRetainingCapacity(self.mailbox_count_before);
+            self.runspace.next_mailbox_id = self.next_mailbox_id_before;
+            for (self.runspace.slots.items[self.slot_count_before..]) |*slot| slot.deinit(allocator);
+            self.runspace.slots.shrinkRetainingCapacity(self.slot_count_before);
+            self.runspace.next_run_id = self.next_run_id_before;
+        }
+    };
+
+    pub fn certificate(image: Image, report: QuiescenceReport) !Certificate {
+        return try Certificate.fromImage(image, report);
+    }
+
+    fn certificateWithOptions(image: Image, report: QuiescenceReport, options: ValidateOptions) !Certificate {
+        return try Certificate.fromImageWithOptions(image, report, options);
+    }
+
+    pub fn validate(image: Image, options: ValidateOptions) !ValidationReport {
+        try image.validate(options);
+        return .{
+            .image_fingerprint = image.image_fingerprint,
+            .accepted = true,
+        };
+    }
+
+    pub fn quiescenceReport(allocator: std.mem.Allocator, runspace: *const Runspace, assembly: ?Assembly) !QuiescenceReport {
+        const report = runspace.report();
+        var blockers: std.ArrayList(Blocker) = .empty;
+        errdefer blockers.deinit(allocator);
+        var warnings: std.ArrayList(Warning) = .empty;
+        errdefer warnings.deinit(allocator);
+
+        var parked_count: usize = 0;
+        var completed_count: usize = 0;
+        var failed_count: usize = 0;
+        for (runspace.slots.items) |slot| {
+            switch (slot.status) {
+                .parked_on_port, .parked_on_supervision => parked_count += 1,
+                .completed => completed_count += 1,
+                .failed, .rejected => failed_count += 1,
+                .exported => switch (slot.current_state.status) {
+                    .completed => completed_count += 1,
+                    .parked_on_port, .parked_on_supervision => parked_count += 1,
+                    .failed => failed_count += 1,
+                    .not_started, .running => try appendUniqueBlocker(&blockers, allocator, .unsupported_running_state),
+                },
+                .admitted, .runnable, .running => try appendUniqueBlocker(&blockers, allocator, .non_quiescent_run),
+            }
+            if (slot.status == .running) try appendUniqueBlocker(&blockers, allocator, .run_currently_stepping);
+        }
+
+        const active_fabric_count = activeFabricInvocationCount(runspace);
+        for (runspace.fabric_invocations.items) |invocation| {
+            if (!isActiveFabricStatus(invocation.status)) continue;
+            if (invocation.provider_run_handle_fingerprint == null) try appendUniqueBlocker(&blockers, allocator, .active_route_provider_witness_missing);
+            if (!mailboxContainsPendingFingerprint(runspace, invocation.parent_pending_port_fingerprint)) {
+                try appendUniqueBlocker(&blockers, allocator, .active_route_parent_pending_witness_missing);
+            }
+            if (invocation.status == .provider_running or invocation.status == .started or invocation.status == .provider_installed) {
+                try appendUniqueBlocker(&blockers, allocator, .non_quiescent_fabric);
+            }
+        }
+
+        if (report.blocker_count != 0) try appendUniqueBlocker(&blockers, allocator, .permit_denied);
+        if (report.warning_count != 0) try warnings.append(allocator, .sender_permit_not_authority);
+
+        const blocker_slice = try blockers.toOwnedSlice(allocator);
+        errdefer allocator.free(blocker_slice);
+        const warning_slice = try warnings.toOwnedSlice(allocator);
+        errdefer allocator.free(warning_slice);
+        var result = QuiescenceReport.init(.{
+            .runspace_fingerprint = runspace.runspace_fingerprint,
+            .assembly_fingerprint = if (assembly) |value| value.assembly_fingerprint else null,
+            .quiescent = blocker_slice.len == 0,
+            .normal_form = normalFormForQuiescence(runspace.slots.items.len, parked_count, completed_count, failed_count, active_fabric_count, blocker_slice.len),
+            .run_count = runspace.slots.items.len,
+            .parked_run_count = parked_count,
+            .completed_run_count = completed_count,
+            .failed_run_count = failed_count,
+            .pending_port_count = runspace.mailbox.pendingCount(),
+            .active_fabric_invocation_count = active_fabric_count,
+            .blockers = blocker_slice,
+            .warnings = warning_slice,
+        });
+        result.owns_memory = true;
+        return result;
+    }
+
+    pub fn mailboxImage(allocator: std.mem.Allocator, runspace: *const Runspace) !MailboxImage {
+        var pending_entries: std.ArrayList(PendingPortImage) = .empty;
+        var pending_entries_owned: bool = true;
+        errdefer {
+            if (pending_entries_owned) {
+                for (pending_entries.items) |*entry| entry.deinit(allocator);
+            }
+            pending_entries.deinit(allocator);
+        }
+        var pending_refs: std.ArrayList(u64) = .empty;
+        errdefer pending_refs.deinit(allocator);
+        var consumed_refs: std.ArrayList(u64) = .empty;
+        errdefer consumed_refs.deinit(allocator);
+        var single_use_refs: std.ArrayList(u64) = .empty;
+        errdefer single_use_refs.deinit(allocator);
+        var routing_refs: std.ArrayList(u64) = .empty;
+        errdefer routing_refs.deinit(allocator);
+
+        for (runspace.mailbox.pending.items) |pending_port| {
+            if (pending_port.status != .pending) continue;
+            var pending_entry = try PendingPortImage.fromPending(allocator, pending_port.borrowed());
+            var pending_entry_owned = true;
+            errdefer if (pending_entry_owned) pending_entry.deinit(allocator);
+            try pending_entries.append(allocator, pending_entry);
+            pending_entry_owned = false;
+            try pending_refs.append(allocator, pending_port.pending_port_fingerprint);
+            try single_use_refs.append(allocator, fingerprintPendingPortSingleUseStatus(pending_port));
+            try routing_refs.append(allocator, fingerprintPendingPortRoutingStatus(pending_port));
+        }
+        for (runspace.mailbox.pending.items) |pending_port| {
+            if (pending_port.status == .pending) continue;
+            try consumed_refs.append(allocator, pending_port.pending_port_fingerprint);
+            try single_use_refs.append(allocator, fingerprintPendingPortSingleUseStatus(pending_port));
+            try routing_refs.append(allocator, fingerprintPendingPortRoutingStatus(pending_port));
+        }
+
+        const pending_entry_slice = try pending_entries.toOwnedSlice(allocator);
+        pending_entries_owned = false;
+        errdefer {
+            for (pending_entry_slice) |*entry| entry.deinit(allocator);
+            allocator.free(pending_entry_slice);
+        }
+        const pending_slice = try pending_refs.toOwnedSlice(allocator);
+        errdefer allocator.free(pending_slice);
+        const consumed_slice = try consumed_refs.toOwnedSlice(allocator);
+        errdefer allocator.free(consumed_slice);
+        const single_use_slice = try single_use_refs.toOwnedSlice(allocator);
+        errdefer allocator.free(single_use_slice);
+        const routing_slice = try routing_refs.toOwnedSlice(allocator);
+        errdefer allocator.free(routing_slice);
+        var image = MailboxImage.init(.{
+            .pending_port_entries = pending_entry_slice,
+            .pending_port_fingerprints = pending_slice,
+            .consumed_port_fingerprints = consumed_slice,
+            .next_mailbox_id = runspace.next_mailbox_id,
+            .generation = @intCast(runspace.mailbox.pending.items.len),
+            .single_use_status_fingerprints = single_use_slice,
+            .response_routing_status_fingerprints = routing_slice,
+        });
+        image.owns_memory = true;
+        return image;
+    }
+
+    pub fn runspaceImage(allocator: std.mem.Allocator, runspace: *const Runspace) !RunspaceImage {
+        return runspaceImageWithRunImageFingerprints(allocator, runspace, null, true, true, true);
+    }
+
+    fn runspaceImageWithRunImageFingerprints(allocator: std.mem.Allocator, runspace: *const Runspace, slot_run_image_fingerprints: ?[]const ?u64, include_transcripts: bool, include_receipts: bool, require_quiescent: bool) !RunspaceImage {
+        if (slot_run_image_fingerprints) |fingerprints| {
+            if (fingerprints.len != runspace.slots.items.len) return error.InvalidFrameEncoding;
+        }
+        var report = try quiescenceReport(allocator, runspace, null);
+        defer report.deinit(allocator);
+        if (require_quiescent and !report.quiescent) return error.InvalidFrameEncoding;
+
+        var run_handle_refs: std.ArrayList(u64) = .empty;
+        errdefer run_handle_refs.deinit(allocator);
+        var slot_images: std.ArrayList(RunSlotImage) = .empty;
+        var slot_images_owned: bool = true;
+        errdefer {
+            if (slot_images_owned) {
+                for (slot_images.items) |*slot| slot.deinit(allocator);
+                slot_images.deinit(allocator);
+            }
+        }
+        var root_refs: std.ArrayList(u64) = .empty;
+        errdefer root_refs.deinit(allocator);
+        var provider_refs: std.ArrayList(u64) = .empty;
+        errdefer provider_refs.deinit(allocator);
+
+        for (runspace.slots.items, 0..) |slot, index| {
+            try run_handle_refs.append(allocator, slot.handle.handle_fingerprint);
+            const run_image_fingerprint = if (slot_run_image_fingerprints) |fingerprints|
+                fingerprints[index]
+            else
+                runImageFingerprintForSlot(slot);
+            var slot_image = try runSlotImageForSlot(allocator, runspace, slot, run_image_fingerprint, include_transcripts);
+            var slot_image_owned = true;
+            errdefer if (slot_image_owned) slot_image.deinit(allocator);
+            try slot_images.append(allocator, slot_image);
+            slot_image_owned = false;
+            switch (runSlotRoleForFreeze(slot)) {
+                .root => try root_refs.append(allocator, slot.handle.handle_fingerprint),
+                .provider => try provider_refs.append(allocator, slot.handle.handle_fingerprint),
+                .branch, .guest, .replay, .verify => {},
+            }
+        }
+
+        var event_refs: std.ArrayList(u64) = .empty;
+        errdefer event_refs.deinit(allocator);
+        for (runspace.events.items) |event| try event_refs.append(allocator, event.event_fingerprint);
+
+        var branch_refs: std.ArrayList(u64) = .empty;
+        errdefer branch_refs.deinit(allocator);
+        var checkpoint_refs: std.ArrayList(u64) = .empty;
+        errdefer checkpoint_refs.deinit(allocator);
+        var transcript_refs: std.ArrayList(u64) = .empty;
+        errdefer transcript_refs.deinit(allocator);
+        var run_image_refs: std.ArrayList(u64) = .empty;
+        errdefer run_image_refs.deinit(allocator);
+        var receipt_refs: std.ArrayList(u64) = .empty;
+        errdefer receipt_refs.deinit(allocator);
+        var admission_refs: std.ArrayList(u64) = .empty;
+        errdefer admission_refs.deinit(allocator);
+        var permit_refs: std.ArrayList(u64) = .empty;
+        errdefer permit_refs.deinit(allocator);
+        for (runspace.slots.items, 0..) |slot, index| {
+            if (slot.branch_id) |branch| try branch_refs.append(allocator, branch);
+            if (slot.checkpoint_fingerprint) |checkpoint| try checkpoint_refs.append(allocator, checkpoint);
+            if (include_transcripts) if (slot.current_state.transcript_image_fingerprint) |transcript| try transcript_refs.append(allocator, transcript);
+            const slot_run_image_fingerprint = if (slot_run_image_fingerprints) |fingerprints|
+                fingerprints[index]
+            else
+                runImageFingerprintForSlot(slot);
+            if (slot_run_image_fingerprint) |fingerprint| try run_image_refs.append(allocator, fingerprint);
+            if (include_receipts) if (slot.run_receipt_fingerprint) |receipt| try receipt_refs.append(allocator, receipt);
+            if (slot.admission_receipt_fingerprint) |admission| try admission_refs.append(allocator, admission);
+            if (slot.run_permit_fingerprint) |permit| try permit_refs.append(allocator, permit);
+        }
+
+        var active_fabric_refs: std.ArrayList(u64) = .empty;
+        errdefer active_fabric_refs.deinit(allocator);
+        for (runspace.fabric_invocations.items) |invocation| {
+            if (isActiveFabricStatus(invocation.status)) try active_fabric_refs.append(allocator, invocation.invocation_fingerprint);
+        }
+
+        var mailbox = try mailboxImage(allocator, runspace);
+        errdefer mailbox.deinit(allocator);
+        const run_handle_slice = try run_handle_refs.toOwnedSlice(allocator);
+        errdefer allocator.free(run_handle_slice);
+        const slot_slice = try slot_images.toOwnedSlice(allocator);
+        slot_images_owned = false;
+        errdefer {
+            for (slot_slice) |*slot| slot.deinit(allocator);
+            allocator.free(slot_slice);
+        }
+        const event_slice = try event_refs.toOwnedSlice(allocator);
+        errdefer allocator.free(event_slice);
+        const root_slice = try root_refs.toOwnedSlice(allocator);
+        errdefer allocator.free(root_slice);
+        const provider_slice = try provider_refs.toOwnedSlice(allocator);
+        errdefer allocator.free(provider_slice);
+        const branch_slice = try branch_refs.toOwnedSlice(allocator);
+        errdefer allocator.free(branch_slice);
+        const checkpoint_slice = try checkpoint_refs.toOwnedSlice(allocator);
+        errdefer allocator.free(checkpoint_slice);
+        const transcript_slice = try transcript_refs.toOwnedSlice(allocator);
+        errdefer allocator.free(transcript_slice);
+        const run_image_slice = try run_image_refs.toOwnedSlice(allocator);
+        errdefer allocator.free(run_image_slice);
+        const receipt_slice = try receipt_refs.toOwnedSlice(allocator);
+        errdefer allocator.free(receipt_slice);
+        const admission_slice = try admission_refs.toOwnedSlice(allocator);
+        errdefer allocator.free(admission_slice);
+        const permit_slice = try permit_refs.toOwnedSlice(allocator);
+        errdefer allocator.free(permit_slice);
+        const active_fabric_slice = try active_fabric_refs.toOwnedSlice(allocator);
+        errdefer allocator.free(active_fabric_slice);
+
+        const runspace_report = runspace.report();
+        var image = RunspaceImage.init(.{
+            .runspace_fingerprint = runspace.runspace_fingerprint,
+            .runspace_report_fingerprint = fingerprintRunspaceReportSummary(runspace_report),
+            .run_handle_mappings = run_handle_slice,
+            .run_slots = slot_slice,
+            .mailbox_image = mailbox,
+            .runspace_event_fingerprints = event_slice,
+            .root_run_handle_fingerprints = root_slice,
+            .provider_run_handle_fingerprints = provider_slice,
+            .branch_refs = branch_slice,
+            .checkpoint_refs = checkpoint_slice,
+            .transcript_image_refs = transcript_slice,
+            .run_image_refs = run_image_slice,
+            .run_receipt_refs = receipt_slice,
+            .admission_receipt_refs = admission_slice,
+            .permit_refs = permit_slice,
+            .active_fabric_invocation_refs = active_fabric_slice,
+        });
+        image.owns_memory = true;
+        return image;
+    }
+
+    pub fn fabricImage(allocator: std.mem.Allocator, runspace: *const Runspace) !FabricImage {
+        return fabricImageWithReceiptPolicy(allocator, runspace, true);
+    }
+
+    fn fabricImageWithReceiptPolicy(allocator: std.mem.Allocator, runspace: *const Runspace, include_receipts: bool) !FabricImage {
+        var plan_refs: std.ArrayList(u64) = .empty;
+        errdefer plan_refs.deinit(allocator);
+        for (runspace.fabric_plan_fingerprints.items) |fingerprint| try plan_refs.append(allocator, fingerprint);
+
+        var active_refs: std.ArrayList(u64) = .empty;
+        errdefer active_refs.deinit(allocator);
+        var completed_receipt_refs: std.ArrayList(u64) = .empty;
+        errdefer completed_receipt_refs.deinit(allocator);
+        var parent_pending_refs: std.ArrayList(u64) = .empty;
+        errdefer parent_pending_refs.deinit(allocator);
+        var provider_run_refs: std.ArrayList(u64) = .empty;
+        errdefer provider_run_refs.deinit(allocator);
+        var provider_state_refs: std.ArrayList(u64) = .empty;
+        errdefer provider_state_refs.deinit(allocator);
+        var depth_route_stack: std.ArrayList(u64) = .empty;
+        errdefer depth_route_stack.deinit(allocator);
+        var route_refs: std.ArrayList(u64) = .empty;
+        errdefer route_refs.deinit(allocator);
+        var mapping_refs: std.ArrayList(u64) = .empty;
+        errdefer mapping_refs.deinit(allocator);
+
+        var status_hasher = std.hash.Wyhash.init(0x6361_7073_6662_7374);
+        for (runspace.fabric_invocations.items) |invocation| {
+            try invocation.validate();
+            hashU64(&status_hasher, invocation.invocation_fingerprint);
+            hashU64(&status_hasher, @intFromEnum(invocation.status));
+            if (isActiveFabricStatus(invocation.status)) {
+                const route = fabricRouteWitness(runspace, invocation.route_fingerprint) orelse return error.FabricWitnessMissing;
+                const mapping_fingerprint = fabricValueMappingWitness(runspace, route) orelse return error.FabricWitnessMissing;
+                if (!mailboxContainsPendingFingerprint(runspace, invocation.parent_pending_port_fingerprint)) return error.MailboxOwnershipMismatch;
+                const provider_handle = invocation.provider_run_handle_fingerprint orelse return error.ProviderStateUnsupported;
+                const provider_state = providerStateFingerprintForHandle(runspace, provider_handle) orelse return error.ProviderStateUnsupported;
+                try active_refs.append(allocator, invocation.invocation_fingerprint);
+                try parent_pending_refs.append(allocator, invocation.parent_pending_port_fingerprint);
+                try provider_run_refs.append(allocator, provider_handle);
+                try provider_state_refs.append(allocator, provider_state);
+                try route_refs.append(allocator, route.route_fingerprint);
+                try mapping_refs.append(allocator, mapping_fingerprint);
+                try depth_route_stack.append(allocator, fingerprintFabricActiveInvocationWitness(
+                    invocation.invocation_fingerprint,
+                    route.route_fingerprint,
+                    mapping_fingerprint,
+                ));
+            }
+        }
+
+        if (include_receipts) {
+            for (runspace.fabric_receipts.items) |receipt| {
+                try receipt.validate();
+                hashU64(&status_hasher, receipt.receipt_fingerprint);
+                hashU64(&status_hasher, @intFromEnum(receipt.status));
+                if (fabricRouteWitness(runspace, receipt.route_fingerprint) == null) return error.FabricWitnessMissing;
+                if (receipt.status == .completed or receipt.status == .parent_responded) {
+                    try completed_receipt_refs.append(allocator, receipt.receipt_fingerprint);
+                }
+                if (receipt.provider_run_handle_fingerprint) |provider| {
+                    try appendUniqueU64(&provider_run_refs, allocator, provider);
+                    if (providerStateFingerprintForHandle(runspace, provider)) |state| {
+                        try appendUniqueU64(&provider_state_refs, allocator, state);
+                    }
+                }
+            }
+        }
+
+        for (runspace.fabric_routes.items) |route| {
+            try route.validate();
+            try appendUniqueU64(&route_refs, allocator, route.route_fingerprint);
+        }
+
+        for (runspace.fabric_value_mappings.items) |mapping| {
+            try mapping.validate();
+            try appendUniqueU64(&mapping_refs, allocator, mapping.mapping_fingerprint);
+        }
+
+        const plan_slice = try plan_refs.toOwnedSlice(allocator);
+        errdefer allocator.free(plan_slice);
+        const active_slice = try active_refs.toOwnedSlice(allocator);
+        errdefer allocator.free(active_slice);
+        const completed_slice = try completed_receipt_refs.toOwnedSlice(allocator);
+        errdefer allocator.free(completed_slice);
+        const pending_slice = try parent_pending_refs.toOwnedSlice(allocator);
+        errdefer allocator.free(pending_slice);
+        const provider_slice = try provider_run_refs.toOwnedSlice(allocator);
+        errdefer allocator.free(provider_slice);
+        const provider_state_slice = try provider_state_refs.toOwnedSlice(allocator);
+        errdefer allocator.free(provider_state_slice);
+        const route_slice = try route_refs.toOwnedSlice(allocator);
+        errdefer allocator.free(route_slice);
+        const mapping_slice = try mapping_refs.toOwnedSlice(allocator);
+        errdefer allocator.free(mapping_slice);
+        const depth_slice = try depth_route_stack.toOwnedSlice(allocator);
+        errdefer allocator.free(depth_slice);
+        const replay_cursor_slice = try allocator.alloc(u64, 0);
+        errdefer allocator.free(replay_cursor_slice);
+
+        var image = FabricImage.init(.{
+            .fabric_plan_fingerprints = plan_slice,
+            .active_invocation_fingerprints = active_slice,
+            .completed_receipt_fingerprints = completed_slice,
+            .parent_pending_port_refs = pending_slice,
+            .provider_run_refs = provider_slice,
+            .provider_state_summary_fingerprints = provider_state_slice,
+            .route_fingerprints = route_slice,
+            .value_mapping_fingerprints = mapping_slice,
+            .depth_route_stack = depth_slice,
+            .replay_cursor_state_refs = replay_cursor_slice,
+            .status_summary_fingerprint = status_hasher.final(),
+        });
+        image.owns_memory = true;
+        return image;
+    }
+
+    pub fn linkImageFromAssembly(allocator: std.mem.Allocator, assembly: Assembly, linker_policy_fingerprint: u64, catalog_fingerprint: ?u64) !LinkImage {
+        try assembly.validate();
+        if (linker_policy_fingerprint == 0) return error.InvalidFrameEncoding;
+
+        var route_refs: std.ArrayList(u64) = .empty;
+        errdefer route_refs.deinit(allocator);
+        var provider_refs: std.ArrayList(u64) = .empty;
+        errdefer provider_refs.deinit(allocator);
+        var external_refs: std.ArrayList(u64) = .empty;
+        errdefer external_refs.deinit(allocator);
+
+        for (assembly.fabric_plans) |plan| {
+            try plan.validate();
+            try route_refs.append(allocator, plan.plan_fingerprint);
+            for (plan.routes) |route| {
+                try route_refs.append(allocator, route.route_fingerprint);
+                if (route.provider_target_ref_fingerprint) |provider| try appendUniqueU64(&provider_refs, allocator, provider);
+            }
+            for (plan.value_mappings) |mapping| try route_refs.append(allocator, mapping.mapping_fingerprint);
+        }
+        for (assembly.provider_run_templates) |provider| try appendUniqueU64(&provider_refs, allocator, provider);
+        for (assembly.external_import_requirements) |requirement| try external_refs.append(allocator, requirement.requirement_fingerprint);
+
+        const route_slice = try route_refs.toOwnedSlice(allocator);
+        errdefer allocator.free(route_slice);
+        const provider_slice = try provider_refs.toOwnedSlice(allocator);
+        errdefer allocator.free(provider_slice);
+        const guest_slice = try allocator.dupe(u64, assembly.guest_provider_templates);
+        errdefer allocator.free(guest_slice);
+        const external_slice = try external_refs.toOwnedSlice(allocator);
+        errdefer allocator.free(external_slice);
+
+        const residual_import_set = assembly.residualImportSet();
+        var image = LinkImage.init(.{
+            .link_plan_fingerprint = assembly.link_plan_fingerprint,
+            .link_certificate_fingerprint = assembly.linker_certificate_fingerprint,
+            .assembly_fingerprint = assembly.assembly_fingerprint,
+            .linker_policy_fingerprint = linker_policy_fingerprint,
+            .catalog_fingerprint = catalog_fingerprint,
+            .route_synthesis_refs = route_slice,
+            .residual_import_set_fingerprint = if (residual_import_set.required_count == 0) 0 else residual_import_set.residual_import_set_fingerprint,
+            .provider_target_refs = provider_slice,
+            .guest_provider_refs = guest_slice,
+            .external_environment_requirements = external_slice,
+        });
+        image.owns_memory = true;
+        return image;
+    }
+
+    pub fn dependencies(image: Image, allocator: std.mem.Allocator) ![]DependencyRef {
+        return dependencyRefsForFreeze(allocator, image.manifest, image.runspace_image, image.link_image, image.fabric_image, image.value_image_refs);
+    }
+
+    pub fn objectRefs(image: Image, allocator: std.mem.Allocator) ![]ObjectRef {
+        return objectRefsForFreeze(allocator, image.manifest, image.runspace_image, image.link_image, image.fabric_image);
+    }
+
+    pub fn asBundleRoot(image: Image) ?ObjectRef {
+        if (image.image_fingerprint == 0) return null;
+        return image.asBundleRoot();
+    }
+
+    pub fn freezeRunspace(runspace: *Runspace, options: FreezeOptions) !Image {
+        return freezeRunspaceWithAssembly(runspace, null, options);
+    }
+
+    pub fn freezeAssembly(runspace: *Runspace, assembly: Assembly, options: FreezeOptions) !Image {
+        return freezeRunspaceWithAssembly(runspace, assembly, options);
+    }
+
+    pub fn freezeRun(handle: RunHandle, options: FreezeOptions) !Image {
+        if (options.max_run_slots == 0) return error.InvalidFrameEncoding;
+        const validate_options = validateOptionsForFreeze(options);
+        const manifest = Manifest.init(.{
+            .kind = .reference_only,
+            .root_target_ref_fingerprint = handle.target_ref_fingerprint,
+            .normal_form = .quiescent_completed,
+        });
+        const runspace_image_value = RunspaceImage.init(.{
+            .runspace_fingerprint = handle.runspace_fingerprint,
+            .runspace_report_fingerprint = handle.handle_fingerprint,
+        });
+        const image = Image.init(.{
+            .manifest = manifest,
+            .runspace_image = runspace_image_value,
+        });
+        try image.validate(validate_options);
+        return image;
+    }
+
+    fn freezeRunspaceWithAssembly(runspace: *Runspace, assembly: ?Assembly, options: FreezeOptions) !Image {
+        const allocator = runspace.allocator;
+        if (runspace.slots.items.len > options.max_run_slots) return error.InvalidFrameEncoding;
+        if (runspace.mailbox.pending.items.len > options.max_pending_ports) return error.InvalidFrameEncoding;
+        if (runspace.fabric_invocations.items.len > options.max_fabric_invocations) return error.InvalidFrameEncoding;
+        if (!options.include_value_images) return error.InvalidFrameEncoding;
+
+        const report_assembly = if (options.include_link_certificate) assembly else null;
+        var report = try quiescenceReport(allocator, runspace, report_assembly);
+        defer report.deinit(allocator);
+        if (options.require_quiescent and !report.quiescent) return error.InvalidFrameEncoding;
+        try validateFreezePolicy(report, options);
+        if (options.include_link_certificate) {
+            if (assembly) |value| try validateAssemblyBoundToRunspace(runspace, value);
+        }
+
+        const slot_run_image_fingerprints = try allocator.alloc(?u64, runspace.slots.items.len);
+        defer allocator.free(slot_run_image_fingerprints);
+        @memset(slot_run_image_fingerprints, null);
+
+        const run_images = try collectRunImages(allocator, runspace, options, slot_run_image_fingerprints);
+        var run_images_owned = true;
+        errdefer if (run_images_owned) {
+            for (run_images) |*image| image.deinit(allocator);
+            allocator.free(run_images);
+        };
+
+        var runspace_image_value = try runspaceImageWithRunImageFingerprints(allocator, runspace, slot_run_image_fingerprints, options.include_transcripts, options.include_receipts, options.require_quiescent);
+        var runspace_image_owned = true;
+        errdefer if (runspace_image_owned) runspace_image_value.deinit(allocator);
+        const projected_receipt_refs = try receiptRefsForRunImages(allocator, runspace_image_value.run_receipt_refs, run_images);
+        var projected_receipt_refs_owned = true;
+        errdefer if (projected_receipt_refs_owned) allocator.free(projected_receipt_refs);
+        allocator.free(runspace_image_value.run_receipt_refs);
+        runspace_image_value.run_receipt_refs = projected_receipt_refs;
+        projected_receipt_refs_owned = false;
+        runspace_image_value.image_fingerprint = fingerprintRunspaceImage(runspace_image_value);
+
+        var maybe_fabric_image: ?FabricImage = if (runspace.fabric_plan_fingerprints.items.len != 0 or runspace.fabric_invocations.items.len != 0 or (options.include_receipts and runspace.fabric_receipts.items.len != 0))
+            try fabricImageWithReceiptPolicy(allocator, runspace, options.include_receipts)
+        else
+            null;
+        var fabric_image_owned = maybe_fabric_image != null;
+        errdefer if (fabric_image_owned) if (maybe_fabric_image) |*image| image.deinit(allocator);
+
+        var maybe_link_image: ?LinkImage = if (options.include_link_certificate) if (assembly) |value|
+            try linkImageFromAssembly(allocator, value, value.linker_policy_fingerprint, value.catalog_fingerprint)
+        else
+            null else null;
+        var link_image_owned = maybe_link_image != null;
+        errdefer if (link_image_owned) if (maybe_link_image) |*image| image.deinit(allocator);
+
+        const admission_refs = try allocator.dupe(u64, runspace_image_value.admission_receipt_refs);
+        var admission_refs_owned = true;
+        errdefer if (admission_refs_owned) allocator.free(admission_refs);
+        const environment_refs = try environmentRefsForFreeze(allocator, assembly, run_images);
+        var environment_refs_owned = true;
+        errdefer if (environment_refs_owned) allocator.free(environment_refs);
+        if (environment_refs.len > 1) return error.InvalidFrameEncoding;
+        const permit_refs = try allocator.dupe(u64, runspace_image_value.permit_refs);
+        var permit_refs_owned = true;
+        errdefer if (permit_refs_owned) allocator.free(permit_refs);
+        const receipt_refs = try allocator.dupe(u64, runspace_image_value.run_receipt_refs);
+        var receipt_refs_owned = true;
+        errdefer if (receipt_refs_owned) allocator.free(receipt_refs);
+        const run_image_refs = try refsFromRunImages(allocator, run_images);
+        var run_image_refs_owned = true;
+        errdefer if (run_image_refs_owned) allocator.free(run_image_refs);
+        const transcript_refs = try allocator.dupe(u64, runspace_image_value.transcript_image_refs);
+        var transcript_refs_owned = true;
+        errdefer if (transcript_refs_owned) allocator.free(transcript_refs);
+        const fabric_plan_refs = if (maybe_fabric_image) |image| try allocator.dupe(u64, image.fabric_plan_fingerprints) else try allocator.alloc(u64, 0);
+        var fabric_plan_refs_owned = true;
+        errdefer if (fabric_plan_refs_owned) allocator.free(fabric_plan_refs);
+        const fabric_invocation_refs = if (maybe_fabric_image) |image| try allocator.dupe(u64, image.active_invocation_fingerprints) else try allocator.alloc(u64, 0);
+        var fabric_invocation_refs_owned = true;
+        errdefer if (fabric_invocation_refs_owned) allocator.free(fabric_invocation_refs);
+        const fabric_receipt_refs = if (maybe_fabric_image) |image| try allocator.dupe(u64, image.completed_receipt_fingerprints) else try allocator.alloc(u64, 0);
+        var fabric_receipt_refs_owned = true;
+        errdefer if (fabric_receipt_refs_owned) allocator.free(fabric_receipt_refs);
+        const guest_refs = if (options.include_guest_conformance) if (assembly) |value|
+            try allocator.dupe(u64, value.guest_conformance_report_fingerprints)
+        else
+            try allocator.alloc(u64, 0) else try allocator.alloc(u64, 0);
+        var guest_refs_owned = true;
+        errdefer if (guest_refs_owned) allocator.free(guest_refs);
+        const supervision_refs = try allocator.dupe(u64, permit_refs);
+        var supervision_refs_owned = true;
+        errdefer if (supervision_refs_owned) allocator.free(supervision_refs);
+        const value_refs = try allocator.alloc(u64, 0);
+        var value_refs_owned = true;
+        errdefer if (value_refs_owned) allocator.free(value_refs);
+        const metadata = try allocator.dupe(u8, "");
+        var metadata_owned = true;
+        errdefer if (metadata_owned) allocator.free(metadata);
+
+        var manifest = Manifest.init(.{
+            .kind = capsuleKindForNormalForm(report.normal_form),
+            .root_target_ref_fingerprint = rootTargetRefFingerprintForFreeze(runspace, assembly),
+            .root_module_ref_fingerprint = if (assembly) |value| value.root_target_ref.boundary_module_fingerprint else rootModuleRefFingerprintForFreeze(runspace),
+            .link_plan_fingerprint = if (options.include_link_certificate) if (assembly) |value| value.link_plan_fingerprint else null else null,
+            .link_certificate_fingerprint = if (options.include_link_certificate) if (assembly) |value| value.linker_certificate_fingerprint else null else null,
+            .assembly_fingerprint = if (options.include_link_certificate) if (assembly) |value| value.assembly_fingerprint else null else null,
+            .admission_receipt_fingerprints = admission_refs,
+            .environment_certificate_fingerprints = environment_refs,
+            .run_permit_fingerprints = permit_refs,
+            .run_receipt_fingerprints = receipt_refs,
+            .run_image_fingerprints = run_image_refs,
+            .transcript_image_fingerprints = transcript_refs,
+            .fabric_plan_fingerprints = fabric_plan_refs,
+            .fabric_invocation_fingerprints = fabric_invocation_refs,
+            .fabric_receipt_fingerprints = fabric_receipt_refs,
+            .guest_conformance_report_fingerprints = guest_refs,
+            .pending_port_count = report.pending_port_count,
+            .run_slot_count = report.run_count,
+            .active_fabric_invocation_count = report.active_fabric_invocation_count,
+            .normal_form = report.normal_form,
+            .metadata = metadata,
+        });
+        manifest.owns_memory = true;
+        admission_refs_owned = false;
+        environment_refs_owned = false;
+        permit_refs_owned = false;
+        receipt_refs_owned = false;
+        run_image_refs_owned = false;
+        transcript_refs_owned = false;
+        fabric_plan_refs_owned = false;
+        fabric_invocation_refs_owned = false;
+        fabric_receipt_refs_owned = false;
+        guest_refs_owned = false;
+        metadata_owned = false;
+        var manifest_owned = true;
+        errdefer if (manifest_owned) manifest.deinit(allocator);
+
+        const dependency_refs = try dependencyRefsForFreeze(allocator, manifest, runspace_image_value, maybe_link_image, maybe_fabric_image, value_refs);
+        var dependency_refs_owned = true;
+        errdefer if (dependency_refs_owned) allocator.free(dependency_refs);
+        const object_refs = try objectRefsForFreeze(allocator, manifest, runspace_image_value, maybe_link_image, maybe_fabric_image);
+        var object_refs_owned = true;
+        errdefer if (object_refs_owned) allocator.free(object_refs);
+        const image_admission_refs = try allocator.dupe(u64, admission_refs);
+        var image_admission_refs_owned = true;
+        errdefer if (image_admission_refs_owned) allocator.free(image_admission_refs);
+        const image_environment_refs = try allocator.dupe(u64, environment_refs);
+        var image_environment_refs_owned = true;
+        errdefer if (image_environment_refs_owned) allocator.free(image_environment_refs);
+        const image_guest_refs = try allocator.dupe(u64, guest_refs);
+        var image_guest_refs_owned = true;
+        errdefer if (image_guest_refs_owned) allocator.free(image_guest_refs);
+        const image_transcript_refs = try allocator.dupe(u64, transcript_refs);
+        var image_transcript_refs_owned = true;
+        errdefer if (image_transcript_refs_owned) allocator.free(image_transcript_refs);
+        const image_run_image_refs = try allocator.dupe(u64, run_image_refs);
+        var image_run_image_refs_owned = true;
+        errdefer if (image_run_image_refs_owned) allocator.free(image_run_image_refs);
+        const image_metadata = try allocator.dupe(u8, "");
+        var image_metadata_owned = true;
+        errdefer if (image_metadata_owned) allocator.free(image_metadata);
+
+        var image = Image.init(.{
+            .manifest = manifest,
+            .runspace_image = runspace_image_value,
+            .link_image = maybe_link_image,
+            .fabric_image = maybe_fabric_image,
+            .admission_refs = image_admission_refs,
+            .environment_refs = image_environment_refs,
+            .supervision_refs = supervision_refs,
+            .guest_conformance_refs = image_guest_refs,
+            .transcript_image_refs = image_transcript_refs,
+            .run_image_refs = image_run_image_refs,
+            .value_image_refs = value_refs,
+            .run_images = run_images,
+            .dependency_refs = dependency_refs,
+            .object_refs = object_refs,
+            .metadata = image_metadata,
+        });
+        image.owns_memory = true;
+        runspace_image_owned = false;
+        fabric_image_owned = false;
+        link_image_owned = false;
+        run_images_owned = false;
+        manifest_owned = false;
+        dependency_refs_owned = false;
+        object_refs_owned = false;
+        image_admission_refs_owned = false;
+        image_environment_refs_owned = false;
+        supervision_refs_owned = false;
+        image_guest_refs_owned = false;
+        image_transcript_refs_owned = false;
+        image_run_image_refs_owned = false;
+        value_refs_owned = false;
+        image_metadata_owned = false;
+        var image_owned = true;
+        errdefer if (image_owned) image.deinit(allocator);
+
+        const encoded = try image.encode(allocator);
+        defer allocator.free(encoded);
+        if (encoded.len > options.max_image_bytes) return error.InvalidFrameEncoding;
+        const validate_options = validateOptionsForFreeze(options);
+        try image.validate(validate_options);
+        const cert = try certificateWithOptions(image, report, validate_options);
+        try cert.validate();
+        image_owned = false;
+        return image;
+    }
+
+    pub fn planThaw(image: Image, local_root_target_ref_fingerprint: u64, environment_fingerprint: u64, permit_fingerprint: ?u64, options: ThawOptions) !ThawPlan {
+        try image.validate(validateOptionsForThaw(options));
+        const blocker: ?Blocker = thawBlocker(image, local_root_target_ref_fingerprint, environment_fingerprint, permit_fingerprint, options);
+        const accepted = blocker == null;
+        const link_status = linkMatchStatusForThaw(image, options);
+        return ThawPlan.init(.{
+            .capsule_image_fingerprint = image.image_fingerprint,
+            .requested_mode = options.mode,
+            .local_root_target_ref_fingerprint = local_root_target_ref_fingerprint,
+            .require_local_permit = options.require_local_permit,
+            .require_link_match = options.require_link_match,
+            .allow_relink_drift = options.allow_relink_drift,
+            .local_catalog_fingerprint = options.local_catalog_fingerprint,
+            .rerun_guest_conformance = options.rerun_guest_conformance,
+            .link_certificate_match_status = link_status,
+            .relink_status = if (accepted) if (link_status == .mismatched and options.allow_relink_drift) .drift_allowed else .matched else .rejected,
+            .environment_preflight_refs = image.manifest.environment_certificate_fingerprints,
+            .guest_conformance_refs = image.guest_conformance_refs,
+            .receiver_run_permit_fingerprint = permit_fingerprint,
+            .handle_remapping_plan = image.runspace_image.run_handle_mappings,
+            .mailbox_id_remapping_plan = if (image.runspace_image.mailbox_image) |mailbox| mailbox.pending_port_fingerprints else &.{},
+            .blockers = if (blocker) |value| blockerSlice(value) else &.{},
+            .warnings = if (image.link_image == null) &.{.relink_not_performed} else &.{},
+        });
+    }
+
+    pub fn thawIntoRunspace(image: Image, runspace: *Runspace, local_root_target_ref_fingerprint: u64, environment_fingerprint: u64, permit_fingerprint: ?u64, options: ThawOptions) !RestoreReport {
+        const allocator = runspace.allocator;
+        var transaction = try RestoreTransaction.prepare(image, runspace, local_root_target_ref_fingerprint, environment_fingerprint, permit_fingerprint, options);
+        defer transaction.rollbackUnlessCommitted();
+        const plan = transaction.plan;
+        if (plan.blockers.len != 0) {
+            return restoreReportOwned(allocator, .{
+                .capsule_image_fingerprint = image.image_fingerprint,
+                .thaw_plan_fingerprint = plan.thaw_plan_fingerprint,
+                .restored_runspace_fingerprint = runspace.runspace_fingerprint,
+                .guest_conformance_refs = plan.guest_conformance_refs,
+                .receiver_run_permit_fingerprint = plan.receiver_run_permit_fingerprint,
+                .accepted = false,
+                .blockers = plan.blockers,
+                .summary = "capsule restore denied before runspace mutation",
+            });
+        }
+        if (options.mode == .inspect_only or options.mode == .replay_only) {
+            return restoreReportOwned(allocator, .{
+                .capsule_image_fingerprint = image.image_fingerprint,
+                .thaw_plan_fingerprint = plan.thaw_plan_fingerprint,
+                .restored_runspace_fingerprint = runspace.runspace_fingerprint,
+                .guest_conformance_refs = plan.guest_conformance_refs,
+                .accepted = true,
+                .warnings = if (options.mode == .replay_only) &.{.replay_only_no_native_handlers} else &.{.metadata_only},
+                .summary = "capsule thaw inspected without runspace mutation",
+            });
+        }
+
+        transaction.preMutationCheck(image, options) catch |err| {
+            const blocker = restorePolicyBlockerForError(err) orelse return err;
+            return restoreReportOwned(allocator, .{
+                .capsule_image_fingerprint = image.image_fingerprint,
+                .thaw_plan_fingerprint = plan.thaw_plan_fingerprint,
+                .restored_runspace_fingerprint = runspace.runspace_fingerprint,
+                .guest_conformance_refs = plan.guest_conformance_refs,
+                .receiver_run_permit_fingerprint = permit_fingerprint,
+                .accepted = false,
+                .blockers = blockerSlice(blocker),
+                .summary = "capsule restore denied by receiver policy before runspace mutation",
+            });
+        };
+
+        var root_refs: std.ArrayList(u64) = .empty;
+        errdefer root_refs.deinit(allocator);
+        var provider_refs: std.ArrayList(u64) = .empty;
+        errdefer provider_refs.deinit(allocator);
+        var handle_mappings: std.ArrayList(u64) = .empty;
+        defer handle_mappings.deinit(allocator);
+        var mailbox_mappings: std.ArrayList(u64) = .empty;
+        errdefer mailbox_mappings.deinit(allocator);
+        var fabric_mappings: std.ArrayList(u64) = .empty;
+        errdefer fabric_mappings.deinit(allocator);
+
+        const restored_handles = try allocator.alloc(RunHandle, image.runspace_image.run_slots.len);
+        defer allocator.free(restored_handles);
+        for (image.runspace_image.run_slots, 0..) |slot_image, index| {
+            try slot_image.validate(.{});
+            const new_handle = restoredSlotHandle(runspace, slot_image, permit_fingerprint);
+            restored_handles[index] = new_handle;
+            try handle_mappings.append(allocator, slot_image.original_run_handle_fingerprint);
+            try handle_mappings.append(allocator, new_handle.handle_fingerprint);
+        }
+
+        try runspace.slots.ensureUnusedCapacity(allocator, image.runspace_image.run_slots.len);
+        for (image.runspace_image.run_slots, 0..) |slot_image, index| {
+            var installed_run_image: ?RunImage = null;
+            var installed_run_image_owned = false;
+            errdefer if (installed_run_image_owned) {
+                if (installed_run_image) |*run_image| run_image.deinit(allocator);
+            };
+            if (slot_image.run_image_fingerprint) |fingerprint| {
+                installed_run_image = try cloneCapsuleRunImageByFingerprint(allocator, image.run_images, fingerprint);
+                installed_run_image_owned = true;
+                if (installed_run_image.?.target_ref.target_ref_fingerprint != slot_image.target_ref_fingerprint) return error.InvalidFrameEncoding;
+                if (installed_run_image.?.current_state.run_state_fingerprint != slot_image.run_state_fingerprint) return error.InvalidFrameEncoding;
+                if (!runImageStateMatchesCapsuleSlot(installed_run_image.?, slot_image)) return error.InvalidFrameEncoding;
+            } else if (slotRestoreRequiresRunImage(slot_image.status)) {
+                return error.InvalidFrameEncoding;
+            }
+            const new_handle = restored_handles[index];
+            const status = try restoredRunspaceStatusForCapsuleSlot(image, slot_image, installed_run_image);
+            const parent_run_handle_fingerprint = if (slot_image.parent_run_handle_fingerprint) |parent|
+                try mappedHandleFingerprint(handle_mappings.items, parent)
+            else
+                null;
+            const restored_target_ref = if (installed_run_image) |run_image|
+                run_image.target_ref
+            else
+                TargetRef{
+                    .target_ref_fingerprint = slot_image.target_ref_fingerprint,
+                    .world_surface_fingerprint = 0,
+                    .target_certificate_fingerprint = 0,
+                    .boundary_module_fingerprint = slot_image.module_ref_fingerprint,
+                };
+            const restored_state = if (installed_run_image) |run_image|
+                run_image.current_state
+            else
+                RunState.init(.{
+                    .target_ref_fingerprint = slot_image.target_ref_fingerprint,
+                    .transcript_image_fingerprint = slot_image.transcript_image_fingerprint,
+                    .branch_id = slot_image.branch_id orelse 0,
+                    .checkpoint_fingerprint = if (slot_image.checkpoint_refs.len == 0) null else slot_image.checkpoint_refs[0],
+                    .status = runStateStatusForCapsuleStatus(slot_image.status),
+                });
+            runspace.slots.appendAssumeCapacity(Runspace.RunSlot.fromState(.{
+                .handle = new_handle,
+                .target_ref = restored_target_ref,
+                .current_state = restored_state,
+                .status = status,
+                .admission_receipt_fingerprint = slot_image.admission_receipt_fingerprint,
+                .run_permit_fingerprint = permit_fingerprint orelse slot_image.run_permit_fingerprint,
+                .run_receipt_fingerprint = if (installed_run_image) |run_image| run_image.prior_run_receipt_fingerprint else null,
+                .pending_mailbox_id = slot_image.current_pending_mailbox_id,
+                .branch_id = slot_image.branch_id,
+                .parent_run_handle_fingerprint = parent_run_handle_fingerprint,
+                .checkpoint_fingerprint = if (slot_image.checkpoint_refs.len == 0) null else slot_image.checkpoint_refs[0],
+                .module_ref_fingerprint = slot_image.module_ref_fingerprint,
+                .installed_run_image = installed_run_image,
+                .owns_installed_run_image = installed_run_image_owned,
+            }));
+            installed_run_image_owned = false;
+            switch (slot_image.role) {
+                .root => try root_refs.append(allocator, new_handle.handle_fingerprint),
+                .provider => try provider_refs.append(allocator, new_handle.handle_fingerprint),
+                .branch, .guest, .replay, .verify => {},
+            }
+        }
+        if (image.runspace_image.mailbox_image) |mailbox| {
+            for (mailbox.pending_port_entries) |pending_entry| {
+                try pending_entry.validate();
+                const new_handle_fingerprint = try mappedHandleFingerprint(handle_mappings.items, pending_entry.original_run_handle_fingerprint);
+                const new_handle = try restoredRunHandleByFingerprint(runspace, new_handle_fingerprint);
+                const new_mailbox_id = runspace.next_mailbox_id;
+                const pending = try runspace.mailbox.push(.{
+                    .run_handle = new_handle,
+                    .mailbox_id = new_mailbox_id,
+                    .request = pending_entry.request_frame,
+                    .target_ref_fingerprint = pending_entry.target_ref_fingerprint,
+                    .expected_response_kind = pending_entry.expected_response_kind,
+                    .environment_certificate_fingerprint = pending_entry.environment_certificate_fingerprint,
+                    .run_permit_fingerprint = permit_fingerprint orelse pending_entry.run_permit_fingerprint,
+                    .inserted_event_index = pending_entry.inserted_event_index,
+                });
+                runspace.next_mailbox_id += 1;
+                try setRestoredSlotPendingMailbox(runspace, new_handle_fingerprint, new_mailbox_id);
+                try mailbox_mappings.append(allocator, pending_entry.pending_port_fingerprint);
+                try mailbox_mappings.append(allocator, pending.pending_port_fingerprint);
+            }
+            if (mailbox.pending_port_entries.len == 0) {
+                for (mailbox.pending_port_fingerprints, 0..) |pending, index| {
+                    try mailbox_mappings.append(allocator, pending);
+                    try mailbox_mappings.append(allocator, runspace.next_mailbox_id + index);
+                }
+                runspace.next_mailbox_id += mailbox.pending_port_fingerprints.len;
+            }
+        }
+        if (image.fabric_image) |fabric| {
+            for (fabric.active_invocation_fingerprints) |invocation| {
+                try fabric_mappings.append(allocator, invocation);
+                try fabric_mappings.append(allocator, invocation);
+            }
+        }
+
+        const root_slice = try root_refs.toOwnedSlice(allocator);
+        errdefer allocator.free(root_slice);
+        const provider_slice = try provider_refs.toOwnedSlice(allocator);
+        errdefer allocator.free(provider_slice);
+        const handle_slice = try handle_mappings.toOwnedSlice(allocator);
+        errdefer allocator.free(handle_slice);
+        const mailbox_slice = try mailbox_mappings.toOwnedSlice(allocator);
+        errdefer allocator.free(mailbox_slice);
+        const fabric_slice = try fabric_mappings.toOwnedSlice(allocator);
+        errdefer allocator.free(fabric_slice);
+        const guest_slice = try allocator.dupe(u64, plan.guest_conformance_refs);
+        errdefer allocator.free(guest_slice);
+        const warning_slice = try allocator.dupe(Warning, &.{.metadata_only});
+        errdefer allocator.free(warning_slice);
+        const summary = try allocator.dupe(u8, "capsule restored slot metadata into runspace");
+        errdefer allocator.free(summary);
+
+        var report = RestoreReport.init(.{
+            .capsule_image_fingerprint = image.image_fingerprint,
+            .thaw_plan_fingerprint = plan.thaw_plan_fingerprint,
+            .restored_runspace_fingerprint = runspace.runspace_fingerprint,
+            .restored_local_run_id_start = transaction.next_run_id_before,
+            .restored_run_handle_mappings = handle_slice,
+            .restored_root_run_handles = root_slice,
+            .restored_provider_run_handles = provider_slice,
+            .restored_pending_port_mappings = mailbox_slice,
+            .restored_fabric_invocation_mappings = fabric_slice,
+            .guest_conformance_refs = guest_slice,
+            .environment_certificate_fingerprint = if (image.manifest.environment_certificate_fingerprints.len == 0) null else environment_fingerprint,
+            .receiver_run_permit_fingerprint = permit_fingerprint,
+            .accepted = true,
+            .warnings = warning_slice,
+            .summary = summary,
+        });
+        report.owns_memory = true;
+        transaction.commit();
+        return report;
+    }
+
+    fn restoreReportOwned(allocator: std.mem.Allocator, args: struct {
+        capsule_image_fingerprint: u64,
+        thaw_plan_fingerprint: u64,
+        restored_runspace_fingerprint: u64,
+        restored_local_run_id_start: u64 = 0,
+        restored_run_handle_mappings: []const u64 = &.{},
+        restored_root_run_handles: []const u64 = &.{},
+        restored_provider_run_handles: []const u64 = &.{},
+        restored_pending_port_mappings: []const u64 = &.{},
+        restored_fabric_invocation_mappings: []const u64 = &.{},
+        guest_conformance_refs: []const u64 = &.{},
+        environment_certificate_fingerprint: ?u64 = null,
+        receiver_run_permit_fingerprint: ?u64 = null,
+        accepted: bool,
+        blockers: []const Blocker = &.{},
+        warnings: []const Warning = &.{},
+        summary: []const u8 = "",
+    }) !RestoreReport {
+        const handle_mappings = try allocator.dupe(u64, args.restored_run_handle_mappings);
+        errdefer allocator.free(handle_mappings);
+        const root_handles = try allocator.dupe(u64, args.restored_root_run_handles);
+        errdefer allocator.free(root_handles);
+        const provider_handles = try allocator.dupe(u64, args.restored_provider_run_handles);
+        errdefer allocator.free(provider_handles);
+        const pending_mappings = try allocator.dupe(u64, args.restored_pending_port_mappings);
+        errdefer allocator.free(pending_mappings);
+        const fabric_mappings = try allocator.dupe(u64, args.restored_fabric_invocation_mappings);
+        errdefer allocator.free(fabric_mappings);
+        const guest_refs = try allocator.dupe(u64, args.guest_conformance_refs);
+        errdefer allocator.free(guest_refs);
+        const blockers = try allocator.dupe(Blocker, args.blockers);
+        errdefer allocator.free(blockers);
+        const warnings = try allocator.dupe(Warning, args.warnings);
+        errdefer allocator.free(warnings);
+        const summary = try allocator.dupe(u8, args.summary);
+        errdefer allocator.free(summary);
+
+        var report = RestoreReport.init(.{
+            .capsule_image_fingerprint = args.capsule_image_fingerprint,
+            .thaw_plan_fingerprint = args.thaw_plan_fingerprint,
+            .restored_runspace_fingerprint = args.restored_runspace_fingerprint,
+            .restored_local_run_id_start = args.restored_local_run_id_start,
+            .restored_run_handle_mappings = handle_mappings,
+            .restored_root_run_handles = root_handles,
+            .restored_provider_run_handles = provider_handles,
+            .restored_pending_port_mappings = pending_mappings,
+            .restored_fabric_invocation_mappings = fabric_mappings,
+            .guest_conformance_refs = guest_refs,
+            .environment_certificate_fingerprint = args.environment_certificate_fingerprint,
+            .receiver_run_permit_fingerprint = args.receiver_run_permit_fingerprint,
+            .accepted = args.accepted,
+            .blockers = blockers,
+            .warnings = warnings,
+            .summary = summary,
+        });
+        report.owns_memory = true;
+        return report;
+    }
+
+    fn restorePolicyBlockerForError(err: anyerror) ?Blocker {
+        return switch (err) {
+            error.BudgetExceeded => .oversized_image,
+            error.RunspaceAdmissionRequired, error.RunspaceInstallDenied, error.SupervisionDenied => .permit_denied,
+            else => null,
+        };
+    }
+
+    fn restoredSlotHandle(runspace: *Runspace, slot_image: RunSlotImage, permit_fingerprint: ?u64) RunHandle {
+        const handle = RunHandle.init(.{
+            .runspace_fingerprint = runspace.runspace_fingerprint,
+            .local_run_id = runspace.next_run_id,
+            .target_ref_fingerprint = slot_image.target_ref_fingerprint,
+            .admission_receipt_fingerprint = slot_image.admission_receipt_fingerprint,
+            .permit_fingerprint = permit_fingerprint orelse slot_image.run_permit_fingerprint,
+            .branch_id = slot_image.branch_id,
+        });
+        runspace.next_run_id += 1;
+        return handle;
+    }
+
+    pub fn verifyLink(image: Image, local_catalog_fingerprint: u64, policy: RelinkPolicy) !ThawPlan {
+        try image.validate(.{});
+        const link = image.link_image orelse {
+            const accepted = !policy.require_link_certificate;
+            return ThawPlan.init(.{
+                .capsule_image_fingerprint = image.image_fingerprint,
+                .requested_mode = .relink_and_restore,
+                .local_root_target_ref_fingerprint = 0,
+                .require_local_permit = false,
+                .local_catalog_fingerprint = local_catalog_fingerprint,
+                .link_certificate_match_status = .missing,
+                .relink_status = if (accepted) .matched else .blocked,
+                .blockers = if (accepted) &.{} else &.{.link_certificate_missing},
+                .warnings = if (accepted) &.{.relink_not_performed} else &.{},
+            });
+        };
+        const local_catalog_present = local_catalog_fingerprint != 0;
+        const catalog_matched = link.catalog_fingerprint == null or
+            (local_catalog_present and link.catalog_fingerprint.? == local_catalog_fingerprint);
+        const residual_matched = !policy.require_residual_import_match or
+            if (policy.expected_residual_import_set_fingerprint) |expected|
+                link.residual_import_set_fingerprint == expected
+            else
+                link.residual_import_set_fingerprint == 0;
+        const fabric_matched = !policy.require_fabric_plan_match or linkFabricPlanWitnessesCover(image.manifest.fabric_plan_fingerprints, link.route_synthesis_refs);
+        const guest_conformance_matched = !policy.require_guest_conformance or guestConformanceRefsCovered(image.manifest.guest_conformance_report_fingerprints, image.guest_conformance_refs);
+        const matched = catalog_matched and residual_matched and fabric_matched and guest_conformance_matched;
+        const catalog_drift_allowed = policy.allow_relink_drift and local_catalog_present and !catalog_matched and residual_matched and fabric_matched and guest_conformance_matched;
+        const accepted = matched or catalog_drift_allowed;
+        const blocker: Blocker = if (!catalog_matched)
+            .relink_drift_rejected
+        else if (!residual_matched)
+            .residual_import_mismatch
+        else if (!fabric_matched)
+            .fabric_plan_mismatch
+        else if (!guest_conformance_matched)
+            .guest_conformance_missing
+        else
+            .relink_drift_rejected;
+        return ThawPlan.init(.{
+            .capsule_image_fingerprint = image.image_fingerprint,
+            .requested_mode = .relink_and_restore,
+            .local_root_target_ref_fingerprint = 0,
+            .require_local_permit = false,
+            .allow_relink_drift = policy.allow_relink_drift,
+            .local_catalog_fingerprint = local_catalog_fingerprint,
+            .link_certificate_match_status = if (matched) .matched else .mismatched,
+            .relink_status = if (matched) .matched else if (catalog_drift_allowed) .drift_allowed else .rejected,
+            .blockers = if (accepted) &.{} else blockerSlice(blocker),
+        });
+    }
+
+    pub fn relink(image: Image, local_catalog_fingerprint: u64, policy: RelinkPolicy) !ThawPlan {
+        return verifyLink(image, local_catalog_fingerprint, policy);
+    }
+
+    fn thawBlocker(image: Image, local_root_target_ref_fingerprint: u64, environment_fingerprint: u64, permit_fingerprint: ?u64, options: ThawOptions) ?Blocker {
+        if (!restoreModeAllowedForImage(image, options.mode)) return .malformed_image;
+        if (restoreModeRequiresRunHandleMappings(options.mode) and !runspaceImageHandleMappingsMatchSlots(image.runspace_image)) return .malformed_image;
+        if (options.mode == .verify_and_restore) return .verification_witness_missing;
+        if (options.require_local_permit and permit_fingerprint == null and options.mode != .inspect_only and options.mode != .replay_only) return .permit_denied;
+        if (restoreModeRequiresLocalTargetWitness(options.mode) and local_root_target_ref_fingerprint == 0) return .target_mismatch;
+        if (local_root_target_ref_fingerprint != 0 and local_root_target_ref_fingerprint != image.manifest.root_target_ref_fingerprint) {
+            return .target_mismatch;
+        }
+        if (image.manifest.environment_certificate_fingerprints.len != 0) {
+            if (image.manifest.environment_certificate_fingerprints.len != 1) return .environment_mismatch;
+            if (image.manifest.environment_certificate_fingerprints[0] != environment_fingerprint) return .environment_mismatch;
+        }
+        if (options.require_link_match) {
+            if (image.link_image) |link| {
+                const local_catalog = localCatalogFingerprintForThaw(options);
+                if (link.catalog_fingerprint) |catalog| {
+                    if (local_catalog) |local| {
+                        if (catalog != local and !options.allow_relink_drift) return .link_plan_mismatch;
+                    } else return .link_plan_mismatch;
+                }
+                if (link.residual_import_set_fingerprint != 0) return .residual_import_mismatch;
+                if (!linkFabricPlanWitnessesCover(image.manifest.fabric_plan_fingerprints, link.route_synthesis_refs)) return .fabric_plan_mismatch;
+            } else if (options.mode == .relink_and_restore or imageRequiresLinkMatchWitness(image)) {
+                return .link_certificate_missing;
+            }
+        }
+        if (options.rerun_guest_conformance and
+            !guestConformanceRefsCovered(image.manifest.guest_conformance_report_fingerprints, image.guest_conformance_refs))
+        {
+            return .guest_conformance_missing;
+        }
+        return null;
+    }
+
+    fn restoreModeAllowedForImage(image: Image, mode: RestoreMode) bool {
+        return switch (mode) {
+            .inspect_only => true,
+            .replay_only => image.manifest.kind == .replay_only or image.manifest.kind == .completed_assembly or image.manifest.kind == .failed_assembly or image.manifest.kind == .full_assembly,
+            .restore_completed => imageHasRestorableSlots(image) and imageKindAllowsMutatingRestore(image.manifest.kind) and image.manifest.normal_form == .quiescent_completed,
+            .restore_failed => imageHasRestorableSlots(image) and imageKindAllowsMutatingRestore(image.manifest.kind) and image.manifest.normal_form == .quiescent_failed,
+            .restore_parked => false,
+            .relink_and_restore, .verify_and_restore => imageHasRestorableSlots(image) and imageKindAllowsMutatingRestore(image.manifest.kind) and switch (image.manifest.normal_form) {
+                .quiescent_completed, .quiescent_failed => true,
+                else => false,
+            },
+        };
+    }
+
+    fn imageKindAllowsMutatingRestore(kind: Kind) bool {
+        return switch (kind) {
+            .completed_assembly, .failed_assembly, .full_assembly => true,
+            .reference_only, .parked_assembly, .replay_only, .inspect_only => false,
+        };
+    }
+
+    fn imageHasRestorableSlots(image: Image) bool {
+        return image.manifest.kind != .reference_only and image.manifest.kind != .inspect_only and image.manifest.run_slot_count != 0 and image.runspace_image.run_slots.len != 0;
+    }
+
+    fn restoreModeRequiresLocalTargetWitness(mode: RestoreMode) bool {
+        return switch (mode) {
+            .restore_parked, .restore_completed, .restore_failed, .relink_and_restore, .verify_and_restore => true,
+            .inspect_only, .replay_only => false,
+        };
+    }
+
+    fn imageRequiresLinkMatchWitness(image: Image) bool {
+        return image.manifest.link_plan_fingerprint != null or
+            image.manifest.link_certificate_fingerprint != null or
+            image.manifest.assembly_fingerprint != null or
+            image.manifest.fabric_plan_fingerprints.len != 0 or
+            image.fabric_image != null;
+    }
+
+    fn validateAssemblyBoundToRunspace(runspace: *const Runspace, assembly: Assembly) !void {
+        try assembly.validate();
+        try validateAssemblyRootBoundToRunspace(runspace, assembly);
+        if (assembly.fabric_plans.len == 0) return;
+        for (assembly.fabric_plans) |plan| {
+            const index = runspace.installedFabricPlanIndex(plan.plan_fingerprint) orelse return error.InvalidFrameEncoding;
+            if ((runspace.fabric_plan_link_plan_fingerprints.items[index] orelse return error.InvalidFrameEncoding) != assembly.link_plan_fingerprint) return error.InvalidFrameEncoding;
+            if ((runspace.fabric_plan_linker_certificate_fingerprints.items[index] orelse return error.InvalidFrameEncoding) != assembly.linker_certificate_fingerprint) return error.InvalidFrameEncoding;
+            if ((runspace.fabric_plan_assembly_fingerprints.items[index] orelse return error.InvalidFrameEncoding) != assembly.assembly_fingerprint) return error.InvalidFrameEncoding;
+        }
+    }
+
+    fn validateAssemblyRootBoundToRunspace(runspace: *const Runspace, assembly: Assembly) !void {
+        const root_slot = rootSlotForFreeze(runspace) orelse return error.InvalidFrameEncoding;
+        if (root_slot.target_ref.target_ref_fingerprint != assembly.root_target_ref.target_ref_fingerprint) return error.InvalidFrameEncoding;
+        if (root_slot.target_ref.world_surface_fingerprint != assembly.root_target_ref.world_surface_fingerprint) return error.InvalidFrameEncoding;
+        if (root_slot.target_ref.target_certificate_fingerprint != assembly.root_target_ref.target_certificate_fingerprint) return error.InvalidFrameEncoding;
+        if (assembly.root_target_ref.boundary_module_fingerprint) |expected| {
+            const actual = root_slot.module_ref_fingerprint orelse root_slot.target_ref.boundary_module_fingerprint orelse return error.InvalidFrameEncoding;
+            if (actual != expected) return error.InvalidFrameEncoding;
+        }
+    }
+
+    fn validateImageManifestConsistency(image: Image) !void {
+        const manifest = image.manifest;
+        const runspace_image_value = image.runspace_image;
+        if (manifest.run_slot_count != runspace_image_value.run_slots.len) return error.InvalidFrameEncoding;
+        if (manifest.pending_port_count != pendingPortImageCount(runspace_image_value)) return error.InvalidFrameEncoding;
+        if (manifest.active_fabric_invocation_count != runspace_image_value.active_fabric_invocation_refs.len) return error.InvalidFrameEncoding;
+        try validateKindNormalForm(manifest.kind, manifest.normal_form);
+        try validateUniqueRunSlotHandleRefs(runspace_image_value.run_slots);
+        try validateRunSlotParentTopology(runspace_image_value.run_slots);
+        try validateRunSlotNormalForm(image, manifest.normal_form, manifest.pending_port_count, manifest.active_fabric_invocation_count);
+        try validateManifestRootSlotCoverage(image);
+        try validateParkedSlotMailboxCoverage(image);
+        if (image.link_image) |link| {
+            if (manifest.link_plan_fingerprint == null or manifest.link_plan_fingerprint.? != link.link_plan_fingerprint) return error.InvalidFrameEncoding;
+            if (manifest.link_certificate_fingerprint == null or manifest.link_certificate_fingerprint.? != link.link_certificate_fingerprint) return error.InvalidFrameEncoding;
+            if (manifest.assembly_fingerprint == null or manifest.assembly_fingerprint.? != link.assembly_fingerprint) return error.InvalidFrameEncoding;
+            if (manifest.fabric_plan_fingerprints.len != 0 and
+                !linkFabricPlanWitnessesCover(manifest.fabric_plan_fingerprints, link.route_synthesis_refs))
+            {
+                return error.InvalidFrameEncoding;
+            }
+        } else if (manifest.link_plan_fingerprint != null or manifest.link_certificate_fingerprint != null or manifest.assembly_fingerprint != null) {
+            return error.InvalidFrameEncoding;
+        }
+        if (image.fabric_image) |fabric| {
+            if (!u64SlicesEqual(manifest.fabric_plan_fingerprints, fabric.fabric_plan_fingerprints)) return error.InvalidFrameEncoding;
+            if (!u64SlicesEqual(manifest.fabric_invocation_fingerprints, fabric.active_invocation_fingerprints)) return error.InvalidFrameEncoding;
+            if (!u64SlicesEqual(manifest.fabric_receipt_fingerprints, fabric.completed_receipt_fingerprints)) return error.InvalidFrameEncoding;
+            if (manifest.active_fabric_invocation_count != fabric.active_invocation_fingerprints.len) return error.InvalidFrameEncoding;
+            try validateActiveFabricRunspaceCoverage(runspace_image_value, fabric);
+        } else if (manifest.fabric_plan_fingerprints.len != 0 or
+            manifest.fabric_invocation_fingerprints.len != 0 or
+            manifest.fabric_receipt_fingerprints.len != 0 or
+            manifest.active_fabric_invocation_count != 0 or
+            runspace_image_value.active_fabric_invocation_refs.len != 0)
+        {
+            return error.InvalidFrameEncoding;
+        }
+        for (manifest.guest_conformance_report_fingerprints) |fingerprint| {
+            if (fingerprint == 0) return error.InvalidFrameEncoding;
+            if (!u64SliceContains(image.guest_conformance_refs, fingerprint)) return error.InvalidFrameEncoding;
+        }
+        for (image.guest_conformance_refs) |fingerprint| {
+            if (fingerprint == 0) return error.InvalidFrameEncoding;
+        }
+    }
+
+    fn validateQuiescenceReportImageConsistency(image: Image, report: QuiescenceReport) !void {
+        if (report.runspace_fingerprint != image.runspace_image.runspace_fingerprint) return error.InvalidFrameEncoding;
+        if (report.normal_form != image.manifest.normal_form) return error.InvalidFrameEncoding;
+        if (report.assembly_fingerprint != image.manifest.assembly_fingerprint) return error.InvalidFrameEncoding;
+        if (report.run_count != image.runspace_image.run_slots.len) return error.InvalidFrameEncoding;
+        if (report.pending_port_count != image.manifest.pending_port_count) return error.InvalidFrameEncoding;
+        if (report.active_fabric_invocation_count != image.manifest.active_fabric_invocation_count) return error.InvalidFrameEncoding;
+
+        var parked_count: usize = 0;
+        var completed_count: usize = 0;
+        var failed_count: usize = 0;
+        for (image.runspace_image.run_slots) |slot| switch (slot.status) {
+            .parked_on_port, .parked_on_supervision => parked_count += 1,
+            .completed => completed_count += 1,
+            .failed, .rejected => failed_count += 1,
+            .exported => switch (capturedRunStateStatus(image, slot) orelse return error.InvalidFrameEncoding) {
+                .completed => completed_count += 1,
+                .parked_on_port, .parked_on_supervision => parked_count += 1,
+                .failed => failed_count += 1,
+                .not_started, .running => {},
+            },
+            .admitted, .runnable => {},
+        };
+        if (report.parked_run_count != parked_count) return error.InvalidFrameEncoding;
+        if (report.completed_run_count != completed_count) return error.InvalidFrameEncoding;
+        if (report.failed_run_count != failed_count) return error.InvalidFrameEncoding;
+    }
+
+    fn validateActiveFabricRunspaceCoverage(runspace_image: RunspaceImage, fabric: FabricImage) !void {
+        if (!u64SlicesEqual(runspace_image.active_fabric_invocation_refs, fabric.active_invocation_fingerprints)) return error.InvalidFrameEncoding;
+        if (fabric.active_invocation_fingerprints.len == 0) return;
+        const mailbox = runspace_image.mailbox_image orelse return error.InvalidFrameEncoding;
+        for (fabric.active_invocation_fingerprints, 0..) |_, index| {
+            const pending = fabric.parent_pending_port_refs[index];
+            if (!mailboxImageContainsPendingFingerprint(mailbox, pending)) return error.InvalidFrameEncoding;
+            if (!runspaceImageContainsProviderSlot(
+                runspace_image,
+                fabric.provider_run_refs[index],
+                fabric.provider_state_summary_fingerprints[index],
+            )) return error.InvalidFrameEncoding;
+        }
+    }
+
+    fn runspaceImageContainsProviderSlot(runspace_image: RunspaceImage, provider_run_ref: u64, provider_state_ref: u64) bool {
+        for (runspace_image.run_slots) |slot| {
+            if (slot.role == .provider and
+                slot.original_run_handle_fingerprint == provider_run_ref and
+                slot.run_state_fingerprint == provider_state_ref)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    fn pendingPortImageCount(image: RunspaceImage) usize {
+        if (image.mailbox_image) |mailbox| return mailbox.pending_port_entries.len;
+        return 0;
+    }
+
+    fn restoreModeRequiresRunHandleMappings(mode: RestoreMode) bool {
+        return switch (mode) {
+            .restore_completed, .restore_failed, .relink_and_restore, .verify_and_restore => true,
+            .inspect_only, .replay_only, .restore_parked => false,
+        };
+    }
+
+    fn runspaceImageHandleMappingsMatchSlots(image: RunspaceImage) bool {
+        if (image.run_slots.len == 0) return image.run_handle_mappings.len == 0;
+        if (image.run_handle_mappings.len != image.run_slots.len) return false;
+        for (image.run_slots, 0..) |slot, index| {
+            if (image.run_handle_mappings[index] != slot.original_run_handle_fingerprint) return false;
+        }
+        return true;
+    }
+
+    fn runspaceImageRoleRefsMatchSlots(image: RunspaceImage) bool {
+        var root_index: usize = 0;
+        var provider_index: usize = 0;
+        for (image.run_slots) |slot| switch (slot.role) {
+            .root => {
+                if (image.root_run_handle_fingerprints.len != 0) {
+                    if (root_index >= image.root_run_handle_fingerprints.len) return false;
+                    if (image.root_run_handle_fingerprints[root_index] != slot.original_run_handle_fingerprint) return false;
+                }
+                root_index += 1;
+            },
+            .provider => {
+                if (image.provider_run_handle_fingerprints.len != 0) {
+                    if (provider_index >= image.provider_run_handle_fingerprints.len) return false;
+                    if (image.provider_run_handle_fingerprints[provider_index] != slot.original_run_handle_fingerprint) return false;
+                }
+                provider_index += 1;
+            },
+            .branch, .replay, .verify, .guest => {},
+        };
+        return (image.root_run_handle_fingerprints.len == 0 or root_index == image.root_run_handle_fingerprints.len) and
+            (image.provider_run_handle_fingerprints.len == 0 or provider_index == image.provider_run_handle_fingerprints.len);
+    }
+
+    fn validateUniqueRunSlotHandleRefs(slots: []const RunSlotImage) !void {
+        for (slots, 0..) |slot, index| {
+            for (slots[index + 1 ..]) |other| {
+                if (slot.original_run_handle_fingerprint == other.original_run_handle_fingerprint) return error.InvalidFrameEncoding;
+            }
+        }
+    }
+
+    fn validateRunSlotParentTopology(slots: []const RunSlotImage) !void {
+        for (slots, 0..) |slot, index| {
+            if (slot.parent_run_handle_fingerprint == null) {
+                if (slot.role != .root) return error.InvalidFrameEncoding;
+                continue;
+            }
+            var current_index = index;
+            var guard: usize = 0;
+            while (slots[current_index].parent_run_handle_fingerprint) |parent| {
+                guard += 1;
+                if (guard > slots.len) return error.InvalidFrameEncoding;
+                current_index = runSlotImageIndexByOriginalHandle(slots, parent) orelse return error.InvalidFrameEncoding;
+            }
+            if (slots[current_index].role != .root) return error.InvalidFrameEncoding;
+        }
+    }
+
+    fn runSlotImageIndexByOriginalHandle(slots: []const RunSlotImage, handle_fingerprint: u64) ?usize {
+        for (slots, 0..) |slot, index| {
+            if (slot.original_run_handle_fingerprint == handle_fingerprint) return index;
+        }
+        return null;
+    }
+
+    fn validateParkedSlotMailboxCoverage(image: Image) !void {
+        const maybe_mailbox = image.runspace_image.mailbox_image;
+        for (image.runspace_image.run_slots) |slot| {
+            const mailbox_id = slot.current_pending_mailbox_id orelse {
+                if (slot.status == .parked_on_port) return error.InvalidFrameEncoding;
+                continue;
+            };
+            if (slot.status == .exported) {
+                const run_image_fingerprint = slot.run_image_fingerprint orelse return error.InvalidFrameEncoding;
+                const run_image = capsuleRunImageByFingerprint(image.run_images, run_image_fingerprint) orelse return error.InvalidFrameEncoding;
+                if (run_image.current_state.run_state_fingerprint != slot.run_state_fingerprint) return error.InvalidFrameEncoding;
+                switch (run_image.current_state.status) {
+                    .parked_on_port, .parked_on_supervision => {
+                        if (run_image.current_state.pending_request_fingerprint == null) return error.InvalidFrameEncoding;
+                        if (run_image.pending_request_frame) |frame| {
+                            if (frame.frame_fingerprint != run_image.current_state.pending_request_fingerprint.?) return error.InvalidFrameEncoding;
+                        }
+                    },
+                    else => return error.InvalidFrameEncoding,
+                }
+                continue;
+            }
+            const mailbox = maybe_mailbox orelse return error.InvalidFrameEncoding;
+            var coverage_count: usize = 0;
+            for (mailbox.pending_port_entries) |entry| {
+                if (entry.mailbox_id != mailbox_id) continue;
+                if (entry.original_run_handle_fingerprint != slot.original_run_handle_fingerprint) return error.InvalidFrameEncoding;
+                if (entry.target_ref_fingerprint != slot.target_ref_fingerprint) return error.InvalidFrameEncoding;
+                if (slotRequiresMailboxRunImageFrameCheck(slot.status)) try validateMailboxEntryRunImageMatch(image, slot, entry);
+                coverage_count += 1;
+            }
+            if (coverage_count != 1) return error.InvalidFrameEncoding;
+        }
+        if (maybe_mailbox) |mailbox| {
+            for (mailbox.pending_port_entries) |entry| {
+                var coverage_count: usize = 0;
+                for (image.runspace_image.run_slots) |slot| {
+                    if (!(try slotCoversPendingMailboxEntry(image, slot))) continue;
+                    const mailbox_id = slot.current_pending_mailbox_id orelse continue;
+                    if (mailbox_id != entry.mailbox_id) continue;
+                    if (slot.original_run_handle_fingerprint != entry.original_run_handle_fingerprint) continue;
+                    if (slot.target_ref_fingerprint != entry.target_ref_fingerprint) continue;
+                    if (slotRequiresMailboxRunImageFrameCheck(slot.status)) try validateMailboxEntryRunImageMatch(image, slot, entry);
+                    coverage_count += 1;
+                }
+                if (coverage_count != 1) return error.InvalidFrameEncoding;
+            }
+        }
+    }
+
+    fn slotRequiresMailboxRunImageFrameCheck(status: RunSlotStatus) bool {
+        return switch (status) {
+            .parked_on_port, .parked_on_supervision, .exported => true,
+            .admitted, .runnable, .completed, .failed, .rejected => false,
+        };
+    }
+
+    fn validateMailboxEntryRunImageMatch(image: Image, slot: RunSlotImage, entry: PendingPortImage) !void {
+        const run_image_fingerprint = slot.run_image_fingerprint orelse return error.InvalidFrameEncoding;
+        const run_image = capsuleRunImageByFingerprint(image.run_images, run_image_fingerprint) orelse return error.InvalidFrameEncoding;
+        if (run_image.current_state.run_state_fingerprint != slot.run_state_fingerprint) return error.InvalidFrameEncoding;
+        switch (run_image.current_state.status) {
+            .parked_on_port, .parked_on_supervision => {},
+            .not_started, .running, .completed, .failed => return error.InvalidFrameEncoding,
+        }
+        if ((run_image.current_state.pending_request_fingerprint orelse return error.InvalidFrameEncoding) != entry.request_frame.frame_fingerprint) return error.InvalidFrameEncoding;
+        if (run_image.pending_request_frame) |frame| {
+            if (frame.frame_fingerprint != entry.request_frame.frame_fingerprint) return error.InvalidFrameEncoding;
+        }
+    }
+
+    fn slotCoversPendingMailboxEntry(image: Image, slot: RunSlotImage) !bool {
+        return switch (slot.status) {
+            .parked_on_port, .parked_on_supervision => true,
+            .exported => switch (capturedRunStateStatus(image, slot) orelse return error.InvalidFrameEncoding) {
+                .parked_on_port, .parked_on_supervision => true,
+                .completed, .failed => false,
+                .not_started, .running => return error.InvalidFrameEncoding,
+            },
+            .admitted, .runnable, .completed, .failed, .rejected => false,
+        };
+    }
+
+    fn validateRunImageCoverage(image: Image) !void {
+        for (image.runspace_image.run_slots) |slot| {
+            if (slot.run_image_fingerprint) |fingerprint| {
+                const run_image = capsuleRunImageByFingerprint(image.run_images, fingerprint) orelse return error.InvalidFrameEncoding;
+                if (!u64SliceContains(image.manifest.run_image_fingerprints, fingerprint)) return error.InvalidFrameEncoding;
+                if (!u64SliceContains(image.runspace_image.run_image_refs, fingerprint)) return error.InvalidFrameEncoding;
+                if (!u64SliceContains(image.run_image_refs, fingerprint)) return error.InvalidFrameEncoding;
+                if (run_image.target_ref.target_ref_fingerprint != slot.target_ref_fingerprint) return error.InvalidFrameEncoding;
+                if (run_image.current_state.run_state_fingerprint != slot.run_state_fingerprint) return error.InvalidFrameEncoding;
+                if (!runImageStateMatchesCapsuleSlot(run_image, slot)) return error.InvalidFrameEncoding;
+                if (run_image.current_state.transcript_image_fingerprint != slot.transcript_image_fingerprint) return error.InvalidFrameEncoding;
+                if (run_image.current_state.transcript_image_fingerprint) |state_transcript| {
+                    try validateCapsuleTranscriptRefCoverage(image, state_transcript);
+                }
+            } else if (slotRestoreRequiresRunImage(slot.status)) {
+                return error.InvalidFrameEncoding;
+            }
+            if (slot.environment_certificate_fingerprint) |fingerprint| {
+                if (!u64SliceContains(image.manifest.environment_certificate_fingerprints, fingerprint)) return error.InvalidFrameEncoding;
+                if (!u64SliceContains(image.environment_refs, fingerprint)) return error.InvalidFrameEncoding;
+            }
+            if (slot.transcript_image_fingerprint) |fingerprint| {
+                try validateCapsuleTranscriptRefCoverage(image, fingerprint);
+            }
+            if (slot.admission_receipt_fingerprint) |fingerprint| {
+                if (!u64SliceContains(image.manifest.admission_receipt_fingerprints, fingerprint)) return error.InvalidFrameEncoding;
+                if (!u64SliceContains(image.runspace_image.admission_receipt_refs, fingerprint)) return error.InvalidFrameEncoding;
+                if (!u64SliceContains(image.admission_refs, fingerprint)) return error.InvalidFrameEncoding;
+            }
+            if (slot.run_permit_fingerprint) |fingerprint| {
+                if (!u64SliceContains(image.manifest.run_permit_fingerprints, fingerprint)) return error.InvalidFrameEncoding;
+                if (!u64SliceContains(image.runspace_image.permit_refs, fingerprint)) return error.InvalidFrameEncoding;
+                if (!u64SliceContains(image.supervision_refs, fingerprint)) return error.InvalidFrameEncoding;
+            }
+        }
+        for (image.run_images) |run_image| {
+            if (!u64SliceContains(image.manifest.run_image_fingerprints, run_image.run_image_fingerprint)) return error.InvalidFrameEncoding;
+            if (!u64SliceContains(image.runspace_image.run_image_refs, run_image.run_image_fingerprint)) return error.InvalidFrameEncoding;
+            if (!u64SliceContains(image.run_image_refs, run_image.run_image_fingerprint)) return error.InvalidFrameEncoding;
+            if (run_image.environment_certificate_fingerprint) |fingerprint| {
+                if (!u64SliceContains(image.manifest.environment_certificate_fingerprints, fingerprint)) return error.InvalidFrameEncoding;
+                if (!u64SliceContains(image.environment_refs, fingerprint)) return error.InvalidFrameEncoding;
+            }
+            if (run_image.prior_run_receipt_fingerprint) |fingerprint| {
+                if (!u64SliceContains(image.manifest.run_receipt_fingerprints, fingerprint)) return error.InvalidFrameEncoding;
+                if (!u64SliceContains(image.runspace_image.run_receipt_refs, fingerprint)) return error.InvalidFrameEncoding;
+            }
+        }
+        for (image.transcript_images) |transcript| {
+            if (!u64SliceContains(image.manifest.transcript_image_fingerprints, transcript.transcript_image_fingerprint)) return error.InvalidFrameEncoding;
+            if (!u64SliceContains(image.transcript_image_refs, transcript.transcript_image_fingerprint)) return error.InvalidFrameEncoding;
+        }
+        for (image.value_images) |value| {
+            if (!u64SliceContains(image.value_image_refs, value.value_image_fingerprint)) return error.InvalidFrameEncoding;
+        }
+    }
+
+    fn validateCapsuleRefIndexes(image: Image) !void {
+        if (image.dependency_refs.len != 0) {
+            const expected_count: usize =
+                2 +
+                (if (image.link_image != null) @as(usize, 1) else 0) +
+                (if (image.fabric_image != null) @as(usize, 1) else 0) +
+                image.manifest.admission_receipt_fingerprints.len +
+                image.manifest.environment_certificate_fingerprints.len +
+                image.manifest.run_permit_fingerprints.len +
+                image.manifest.run_receipt_fingerprints.len +
+                image.manifest.fabric_receipt_fingerprints.len +
+                image.manifest.guest_conformance_report_fingerprints.len +
+                image.manifest.transcript_image_fingerprints.len +
+                image.manifest.run_image_fingerprints.len +
+                image.value_image_refs.len;
+            if (image.dependency_refs.len != expected_count) return error.InvalidFrameEncoding;
+            try validateDependencyRefCovered(image, .manifest, image.manifest.manifest_fingerprint);
+            try validateDependencyRefCovered(image, .runspace_image, image.runspace_image.image_fingerprint);
+            if (image.link_image) |link| try validateDependencyRefCovered(image, .link_image, link.link_image_fingerprint);
+            if (image.fabric_image) |fabric| try validateDependencyRefCovered(image, .fabric_image, fabric.fabric_image_fingerprint);
+            for (image.manifest.admission_receipt_fingerprints) |fingerprint| try validateDependencyRefCovered(image, .admission, fingerprint);
+            for (image.manifest.environment_certificate_fingerprints) |fingerprint| try validateDependencyRefCovered(image, .environment, fingerprint);
+            for (image.manifest.run_permit_fingerprints) |fingerprint| try validateDependencyRefCovered(image, .supervision, fingerprint);
+            for (image.manifest.run_receipt_fingerprints) |fingerprint| try validateDependencyRefCovered(image, .run_receipt, fingerprint);
+            for (image.manifest.fabric_receipt_fingerprints) |fingerprint| try validateDependencyRefCovered(image, .fabric_receipt, fingerprint);
+            for (image.manifest.guest_conformance_report_fingerprints) |fingerprint| try validateDependencyRefCovered(image, .guest_conformance, fingerprint);
+            for (image.manifest.transcript_image_fingerprints) |fingerprint| try validateDependencyRefCovered(image, .transcript_image, fingerprint);
+            for (image.manifest.run_image_fingerprints) |fingerprint| try validateDependencyRefCovered(image, .run_image, fingerprint);
+            for (image.value_image_refs) |fingerprint| try validateDependencyRefCovered(image, .value_image, fingerprint);
+        }
+        if (image.object_refs.len != 0) {
+            const expected_count: usize =
+                2 +
+                (if (image.link_image != null) @as(usize, 1) else 0) +
+                (if (image.fabric_image != null) @as(usize, 1) else 0);
+            if (image.object_refs.len != expected_count) return error.InvalidFrameEncoding;
+            try validateObjectRefCovered(image, .capsule_manifest, image.manifest.manifest_fingerprint);
+            try validateObjectRefCovered(image, .runspace_image, image.runspace_image.image_fingerprint);
+            if (image.link_image) |link| try validateObjectRefCovered(image, .link_image, link.link_image_fingerprint);
+            if (image.fabric_image) |fabric| try validateObjectRefCovered(image, .fabric_image, fabric.fabric_image_fingerprint);
+        }
+    }
+
+    fn validateDependencyRefCovered(image: Image, section: SectionKind, fingerprint: u64) !void {
+        for (image.dependency_refs) |ref| {
+            if (ref.section == section and ref.fingerprint == fingerprint) return;
+        }
+        return error.InvalidFrameEncoding;
+    }
+
+    fn validateObjectRefCovered(image: Image, kind: ObjectKind, fingerprint: u64) !void {
+        for (image.object_refs) |ref| {
+            if (ref.kind == kind and ref.fingerprint == fingerprint) return;
+        }
+        return error.InvalidFrameEncoding;
+    }
+
+    fn validateManifestRootSlotCoverage(image: Image) !void {
+        var root_count: usize = 0;
+        for (image.runspace_image.run_slots) |slot| {
+            if (slot.role != .root) continue;
+            root_count += 1;
+            if (slot.target_ref_fingerprint != image.manifest.root_target_ref_fingerprint) return error.InvalidFrameEncoding;
+            if (image.manifest.root_module_ref_fingerprint) |expected| {
+                const actual = rootSlotModuleRefFingerprint(image, slot) orelse return error.InvalidFrameEncoding;
+                if (actual != expected) return error.InvalidFrameEncoding;
+            }
+        }
+        if (image.runspace_image.run_slots.len != 0 and image.manifest.kind != .reference_only and image.manifest.kind != .inspect_only and root_count == 0) return error.InvalidFrameEncoding;
+    }
+
+    fn rootSlotModuleRefFingerprint(image: Image, slot: RunSlotImage) ?u64 {
+        if (slot.module_ref_fingerprint) |fingerprint| return fingerprint;
+        if (slot.run_image_fingerprint) |fingerprint| {
+            for (image.run_images) |run_image| {
+                if (run_image.run_image_fingerprint != fingerprint) continue;
+                return run_image.module_ref_fingerprint orelse run_image.target_ref.boundary_module_fingerprint;
+            }
+        }
+        return null;
+    }
+
+    fn capsuleRunImageByFingerprint(images: []const RunImage, fingerprint: u64) ?RunImage {
+        for (images) |image| {
+            if (image.run_image_fingerprint == fingerprint) return image;
+        }
+        return null;
+    }
+
+    fn validateCapsuleTranscriptRefCoverage(image: Image, fingerprint: u64) !void {
+        if (!u64SliceContains(image.manifest.transcript_image_fingerprints, fingerprint)) return error.InvalidFrameEncoding;
+        if (!u64SliceContains(image.runspace_image.transcript_image_refs, fingerprint)) return error.InvalidFrameEncoding;
+        if (!u64SliceContains(image.transcript_image_refs, fingerprint)) return error.InvalidFrameEncoding;
+    }
+
+    fn u64SlicesEqual(left: []const u64, right: []const u64) bool {
+        return std.mem.eql(u64, left, right);
+    }
+
+    fn mailboxImageContainsPendingFingerprint(mailbox: MailboxImage, pending_port_fingerprint: u64) bool {
+        for (mailbox.pending_port_fingerprints) |fingerprint| {
+            if (fingerprint == pending_port_fingerprint) return true;
+        }
+        return false;
+    }
+
+    fn ensureRestoreRunCapacity(runspace: *const Runspace, image: Image) !void {
+        if (runspace.config.max_runs) |max| {
+            var count = runspace.activeRunCountForCapacity();
+            for (image.runspace_image.run_slots) |slot| {
+                if (!(try restoredSlotCountsAgainstMaxRuns(runspace.config, image, slot))) continue;
+                if (count >= max) return error.BudgetExceeded;
+                count += 1;
+            }
+        }
+    }
+
+    fn restoredSlotCountsAgainstMaxRuns(config: Runspace.Config, image: Image, slot: RunSlotImage) !bool {
+        if (config.preserve_completed_runs) return true;
+        return switch (slot.status) {
+            .completed => false,
+            .exported => switch (capturedRunStateStatus(image, slot) orelse return error.InvalidFrameEncoding) {
+                .completed => false,
+                .parked_on_port, .parked_on_supervision, .failed => true,
+                .not_started, .running => return error.InvalidFrameEncoding,
+            },
+            else => true,
+        };
+    }
+
+    fn validateKindNormalForm(kind: Kind, normal_form: NormalForm) !void {
+        switch (kind) {
+            .reference_only, .inspect_only => {},
+            .full_assembly, .replay_only => switch (normal_form) {
+                .quiescent_completed, .quiescent_parked, .quiescent_failed, .active_fabric_parked => {},
+                .unsupported_running, .partial_with_blockers => return error.InvalidFrameEncoding,
+            },
+            .parked_assembly => switch (normal_form) {
+                .quiescent_parked, .active_fabric_parked => {},
+                else => return error.InvalidFrameEncoding,
+            },
+            .completed_assembly => if (normal_form != .quiescent_completed) return error.InvalidFrameEncoding,
+            .failed_assembly => if (normal_form != .quiescent_failed) return error.InvalidFrameEncoding,
+        }
+    }
+
+    fn validateRunSlotNormalForm(image: Image, normal_form: NormalForm, pending_port_count: usize, active_fabric_count: usize) !void {
+        var completed_count: usize = 0;
+        var failed_count: usize = 0;
+        var parked_count: usize = 0;
+        var unsupported_count: usize = 0;
+        for (image.runspace_image.run_slots) |slot| {
+            switch (slot.status) {
+                .completed => completed_count += 1,
+                .exported => switch (capturedRunStateStatus(image, slot) orelse return error.InvalidFrameEncoding) {
+                    .completed => {
+                        if (slot.current_pending_mailbox_id != null) return error.InvalidFrameEncoding;
+                        completed_count += 1;
+                    },
+                    .parked_on_port => {
+                        if (slot.current_pending_mailbox_id == null) return error.InvalidFrameEncoding;
+                        parked_count += 1;
+                    },
+                    .parked_on_supervision => {
+                        if (slot.current_pending_mailbox_id != null) return error.InvalidFrameEncoding;
+                        parked_count += 1;
+                    },
+                    .failed => {
+                        if (slot.current_pending_mailbox_id != null) return error.InvalidFrameEncoding;
+                        failed_count += 1;
+                    },
+                    .not_started, .running => unsupported_count += 1,
+                },
+                .failed, .rejected => failed_count += 1,
+                .parked_on_port, .parked_on_supervision => parked_count += 1,
+                .admitted, .runnable => unsupported_count += 1,
+            }
+        }
+        switch (normal_form) {
+            .quiescent_completed => {
+                if (pending_port_count != 0 or active_fabric_count != 0) return error.InvalidFrameEncoding;
+                if (completed_count != image.runspace_image.run_slots.len) return error.InvalidFrameEncoding;
+            },
+            .quiescent_failed => {
+                if (pending_port_count != 0 or active_fabric_count != 0) return error.InvalidFrameEncoding;
+                if (failed_count == 0 or completed_count + failed_count != image.runspace_image.run_slots.len) return error.InvalidFrameEncoding;
+            },
+            .quiescent_parked => {
+                if (active_fabric_count != 0 or parked_count == 0 or unsupported_count != 0) return error.InvalidFrameEncoding;
+            },
+            .active_fabric_parked => {
+                if (active_fabric_count == 0 or parked_count == 0 or unsupported_count != 0) return error.InvalidFrameEncoding;
+            },
+            .unsupported_running => {
+                if (unsupported_count == 0) return error.InvalidFrameEncoding;
+            },
+            .partial_with_blockers => {},
+        }
+    }
+
+    fn capturedRunStateStatus(image: Image, slot: RunSlotImage) ?RunState.Status {
+        const fingerprint = slot.run_image_fingerprint orelse return null;
+        const run_image = capsuleRunImageByFingerprint(image.run_images, fingerprint) orelse return null;
+        if (run_image.current_state.run_state_fingerprint != slot.run_state_fingerprint) return null;
+        return run_image.current_state.status;
+    }
+
+    fn linkFabricPlanWitnessesCover(manifest_refs: []const u64, link_plan_witness_refs: []const u64) bool {
+        if (manifest_refs.len == 0 and link_plan_witness_refs.len != 0) return false;
+        for (manifest_refs) |manifest_ref| {
+            if (!u64SliceContains(link_plan_witness_refs, manifest_ref)) return false;
+        }
+        return true;
+    }
+
+    fn guestConformanceRefsCovered(manifest_refs: []const u64, image_refs: []const u64) bool {
+        if (manifest_refs.len == 0) return false;
+        for (image_refs) |image_ref| {
+            if (image_ref == 0) return false;
+        }
+        for (manifest_refs) |manifest_ref| {
+            if (manifest_ref == 0) return false;
+            if (!u64SliceContains(image_refs, manifest_ref)) return false;
+        }
+        return true;
+    }
+
+    fn slotRestoreRequiresRunImage(status: RunSlotStatus) bool {
+        return switch (status) {
+            .parked_on_port, .parked_on_supervision, .completed, .failed, .exported, .rejected => true,
+            .admitted, .runnable => false,
+        };
+    }
+
+    fn cloneCapsuleRunImageByFingerprint(allocator: std.mem.Allocator, run_images: []const RunImage, fingerprint: u64) !RunImage {
+        for (run_images) |run_image| {
+            if (run_image.run_image_fingerprint == fingerprint) return cloneCapsuleRunImage(allocator, run_image);
+        }
+        return error.InvalidFrameEncoding;
+    }
+
+    fn localCatalogFingerprintForThaw(options: ThawOptions) ?u64 {
+        if (options.local_catalog_fingerprint) |catalog| return catalog;
+        return null;
+    }
+
+    fn linkMatchStatusForThaw(image: Image, options: ThawOptions) LinkCertificateMatchStatus {
+        const link = image.link_image orelse return .missing;
+        const local_catalog = localCatalogFingerprintForThaw(options);
+        if (link.catalog_fingerprint) |catalog| {
+            if (local_catalog) |local| {
+                if (catalog != local) return .mismatched;
+            } else return .mismatched;
+        }
+        return .matched;
+    }
+
+    fn blockerSlice(blocker: Blocker) []const Blocker {
+        return switch (blocker) {
+            .non_quiescent_run => &.{.non_quiescent_run},
+            .run_currently_stepping => &.{.run_currently_stepping},
+            .mailbox_mutation_in_progress => &.{.mailbox_mutation_in_progress},
+            .fabric_response_transaction_in_progress => &.{.fabric_response_transaction_in_progress},
+            .provider_run_unwitnessed => &.{.provider_run_unwitnessed},
+            .replay_cursor_mutation_in_progress => &.{.replay_cursor_mutation_in_progress},
+            .receipt_write_in_progress => &.{.receipt_write_in_progress},
+            .active_route_invocation_witness_missing => &.{.active_route_invocation_witness_missing},
+            .active_route_provider_witness_missing => &.{.active_route_provider_witness_missing},
+            .active_route_parent_pending_witness_missing => &.{.active_route_parent_pending_witness_missing},
+            .active_fabric_unsupported => &.{.active_fabric_unsupported},
+            .non_quiescent_fabric => &.{.non_quiescent_fabric},
+            .fabric_witness_missing => &.{.fabric_witness_missing},
+            .provider_state_unsupported => &.{.provider_state_unsupported},
+            .mailbox_ownership_mismatch => &.{.mailbox_ownership_mismatch},
+            .link_certificate_missing => &.{.link_certificate_missing},
+            .local_provider_missing => &.{.local_provider_missing},
+            .link_plan_mismatch => &.{.link_plan_mismatch},
+            .assembly_mismatch => &.{.assembly_mismatch},
+            .residual_import_mismatch => &.{.residual_import_mismatch},
+            .fabric_plan_mismatch => &.{.fabric_plan_mismatch},
+            .guest_conformance_missing => &.{.guest_conformance_missing},
+            .relink_drift_rejected => &.{.relink_drift_rejected},
+            .target_mismatch => &.{.target_mismatch},
+            .module_mismatch => &.{.module_mismatch},
+            .environment_mismatch => &.{.environment_mismatch},
+            .permit_denied => &.{.permit_denied},
+            .malformed_image => &.{.malformed_image},
+            .oversized_image => &.{.oversized_image},
+            .unsupported_running_state => &.{.unsupported_running_state},
+            .stale_pending_port => &.{.stale_pending_port},
+            .duplicate_response => &.{.duplicate_response},
+            .forbidden_native_state => &.{.forbidden_native_state},
+            .verification_witness_missing => &.{.verification_witness_missing},
+        };
+    }
+
+    fn u64SliceContains(values: []const u64, needle: u64) bool {
+        for (values) |value| {
+            if (value == needle) return true;
+        }
+        return false;
+    }
+
+    fn validateUniqueU64Slice(values: []const u64) !void {
+        for (values, 0..) |value, index| {
+            for (values[index + 1 ..]) |other| {
+                if (value == other) return error.InvalidFrameEncoding;
+            }
+        }
+    }
+
+    fn mappedHandleFingerprint(mappings: []const u64, original: u64) !u64 {
+        if (mappings.len % 2 != 0) return error.InvalidFrameEncoding;
+        var index: usize = 0;
+        while (index < mappings.len) : (index += 2) {
+            if (mappings[index] == original) return mappings[index + 1];
+        }
+        return error.StaleRunHandle;
+    }
+
+    fn restoredRunHandleByFingerprint(runspace: *const Runspace, handle_fingerprint: u64) !RunHandle {
+        for (runspace.slots.items) |slot| {
+            if (slot.handle.handle_fingerprint == handle_fingerprint) return slot.handle;
+        }
+        return error.StaleRunHandle;
+    }
+
+    fn setRestoredSlotPendingMailbox(runspace: *Runspace, handle_fingerprint: u64, mailbox_id: u64) !void {
+        for (runspace.slots.items) |*slot| {
+            if (slot.handle.handle_fingerprint == handle_fingerprint) {
+                const current_state = slot.current_state;
+                const pending_request_fingerprint = (try runspace.mailbox.get(mailbox_id)).request_frame_fingerprint;
+                slot.pending_mailbox_id = mailbox_id;
+                slot.current_state = RunState.init(.{
+                    .target_ref_fingerprint = current_state.target_ref_fingerprint,
+                    .transcript_image_fingerprint = current_state.transcript_image_fingerprint,
+                    .branch_id = current_state.branch_id,
+                    .checkpoint_fingerprint = current_state.checkpoint_fingerprint,
+                    .pending_request_fingerprint = pending_request_fingerprint,
+                    .final_response_fingerprint = current_state.final_response_fingerprint,
+                    .final_value_image_fingerprint = current_state.final_value_image_fingerprint,
+                    .turn_index = current_state.turn_index,
+                    .status = current_state.status,
+                });
+                return;
+            }
+        }
+        return error.StaleRunHandle;
+    }
+
+    fn runspaceStatusForCapsuleStatus(status: RunSlotStatus) Runspace.RunStatus {
+        return switch (status) {
+            .admitted => .admitted,
+            .runnable => .runnable,
+            .parked_on_port => .parked_on_port,
+            .parked_on_supervision => .parked_on_supervision,
+            .completed => .completed,
+            .failed => .failed,
+            .exported => .exported,
+            .rejected => .rejected,
+        };
+    }
+
+    fn restoredRunspaceStatusForCapsuleSlot(image: Image, slot_image: RunSlotImage, run_image: ?RunImage) !Runspace.RunStatus {
+        if (slot_image.status != .exported) return runspaceStatusForCapsuleStatus(slot_image.status);
+        const restored = run_image orelse return error.InvalidFrameEncoding;
+        return switch (restored.current_state.status) {
+            .completed => .completed,
+            .parked_on_port => if (capsuleSlotHasPendingMailboxEntry(image, slot_image)) .parked_on_port else .exported,
+            .parked_on_supervision => if (capsuleSlotHasPendingMailboxEntry(image, slot_image)) .parked_on_supervision else .exported,
+            .failed => .failed,
+            .not_started, .running => error.InvalidFrameEncoding,
+        };
+    }
+
+    fn capsuleSlotHasPendingMailboxEntry(image: Image, slot: RunSlotImage) bool {
+        const mailbox_id = slot.current_pending_mailbox_id orelse return false;
+        const mailbox = image.runspace_image.mailbox_image orelse return false;
+        for (mailbox.pending_port_entries) |entry| {
+            if (entry.mailbox_id != mailbox_id) continue;
+            if (entry.original_run_handle_fingerprint != slot.original_run_handle_fingerprint) continue;
+            if (entry.target_ref_fingerprint != slot.target_ref_fingerprint) continue;
+            return true;
+        }
+        return false;
+    }
+
+    fn runStateStatusForCapsuleStatus(status: RunSlotStatus) RunState.Status {
+        return switch (status) {
+            .admitted, .runnable => .not_started,
+            .parked_on_port => .parked_on_port,
+            .parked_on_supervision => .parked_on_supervision,
+            .completed, .exported => .completed,
+            .failed, .rejected => .failed,
+        };
+    }
+
+    fn runImageStateMatchesCapsuleSlot(run_image: RunImage, slot_image: RunSlotImage) bool {
+        if (slot_image.status == .exported) {
+            return switch (run_image.current_state.status) {
+                .completed, .parked_on_port, .parked_on_supervision, .failed => true,
+                .not_started, .running => false,
+            };
+        }
+        if (slot_image.status == .parked_on_supervision and run_image.current_state.status == .parked_on_port) {
+            return slot_image.current_pending_mailbox_id != null;
+        }
+        if (slot_image.status == .runnable) {
+            return switch (run_image.current_state.status) {
+                .not_started, .running => true,
+                .completed, .parked_on_port, .parked_on_supervision, .failed => false,
+            };
+        }
+        return run_image.current_state.status == runStateStatusForCapsuleStatus(slot_image.status);
+    }
+
+    fn validateFreezePolicy(report: QuiescenceReport, options: FreezeOptions) !void {
+        switch (report.normal_form) {
+            .quiescent_completed => if (!options.allow_completed) return error.InvalidFrameEncoding,
+            .quiescent_failed => if (!options.allow_failed) return error.InvalidFrameEncoding,
+            .quiescent_parked => if (!options.allow_parked) return error.InvalidFrameEncoding,
+            .active_fabric_parked => if (!options.allow_active_fabric_parked) return error.ActiveFabricUnsupported,
+            .unsupported_running, .partial_with_blockers => if (options.require_quiescent) return error.InvalidFrameEncoding,
+        }
+    }
+
+    fn validateOptionsForFreeze(options: FreezeOptions) ValidateOptions {
+        const max_top_level_refs = @max(options.max_run_slots, @max(options.max_pending_ports, options.max_fabric_invocations));
+        return .{
+            .max_image_bytes = options.max_image_bytes,
+            .max_run_slots = options.max_run_slots,
+            .max_pending_ports = options.max_pending_ports,
+            .max_fabric_invocations = options.max_fabric_invocations,
+            .max_dependencies = @max((ValidateOptions{}).max_dependencies, max_top_level_refs),
+            .max_embedded_images = @max((ValidateOptions{}).max_embedded_images, options.max_run_slots),
+        };
+    }
+
+    fn validateOptionsForThaw(options: ThawOptions) ValidateOptions {
+        return .{
+            .max_image_bytes = options.max_image_bytes,
+            .max_run_slots = options.max_run_slots,
+            .max_pending_ports = options.max_pending_ports,
+            .max_fabric_invocations = options.max_fabric_invocations,
+            .max_dependencies = options.max_dependencies,
+            .max_embedded_images = options.max_embedded_images,
+        };
+    }
+
+    fn capsuleKindForNormalForm(normal_form: NormalForm) Kind {
+        return switch (normal_form) {
+            .quiescent_completed => .completed_assembly,
+            .quiescent_failed => .failed_assembly,
+            .quiescent_parked => .parked_assembly,
+            .active_fabric_parked => .parked_assembly,
+            .unsupported_running, .partial_with_blockers => .inspect_only,
+        };
+    }
+
+    fn rootTargetRefFingerprintForFreeze(runspace: *const Runspace, assembly: ?Assembly) u64 {
+        if (assembly) |value| return value.root_target_ref.target_ref_fingerprint;
+        if (rootSlotForFreeze(runspace)) |slot| return slot.target_ref.target_ref_fingerprint;
+        return 0;
+    }
+
+    fn rootSlotForFreeze(runspace: *const Runspace) ?Runspace.RunSlot {
+        for (runspace.slots.items) |slot| {
+            if (slot.parent_run_handle_fingerprint == null) return slot;
+        }
+        return if (runspace.slots.items.len == 0) null else runspace.slots.items[0];
+    }
+
+    fn rootModuleRefFingerprintForFreeze(runspace: *const Runspace) ?u64 {
+        if (rootSlotForFreeze(runspace)) |slot| {
+            if (slot.module_ref_fingerprint) |fingerprint| return fingerprint;
+            if (slot.installed_run_image) |image| return image.module_ref_fingerprint orelse image.target_ref.boundary_module_fingerprint;
+        }
+        return null;
+    }
+
+    fn environmentRefsForFreeze(allocator: std.mem.Allocator, assembly: ?Assembly, run_images: []const RunImage) ![]u64 {
+        var refs: std.ArrayList(u64) = .empty;
+        errdefer refs.deinit(allocator);
+        if (assembly) |value| {
+            if (value.environment_certificate_fingerprint) |fingerprint| try appendUniqueU64(&refs, allocator, fingerprint);
+        }
+        for (run_images) |image| {
+            if (image.environment_certificate_fingerprint) |fingerprint| try appendUniqueU64(&refs, allocator, fingerprint);
+        }
+        return refs.toOwnedSlice(allocator);
+    }
+
+    fn collectRunImages(allocator: std.mem.Allocator, runspace: *Runspace, options: FreezeOptions, slot_run_image_fingerprints: []?u64) ![]RunImage {
+        if (slot_run_image_fingerprints.len != runspace.slots.items.len) return error.InvalidFrameEncoding;
+        var images: std.ArrayList(RunImage) = .empty;
+        var images_owned = true;
+        errdefer if (images_owned) {
+            for (images.items) |*image| image.deinit(allocator);
+            images.deinit(allocator);
+        };
+        if (!options.include_run_images) {
+            for (runspace.slots.items) |slot| {
+                if (slotNeedsRunImageForCapsule(slot)) return error.InvalidFrameEncoding;
+            }
+            return images.toOwnedSlice(allocator);
+        }
+        try images.ensureUnusedCapacity(allocator, runspace.slots.items.len);
+        for (runspace.slots.items, 0..) |slot, index| {
+            if (!slotNeedsRunImageForCapsule(slot)) continue;
+            var clone = try runspace.snapshotSlotImage(index);
+            var clone_owned = true;
+            errdefer if (clone_owned) clone.deinit(allocator);
+            scrubRunImageForCapsuleFreeze(allocator, &clone, options);
+            slot_run_image_fingerprints[index] = clone.run_image_fingerprint;
+            images.appendAssumeCapacity(clone);
+            clone_owned = false;
+        }
+        const result = try images.toOwnedSlice(allocator);
+        images_owned = false;
+        return result;
+    }
+
+    fn scrubRunImageForCapsuleFreeze(allocator: std.mem.Allocator, image: *RunImage, options: FreezeOptions) void {
+        if (!options.include_transcripts) {
+            if (image.owns_transcript_image) {
+                if (image.transcript_image) |*transcript| transcript.deinit(allocator);
+            }
+            image.transcript_image = null;
+            image.owns_transcript_image = false;
+            image.current_state = runStateWithoutTranscript(image.current_state);
+        }
+        if (!options.include_receipts) image.prior_run_receipt_fingerprint = null;
+        const has_module_witness = image.module_ref_fingerprint != null or image.boundary_module_fingerprint != null or image.module_image_fingerprint != null;
+        if (has_module_witness) image.format_version = world_run_image_format_version;
+        image.run_image_fingerprint = if (image.format_version >= 3) fingerprintRunImageV3(image.*) else fingerprintRunImage(image.*);
+    }
+
+    fn runStateWithoutTranscript(state: RunState) RunState {
+        return RunState.init(.{
+            .target_ref_fingerprint = state.target_ref_fingerprint,
+            .transcript_image_fingerprint = null,
+            .branch_id = state.branch_id,
+            .checkpoint_fingerprint = state.checkpoint_fingerprint,
+            .pending_request_fingerprint = state.pending_request_fingerprint,
+            .final_response_fingerprint = state.final_response_fingerprint,
+            .final_value_image_fingerprint = state.final_value_image_fingerprint,
+            .turn_index = state.turn_index,
+            .status = state.status,
+        });
+    }
+
+    fn slotNeedsRunImageForCapsule(slot: Runspace.RunSlot) bool {
+        return slot.installed_run_image != null or slotRestoreRequiresRunImage(capsuleStatusForRunspaceStatus(slot.status));
+    }
+
+    fn runImageFingerprintForSlot(slot: Runspace.RunSlot) ?u64 {
+        if (slot.installed_run_image) |image| return image.run_image_fingerprint;
+        return null;
+    }
+
+    fn cloneCapsuleRunImage(allocator: std.mem.Allocator, image: RunImage) !RunImage {
+        const encoded = try image.encode(allocator);
+        defer allocator.free(encoded);
+        return RunImage.decode(allocator, encoded);
+    }
+
+    fn refsFromRunImages(allocator: std.mem.Allocator, run_images: []const RunImage) ![]u64 {
+        const refs = try allocator.alloc(u64, run_images.len);
+        for (run_images, 0..) |image, index| refs[index] = image.run_image_fingerprint;
+        return refs;
+    }
+
+    fn receiptRefsForRunImages(allocator: std.mem.Allocator, existing_refs: []const u64, run_images: []const RunImage) ![]u64 {
+        var refs: std.ArrayList(u64) = .empty;
+        errdefer refs.deinit(allocator);
+        for (existing_refs) |fingerprint| try appendUniqueU64(&refs, allocator, fingerprint);
+        for (run_images) |image| {
+            if (image.prior_run_receipt_fingerprint) |fingerprint| try appendUniqueU64(&refs, allocator, fingerprint);
+        }
+        return refs.toOwnedSlice(allocator);
+    }
+
+    fn dependencyRefsForFreeze(
+        allocator: std.mem.Allocator,
+        manifest: Manifest,
+        runspace_image_value: RunspaceImage,
+        link_image_value: ?LinkImage,
+        fabric_image_value: ?FabricImage,
+        value_image_refs: []const u64,
+    ) ![]DependencyRef {
+        var refs: std.ArrayList(DependencyRef) = .empty;
+        errdefer refs.deinit(allocator);
+        try refs.append(allocator, .{ .section = .manifest, .fingerprint = manifest.manifest_fingerprint });
+        try refs.append(allocator, .{ .section = .runspace_image, .fingerprint = runspace_image_value.image_fingerprint });
+        if (link_image_value) |value| try refs.append(allocator, .{ .section = .link_image, .fingerprint = value.link_image_fingerprint });
+        if (fabric_image_value) |value| try refs.append(allocator, .{ .section = .fabric_image, .fingerprint = value.fabric_image_fingerprint });
+        for (manifest.admission_receipt_fingerprints) |fingerprint| try refs.append(allocator, .{ .section = .admission, .fingerprint = fingerprint });
+        for (manifest.environment_certificate_fingerprints) |fingerprint| try refs.append(allocator, .{ .section = .environment, .fingerprint = fingerprint });
+        for (manifest.run_permit_fingerprints) |fingerprint| try refs.append(allocator, .{ .section = .supervision, .fingerprint = fingerprint });
+        for (manifest.run_receipt_fingerprints) |fingerprint| try refs.append(allocator, .{ .section = .run_receipt, .fingerprint = fingerprint });
+        for (manifest.fabric_receipt_fingerprints) |fingerprint| try refs.append(allocator, .{ .section = .fabric_receipt, .fingerprint = fingerprint });
+        for (manifest.guest_conformance_report_fingerprints) |fingerprint| try refs.append(allocator, .{ .section = .guest_conformance, .fingerprint = fingerprint });
+        for (manifest.transcript_image_fingerprints) |fingerprint| try refs.append(allocator, .{ .section = .transcript_image, .fingerprint = fingerprint });
+        for (manifest.run_image_fingerprints) |fingerprint| try refs.append(allocator, .{ .section = .run_image, .fingerprint = fingerprint });
+        for (value_image_refs) |fingerprint| try refs.append(allocator, .{ .section = .value_image, .fingerprint = fingerprint });
+        return refs.toOwnedSlice(allocator);
+    }
+
+    fn objectRefsForFreeze(
+        allocator: std.mem.Allocator,
+        manifest: Manifest,
+        runspace_image_value: RunspaceImage,
+        link_image_value: ?LinkImage,
+        fabric_image_value: ?FabricImage,
+    ) ![]ObjectRef {
+        var refs: std.ArrayList(ObjectRef) = .empty;
+        errdefer refs.deinit(allocator);
+        try refs.append(allocator, .{ .kind = .capsule_manifest, .fingerprint = manifest.manifest_fingerprint });
+        try refs.append(allocator, .{ .kind = .runspace_image, .fingerprint = runspace_image_value.image_fingerprint });
+        if (link_image_value) |value| try refs.append(allocator, .{ .kind = .link_image, .fingerprint = value.link_image_fingerprint });
+        if (fabric_image_value) |value| try refs.append(allocator, .{ .kind = .fabric_image, .fingerprint = value.fabric_image_fingerprint });
+        return refs.toOwnedSlice(allocator);
+    }
+
+    fn fingerprintManifest(manifest: Manifest) u64 {
+        var hasher = std.hash.Wyhash.init(0x6361_7073_6d61_6e69);
+        hashU64(&hasher, manifest.fingerprint_version);
+        hashU64(&hasher, @intFromEnum(manifest.kind));
+        hashU64(&hasher, manifest.root_target_ref_fingerprint);
+        hashOptionalU64(&hasher, manifest.root_module_ref_fingerprint);
+        hashOptionalU64(&hasher, manifest.link_plan_fingerprint);
+        hashOptionalU64(&hasher, manifest.link_certificate_fingerprint);
+        hashOptionalU64(&hasher, manifest.assembly_fingerprint);
+        hashU64Slice(&hasher, manifest.admission_receipt_fingerprints);
+        hashU64Slice(&hasher, manifest.environment_certificate_fingerprints);
+        hashU64Slice(&hasher, manifest.run_permit_fingerprints);
+        hashU64Slice(&hasher, manifest.run_receipt_fingerprints);
+        hashU64Slice(&hasher, manifest.run_image_fingerprints);
+        hashU64Slice(&hasher, manifest.transcript_image_fingerprints);
+        hashU64Slice(&hasher, manifest.fabric_plan_fingerprints);
+        hashU64Slice(&hasher, manifest.fabric_invocation_fingerprints);
+        hashU64Slice(&hasher, manifest.fabric_receipt_fingerprints);
+        hashU64Slice(&hasher, manifest.guest_conformance_report_fingerprints);
+        hashU64(&hasher, manifest.pending_port_count);
+        hashU64(&hasher, manifest.run_slot_count);
+        hashU64(&hasher, manifest.active_fabric_invocation_count);
+        hashU64(&hasher, @intFromEnum(manifest.normal_form));
+        hashU64(&hasher, manifest.metadata.len);
+        hashBytes(&hasher, manifest.metadata);
+        return hasher.final();
+    }
+
+    fn fingerprintQuiescenceReport(report: QuiescenceReport) u64 {
+        var hasher = std.hash.Wyhash.init(0x6361_7073_7175_6965);
+        hashU64(&hasher, report.fingerprint_version);
+        hashU64(&hasher, report.runspace_fingerprint);
+        hashOptionalU64(&hasher, report.assembly_fingerprint);
+        hashBool(&hasher, report.quiescent);
+        hashU64(&hasher, @intFromEnum(report.normal_form));
+        hashU64(&hasher, report.run_count);
+        hashU64(&hasher, report.parked_run_count);
+        hashU64(&hasher, report.completed_run_count);
+        hashU64(&hasher, report.failed_run_count);
+        hashU64(&hasher, report.pending_port_count);
+        hashU64(&hasher, report.active_fabric_invocation_count);
+        hashEnumSlice(&hasher, Blocker, report.blockers);
+        hashEnumSlice(&hasher, Warning, report.warnings);
+        return hasher.final();
+    }
+
+    fn fingerprintRunSlotImage(image: RunSlotImage) u64 {
+        var hasher = std.hash.Wyhash.init(0x6361_7073_736c_6f74);
+        hashU64(&hasher, image.fingerprint_version);
+        hashU64(&hasher, image.original_run_handle_fingerprint);
+        hashOptionalU64(&hasher, image.parent_run_handle_fingerprint);
+        hashU64(&hasher, @intFromEnum(image.role));
+        hashU64(&hasher, image.target_ref_fingerprint);
+        hashOptionalU64(&hasher, image.module_ref_fingerprint);
+        hashOptionalU64(&hasher, image.admission_receipt_fingerprint);
+        hashOptionalU64(&hasher, image.environment_certificate_fingerprint);
+        hashOptionalU64(&hasher, image.run_permit_fingerprint);
+        hashU64(&hasher, image.run_state_fingerprint);
+        hashOptionalU64(&hasher, image.run_image_fingerprint);
+        hashOptionalU64(&hasher, image.transcript_image_fingerprint);
+        hashOptionalU64(&hasher, image.current_pending_mailbox_id);
+        hashOptionalU64(&hasher, image.branch_id);
+        hashU64Slice(&hasher, image.checkpoint_refs);
+        hashU64Slice(&hasher, image.fabric_invocation_refs);
+        hashU64(&hasher, @intFromEnum(image.status));
+        return hasher.final();
+    }
+
+    fn fingerprintPendingPortImage(image: PendingPortImage) u64 {
+        return PendingPortImage.fingerprint(image);
+    }
+
+    fn fingerprintMailboxImage(image: MailboxImage) u64 {
+        var hasher = std.hash.Wyhash.init(0x6361_7073_6d62_6f78);
+        hashU64(&hasher, image.fingerprint_version);
+        hashU64(&hasher, image.pending_port_entries.len);
+        for (image.pending_port_entries) |entry| hashU64(&hasher, entry.pending_port_image_fingerprint);
+        hashU64Slice(&hasher, image.pending_port_fingerprints);
+        hashU64Slice(&hasher, image.consumed_port_fingerprints);
+        hashU64(&hasher, image.next_mailbox_id);
+        hashU64(&hasher, image.generation);
+        hashU64Slice(&hasher, image.single_use_status_fingerprints);
+        hashU64Slice(&hasher, image.response_routing_status_fingerprints);
+        return hasher.final();
+    }
+
+    fn fingerprintRunspaceImage(image: RunspaceImage) u64 {
+        var hasher = std.hash.Wyhash.init(0x6361_7073_7273_7063);
+        hashU64(&hasher, image.fingerprint_version);
+        hashU64(&hasher, image.runspace_fingerprint);
+        hashU64(&hasher, image.runspace_report_fingerprint);
+        hashU64Slice(&hasher, image.run_handle_mappings);
+        hashU64(&hasher, image.run_slots.len);
+        for (image.run_slots) |slot| hashU64(&hasher, slot.slot_image_fingerprint);
+        hashOptionalU64(&hasher, if (image.mailbox_image) |mailbox| mailbox.mailbox_image_fingerprint else null);
+        hashU64Slice(&hasher, image.runspace_event_fingerprints);
+        hashU64Slice(&hasher, image.root_run_handle_fingerprints);
+        hashU64Slice(&hasher, image.provider_run_handle_fingerprints);
+        hashU64Slice(&hasher, image.branch_refs);
+        hashU64Slice(&hasher, image.checkpoint_refs);
+        hashU64Slice(&hasher, image.transcript_image_refs);
+        hashU64Slice(&hasher, image.run_image_refs);
+        hashU64Slice(&hasher, image.run_receipt_refs);
+        hashU64Slice(&hasher, image.admission_receipt_refs);
+        hashU64Slice(&hasher, image.permit_refs);
+        hashU64Slice(&hasher, image.active_fabric_invocation_refs);
+        hashU64(&hasher, image.metadata.len);
+        hashBytes(&hasher, image.metadata);
+        return hasher.final();
+    }
+
+    fn fingerprintFabricImage(image: FabricImage) u64 {
+        var hasher = std.hash.Wyhash.init(0x6361_7073_6661_6272);
+        hashU64(&hasher, image.fingerprint_version);
+        hashU64Slice(&hasher, image.fabric_plan_fingerprints);
+        hashU64Slice(&hasher, image.active_invocation_fingerprints);
+        hashU64Slice(&hasher, image.completed_receipt_fingerprints);
+        hashU64Slice(&hasher, image.parent_pending_port_refs);
+        hashU64Slice(&hasher, image.provider_run_refs);
+        hashU64Slice(&hasher, image.provider_state_summary_fingerprints);
+        hashU64Slice(&hasher, image.route_fingerprints);
+        hashU64Slice(&hasher, image.value_mapping_fingerprints);
+        hashU64Slice(&hasher, image.depth_route_stack);
+        hashU64Slice(&hasher, image.replay_cursor_state_refs);
+        hashU64(&hasher, image.status_summary_fingerprint);
+        return hasher.final();
+    }
+
+    fn fingerprintLinkImage(image: LinkImage) u64 {
+        var hasher = std.hash.Wyhash.init(0x6361_7073_6c69_6e6b);
+        hashU64(&hasher, image.fingerprint_version);
+        hashU64(&hasher, image.link_plan_fingerprint);
+        hashU64(&hasher, image.link_certificate_fingerprint);
+        hashU64(&hasher, image.assembly_fingerprint);
+        hashU64(&hasher, image.linker_policy_fingerprint);
+        hashOptionalU64(&hasher, image.catalog_fingerprint);
+        hashU64Slice(&hasher, image.route_synthesis_refs);
+        hashU64(&hasher, image.residual_import_set_fingerprint);
+        hashU64Slice(&hasher, image.provider_target_refs);
+        hashU64Slice(&hasher, image.guest_provider_refs);
+        hashU64Slice(&hasher, image.external_environment_requirements);
+        return hasher.final();
+    }
+
+    fn fingerprintImage(image: Image) u64 {
+        var hasher = std.hash.Wyhash.init(0x6361_7073_696d_6167);
+        hashU64(&hasher, image.fingerprint_version);
+        hashU64(&hasher, image.manifest.manifest_fingerprint);
+        hashU64(&hasher, image.runspace_image.image_fingerprint);
+        hashOptionalU64(&hasher, if (image.link_image) |link| link.link_image_fingerprint else null);
+        hashOptionalU64(&hasher, if (image.fabric_image) |fabric| fabric.fabric_image_fingerprint else null);
+        hashU64Slice(&hasher, image.admission_refs);
+        hashU64Slice(&hasher, image.environment_refs);
+        hashU64Slice(&hasher, image.supervision_refs);
+        hashU64Slice(&hasher, image.guest_conformance_refs);
+        hashU64Slice(&hasher, image.transcript_image_refs);
+        hashU64Slice(&hasher, image.run_image_refs);
+        hashU64Slice(&hasher, image.value_image_refs);
+        hashU64(&hasher, image.transcript_images.len);
+        for (image.transcript_images) |transcript| hashU64(&hasher, transcript.transcript_image_fingerprint);
+        hashU64(&hasher, image.run_images.len);
+        for (image.run_images) |run_image| hashU64(&hasher, run_image.run_image_fingerprint);
+        hashU64(&hasher, image.value_images.len);
+        for (image.value_images) |value_image| hashU64(&hasher, value_image.value_image_fingerprint);
+        hashDependencyRefSlice(&hasher, image.dependency_refs);
+        hashObjectRefSlice(&hasher, image.object_refs);
+        hashU64(&hasher, image.metadata.len);
+        hashBytes(&hasher, image.metadata);
+        return hasher.final();
+    }
+
+    fn fingerprintCertificate(certificate_value: Certificate) u64 {
+        var hasher = std.hash.Wyhash.init(0x6361_7073_6365_7274);
+        hashU64(&hasher, certificate_value.fingerprint_version);
+        hashU64(&hasher, certificate_value.capsule_image_fingerprint);
+        hashU64(&hasher, certificate_value.capsule_manifest_fingerprint);
+        hashU64(&hasher, certificate_value.quiescence_report_fingerprint);
+        hashU64(&hasher, certificate_value.runspace_image_fingerprint);
+        hashOptionalU64(&hasher, certificate_value.link_image_fingerprint);
+        hashOptionalU64(&hasher, certificate_value.fabric_image_fingerprint);
+        hashU64(&hasher, certificate_value.root_target_ref_fingerprint);
+        hashOptionalU64(&hasher, certificate_value.assembly_fingerprint);
+        hashEnumSlice(&hasher, Blocker, certificate_value.blocker_summary);
+        hashEnumSlice(&hasher, Warning, certificate_value.warning_summary);
+        return hasher.final();
+    }
+
+    fn fingerprintThawPlan(plan: ThawPlan) u64 {
+        var hasher = std.hash.Wyhash.init(0x6361_7073_7468_6177);
+        hashU64(&hasher, plan.fingerprint_version);
+        hashU64(&hasher, plan.capsule_image_fingerprint);
+        hashU64(&hasher, @intFromEnum(plan.requested_mode));
+        hashU64(&hasher, plan.local_root_target_ref_fingerprint);
+        hashBool(&hasher, plan.require_local_permit);
+        hashBool(&hasher, plan.require_link_match);
+        hashBool(&hasher, plan.allow_relink_drift);
+        hashOptionalU64(&hasher, plan.local_catalog_fingerprint);
+        hashBool(&hasher, plan.rerun_guest_conformance);
+        hashU64Slice(&hasher, plan.target_matches);
+        hashU64Slice(&hasher, plan.module_matches);
+        hashU64(&hasher, @intFromEnum(plan.link_certificate_match_status));
+        hashU64(&hasher, @intFromEnum(plan.relink_status));
+        hashU64Slice(&hasher, plan.environment_preflight_refs);
+        hashU64Slice(&hasher, plan.guest_conformance_refs);
+        hashU64Slice(&hasher, plan.receiver_run_permit_refs);
+        hashOptionalU64(&hasher, plan.receiver_run_permit_fingerprint);
+        hashU64Slice(&hasher, plan.handle_remapping_plan);
+        hashU64Slice(&hasher, plan.mailbox_id_remapping_plan);
+        hashEnumSlice(&hasher, Blocker, plan.blockers);
+        hashEnumSlice(&hasher, Warning, plan.warnings);
+        return hasher.final();
+    }
+
+    fn fingerprintRestoreReport(report: RestoreReport) u64 {
+        var hasher = std.hash.Wyhash.init(0x6361_7073_7273_7472);
+        hashU64(&hasher, report.fingerprint_version);
+        hashU64(&hasher, report.capsule_image_fingerprint);
+        hashU64(&hasher, report.thaw_plan_fingerprint);
+        hashU64(&hasher, report.restored_runspace_fingerprint);
+        hashU64(&hasher, report.restored_local_run_id_start);
+        hashU64Slice(&hasher, report.restored_run_handle_mappings);
+        hashU64Slice(&hasher, report.restored_root_run_handles);
+        hashU64Slice(&hasher, report.restored_provider_run_handles);
+        hashU64Slice(&hasher, report.restored_pending_port_mappings);
+        hashU64Slice(&hasher, report.restored_fabric_invocation_mappings);
+        hashU64Slice(&hasher, report.guest_conformance_refs);
+        hashOptionalU64(&hasher, report.environment_certificate_fingerprint);
+        hashOptionalU64(&hasher, report.receiver_run_permit_fingerprint);
+        hashBool(&hasher, report.accepted);
+        hashEnumSlice(&hasher, Blocker, report.blockers);
+        hashEnumSlice(&hasher, Warning, report.warnings);
+        hashU64(&hasher, report.summary.len);
+        hashBytes(&hasher, report.summary);
+        return hasher.final();
+    }
+
+    fn appendUniqueBlocker(blockers: *std.ArrayList(Blocker), allocator: std.mem.Allocator, blocker: Blocker) !void {
+        for (blockers.items) |existing| {
+            if (existing == blocker) return;
+        }
+        try blockers.append(allocator, blocker);
+    }
+
+    fn normalFormForQuiescence(run_count: usize, parked_count: usize, completed_count: usize, failed_count: usize, active_fabric_count: usize, blocker_count: usize) NormalForm {
+        if (blocker_count != 0) return .partial_with_blockers;
+        if (active_fabric_count != 0) return .active_fabric_parked;
+        if (run_count == 0 or completed_count == run_count) return .quiescent_completed;
+        if (failed_count == run_count) return .quiescent_failed;
+        if (parked_count != 0) return .quiescent_parked;
+        if (failed_count != 0) return .quiescent_failed;
+        return .quiescent_completed;
+    }
+
+    fn isActiveFabricStatus(status: Fabric.InvocationStatus) bool {
+        return switch (status) {
+            .started,
+            .provider_installed,
+            .provider_running,
+            .provider_parked,
+            .provider_completed,
+            => true,
+            .planned,
+            .parent_responded,
+            .completed,
+            .rejected,
+            .failed,
+            .unsupported,
+            .denied,
+            .cycle_blocked,
+            .supervision_denied,
+            => false,
+        };
+    }
+
+    fn activeFabricInvocationCount(runspace: *const Runspace) usize {
+        var count: usize = 0;
+        for (runspace.fabric_invocations.items) |invocation| {
+            if (isActiveFabricStatus(invocation.status)) count += 1;
+        }
+        return count;
+    }
+
+    fn mailboxContainsPendingFingerprint(runspace: *const Runspace, pending_port_fingerprint: u64) bool {
+        for (runspace.mailbox.pending.items) |pending_port| {
+            if (pending_port.pending_port_fingerprint == pending_port_fingerprint and pending_port.status == .pending) return true;
+        }
+        return false;
+    }
+
+    fn fabricRouteWitness(runspace: *const Runspace, route_fingerprint: u64) ?Fabric.Route {
+        for (runspace.fabric_routes.items) |route| {
+            if (route.route_fingerprint == route_fingerprint) return route;
+        }
+        return null;
+    }
+
+    fn fabricRouteMappingWitnessFingerprint(route: Fabric.Route) ?u64 {
+        return route.response_value_mapping_fingerprint orelse route.value_mapping_fingerprint;
+    }
+
+    fn fabricValueMappingWitness(runspace: *const Runspace, route: Fabric.Route) ?u64 {
+        const fingerprint = fabricRouteMappingWitnessFingerprint(route) orelse return null;
+        for (runspace.fabric_value_mappings.items) |mapping| {
+            if (mapping.mapping_fingerprint == fingerprint) return fingerprint;
+        }
+        return null;
+    }
+
+    fn fingerprintFabricActiveInvocationWitness(invocation_fingerprint: u64, route_fingerprint: u64, mapping_fingerprint: u64) u64 {
+        var hasher = std.hash.Wyhash.init(0x6361_7073_6662_6177);
+        hashU64(&hasher, invocation_fingerprint);
+        hashU64(&hasher, route_fingerprint);
+        hashU64(&hasher, mapping_fingerprint);
+        return hasher.final();
+    }
+
+    fn providerStateFingerprintForHandle(runspace: *const Runspace, provider_run_handle_fingerprint: u64) ?u64 {
+        for (runspace.slots.items) |slot| {
+            if (slot.handle.handle_fingerprint == provider_run_handle_fingerprint) return slot.current_state.run_state_fingerprint;
+        }
+        return null;
+    }
+
+    fn appendUniqueU64(values: *std.ArrayList(u64), allocator: std.mem.Allocator, value: u64) !void {
+        for (values.items) |existing| {
+            if (existing == value) return;
+        }
+        try values.append(allocator, value);
+    }
+
+    fn runSlotImageForSlot(allocator: std.mem.Allocator, runspace: *const Runspace, slot: Runspace.RunSlot, run_image_fingerprint: ?u64, include_transcripts: bool) !RunSlotImage {
+        const snapshot_state = Runspace.runStateForSlotSnapshot(slot);
+        const checkpoint_refs = if (slot.checkpoint_fingerprint) |checkpoint| refs: {
+            const refs = try allocator.alloc(u64, 1);
+            refs[0] = checkpoint;
+            break :refs refs;
+        } else try allocator.alloc(u64, 0);
+        errdefer allocator.free(checkpoint_refs);
+
+        var fabric_refs: std.ArrayList(u64) = .empty;
+        errdefer fabric_refs.deinit(allocator);
+        for (runspace.fabric_invocations.items) |invocation| {
+            if (invocation.parent_run_handle_fingerprint == slot.handle.handle_fingerprint or
+                invocation.provider_run_handle_fingerprint == slot.handle.handle_fingerprint)
+            {
+                try fabric_refs.append(allocator, invocation.invocation_fingerprint);
+            }
+        }
+        const fabric_slice = try fabric_refs.toOwnedSlice(allocator);
+        errdefer allocator.free(fabric_slice);
+
+        var image = RunSlotImage.init(.{
+            .original_run_handle_fingerprint = slot.handle.handle_fingerprint,
+            .parent_run_handle_fingerprint = slot.parent_run_handle_fingerprint,
+            .role = runSlotRoleForFreeze(slot),
+            .target_ref_fingerprint = slot.target_ref.target_ref_fingerprint,
+            .module_ref_fingerprint = slot.module_ref_fingerprint,
+            .admission_receipt_fingerprint = slot.admission_receipt_fingerprint,
+            .environment_certificate_fingerprint = null,
+            .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .run_state_fingerprint = if (include_transcripts) snapshot_state.run_state_fingerprint else runStateWithoutTranscript(snapshot_state).run_state_fingerprint,
+            .run_image_fingerprint = run_image_fingerprint,
+            .transcript_image_fingerprint = if (include_transcripts) snapshot_state.transcript_image_fingerprint else null,
+            .current_pending_mailbox_id = slot.pending_mailbox_id,
+            .branch_id = slot.branch_id,
+            .checkpoint_refs = checkpoint_refs,
+            .fabric_invocation_refs = fabric_slice,
+            .status = capsuleStatusForRunspaceStatus(slot.status),
+        });
+        image.owns_memory = true;
+        return image;
+    }
+
+    fn runSlotRoleForFreeze(slot: Runspace.RunSlot) RunRole {
+        if (slot.parent_run_handle_fingerprint == null) return .root;
+        if (slot.branch_id != null) return .branch;
+        return .provider;
+    }
+
+    fn capsuleStatusForRunspaceStatus(status: Runspace.RunStatus) RunSlotStatus {
+        return switch (status) {
+            .admitted => .admitted,
+            .runnable, .running => .runnable,
+            .parked_on_port => .parked_on_port,
+            .parked_on_supervision => .parked_on_supervision,
+            .completed => .completed,
+            .failed => .failed,
+            .exported => .exported,
+            .rejected => .rejected,
+        };
+    }
+
+    fn fingerprintPendingPortSingleUseStatus(pending_port: Runspace.PendingPort) u64 {
+        var hasher = std.hash.Wyhash.init(0x6361_7073_6d62_7375);
+        hashU64(&hasher, pending_port.pending_port_fingerprint);
+        hashU64(&hasher, pending_port.mailbox_id);
+        hashU64(&hasher, @intFromEnum(pending_port.status));
+        hashU64(&hasher, pending_port.request_fingerprint);
+        return hasher.final();
+    }
+
+    fn fingerprintPendingPortImageSingleUseStatus(image: PendingPortImage) u64 {
+        var hasher = std.hash.Wyhash.init(0x6361_7073_6d62_7375);
+        hashU64(&hasher, image.pending_port_fingerprint);
+        hashU64(&hasher, image.mailbox_id);
+        hashU64(&hasher, @intFromEnum(image.status));
+        hashU64(&hasher, image.request_frame.request_fingerprint);
+        return hasher.final();
+    }
+
+    fn fingerprintPendingPortRoutingStatus(pending_port: Runspace.PendingPort) u64 {
+        var hasher = std.hash.Wyhash.init(0x6361_7073_6d62_7274);
+        hashU64(&hasher, pending_port.pending_port_fingerprint);
+        hashU64(&hasher, pending_port.world_surface_fingerprint);
+        hashU64(&hasher, pending_port.target_certificate_fingerprint);
+        hashU64(&hasher, pending_port.world_port_id);
+        hashU64(&hasher, pending_port.request_fingerprint);
+        hashU64(&hasher, @intFromEnum(pending_port.expected_response_kind));
+        hashOptionalU32(&hasher, pending_port.expected_response_value_table_id);
+        return hasher.final();
+    }
+
+    fn fingerprintPendingPortImageRoutingStatus(image: PendingPortImage) u64 {
+        var hasher = std.hash.Wyhash.init(0x6361_7073_6d62_7274);
+        hashU64(&hasher, image.pending_port_fingerprint);
+        hashU64(&hasher, image.request_frame.world_surface_fingerprint);
+        hashU64(&hasher, image.request_frame.target_certificate_fingerprint);
+        hashU64(&hasher, image.request_frame.world_port_id);
+        hashU64(&hasher, image.request_frame.request_fingerprint);
+        hashU64(&hasher, @intFromEnum(image.expected_response_kind));
+        hashOptionalU32(&hasher, image.expected_response_value_table_id);
+        return hasher.final();
+    }
+
+    fn fingerprintRunspaceReportSummary(report: Runspace.RunspaceReport) u64 {
+        var hasher = std.hash.Wyhash.init(0x6361_7073_7270_7473);
+        hashU64(&hasher, report.runspace_fingerprint);
+        hashU64(&hasher, report.event_count);
+        hashU64(&hasher, report.run_count);
+        hashU64(&hasher, report.runnable_count);
+        hashU64(&hasher, report.parked_count);
+        hashU64(&hasher, report.completed_count);
+        hashU64(&hasher, report.failed_count);
+        hashU64(&hasher, report.pending_port_count);
+        hashU64(&hasher, report.blocker_count);
+        hashU64(&hasher, report.warning_count);
+        hashU64(&hasher, report.fabric_invocation_count);
+        hashU64(&hasher, report.fabric_receipt_count);
+        for (report.emitted_events) |event| hashU64(&hasher, event.event_fingerprint);
+        return hasher.final();
+    }
+
+    fn sectionKindFromRefKind(kind: anytype) SectionKind {
+        const name = @tagName(kind);
+        if (std.mem.eql(u8, name, "manifest") or std.mem.eql(u8, name, "capsule_manifest")) return .manifest;
+        if (std.mem.eql(u8, name, "runspace_image")) return .runspace_image;
+        if (std.mem.eql(u8, name, "link_image")) return .link_image;
+        if (std.mem.eql(u8, name, "fabric_image")) return .fabric_image;
+        if (std.mem.eql(u8, name, "admission")) return .admission;
+        if (std.mem.eql(u8, name, "environment")) return .environment;
+        if (std.mem.eql(u8, name, "supervision")) return .supervision;
+        if (std.mem.eql(u8, name, "run_receipt")) return .run_receipt;
+        if (std.mem.eql(u8, name, "fabric_receipt")) return .fabric_receipt;
+        if (std.mem.eql(u8, name, "guest_conformance")) return .guest_conformance;
+        if (std.mem.eql(u8, name, "transcript_image")) return .transcript_image;
+        if (std.mem.eql(u8, name, "run_image")) return .run_image;
+        if (std.mem.eql(u8, name, "value_image")) return .value_image;
+        return .dependency;
+    }
+
+    fn objectKindFromRefKind(kind: anytype) ObjectKind {
+        const name = @tagName(kind);
+        if (std.mem.eql(u8, name, "capsule_manifest") or std.mem.eql(u8, name, "manifest")) return .capsule_manifest;
+        if (std.mem.eql(u8, name, "runspace_image")) return .runspace_image;
+        if (std.mem.eql(u8, name, "link_image")) return .link_image;
+        if (std.mem.eql(u8, name, "fabric_image")) return .fabric_image;
+        if (std.mem.eql(u8, name, "run_image")) return .run_image;
+        if (std.mem.eql(u8, name, "transcript_image")) return .transcript_image;
+        if (std.mem.eql(u8, name, "value_image")) return .value_image;
+        if (std.mem.eql(u8, name, "certificate")) return .certificate;
+        return .capsule_image;
+    }
+
+    fn hashU64Slice(hasher: *std.hash.Wyhash, values: []const u64) void {
+        hashU64(hasher, values.len);
+        for (values) |value| hashU64(hasher, value);
+    }
+
+    fn hashEnumSlice(hasher: *std.hash.Wyhash, comptime Enum: type, values: []const Enum) void {
+        hashU64(hasher, values.len);
+        for (values) |value| hashU64(hasher, @intFromEnum(value));
+    }
+
+    fn hashDependencyRefSlice(hasher: *std.hash.Wyhash, values: []const DependencyRef) void {
+        hashU64(hasher, values.len);
+        for (values) |value| {
+            hashU64(hasher, @intFromEnum(value.section));
+            hashU64(hasher, value.fingerprint);
+        }
+    }
+
+    fn hashObjectRefSlice(hasher: *std.hash.Wyhash, values: []const ObjectRef) void {
+        hashU64(hasher, values.len);
+        for (values) |value| {
+            hashU64(hasher, @intFromEnum(value.kind));
+            hashU64(hasher, value.fingerprint);
+        }
+    }
+
+    fn encodeManifest(out: *std.ArrayList(u8), allocator: std.mem.Allocator, manifest: Manifest) !void {
+        try writeU32(out, allocator, manifest.format_version);
+        try writeU32(out, allocator, manifest.fingerprint_version);
+        try writeU64(out, allocator, manifest.manifest_fingerprint);
+        try writeU8(out, allocator, @intFromEnum(manifest.kind));
+        try writeU64(out, allocator, manifest.root_target_ref_fingerprint);
+        try writeOptionalU64(out, allocator, manifest.root_module_ref_fingerprint);
+        try writeOptionalU64(out, allocator, manifest.link_plan_fingerprint);
+        try writeOptionalU64(out, allocator, manifest.link_certificate_fingerprint);
+        try writeOptionalU64(out, allocator, manifest.assembly_fingerprint);
+        try writeU64Slice(out, allocator, manifest.admission_receipt_fingerprints);
+        try writeU64Slice(out, allocator, manifest.environment_certificate_fingerprints);
+        try writeU64Slice(out, allocator, manifest.run_permit_fingerprints);
+        try writeU64Slice(out, allocator, manifest.run_receipt_fingerprints);
+        try writeU64Slice(out, allocator, manifest.run_image_fingerprints);
+        try writeU64Slice(out, allocator, manifest.transcript_image_fingerprints);
+        try writeU64Slice(out, allocator, manifest.fabric_plan_fingerprints);
+        try writeU64Slice(out, allocator, manifest.fabric_invocation_fingerprints);
+        try writeU64Slice(out, allocator, manifest.fabric_receipt_fingerprints);
+        try writeU64Slice(out, allocator, manifest.guest_conformance_report_fingerprints);
+        try writeU64(out, allocator, manifest.pending_port_count);
+        try writeU64(out, allocator, manifest.run_slot_count);
+        try writeU64(out, allocator, manifest.active_fabric_invocation_count);
+        try writeU8(out, allocator, @intFromEnum(manifest.normal_form));
+        try writeBytes(out, allocator, manifest.metadata);
+    }
+
+    fn decodeManifest(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, options: ValidateOptions) !Manifest {
+        const format_version = try readU32(bytes, cursor);
+        const fingerprint_version = try readU32(bytes, cursor);
+        const manifest_fingerprint = try readU64(bytes, cursor);
+        const kind = try enumFromByte(Kind, try readU8(bytes, cursor));
+        const root_target_ref_fingerprint = try readU64(bytes, cursor);
+        const root_module_ref_fingerprint = try readOptionalU64(bytes, cursor);
+        const link_plan_fingerprint = try readOptionalU64(bytes, cursor);
+        const link_certificate_fingerprint = try readOptionalU64(bytes, cursor);
+        const assembly_fingerprint = try readOptionalU64(bytes, cursor);
+        const admission_receipt_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var admission_receipt_fingerprints_owned = true;
+        errdefer if (admission_receipt_fingerprints_owned) allocator.free(admission_receipt_fingerprints);
+        const environment_certificate_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var environment_certificate_fingerprints_owned = true;
+        errdefer if (environment_certificate_fingerprints_owned) allocator.free(environment_certificate_fingerprints);
+        const run_permit_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var run_permit_fingerprints_owned = true;
+        errdefer if (run_permit_fingerprints_owned) allocator.free(run_permit_fingerprints);
+        const run_receipt_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var run_receipt_fingerprints_owned = true;
+        errdefer if (run_receipt_fingerprints_owned) allocator.free(run_receipt_fingerprints);
+        const run_image_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var run_image_fingerprints_owned = true;
+        errdefer if (run_image_fingerprints_owned) allocator.free(run_image_fingerprints);
+        const transcript_image_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var transcript_image_fingerprints_owned = true;
+        errdefer if (transcript_image_fingerprints_owned) allocator.free(transcript_image_fingerprints);
+        const fabric_plan_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var fabric_plan_fingerprints_owned = true;
+        errdefer if (fabric_plan_fingerprints_owned) allocator.free(fabric_plan_fingerprints);
+        const fabric_invocation_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var fabric_invocation_fingerprints_owned = true;
+        errdefer if (fabric_invocation_fingerprints_owned) allocator.free(fabric_invocation_fingerprints);
+        const fabric_receipt_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var fabric_receipt_fingerprints_owned = true;
+        errdefer if (fabric_receipt_fingerprints_owned) allocator.free(fabric_receipt_fingerprints);
+        const guest_conformance_report_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var guest_conformance_report_fingerprints_owned = true;
+        errdefer if (guest_conformance_report_fingerprints_owned) allocator.free(guest_conformance_report_fingerprints);
+        const pending_port_count = try readU64AsUsize(bytes, cursor);
+        const run_slot_count = try readU64AsUsize(bytes, cursor);
+        const active_fabric_invocation_count = try readU64AsUsize(bytes, cursor);
+        const normal_form = try enumFromByte(NormalForm, try readU8(bytes, cursor));
+        const metadata = try readBytesOwned(allocator, bytes, cursor);
+        var metadata_owned = true;
+        errdefer if (metadata_owned) allocator.free(metadata);
+
+        var manifest = Manifest{
+            .format_version = format_version,
+            .fingerprint_version = fingerprint_version,
+            .manifest_fingerprint = manifest_fingerprint,
+            .kind = kind,
+            .root_target_ref_fingerprint = root_target_ref_fingerprint,
+            .root_module_ref_fingerprint = root_module_ref_fingerprint,
+            .link_plan_fingerprint = link_plan_fingerprint,
+            .link_certificate_fingerprint = link_certificate_fingerprint,
+            .assembly_fingerprint = assembly_fingerprint,
+            .admission_receipt_fingerprints = admission_receipt_fingerprints,
+            .environment_certificate_fingerprints = environment_certificate_fingerprints,
+            .run_permit_fingerprints = run_permit_fingerprints,
+            .run_receipt_fingerprints = run_receipt_fingerprints,
+            .run_image_fingerprints = run_image_fingerprints,
+            .transcript_image_fingerprints = transcript_image_fingerprints,
+            .fabric_plan_fingerprints = fabric_plan_fingerprints,
+            .fabric_invocation_fingerprints = fabric_invocation_fingerprints,
+            .fabric_receipt_fingerprints = fabric_receipt_fingerprints,
+            .guest_conformance_report_fingerprints = guest_conformance_report_fingerprints,
+            .pending_port_count = pending_port_count,
+            .run_slot_count = run_slot_count,
+            .active_fabric_invocation_count = active_fabric_invocation_count,
+            .normal_form = normal_form,
+            .metadata = metadata,
+            .owns_memory = true,
+        };
+        admission_receipt_fingerprints_owned = false;
+        environment_certificate_fingerprints_owned = false;
+        run_permit_fingerprints_owned = false;
+        run_receipt_fingerprints_owned = false;
+        run_image_fingerprints_owned = false;
+        transcript_image_fingerprints_owned = false;
+        fabric_plan_fingerprints_owned = false;
+        fabric_invocation_fingerprints_owned = false;
+        fabric_receipt_fingerprints_owned = false;
+        guest_conformance_report_fingerprints_owned = false;
+        metadata_owned = false;
+        errdefer manifest.deinit(allocator);
+        try manifest.validate(options);
+        return manifest;
+    }
+
+    fn encodeRunSlotImage(out: *std.ArrayList(u8), allocator: std.mem.Allocator, image: RunSlotImage) !void {
+        try writeU32(out, allocator, image.fingerprint_version);
+        try writeU64(out, allocator, image.slot_image_fingerprint);
+        try writeU64(out, allocator, image.original_run_handle_fingerprint);
+        try writeOptionalU64(out, allocator, image.parent_run_handle_fingerprint);
+        try writeU8(out, allocator, @intFromEnum(image.role));
+        try writeU64(out, allocator, image.target_ref_fingerprint);
+        try writeOptionalU64(out, allocator, image.module_ref_fingerprint);
+        try writeOptionalU64(out, allocator, image.admission_receipt_fingerprint);
+        try writeOptionalU64(out, allocator, image.environment_certificate_fingerprint);
+        try writeOptionalU64(out, allocator, image.run_permit_fingerprint);
+        try writeU64(out, allocator, image.run_state_fingerprint);
+        try writeOptionalU64(out, allocator, image.run_image_fingerprint);
+        try writeOptionalU64(out, allocator, image.transcript_image_fingerprint);
+        try writeOptionalU64(out, allocator, image.current_pending_mailbox_id);
+        try writeOptionalU64(out, allocator, image.branch_id);
+        try writeU64Slice(out, allocator, image.checkpoint_refs);
+        try writeU64Slice(out, allocator, image.fabric_invocation_refs);
+        try writeU8(out, allocator, @intFromEnum(image.status));
+    }
+
+    fn decodeRunSlotImage(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, options: ValidateOptions) !RunSlotImage {
+        const fingerprint_version = try readU32(bytes, cursor);
+        const slot_image_fingerprint = try readU64(bytes, cursor);
+        const original_run_handle_fingerprint = try readU64(bytes, cursor);
+        const parent_run_handle_fingerprint = try readOptionalU64(bytes, cursor);
+        const role = try enumFromByte(RunRole, try readU8(bytes, cursor));
+        const target_ref_fingerprint = try readU64(bytes, cursor);
+        const module_ref_fingerprint = try readOptionalU64(bytes, cursor);
+        const admission_receipt_fingerprint = try readOptionalU64(bytes, cursor);
+        const environment_certificate_fingerprint = try readOptionalU64(bytes, cursor);
+        const run_permit_fingerprint = try readOptionalU64(bytes, cursor);
+        const run_state_fingerprint = try readU64(bytes, cursor);
+        const run_image_fingerprint = try readOptionalU64(bytes, cursor);
+        const transcript_image_fingerprint = try readOptionalU64(bytes, cursor);
+        const current_pending_mailbox_id = try readOptionalU64(bytes, cursor);
+        const branch_id = try readOptionalU64(bytes, cursor);
+        const checkpoint_refs = try readU64SliceOwned(allocator, bytes, cursor, options.max_run_slots);
+        var checkpoint_refs_owned = true;
+        errdefer if (checkpoint_refs_owned) allocator.free(checkpoint_refs);
+        const fabric_invocation_refs = try readU64SliceOwned(allocator, bytes, cursor, options.max_fabric_invocations);
+        var fabric_invocation_refs_owned = true;
+        errdefer if (fabric_invocation_refs_owned) allocator.free(fabric_invocation_refs);
+        const status = try enumFromByte(RunSlotStatus, try readU8(bytes, cursor));
+        var image = RunSlotImage{
+            .fingerprint_version = fingerprint_version,
+            .slot_image_fingerprint = slot_image_fingerprint,
+            .original_run_handle_fingerprint = original_run_handle_fingerprint,
+            .parent_run_handle_fingerprint = parent_run_handle_fingerprint,
+            .role = role,
+            .target_ref_fingerprint = target_ref_fingerprint,
+            .module_ref_fingerprint = module_ref_fingerprint,
+            .admission_receipt_fingerprint = admission_receipt_fingerprint,
+            .environment_certificate_fingerprint = environment_certificate_fingerprint,
+            .run_permit_fingerprint = run_permit_fingerprint,
+            .run_state_fingerprint = run_state_fingerprint,
+            .run_image_fingerprint = run_image_fingerprint,
+            .transcript_image_fingerprint = transcript_image_fingerprint,
+            .current_pending_mailbox_id = current_pending_mailbox_id,
+            .branch_id = branch_id,
+            .checkpoint_refs = checkpoint_refs,
+            .fabric_invocation_refs = fabric_invocation_refs,
+            .status = status,
+            .owns_memory = true,
+        };
+        checkpoint_refs_owned = false;
+        fabric_invocation_refs_owned = false;
+        errdefer image.deinit(allocator);
+        try image.validate(options);
+        return image;
+    }
+
+    fn writeRunSlotImageSlice(out: *std.ArrayList(u8), allocator: std.mem.Allocator, values: []const RunSlotImage) !void {
+        try writeU64(out, allocator, values.len);
+        for (values) |value| try encodeRunSlotImage(out, allocator, value);
+    }
+
+    fn readRunSlotImageSliceOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, options: ValidateOptions) ![]RunSlotImage {
+        const count = try readU64AsUsize(bytes, cursor);
+        if (count > options.max_run_slots) return error.InvalidFrameEncoding;
+        const values = try allocator.alloc(RunSlotImage, count);
+        var initialized: usize = 0;
+        errdefer {
+            for (values[0..initialized]) |*value| value.deinit(allocator);
+            allocator.free(values);
+        }
+        for (values) |*value| {
+            value.* = try decodeRunSlotImage(allocator, bytes, cursor, options);
+            initialized += 1;
+        }
+        return values;
+    }
+
+    fn encodePendingPortImage(out: *std.ArrayList(u8), allocator: std.mem.Allocator, image: PendingPortImage) !void {
+        try writeU32(out, allocator, image.fingerprint_version);
+        try writeU64(out, allocator, image.pending_port_image_fingerprint);
+        try writeU64(out, allocator, image.pending_port_fingerprint);
+        try writeU64(out, allocator, image.original_run_handle_fingerprint);
+        try writeU64(out, allocator, image.mailbox_id);
+        const request_bytes = try image.request_frame.encode(allocator);
+        defer allocator.free(request_bytes);
+        try writeBytes(out, allocator, request_bytes);
+        try writeU8(out, allocator, @intFromEnum(image.expected_response_kind));
+        try writeOptionalU32(out, allocator, image.expected_response_value_table_id);
+        try writeU64(out, allocator, image.target_ref_fingerprint);
+        try writeOptionalU64(out, allocator, image.environment_certificate_fingerprint);
+        try writeOptionalU64(out, allocator, image.run_permit_fingerprint);
+        try writeU64(out, allocator, image.inserted_event_index);
+        try writeU8(out, allocator, @intFromEnum(image.status));
+    }
+
+    fn decodePendingPortImage(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) !PendingPortImage {
+        const fingerprint_version = try readU32(bytes, cursor);
+        const pending_port_image_fingerprint = try readU64(bytes, cursor);
+        const pending_port_fingerprint = try readU64(bytes, cursor);
+        const original_run_handle_fingerprint = try readU64(bytes, cursor);
+        const mailbox_id = try readU64(bytes, cursor);
+        const request_bytes = try readBytesOwned(allocator, bytes, cursor);
+        defer allocator.free(request_bytes);
+        var request = try Frame.Request.decode(allocator, request_bytes);
+        var request_owned = true;
+        errdefer if (request_owned) request.deinit(allocator);
+        var image = PendingPortImage{
+            .fingerprint_version = fingerprint_version,
+            .pending_port_image_fingerprint = pending_port_image_fingerprint,
+            .pending_port_fingerprint = pending_port_fingerprint,
+            .original_run_handle_fingerprint = original_run_handle_fingerprint,
+            .mailbox_id = mailbox_id,
+            .request_frame = request,
+            .expected_response_kind = try enumFromByte(ResponseKind, try readU8(bytes, cursor)),
+            .expected_response_value_table_id = try readOptionalU32(bytes, cursor),
+            .target_ref_fingerprint = try readU64(bytes, cursor),
+            .environment_certificate_fingerprint = try readOptionalU64(bytes, cursor),
+            .run_permit_fingerprint = try readOptionalU64(bytes, cursor),
+            .inserted_event_index = try readU64(bytes, cursor),
+            .status = try enumFromByte(Runspace.PendingStatus, try readU8(bytes, cursor)),
+            .owns_memory = true,
+        };
+        request_owned = false;
+        errdefer image.deinit(allocator);
+        try image.validate();
+        return image;
+    }
+
+    fn writePendingPortImageSlice(out: *std.ArrayList(u8), allocator: std.mem.Allocator, values: []const PendingPortImage) !void {
+        try writeU64(out, allocator, values.len);
+        for (values) |value| try encodePendingPortImage(out, allocator, value);
+    }
+
+    fn readPendingPortImageSliceOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, options: ValidateOptions) ![]PendingPortImage {
+        const count = try readU64AsUsize(bytes, cursor);
+        if (count > options.max_pending_ports) return error.InvalidFrameEncoding;
+        const values = try allocator.alloc(PendingPortImage, count);
+        var initialized: usize = 0;
+        errdefer {
+            for (values[0..initialized]) |*value| value.deinit(allocator);
+            allocator.free(values);
+        }
+        for (values) |*value| {
+            value.* = try decodePendingPortImage(allocator, bytes, cursor);
+            initialized += 1;
+        }
+        return values;
+    }
+
+    fn encodeMailboxImage(out: *std.ArrayList(u8), allocator: std.mem.Allocator, image: MailboxImage) !void {
+        try writeU32(out, allocator, image.fingerprint_version);
+        try writeU64(out, allocator, image.mailbox_image_fingerprint);
+        try writePendingPortImageSlice(out, allocator, image.pending_port_entries);
+        try writeU64Slice(out, allocator, image.pending_port_fingerprints);
+        try writeU64Slice(out, allocator, image.consumed_port_fingerprints);
+        try writeU64(out, allocator, image.next_mailbox_id);
+        try writeU64(out, allocator, image.generation);
+        try writeU64Slice(out, allocator, image.single_use_status_fingerprints);
+        try writeU64Slice(out, allocator, image.response_routing_status_fingerprints);
+    }
+
+    fn decodeMailboxImage(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, options: ValidateOptions) !MailboxImage {
+        const fingerprint_version = try readU32(bytes, cursor);
+        const mailbox_image_fingerprint = try readU64(bytes, cursor);
+        const pending_port_entries = try readPendingPortImageSliceOwned(allocator, bytes, cursor, options);
+        var pending_port_entries_owned = true;
+        errdefer if (pending_port_entries_owned) {
+            for (pending_port_entries) |*entry| entry.deinit(allocator);
+            allocator.free(pending_port_entries);
+        };
+        const pending_port_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_pending_ports);
+        var pending_port_fingerprints_owned = true;
+        errdefer if (pending_port_fingerprints_owned) allocator.free(pending_port_fingerprints);
+        const consumed_port_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_pending_ports);
+        var consumed_port_fingerprints_owned = true;
+        errdefer if (consumed_port_fingerprints_owned) allocator.free(consumed_port_fingerprints);
+        const next_mailbox_id = try readU64(bytes, cursor);
+        const generation = try readU64(bytes, cursor);
+        const single_use_status_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_pending_ports);
+        var single_use_status_fingerprints_owned = true;
+        errdefer if (single_use_status_fingerprints_owned) allocator.free(single_use_status_fingerprints);
+        const response_routing_status_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_pending_ports);
+        var response_routing_status_fingerprints_owned = true;
+        errdefer if (response_routing_status_fingerprints_owned) allocator.free(response_routing_status_fingerprints);
+        var image = MailboxImage{
+            .fingerprint_version = fingerprint_version,
+            .mailbox_image_fingerprint = mailbox_image_fingerprint,
+            .pending_port_entries = pending_port_entries,
+            .pending_port_fingerprints = pending_port_fingerprints,
+            .consumed_port_fingerprints = consumed_port_fingerprints,
+            .next_mailbox_id = next_mailbox_id,
+            .generation = generation,
+            .single_use_status_fingerprints = single_use_status_fingerprints,
+            .response_routing_status_fingerprints = response_routing_status_fingerprints,
+            .owns_memory = true,
+        };
+        pending_port_entries_owned = false;
+        pending_port_fingerprints_owned = false;
+        consumed_port_fingerprints_owned = false;
+        single_use_status_fingerprints_owned = false;
+        response_routing_status_fingerprints_owned = false;
+        errdefer image.deinit(allocator);
+        try image.validate(options);
+        return image;
+    }
+
+    fn writeOptionalMailboxImage(out: *std.ArrayList(u8), allocator: std.mem.Allocator, image: ?MailboxImage) !void {
+        if (image) |present| {
+            try writeBool(out, allocator, true);
+            try encodeMailboxImage(out, allocator, present);
+        } else {
+            try writeBool(out, allocator, false);
+        }
+    }
+
+    fn readOptionalMailboxImage(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, options: ValidateOptions) !?MailboxImage {
+        if (!try readBool(bytes, cursor)) return null;
+        return try decodeMailboxImage(allocator, bytes, cursor, options);
+    }
+
+    fn encodeRunspaceImage(out: *std.ArrayList(u8), allocator: std.mem.Allocator, image: RunspaceImage) !void {
+        try writeU32(out, allocator, image.format_version);
+        try writeU32(out, allocator, image.fingerprint_version);
+        try writeU64(out, allocator, image.image_fingerprint);
+        try writeU64(out, allocator, image.runspace_fingerprint);
+        try writeU64(out, allocator, image.runspace_report_fingerprint);
+        try writeU64Slice(out, allocator, image.run_handle_mappings);
+        try writeRunSlotImageSlice(out, allocator, image.run_slots);
+        try writeOptionalMailboxImage(out, allocator, image.mailbox_image);
+        try writeU64Slice(out, allocator, image.runspace_event_fingerprints);
+        try writeU64Slice(out, allocator, image.root_run_handle_fingerprints);
+        try writeU64Slice(out, allocator, image.provider_run_handle_fingerprints);
+        try writeU64Slice(out, allocator, image.branch_refs);
+        try writeU64Slice(out, allocator, image.checkpoint_refs);
+        try writeU64Slice(out, allocator, image.transcript_image_refs);
+        try writeU64Slice(out, allocator, image.run_image_refs);
+        try writeU64Slice(out, allocator, image.run_receipt_refs);
+        try writeU64Slice(out, allocator, image.admission_receipt_refs);
+        try writeU64Slice(out, allocator, image.permit_refs);
+        try writeU64Slice(out, allocator, image.active_fabric_invocation_refs);
+        try writeBytes(out, allocator, image.metadata);
+    }
+
+    fn decodeRunspaceImage(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, options: ValidateOptions) !RunspaceImage {
+        const format_version = try readU32(bytes, cursor);
+        const fingerprint_version = try readU32(bytes, cursor);
+        const image_fingerprint = try readU64(bytes, cursor);
+        const runspace_fingerprint = try readU64(bytes, cursor);
+        const runspace_report_fingerprint = try readU64(bytes, cursor);
+        const run_handle_mappings = try readU64SliceOwned(allocator, bytes, cursor, options.max_run_slots);
+        var run_handle_mappings_owned = true;
+        errdefer if (run_handle_mappings_owned) allocator.free(run_handle_mappings);
+        const run_slots = try readRunSlotImageSliceOwned(allocator, bytes, cursor, options);
+        var run_slots_owned = true;
+        errdefer if (run_slots_owned) {
+            for (run_slots) |*slot| slot.deinit(allocator);
+            allocator.free(run_slots);
+        };
+        var mailbox_image = try readOptionalMailboxImage(allocator, bytes, cursor, options);
+        var mailbox_image_owned = mailbox_image != null;
+        errdefer if (mailbox_image_owned) if (mailbox_image) |*mailbox| mailbox.deinit(allocator);
+        const runspace_event_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var runspace_event_fingerprints_owned = true;
+        errdefer if (runspace_event_fingerprints_owned) allocator.free(runspace_event_fingerprints);
+        const root_run_handle_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_run_slots);
+        var root_run_handle_fingerprints_owned = true;
+        errdefer if (root_run_handle_fingerprints_owned) allocator.free(root_run_handle_fingerprints);
+        const provider_run_handle_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_run_slots);
+        var provider_run_handle_fingerprints_owned = true;
+        errdefer if (provider_run_handle_fingerprints_owned) allocator.free(provider_run_handle_fingerprints);
+        const branch_refs = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var branch_refs_owned = true;
+        errdefer if (branch_refs_owned) allocator.free(branch_refs);
+        const checkpoint_refs = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var checkpoint_refs_owned = true;
+        errdefer if (checkpoint_refs_owned) allocator.free(checkpoint_refs);
+        const transcript_image_refs = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var transcript_image_refs_owned = true;
+        errdefer if (transcript_image_refs_owned) allocator.free(transcript_image_refs);
+        const run_image_refs = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var run_image_refs_owned = true;
+        errdefer if (run_image_refs_owned) allocator.free(run_image_refs);
+        const run_receipt_refs = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var run_receipt_refs_owned = true;
+        errdefer if (run_receipt_refs_owned) allocator.free(run_receipt_refs);
+        const admission_receipt_refs = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var admission_receipt_refs_owned = true;
+        errdefer if (admission_receipt_refs_owned) allocator.free(admission_receipt_refs);
+        const permit_refs = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var permit_refs_owned = true;
+        errdefer if (permit_refs_owned) allocator.free(permit_refs);
+        const active_fabric_invocation_refs = try readU64SliceOwned(allocator, bytes, cursor, options.max_fabric_invocations);
+        var active_fabric_invocation_refs_owned = true;
+        errdefer if (active_fabric_invocation_refs_owned) allocator.free(active_fabric_invocation_refs);
+        const metadata = try readBytesOwned(allocator, bytes, cursor);
+        var metadata_owned = true;
+        errdefer if (metadata_owned) allocator.free(metadata);
+
+        var image = RunspaceImage{
+            .format_version = format_version,
+            .fingerprint_version = fingerprint_version,
+            .image_fingerprint = image_fingerprint,
+            .runspace_fingerprint = runspace_fingerprint,
+            .runspace_report_fingerprint = runspace_report_fingerprint,
+            .run_handle_mappings = run_handle_mappings,
+            .run_slots = run_slots,
+            .mailbox_image = mailbox_image,
+            .runspace_event_fingerprints = runspace_event_fingerprints,
+            .root_run_handle_fingerprints = root_run_handle_fingerprints,
+            .provider_run_handle_fingerprints = provider_run_handle_fingerprints,
+            .branch_refs = branch_refs,
+            .checkpoint_refs = checkpoint_refs,
+            .transcript_image_refs = transcript_image_refs,
+            .run_image_refs = run_image_refs,
+            .run_receipt_refs = run_receipt_refs,
+            .admission_receipt_refs = admission_receipt_refs,
+            .permit_refs = permit_refs,
+            .active_fabric_invocation_refs = active_fabric_invocation_refs,
+            .metadata = metadata,
+            .owns_memory = true,
+        };
+        run_handle_mappings_owned = false;
+        run_slots_owned = false;
+        mailbox_image_owned = false;
+        runspace_event_fingerprints_owned = false;
+        root_run_handle_fingerprints_owned = false;
+        provider_run_handle_fingerprints_owned = false;
+        branch_refs_owned = false;
+        checkpoint_refs_owned = false;
+        transcript_image_refs_owned = false;
+        run_image_refs_owned = false;
+        run_receipt_refs_owned = false;
+        admission_receipt_refs_owned = false;
+        permit_refs_owned = false;
+        active_fabric_invocation_refs_owned = false;
+        metadata_owned = false;
+        errdefer image.deinit(allocator);
+        try image.validate(options);
+        return image;
+    }
+
+    fn encodeFabricImage(out: *std.ArrayList(u8), allocator: std.mem.Allocator, image: FabricImage) !void {
+        try writeU32(out, allocator, image.fingerprint_version);
+        try writeU64(out, allocator, image.fabric_image_fingerprint);
+        try writeU64Slice(out, allocator, image.fabric_plan_fingerprints);
+        try writeU64Slice(out, allocator, image.active_invocation_fingerprints);
+        try writeU64Slice(out, allocator, image.completed_receipt_fingerprints);
+        try writeU64Slice(out, allocator, image.parent_pending_port_refs);
+        try writeU64Slice(out, allocator, image.provider_run_refs);
+        try writeU64Slice(out, allocator, image.provider_state_summary_fingerprints);
+        try writeU64Slice(out, allocator, image.route_fingerprints);
+        try writeU64Slice(out, allocator, image.value_mapping_fingerprints);
+        try writeU64Slice(out, allocator, image.depth_route_stack);
+        try writeU64Slice(out, allocator, image.replay_cursor_state_refs);
+        try writeU64(out, allocator, image.status_summary_fingerprint);
+    }
+
+    fn decodeFabricImage(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, options: ValidateOptions) !FabricImage {
+        const fingerprint_version = try readU32(bytes, cursor);
+        const fabric_image_fingerprint = try readU64(bytes, cursor);
+        const fabric_plan_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var fabric_plan_fingerprints_owned = true;
+        errdefer if (fabric_plan_fingerprints_owned) allocator.free(fabric_plan_fingerprints);
+        const active_invocation_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_fabric_invocations);
+        var active_invocation_fingerprints_owned = true;
+        errdefer if (active_invocation_fingerprints_owned) allocator.free(active_invocation_fingerprints);
+        const completed_receipt_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var completed_receipt_fingerprints_owned = true;
+        errdefer if (completed_receipt_fingerprints_owned) allocator.free(completed_receipt_fingerprints);
+        const parent_pending_port_refs = try readU64SliceOwned(allocator, bytes, cursor, options.max_pending_ports);
+        var parent_pending_port_refs_owned = true;
+        errdefer if (parent_pending_port_refs_owned) allocator.free(parent_pending_port_refs);
+        const provider_run_refs = try readU64SliceOwned(allocator, bytes, cursor, options.max_run_slots);
+        var provider_run_refs_owned = true;
+        errdefer if (provider_run_refs_owned) allocator.free(provider_run_refs);
+        const provider_state_summary_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_run_slots);
+        var provider_state_summary_fingerprints_owned = true;
+        errdefer if (provider_state_summary_fingerprints_owned) allocator.free(provider_state_summary_fingerprints);
+        const route_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var route_fingerprints_owned = true;
+        errdefer if (route_fingerprints_owned) allocator.free(route_fingerprints);
+        const value_mapping_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var value_mapping_fingerprints_owned = true;
+        errdefer if (value_mapping_fingerprints_owned) allocator.free(value_mapping_fingerprints);
+        const depth_route_stack = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var depth_route_stack_owned = true;
+        errdefer if (depth_route_stack_owned) allocator.free(depth_route_stack);
+        const replay_cursor_state_refs = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var replay_cursor_state_refs_owned = true;
+        errdefer if (replay_cursor_state_refs_owned) allocator.free(replay_cursor_state_refs);
+
+        var image = FabricImage{
+            .fingerprint_version = fingerprint_version,
+            .fabric_image_fingerprint = fabric_image_fingerprint,
+            .fabric_plan_fingerprints = fabric_plan_fingerprints,
+            .active_invocation_fingerprints = active_invocation_fingerprints,
+            .completed_receipt_fingerprints = completed_receipt_fingerprints,
+            .parent_pending_port_refs = parent_pending_port_refs,
+            .provider_run_refs = provider_run_refs,
+            .provider_state_summary_fingerprints = provider_state_summary_fingerprints,
+            .route_fingerprints = route_fingerprints,
+            .value_mapping_fingerprints = value_mapping_fingerprints,
+            .depth_route_stack = depth_route_stack,
+            .replay_cursor_state_refs = replay_cursor_state_refs,
+            .status_summary_fingerprint = try readU64(bytes, cursor),
+            .owns_memory = true,
+        };
+        fabric_plan_fingerprints_owned = false;
+        active_invocation_fingerprints_owned = false;
+        completed_receipt_fingerprints_owned = false;
+        parent_pending_port_refs_owned = false;
+        provider_run_refs_owned = false;
+        provider_state_summary_fingerprints_owned = false;
+        route_fingerprints_owned = false;
+        value_mapping_fingerprints_owned = false;
+        depth_route_stack_owned = false;
+        replay_cursor_state_refs_owned = false;
+        errdefer image.deinit(allocator);
+        try image.validate(options);
+        return image;
+    }
+
+    fn writeOptionalFabricImage(out: *std.ArrayList(u8), allocator: std.mem.Allocator, image: ?FabricImage) !void {
+        if (image) |present| {
+            try writeBool(out, allocator, true);
+            try encodeFabricImage(out, allocator, present);
+        } else {
+            try writeBool(out, allocator, false);
+        }
+    }
+
+    fn readOptionalFabricImage(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, options: ValidateOptions) !?FabricImage {
+        if (!try readBool(bytes, cursor)) return null;
+        return try decodeFabricImage(allocator, bytes, cursor, options);
+    }
+
+    fn encodeLinkImage(out: *std.ArrayList(u8), allocator: std.mem.Allocator, image: LinkImage) !void {
+        try writeU32(out, allocator, image.fingerprint_version);
+        try writeU64(out, allocator, image.link_image_fingerprint);
+        try writeU64(out, allocator, image.link_plan_fingerprint);
+        try writeU64(out, allocator, image.link_certificate_fingerprint);
+        try writeU64(out, allocator, image.assembly_fingerprint);
+        try writeU64(out, allocator, image.linker_policy_fingerprint);
+        try writeOptionalU64(out, allocator, image.catalog_fingerprint);
+        try writeU64Slice(out, allocator, image.route_synthesis_refs);
+        try writeU64(out, allocator, image.residual_import_set_fingerprint);
+        try writeU64Slice(out, allocator, image.provider_target_refs);
+        try writeU64Slice(out, allocator, image.guest_provider_refs);
+        try writeU64Slice(out, allocator, image.external_environment_requirements);
+    }
+
+    fn decodeLinkImage(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, options: ValidateOptions) !LinkImage {
+        const max = options.max_dependencies;
+        const fingerprint_version = try readU32(bytes, cursor);
+        const link_image_fingerprint = try readU64(bytes, cursor);
+        const link_plan_fingerprint = try readU64(bytes, cursor);
+        const link_certificate_fingerprint = try readU64(bytes, cursor);
+        const assembly_fingerprint = try readU64(bytes, cursor);
+        const linker_policy_fingerprint = try readU64(bytes, cursor);
+        const catalog_fingerprint = try readOptionalU64(bytes, cursor);
+        const route_synthesis_refs = try readU64SliceOwned(allocator, bytes, cursor, max);
+        var route_synthesis_refs_owned = true;
+        errdefer if (route_synthesis_refs_owned) allocator.free(route_synthesis_refs);
+        const residual_import_set_fingerprint = try readU64(bytes, cursor);
+        const provider_target_refs = try readU64SliceOwned(allocator, bytes, cursor, max);
+        var provider_target_refs_owned = true;
+        errdefer if (provider_target_refs_owned) allocator.free(provider_target_refs);
+        const guest_provider_refs = try readU64SliceOwned(allocator, bytes, cursor, max);
+        var guest_provider_refs_owned = true;
+        errdefer if (guest_provider_refs_owned) allocator.free(guest_provider_refs);
+        const external_environment_requirements = try readU64SliceOwned(allocator, bytes, cursor, max);
+        var external_environment_requirements_owned = true;
+        errdefer if (external_environment_requirements_owned) allocator.free(external_environment_requirements);
+
+        var image = LinkImage{
+            .fingerprint_version = fingerprint_version,
+            .link_image_fingerprint = link_image_fingerprint,
+            .link_plan_fingerprint = link_plan_fingerprint,
+            .link_certificate_fingerprint = link_certificate_fingerprint,
+            .assembly_fingerprint = assembly_fingerprint,
+            .linker_policy_fingerprint = linker_policy_fingerprint,
+            .catalog_fingerprint = catalog_fingerprint,
+            .route_synthesis_refs = route_synthesis_refs,
+            .residual_import_set_fingerprint = residual_import_set_fingerprint,
+            .provider_target_refs = provider_target_refs,
+            .guest_provider_refs = guest_provider_refs,
+            .external_environment_requirements = external_environment_requirements,
+            .owns_memory = true,
+        };
+        route_synthesis_refs_owned = false;
+        provider_target_refs_owned = false;
+        guest_provider_refs_owned = false;
+        external_environment_requirements_owned = false;
+        errdefer image.deinit(allocator);
+        try image.validateWithOptions(options);
+        return image;
+    }
+
+    fn writeOptionalLinkImage(out: *std.ArrayList(u8), allocator: std.mem.Allocator, image: ?LinkImage) !void {
+        if (image) |present| {
+            try writeBool(out, allocator, true);
+            try encodeLinkImage(out, allocator, present);
+        } else {
+            try writeBool(out, allocator, false);
+        }
+    }
+
+    fn readOptionalLinkImage(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, options: ValidateOptions) !?LinkImage {
+        if (!try readBool(bytes, cursor)) return null;
+        return try decodeLinkImage(allocator, bytes, cursor, options);
+    }
+
+    fn writeTranscriptImageSlice(out: *std.ArrayList(u8), allocator: std.mem.Allocator, values: []const TranscriptImage) !void {
+        try writeU64(out, allocator, values.len);
+        for (values) |value| {
+            const encoded = try value.encode(allocator);
+            defer allocator.free(encoded);
+            try writeBytes(out, allocator, encoded);
+        }
+    }
+
+    fn readTranscriptImageSliceOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, max_count: usize) ![]TranscriptImage {
+        const count = try readU64AsUsize(bytes, cursor);
+        if (count > max_count) return error.InvalidFrameEncoding;
+        const values = try allocator.alloc(TranscriptImage, count);
+        var initialized: usize = 0;
+        errdefer {
+            for (values[0..initialized]) |*value| value.deinit(allocator);
+            allocator.free(values);
+        }
+        for (values) |*value| {
+            const encoded = try readBytesOwned(allocator, bytes, cursor);
+            defer allocator.free(encoded);
+            value.* = try TranscriptImage.decode(allocator, encoded);
+            initialized += 1;
+        }
+        return values;
+    }
+
+    fn writeRunImageSlice(out: *std.ArrayList(u8), allocator: std.mem.Allocator, values: []const RunImage) !void {
+        try writeU64(out, allocator, values.len);
+        for (values) |value| {
+            const encoded = try value.encode(allocator);
+            defer allocator.free(encoded);
+            try writeBytes(out, allocator, encoded);
+        }
+    }
+
+    fn readRunImageSliceOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, max_count: usize) ![]RunImage {
+        const count = try readU64AsUsize(bytes, cursor);
+        if (count > max_count) return error.InvalidFrameEncoding;
+        const values = try allocator.alloc(RunImage, count);
+        var initialized: usize = 0;
+        errdefer {
+            for (values[0..initialized]) |*value| value.deinit(allocator);
+            allocator.free(values);
+        }
+        for (values) |*value| {
+            const encoded = try readBytesOwned(allocator, bytes, cursor);
+            defer allocator.free(encoded);
+            value.* = try RunImage.decode(allocator, encoded);
+            initialized += 1;
+        }
+        return values;
+    }
+
+    fn writeValueImageSlice(out: *std.ArrayList(u8), allocator: std.mem.Allocator, values: []const Frame.ValueImage) !void {
+        try writeU64(out, allocator, values.len);
+        for (values) |value| {
+            const encoded = try value.encode(allocator);
+            defer allocator.free(encoded);
+            try writeBytes(out, allocator, encoded);
+        }
+    }
+
+    fn readValueImageSliceOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, max_count: usize) ![]Frame.ValueImage {
+        const count = try readU64AsUsize(bytes, cursor);
+        if (count > max_count) return error.InvalidFrameEncoding;
+        const values = try allocator.alloc(Frame.ValueImage, count);
+        var initialized: usize = 0;
+        errdefer {
+            for (values[0..initialized]) |*value| value.deinit(allocator);
+            allocator.free(values);
+        }
+        for (values) |*value| {
+            const encoded = try readBytesOwned(allocator, bytes, cursor);
+            defer allocator.free(encoded);
+            value.* = try Frame.ValueImage.decode(allocator, encoded);
+            initialized += 1;
+        }
+        return values;
+    }
+
+    fn writeDependencyRefSlice(out: *std.ArrayList(u8), allocator: std.mem.Allocator, values: []const DependencyRef) !void {
+        try writeU64(out, allocator, values.len);
+        for (values) |value| {
+            try writeU8(out, allocator, @intFromEnum(value.section));
+            try writeU64(out, allocator, value.fingerprint);
+        }
+    }
+
+    fn readDependencyRefSliceOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, max_count: usize) ![]DependencyRef {
+        const count = try readU64AsUsize(bytes, cursor);
+        if (count > max_count) return error.InvalidFrameEncoding;
+        const values = try allocator.alloc(DependencyRef, count);
+        errdefer allocator.free(values);
+        for (values) |*value| {
+            value.* = .{
+                .section = try enumFromByte(SectionKind, try readU8(bytes, cursor)),
+                .fingerprint = try readU64(bytes, cursor),
+            };
+        }
+        return values;
+    }
+
+    fn writeObjectRefSlice(out: *std.ArrayList(u8), allocator: std.mem.Allocator, values: []const ObjectRef) !void {
+        try writeU64(out, allocator, values.len);
+        for (values) |value| {
+            try writeU8(out, allocator, @intFromEnum(value.kind));
+            try writeU64(out, allocator, value.fingerprint);
+        }
+    }
+
+    fn readObjectRefSliceOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, max_count: usize) ![]ObjectRef {
+        const count = try readU64AsUsize(bytes, cursor);
+        if (count > max_count) return error.InvalidFrameEncoding;
+        const values = try allocator.alloc(ObjectRef, count);
+        errdefer allocator.free(values);
+        for (values) |*value| {
+            value.* = .{
+                .kind = try enumFromByte(ObjectKind, try readU8(bytes, cursor)),
+                .fingerprint = try readU64(bytes, cursor),
+            };
+        }
+        return values;
+    }
+};
+
+pub const AssemblyCapsule = Capsule;
+
+test "capsule quiescence report accepts completed runspace and rejects running slot" {
+    const allocator = std.testing.allocator;
+    var runspace = Runspace.init(allocator, .{});
+    defer runspace.deinit();
+    const target_ref = TargetRef{
+        .target_ref_fingerprint = 0x5150_3001,
+        .world_surface_fingerprint = 0x5150_3002,
+        .target_certificate_fingerprint = 0x5150_3003,
+    };
+    const completed_handle = RunHandle.init(.{
+        .runspace_fingerprint = runspace.runspace_fingerprint,
+        .local_run_id = 0,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+    });
+    try runspace.slots.append(allocator, Runspace.RunSlot.fromState(.{
+        .handle = completed_handle,
+        .target_ref = target_ref,
+        .current_state = RunState.init(.{
+            .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+            .status = .completed,
+        }),
+        .status = .completed,
+    }));
+    var completed = try Capsule.quiescenceReport(allocator, &runspace, null);
+    defer completed.deinit(allocator);
+    try std.testing.expect(completed.quiescent);
+    try std.testing.expectEqual(Capsule.NormalForm.quiescent_completed, completed.normal_form);
+    try std.testing.expectEqual(@as(usize, 1), completed.completed_run_count);
+
+    runspace.slots.items[0].status = .running;
+    runspace.slots.items[0].current_state = RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .running,
+    });
+    var running = try Capsule.quiescenceReport(allocator, &runspace, null);
+    defer running.deinit(allocator);
+    try std.testing.expect(!running.quiescent);
+    try std.testing.expectEqual(Capsule.Blocker.non_quiescent_run, running.blockers[0]);
+}
+
+test "capsule runspace image captures run slots and rejects unsupported running state" {
+    const allocator = std.testing.allocator;
+    var runspace = Runspace.init(allocator, .{});
+    defer runspace.deinit();
+    const target_ref = TargetRef{
+        .target_ref_fingerprint = 0x5150_3101,
+        .world_surface_fingerprint = 0x5150_3102,
+        .target_certificate_fingerprint = 0x5150_3103,
+    };
+    const handle = RunHandle.init(.{
+        .runspace_fingerprint = runspace.runspace_fingerprint,
+        .local_run_id = 0,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+    });
+    try runspace.slots.append(allocator, Runspace.RunSlot.fromState(.{
+        .handle = handle,
+        .target_ref = target_ref,
+        .current_state = RunState.init(.{
+            .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+            .transcript_image_fingerprint = 0x5150_3110,
+            .status = .completed,
+        }),
+        .status = .completed,
+        .run_receipt_fingerprint = 0x5150_3111,
+    }));
+    var image = try Capsule.runspaceImage(allocator, &runspace);
+    defer image.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), image.run_slots.len);
+    try std.testing.expectEqual(handle.handle_fingerprint, image.run_slots[0].original_run_handle_fingerprint);
+    try std.testing.expectEqual(@as(usize, 1), image.transcript_image_refs.len);
+    try std.testing.expectEqual(@as(usize, 1), image.run_receipt_refs.len);
+
+    runspace.slots.items[0].status = .running;
+    runspace.slots.items[0].current_state = RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .running,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, Capsule.runspaceImage(allocator, &runspace));
+}
+
+test "capsule fabric image captures active invocation and completed receipt" {
+    const allocator = std.testing.allocator;
+    var runspace = Runspace.init(allocator, .{});
+    defer runspace.deinit();
+
+    var parent_ref = TargetRef{
+        .target_ref_fingerprint = 0,
+        .world_surface_fingerprint = 0x5150_3201,
+        .target_certificate_fingerprint = 0x5150_3202,
+    };
+    parent_ref.target_ref_fingerprint = fingerprintTargetRef(parent_ref);
+    var provider_ref = TargetRef{
+        .target_ref_fingerprint = 0,
+        .world_surface_fingerprint = 0x5150_3203,
+        .target_certificate_fingerprint = 0x5150_3204,
+    };
+    provider_ref.target_ref_fingerprint = fingerprintTargetRef(provider_ref);
+    const parent_handle = RunHandle.init(.{
+        .runspace_fingerprint = runspace.runspace_fingerprint,
+        .local_run_id = 0,
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+    });
+    const provider_handle = RunHandle.init(.{
+        .runspace_fingerprint = runspace.runspace_fingerprint,
+        .local_run_id = 1,
+        .target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+    });
+    const request = Frame.Request.init(.{
+        .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .world_port_id = 0,
+        .residual_site_index = 0,
+        .residual_site_fingerprint = 0x5150_3205,
+        .request_fingerprint = 0x5150_3206,
+        .turn_index = 0,
+        .expected_response_value_table_id = 7,
+    });
+    const pending = try runspace.mailbox.push(.{
+        .run_handle = parent_handle,
+        .mailbox_id = 0,
+        .request = request,
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .inserted_event_index = 0,
+    });
+    try runspace.slots.append(allocator, Runspace.RunSlot.fromState(.{
+        .handle = parent_handle,
+        .target_ref = parent_ref,
+        .current_state = RunState.init(.{
+            .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+            .pending_request_fingerprint = pending.request_fingerprint,
+            .status = .parked_on_port,
+        }),
+        .status = .parked_on_port,
+        .pending_mailbox_id = pending.mailbox_id,
+    }));
+    try runspace.slots.append(allocator, Runspace.RunSlot.fromState(.{
+        .handle = provider_handle,
+        .target_ref = provider_ref,
+        .current_state = RunState.init(.{
+            .target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+            .status = .parked_on_supervision,
+        }),
+        .status = .parked_on_supervision,
+        .parent_run_handle_fingerprint = parent_handle.handle_fingerprint,
+    }));
+
+    const mapping = Fabric.ValueMapping.init(.{
+        .kind = .provider_result_to_parent_response,
+        .provider_value_table_id = 7,
+        .parent_value_table_id = 7,
+    });
+    const route = Fabric.Route.init(.{
+        .route_id = 0x5150_3210,
+        .kind = .target_export,
+        .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .parent_world_port_id = 0,
+        .provider_target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+        .provider_world_surface_fingerprint = provider_ref.world_surface_fingerprint,
+        .provider_target_certificate_fingerprint = provider_ref.target_certificate_fingerprint,
+        .response_value_mapping_fingerprint = mapping.mapping_fingerprint,
+        .metadata = "capsule fabric test route",
+    });
+    const plan = Fabric.Plan.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .routes = &.{route},
+        .value_mappings = &.{mapping},
+    });
+    try runspace.fabric_plan_fingerprints.append(allocator, plan.plan_fingerprint);
+    try runspace.fabric_routes.append(allocator, route);
+    try runspace.fabric_route_plan_fingerprints.append(allocator, plan.plan_fingerprint);
+    try runspace.fabric_value_mappings.append(allocator, mapping);
+    const invocation = Fabric.Invocation.init(.{
+        .plan_fingerprint = plan.plan_fingerprint,
+        .route_fingerprint = route.route_fingerprint,
+        .parent_run_handle_fingerprint = parent_handle.handle_fingerprint,
+        .parent_pending_port_fingerprint = pending.pending_port_fingerprint,
+        .parent_mailbox_id = pending.mailbox_id,
+        .request_frame_fingerprint = pending.request_frame_fingerprint,
+        .provider_run_handle_fingerprint = provider_handle.handle_fingerprint,
+        .depth = 1,
+        .sequence = 0,
+        .status = .provider_parked,
+    });
+    try runspace.fabric_invocations.append(allocator, invocation);
+    try runspace.fabric_receipts.append(allocator, Fabric.Receipt.init(.{
+        .invocation_fingerprint = invocation.invocation_fingerprint,
+        .route_fingerprint = route.route_fingerprint,
+        .parent_pending_port_fingerprint = pending.pending_port_fingerprint,
+        .parent_response_frame_fingerprint = 0x5150_3211,
+        .provider_run_handle_fingerprint = provider_handle.handle_fingerprint,
+        .status = .completed,
+    }));
+
+    var image = try Capsule.fabricImage(allocator, &runspace);
+    defer image.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), image.fabric_plan_fingerprints.len);
+    try std.testing.expectEqual(invocation.invocation_fingerprint, image.active_invocation_fingerprints[0]);
+    try std.testing.expectEqual(@as(usize, 1), image.completed_receipt_fingerprints.len);
+    try std.testing.expectEqual(pending.pending_port_fingerprint, image.parent_pending_port_refs[0]);
+    try std.testing.expectEqual(provider_handle.handle_fingerprint, image.provider_run_refs[0]);
+    try std.testing.expectEqual(route.route_fingerprint, image.route_fingerprints[0]);
+    try std.testing.expectEqual(mapping.mapping_fingerprint, image.value_mapping_fingerprints[0]);
+
+    var runspace_image = try Capsule.runspaceImage(allocator, &runspace);
+    defer runspace_image.deinit(allocator);
+    const manifest = Capsule.Manifest.init(.{
+        .kind = .parked_assembly,
+        .root_target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .fabric_plan_fingerprints = &.{plan.plan_fingerprint},
+        .fabric_invocation_fingerprints = &.{invocation.invocation_fingerprint},
+        .fabric_receipt_fingerprints = &.{runspace.fabric_receipts.items[0].receipt_fingerprint},
+        .pending_port_count = runspace_image.mailbox_image.?.pending_port_fingerprints.len,
+        .run_slot_count = runspace_image.run_slots.len,
+        .active_fabric_invocation_count = 1,
+        .normal_form = .active_fabric_parked,
+    });
+    const capsule_image = Capsule.Image.init(.{
+        .manifest = manifest,
+        .runspace_image = runspace_image,
+        .fabric_image = image,
+    });
+    try capsule_image.validate(.{});
+    const dependency_refs = try Capsule.dependencies(capsule_image, allocator);
+    defer allocator.free(dependency_refs);
+    const fabric_receipt_dependency_found = for (dependency_refs) |dependency| {
+        if (dependency.section == .fabric_receipt and dependency.fingerprint == runspace.fabric_receipts.items[0].receipt_fingerprint) break true;
+    } else false;
+    try std.testing.expect(fabric_receipt_dependency_found);
+    const missing_fabric_receipt_dependency_refs = [_]Capsule.DependencyRef{
+        Capsule.DependencyRef.init(.manifest, manifest.manifest_fingerprint),
+        Capsule.DependencyRef.init(.runspace_image, runspace_image.image_fingerprint),
+        Capsule.DependencyRef.init(.fabric_image, image.fabric_image_fingerprint),
+    };
+    const missing_fabric_receipt_dependency_image = Capsule.Image.init(.{
+        .manifest = manifest,
+        .runspace_image = runspace_image,
+        .fabric_image = image,
+        .dependency_refs = &missing_fabric_receipt_dependency_refs,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, missing_fabric_receipt_dependency_image.validate(.{}));
+
+    const forged_active_refs = [_]u64{invocation.invocation_fingerprint ^ 1};
+    const forged_runspace_image = Capsule.RunspaceImage.init(.{
+        .runspace_fingerprint = runspace_image.runspace_fingerprint,
+        .runspace_report_fingerprint = runspace_image.runspace_report_fingerprint,
+        .run_handle_mappings = runspace_image.run_handle_mappings,
+        .run_slots = runspace_image.run_slots,
+        .mailbox_image = runspace_image.mailbox_image,
+        .runspace_event_fingerprints = runspace_image.runspace_event_fingerprints,
+        .root_run_handle_fingerprints = runspace_image.root_run_handle_fingerprints,
+        .provider_run_handle_fingerprints = runspace_image.provider_run_handle_fingerprints,
+        .branch_refs = runspace_image.branch_refs,
+        .checkpoint_refs = runspace_image.checkpoint_refs,
+        .transcript_image_refs = runspace_image.transcript_image_refs,
+        .run_image_refs = runspace_image.run_image_refs,
+        .run_receipt_refs = runspace_image.run_receipt_refs,
+        .admission_receipt_refs = runspace_image.admission_receipt_refs,
+        .permit_refs = runspace_image.permit_refs,
+        .active_fabric_invocation_refs = &forged_active_refs,
+    });
+    const forged_runspace_capsule = Capsule.Image.init(.{
+        .manifest = manifest,
+        .runspace_image = forged_runspace_image,
+        .fabric_image = image,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_runspace_capsule.validate(.{}));
+
+    const forged_parent_pending_refs = [_]u64{pending.pending_port_fingerprint ^ 1};
+    const forged_fabric_image = Capsule.FabricImage.init(.{
+        .fabric_plan_fingerprints = image.fabric_plan_fingerprints,
+        .active_invocation_fingerprints = image.active_invocation_fingerprints,
+        .completed_receipt_fingerprints = image.completed_receipt_fingerprints,
+        .parent_pending_port_refs = &forged_parent_pending_refs,
+        .provider_run_refs = image.provider_run_refs,
+        .provider_state_summary_fingerprints = image.provider_state_summary_fingerprints,
+        .route_fingerprints = image.route_fingerprints,
+        .value_mapping_fingerprints = image.value_mapping_fingerprints,
+        .depth_route_stack = image.depth_route_stack,
+        .replay_cursor_state_refs = image.replay_cursor_state_refs,
+        .status_summary_fingerprint = image.status_summary_fingerprint,
+    });
+    const forged_parent_pending_capsule = Capsule.Image.init(.{
+        .manifest = manifest,
+        .runspace_image = runspace_image,
+        .fabric_image = forged_fabric_image,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_parent_pending_capsule.validate(.{}));
+
+    const forged_provider_refs = [_]u64{provider_handle.handle_fingerprint ^ 1};
+    const forged_provider_fabric = Capsule.FabricImage.init(.{
+        .fabric_plan_fingerprints = image.fabric_plan_fingerprints,
+        .active_invocation_fingerprints = image.active_invocation_fingerprints,
+        .completed_receipt_fingerprints = image.completed_receipt_fingerprints,
+        .parent_pending_port_refs = image.parent_pending_port_refs,
+        .provider_run_refs = &forged_provider_refs,
+        .provider_state_summary_fingerprints = image.provider_state_summary_fingerprints,
+        .route_fingerprints = image.route_fingerprints,
+        .value_mapping_fingerprints = image.value_mapping_fingerprints,
+        .depth_route_stack = image.depth_route_stack,
+        .replay_cursor_state_refs = image.replay_cursor_state_refs,
+        .status_summary_fingerprint = image.status_summary_fingerprint,
+    });
+    const forged_provider_capsule = Capsule.Image.init(.{
+        .manifest = manifest,
+        .runspace_image = runspace_image,
+        .fabric_image = forged_provider_fabric,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_provider_capsule.validate(.{}));
+
+    const forged_provider_state_refs = [_]u64{image.provider_state_summary_fingerprints[0] ^ 1};
+    const forged_provider_state_fabric = Capsule.FabricImage.init(.{
+        .fabric_plan_fingerprints = image.fabric_plan_fingerprints,
+        .active_invocation_fingerprints = image.active_invocation_fingerprints,
+        .completed_receipt_fingerprints = image.completed_receipt_fingerprints,
+        .parent_pending_port_refs = image.parent_pending_port_refs,
+        .provider_run_refs = image.provider_run_refs,
+        .provider_state_summary_fingerprints = &forged_provider_state_refs,
+        .route_fingerprints = image.route_fingerprints,
+        .value_mapping_fingerprints = image.value_mapping_fingerprints,
+        .depth_route_stack = image.depth_route_stack,
+        .replay_cursor_state_refs = image.replay_cursor_state_refs,
+        .status_summary_fingerprint = image.status_summary_fingerprint,
+    });
+    const forged_provider_state_capsule = Capsule.Image.init(.{
+        .manifest = manifest,
+        .runspace_image = runspace_image,
+        .fabric_image = forged_provider_state_fabric,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_provider_state_capsule.validate(.{}));
+
+    _ = runspace.fabric_routes.pop().?;
+    try std.testing.expectError(error.FabricWitnessMissing, Capsule.fabricImage(allocator, &runspace));
+}
+
+test "capsule link image captures assembly residual import set" {
+    const allocator = std.testing.allocator;
+    var root_ref = TargetRef{
+        .target_ref_fingerprint = 0,
+        .world_surface_fingerprint = 0x5150_3301,
+        .target_certificate_fingerprint = 0x5150_3302,
+    };
+    root_ref.target_ref_fingerprint = fingerprintTargetRef(root_ref);
+    var provider_ref = TargetRef{
+        .target_ref_fingerprint = 0,
+        .world_surface_fingerprint = 0x5150_3303,
+        .target_certificate_fingerprint = 0x5150_3304,
+    };
+    provider_ref.target_ref_fingerprint = fingerprintTargetRef(provider_ref);
+
+    const mapping = Fabric.ValueMapping.init(.{
+        .kind = .provider_result_to_parent_response,
+        .provider_value_table_id = 9,
+        .parent_value_table_id = 9,
+    });
+    const route = Fabric.Route.init(.{
+        .route_id = 0x5150_3310,
+        .kind = .target_export,
+        .parent_world_surface_fingerprint = root_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = root_ref.target_certificate_fingerprint,
+        .parent_world_port_id = 0,
+        .provider_target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+        .provider_world_surface_fingerprint = provider_ref.world_surface_fingerprint,
+        .provider_target_certificate_fingerprint = provider_ref.target_certificate_fingerprint,
+        .response_value_mapping_fingerprint = mapping.mapping_fingerprint,
+        .metadata = "capsule link test route",
+    });
+    const plan = Fabric.Plan.init(.{
+        .target_ref_fingerprint = root_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = root_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = root_ref.target_certificate_fingerprint,
+        .routes = &.{route},
+        .value_mappings = &.{mapping},
+    });
+    var requirement = ImportRequirement{
+        .requirement_fingerprint = 0,
+        .target_ref_fingerprint = root_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = root_ref.world_surface_fingerprint,
+        .world_port_id = 1,
+        .residual_site_index = 1,
+        .residual_site_fingerprint = 0x5150_3311,
+    };
+    requirement.requirement_fingerprint = fingerprintImportRequirement(requirement);
+    const assembly = Assembly.init(.{
+        .root_target_ref = root_ref,
+        .link_plan_fingerprint = 0x5150_3312,
+        .linker_certificate_fingerprint = 0x5150_3313,
+        .fabric_plans = &.{plan},
+        .external_import_requirements = &.{requirement},
+        .admission_receipts_used = &.{0x5150_3314},
+        .provider_run_templates = &.{provider_ref.target_ref_fingerprint},
+        .guest_provider_templates = &.{0x5150_3315},
+    });
+
+    var image = try Capsule.linkImageFromAssembly(allocator, assembly, 0x5150_3316, 0x5150_3317);
+    defer image.deinit(allocator);
+    try std.testing.expectEqual(assembly.link_plan_fingerprint, image.link_plan_fingerprint);
+    try std.testing.expectEqual(assembly.linker_certificate_fingerprint, image.link_certificate_fingerprint);
+    try std.testing.expectEqual(assembly.assembly_fingerprint, image.assembly_fingerprint);
+    try std.testing.expectEqual(assembly.residualImportSet().residual_import_set_fingerprint, image.residual_import_set_fingerprint);
+    try std.testing.expectEqual(provider_ref.target_ref_fingerprint, image.provider_target_refs[0]);
+    try std.testing.expectEqual(@as(u64, 0x5150_3315), image.guest_provider_refs[0]);
+    try std.testing.expectEqual(requirement.requirement_fingerprint, image.external_environment_requirements[0]);
+    try std.testing.expect(image.route_synthesis_refs.len >= 3);
+}
+
+test "capsule freeze produces completed image certificate and rejects running state" {
+    const allocator = std.testing.allocator;
+    var runspace = Runspace.init(allocator, .{});
+    defer runspace.deinit();
+    var target_ref = TargetRef{
+        .target_ref_fingerprint = 0,
+        .world_surface_fingerprint = 0x5150_3401,
+        .target_certificate_fingerprint = 0x5150_3402,
+    };
+    target_ref.target_ref_fingerprint = fingerprintTargetRef(target_ref);
+    const handle = RunHandle.init(.{
+        .runspace_fingerprint = runspace.runspace_fingerprint,
+        .local_run_id = 0,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+    });
+    try runspace.slots.append(allocator, Runspace.RunSlot.fromState(.{
+        .handle = handle,
+        .target_ref = target_ref,
+        .current_state = RunState.init(.{
+            .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+            .status = .completed,
+        }),
+        .status = .completed,
+        .admission_receipt_fingerprint = 0x5150_3403,
+        .run_permit_fingerprint = 0x5150_3404,
+        .run_receipt_fingerprint = 0x5150_3405,
+    }));
+
+    var image = try Capsule.freezeRunspace(&runspace, .{});
+    defer image.deinit(allocator);
+    try std.testing.expectEqual(Capsule.Kind.completed_assembly, image.manifest.kind);
+    try std.testing.expectEqual(target_ref.target_ref_fingerprint, image.manifest.root_target_ref_fingerprint);
+    try std.testing.expectEqual(@as(usize, 1), image.manifest.run_slot_count);
+    try std.testing.expectEqual(@as(usize, 1), image.admission_refs.len);
+    try std.testing.expectEqual(@as(usize, 1), image.supervision_refs.len);
+    const missing_admission_ref_image = Capsule.Image.init(.{
+        .manifest = image.manifest,
+        .runspace_image = image.runspace_image,
+        .admission_refs = &.{},
+        .supervision_refs = image.supervision_refs,
+        .run_image_refs = image.run_image_refs,
+        .run_images = image.run_images,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, missing_admission_ref_image.validate(.{}));
+    const missing_permit_ref_image = Capsule.Image.init(.{
+        .manifest = image.manifest,
+        .runspace_image = image.runspace_image,
+        .admission_refs = image.admission_refs,
+        .supervision_refs = &.{},
+        .run_image_refs = image.run_image_refs,
+        .run_images = image.run_images,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, missing_permit_ref_image.validate(.{}));
+    var report = try Capsule.quiescenceReport(allocator, &runspace, null);
+    defer report.deinit(allocator);
+    const cert = try Capsule.certificate(image, report);
+    try cert.validate();
+    try std.testing.expectEqual(image.image_fingerprint, cert.capsule_image_fingerprint);
+
+    const encoded = try image.encode(allocator);
+    defer allocator.free(encoded);
+    var decoded = try Capsule.Image.decode(allocator, encoded);
+    defer decoded.deinit(allocator);
+    try std.testing.expectEqual(image.image_fingerprint, decoded.image_fingerprint);
+
+    runspace.slots.items[0].status = .running;
+    runspace.slots.items[0].current_state = RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .status = .running,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, Capsule.freezeRunspace(&runspace, .{}));
+}
+
+test "capsule freezeRun creates reference-only handle capsule" {
+    const handle = RunHandle.init(.{
+        .runspace_fingerprint = 0x5150_3501,
+        .local_run_id = 7,
+        .target_ref_fingerprint = 0x5150_3502,
+    });
+    const image = try Capsule.freezeRun(handle, .{});
+    try std.testing.expectEqual(Capsule.Kind.reference_only, image.manifest.kind);
+    try std.testing.expectEqual(handle.target_ref_fingerprint, image.manifest.root_target_ref_fingerprint);
+    try std.testing.expectEqual(handle.runspace_fingerprint, image.runspace_image.runspace_fingerprint);
+}
+
+test "capsule certificate rejects invalid image witness" {
+    const manifest = Capsule.Manifest.init(.{
+        .kind = .completed_assembly,
+        .root_target_ref_fingerprint = 0x5150_35f1,
+        .run_slot_count = 1,
+        .normal_form = .quiescent_completed,
+    });
+    const runspace_image = Capsule.RunspaceImage.init(.{
+        .runspace_fingerprint = 0x5150_35f2,
+        .runspace_report_fingerprint = 0x5150_35f3,
+    });
+    const image = Capsule.Image.init(.{
+        .manifest = manifest,
+        .runspace_image = runspace_image,
+    });
+    const report = Capsule.QuiescenceReport.init(.{
+        .runspace_fingerprint = runspace_image.runspace_fingerprint,
+        .quiescent = true,
+        .normal_form = .quiescent_completed,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, Capsule.certificate(image, report));
+}
+
+test "capsule thaw denies before mutation and restores completed slot metadata" {
+    const allocator = std.testing.allocator;
+    var source = Runspace.init(allocator, .{});
+    defer source.deinit();
+    var target_ref = TargetRef{
+        .target_ref_fingerprint = 0,
+        .world_surface_fingerprint = 0x5150_3601,
+        .target_certificate_fingerprint = 0x5150_3602,
+    };
+    target_ref.target_ref_fingerprint = fingerprintTargetRef(target_ref);
+    const source_handle = RunHandle.init(.{
+        .runspace_fingerprint = source.runspace_fingerprint,
+        .local_run_id = 0,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+    });
+    try source.slots.append(allocator, Runspace.RunSlot.fromState(.{
+        .handle = source_handle,
+        .target_ref = target_ref,
+        .current_state = RunState.init(.{
+            .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+            .status = .completed,
+        }),
+        .status = .completed,
+    }));
+    var image = try Capsule.freezeRunspace(&source, .{});
+    defer image.deinit(allocator);
+
+    var receiver = Runspace.init(allocator, .{});
+    defer receiver.deinit();
+    const before_slots = receiver.slots.items.len;
+    const denied_plan = try Capsule.planThaw(image, target_ref.target_ref_fingerprint, 0, null, .{ .mode = .restore_completed });
+    try std.testing.expectEqual(Capsule.RelinkStatus.rejected, denied_plan.relink_status);
+    try std.testing.expectEqual(Capsule.Blocker.permit_denied, denied_plan.blockers[0]);
+    const denied = try Capsule.thawIntoRunspace(image, &receiver, target_ref.target_ref_fingerprint, 0, null, .{ .mode = .restore_completed });
+    try std.testing.expect(!denied.accepted);
+    try std.testing.expectEqual(before_slots, receiver.slots.items.len);
+
+    var capped_receiver = Runspace.init(allocator, .{ .max_runs = 0 });
+    defer capped_receiver.deinit();
+    var capped_denied = try Capsule.thawIntoRunspace(image, &capped_receiver, target_ref.target_ref_fingerprint, 0, 0x5150_3605, .{ .mode = .restore_completed });
+    defer capped_denied.deinit(allocator);
+    try std.testing.expect(!capped_denied.accepted);
+    try std.testing.expectEqual(Capsule.Blocker.oversized_image, capped_denied.blockers[0]);
+    try std.testing.expectEqual(@as(usize, 0), capped_receiver.slots.items.len);
+
+    var admission_required_receiver = Runspace.init(allocator, .{ .require_admission = true });
+    defer admission_required_receiver.deinit();
+    var admission_required_denied = try Capsule.thawIntoRunspace(image, &admission_required_receiver, target_ref.target_ref_fingerprint, 0, 0x5150_3606, .{ .mode = .restore_completed });
+    defer admission_required_denied.deinit(allocator);
+    try std.testing.expect(!admission_required_denied.accepted);
+    try std.testing.expectEqual(Capsule.Blocker.permit_denied, admission_required_denied.blockers[0]);
+    try std.testing.expectEqual(@as(usize, 0), admission_required_receiver.slots.items.len);
+
+    var handoff_denied_receiver = Runspace.init(allocator, .{ .allow_handoff_install = false });
+    defer handoff_denied_receiver.deinit();
+    var handoff_denied = try Capsule.thawIntoRunspace(image, &handoff_denied_receiver, target_ref.target_ref_fingerprint, 0, 0x5150_3607, .{ .mode = .restore_completed });
+    defer handoff_denied.deinit(allocator);
+    try std.testing.expect(!handoff_denied.accepted);
+    try std.testing.expectEqual(Capsule.Blocker.permit_denied, handoff_denied.blockers[0]);
+    try std.testing.expectEqual(@as(usize, 0), handoff_denied_receiver.slots.items.len);
+
+    var supervised_receiver = Runspace.init(allocator, .{ .require_supervision = true });
+    defer supervised_receiver.deinit();
+    var supervised_denied = try Capsule.thawIntoRunspace(image, &supervised_receiver, target_ref.target_ref_fingerprint, 0, 0x5150_3608, .{ .mode = .restore_completed });
+    defer supervised_denied.deinit(allocator);
+    try std.testing.expect(!supervised_denied.accepted);
+    try std.testing.expectEqual(Capsule.Blocker.permit_denied, supervised_denied.blockers[0]);
+    try std.testing.expectEqual(@as(usize, 0), supervised_receiver.slots.items.len);
+
+    var rollback_receiver = Runspace.init(allocator, .{});
+    defer rollback_receiver.deinit();
+    var transaction = try Capsule.RestoreTransaction.prepare(image, &rollback_receiver, target_ref.target_ref_fingerprint, 0, 0x5150_3604, .{ .mode = .restore_completed });
+    try transaction.preMutationCheck(image, .{ .mode = .restore_completed });
+    const rollback_handle = RunHandle.init(.{
+        .runspace_fingerprint = rollback_receiver.runspace_fingerprint,
+        .local_run_id = rollback_receiver.next_run_id,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .permit_fingerprint = 0x5150_3604,
+    });
+    rollback_receiver.next_run_id += 1;
+    try rollback_receiver.slots.append(allocator, Runspace.RunSlot.fromState(.{
+        .handle = rollback_handle,
+        .target_ref = target_ref,
+        .current_state = RunState.init(.{
+            .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+            .status = .completed,
+        }),
+        .status = .completed,
+    }));
+    transaction.rollbackUnlessCommitted();
+    try std.testing.expectEqual(@as(usize, 0), rollback_receiver.slots.items.len);
+    try std.testing.expectEqual(transaction.next_run_id_before, rollback_receiver.next_run_id);
+
+    var restored = try Capsule.thawIntoRunspace(image, &receiver, target_ref.target_ref_fingerprint, 0, 0x5150_3603, .{ .mode = .restore_completed });
+    defer restored.deinit(allocator);
+    try std.testing.expect(restored.accepted);
+    try std.testing.expectEqual(@as(usize, 1), receiver.slots.items.len);
+    try std.testing.expectEqual(@as(usize, 1), restored.restored_root_run_handles.len);
+    try std.testing.expectEqual(Runspace.RunStatus.completed, receiver.slots.items[0].status);
+    try std.testing.expectEqual(@as(?u64, 0x5150_3603), receiver.slots.items[0].run_permit_fingerprint);
+}
+
+test "capsule replay-only terminal image cannot enter mutating restore modes" {
+    const allocator = std.testing.allocator;
+    var source = Runspace.init(allocator, .{});
+    defer source.deinit();
+    var target_ref = TargetRef{
+        .target_ref_fingerprint = 0,
+        .world_surface_fingerprint = 0x5150_3611,
+        .target_certificate_fingerprint = 0x5150_3612,
+    };
+    target_ref.target_ref_fingerprint = fingerprintTargetRef(target_ref);
+    const source_handle = RunHandle.init(.{
+        .runspace_fingerprint = source.runspace_fingerprint,
+        .local_run_id = 0,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+    });
+    try source.slots.append(allocator, Runspace.RunSlot.fromState(.{
+        .handle = source_handle,
+        .target_ref = target_ref,
+        .current_state = RunState.init(.{
+            .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+            .status = .completed,
+        }),
+        .status = .completed,
+    }));
+    var image = try Capsule.freezeRunspace(&source, .{});
+    defer image.deinit(allocator);
+
+    const replay_manifest = Capsule.Manifest.init(.{
+        .kind = .replay_only,
+        .root_target_ref_fingerprint = image.manifest.root_target_ref_fingerprint,
+        .root_module_ref_fingerprint = image.manifest.root_module_ref_fingerprint,
+        .link_plan_fingerprint = image.manifest.link_plan_fingerprint,
+        .link_certificate_fingerprint = image.manifest.link_certificate_fingerprint,
+        .assembly_fingerprint = image.manifest.assembly_fingerprint,
+        .admission_receipt_fingerprints = image.manifest.admission_receipt_fingerprints,
+        .environment_certificate_fingerprints = image.manifest.environment_certificate_fingerprints,
+        .run_permit_fingerprints = image.manifest.run_permit_fingerprints,
+        .run_receipt_fingerprints = image.manifest.run_receipt_fingerprints,
+        .run_image_fingerprints = image.manifest.run_image_fingerprints,
+        .transcript_image_fingerprints = image.manifest.transcript_image_fingerprints,
+        .fabric_plan_fingerprints = image.manifest.fabric_plan_fingerprints,
+        .fabric_invocation_fingerprints = image.manifest.fabric_invocation_fingerprints,
+        .fabric_receipt_fingerprints = image.manifest.fabric_receipt_fingerprints,
+        .guest_conformance_report_fingerprints = image.manifest.guest_conformance_report_fingerprints,
+        .pending_port_count = image.manifest.pending_port_count,
+        .run_slot_count = image.manifest.run_slot_count,
+        .active_fabric_invocation_count = image.manifest.active_fabric_invocation_count,
+        .normal_form = image.manifest.normal_form,
+        .metadata = image.manifest.metadata,
+    });
+    const replay_image = Capsule.Image.init(.{
+        .manifest = replay_manifest,
+        .runspace_image = image.runspace_image,
+        .link_image = image.link_image,
+        .fabric_image = image.fabric_image,
+        .admission_refs = image.admission_refs,
+        .environment_refs = image.environment_refs,
+        .supervision_refs = image.supervision_refs,
+        .guest_conformance_refs = image.guest_conformance_refs,
+        .transcript_image_refs = image.transcript_image_refs,
+        .run_image_refs = image.run_image_refs,
+        .value_image_refs = image.value_image_refs,
+        .transcript_images = image.transcript_images,
+        .run_images = image.run_images,
+        .value_images = image.value_images,
+        .dependency_refs = image.dependency_refs,
+        .object_refs = image.object_refs,
+        .metadata = image.metadata,
+    });
+    try replay_image.validate(.{});
+
+    const replay_plan = try Capsule.planThaw(replay_image, target_ref.target_ref_fingerprint, 0, null, .{ .mode = .replay_only });
+    try std.testing.expectEqual(@as(usize, 0), replay_plan.blockers.len);
+
+    const restore_plan = try Capsule.planThaw(replay_image, target_ref.target_ref_fingerprint, 0, 0x5150_3613, .{ .mode = .restore_completed });
+    try std.testing.expectEqual(Capsule.Blocker.malformed_image, restore_plan.blockers[0]);
+    const relink_plan = try Capsule.planThaw(replay_image, target_ref.target_ref_fingerprint, 0, 0x5150_3614, .{ .mode = .relink_and_restore });
+    try std.testing.expectEqual(Capsule.Blocker.malformed_image, relink_plan.blockers[0]);
+    const verify_plan = try Capsule.planThaw(replay_image, target_ref.target_ref_fingerprint, 0, 0x5150_3615, .{ .mode = .verify_and_restore });
+    try std.testing.expectEqual(Capsule.Blocker.malformed_image, verify_plan.blockers[0]);
+
+    var receiver = Runspace.init(allocator, .{});
+    defer receiver.deinit();
+    var denied = try Capsule.thawIntoRunspace(replay_image, &receiver, target_ref.target_ref_fingerprint, 0, 0x5150_3616, .{ .mode = .restore_completed });
+    defer denied.deinit(allocator);
+    try std.testing.expect(!denied.accepted);
+    try std.testing.expectEqual(@as(usize, 0), receiver.slots.items.len);
+}
+
+test "capsule relink verification rejects catalog drift" {
+    const manifest = Capsule.Manifest.init(.{
+        .kind = .completed_assembly,
+        .root_target_ref_fingerprint = 0x5150_3701,
+        .link_plan_fingerprint = 0x5150_3702,
+        .link_certificate_fingerprint = 0x5150_3703,
+        .assembly_fingerprint = 0x5150_3704,
+        .normal_form = .quiescent_completed,
+    });
+    const runspace_image_value = Capsule.RunspaceImage.init(.{
+        .runspace_fingerprint = 0x5150_3705,
+        .runspace_report_fingerprint = 0x5150_3706,
+    });
+    const link_image_value = Capsule.LinkImage.init(.{
+        .link_plan_fingerprint = 0x5150_3702,
+        .link_certificate_fingerprint = 0x5150_3703,
+        .assembly_fingerprint = 0x5150_3704,
+        .linker_policy_fingerprint = 0x5150_3707,
+        .catalog_fingerprint = 0x5150_3708,
+        .residual_import_set_fingerprint = 0x5150_3709,
+    });
+    const image = Capsule.Image.init(.{
+        .manifest = manifest,
+        .runspace_image = runspace_image_value,
+        .link_image = link_image_value,
+    });
+    const rejected = try Capsule.verifyLink(image, 0x5150_3710, .{});
+    try std.testing.expectEqual(Capsule.LinkCertificateMatchStatus.mismatched, rejected.link_certificate_match_status);
+    try std.testing.expectEqual(Capsule.RelinkStatus.rejected, rejected.relink_status);
+    try std.testing.expectEqual(Capsule.Blocker.relink_drift_rejected, rejected.blockers[0]);
+    const missing_local_catalog = try Capsule.verifyLink(image, 0, .{});
+    try std.testing.expectEqual(Capsule.LinkCertificateMatchStatus.mismatched, missing_local_catalog.link_certificate_match_status);
+    try std.testing.expectEqual(Capsule.RelinkStatus.rejected, missing_local_catalog.relink_status);
+    try std.testing.expectEqual(Capsule.Blocker.relink_drift_rejected, missing_local_catalog.blockers[0]);
+}
+
+test "capsule handoff exports accepts and admission report binds witnesses" {
+    const allocator = std.testing.allocator;
+    var source = Runspace.init(allocator, .{});
+    defer source.deinit();
+    var target_ref = TargetRef{
+        .target_ref_fingerprint = 0,
+        .world_surface_fingerprint = 0x5150_3801,
+        .target_certificate_fingerprint = 0x5150_3802,
+    };
+    target_ref.target_ref_fingerprint = fingerprintTargetRef(target_ref);
+    const handle = RunHandle.init(.{
+        .runspace_fingerprint = source.runspace_fingerprint,
+        .local_run_id = 0,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+    });
+    try source.slots.append(allocator, Runspace.RunSlot.fromState(.{
+        .handle = handle,
+        .target_ref = target_ref,
+        .current_state = RunState.init(.{
+            .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+            .status = .completed,
+        }),
+        .status = .completed,
+    }));
+    var image = try Capsule.freezeRunspace(&source, .{});
+    defer image.deinit(allocator);
+    var quiescence = try Capsule.quiescenceReport(allocator, &source, null);
+    defer quiescence.deinit(allocator);
+    const cert = try Capsule.certificate(image, quiescence);
+
+    const bytes = try Handoff.exportCapsule(allocator, image);
+    defer allocator.free(bytes);
+    var imported = try Handoff.fromCapsule(allocator, bytes);
+    defer imported.deinit(allocator);
+    try std.testing.expectEqual(image.image_fingerprint, imported.image_fingerprint);
+
+    var receiver = Runspace.init(allocator, .{});
+    defer receiver.deinit();
+    var restore = try Handoff.acceptCapsule(imported, &receiver, target_ref.target_ref_fingerprint, 0, 0x5150_3803, .{ .mode = .restore_completed });
+    defer restore.deinit(allocator);
+    try std.testing.expect(restore.accepted);
+
+    const thaw = try Capsule.planThaw(imported, target_ref.target_ref_fingerprint, 0, 0x5150_3803, .{ .mode = .restore_completed });
+    const admission = Admission.capsuleAdmissionReport(.{
+        .mode = .restore_parked,
+        .image = imported,
+        .certificate = cert,
+        .thaw_plan = thaw,
+        .restore_report = restore,
+    });
+    try std.testing.expect(!admission.accepted);
+    try std.testing.expectEqual(Admission.AdmissionBlocker.PackageInvalid, admission.blockers[0]);
+    try std.testing.expectEqual(imported.image_fingerprint, admission.capsule_image_fingerprint.?);
+    try std.testing.expectEqual(cert.certificate_fingerprint, admission.capsule_certificate_fingerprint.?);
+    try std.testing.expectEqual(thaw.thaw_plan_fingerprint, admission.capsule_thaw_plan_fingerprint.?);
+    try std.testing.expectEqual(restore.restore_report_fingerprint, admission.capsule_restore_report_fingerprint.?);
+    const completed_admission = Admission.capsuleAdmissionReport(.{
+        .mode = .restore_completed,
+        .image = imported,
+        .certificate = cert,
+        .thaw_plan = thaw,
+        .restore_report = restore,
+    });
+    try std.testing.expect(completed_admission.accepted);
+    try std.testing.expectEqual(restore.restore_report_fingerprint, completed_admission.capsule_restore_report_fingerprint.?);
+}
+
 fn isSupportedRunImageFormatVersion(format_version: u32) bool {
     return format_version == 1 or format_version == 2 or format_version == world_run_image_format_version;
 }
@@ -16077,6 +22289,25 @@ pub const Handoff = struct {
         errdefer image.deinit(allocator);
         try image.validate(.{});
         return .{ .allocator = allocator, .run_image = image };
+    }
+
+    pub fn exportCapsule(allocator: std.mem.Allocator, image: Capsule.Image) ![]const u8 {
+        return image.encode(allocator);
+    }
+
+    pub fn fromCapsule(allocator: std.mem.Allocator, bytes: []const u8) !Capsule.Image {
+        return Capsule.Image.decode(allocator, bytes);
+    }
+
+    pub fn acceptCapsule(
+        image: Capsule.Image,
+        runspace: *Runspace,
+        local_root_target_ref_fingerprint: u64,
+        environment_fingerprint: u64,
+        permit_fingerprint: ?u64,
+        options: Capsule.ThawOptions,
+    ) !Capsule.RestoreReport {
+        return Capsule.thawIntoRunspace(image, runspace, local_root_target_ref_fingerprint, environment_fingerprint, permit_fingerprint, options);
     }
 
     pub fn deinit(self: *@This()) void {
@@ -19920,6 +26151,16 @@ fn admissionModeToRunMode(mode: Admission.AdmissionMode) Mode {
     };
 }
 
+fn admissionModeForCapsuleAdmission(mode: Admission.CapsuleAdmissionMode) Admission.AdmissionMode {
+    return switch (mode) {
+        .inspect_only => .inspect_only,
+        .replay_only => .replay_only,
+        .restore_parked, .relink_and_restore => .resume_parked,
+        .restore_completed, .restore_failed => .continue_fresh,
+        .verify => .verify_only,
+    };
+}
+
 fn admissionModeNeedsRunImage(mode: Admission.AdmissionMode) bool {
     return switch (mode) {
         .inspect_only, .local_target_match_only, .continue_fresh, .replay_only, .verify_only => false,
@@ -21118,6 +27359,9 @@ fn decodeRunState(bytes: []const u8, cursor: *usize) !RunState {
 }
 
 fn encodeCheckpoint(out: *std.ArrayList(u8), allocator: std.mem.Allocator, checkpoint: Timeline.Checkpoint) !void {
+    if (!isSupportedTimelineCheckpointFormatVersion(checkpoint.format_version)) return error.InvalidFrameEncoding;
+    if (!isSupportedTimelineCheckpointFingerprintVersion(checkpoint.fingerprint_version)) return error.InvalidFrameEncoding;
+    if (checkpoint.format_version != checkpoint.fingerprint_version) return error.InvalidFrameEncoding;
     try writeU32(out, allocator, checkpoint.format_version);
     try writeU32(out, allocator, checkpoint.fingerprint_version);
     try writeU64(out, allocator, checkpoint.checkpoint_fingerprint);
@@ -21135,10 +27379,13 @@ fn encodeCheckpoint(out: *std.ArrayList(u8), allocator: std.mem.Allocator, check
 
 fn decodeCheckpoint(bytes: []const u8, cursor: *usize) !Timeline.Checkpoint {
     const format_version = try readU32(bytes, cursor);
-    if (format_version != world_timeline_checkpoint_format_version) return error.InvalidFrameEncoding;
+    if (!isSupportedTimelineCheckpointFormatVersion(format_version)) return error.InvalidFrameEncoding;
     const fingerprint_version = try readU32(bytes, cursor);
-    if (fingerprint_version != world_timeline_checkpoint_fingerprint_version) return error.InvalidFrameEncoding;
+    if (!isSupportedTimelineCheckpointFingerprintVersion(fingerprint_version)) return error.InvalidFrameEncoding;
+    if (format_version != fingerprint_version) return error.InvalidFrameEncoding;
     const checkpoint = Timeline.Checkpoint{
+        .format_version = format_version,
+        .fingerprint_version = fingerprint_version,
         .checkpoint_fingerprint = try readU64(bytes, cursor),
         .world_surface_fingerprint = try readU64(bytes, cursor),
         .target_certificate_fingerprint = try readU64(bytes, cursor),
@@ -21153,6 +27400,14 @@ fn decodeCheckpoint(bytes: []const u8, cursor: *usize) !Timeline.Checkpoint {
     };
     if (fingerprintCheckpoint(checkpoint) != checkpoint.checkpoint_fingerprint) return error.InvalidFrameEncoding;
     return checkpoint;
+}
+
+fn isSupportedTimelineCheckpointFormatVersion(version: u32) bool {
+    return version == 1 or version == world_timeline_checkpoint_format_version;
+}
+
+fn isSupportedTimelineCheckpointFingerprintVersion(version: u32) bool {
+    return version == 1 or version == world_timeline_checkpoint_fingerprint_version;
 }
 
 fn encodeBranch(out: *std.ArrayList(u8), allocator: std.mem.Allocator, branch: Timeline.Branch) !void {
@@ -21874,26 +28129,88 @@ fn fingerprintRunspaceConfig(config: Runspace.Config, runspace_instance_id: u64)
 }
 
 fn fingerprintPendingPort(pending_port: PendingPort) u64 {
+    return fingerprintPendingPortFields(.{
+        .handle_fingerprint = pending_port.handle.handle_fingerprint,
+        .mailbox_id = pending_port.mailbox_id,
+        .world_surface_fingerprint = pending_port.world_surface_fingerprint,
+        .target_certificate_fingerprint = pending_port.target_certificate_fingerprint,
+        .world_port_id = pending_port.world_port_id,
+        .request_fingerprint = pending_port.request_fingerprint,
+        .request_frame_fingerprint = pending_port.request_frame_fingerprint,
+        .expected_response_kind = pending_port.expected_response_kind,
+        .expected_response_value_table_id = pending_port.expected_response_value_table_id,
+        .residual_site_index = pending_port.residual_site_index,
+        .residual_site_fingerprint = pending_port.residual_site_fingerprint,
+        .target_ref_fingerprint = pending_port.target_ref_fingerprint,
+        .environment_certificate_fingerprint = pending_port.environment_certificate_fingerprint,
+        .run_permit_fingerprint = pending_port.run_permit_fingerprint,
+        .turn_index = pending_port.turn_index,
+        .inserted_event_index = pending_port.inserted_event_index,
+        .status = pending_port.status,
+    });
+}
+
+fn fingerprintPendingPortImageProjection(image: Capsule.PendingPortImage) u64 {
+    return fingerprintPendingPortFields(.{
+        .handle_fingerprint = image.original_run_handle_fingerprint,
+        .mailbox_id = image.mailbox_id,
+        .world_surface_fingerprint = image.request_frame.world_surface_fingerprint,
+        .target_certificate_fingerprint = image.request_frame.target_certificate_fingerprint,
+        .world_port_id = image.request_frame.world_port_id,
+        .request_fingerprint = image.request_frame.request_fingerprint,
+        .request_frame_fingerprint = image.request_frame.frame_fingerprint,
+        .expected_response_kind = image.expected_response_kind,
+        .expected_response_value_table_id = image.expected_response_value_table_id,
+        .residual_site_index = image.request_frame.residual_site_index,
+        .residual_site_fingerprint = image.request_frame.residual_site_fingerprint,
+        .target_ref_fingerprint = image.target_ref_fingerprint,
+        .environment_certificate_fingerprint = image.environment_certificate_fingerprint,
+        .run_permit_fingerprint = image.run_permit_fingerprint,
+        .turn_index = image.request_frame.turn_index,
+        .inserted_event_index = image.inserted_event_index,
+        .status = image.status,
+    });
+}
+
+fn fingerprintPendingPortFields(args: struct {
+    handle_fingerprint: u64,
+    mailbox_id: u64,
+    world_surface_fingerprint: u64,
+    target_certificate_fingerprint: u64,
+    world_port_id: u32,
+    request_fingerprint: u64,
+    request_frame_fingerprint: u64,
+    expected_response_kind: ResponseKind,
+    expected_response_value_table_id: ?u32,
+    residual_site_index: usize,
+    residual_site_fingerprint: u64,
+    target_ref_fingerprint: u64,
+    environment_certificate_fingerprint: ?u64,
+    run_permit_fingerprint: ?u64,
+    turn_index: usize,
+    inserted_event_index: u64,
+    status: Runspace.PendingStatus,
+}) u64 {
     var hasher = std.hash.Wyhash.init(0);
     hashBytes(&hasher, "world.pending_port.fingerprint");
     hashU64(&hasher, world_pending_port_fingerprint_version);
-    hashU64(&hasher, pending_port.handle.handle_fingerprint);
-    hashU64(&hasher, pending_port.mailbox_id);
-    hashU64(&hasher, pending_port.world_surface_fingerprint);
-    hashU64(&hasher, pending_port.target_certificate_fingerprint);
-    hashU64(&hasher, pending_port.world_port_id);
-    hashU64(&hasher, pending_port.request_fingerprint);
-    hashU64(&hasher, pending_port.request_frame_fingerprint);
-    hashU64(&hasher, @intFromEnum(pending_port.expected_response_kind));
-    hashOptionalU32(&hasher, pending_port.expected_response_value_table_id);
-    hashU64(&hasher, pending_port.residual_site_index);
-    hashU64(&hasher, pending_port.residual_site_fingerprint);
-    hashU64(&hasher, pending_port.target_ref_fingerprint);
-    hashOptionalU64(&hasher, pending_port.environment_certificate_fingerprint);
-    hashOptionalU64(&hasher, pending_port.run_permit_fingerprint);
-    hashU64(&hasher, pending_port.turn_index);
-    hashU64(&hasher, pending_port.inserted_event_index);
-    hashU64(&hasher, @intFromEnum(pending_port.status));
+    hashU64(&hasher, args.handle_fingerprint);
+    hashU64(&hasher, args.mailbox_id);
+    hashU64(&hasher, args.world_surface_fingerprint);
+    hashU64(&hasher, args.target_certificate_fingerprint);
+    hashU64(&hasher, args.world_port_id);
+    hashU64(&hasher, args.request_fingerprint);
+    hashU64(&hasher, args.request_frame_fingerprint);
+    hashU64(&hasher, @intFromEnum(args.expected_response_kind));
+    hashOptionalU32(&hasher, args.expected_response_value_table_id);
+    hashU64(&hasher, args.residual_site_index);
+    hashU64(&hasher, args.residual_site_fingerprint);
+    hashU64(&hasher, args.target_ref_fingerprint);
+    hashOptionalU64(&hasher, args.environment_certificate_fingerprint);
+    hashOptionalU64(&hasher, args.run_permit_fingerprint);
+    hashU64(&hasher, args.turn_index);
+    hashU64(&hasher, args.inserted_event_index);
+    hashU64(&hasher, @intFromEnum(args.status));
     return hasher.final();
 }
 
@@ -22354,6 +28671,18 @@ fn fingerprintAdmissionReport(report: Admission.AdmissionReport) u64 {
     hashOptionalU64(&hasher, report.run_permit_fingerprint);
     hashLinkerMetadataIfPresent(&hasher, report.link_plan_fingerprint, report.linker_certificate_fingerprint, report.assembly_fingerprint);
     hashOptionalU64(&hasher, report.handoff_preflight_report_fingerprint);
+    if (report.capsule_image_fingerprint != null or
+        report.capsule_certificate_fingerprint != null or
+        report.capsule_thaw_plan_fingerprint != null or
+        report.capsule_restore_report_fingerprint != null)
+    {
+        hashBytes(&hasher, "world.admission_report.capsule_refs");
+        hashU64(&hasher, world_capsule_image_fingerprint_version);
+        hashOptionalU64(&hasher, report.capsule_image_fingerprint);
+        hashOptionalU64(&hasher, report.capsule_certificate_fingerprint);
+        hashOptionalU64(&hasher, report.capsule_thaw_plan_fingerprint);
+        hashOptionalU64(&hasher, report.capsule_restore_report_fingerprint);
+    }
     hashU64(&hasher, report.blockers.len);
     for (report.blockers) |blocker| hashU64(&hasher, @intFromEnum(blocker));
     hashU64(&hasher, report.warnings.len);
@@ -22558,7 +28887,7 @@ fn fingerprintTimelineEvent(event: Timeline.Event) u64 {
 fn fingerprintCheckpoint(checkpoint: Timeline.Checkpoint) u64 {
     var hasher = std.hash.Wyhash.init(0);
     hashBytes(&hasher, "world.timeline.checkpoint.fingerprint");
-    hashU64(&hasher, world_timeline_checkpoint_fingerprint_version);
+    hashU64(&hasher, checkpoint.fingerprint_version);
     hashU64(&hasher, checkpoint.world_surface_fingerprint);
     hashU64(&hasher, checkpoint.target_certificate_fingerprint);
     hashU64(&hasher, checkpoint.event_index);

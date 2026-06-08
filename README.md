@@ -50,6 +50,8 @@ The public root is intentionally small:
 - `world.Fabric`
 - `world.Linker`
 - `world.Assembly`
+- `world.Capsule`
+- `world.AssemblyCapsule`
 - `world.ConduitPlan`
 - `world.ConduitRoute`
 - `world.AuditImage`
@@ -268,6 +270,22 @@ Linker is closed-world assembly linking only. It does not implement service disc
 
 See `docs/linker.md`.
 
+## World Assembly Capsules
+
+RunImage moves one run. Assembly Capsule moves a linked execution fabric.
+
+`world.Capsule` freezes a quiescent Runspace or linked Assembly into a deterministic portable image. The image binds a `Capsule.Manifest`, `RunspaceImage`, optional `LinkImage`, optional `FabricImage`, admission/environment/supervision/guest refs, transcript/run/value refs, dependency refs, and object refs. It carries fingerprints and metadata only; it does not carry handlers, credentials, request tokens, allocator/runtime/thread state, file handles, network handles, storage addresses, or ABI-specific host data.
+
+Quiescence is the freeze boundary. Completed, failed, parked, and witnessed active-Fabric parked assemblies can be frozen under policy. Running slots, mailbox mutations, missing Fabric route/provider/parent-pending witnesses, and unsafe active Fabric fail closed before image construction.
+
+`RunspaceImage` captures run slots, mailbox pending-port state, runspace events, roots/providers, branch/checkpoint refs, transcripts, run images, receipts, admissions, permits, and active Fabric invocation refs. `FabricImage` captures active and completed Fabric causality only when provider identity, route witness, value mapping, supervision evidence, parent response mapping, and mailbox ownership are explicit. `LinkImage` captures LinkPlan, LinkCertificate, Assembly, policy/catalog, route synthesis refs, residual imports, provider refs, guest refs, and external environment requirements.
+
+Thaw is receiver-owned. `Capsule.planThaw` validates the local root target-ref witness plus link/environment/permit policy and records handle/mailbox remapping plans. `Capsule.thawIntoRunspace` denies before destination Runspace mutation when policy fails. Sender permits and receipts are evidence only; receiver permit fingerprints are recorded as local restore evidence, not object-level authorization. Receivers configured with supervision or parked restore still fail closed until a receiver-local permit verifier and executable continuation witness exist. `Capsule.verifyLink` and `Capsule.relink` can use an embedded LinkCertificate or compare against a local catalog fingerprint, rejecting drift by default. Replay-only and inspect-only modes do not call native handlers. Guest conformance refs are carried as evidence and can be rerun by policy without requiring a real wasm runtime by default.
+
+`Handoff.exportCapsule`, `Handoff.fromCapsule`, and `Handoff.acceptCapsule` move capsule bytes locally. `Admission.capsuleAdmissionReport` binds Capsule image/certificate/thaw/restore fingerprints into admission reports. Capsule is store-ready through object/dependency refs, but World still does not implement storage, xitdb, network transport, schedulers, async runtimes, real model/tool/file/human integrations, provider lifecycle management, WASM host packages, Boundary loaded-module execution, package management, artifact registries, signing, encryption, or cryptographic security.
+
+See `docs/capsules.md`.
+
 ## World Guest Conformance
 
 Runspace makes execution local and deterministic. Guest Conformance proves that local execution can cross a runtime boundary.
@@ -330,6 +348,12 @@ zig build run-world-linker-nested-provider
 zig build run-world-linker-ambiguity
 zig build run-world-linker-cycle-blocked
 zig build run-world-linker-guest-conformance
+zig build run-world-capsule-linked-restore
+zig build run-world-capsule-active-fabric
+zig build run-world-capsule-agent-transfer
+zig build run-world-capsule-relink-mismatch
+zig build run-world-capsule-guest-verify
+zig build run-world-capsule-supervised-restore
 zig build run-world-supervised-budget
 zig build run-world-supervised-agent
 zig build run-world-supervised-handoff
@@ -384,6 +408,18 @@ zig build check-world-wasm
 `world_linker_cycle_blocked` reports a LinkGraph cycle blocker before Runspace mutation.
 
 `world_linker_guest_conformance` binds a linked assembly fingerprint to a Guest conformance report fingerprint.
+
+`world_capsule_linked_restore` freezes a completed linked assembly capsule and thaws it into a fresh Runspace.
+
+`world_capsule_active_fabric` freezes a witnessed active Fabric invocation while parent/provider runs are parked and reports parked restore as denied.
+
+`world_capsule_agent_transfer` demonstrates agent-shaped capsule transfer with a residual external model import.
+
+`world_capsule_relink_mismatch` shows local relink verification rejecting a catalog mismatch.
+
+`world_capsule_guest_verify` carries a Guest conformance report through the inspect-only capsule thaw/restore report path.
+
+`world_capsule_supervised_restore` shows sender permit evidence, receiver permit fingerprint recording, and fail-closed parked restore.
 
 `world_agent_loop` demonstrates an agent-shaped residual surface with `model.decide` and `tool.call` ports. It is not an agent framework; it is a port dispatch and replay fixture.
 

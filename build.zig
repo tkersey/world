@@ -256,7 +256,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-agent-branch",
             .desc = "Run the agent branch World example.",
             .expected_stdout =
-            \\checkpoint_fingerprint=41a07ca32c074d08
+            \\checkpoint_fingerprint=2b11bbc8bca81ece
             \\baseline_transcript_fingerprint=aa3dd05381fca5cb
             \\branch_transcript_fingerprint=7cc91fbb223c4ca
             \\baseline_final_result=final=actuate skeleton complete
@@ -319,8 +319,8 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-agent-handoff",
             .desc = "Run the agent World handoff example.",
             .expected_stdout =
-            \\run_image_fingerprint=f55a3fb93cf4962
-            \\checkpoint_fingerprint=41a07ca32c074d08
+            \\run_image_fingerprint=7948ea7d8f9c5e1a
+            \\checkpoint_fingerprint=2b11bbc8bca81ece
             \\branch_id=1
             \\model_port_id=0
             \\tool_port_id=1
@@ -500,7 +500,7 @@ pub fn build(b: *std.Build) void {
             .expected_stdout =
             \\parent_run_handle=367cb72b9a8188ae
             \\provider_run_handle=a53ebdcc0976217b
-            \\fabric_receipt_fingerprint=271db8a6e0670c1f
+            \\fabric_receipt_fingerprint=33d8e8ba055c1f54
             \\final_result=7
             \\native_handler_calls=0
             \\
@@ -540,7 +540,7 @@ pub fn build(b: *std.Build) void {
             .expected_stdout =
             \\fabric_invocation_count=1
             \\budget_exceeded=true
-            \\run_receipt_fingerprint=fd2da870d6aba08f
+            \\run_receipt_fingerprint=c416c6165617f7d4
             \\
             ,
         },
@@ -563,7 +563,7 @@ pub fn build(b: *std.Build) void {
             .expected_stdout =
             \\link_plan_fingerprint=1ba238a635990090
             \\fabric_route_count=1
-            \\assembly_fingerprint=44f572c93409c137
+            \\assembly_fingerprint=bb15a8935e2760db
             \\final_result=7
             \\native_handler_calls=0
             \\
@@ -624,9 +624,86 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-linker-guest-conformance",
             .desc = "Run the World Linker guest conformance example.",
             .expected_stdout =
-            \\assembly_fingerprint=7dac2578b034b034
-            \\conformance_report_fingerprint=d50db4c773413313
+            \\assembly_fingerprint=9dd84e749e687387
+            \\conformance_report_fingerprint=58221d8c8e24e275
             \\conformance=true
+            \\
+            ,
+        },
+        .{
+            .name = "world-capsule-linked-restore",
+            .path = "examples/world_capsule_linked_restore.zig",
+            .step = "run-world-capsule-linked-restore",
+            .desc = "Run the World Assembly Capsule linked restore example.",
+            .expected_stdout =
+            \\capsule_fingerprint=6449041ef0225991
+            \\link_certificate_fingerprint=2045220a5ff7a9fd
+            \\restore_report_fingerprint=6d09ac90404384a3
+            \\final_result=7
+            \\
+            ,
+        },
+        .{
+            .name = "world-capsule-active-fabric",
+            .path = "examples/world_capsule_active_fabric.zig",
+            .step = "run-world-capsule-active-fabric",
+            .desc = "Run the World Assembly Capsule active Fabric restore example.",
+            .expected_stdout =
+            \\active_fabric_invocation_fingerprint=6e1ba40ac216edb1
+            \\pending_provider_port_fingerprint=423eef2930e63077
+            \\restore_report_fingerprint=9332065ccdd19729
+            \\restore_accepted=false
+            \\final_result=active-fabric-restore-denied
+            \\
+            ,
+        },
+        .{
+            .name = "world-capsule-agent-transfer",
+            .path = "examples/world_capsule_agent_transfer.zig",
+            .step = "run-world-capsule-agent-transfer",
+            .desc = "Run the World Assembly Capsule agent transfer example.",
+            .expected_stdout =
+            \\capsule_fingerprint=32c33e5c253635b2
+            \\residual_external_import_count=1
+            \\receiver_permit_fingerprint=e9600a9c50625a17
+            \\restore_accepted=false
+            \\final_result=parked-restore-denied
+            \\
+            ,
+        },
+        .{
+            .name = "world-capsule-relink-mismatch",
+            .path = "examples/world_capsule_relink_mismatch.zig",
+            .step = "run-world-capsule-relink-mismatch",
+            .desc = "Run the World Assembly Capsule relink mismatch example.",
+            .expected_stdout =
+            \\relink_rejected=true
+            \\blocker_tag=relink_drift_rejected
+            \\thaw_plan_fingerprint=2b46501661f7345d
+            \\
+            ,
+        },
+        .{
+            .name = "world-capsule-guest-verify",
+            .path = "examples/world_capsule_guest_verify.zig",
+            .step = "run-world-capsule-guest-verify",
+            .desc = "Run the World Assembly Capsule guest verify example.",
+            .expected_stdout =
+            \\guest_report_fingerprint=d35a6d645e4511ea
+            \\restore_report_fingerprint=b20f8373cb3ca51d
+            \\conformance=true
+            \\
+            ,
+        },
+        .{
+            .name = "world-capsule-supervised-restore",
+            .path = "examples/world_capsule_supervised_restore.zig",
+            .step = "run-world-capsule-supervised-restore",
+            .desc = "Run the World Assembly Capsule supervised restore example.",
+            .expected_stdout =
+            \\sender_permit_fingerprint=905f7ae1b780bb33
+            \\receiver_permit_fingerprint=cec182f086daf454
+            \\restore_allowed=false
             \\
             ,
         },
@@ -675,7 +752,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-supervised-branch",
             .desc = "Run the supervised branch World example.",
             .expected_stdout =
-            \\checkpoint_fingerprint=f8e9ec205791e870
+            \\checkpoint_fingerprint=287104bce23139a9
             \\first_branch_result=allowed
             \\second_branch_denied=true
             \\
