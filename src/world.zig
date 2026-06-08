@@ -18441,6 +18441,7 @@ pub const Capsule = struct {
         const environment_refs = try environmentRefsForFreeze(allocator, assembly, run_images);
         var environment_refs_owned = true;
         errdefer if (environment_refs_owned) allocator.free(environment_refs);
+        if (environment_refs.len > 1) return error.InvalidFrameEncoding;
         const permit_refs = try allocator.dupe(u64, runspace_image_value.permit_refs);
         var permit_refs_owned = true;
         errdefer if (permit_refs_owned) allocator.free(permit_refs);

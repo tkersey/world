@@ -2063,6 +2063,51 @@ test "capsule freezeRunspace preserves run image environment refs" {
     try multi_env_image.validate(.{});
     const multi_env_denied = try world.Capsule.planThaw(multi_env_image, target_ref.target_ref_fingerprint, env_cert.certificate_fingerprint, 0x5150_3794, .{ .mode = .restore_completed });
     try std.testing.expectEqual(world.Capsule.Blocker.environment_mismatch, multi_env_denied.blockers[0]);
+    const second_env_fingerprint = env_cert.certificate_fingerprint +% 1;
+    const multi_env_run_image_a = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = state,
+        .environment_certificate_fingerprint = env_cert.certificate_fingerprint,
+    });
+    const multi_env_run_image_b = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = state,
+        .environment_certificate_fingerprint = second_env_fingerprint,
+    });
+    var multi_env_source = world.Runspace.init(allocator, .{});
+    defer multi_env_source.deinit();
+    const multi_env_handle_a = world.RunHandle.init(.{
+        .runspace_fingerprint = multi_env_source.runspace_fingerprint,
+        .local_run_id = 0,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+    });
+    const multi_env_handle_b = world.RunHandle.init(.{
+        .runspace_fingerprint = multi_env_source.runspace_fingerprint,
+        .local_run_id = 1,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+    });
+    try multi_env_source.slots.append(allocator, world.Runspace.RunSlot.fromState(.{
+        .handle = multi_env_handle_a,
+        .target_ref = target_ref,
+        .current_state = state,
+        .status = .completed,
+        .installed_run_image = multi_env_run_image_a,
+        .owns_installed_run_image = true,
+    }));
+    try multi_env_source.slots.append(allocator, world.Runspace.RunSlot.fromState(.{
+        .handle = multi_env_handle_b,
+        .target_ref = target_ref,
+        .current_state = state,
+        .status = .completed,
+        .installed_run_image = multi_env_run_image_b,
+        .owns_installed_run_image = true,
+    }));
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Capsule.freezeRunspace(&multi_env_source, .{}));
+
     var env_receiver = world.Runspace.init(allocator, .{});
     defer env_receiver.deinit();
     var env_restore = try world.Capsule.thawIntoRunspace(image, &env_receiver, target_ref.target_ref_fingerprint, env_cert.certificate_fingerprint, 0x5150_3793, .{ .mode = .restore_completed });
