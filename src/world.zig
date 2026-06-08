@@ -2252,6 +2252,7 @@ pub const Admission = struct {
             (args.restore_report == null or args.restore_report.?.capsule_image_fingerprint == args.image.image_fingerprint) and
             (args.thaw_plan == null or args.restore_report == null or args.restore_report.?.thaw_plan_fingerprint == args.thaw_plan.?.thaw_plan_fingerprint) and
             (args.thaw_plan == null or args.restore_report == null or args.thaw_plan.?.receiver_run_permit_fingerprint == args.restore_report.?.receiver_run_permit_fingerprint) and
+            (args.thaw_plan == null or args.restore_report != null or capsulePlanOnlyThawMatchesPolicy(args.image, args.thaw_plan.?)) and
             (args.thaw_plan == null or args.restore_report == null or !args.restore_report.?.accepted or capsuleRestoreReportMatchesImageAndPlan(args.image, args.thaw_plan.?, args.restore_report.?));
         const witness_modes_bound = args.thaw_plan == null or capsuleAdmissionModeAllowsThaw(args.mode, args.thaw_plan.?.requested_mode);
         const has_required_witnesses = switch (args.mode) {
@@ -2340,6 +2341,24 @@ pub const Admission = struct {
 
     fn capsuleRestoreReportAccepted(report: Capsule.RestoreReport) bool {
         return report.accepted and report.blockers.len == 0;
+    }
+
+    fn capsulePlanOnlyThawMatchesPolicy(image: Capsule.Image, plan: Capsule.ThawPlan) bool {
+        const options = Capsule.ThawOptions{
+            .mode = plan.requested_mode,
+            .require_local_permit = plan.require_local_permit,
+            .require_link_match = plan.require_link_match,
+            .allow_relink_drift = plan.allow_relink_drift,
+            .local_catalog_fingerprint = plan.local_catalog_fingerprint,
+            .rerun_guest_conformance = plan.rerun_guest_conformance,
+        };
+        return Capsule.thawBlocker(
+            image,
+            plan.local_root_target_ref_fingerprint,
+            0,
+            plan.receiver_run_permit_fingerprint,
+            options,
+        ) == null;
     }
 
     fn capsuleRestoreReportMatchesImageAndPlan(image: Capsule.Image, plan: Capsule.ThawPlan, report: Capsule.RestoreReport) bool {

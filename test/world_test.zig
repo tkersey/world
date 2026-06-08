@@ -2639,6 +2639,33 @@ test "capsule handoff admission binds restore witnesses and receiver permit" {
     });
     try std.testing.expect(replay_admission.accepted);
     try std.testing.expectEqual(replay_thaw.thaw_plan_fingerprint, replay_admission.capsule_thaw_plan_fingerprint.?);
+    const forged_target_replay_thaw = world.Capsule.ThawPlan.init(.{
+        .capsule_image_fingerprint = imported.image_fingerprint,
+        .requested_mode = .replay_only,
+        .local_root_target_ref_fingerprint = target_ref.target_ref_fingerprint +% 1,
+        .handle_remapping_plan = imported.runspace_image.run_handle_mappings,
+    });
+    const forged_target_replay_admission = world.Admission.capsuleAdmissionReport(.{
+        .mode = .replay_only,
+        .image = imported,
+        .certificate = cert,
+        .thaw_plan = forged_target_replay_thaw,
+    });
+    try std.testing.expect(!forged_target_replay_admission.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, forged_target_replay_admission.blockers[0]);
+    const forged_link_replay_thaw = world.Capsule.ThawPlan.init(.{
+        .capsule_image_fingerprint = linked_image.image_fingerprint,
+        .requested_mode = .replay_only,
+        .local_root_target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .handle_remapping_plan = linked_image.runspace_image.run_handle_mappings,
+    });
+    const forged_link_replay_admission = world.Admission.capsuleAdmissionReport(.{
+        .mode = .replay_only,
+        .image = linked_image,
+        .thaw_plan = forged_link_replay_thaw,
+    });
+    try std.testing.expect(!forged_link_replay_admission.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, forged_link_replay_admission.blockers[0]);
     const reference_only = try world.Capsule.freezeRun(handle, .{});
     const forged_replay_thaw = world.Capsule.ThawPlan.init(.{
         .capsule_image_fingerprint = reference_only.image_fingerprint,
