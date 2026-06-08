@@ -26528,7 +26528,7 @@ fn checkpointEncodedByteSize(checkpoint: Timeline.Checkpoint) usize {
     var size: usize = 4 + 4 + 8 + 8 + 8 + 8 + 8;
     size = addSatEncodedSize(size, optionalU64EncodedByteSize(checkpoint.current_request_fingerprint));
     size = addSatEncodedSize(size, optionalU64EncodedByteSize(checkpoint.last_response_fingerprint));
-    if (checkpoint.format_version >= 2) size = addSatEncodedSize(size, optionalU64EncodedByteSize(checkpoint.capsule_image_fingerprint));
+    size = addSatEncodedSize(size, optionalU64EncodedByteSize(checkpoint.capsule_image_fingerprint));
     size = addSatEncodedSize(size, 8 + 8 + 1);
     return size;
 }
@@ -27349,11 +27349,7 @@ fn encodeCheckpoint(out: *std.ArrayList(u8), allocator: std.mem.Allocator, check
     try writeU64(out, allocator, checkpoint.turn_index);
     try writeOptionalU64(out, allocator, checkpoint.current_request_fingerprint);
     try writeOptionalU64(out, allocator, checkpoint.last_response_fingerprint);
-    if (checkpoint.format_version >= 2) {
-        try writeOptionalU64(out, allocator, checkpoint.capsule_image_fingerprint);
-    } else if (checkpoint.capsule_image_fingerprint != null) {
-        return error.InvalidFrameEncoding;
-    }
+    try writeOptionalU64(out, allocator, checkpoint.capsule_image_fingerprint);
     try writeU64(out, allocator, checkpoint.transcript_prefix_fingerprint);
     try writeU64(out, allocator, checkpoint.branch_id);
     try writeU8(out, allocator, @intFromEnum(checkpoint.status));
@@ -27375,7 +27371,7 @@ fn decodeCheckpoint(bytes: []const u8, cursor: *usize) !Timeline.Checkpoint {
         .turn_index = try readU64AsUsize(bytes, cursor),
         .current_request_fingerprint = try readOptionalU64(bytes, cursor),
         .last_response_fingerprint = try readOptionalU64(bytes, cursor),
-        .capsule_image_fingerprint = if (format_version >= 2) try readOptionalU64(bytes, cursor) else null,
+        .capsule_image_fingerprint = try readOptionalU64(bytes, cursor),
         .transcript_prefix_fingerprint = try readU64(bytes, cursor),
         .branch_id = try readU64(bytes, cursor),
         .status = try enumFromByte(Timeline.Checkpoint.Status, try readU8(bytes, cursor)),
@@ -28876,7 +28872,7 @@ fn fingerprintCheckpoint(checkpoint: Timeline.Checkpoint) u64 {
     hashU64(&hasher, checkpoint.turn_index);
     hashOptionalU64(&hasher, checkpoint.current_request_fingerprint);
     hashOptionalU64(&hasher, checkpoint.last_response_fingerprint);
-    if (checkpoint.fingerprint_version >= 2) hashOptionalU64(&hasher, checkpoint.capsule_image_fingerprint);
+    hashOptionalU64(&hasher, checkpoint.capsule_image_fingerprint);
     hashU64(&hasher, checkpoint.transcript_prefix_fingerprint);
     hashU64(&hasher, checkpoint.branch_id);
     hashU64(&hasher, @intFromEnum(checkpoint.status));

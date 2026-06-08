@@ -11226,7 +11226,7 @@ fn timelineCheckpointFingerprintForTest(checkpoint: world.Timeline.Checkpoint) u
     hashTestU64(&hasher, checkpoint.turn_index);
     hashTestOptionalU64(&hasher, checkpoint.current_request_fingerprint);
     hashTestOptionalU64(&hasher, checkpoint.last_response_fingerprint);
-    if (checkpoint.fingerprint_version >= 2) hashTestOptionalU64(&hasher, checkpoint.capsule_image_fingerprint);
+    hashTestOptionalU64(&hasher, checkpoint.capsule_image_fingerprint);
     hashTestU64(&hasher, checkpoint.transcript_prefix_fingerprint);
     hashTestU64(&hasher, checkpoint.branch_id);
     hashTestU64(&hasher, @intFromEnum(checkpoint.status));
@@ -26723,7 +26723,7 @@ test "run image encode decode roundtrip includes TargetRef TranscriptImage branc
     try std.testing.expectError(error.HandoffCheckpointMismatch, wrong_target_checkpoint_image.validate(.{}));
 }
 
-test "RunImage decoder accepts legacy v1 checkpoint layout" {
+test "RunImage decoder preserves legacy v1 checkpoint capsule field" {
     const allocator = std.testing.allocator;
     const target_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
     var legacy_checkpoint = world.Timeline.Checkpoint{
@@ -26736,6 +26736,7 @@ test "RunImage decoder accepts legacy v1 checkpoint layout" {
         .turn_index = 2,
         .current_request_fingerprint = 0x1001,
         .last_response_fingerprint = 0x1002,
+        .capsule_image_fingerprint = 0x5150_cafe,
         .transcript_prefix_fingerprint = 0x1003,
         .branch_id = 4,
         .status = .completed,
@@ -26762,7 +26763,7 @@ test "RunImage decoder accepts legacy v1 checkpoint layout" {
     try std.testing.expectEqual(@as(usize, 1), decoded.checkpoints.len);
     try std.testing.expectEqual(@as(u32, 1), decoded.checkpoints[0].format_version);
     try std.testing.expectEqual(@as(u32, 1), decoded.checkpoints[0].fingerprint_version);
-    try std.testing.expectEqual(@as(?u64, null), decoded.checkpoints[0].capsule_image_fingerprint);
+    try std.testing.expectEqual(@as(?u64, 0x5150_cafe), decoded.checkpoints[0].capsule_image_fingerprint);
     try std.testing.expectEqual(legacy_checkpoint.transcript_prefix_fingerprint, decoded.checkpoints[0].transcript_prefix_fingerprint);
     try std.testing.expectEqual(legacy_checkpoint.checkpoint_fingerprint, decoded.checkpoints[0].checkpoint_fingerprint);
 
