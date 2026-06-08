@@ -16927,10 +16927,22 @@ pub const Capsule = struct {
             if (self.fingerprint_version != world_capsule_mailbox_image_fingerprint_version) return error.InvalidFrameEncoding;
             if (self.pending_port_entries.len > options.max_pending_ports) return error.InvalidFrameEncoding;
             if (self.pending_port_fingerprints.len > options.max_pending_ports) return error.InvalidFrameEncoding;
+            if (self.consumed_port_fingerprints.len > options.max_pending_ports) return error.InvalidFrameEncoding;
+            const status_count = self.pending_port_fingerprints.len + self.consumed_port_fingerprints.len;
+            if (status_count > options.max_pending_ports) return error.InvalidFrameEncoding;
+            if (self.single_use_status_fingerprints.len != status_count) return error.InvalidFrameEncoding;
+            if (self.response_routing_status_fingerprints.len != status_count) return error.InvalidFrameEncoding;
             if (self.pending_port_entries.len != self.pending_port_fingerprints.len) return error.InvalidFrameEncoding;
             for (self.pending_port_entries, 0..) |entry, index| {
                 try entry.validate();
                 if (self.pending_port_fingerprints[index] != entry.pending_port_fingerprint) return error.InvalidFrameEncoding;
+                if (self.single_use_status_fingerprints[index] != fingerprintPendingPortImageSingleUseStatus(entry)) return error.InvalidFrameEncoding;
+                if (self.response_routing_status_fingerprints[index] != fingerprintPendingPortImageRoutingStatus(entry)) return error.InvalidFrameEncoding;
+            }
+            try validateUniqueU64Slice(self.pending_port_fingerprints);
+            try validateUniqueU64Slice(self.consumed_port_fingerprints);
+            for (self.pending_port_fingerprints) |pending| {
+                if (u64SliceContains(self.consumed_port_fingerprints, pending)) return error.InvalidFrameEncoding;
             }
             if (self.mailbox_image_fingerprint != fingerprintMailboxImage(self)) return error.InvalidFrameEncoding;
         }
@@ -18954,6 +18966,7 @@ pub const Capsule = struct {
         if (manifest.active_fabric_invocation_count != runspace_image_value.active_fabric_invocation_refs.len) return error.InvalidFrameEncoding;
         try validateKindNormalForm(manifest.kind, manifest.normal_form);
         try validateUniqueRunSlotHandleRefs(runspace_image_value.run_slots);
+        try validateRunSlotParentTopology(runspace_image_value.run_slots);
         try validateRunSlotNormalForm(image, manifest.normal_form, manifest.pending_port_count, manifest.active_fabric_invocation_count);
         try validateManifestRootSlotCoverage(image);
         try validateParkedSlotMailboxCoverage(image);
@@ -19091,6 +19104,30 @@ pub const Capsule = struct {
                 if (slot.original_run_handle_fingerprint == other.original_run_handle_fingerprint) return error.InvalidFrameEncoding;
             }
         }
+    }
+
+    fn validateRunSlotParentTopology(slots: []const RunSlotImage) !void {
+        for (slots, 0..) |slot, index| {
+            if (slot.parent_run_handle_fingerprint == null) {
+                if (slot.role != .root) return error.InvalidFrameEncoding;
+                continue;
+            }
+            var current_index = index;
+            var guard: usize = 0;
+            while (slots[current_index].parent_run_handle_fingerprint) |parent| {
+                guard += 1;
+                if (guard > slots.len) return error.InvalidFrameEncoding;
+                current_index = runSlotImageIndexByOriginalHandle(slots, parent) orelse return error.InvalidFrameEncoding;
+            }
+            if (slots[current_index].role != .root) return error.InvalidFrameEncoding;
+        }
+    }
+
+    fn runSlotImageIndexByOriginalHandle(slots: []const RunSlotImage, handle_fingerprint: u64) ?usize {
+        for (slots, 0..) |slot, index| {
+            if (slot.original_run_handle_fingerprint == handle_fingerprint) return index;
+        }
+        return null;
     }
 
     fn validateParkedSlotMailboxCoverage(image: Image) !void {
@@ -19463,6 +19500,14 @@ pub const Capsule = struct {
             if (value == needle) return true;
         }
         return false;
+    }
+
+    fn validateUniqueU64Slice(values: []const u64) !void {
+        for (values, 0..) |value, index| {
+            for (values[index + 1 ..]) |other| {
+                if (value == other) return error.InvalidFrameEncoding;
+            }
+        }
     }
 
     fn mappedHandleFingerprint(mappings: []const u64, original: u64) !u64 {
@@ -20143,6 +20188,15 @@ pub const Capsule = struct {
         return hasher.final();
     }
 
+    fn fingerprintPendingPortImageSingleUseStatus(image: PendingPortImage) u64 {
+        var hasher = std.hash.Wyhash.init(0x6361_7073_6d62_7375);
+        hashU64(&hasher, image.pending_port_fingerprint);
+        hashU64(&hasher, image.mailbox_id);
+        hashU64(&hasher, @intFromEnum(image.status));
+        hashU64(&hasher, image.request_frame.request_fingerprint);
+        return hasher.final();
+    }
+
     fn fingerprintPendingPortRoutingStatus(pending_port: Runspace.PendingPort) u64 {
         var hasher = std.hash.Wyhash.init(0x6361_7073_6d62_7274);
         hashU64(&hasher, pending_port.pending_port_fingerprint);
@@ -20152,6 +20206,18 @@ pub const Capsule = struct {
         hashU64(&hasher, pending_port.request_fingerprint);
         hashU64(&hasher, @intFromEnum(pending_port.expected_response_kind));
         hashOptionalU32(&hasher, pending_port.expected_response_value_table_id);
+        return hasher.final();
+    }
+
+    fn fingerprintPendingPortImageRoutingStatus(image: PendingPortImage) u64 {
+        var hasher = std.hash.Wyhash.init(0x6361_7073_6d62_7274);
+        hashU64(&hasher, image.pending_port_fingerprint);
+        hashU64(&hasher, image.request_frame.world_surface_fingerprint);
+        hashU64(&hasher, image.request_frame.target_certificate_fingerprint);
+        hashU64(&hasher, image.request_frame.world_port_id);
+        hashU64(&hasher, image.request_frame.request_fingerprint);
+        hashU64(&hasher, @intFromEnum(image.expected_response_kind));
+        hashOptionalU32(&hasher, image.expected_response_value_table_id);
         return hasher.final();
     }
 

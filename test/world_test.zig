@@ -962,6 +962,23 @@ test "capsule runspace and mailbox images capture slots pending ports and events
     try std.testing.expectEqual(@as(u64, 1), mailbox_image.next_mailbox_id);
     try std.testing.expectEqual(@as(usize, 1), mailbox_image.single_use_status_fingerprints.len);
     try std.testing.expectEqual(@as(usize, 1), mailbox_image.response_routing_status_fingerprints.len);
+    const missing_pending_status = world.Capsule.MailboxImage.init(.{
+        .pending_port_entries = mailbox_image.pending_port_entries,
+        .pending_port_fingerprints = mailbox_image.pending_port_fingerprints,
+        .next_mailbox_id = mailbox_image.next_mailbox_id,
+        .generation = mailbox_image.generation,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, missing_pending_status.validate(.{}));
+    const forged_pending_status_refs = [_]u64{mailbox_image.single_use_status_fingerprints[0] +% 1};
+    const forged_pending_status = world.Capsule.MailboxImage.init(.{
+        .pending_port_entries = mailbox_image.pending_port_entries,
+        .pending_port_fingerprints = mailbox_image.pending_port_fingerprints,
+        .next_mailbox_id = mailbox_image.next_mailbox_id,
+        .generation = mailbox_image.generation,
+        .single_use_status_fingerprints = &forged_pending_status_refs,
+        .response_routing_status_fingerprints = mailbox_image.response_routing_status_fingerprints,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_pending_status.validate(.{}));
 
     var image = try world.Capsule.runspaceImage(allocator, &runspace);
     defer image.deinit(allocator);
@@ -980,6 +997,14 @@ test "capsule runspace and mailbox images capture slots pending ports and events
     defer consumed_mailbox_image.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 0), consumed_mailbox_image.pending_port_fingerprints.len);
     try std.testing.expectEqual(@as(usize, 1), consumed_mailbox_image.consumed_port_fingerprints.len);
+    try std.testing.expectEqual(@as(usize, 1), consumed_mailbox_image.single_use_status_fingerprints.len);
+    try std.testing.expectEqual(@as(usize, 1), consumed_mailbox_image.response_routing_status_fingerprints.len);
+    const missing_consumed_status = world.Capsule.MailboxImage.init(.{
+        .consumed_port_fingerprints = consumed_mailbox_image.consumed_port_fingerprints,
+        .next_mailbox_id = consumed_mailbox_image.next_mailbox_id,
+        .generation = consumed_mailbox_image.generation,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, missing_consumed_status.validate(.{}));
 }
 
 test "fabric image captures active invocation completed receipt and witnesses" {
@@ -1800,6 +1825,56 @@ test "capsule thaw preserves branch parent links" {
     try std.testing.expect(reversed_report.accepted);
     try std.testing.expectEqual(@as(usize, 2), reversed_destination.slots.items.len);
     try std.testing.expectEqual(reversed_destination.slots.items[1].handle.handle_fingerprint, reversed_destination.slots.items[0].parent_run_handle_fingerprint.?);
+
+    const cycle_a = world.Capsule.RunSlotImage.init(.{
+        .original_run_handle_fingerprint = 0x5150_37a1,
+        .parent_run_handle_fingerprint = 0x5150_37a2,
+        .role = .branch,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .run_state_fingerprint = image.runspace_image.run_slots[1].run_state_fingerprint,
+        .run_image_fingerprint = image.runspace_image.run_slots[1].run_image_fingerprint,
+        .status = .completed,
+    });
+    const cycle_b = world.Capsule.RunSlotImage.init(.{
+        .original_run_handle_fingerprint = 0x5150_37a2,
+        .parent_run_handle_fingerprint = 0x5150_37a1,
+        .role = .branch,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .run_state_fingerprint = image.runspace_image.run_slots[1].run_state_fingerprint,
+        .run_image_fingerprint = image.runspace_image.run_slots[1].run_image_fingerprint,
+        .status = .completed,
+    });
+    const cyclic_slots = [_]world.Capsule.RunSlotImage{
+        image.runspace_image.run_slots[0],
+        cycle_a,
+        cycle_b,
+    };
+    const cyclic_handle_mappings = [_]u64{
+        cyclic_slots[0].original_run_handle_fingerprint,
+        cyclic_slots[1].original_run_handle_fingerprint,
+        cyclic_slots[2].original_run_handle_fingerprint,
+    };
+    const cyclic_manifest = world.Capsule.Manifest.init(.{
+        .kind = .completed_assembly,
+        .root_target_ref_fingerprint = image.manifest.root_target_ref_fingerprint,
+        .run_image_fingerprints = image.manifest.run_image_fingerprints,
+        .run_slot_count = cyclic_slots.len,
+        .normal_form = .quiescent_completed,
+    });
+    const cyclic_runspace_image = world.Capsule.RunspaceImage.init(.{
+        .runspace_fingerprint = image.runspace_image.runspace_fingerprint,
+        .runspace_report_fingerprint = image.runspace_image.runspace_report_fingerprint,
+        .run_handle_mappings = &cyclic_handle_mappings,
+        .run_slots = &cyclic_slots,
+        .run_image_refs = image.runspace_image.run_image_refs,
+    });
+    const cyclic_image = world.Capsule.Image.init(.{
+        .manifest = cyclic_manifest,
+        .runspace_image = cyclic_runspace_image,
+        .run_image_refs = image.run_image_refs,
+        .run_images = image.run_images,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, cyclic_image.validate(.{}));
 }
 
 test "capsule freezeRunspace preserves run image environment refs" {
