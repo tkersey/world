@@ -2676,6 +2676,9 @@ test "capsule relink requires manifest fabric plan coverage" {
     const residual_default = try world.Capsule.verifyLink(residual_image, 0, .{});
     try std.testing.expectEqual(world.Capsule.RelinkStatus.rejected, residual_default.relink_status);
     try std.testing.expectEqual(world.Capsule.Blocker.residual_import_mismatch, residual_default.blockers[0]);
+    const residual_thaw = try world.Capsule.planThaw(residual_image, 0, 0, null, .{ .mode = .inspect_only });
+    try std.testing.expectEqual(world.Capsule.RelinkStatus.rejected, residual_thaw.relink_status);
+    try std.testing.expectEqual(world.Capsule.Blocker.residual_import_mismatch, residual_thaw.blockers[0]);
     const residual_drift_allowed = try world.Capsule.verifyLink(residual_image, 0, .{ .allow_relink_drift = true });
     try std.testing.expectEqual(world.Capsule.RelinkStatus.rejected, residual_drift_allowed.relink_status);
     try std.testing.expectEqual(world.Capsule.Blocker.residual_import_mismatch, residual_drift_allowed.blockers[0]);
@@ -4567,21 +4570,23 @@ test "capsule agent transfer preserves residual external import" {
         .mode = .restore_completed,
         .local_catalog_fingerprint = linked.plan.catalog_fingerprint,
     });
-    try std.testing.expectEqual(@as(usize, 0), catalog_thaw.blockers.len);
+    try std.testing.expectEqual(world.Capsule.Blocker.residual_import_mismatch, catalog_thaw.blockers[0]);
     var restore = try world.Capsule.thawIntoRunspace(image, &receiver, root_ref.target_ref_fingerprint, 0, 0x5150_3b01, .{
         .mode = .restore_completed,
         .local_catalog_fingerprint = linked.plan.catalog_fingerprint,
     });
     defer restore.deinit(allocator);
-    try std.testing.expect(restore.accepted);
+    try std.testing.expect(!restore.accepted);
+    try std.testing.expectEqual(world.Capsule.Blocker.residual_import_mismatch, restore.blockers[0]);
     const admission = world.Admission.capsuleAdmissionReport(.{
         .mode = .restore_completed,
         .image = image,
         .thaw_plan = catalog_thaw,
         .restore_report = restore,
     });
-    try std.testing.expect(admission.accepted);
-    try std.testing.expectEqual(@as(usize, 1), restore.restored_root_run_handles.len);
+    try std.testing.expect(!admission.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.AdmissionModeNotAllowed, admission.blockers[0]);
+    try std.testing.expectEqual(@as(usize, 0), receiver.slots.items.len);
 }
 
 test "link catalog entry fingerprint is stable and excludes pointer identity" {

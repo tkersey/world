@@ -19019,6 +19019,7 @@ pub const Capsule = struct {
                         if (catalog != local and !options.allow_relink_drift) return .link_plan_mismatch;
                     } else if (!options.allow_relink_drift) return .link_plan_mismatch;
                 }
+                if (link.residual_import_set_fingerprint != 0) return .residual_import_mismatch;
                 if (!linkFabricPlanWitnessesCover(image.manifest.fabric_plan_fingerprints, link.route_synthesis_refs)) return .fabric_plan_mismatch;
             } else if (options.mode == .relink_and_restore or imageRequiresLinkMatchWitness(image)) {
                 return .link_certificate_missing;
