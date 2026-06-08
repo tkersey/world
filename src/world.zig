@@ -13212,11 +13212,12 @@ pub const Runspace = struct {
     fn snapshotSlotImage(self: *@This(), index: usize) !RunImage {
         const slot = &self.slots.items[index];
         if (slot.driver) |driver| return driver.snapshotRunImage();
+        const snapshot_state = runStateForSlotSnapshot(slot.*);
         const run_receipt_fingerprint = if (slot.supervisor) |*supervisor|
             supervisor.receipt(
-                receiptFinalStatusForRunState(slot.current_state),
-                slot.current_state.run_state_fingerprint,
-                slot.current_state.transcript_image_fingerprint,
+                receiptFinalStatusForRunState(snapshot_state),
+                snapshot_state.run_state_fingerprint,
+                snapshot_state.transcript_image_fingerprint,
                 null,
             ).receipt_fingerprint
         else
@@ -13224,7 +13225,7 @@ pub const Runspace = struct {
         if (slot.installed_run_image) |installed_image| {
             var image = try cloneRunImage(self.allocator, installed_image);
             image.kind = try runImageKindForSlotSnapshot(slot.*, installed_image.kind);
-            image.current_state = slot.current_state;
+            image.current_state = snapshot_state;
             scrubTerminalInstalledSlotSnapshot(self.allocator, &image, slot.status);
             image.prior_run_permit_fingerprint = slot.run_permit_fingerprint;
             image.prior_run_receipt_fingerprint = run_receipt_fingerprint;
@@ -13255,7 +13256,7 @@ pub const Runspace = struct {
             },
             .target_ref = slot.target_ref,
             .import_set_fingerprint = 0,
-            .current_state = slot.current_state,
+            .current_state = snapshot_state,
             .pending_request_frame = pending_frame,
             .prior_run_permit_fingerprint = slot.run_permit_fingerprint,
             .prior_run_receipt_fingerprint = run_receipt_fingerprint,
@@ -13266,12 +13267,36 @@ pub const Runspace = struct {
         return image;
     }
 
+    fn runStateForSlotSnapshot(slot: Runspace.RunSlot) RunState {
+        return RunState.init(.{
+            .target_ref_fingerprint = slot.current_state.target_ref_fingerprint,
+            .transcript_image_fingerprint = slot.current_state.transcript_image_fingerprint,
+            .branch_id = slot.current_state.branch_id,
+            .checkpoint_fingerprint = slot.current_state.checkpoint_fingerprint,
+            .pending_request_fingerprint = slot.current_state.pending_request_fingerprint,
+            .final_response_fingerprint = slot.current_state.final_response_fingerprint,
+            .final_value_image_fingerprint = slot.current_state.final_value_image_fingerprint,
+            .turn_index = slot.current_state.turn_index,
+            .status = runStateStatusForSlotSnapshot(slot),
+        });
+    }
+
     fn runImageKindForSlotSnapshot(slot: Runspace.RunSlot, installed_kind: RunImage.Kind) !RunImage.Kind {
         return switch (slot.status) {
             .completed => if (installed_kind == .parked_run) .completed_run else installed_kind,
             .exported => try runImageKindForExportedSlot(slot),
             .failed, .rejected => .replay_only_run,
             else => installed_kind,
+        };
+    }
+
+    fn runStateStatusForSlotSnapshot(slot: Runspace.RunSlot) RunState.Status {
+        return switch (slot.status) {
+            .completed => .completed,
+            .failed, .rejected => .failed,
+            .parked_on_port => .parked_on_port,
+            .parked_on_supervision => if (slot.current_state.status == .parked_on_port) .parked_on_port else slot.current_state.status,
+            .admitted, .runnable, .running, .exported => slot.current_state.status,
         };
     }
 
@@ -20254,6 +20279,7 @@ pub const Capsule = struct {
     }
 
     fn runSlotImageForSlot(allocator: std.mem.Allocator, runspace: *const Runspace, slot: Runspace.RunSlot, run_image_fingerprint: ?u64, include_transcripts: bool) !RunSlotImage {
+        const snapshot_state = Runspace.runStateForSlotSnapshot(slot);
         const checkpoint_refs = if (slot.checkpoint_fingerprint) |checkpoint| refs: {
             const refs = try allocator.alloc(u64, 1);
             refs[0] = checkpoint;
@@ -20282,9 +20308,9 @@ pub const Capsule = struct {
             .admission_receipt_fingerprint = slot.admission_receipt_fingerprint,
             .environment_certificate_fingerprint = null,
             .run_permit_fingerprint = slot.run_permit_fingerprint,
-            .run_state_fingerprint = if (include_transcripts) slot.current_state.run_state_fingerprint else runStateWithoutTranscript(slot.current_state).run_state_fingerprint,
+            .run_state_fingerprint = if (include_transcripts) snapshot_state.run_state_fingerprint else runStateWithoutTranscript(snapshot_state).run_state_fingerprint,
             .run_image_fingerprint = run_image_fingerprint,
-            .transcript_image_fingerprint = if (include_transcripts) slot.current_state.transcript_image_fingerprint else null,
+            .transcript_image_fingerprint = if (include_transcripts) snapshot_state.transcript_image_fingerprint else null,
             .current_pending_mailbox_id = slot.pending_mailbox_id,
             .branch_id = slot.branch_id,
             .checkpoint_refs = checkpoint_refs,

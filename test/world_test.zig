@@ -1010,6 +1010,28 @@ test "capsule freezeRunspace honors partial freeze and caller count limits" {
     try std.testing.expectEqual(world.Capsule.Kind.inspect_only, partial_image.manifest.kind);
     try std.testing.expectEqual(world.Capsule.NormalForm.partial_with_blockers, partial_image.manifest.normal_form);
 
+    var rejected_runspace = world.Runspace.init(allocator, .{});
+    defer rejected_runspace.deinit();
+    const rejected_handle = world.RunHandle.init(.{
+        .runspace_fingerprint = rejected_runspace.runspace_fingerprint,
+        .local_run_id = 0,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+    });
+    try rejected_runspace.slots.append(allocator, world.Runspace.RunSlot.fromState(.{
+        .handle = rejected_handle,
+        .target_ref = target_ref,
+        .current_state = state,
+        .status = .rejected,
+    }));
+    var rejected_image = try world.Capsule.freezeRunspace(&rejected_runspace, .{});
+    defer rejected_image.deinit(allocator);
+    try rejected_image.validate(.{});
+    try std.testing.expectEqual(world.Capsule.Kind.failed_assembly, rejected_image.manifest.kind);
+    try std.testing.expectEqual(world.Capsule.NormalForm.quiescent_failed, rejected_image.manifest.normal_form);
+    try std.testing.expectEqual(world.Capsule.RunSlotStatus.rejected, rejected_image.runspace_image.run_slots[0].status);
+    try std.testing.expectEqual(world.RunImage.Kind.replay_only_run, rejected_image.run_images[0].kind);
+    try std.testing.expectEqual(world.RunState.Status.failed, rejected_image.run_images[0].current_state.status);
+
     const slot_count: usize = 4097;
     var large_runspace = world.Runspace.init(allocator, .{});
     defer large_runspace.deinit();
