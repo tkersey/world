@@ -16838,8 +16838,7 @@ pub const Capsule = struct {
             if (self.checkpoint_refs.len > options.max_run_slots) return error.InvalidFrameEncoding;
             if (self.fabric_invocation_refs.len > options.max_fabric_invocations) return error.InvalidFrameEncoding;
             switch (self.status) {
-                .runnable => return error.InvalidFrameEncoding,
-                .admitted, .parked_on_port, .parked_on_supervision, .completed, .failed, .exported, .rejected => {},
+                .admitted, .runnable, .parked_on_port, .parked_on_supervision, .completed, .failed, .exported, .rejected => {},
             }
             if (self.status == .parked_on_port) {
                 if (self.current_pending_mailbox_id == null) return error.InvalidFrameEncoding;
@@ -19575,9 +19574,10 @@ pub const Capsule = struct {
             .active_fabric_parked => {
                 if (active_fabric_count == 0 or parked_count == 0 or unsupported_count != 0) return error.InvalidFrameEncoding;
             },
-            .unsupported_running, .partial_with_blockers => {
+            .unsupported_running => {
                 if (unsupported_count == 0) return error.InvalidFrameEncoding;
             },
+            .partial_with_blockers => {},
         }
     }
 
@@ -19783,6 +19783,12 @@ pub const Capsule = struct {
         }
         if (slot_image.status == .parked_on_supervision and run_image.current_state.status == .parked_on_port) {
             return slot_image.current_pending_mailbox_id != null;
+        }
+        if (slot_image.status == .runnable) {
+            return switch (run_image.current_state.status) {
+                .not_started, .running => true,
+                .completed, .parked_on_port, .parked_on_supervision, .failed => false,
+            };
         }
         return run_image.current_state.status == runStateStatusForCapsuleStatus(slot_image.status);
     }

@@ -1070,6 +1070,30 @@ test "capsule freezeRunspace honors partial freeze and caller count limits" {
     try std.testing.expectEqual(world.Capsule.Kind.inspect_only, partial_image.manifest.kind);
     try std.testing.expectEqual(world.Capsule.NormalForm.partial_with_blockers, partial_image.manifest.normal_form);
 
+    var running_partial_runspace = world.Runspace.init(allocator, .{});
+    defer running_partial_runspace.deinit();
+    const running_partial_handle = world.RunHandle.init(.{
+        .runspace_fingerprint = running_partial_runspace.runspace_fingerprint,
+        .local_run_id = 0,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+    });
+    try running_partial_runspace.slots.append(allocator, world.Runspace.RunSlot.fromState(.{
+        .handle = running_partial_handle,
+        .target_ref = target_ref,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+            .status = .running,
+        }),
+        .status = .running,
+    }));
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Capsule.freezeRunspace(&running_partial_runspace, .{}));
+    var running_partial_image = try world.Capsule.freezeRunspace(&running_partial_runspace, .{ .require_quiescent = false });
+    defer running_partial_image.deinit(allocator);
+    try running_partial_image.validate(.{});
+    try std.testing.expectEqual(world.Capsule.Kind.inspect_only, running_partial_image.manifest.kind);
+    try std.testing.expectEqual(world.Capsule.NormalForm.partial_with_blockers, running_partial_image.manifest.normal_form);
+    try std.testing.expectEqual(world.Capsule.RunSlotStatus.runnable, running_partial_image.runspace_image.run_slots[0].status);
+
     var rejected_runspace = world.Runspace.init(allocator, .{});
     defer rejected_runspace.deinit();
     const rejected_handle = world.RunHandle.init(.{
@@ -1091,6 +1115,20 @@ test "capsule freezeRunspace honors partial freeze and caller count limits" {
     try std.testing.expectEqual(world.Capsule.RunSlotStatus.rejected, rejected_image.runspace_image.run_slots[0].status);
     try std.testing.expectEqual(world.RunImage.Kind.replay_only_run, rejected_image.run_images[0].kind);
     try std.testing.expectEqual(world.RunState.Status.failed, rejected_image.run_images[0].current_state.status);
+    const blocker_manifest = world.Capsule.Manifest.init(.{
+        .kind = .inspect_only,
+        .root_target_ref_fingerprint = rejected_image.manifest.root_target_ref_fingerprint,
+        .run_image_fingerprints = rejected_image.manifest.run_image_fingerprints,
+        .run_slot_count = rejected_image.manifest.run_slot_count,
+        .normal_form = .partial_with_blockers,
+    });
+    const blocker_image = world.Capsule.Image.init(.{
+        .manifest = blocker_manifest,
+        .runspace_image = rejected_image.runspace_image,
+        .run_image_refs = rejected_image.run_image_refs,
+        .run_images = rejected_image.run_images,
+    });
+    try blocker_image.validate(.{});
 
     const slot_count: usize = 4097;
     var large_partial_runspace = world.Runspace.init(allocator, .{});
