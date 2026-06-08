@@ -19392,6 +19392,7 @@ pub const Capsule = struct {
                 image.manifest.admission_receipt_fingerprints.len +
                 image.manifest.environment_certificate_fingerprints.len +
                 image.manifest.run_permit_fingerprints.len +
+                image.manifest.guest_conformance_report_fingerprints.len +
                 image.manifest.transcript_image_fingerprints.len +
                 image.manifest.run_image_fingerprints.len;
             if (image.dependency_refs.len != expected_count) return error.InvalidFrameEncoding;
@@ -19402,6 +19403,7 @@ pub const Capsule = struct {
             for (image.manifest.admission_receipt_fingerprints) |fingerprint| try validateDependencyRefCovered(image, .admission, fingerprint);
             for (image.manifest.environment_certificate_fingerprints) |fingerprint| try validateDependencyRefCovered(image, .environment, fingerprint);
             for (image.manifest.run_permit_fingerprints) |fingerprint| try validateDependencyRefCovered(image, .supervision, fingerprint);
+            for (image.manifest.guest_conformance_report_fingerprints) |fingerprint| try validateDependencyRefCovered(image, .guest_conformance, fingerprint);
             for (image.manifest.transcript_image_fingerprints) |fingerprint| try validateDependencyRefCovered(image, .transcript_image, fingerprint);
             for (image.manifest.run_image_fingerprints) |fingerprint| try validateDependencyRefCovered(image, .run_image, fingerprint);
         }
@@ -19948,6 +19950,7 @@ pub const Capsule = struct {
         for (manifest.admission_receipt_fingerprints) |fingerprint| try refs.append(allocator, .{ .section = .admission, .fingerprint = fingerprint });
         for (manifest.environment_certificate_fingerprints) |fingerprint| try refs.append(allocator, .{ .section = .environment, .fingerprint = fingerprint });
         for (manifest.run_permit_fingerprints) |fingerprint| try refs.append(allocator, .{ .section = .supervision, .fingerprint = fingerprint });
+        for (manifest.guest_conformance_report_fingerprints) |fingerprint| try refs.append(allocator, .{ .section = .guest_conformance, .fingerprint = fingerprint });
         for (manifest.transcript_image_fingerprints) |fingerprint| try refs.append(allocator, .{ .section = .transcript_image, .fingerprint = fingerprint });
         for (manifest.run_image_fingerprints) |fingerprint| try refs.append(allocator, .{ .section = .run_image, .fingerprint = fingerprint });
         return refs.toOwnedSlice(allocator);

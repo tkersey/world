@@ -1543,6 +1543,11 @@ test "capsule freeze freezes completed linked assembly" {
     try std.testing.expectEqual(@as(u64, 0), image.link_image.?.residual_import_set_fingerprint);
     try std.testing.expectEqual(guest_conformance_refs[0], image.manifest.guest_conformance_report_fingerprints[0]);
     try std.testing.expectEqual(guest_conformance_refs[0], image.guest_conformance_refs[0]);
+    var saw_guest_dependency = false;
+    for (image.dependency_refs) |dependency| {
+        if (dependency.section == .guest_conformance and dependency.fingerprint == guest_conformance_refs[0]) saw_guest_dependency = true;
+    }
+    try std.testing.expect(saw_guest_dependency);
     const generated_link = try world.Capsule.verifyLink(image, 0, .{});
     try std.testing.expectEqual(world.Capsule.RelinkStatus.matched, generated_link.relink_status);
     const guest_required_link = try world.Capsule.verifyLink(image, 0, .{ .require_guest_conformance = true });
@@ -3404,6 +3409,17 @@ test "capsule guest conformance refs are exposed during thaw and inspect restore
         .runspace_image = runspace_image,
         .guest_conformance_refs = &guest_refs,
     });
+    const missing_guest_dependency_refs = [_]world.Capsule.DependencyRef{
+        world.Capsule.DependencyRef.init(.manifest, manifest.manifest_fingerprint),
+        world.Capsule.DependencyRef.init(.runspace_image, runspace_image.image_fingerprint),
+    };
+    const missing_guest_dependency_image = world.Capsule.Image.init(.{
+        .manifest = manifest,
+        .runspace_image = runspace_image,
+        .guest_conformance_refs = &guest_refs,
+        .dependency_refs = &missing_guest_dependency_refs,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, missing_guest_dependency_image.validate(.{}));
     const missing_guest_image = world.Capsule.Image.init(.{
         .manifest = manifest,
         .runspace_image = runspace_image,
