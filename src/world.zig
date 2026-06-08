@@ -18993,6 +18993,7 @@ pub const Capsule = struct {
         if (restoreModeRequiresRunHandleMappings(options.mode) and !runspaceImageHandleMappingsMatchSlots(image.runspace_image)) return .malformed_image;
         if (options.mode == .verify_and_restore) return .verification_witness_missing;
         if (options.require_local_permit and permit_fingerprint == null and options.mode != .inspect_only and options.mode != .replay_only) return .permit_denied;
+        if (restoreModeRequiresLocalTargetWitness(options.mode) and local_root_target_ref_fingerprint == 0) return .target_mismatch;
         if (local_root_target_ref_fingerprint != 0 and local_root_target_ref_fingerprint != image.manifest.root_target_ref_fingerprint) {
             return .target_mismatch;
         }
@@ -19044,6 +19045,13 @@ pub const Capsule = struct {
 
     fn imageHasRestorableSlots(image: Image) bool {
         return image.manifest.kind != .reference_only and image.manifest.kind != .inspect_only and image.manifest.run_slot_count != 0 and image.runspace_image.run_slots.len != 0;
+    }
+
+    fn restoreModeRequiresLocalTargetWitness(mode: RestoreMode) bool {
+        return switch (mode) {
+            .restore_parked, .restore_completed, .restore_failed, .relink_and_restore, .verify_and_restore => true,
+            .inspect_only, .replay_only => false,
+        };
     }
 
     fn imageRequiresLinkMatchWitness(image: Image) bool {

@@ -1872,7 +1872,10 @@ test "capsule thaw restores completed capsule with handle remap" {
     try std.testing.expectEqual(@as(usize, 1), image.run_images.len);
     const slot_run_image_fingerprint = image.runspace_image.run_slots[0].run_image_fingerprint orelse return error.ExpectedRunImage;
     try std.testing.expectEqual(image.run_images[0].run_image_fingerprint, slot_run_image_fingerprint);
-    const thaw_plan = try world.Capsule.planThaw(image, 0, 0, 0x7775, .{ .mode = .restore_completed });
+    const missing_target_plan = try world.Capsule.planThaw(image, 0, 0, 0x7774, .{ .mode = .restore_completed });
+    try std.testing.expectEqual(world.Capsule.RelinkStatus.rejected, missing_target_plan.relink_status);
+    try std.testing.expectEqual(world.Capsule.Blocker.target_mismatch, missing_target_plan.blockers[0]);
+    const thaw_plan = try world.Capsule.planThaw(image, target_ref.target_ref_fingerprint, 0, 0x7775, .{ .mode = .restore_completed });
     try std.testing.expectEqual(@as(usize, 1), thaw_plan.handle_remapping_plan.len);
     try std.testing.expectEqual(handle.handle_fingerprint, thaw_plan.handle_remapping_plan[0]);
     try std.testing.expectEqual(@as(?u64, 0x7775), thaw_plan.receiver_run_permit_fingerprint);
@@ -1891,12 +1894,12 @@ test "capsule thaw restores completed capsule with handle remap" {
         .run_images = image.run_images,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, stale_mapping_image.validate(.{}));
-    const other_permit_plan = try world.Capsule.planThaw(image, 0, 0, 0x7778, .{ .mode = .restore_completed });
+    const other_permit_plan = try world.Capsule.planThaw(image, target_ref.target_ref_fingerprint, 0, 0x7778, .{ .mode = .restore_completed });
     try std.testing.expect(thaw_plan.thaw_plan_fingerprint != other_permit_plan.thaw_plan_fingerprint);
 
     var terminal_receiver = world.Runspace.init(allocator, .{ .max_runs = 0, .preserve_completed_runs = false });
     defer terminal_receiver.deinit();
-    var terminal_restore = try world.Capsule.thawIntoRunspace(image, &terminal_receiver, 0, 0, 0x7776, .{ .mode = .restore_completed });
+    var terminal_restore = try world.Capsule.thawIntoRunspace(image, &terminal_receiver, target_ref.target_ref_fingerprint, 0, 0x7776, .{ .mode = .restore_completed });
     defer terminal_restore.deinit(allocator);
     try std.testing.expect(terminal_restore.accepted);
     try std.testing.expectEqual(@as(usize, 1), terminal_receiver.slots.items.len);
@@ -1904,7 +1907,7 @@ test "capsule thaw restores completed capsule with handle remap" {
 
     var destination = world.Runspace.init(allocator, .{});
     defer destination.deinit();
-    var report = try world.Capsule.thawIntoRunspace(image, &destination, 0, 0, 0x7777, .{ .mode = .restore_completed });
+    var report = try world.Capsule.thawIntoRunspace(image, &destination, target_ref.target_ref_fingerprint, 0, 0x7777, .{ .mode = .restore_completed });
     defer report.deinit(allocator);
     try std.testing.expect(report.accepted);
     try std.testing.expectEqual(@as(usize, 1), destination.slots.items.len);
@@ -2159,7 +2162,7 @@ test "capsule thaw preserves branch parent links" {
 
     var destination = world.Runspace.init(allocator, .{});
     defer destination.deinit();
-    var report = try world.Capsule.thawIntoRunspace(image, &destination, 0, 0, 0x5150_3781, .{ .mode = .restore_completed });
+    var report = try world.Capsule.thawIntoRunspace(image, &destination, target_ref.target_ref_fingerprint, 0, 0x5150_3781, .{ .mode = .restore_completed });
     defer report.deinit(allocator);
     try std.testing.expect(report.accepted);
     try std.testing.expectEqual(@as(usize, 2), destination.slots.items.len);
@@ -2202,11 +2205,11 @@ test "capsule thaw preserves branch parent links" {
         .run_images = image.run_images,
     });
     try reversed_image.validate(.{});
-    const reversed_plan = try world.Capsule.planThaw(reversed_image, 0, 0, 0x5150_3782, .{ .mode = .restore_completed });
+    const reversed_plan = try world.Capsule.planThaw(reversed_image, target_ref.target_ref_fingerprint, 0, 0x5150_3782, .{ .mode = .restore_completed });
     try std.testing.expectEqual(@as(usize, 0), reversed_plan.blockers.len);
     var reversed_destination = world.Runspace.init(allocator, .{});
     defer reversed_destination.deinit();
-    var reversed_report = try world.Capsule.thawIntoRunspace(reversed_image, &reversed_destination, 0, 0, 0x5150_3782, .{ .mode = .restore_completed });
+    var reversed_report = try world.Capsule.thawIntoRunspace(reversed_image, &reversed_destination, target_ref.target_ref_fingerprint, 0, 0x5150_3782, .{ .mode = .restore_completed });
     defer reversed_report.deinit(allocator);
     try std.testing.expect(reversed_report.accepted);
     try std.testing.expectEqual(@as(usize, 2), reversed_destination.slots.items.len);
