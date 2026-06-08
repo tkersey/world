@@ -10962,8 +10962,7 @@ pub const Runspace = struct {
     pub fn dispatchActuation(self: *@This(), mailbox_id: u64, execution: Actuation.Membrane.Execution) !Actuation.Receipt {
         try execution.validate();
         const pending = try self.mailbox.get(mailbox_id);
-        if (execution.receipt.world_port_id != pending.world_port_id) return error.FramePortMismatch;
-        if (execution.response.request_fingerprint != pending.request_fingerprint) return error.FrameRequestFingerprintMismatch;
+        try validateActuationDispatchForPending(pending, execution);
         const index = try self.slotIndex(pending.handle);
         switch (execution.response.status) {
             .pending, .deferred => {
@@ -11022,15 +11021,45 @@ pub const Runspace = struct {
         if (self.config.require_supervision) return error.SupervisionDenied;
     }
 
+    fn validateActuationDispatchForPending(pending: Runspace.PendingPort, execution: Actuation.Membrane.Execution) !void {
+        if (execution.intent.world_surface_fingerprint != pending.world_surface_fingerprint) return error.FrameSurfaceMismatch;
+        if (execution.intent.target_ref_fingerprint != pending.target_ref_fingerprint) return error.WrongTarget;
+        if (execution.intent.world_port_id != pending.world_port_id) return error.FramePortMismatch;
+        if (execution.intent.frame_request_fingerprint != pending.request_fingerprint) return error.FrameRequestFingerprintMismatch;
+        if (execution.intent.encoded_frame_request_fingerprint) |encoded| {
+            if (encoded != pending.request_frame_fingerprint) return error.FrameRequestFingerprintMismatch;
+        }
+        if (execution.intent.pending_port_fingerprint == null or execution.intent.pending_port_fingerprint.? != pending.pending_port_fingerprint) return error.InvalidPendingPortTransition;
+        if (execution.intent.run_permit_fingerprint != pending.run_permit_fingerprint) return error.InvalidRunspaceTransition;
+        if (execution.intent.environment_certificate_fingerprint != pending.environment_certificate_fingerprint) return error.InvalidRunspaceTransition;
+        const key = execution.envelope.idempotency_key;
+        if (key.world_surface_fingerprint != pending.world_surface_fingerprint) return error.FrameSurfaceMismatch;
+        if (key.target_ref_fingerprint != pending.target_ref_fingerprint) return error.WrongTarget;
+        if (key.world_port_id != pending.world_port_id) return error.FramePortMismatch;
+        if (key.request_fingerprint != pending.request_fingerprint) return error.FrameRequestFingerprintMismatch;
+        if (key.pending_port_fingerprint == null or key.pending_port_fingerprint.? != pending.pending_port_fingerprint) return error.InvalidPendingPortTransition;
+        if (execution.response.world_port_id != pending.world_port_id) return error.FramePortMismatch;
+        if (execution.response.request_fingerprint != pending.request_fingerprint) return error.FrameRequestFingerprintMismatch;
+        if (execution.receipt.target_ref_fingerprint != pending.target_ref_fingerprint) return error.WrongTarget;
+        if (execution.receipt.world_surface_fingerprint != pending.world_surface_fingerprint) return error.FrameSurfaceMismatch;
+        if (execution.receipt.world_port_id != pending.world_port_id) return error.FramePortMismatch;
+        if (execution.receipt.run_permit_fingerprint != pending.run_permit_fingerprint) return error.InvalidRunspaceTransition;
+        if (execution.receipt.environment_certificate_fingerprint != pending.environment_certificate_fingerprint) return error.InvalidRunspaceTransition;
+    }
+
     fn frameResponseFromActuation(self: *@This(), pending: Runspace.PendingPort, actuation_response: Actuation.Response) !Frame.Response {
         _ = self;
         const request = pending.request_frame orelse return error.InvalidPendingPortTransition;
-        const response_fingerprint = actuation_response.frame_response_fingerprint orelse return error.MissingValueImage;
         const status: ResponseStatus = switch (actuation_response.status) {
             .responded => .responded,
             .rejected, .cancelled => .rejected,
             .failed => .failed,
             .pending, .deferred => return error.InvalidPendingPortTransition,
+        };
+        const response_fingerprint = actuation_response.frame_response_fingerprint orelse switch (status) {
+            .responded => return error.MissingValueImage,
+            .rejected, .failed => actuation_response.response_fingerprint,
+            .pending => unreachable,
         };
         return Frame.Response.init(.{
             .world_surface_fingerprint = pending.world_surface_fingerprint,
@@ -18531,6 +18560,7 @@ pub const Actuation = struct {
 
         pub const Execution = struct {
             intent: Intent,
+            envelope: Envelope,
             decision: Decision,
             commit_value: Commit,
             response: Response,
@@ -18541,12 +18571,15 @@ pub const Actuation = struct {
 
             pub fn validate(self: @This()) !void {
                 try self.intent.validate();
+                try self.envelope.validate(.{});
                 try self.decision.validate();
                 try self.commit_value.validateAfterDecision(self.decision);
                 if (self.response.commit_fingerprint == null) return error.InvalidFrameEncoding;
                 if (self.response.response_fingerprint != Actuation.fingerprintResponse(self.response)) return error.InvalidFrameEncoding;
                 try self.receipt.validate();
                 if (self.decision.intent_fingerprint != self.intent.intent_fingerprint) return error.InvalidFrameEncoding;
+                if (self.envelope.intent_fingerprint != self.intent.intent_fingerprint) return error.InvalidFrameEncoding;
+                if (self.envelope.idempotency_key.key_fingerprint != self.intent.idempotency_key_fingerprint) return error.InvalidFrameEncoding;
                 if (self.commit_value.intent_fingerprint != self.intent.intent_fingerprint) return error.InvalidFrameEncoding;
                 if (self.response.intent_fingerprint != self.intent.intent_fingerprint) return error.InvalidFrameEncoding;
                 if (self.receipt.intent_fingerprint != self.intent.intent_fingerprint) return error.InvalidFrameEncoding;
@@ -18555,7 +18588,9 @@ pub const Actuation = struct {
                 if (self.receipt.decision_fingerprint != self.decision.decision_fingerprint) return error.InvalidFrameEncoding;
                 if (self.receipt.commit_fingerprint != self.commit_value.commit_fingerprint) return error.InvalidFrameEncoding;
                 if (self.receipt.response_fingerprint != self.response.response_fingerprint) return error.InvalidFrameEncoding;
+                if (self.receipt.response_kind != self.response.response_kind) return error.InvalidFrameEncoding;
                 if (self.receipt.frame_response_fingerprint != self.response.frame_response_fingerprint) return error.InvalidFrameEncoding;
+                if (self.receipt.response_value_image_fingerprint != self.response.value_image_fingerprint) return error.InvalidFrameEncoding;
                 if (self.receipt.actuator_ref_fingerprint != self.intent.actuator_ref_fingerprint) return error.InvalidFrameEncoding;
                 if (self.receipt.idempotency_key_fingerprint != self.intent.idempotency_key_fingerprint) return error.InvalidFrameEncoding;
                 if (self.receipt.target_ref_fingerprint != self.intent.target_ref_fingerprint) return error.InvalidFrameEncoding;
@@ -18563,6 +18598,8 @@ pub const Actuation = struct {
                 if (self.receipt.world_port_id != self.intent.world_port_id) return error.InvalidFrameEncoding;
                 if (self.receipt.class != self.intent.class) return error.InvalidFrameEncoding;
                 if (self.receipt.mode != self.intent.requested_mode) return error.InvalidFrameEncoding;
+                if (self.receipt.run_permit_fingerprint != self.intent.run_permit_fingerprint) return error.InvalidFrameEncoding;
+                if (self.receipt.environment_certificate_fingerprint != self.intent.environment_certificate_fingerprint) return error.InvalidFrameEncoding;
                 if (self.fresh_called != self.commit_value.fresh_called) return error.InvalidFrameEncoding;
                 if (self.parent_terminal != self.response.isTerminalForParent()) return error.InvalidFrameEncoding;
                 if (!self.decision.approved and self.fresh_called) return error.SupervisionDenied;
@@ -18668,6 +18705,7 @@ pub const Actuation = struct {
             const receipt = receiptFor(args, decision, commit_value, response);
             return .{
                 .intent = args.intent,
+                .envelope = args.envelope,
                 .decision = decision,
                 .commit_value = commit_value,
                 .response = response,
@@ -18687,6 +18725,7 @@ pub const Actuation = struct {
             try receipt.validate();
             return .{
                 .intent = args.intent,
+                .envelope = args.envelope,
                 .decision = decision,
                 .commit_value = commit_value,
                 .response = response,
@@ -18707,6 +18746,7 @@ pub const Actuation = struct {
             try receipt.validate();
             return .{
                 .intent = args.intent,
+                .envelope = args.envelope,
                 .decision = decision,
                 .commit_value = commit_value,
                 .response = response,
@@ -18726,6 +18766,7 @@ pub const Actuation = struct {
             const report = VerifyReport.compare(args.intent, verify.expected_receipt, verify.fresh_receipt);
             return .{
                 .intent = args.intent,
+                .envelope = args.envelope,
                 .decision = decision,
                 .commit_value = commit_value,
                 .response = response,
