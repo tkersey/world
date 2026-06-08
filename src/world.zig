@@ -17546,6 +17546,11 @@ pub const Capsule = struct {
         }
 
         pub fn fromImage(image: Image, report: QuiescenceReport) !@This() {
+            return fromImageWithOptions(image, report, .{});
+        }
+
+        fn fromImageWithOptions(image: Image, report: QuiescenceReport, options: ValidateOptions) !@This() {
+            try image.validate(options);
             try report.validate();
             try validateQuiescenceReportImageConsistency(image, report);
             return init(.{
@@ -17815,6 +17820,10 @@ pub const Capsule = struct {
 
     pub fn certificate(image: Image, report: QuiescenceReport) !Certificate {
         return try Certificate.fromImage(image, report);
+    }
+
+    fn certificateWithOptions(image: Image, report: QuiescenceReport, options: ValidateOptions) !Certificate {
+        return try Certificate.fromImageWithOptions(image, report, options);
     }
 
     pub fn validate(image: Image, options: ValidateOptions) !ValidationReport {
@@ -18479,8 +18488,9 @@ pub const Capsule = struct {
         const encoded = try image.encode(allocator);
         defer allocator.free(encoded);
         if (encoded.len > options.max_image_bytes) return error.InvalidFrameEncoding;
-        try image.validate(validateOptionsForFreeze(options));
-        const cert = try certificate(image, report);
+        const validate_options = validateOptionsForFreeze(options);
+        try image.validate(validate_options);
+        const cert = try certificateWithOptions(image, report, validate_options);
         try cert.validate();
         image_owned = false;
         return image;
@@ -21388,6 +21398,29 @@ test "capsule freezeRun creates reference-only handle capsule" {
     try std.testing.expectEqual(Capsule.Kind.reference_only, image.manifest.kind);
     try std.testing.expectEqual(handle.target_ref_fingerprint, image.manifest.root_target_ref_fingerprint);
     try std.testing.expectEqual(handle.runspace_fingerprint, image.runspace_image.runspace_fingerprint);
+}
+
+test "capsule certificate rejects invalid image witness" {
+    const manifest = Capsule.Manifest.init(.{
+        .kind = .completed_assembly,
+        .root_target_ref_fingerprint = 0x5150_35f1,
+        .run_slot_count = 1,
+        .normal_form = .quiescent_completed,
+    });
+    const runspace_image = Capsule.RunspaceImage.init(.{
+        .runspace_fingerprint = 0x5150_35f2,
+        .runspace_report_fingerprint = 0x5150_35f3,
+    });
+    const image = Capsule.Image.init(.{
+        .manifest = manifest,
+        .runspace_image = runspace_image,
+    });
+    const report = Capsule.QuiescenceReport.init(.{
+        .runspace_fingerprint = runspace_image.runspace_fingerprint,
+        .quiescent = true,
+        .normal_form = .quiescent_completed,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, Capsule.certificate(image, report));
 }
 
 test "capsule thaw denies before mutation and restores completed slot metadata" {
