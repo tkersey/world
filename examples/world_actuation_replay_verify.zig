@@ -37,7 +37,7 @@ pub fn main(init: std.process.Init) !void {
         .world_port_id = 0,
         .request_fingerprint = 0xacc7_3001,
     });
-    const changed = common.receiptWithResponseFingerprint(fresh.receipt, 0xacc7_3999, .verify);
+    const changed = common.receiptWithResponseEvidence(fresh.receipt, 0xacc7_3999, 0xacc7_3003, .verify);
     const verify = try common.execute(verify_ctx, world.Actuation.Policy.fixture_test, .{
         .verify = .{
             .expected_receipt = fresh.receipt,

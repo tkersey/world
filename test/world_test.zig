@@ -770,6 +770,7 @@ test "actuation verify report records matches and divergences" {
         .decision_fingerprint = 0x5202,
         .commit_fingerprint = 0x5203,
         .response_fingerprint = 0x5204,
+        .frame_response_fingerprint = 0x5207,
         .actuator_ref_fingerprint = 0x5101,
         .idempotency_key_fingerprint = 0x5106,
         .target_ref_fingerprint = 0x5103,
@@ -784,7 +785,8 @@ test "actuation verify report records matches and divergences" {
         .envelope_fingerprint = 0x5201,
         .decision_fingerprint = 0x5202,
         .commit_fingerprint = 0x5205,
-        .response_fingerprint = 0x5204,
+        .response_fingerprint = 0x5208,
+        .frame_response_fingerprint = 0x5207,
         .actuator_ref_fingerprint = 0x5101,
         .idempotency_key_fingerprint = 0x5106,
         .target_ref_fingerprint = 0x5103,
@@ -805,6 +807,7 @@ test "actuation verify report records matches and divergences" {
         .decision_fingerprint = 0x5202,
         .commit_fingerprint = 0x5206,
         .response_fingerprint = 0x9999,
+        .frame_response_fingerprint = 0x9998,
         .actuator_ref_fingerprint = 0x5101,
         .idempotency_key_fingerprint = 0x5106,
         .target_ref_fingerprint = 0x5103,
@@ -1006,6 +1009,15 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
     try std.testing.expect(!replay_exec.fresh_called);
     try std.testing.expect(replay_exec.receipt.replayed);
     try std.testing.expectEqual(@as(?u64, 0x6306), replay_exec.response.frame_response_fingerprint);
+    try std.testing.expectError(error.ReplayResponseKindMismatch, world.Actuation.Membrane.execute(.{
+        .policy = policy,
+        .intent = replay_intent,
+        .envelope = replay_envelope,
+        .descriptor = descriptor,
+        .actuator = .{ .replay = .{ .source = replay_source, .expected_response_kind = .return_now } },
+        .target_ref_fingerprint = 0x6102,
+        .world_surface_fingerprint = 0x6101,
+    }));
 
     const verify_intent = world.Actuation.Intent.init(.{
         .actuator_ref_fingerprint = ref.ref_fingerprint,
@@ -1026,6 +1038,7 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
     });
     var changed_fresh = replay_seed;
     changed_fresh.response_fingerprint = 0x9999;
+    changed_fresh.frame_response_fingerprint = 0x9998;
     changed_fresh.receipt_fingerprint = 0;
     changed_fresh.receipt_fingerprint = @TypeOf(changed_fresh).init(.{
         .intent_fingerprint = changed_fresh.intent_fingerprint,
@@ -1033,6 +1046,7 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
         .decision_fingerprint = changed_fresh.decision_fingerprint,
         .commit_fingerprint = changed_fresh.commit_fingerprint,
         .response_fingerprint = changed_fresh.response_fingerprint,
+        .frame_response_fingerprint = changed_fresh.frame_response_fingerprint,
         .actuator_ref_fingerprint = changed_fresh.actuator_ref_fingerprint,
         .idempotency_key_fingerprint = changed_fresh.idempotency_key_fingerprint,
         .target_ref_fingerprint = changed_fresh.target_ref_fingerprint,
@@ -1041,6 +1055,8 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
         .class = changed_fresh.class,
         .mode = .verify,
         .verified = true,
+        .response_kind = changed_fresh.response_kind,
+        .response_value_image_fingerprint = changed_fresh.response_value_image_fingerprint,
     }).receipt_fingerprint;
     const verify_exec = try world.Actuation.Membrane.execute(.{
         .policy = policy,

@@ -103,13 +103,24 @@ pub fn execute(
 }
 
 pub fn receiptWithResponseFingerprint(receipt: world.Actuation.Receipt, response_fingerprint: u64, mode: world.Mode) world.Actuation.Receipt {
+    return receiptWithResponseEvidence(receipt, response_fingerprint, receipt.frame_response_fingerprint orelse response_fingerprint, mode);
+}
+
+pub fn receiptWithResponseEvidence(
+    receipt: world.Actuation.Receipt,
+    response_fingerprint: u64,
+    frame_response_fingerprint: u64,
+    mode: world.Mode,
+) world.Actuation.Receipt {
     return world.Actuation.Receipt.init(.{
         .intent_fingerprint = receipt.intent_fingerprint,
         .envelope_fingerprint = receipt.envelope_fingerprint,
         .decision_fingerprint = receipt.decision_fingerprint,
         .commit_fingerprint = receipt.commit_fingerprint,
         .response_fingerprint = response_fingerprint,
-        .frame_response_fingerprint = receipt.frame_response_fingerprint orelse response_fingerprint,
+        .response_kind = receipt.response_kind,
+        .frame_response_fingerprint = frame_response_fingerprint,
+        .response_value_image_fingerprint = receipt.response_value_image_fingerprint,
         .actuator_ref_fingerprint = receipt.actuator_ref_fingerprint,
         .idempotency_key_fingerprint = receipt.idempotency_key_fingerprint,
         .target_ref_fingerprint = receipt.target_ref_fingerprint,

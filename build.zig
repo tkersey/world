@@ -714,7 +714,7 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Actuation fixture tool example.",
             .expected_stdout =
             \\actuator_ref=10721e5b053f1ab3
-            \\actuation_receipt_fingerprint=c6f5dd3ef8b68940
+            \\actuation_receipt_fingerprint=738828b0a3041427
             \\final_result=fixture-tool-ok
             \\
             ,
@@ -750,8 +750,8 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Actuation pending Capsule example.",
             .expected_stdout =
             \\pending_actuation_intent_fingerprint=a59bf43266789296
-            \\capsule_fingerprint=15f139f8b99092ca
-            \\restore_report_fingerprint=f5191734e2a9b5c7
+            \\capsule_fingerprint=923739941765f633
+            \\restore_report_fingerprint=8890c7939ae9912e
             \\final_result=true
             \\
             ,
@@ -774,7 +774,7 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Actuation guest bridge example.",
             .expected_stdout =
             \\guest_request_fingerprint=acc76001
-            \\actuation_receipt_fingerprint=81f21cfb050fa772
+            \\actuation_receipt_fingerprint=9d348be4e2ed2ff0
             \\conformance=true
             \\
             ,

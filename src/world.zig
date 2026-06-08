@@ -17933,7 +17933,9 @@ pub const Actuation = struct {
         decision_fingerprint: u64,
         commit_fingerprint: u64,
         response_fingerprint: u64,
+        response_kind: ResponseKind = .@"resume",
         frame_response_fingerprint: ?u64 = null,
+        response_value_image_fingerprint: ?u64 = null,
         actuator_ref_fingerprint: u64,
         idempotency_key_fingerprint: u64,
         target_ref_fingerprint: u64,
@@ -17964,7 +17966,9 @@ pub const Actuation = struct {
             decision_fingerprint: u64,
             commit_fingerprint: u64,
             response_fingerprint: u64,
+            response_kind: ResponseKind = .@"resume",
             frame_response_fingerprint: ?u64 = null,
+            response_value_image_fingerprint: ?u64 = null,
             actuator_ref_fingerprint: u64,
             idempotency_key_fingerprint: u64,
             target_ref_fingerprint: u64,
@@ -17996,7 +18000,9 @@ pub const Actuation = struct {
                 .decision_fingerprint = args.decision_fingerprint,
                 .commit_fingerprint = args.commit_fingerprint,
                 .response_fingerprint = args.response_fingerprint,
+                .response_kind = args.response_kind,
                 .frame_response_fingerprint = args.frame_response_fingerprint,
+                .response_value_image_fingerprint = args.response_value_image_fingerprint,
                 .actuator_ref_fingerprint = args.actuator_ref_fingerprint,
                 .idempotency_key_fingerprint = args.idempotency_key_fingerprint,
                 .target_ref_fingerprint = args.target_ref_fingerprint,
@@ -18044,7 +18050,9 @@ pub const Actuation = struct {
                 .decision_fingerprint = args.decision.decision_fingerprint,
                 .commit_fingerprint = args.commit.commit_fingerprint,
                 .response_fingerprint = args.response.response_fingerprint,
+                .response_kind = args.response.response_kind,
                 .frame_response_fingerprint = args.response.frame_response_fingerprint,
+                .response_value_image_fingerprint = args.response.value_image_fingerprint,
                 .actuator_ref_fingerprint = args.response.actuator_ref_fingerprint,
                 .idempotency_key_fingerprint = args.envelope.idempotency_key.key_fingerprint,
                 .target_ref_fingerprint = args.target_ref_fingerprint,
@@ -18094,7 +18102,9 @@ pub const Actuation = struct {
             decision_fingerprint: ?u64 = null,
             commit_fingerprint: ?u64 = null,
             response_fingerprint: ?u64 = null,
+            response_kind: ?ResponseKind = null,
             frame_response_fingerprint: ?u64 = null,
+            response_value_image_fingerprint: ?u64 = null,
             receipt_fingerprint: ?u64 = null,
             idempotency_key_fingerprint: ?u64 = null,
             request_fingerprint: ?u64 = null,
@@ -18182,7 +18192,9 @@ pub const Actuation = struct {
                 .intent_fingerprint = response.intent_fingerprint,
                 .commit_fingerprint = response.commit_fingerprint,
                 .response_fingerprint = response.response_fingerprint,
+                .response_kind = response.response_kind,
                 .frame_response_fingerprint = response.frame_response_fingerprint,
+                .response_value_image_fingerprint = response.value_image_fingerprint,
                 .request_fingerprint = response.request_fingerprint,
                 .pending = response.status == .pending,
                 .deferred = response.status == .deferred,
@@ -18198,7 +18210,9 @@ pub const Actuation = struct {
                 .intent_fingerprint = receipt.intent_fingerprint,
                 .commit_fingerprint = receipt.commit_fingerprint,
                 .response_fingerprint = receipt.response_fingerprint,
+                .response_kind = receipt.response_kind,
                 .frame_response_fingerprint = receipt.frame_response_fingerprint,
+                .response_value_image_fingerprint = receipt.response_value_image_fingerprint,
                 .receipt_fingerprint = receipt.receipt_fingerprint,
                 .idempotency_key_fingerprint = receipt.idempotency_key_fingerprint,
                 .fresh_called = receipt.fresh_called,
@@ -18306,6 +18320,7 @@ pub const Actuation = struct {
             if (receipt.intent_fingerprint != intent.intent_fingerprint and receipt.mode != .replay and !(intent.requested_mode == .replay and receipt.mode == .fresh)) return error.ReplayRequestFingerprintMismatch;
             const status: Actuation.ResponseStatus = if (receipt.rejected) .rejected else if (receipt.failed) .failed else if (receipt.pending) .pending else if (receipt.deferred) .deferred else if (receipt.cancelled) .cancelled else .responded;
             if (status != expected_status) return error.ReplayResponseKindMismatch;
+            if (receipt.response_kind != expected_kind) return error.ReplayResponseKindMismatch;
             return Response.init(.{
                 .intent_fingerprint = intent.intent_fingerprint,
                 .commit_fingerprint = receipt.commit_fingerprint,
@@ -18313,8 +18328,9 @@ pub const Actuation = struct {
                 .world_port_id = receipt.world_port_id,
                 .request_fingerprint = intent.frame_request_fingerprint,
                 .status = status,
-                .response_kind = expected_kind,
+                .response_kind = receipt.response_kind,
                 .frame_response_fingerprint = receipt.frame_response_fingerprint orelse return error.ReplayMissing,
+                .value_image_fingerprint = receipt.response_value_image_fingerprint,
                 .metadata = "replay",
             });
         }
@@ -18371,14 +18387,38 @@ pub const Actuation = struct {
                     .divergence_kind = .fresh_failed,
                 });
             }
-            const matched = expected.?.response_fingerprint == fresh.?.response_fingerprint;
+            const expected_status = statusFromReceipt(expected.?);
+            const fresh_status = statusFromReceipt(fresh.?);
+            const matched = expected_status == fresh_status and
+                expected.?.response_kind == fresh.?.response_kind and
+                expected.?.frame_response_fingerprint == fresh.?.frame_response_fingerprint and
+                expected.?.response_value_image_fingerprint == fresh.?.response_value_image_fingerprint;
+            const divergence_kind: ?DivergenceKind = if (matched)
+                null
+            else if (expected_status != fresh_status)
+                .status_mismatch
+            else if (expected.?.response_kind != fresh.?.response_kind)
+                .response_kind_mismatch
+            else if (expected.?.response_value_image_fingerprint != fresh.?.response_value_image_fingerprint)
+                .value_image_mismatch
+            else
+                .response_fingerprint_mismatch;
             return init(.{
                 .intent_fingerprint = intent.intent_fingerprint,
                 .expected_receipt_fingerprint = expected.?.receipt_fingerprint,
                 .fresh_receipt_fingerprint = fresh.?.receipt_fingerprint,
                 .matched = matched,
-                .divergence_kind = if (matched) null else .response_fingerprint_mismatch,
+                .divergence_kind = divergence_kind,
             });
+        }
+
+        fn statusFromReceipt(receipt: Receipt) Actuation.ResponseStatus {
+            if (receipt.rejected) return .rejected;
+            if (receipt.failed) return .failed;
+            if (receipt.pending) return .pending;
+            if (receipt.deferred) return .deferred;
+            if (receipt.cancelled) return .cancelled;
+            return .responded;
         }
     };
 
@@ -18975,7 +19015,9 @@ pub const Actuation = struct {
         hashU64(&hasher, receipt.decision_fingerprint);
         hashU64(&hasher, receipt.commit_fingerprint);
         hashU64(&hasher, receipt.response_fingerprint);
+        hashU64(&hasher, @intFromEnum(receipt.response_kind));
         hashOptionalU64(&hasher, receipt.frame_response_fingerprint);
+        hashOptionalU64(&hasher, receipt.response_value_image_fingerprint);
         hashU64(&hasher, receipt.actuator_ref_fingerprint);
         hashU64(&hasher, receipt.idempotency_key_fingerprint);
         hashU64(&hasher, receipt.target_ref_fingerprint);
@@ -19015,7 +19057,10 @@ pub const Actuation = struct {
             hashOptionalU64(&hasher, entry.decision_fingerprint);
             hashOptionalU64(&hasher, entry.commit_fingerprint);
             hashOptionalU64(&hasher, entry.response_fingerprint);
+            hashBool(&hasher, entry.response_kind != null);
+            if (entry.response_kind) |kind| hashU64(&hasher, @intFromEnum(kind));
             hashOptionalU64(&hasher, entry.frame_response_fingerprint);
+            hashOptionalU64(&hasher, entry.response_value_image_fingerprint);
             hashOptionalU64(&hasher, entry.receipt_fingerprint);
             hashOptionalU64(&hasher, entry.idempotency_key_fingerprint);
             hashOptionalU64(&hasher, entry.request_fingerprint);
@@ -21746,6 +21791,8 @@ pub const Capsule = struct {
         errdefer allocator.free(fabric_slice);
         const guest_slice = try allocator.dupe(u64, plan.guest_conformance_refs);
         errdefer allocator.free(guest_slice);
+        const restored_actuation_receipts = try allocator.dupe(u64, image.manifest.actuation_receipt_fingerprints);
+        errdefer allocator.free(restored_actuation_receipts);
         const warning_slice = try allocator.dupe(Warning, &.{.metadata_only});
         errdefer allocator.free(warning_slice);
         const summary = try allocator.dupe(u8, "capsule restored slot metadata into runspace");
@@ -21762,7 +21809,7 @@ pub const Capsule = struct {
             .restored_pending_port_mappings = mailbox_slice,
             .restored_fabric_invocation_mappings = fabric_slice,
             .guest_conformance_refs = guest_slice,
-            .restored_actuation_receipt_refs = image.manifest.actuation_receipt_fingerprints,
+            .restored_actuation_receipt_refs = restored_actuation_receipts,
             .environment_certificate_fingerprint = if (image.manifest.environment_certificate_fingerprints.len == 0) null else environment_fingerprint,
             .receiver_run_permit_fingerprint = permit_fingerprint,
             .accepted = true,
