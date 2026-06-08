@@ -19135,7 +19135,11 @@ pub const Capsule = struct {
             return error.InvalidFrameEncoding;
         }
         for (manifest.guest_conformance_report_fingerprints) |fingerprint| {
+            if (fingerprint == 0) return error.InvalidFrameEncoding;
             if (!u64SliceContains(image.guest_conformance_refs, fingerprint)) return error.InvalidFrameEncoding;
+        }
+        for (image.guest_conformance_refs) |fingerprint| {
+            if (fingerprint == 0) return error.InvalidFrameEncoding;
         }
     }
 
@@ -19628,7 +19632,11 @@ pub const Capsule = struct {
 
     fn guestConformanceRefsCovered(manifest_refs: []const u64, image_refs: []const u64) bool {
         if (manifest_refs.len == 0) return false;
+        for (image_refs) |image_ref| {
+            if (image_ref == 0) return false;
+        }
         for (manifest_refs) |manifest_ref| {
+            if (manifest_ref == 0) return false;
             if (!u64SliceContains(image_refs, manifest_ref)) return false;
         }
         return true;

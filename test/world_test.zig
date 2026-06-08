@@ -2659,6 +2659,29 @@ test "capsule relink requires manifest fabric plan coverage" {
     try std.testing.expectEqual(world.Capsule.LinkCertificateMatchStatus.matched, guest_accepted.link_certificate_match_status);
     try std.testing.expectEqual(world.Capsule.RelinkStatus.matched, guest_accepted.relink_status);
     try std.testing.expectEqual(@as(usize, 0), guest_accepted.blockers.len);
+    const zero_guest_refs = [_]u64{0};
+    const zero_guest_manifest = world.Capsule.Manifest.init(.{
+        .kind = .completed_assembly,
+        .root_target_ref_fingerprint = root_ref.target_ref_fingerprint,
+        .link_plan_fingerprint = 0x1010,
+        .link_certificate_fingerprint = 0x2020,
+        .assembly_fingerprint = 0x3030,
+        .fabric_plan_fingerprints = &manifest_fabric_refs,
+        .guest_conformance_report_fingerprints = &zero_guest_refs,
+        .normal_form = .quiescent_completed,
+    });
+    const zero_guest_image = world.Capsule.Image.init(.{
+        .manifest = zero_guest_manifest,
+        .runspace_image = runspace_image,
+        .link_image = covered_link,
+        .fabric_image = fabric_image,
+        .guest_conformance_refs = &zero_guest_refs,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, zero_guest_image.validate(.{}));
+    try std.testing.expectError(
+        error.InvalidFrameEncoding,
+        world.Capsule.verifyLink(zero_guest_image, 0, .{ .require_guest_conformance = true }),
+    );
     const residual_link = world.Capsule.LinkImage.init(.{
         .link_plan_fingerprint = 0x1010,
         .link_certificate_fingerprint = 0x2020,
