@@ -1109,6 +1109,15 @@ test "actuation environment preflight and supervision ledger account host effect
     try std.testing.expect(report.accepted);
     try std.testing.expectEqual(@as(usize, 1), report.actuation_binding_count);
     try std.testing.expectEqual(@as(usize, 0), report.missing_port_count);
+    const supervised_denied = ActuationEnv.acceptanceReportWithSupervision(.fresh, false, world.SupervisionPolicy.strict_fresh);
+    try std.testing.expect(!supervised_denied.accepted);
+    try std.testing.expectEqualSlices(world.AcceptanceBlocker, &.{.SupervisionPolicyMismatch}, supervised_denied.blockers);
+    const supervised_allowed = ActuationEnv.acceptanceReportWithSupervision(.fresh, false, world.SupervisionPolicy.init(.{
+        .allow_fresh_calls = true,
+        .allow_actuation = true,
+        .allow_fresh_actuation = true,
+    }));
+    try std.testing.expect(supervised_allowed.accepted);
 
     const binding = ActuationEnv.bindActuator(ToolBinding);
     const preflight = ActuationEnv.preflightActuation(binding, world.Actuation.Policy.strict_fresh);
@@ -1135,12 +1144,32 @@ test "actuation environment preflight and supervision ledger account host effect
     const replay_report = ReplayOnlyEnv.acceptanceReport(.replay, true);
     try std.testing.expect(replay_report.accepted);
     try std.testing.expectEqual(@as(usize, 1), replay_report.actuation_binding_count);
+    const replay_without_transcript = ReplayOnlyEnv.acceptanceReport(.replay, false);
+    try std.testing.expect(!replay_without_transcript.accepted);
+    try std.testing.expectEqualSlices(world.AcceptanceBlocker, &.{.TranscriptImageRequired}, replay_without_transcript.blockers);
     const replay_only_binding = ReplayOnlyEnv.bindActuator(ReplayOnlyBinding);
     const fresh_preflight = ReplayOnlyEnv.preflightActuationMode(replay_only_binding, .fresh, world.Actuation.Policy.strict_fresh);
     try std.testing.expect(!fresh_preflight.accepted);
     try std.testing.expectEqualSlices(world.AcceptanceBlocker, &.{.ActuationPolicyMismatch}, fresh_preflight.blockers);
     const replay_preflight = ReplayOnlyEnv.preflightActuationMode(replay_only_binding, .replay, world.Actuation.Policy.strict_replay);
     try std.testing.expect(replay_preflight.accepted);
+
+    const IrreversibleActuator = world.actuator(.{
+        .kind = .tool_like,
+        .class = .irreversible_mutation,
+        .label = "tool.call.irreversible",
+        .supported_response_statuses = world.Actuation.ResponseStatusSet.all,
+        .value_policy = world.ValuePolicy.portable,
+    });
+    const IrreversibleBinding = world.bindActuator(PortsDecl, IrreversibleActuator);
+    const IrreversibleEnv = world.Environment(fixtures.Ports.Target, .{
+        .actuation_bindings = .{IrreversibleBinding},
+        .policy = world.EnvironmentPolicy.fresh_and_replay,
+    });
+    const irreversible_binding = IrreversibleEnv.bindActuator(IrreversibleBinding);
+    const irreversible_preflight = IrreversibleEnv.preflightActuationMode(irreversible_binding, .fresh, world.Actuation.Policy.strict_fresh);
+    try std.testing.expect(!irreversible_preflight.accepted);
+    try std.testing.expectEqualSlices(world.AcceptanceBlocker, &.{.ActuationPolicyMismatch}, irreversible_preflight.blockers);
 
     const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const descriptor = ToolBinding.actuationDescriptor();

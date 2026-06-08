@@ -5204,7 +5204,7 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
 
         pub fn acceptanceReport(requested_mode: Mode, transcript_image_available: bool) AcceptanceReport {
             const report = acceptanceReportFor(Target, bindings, policy, requested_mode, transcript_image_available);
-            return acceptanceReportWithActuationBindings(report, requested_mode);
+            return acceptanceReportWithActuationBindings(report, requested_mode, transcript_image_available);
         }
 
         pub fn acceptanceReportWithFabricPlan(requested_mode: Mode, transcript_image_available: bool, plan: Fabric.Plan) AcceptanceReport {
@@ -5295,6 +5295,9 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
                         return rejectedReport(report, &.{.NativeOnlyValueRejected});
                     }
                 }
+            }
+            if (reportUsesActuationCoverage(report) and !actuationCoverageAllowedBySupervision(requested_mode, supervision_policy)) {
+                return rejectedReport(report, &.{.SupervisionPolicyMismatch});
             }
             return report;
         }
@@ -5467,6 +5470,8 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
             if (!actuation_policy.allowsMode(requested_mode)) return rejectedAcceptance(target_ref, requested_mode, &.{.ActuationPolicyMismatch});
             binding.validate() catch return rejectedAcceptance(target_ref, requested_mode, &.{.MissingActuator});
             if (!binding.binding_mode_policy.allows(requested_mode)) return rejectedAcceptance(target_ref, requested_mode, &.{.ActuationPolicyMismatch});
+            const binding_class = actuationBindingClass(binding) orelse return rejectedAcceptance(target_ref, requested_mode, &.{.MissingActuator});
+            if (!actuation_policy.allowsClass(binding_class)) return rejectedAcceptance(target_ref, requested_mode, &.{.ActuationPolicyMismatch});
             if (binding.target_ref_fingerprint != target_ref.target_ref_fingerprint) return rejectedAcceptance(target_ref, requested_mode, &.{.HandoffTargetMismatch});
             if (binding.world_surface_fingerprint != target_ref.world_surface_fingerprint) return rejectedAcceptance(target_ref, requested_mode, &.{.WrongWorldSurface});
             if (binding.world_port_id >= Target.WorldPortTable.entries.len) return rejectedAcceptance(target_ref, requested_mode, &.{.WrongPortId});
@@ -5482,7 +5487,7 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
             return report;
         }
 
-        fn acceptanceReportWithActuationBindings(report: AcceptanceReport, requested_mode: Mode) AcceptanceReport {
+        fn acceptanceReportWithActuationBindings(report: AcceptanceReport, requested_mode: Mode, transcript_image_available: bool) AcceptanceReport {
             const actuation_count = actuationBindingCountForTarget(requested_mode);
             if (actuation_count == 0) return report;
             if (actuationBindingBlocker(requested_mode)) |blocker| return rejectedReport(report, &.{blocker});
@@ -5507,8 +5512,56 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
             result.missing_actuator_count = 0;
             result.blockers = &.{};
             result.summary = "accepted by actuation bindings";
+            if (requested_mode == .fresh and !transcript_image_available and !policy.allow_fresh_without_transcript) return rejectedReport(result, &.{.TranscriptImageRequired});
+            if (requested_mode == .replay and !transcript_image_available and policy.require_frame_images_for_replay) return rejectedReport(result, &.{.TranscriptImageRequired});
+            if (requested_mode == .verify and !transcript_image_available and !policy.allow_verify_without_transcript) return rejectedReport(result, &.{.VerifyTranscriptMissing});
             result.report_fingerprint = fingerprintAcceptanceReport(result);
             return result;
+        }
+
+        fn reportUsesActuationCoverage(report: AcceptanceReport) bool {
+            return report.accepted and report.actuation_binding_count != 0 and report.bound_port_count > bindings.len;
+        }
+
+        fn actuationCoverageAllowedBySupervision(requested_mode: Mode, supervision_policy: SupervisionPolicy) bool {
+            inline for (0..Target.WorldPortTable.entries.len) |world_port_id| {
+                const port_id: u32 = @intCast(world_port_id);
+                const environment_has_binding = comptime environmentHasBindingForPort(@This(), port_id);
+                if (environment_has_binding) continue;
+                if (actuationBindingForPort(port_id, requested_mode)) |binding| {
+                    if (!supervisionAllowsActuationBinding(requested_mode, supervision_policy, binding.class, binding.value_policy)) return false;
+                }
+            }
+            return true;
+        }
+
+        const ActuationBindingPolicyView = struct {
+            class: Actuation.Class,
+            value_policy: ValuePolicy,
+        };
+
+        fn supervisionAllowsActuationBinding(requested_mode: Mode, supervision_policy: SupervisionPolicy, class: Actuation.Class, value_policy: ValuePolicy) bool {
+            if (!supervision_policy.allow_actuation) return false;
+            switch (requested_mode) {
+                .fresh => if (!supervision_policy.allow_fresh_actuation) return false,
+                .replay => if (!supervision_policy.allow_replay_calls) return false,
+                .verify => if (!supervision_policy.allow_verify_calls) return false,
+                .audit => if (!supervision_policy.allow_audit_only) return false,
+            }
+            if (class == .irreversible_mutation and !supervision_policy.allow_irreversible_actuation) return false;
+            if (supervision_policy.require_portable_value_images and !value_policy.require_portable_values) return false;
+            if (supervision_policy.reject_native_only_values and value_policy.allow_native_only_values) return false;
+            return true;
+        }
+
+        fn actuationBindingClass(binding: Actuation.Binding) ?Actuation.Class {
+            inline for (actuation_bindings) |BindingDecl| {
+                if (comptime BindingDecl.TargetType == Target) {
+                    const candidate = BindingDecl.actuationBindingRecord();
+                    if (candidate.binding_fingerprint == binding.binding_fingerprint) return BindingDecl.actuator_ref.class;
+                }
+            }
+            return null;
         }
 
         fn actuationBindingCountForTarget(requested_mode: Mode) usize {
@@ -5533,12 +5586,21 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
         }
 
         fn actuationHasBindingForPort(world_port_id: u32, requested_mode: Mode) bool {
+            return actuationBindingForPort(world_port_id, requested_mode) != null;
+        }
+
+        fn actuationBindingForPort(world_port_id: u32, requested_mode: Mode) ?ActuationBindingPolicyView {
             inline for (actuation_bindings) |BindingDecl| {
                 if (comptime BindingDecl.TargetType == Target) {
-                    if (BindingDecl.world_port_id == world_port_id and BindingDecl.binding_mode_policy.allows(requested_mode)) return true;
+                    if (BindingDecl.world_port_id == world_port_id and BindingDecl.binding_mode_policy.allows(requested_mode)) {
+                        return .{
+                            .class = BindingDecl.actuator_ref.class,
+                            .value_policy = BindingDecl.value_policy,
+                        };
+                    }
                 }
             }
-            return false;
+            return null;
         }
 
         fn actuationRequirementFingerprintForPort(world_port_id: u32) ?u64 {
