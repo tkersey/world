@@ -16634,6 +16634,16 @@ pub const Capsule = struct {
             if (self.run_slot_count > options.max_run_slots) return error.InvalidFrameEncoding;
             if (self.pending_port_count > options.max_pending_ports) return error.InvalidFrameEncoding;
             if (self.active_fabric_invocation_count > options.max_fabric_invocations) return error.InvalidFrameEncoding;
+            if (self.admission_receipt_fingerprints.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.environment_certificate_fingerprints.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.run_permit_fingerprints.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.run_receipt_fingerprints.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.run_image_fingerprints.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.transcript_image_fingerprints.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.fabric_plan_fingerprints.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.fabric_invocation_fingerprints.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.fabric_receipt_fingerprints.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.guest_conformance_report_fingerprints.len > options.max_dependencies) return error.InvalidFrameEncoding;
             if (self.manifest_fingerprint != fingerprintManifest(self)) return error.InvalidFrameEncoding;
         }
 
@@ -17070,7 +17080,19 @@ pub const Capsule = struct {
             if (self.format_version != world_capsule_runspace_image_format_version) return error.InvalidFrameEncoding;
             if (self.fingerprint_version != world_capsule_runspace_image_fingerprint_version) return error.InvalidFrameEncoding;
             if (self.metadata.len > options.max_image_bytes) return error.InvalidFrameEncoding;
+            if (self.run_handle_mappings.len > options.max_run_slots) return error.InvalidFrameEncoding;
             if (self.run_slots.len > options.max_run_slots) return error.InvalidFrameEncoding;
+            if (self.runspace_event_fingerprints.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.root_run_handle_fingerprints.len > options.max_run_slots) return error.InvalidFrameEncoding;
+            if (self.provider_run_handle_fingerprints.len > options.max_run_slots) return error.InvalidFrameEncoding;
+            if (self.branch_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.checkpoint_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.transcript_image_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.run_image_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.run_receipt_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.admission_receipt_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.permit_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.active_fabric_invocation_refs.len > options.max_fabric_invocations) return error.InvalidFrameEncoding;
             for (self.run_slots) |slot| try slot.validate(options);
             if (self.run_handle_mappings.len != 0 and !runspaceImageHandleMappingsMatchSlots(self)) return error.InvalidFrameEncoding;
             if (!runspaceImageRoleRefsMatchSlots(self)) return error.InvalidFrameEncoding;
@@ -17153,11 +17175,16 @@ pub const Capsule = struct {
 
         pub fn validate(self: @This(), options: ValidateOptions) !void {
             if (self.fingerprint_version != world_capsule_fabric_image_fingerprint_version) return error.InvalidFrameEncoding;
+            if (self.fabric_plan_fingerprints.len > options.max_dependencies) return error.InvalidFrameEncoding;
             if (self.active_invocation_fingerprints.len > options.max_fabric_invocations) return error.InvalidFrameEncoding;
+            if (self.completed_receipt_fingerprints.len > options.max_dependencies) return error.InvalidFrameEncoding;
             if (self.parent_pending_port_refs.len > options.max_pending_ports) return error.InvalidFrameEncoding;
             if (self.provider_run_refs.len > options.max_run_slots) return error.InvalidFrameEncoding;
             if (self.provider_state_summary_fingerprints.len > options.max_run_slots) return error.InvalidFrameEncoding;
-            if (self.depth_route_stack.len > options.max_fabric_invocations) return error.InvalidFrameEncoding;
+            if (self.route_fingerprints.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.value_mapping_fingerprints.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.depth_route_stack.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.replay_cursor_state_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
             if (self.active_invocation_fingerprints.len != 0) {
                 if (self.parent_pending_port_refs.len != self.active_invocation_fingerprints.len) return error.InvalidFrameEncoding;
                 if (self.depth_route_stack.len != self.active_invocation_fingerprints.len) return error.InvalidFrameEncoding;
@@ -17238,11 +17265,19 @@ pub const Capsule = struct {
         }
 
         pub fn validate(self: @This()) !void {
+            try self.validateWithOptions(.{});
+        }
+
+        fn validateWithOptions(self: @This(), options: ValidateOptions) !void {
             if (self.fingerprint_version != world_capsule_link_image_fingerprint_version) return error.InvalidFrameEncoding;
             if (self.link_plan_fingerprint == 0) return error.InvalidFrameEncoding;
             if (self.link_certificate_fingerprint == 0) return error.InvalidFrameEncoding;
             if (self.assembly_fingerprint == 0) return error.InvalidFrameEncoding;
             if (self.linker_policy_fingerprint == 0) return error.InvalidFrameEncoding;
+            if (self.route_synthesis_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.provider_target_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.guest_provider_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.external_environment_requirements.len > options.max_dependencies) return error.InvalidFrameEncoding;
             if (self.catalog_fingerprint) |catalog| {
                 if (catalog == 0) return error.InvalidFrameEncoding;
             }
@@ -17336,7 +17371,7 @@ pub const Capsule = struct {
             if (self.value_images.len > options.max_embedded_images) return error.InvalidFrameEncoding;
             try self.manifest.validate(options);
             try self.runspace_image.validate(options);
-            if (self.link_image) |link| try link.validate();
+            if (self.link_image) |link| try link.validateWithOptions(options);
             if (self.fabric_image) |fabric| try fabric.validate(options);
             try validateImageManifestConsistency(self);
             try validateRunImageCoverage(self);
@@ -20964,7 +20999,7 @@ pub const Capsule = struct {
         guest_provider_refs_owned = false;
         external_environment_requirements_owned = false;
         errdefer image.deinit(allocator);
-        try image.validate();
+        try image.validateWithOptions(options);
         return image;
     }
 

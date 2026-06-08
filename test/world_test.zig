@@ -340,9 +340,44 @@ test "capsule decode applies dependency limits to link image refs" {
         .link_image = link_image,
     });
     try image.validate(.{});
+    try std.testing.expectError(error.InvalidFrameEncoding, image.validate(.{ .max_dependencies = 1 }));
     const encoded = try image.encode(allocator);
     defer allocator.free(encoded);
     try std.testing.expectError(error.InvalidFrameEncoding, world.Capsule.Image.decodeWithOptions(allocator, encoded, .{ .max_dependencies = 1 }));
+
+    const capped_refs = [_]u64{ 0x701, 0x702 };
+    const capped_manifest = world.Capsule.Manifest.init(.{
+        .kind = .full_assembly,
+        .root_target_ref_fingerprint = 0x100,
+        .admission_receipt_fingerprints = &capped_refs,
+        .normal_form = .quiescent_completed,
+    });
+    const manifest_capped_image = world.Capsule.Image.init(.{
+        .manifest = capped_manifest,
+        .runspace_image = runspace_image,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, manifest_capped_image.validate(.{ .max_dependencies = 1 }));
+
+    const capped_runspace_image = world.Capsule.RunspaceImage.init(.{
+        .runspace_fingerprint = 0x200,
+        .runspace_report_fingerprint = 0x300,
+        .branch_refs = &capped_refs,
+    });
+    const runspace_capped_image = world.Capsule.Image.init(.{
+        .manifest = manifest,
+        .runspace_image = capped_runspace_image,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, runspace_capped_image.validate(.{ .max_dependencies = 1 }));
+
+    const capped_fabric = world.Capsule.FabricImage.init(.{
+        .route_fingerprints = &capped_refs,
+    });
+    const fabric_capped_image = world.Capsule.Image.init(.{
+        .manifest = manifest,
+        .runspace_image = runspace_image,
+        .fabric_image = capped_fabric,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, fabric_capped_image.validate(.{ .max_dependencies = 1 }));
 }
 
 test "capsule certificate derives from image and quiescence without image hash cycle" {
