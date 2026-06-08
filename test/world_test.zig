@@ -2221,6 +2221,11 @@ test "capsule relink requires manifest fabric plan coverage" {
     const missing_catalog_thaw = try world.Capsule.planThaw(catalog_image, root_ref.target_ref_fingerprint, 0, 0x5150_3722, .{ .mode = .restore_completed });
     try std.testing.expectEqual(world.Capsule.Blocker.link_plan_mismatch, missing_catalog_thaw.blockers[0]);
     try std.testing.expectEqual(world.Capsule.LinkCertificateMatchStatus.mismatched, missing_catalog_thaw.link_certificate_match_status);
+    const catalog_as_target_thaw = try world.Capsule.planThaw(catalog_image, catalog_image.link_image.?.catalog_fingerprint.?, 0, 0x5150_3723, .{
+        .mode = .restore_completed,
+        .local_catalog_fingerprint = catalog_image.link_image.?.catalog_fingerprint.?,
+    });
+    try std.testing.expectEqual(world.Capsule.Blocker.target_mismatch, catalog_as_target_thaw.blockers[0]);
     const drift_rejected = try world.Capsule.planThaw(catalog_image, root_ref.target_ref_fingerprint, 0, 0x5150_3714, .{
         .mode = .restore_completed,
         .local_catalog_fingerprint = root_ref.target_ref_fingerprint,

@@ -18863,9 +18863,7 @@ pub const Capsule = struct {
         if (options.mode == .verify_and_restore) return .verification_witness_missing;
         if (options.require_local_permit and permit_fingerprint == null and options.mode != .inspect_only and options.mode != .replay_only) return .permit_denied;
         if (registry_fingerprint != 0 and registry_fingerprint != image.manifest.root_target_ref_fingerprint) {
-            if (image.link_image) |link| {
-                if (link.catalog_fingerprint == null or link.catalog_fingerprint.? != registry_fingerprint) return .target_mismatch;
-            } else return .target_mismatch;
+            return .target_mismatch;
         }
         if (image.manifest.environment_certificate_fingerprints.len != 0) {
             if (image.manifest.environment_certificate_fingerprints.len != 1) return .environment_mismatch;
