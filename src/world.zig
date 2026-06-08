@@ -17580,6 +17580,7 @@ pub const Actuation = struct {
         world_port_id: u32,
         pending_port_fingerprint: ?u64 = null,
         frame_request_fingerprint: u64,
+        encoded_frame_request_fingerprint: ?u64 = null,
         payload_value_image_fingerprint: ?u64 = null,
         idempotency_key_fingerprint: u64,
         run_permit_fingerprint: ?u64 = null,
@@ -17599,6 +17600,7 @@ pub const Actuation = struct {
             world_port_id: u32,
             pending_port_fingerprint: ?u64 = null,
             frame_request_fingerprint: u64,
+            encoded_frame_request_fingerprint: ?u64 = null,
             payload_value_image_fingerprint: ?u64 = null,
             idempotency_key_fingerprint: u64,
             run_permit_fingerprint: ?u64 = null,
@@ -17619,6 +17621,7 @@ pub const Actuation = struct {
                 .world_port_id = args.world_port_id,
                 .pending_port_fingerprint = args.pending_port_fingerprint,
                 .frame_request_fingerprint = args.frame_request_fingerprint,
+                .encoded_frame_request_fingerprint = args.encoded_frame_request_fingerprint,
                 .payload_value_image_fingerprint = args.payload_value_image_fingerprint,
                 .idempotency_key_fingerprint = args.idempotency_key_fingerprint,
                 .run_permit_fingerprint = args.run_permit_fingerprint,
@@ -18295,7 +18298,7 @@ pub const Actuation = struct {
         pub fn responseForIntent(self: @This(), intent: Intent, expected_status: Actuation.ResponseStatus, expected_kind: ResponseKind) !Response {
             const receipt = try self.lookupByIdempotencyKey(intent.idempotency_key_fingerprint);
             if (receipt.world_port_id != intent.world_port_id) return error.ReplayPortMismatch;
-            if (receipt.intent_fingerprint != intent.intent_fingerprint and receipt.mode != .replay) return error.ReplayRequestFingerprintMismatch;
+            if (receipt.intent_fingerprint != intent.intent_fingerprint and receipt.mode != .replay and !(intent.requested_mode == .replay and receipt.mode == .fresh)) return error.ReplayRequestFingerprintMismatch;
             const status: Actuation.ResponseStatus = if (receipt.rejected) .rejected else if (receipt.failed) .failed else if (receipt.pending) .pending else if (receipt.deferred) .deferred else if (receipt.cancelled) .cancelled else .responded;
             if (status != expected_status) return error.ReplayResponseKindMismatch;
             return Response.init(.{
@@ -18567,6 +18570,12 @@ pub const Actuation = struct {
             if (args.envelope.idempotency_key.world_port_id != args.intent.world_port_id) return error.InvalidFrameEncoding;
             if (args.envelope.idempotency_key.request_fingerprint != args.intent.frame_request_fingerprint) return error.InvalidFrameEncoding;
             if (args.envelope.idempotency_key.actuator_ref_fingerprint != args.intent.actuator_ref_fingerprint) return error.InvalidFrameEncoding;
+            if (args.envelope.encoded_frame_request_fingerprint) |encoded| {
+                if (args.intent.encoded_frame_request_fingerprint == null or args.intent.encoded_frame_request_fingerprint.? != encoded) return error.InvalidFrameEncoding;
+            }
+            if (args.envelope.payload_value_image_fingerprint) |payload| {
+                if (args.intent.payload_value_image_fingerprint == null or args.intent.payload_value_image_fingerprint.? != payload) return error.InvalidFrameEncoding;
+            }
             if (args.target_ref_fingerprint != args.intent.target_ref_fingerprint) return error.InvalidFrameEncoding;
             if (args.world_surface_fingerprint != args.intent.world_surface_fingerprint) return error.InvalidFrameEncoding;
             if (args.descriptor) |descriptor| {
@@ -18574,6 +18583,7 @@ pub const Actuation = struct {
                 try validateDescriptorValuePolicy(args.policy, descriptor.value_policy);
                 if (descriptor.descriptor_fingerprint != args.intent.descriptor_fingerprint) return error.InvalidFrameEncoding;
                 if (descriptor.actuator_ref_fingerprint != args.intent.actuator_ref_fingerprint) return error.InvalidFrameEncoding;
+                if (descriptor.class != args.intent.class) return error.InvalidFrameEncoding;
                 if (descriptor.target_ref_fingerprint) |target| {
                     if (target != args.intent.target_ref_fingerprint) return error.InvalidFrameEncoding;
                 }
@@ -18871,6 +18881,7 @@ pub const Actuation = struct {
         hashU64(&hasher, intent.world_port_id);
         hashOptionalU64(&hasher, intent.pending_port_fingerprint);
         hashU64(&hasher, intent.frame_request_fingerprint);
+        hashOptionalU64(&hasher, intent.encoded_frame_request_fingerprint);
         hashOptionalU64(&hasher, intent.payload_value_image_fingerprint);
         hashU64(&hasher, intent.idempotency_key_fingerprint);
         hashOptionalU64(&hasher, intent.run_permit_fingerprint);

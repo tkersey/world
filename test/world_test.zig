@@ -494,6 +494,7 @@ test "actuation commit response receipt journal and replay bind idempotency" {
         .world_surface_fingerprint = 0x4102,
         .world_port_id = 0,
         .frame_request_fingerprint = 0x4103,
+        .encoded_frame_request_fingerprint = 0x4103,
         .idempotency_key_fingerprint = key.key_fingerprint,
         .class = .deterministic_fixture,
         .requested_mode = .fresh,
@@ -548,6 +549,21 @@ test "actuation commit response receipt journal and replay bind idempotency" {
     const replay_response = try replay_source.responseForIntent(intent, .responded, .@"resume");
     try std.testing.expectEqual(world.Actuation.ResponseStatus.responded, replay_response.status);
     try std.testing.expectEqual(@as(?u64, 0x4106), replay_response.frame_response_fingerprint);
+    const replay_intent_from_fresh = world.Actuation.Intent.init(.{
+        .actuator_ref_fingerprint = ref.ref_fingerprint,
+        .descriptor_fingerprint = 0x4104,
+        .target_ref_fingerprint = 0x4101,
+        .world_surface_fingerprint = 0x4102,
+        .world_port_id = 0,
+        .frame_request_fingerprint = 0x4103,
+        .encoded_frame_request_fingerprint = 0x4103,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .class = .deterministic_fixture,
+        .requested_mode = .replay,
+    });
+    const replayed_fresh_response = try replay_source.responseForIntent(replay_intent_from_fresh, .responded, .@"resume");
+    try std.testing.expectEqual(replay_intent_from_fresh.intent_fingerprint, replayed_fresh_response.intent_fingerprint);
+    try std.testing.expectEqual(@as(?u64, 0x4106), replayed_fresh_response.frame_response_fingerprint);
 
     var deps_buffer: [12]world.Actuation.DependencyRef = undefined;
     const deps = try world.Actuation.dependenciesForReceipt(receipt, &deps_buffer);
@@ -630,6 +646,75 @@ test "actuation membrane rejects mismatched envelope and descriptor bindings" {
         .envelope = wrong_key_envelope,
         .descriptor = descriptor,
         .actuator = .{ .fixture = .{ .frame_response_fingerprint = 0x4206 } },
+        .target_ref_fingerprint = 0x4201,
+        .world_surface_fingerprint = 0x4202,
+    }));
+
+    const wrong_request_envelope = world.Actuation.Envelope.init(.{
+        .intent_fingerprint = intent.intent_fingerprint,
+        .encoded_frame_request_fingerprint = 0x9998,
+        .idempotency_key = key,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Actuation.Membrane.execute(.{
+        .policy = policy,
+        .intent = intent,
+        .envelope = wrong_request_envelope,
+        .descriptor = descriptor,
+        .actuator = .{ .fixture = .{ .frame_response_fingerprint = 0x4207 } },
+        .target_ref_fingerprint = 0x4201,
+        .world_surface_fingerprint = 0x4202,
+    }));
+
+    const wrong_payload_envelope = world.Actuation.Envelope.init(.{
+        .intent_fingerprint = intent.intent_fingerprint,
+        .payload_value_image_fingerprint = 0x9997,
+        .idempotency_key = key,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Actuation.Membrane.execute(.{
+        .policy = policy,
+        .intent = intent,
+        .envelope = wrong_payload_envelope,
+        .descriptor = descriptor,
+        .actuator = .{ .fixture = .{ .frame_response_fingerprint = 0x4208 } },
+        .target_ref_fingerprint = 0x4201,
+        .world_surface_fingerprint = 0x4202,
+    }));
+
+    const mutation_ref = world.Actuation.Ref.init(.{ .kind = .fixture, .class = .idempotent_mutation, .label = "mutation-binding-check" });
+    const mutation_descriptor = world.Actuation.Descriptor.init(.{
+        .actuator_ref = mutation_ref,
+        .world_surface_fingerprint = 0x4202,
+        .target_ref_fingerprint = 0x4201,
+        .world_port_id = 0,
+    });
+    const mutation_key = world.Actuation.IdempotencyKey.init(.{
+        .target_ref_fingerprint = 0x4201,
+        .world_surface_fingerprint = 0x4202,
+        .world_port_id = 0,
+        .request_fingerprint = 0x4203,
+        .actuator_ref_fingerprint = mutation_ref.ref_fingerprint,
+    });
+    const downgraded_intent = world.Actuation.Intent.init(.{
+        .actuator_ref_fingerprint = mutation_ref.ref_fingerprint,
+        .descriptor_fingerprint = mutation_descriptor.descriptor_fingerprint,
+        .target_ref_fingerprint = 0x4201,
+        .world_surface_fingerprint = 0x4202,
+        .world_port_id = 0,
+        .frame_request_fingerprint = 0x4203,
+        .idempotency_key_fingerprint = mutation_key.key_fingerprint,
+        .class = .observation,
+        .requested_mode = .fresh,
+    });
+    const downgraded_envelope = world.Actuation.Envelope.init(.{
+        .intent_fingerprint = downgraded_intent.intent_fingerprint,
+        .idempotency_key = mutation_key,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Actuation.Membrane.execute(.{
+        .policy = policy,
+        .intent = downgraded_intent,
+        .envelope = downgraded_envelope,
+        .descriptor = mutation_descriptor,
+        .actuator = .{ .fixture = .{ .frame_response_fingerprint = 0x4209 } },
         .target_ref_fingerprint = 0x4201,
         .world_surface_fingerprint = 0x4202,
     }));
@@ -763,6 +848,7 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
         .world_surface_fingerprint = 0x6101,
         .world_port_id = 7,
         .frame_request_fingerprint = 0x6103,
+        .encoded_frame_request_fingerprint = 0x6103,
         .idempotency_key_fingerprint = key.key_fingerprint,
         .class = .deterministic_fixture,
         .requested_mode = .fresh,
@@ -877,6 +963,7 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
         .world_surface_fingerprint = 0x6101,
         .world_port_id = 7,
         .frame_request_fingerprint = 0x6103,
+        .encoded_frame_request_fingerprint = 0x6103,
         .idempotency_key_fingerprint = key.key_fingerprint,
         .class = .deterministic_fixture,
         .requested_mode = .replay,
@@ -924,6 +1011,7 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
         .world_surface_fingerprint = 0x6101,
         .world_port_id = 7,
         .frame_request_fingerprint = 0x6103,
+        .encoded_frame_request_fingerprint = 0x6103,
         .idempotency_key_fingerprint = key.key_fingerprint,
         .class = .deterministic_fixture,
         .requested_mode = .verify,
@@ -1166,6 +1254,7 @@ test "runspace actuation dispatch preserves pending mailbox state" {
         .world_port_id = request.world_port_id,
         .pending_port_fingerprint = pending.pending_port_fingerprint,
         .frame_request_fingerprint = request.request_fingerprint,
+        .encoded_frame_request_fingerprint = request.frame_fingerprint,
         .idempotency_key_fingerprint = key.key_fingerprint,
         .class = .deterministic_fixture,
         .requested_mode = .fresh,
@@ -1262,6 +1351,7 @@ test "runspace actuation dispatch accounts terminal response bytes" {
         .world_port_id = request.world_port_id,
         .pending_port_fingerprint = pending.pending_port_fingerprint,
         .frame_request_fingerprint = request.request_fingerprint,
+        .encoded_frame_request_fingerprint = request.frame_fingerprint,
         .idempotency_key_fingerprint = key.key_fingerprint,
         .class = .deterministic_fixture,
         .requested_mode = .fresh,
@@ -1326,7 +1416,7 @@ test "runspace actuation dispatch uses installed supervisor before mailbox resum
     const request = pending.request_frame.?;
     const ref = world.Actuation.Ref.init(.{
         .kind = .fixture,
-        .class = .deterministic_fixture,
+        .class = .irreversible_mutation,
         .label = "supervised-fixture",
         .supported_response_statuses = world.Actuation.ResponseStatusSet.all,
     });
@@ -1354,6 +1444,7 @@ test "runspace actuation dispatch uses installed supervisor before mailbox resum
         .world_port_id = request.world_port_id,
         .pending_port_fingerprint = pending.pending_port_fingerprint,
         .frame_request_fingerprint = request.request_fingerprint,
+        .encoded_frame_request_fingerprint = request.frame_fingerprint,
         .idempotency_key_fingerprint = key.key_fingerprint,
         .class = .irreversible_mutation,
         .requested_mode = .fresh,

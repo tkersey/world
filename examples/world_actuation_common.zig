@@ -58,6 +58,7 @@ pub fn context(args: struct {
         .world_port_id = args.world_port_id,
         .pending_port_fingerprint = args.pending_port_fingerprint,
         .frame_request_fingerprint = args.request_fingerprint,
+        .encoded_frame_request_fingerprint = args.request_fingerprint,
         .idempotency_key_fingerprint = key.key_fingerprint,
         .capsule_fingerprint = args.capsule_fingerprint,
         .class = args.class,
