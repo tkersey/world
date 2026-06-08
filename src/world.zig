@@ -17365,7 +17365,15 @@ pub const Capsule = struct {
             if (self.format_version != world_capsule_image_format_version) return error.InvalidFrameEncoding;
             if (self.fingerprint_version != world_capsule_image_fingerprint_version) return error.InvalidFrameEncoding;
             if (self.metadata.len > options.max_image_bytes) return error.InvalidFrameEncoding;
+            if (self.admission_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.environment_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.supervision_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.guest_conformance_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.transcript_image_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.run_image_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.value_image_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
             if (self.dependency_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.object_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
             if (self.transcript_images.len > options.max_embedded_images) return error.InvalidFrameEncoding;
             if (self.run_images.len > options.max_embedded_images) return error.InvalidFrameEncoding;
             if (self.value_images.len > options.max_embedded_images) return error.InvalidFrameEncoding;

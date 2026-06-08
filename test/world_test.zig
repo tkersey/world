@@ -378,6 +378,60 @@ test "capsule decode applies dependency limits to link image refs" {
         .fabric_image = capped_fabric,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, fabric_capped_image.validate(.{ .max_dependencies = 1 }));
+
+    const top_level_refs = [_]u64{ 0x801, 0x802 };
+    const top_level_objects = [_]world.Capsule.ObjectRef{
+        world.Capsule.ObjectRef.init(world.Capsule.ObjectKind.capsule_image, 0x901),
+        world.Capsule.ObjectRef.init(world.Capsule.ObjectKind.run_image, 0x902),
+    };
+    const admission_capped_image = world.Capsule.Image.init(.{
+        .manifest = manifest,
+        .runspace_image = runspace_image,
+        .admission_refs = &top_level_refs,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, admission_capped_image.validate(.{ .max_dependencies = 1 }));
+    const environment_capped_image = world.Capsule.Image.init(.{
+        .manifest = manifest,
+        .runspace_image = runspace_image,
+        .environment_refs = &top_level_refs,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, environment_capped_image.validate(.{ .max_dependencies = 1 }));
+    const supervision_capped_image = world.Capsule.Image.init(.{
+        .manifest = manifest,
+        .runspace_image = runspace_image,
+        .supervision_refs = &top_level_refs,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, supervision_capped_image.validate(.{ .max_dependencies = 1 }));
+    const guest_capped_image = world.Capsule.Image.init(.{
+        .manifest = manifest,
+        .runspace_image = runspace_image,
+        .guest_conformance_refs = &top_level_refs,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, guest_capped_image.validate(.{ .max_dependencies = 1 }));
+    const transcript_ref_capped_image = world.Capsule.Image.init(.{
+        .manifest = manifest,
+        .runspace_image = runspace_image,
+        .transcript_image_refs = &top_level_refs,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, transcript_ref_capped_image.validate(.{ .max_dependencies = 1 }));
+    const run_ref_capped_image = world.Capsule.Image.init(.{
+        .manifest = manifest,
+        .runspace_image = runspace_image,
+        .run_image_refs = &top_level_refs,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, run_ref_capped_image.validate(.{ .max_dependencies = 1 }));
+    const value_ref_capped_image = world.Capsule.Image.init(.{
+        .manifest = manifest,
+        .runspace_image = runspace_image,
+        .value_image_refs = &top_level_refs,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, value_ref_capped_image.validate(.{ .max_dependencies = 1 }));
+    const object_ref_capped_image = world.Capsule.Image.init(.{
+        .manifest = manifest,
+        .runspace_image = runspace_image,
+        .object_refs = &top_level_objects,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, object_ref_capped_image.validate(.{ .max_dependencies = 1 }));
 }
 
 test "capsule certificate derives from image and quiescence without image hash cycle" {
