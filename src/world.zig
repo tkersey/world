@@ -18550,7 +18550,19 @@ pub const Capsule = struct {
             });
         }
 
-        try transaction.preMutationCheck(image, options);
+        transaction.preMutationCheck(image, options) catch |err| {
+            const blocker = restorePolicyBlockerForError(err) orelse return err;
+            return restoreReportOwned(allocator, .{
+                .capsule_image_fingerprint = image.image_fingerprint,
+                .thaw_plan_fingerprint = plan.thaw_plan_fingerprint,
+                .restored_runspace_fingerprint = runspace.runspace_fingerprint,
+                .guest_conformance_refs = plan.guest_conformance_refs,
+                .receiver_run_permit_fingerprint = permit_fingerprint,
+                .accepted = false,
+                .blockers = blockerSlice(blocker),
+                .summary = "capsule restore denied by receiver policy before runspace mutation",
+            });
+        };
 
         var root_refs: std.ArrayList(u64) = .empty;
         errdefer root_refs.deinit(allocator);
@@ -18768,6 +18780,14 @@ pub const Capsule = struct {
         });
         report.owns_memory = true;
         return report;
+    }
+
+    fn restorePolicyBlockerForError(err: anyerror) ?Blocker {
+        return switch (err) {
+            error.BudgetExceeded => .oversized_image,
+            error.RunspaceAdmissionRequired, error.RunspaceInstallDenied, error.SupervisionDenied => .permit_denied,
+            else => null,
+        };
     }
 
     fn restoredSlotHandle(runspace: *Runspace, slot_image: RunSlotImage, permit_fingerprint: ?u64) RunHandle {
@@ -21519,6 +21539,38 @@ test "capsule thaw denies before mutation and restores completed slot metadata" 
     const denied = try Capsule.thawIntoRunspace(image, &receiver, target_ref.target_ref_fingerprint, 0, null, .{ .mode = .restore_completed });
     try std.testing.expect(!denied.accepted);
     try std.testing.expectEqual(before_slots, receiver.slots.items.len);
+
+    var capped_receiver = Runspace.init(allocator, .{ .max_runs = 0 });
+    defer capped_receiver.deinit();
+    var capped_denied = try Capsule.thawIntoRunspace(image, &capped_receiver, target_ref.target_ref_fingerprint, 0, 0x5150_3605, .{ .mode = .restore_completed });
+    defer capped_denied.deinit(allocator);
+    try std.testing.expect(!capped_denied.accepted);
+    try std.testing.expectEqual(Capsule.Blocker.oversized_image, capped_denied.blockers[0]);
+    try std.testing.expectEqual(@as(usize, 0), capped_receiver.slots.items.len);
+
+    var admission_required_receiver = Runspace.init(allocator, .{ .require_admission = true });
+    defer admission_required_receiver.deinit();
+    var admission_required_denied = try Capsule.thawIntoRunspace(image, &admission_required_receiver, target_ref.target_ref_fingerprint, 0, 0x5150_3606, .{ .mode = .restore_completed });
+    defer admission_required_denied.deinit(allocator);
+    try std.testing.expect(!admission_required_denied.accepted);
+    try std.testing.expectEqual(Capsule.Blocker.permit_denied, admission_required_denied.blockers[0]);
+    try std.testing.expectEqual(@as(usize, 0), admission_required_receiver.slots.items.len);
+
+    var handoff_denied_receiver = Runspace.init(allocator, .{ .allow_handoff_install = false });
+    defer handoff_denied_receiver.deinit();
+    var handoff_denied = try Capsule.thawIntoRunspace(image, &handoff_denied_receiver, target_ref.target_ref_fingerprint, 0, 0x5150_3607, .{ .mode = .restore_completed });
+    defer handoff_denied.deinit(allocator);
+    try std.testing.expect(!handoff_denied.accepted);
+    try std.testing.expectEqual(Capsule.Blocker.permit_denied, handoff_denied.blockers[0]);
+    try std.testing.expectEqual(@as(usize, 0), handoff_denied_receiver.slots.items.len);
+
+    var supervised_receiver = Runspace.init(allocator, .{ .require_supervision = true });
+    defer supervised_receiver.deinit();
+    var supervised_denied = try Capsule.thawIntoRunspace(image, &supervised_receiver, target_ref.target_ref_fingerprint, 0, 0x5150_3608, .{ .mode = .restore_completed });
+    defer supervised_denied.deinit(allocator);
+    try std.testing.expect(!supervised_denied.accepted);
+    try std.testing.expectEqual(Capsule.Blocker.permit_denied, supervised_denied.blockers[0]);
+    try std.testing.expectEqual(@as(usize, 0), supervised_receiver.slots.items.len);
 
     var rollback_receiver = Runspace.init(allocator, .{});
     defer rollback_receiver.deinit();

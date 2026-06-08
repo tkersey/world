@@ -553,7 +553,10 @@ test "capsule freezeRunspace honors receipt and transcript exclusion flags" {
     try std.testing.expectEqual(@as(?u64, null), excluded.run_images[0].prior_run_receipt_fingerprint);
     var supervised_receiver = world.Runspace.init(allocator, .{ .require_supervision = true });
     defer supervised_receiver.deinit();
-    try std.testing.expectError(error.SupervisionDenied, world.Capsule.thawIntoRunspace(excluded, &supervised_receiver, target_ref.target_ref_fingerprint, 0, 0x5150_3341, .{ .mode = .restore_completed }));
+    var supervised_denied = try world.Capsule.thawIntoRunspace(excluded, &supervised_receiver, target_ref.target_ref_fingerprint, 0, 0x5150_3341, .{ .mode = .restore_completed });
+    defer supervised_denied.deinit(allocator);
+    try std.testing.expect(!supervised_denied.accepted);
+    try std.testing.expectEqual(world.Capsule.Blocker.permit_denied, supervised_denied.blockers[0]);
     try std.testing.expectEqual(@as(usize, 0), supervised_receiver.slots.items.len);
     var receiver = world.Runspace.init(allocator, .{});
     defer receiver.deinit();
