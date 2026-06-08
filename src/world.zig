@@ -19063,7 +19063,7 @@ pub const Capsule = struct {
     }
 
     fn validateAssemblyRootBoundToRunspace(runspace: *const Runspace, assembly: Assembly) !void {
-        const root_slot = rootSlotForFreeze(runspace) orelse return;
+        const root_slot = rootSlotForFreeze(runspace) orelse return error.InvalidFrameEncoding;
         if (root_slot.target_ref.target_ref_fingerprint != assembly.root_target_ref.target_ref_fingerprint) return error.InvalidFrameEncoding;
         if (root_slot.target_ref.world_surface_fingerprint != assembly.root_target_ref.world_surface_fingerprint) return error.InvalidFrameEncoding;
         if (root_slot.target_ref.target_certificate_fingerprint != assembly.root_target_ref.target_certificate_fingerprint) return error.InvalidFrameEncoding;

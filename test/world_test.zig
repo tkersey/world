@@ -1519,6 +1519,15 @@ test "capsule freeze freezes completed linked assembly" {
         .guest_conformance_report_fingerprints = &guest_conformance_refs,
     });
 
+    var empty_runspace = world.Runspace.init(allocator, .{});
+    defer empty_runspace.deinit();
+    const root_only_assembly = world.Assembly.init(.{
+        .root_target_ref = root_ref,
+        .link_plan_fingerprint = 0xaaac,
+        .linker_certificate_fingerprint = 0xbbbd,
+        .linker_policy_fingerprint = 0x5150_3501,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Capsule.freezeAssembly(&empty_runspace, root_only_assembly, .{}));
     try std.testing.expectError(error.InvalidFrameEncoding, world.Capsule.freezeAssembly(&runspace, assembly, .{}));
     try assembly.installIntoRunspace(&runspace);
     const forged_assembly = world.Assembly.init(.{
