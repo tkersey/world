@@ -18444,6 +18444,13 @@ pub const Capsule = struct {
         var runspace_image_value = try runspaceImageWithRunImageFingerprints(allocator, runspace, slot_run_image_fingerprints, options.include_transcripts, options.include_receipts, options.require_quiescent);
         var runspace_image_owned = true;
         errdefer if (runspace_image_owned) runspace_image_value.deinit(allocator);
+        const projected_receipt_refs = try receiptRefsForRunImages(allocator, runspace_image_value.run_receipt_refs, run_images);
+        var projected_receipt_refs_owned = true;
+        errdefer if (projected_receipt_refs_owned) allocator.free(projected_receipt_refs);
+        allocator.free(runspace_image_value.run_receipt_refs);
+        runspace_image_value.run_receipt_refs = projected_receipt_refs;
+        projected_receipt_refs_owned = false;
+        runspace_image_value.image_fingerprint = fingerprintRunspaceImage(runspace_image_value);
 
         var maybe_fabric_image: ?FabricImage = if (runspace.fabric_plan_fingerprints.items.len != 0 or runspace.fabric_invocations.items.len != 0 or (options.include_receipts and runspace.fabric_receipts.items.len != 0))
             try fabricImageWithReceiptPolicy(allocator, runspace, options.include_receipts)
@@ -19362,6 +19369,10 @@ pub const Capsule = struct {
                 if (!u64SliceContains(image.manifest.environment_certificate_fingerprints, fingerprint)) return error.InvalidFrameEncoding;
                 if (!u64SliceContains(image.environment_refs, fingerprint)) return error.InvalidFrameEncoding;
             }
+            if (run_image.prior_run_receipt_fingerprint) |fingerprint| {
+                if (!u64SliceContains(image.manifest.run_receipt_fingerprints, fingerprint)) return error.InvalidFrameEncoding;
+                if (!u64SliceContains(image.runspace_image.run_receipt_refs, fingerprint)) return error.InvalidFrameEncoding;
+            }
         }
         for (image.transcript_images) |transcript| {
             if (!u64SliceContains(image.manifest.transcript_image_fingerprints, transcript.transcript_image_fingerprint)) return error.InvalidFrameEncoding;
@@ -19909,6 +19920,16 @@ pub const Capsule = struct {
         const refs = try allocator.alloc(u64, run_images.len);
         for (run_images, 0..) |image, index| refs[index] = image.run_image_fingerprint;
         return refs;
+    }
+
+    fn receiptRefsForRunImages(allocator: std.mem.Allocator, existing_refs: []const u64, run_images: []const RunImage) ![]u64 {
+        var refs: std.ArrayList(u64) = .empty;
+        errdefer refs.deinit(allocator);
+        for (existing_refs) |fingerprint| try appendUniqueU64(&refs, allocator, fingerprint);
+        for (run_images) |image| {
+            if (image.prior_run_receipt_fingerprint) |fingerprint| try appendUniqueU64(&refs, allocator, fingerprint);
+        }
+        return refs.toOwnedSlice(allocator);
     }
 
     fn dependencyRefsForFreeze(
