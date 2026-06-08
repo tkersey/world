@@ -19081,6 +19081,9 @@ pub const Capsule = struct {
         {
             return error.InvalidFrameEncoding;
         }
+        for (manifest.guest_conformance_report_fingerprints) |fingerprint| {
+            if (!u64SliceContains(image.guest_conformance_refs, fingerprint)) return error.InvalidFrameEncoding;
+        }
     }
 
     fn validateQuiescenceReportImageConsistency(image: Image, report: QuiescenceReport) !void {

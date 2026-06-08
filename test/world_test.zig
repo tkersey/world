@@ -3308,18 +3308,8 @@ test "capsule guest conformance refs are exposed during thaw and inspect restore
         .manifest = manifest,
         .runspace_image = runspace_image,
     });
-    const missing_guest_thaw = try world.Capsule.planThaw(missing_guest_image, 0, 0, null, .{ .mode = .inspect_only, .rerun_guest_conformance = true });
-    try std.testing.expectEqual(world.Capsule.Blocker.guest_conformance_missing, missing_guest_thaw.blockers[0]);
-    try std.testing.expectEqual(@as(usize, 0), missing_guest_thaw.guest_conformance_refs.len);
-    const unwitnessed_guest_thaw = try world.Capsule.planThaw(missing_guest_image, 0, 0, null, .{ .mode = .inspect_only });
-    try std.testing.expectEqual(@as(usize, 0), unwitnessed_guest_thaw.guest_conformance_refs.len);
-    var missing_guest_receiver = world.Runspace.init(allocator, .{});
-    defer missing_guest_receiver.deinit();
-    var missing_guest_restore = try world.Capsule.thawIntoRunspace(missing_guest_image, &missing_guest_receiver, 0, 0, null, .{ .mode = .inspect_only, .rerun_guest_conformance = true });
-    defer missing_guest_restore.deinit(allocator);
-    try std.testing.expect(!missing_guest_restore.accepted);
-    try std.testing.expect(missing_guest_restore.owns_memory);
-    try std.testing.expectEqual(@as(usize, 0), missing_guest_restore.guest_conformance_refs.len);
+    try std.testing.expectError(error.InvalidFrameEncoding, missing_guest_image.validate(.{}));
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Capsule.planThaw(missing_guest_image, 0, 0, null, .{ .mode = .inspect_only }));
 
     const thaw = try world.Capsule.planThaw(image, 0, 0, null, .{ .mode = .inspect_only, .rerun_guest_conformance = true });
     try std.testing.expectEqual(guest_report.report_fingerprint, thaw.guest_conformance_refs[0]);
