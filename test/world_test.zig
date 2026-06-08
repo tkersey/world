@@ -1275,6 +1275,7 @@ test "link image captures assembly linker provenance" {
         .provider_run_templates = &.{provider_ref.target_ref_fingerprint},
     });
     try std.testing.expect(catalog_scoped_assembly.assembly_fingerprint != assembly.assembly_fingerprint);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Capsule.linkImageFromAssembly(allocator, assembly, 0, 0x2222));
     var image = try world.Capsule.linkImageFromAssembly(allocator, assembly, 0x1111, 0x2222);
     defer image.deinit(allocator);
     try std.testing.expectEqual(assembly.assembly_fingerprint, image.assembly_fingerprint);

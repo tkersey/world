@@ -18302,6 +18302,7 @@ pub const Capsule = struct {
 
     pub fn linkImageFromAssembly(allocator: std.mem.Allocator, assembly: Assembly, linker_policy_fingerprint: u64, catalog_fingerprint: ?u64) !LinkImage {
         try assembly.validate();
+        if (linker_policy_fingerprint == 0) return error.InvalidFrameEncoding;
 
         var route_refs: std.ArrayList(u64) = .empty;
         errdefer route_refs.deinit(allocator);
