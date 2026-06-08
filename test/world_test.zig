@@ -1318,6 +1318,9 @@ test "capsule freeze freezes completed linked assembly" {
     try std.testing.expectEqual(assembly.assembly_fingerprint, image.manifest.assembly_fingerprint.?);
     try std.testing.expect(image.link_image != null);
     try std.testing.expectEqual(@as(u64, 0x5150_3501), image.link_image.?.linker_policy_fingerprint);
+    try std.testing.expectEqual(@as(u64, 0), image.link_image.?.residual_import_set_fingerprint);
+    const generated_link = try world.Capsule.verifyLink(image, 0, .{});
+    try std.testing.expectEqual(world.Capsule.RelinkStatus.matched, generated_link.relink_status);
     try std.testing.expectEqual(@as(usize, 1), image.runspace_image.run_slots.len);
     try std.testing.expectEqual(@as(usize, 0), image.manifest.pending_port_count);
     try image.validate(.{});
@@ -6012,6 +6015,15 @@ test "assembly preflights environment and installs into Runspace through Fabric 
     defer linked.deinit();
 
     try std.testing.expectEqual(@as(usize, 0), linked.assembly.residualImportSet().required_count);
+    var closed_link_image = try world.Capsule.linkImageFromAssembly(
+        std.testing.allocator,
+        linked.assembly,
+        linked.assembly.linker_policy_fingerprint,
+        linked.assembly.catalog_fingerprint,
+    );
+    defer closed_link_image.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u64, 0), closed_link_image.residual_import_set_fingerprint);
+    try std.testing.expectEqual(@as(usize, 0), closed_link_image.external_environment_requirements.len);
     const missing_env_report = PortsMissingEnv.preflightAssembly(.fresh, true, linked.assembly);
     try std.testing.expect(missing_env_report.accepted);
     try std.testing.expectEqual(linked.plan.plan_fingerprint, missing_env_report.link_plan_fingerprint.?);

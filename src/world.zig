@@ -18293,6 +18293,7 @@ pub const Capsule = struct {
         const external_slice = try external_refs.toOwnedSlice(allocator);
         errdefer allocator.free(external_slice);
 
+        const residual_import_set = assembly.residualImportSet();
         var image = LinkImage.init(.{
             .link_plan_fingerprint = assembly.link_plan_fingerprint,
             .link_certificate_fingerprint = assembly.linker_certificate_fingerprint,
@@ -18300,7 +18301,7 @@ pub const Capsule = struct {
             .linker_policy_fingerprint = linker_policy_fingerprint,
             .catalog_fingerprint = catalog_fingerprint,
             .route_synthesis_refs = route_slice,
-            .residual_import_set_fingerprint = assembly.residualImportSet().residual_import_set_fingerprint,
+            .residual_import_set_fingerprint = if (residual_import_set.required_count == 0) 0 else residual_import_set.residual_import_set_fingerprint,
             .provider_target_refs = provider_slice,
             .guest_provider_refs = guest_slice,
             .external_environment_requirements = external_slice,

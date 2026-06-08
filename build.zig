@@ -636,9 +636,9 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-capsule-linked-restore",
             .desc = "Run the World Assembly Capsule linked restore example.",
             .expected_stdout =
-            \\capsule_fingerprint=2eef2b7bf9dd7c3c
+            \\capsule_fingerprint=1c162ff9cf0a1759
             \\link_certificate_fingerprint=2045220a5ff7a9fd
-            \\restore_report_fingerprint=da5e45406431c74
+            \\restore_report_fingerprint=126616d46836f122
             \\final_result=7
             \\
             ,
