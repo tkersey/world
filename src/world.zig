@@ -17383,6 +17383,7 @@ pub const Capsule = struct {
             if (self.fabric_image) |fabric| try fabric.validate(options);
             try validateImageManifestConsistency(self);
             try validateRunImageCoverage(self);
+            try validateCapsuleRefIndexes(self);
             for (self.transcript_images) |transcript| {
                 try validateTranscriptImageFingerprint(transcript);
                 try transcript.validateValuePolicy(.portable);
@@ -17390,14 +17391,6 @@ pub const Capsule = struct {
             for (self.run_images) |run_image| try run_image.validate(.{ .require_portable_values = true });
             for (self.value_images) |value_image| try validateValueImage(value_image);
             if (self.image_fingerprint != fingerprintImage(self)) return error.InvalidFrameEncoding;
-        }
-
-        pub fn dependencies(self: @This()) []const DependencyRef {
-            return self.dependency_refs;
-        }
-
-        pub fn objectRefs(self: @This()) []const ObjectRef {
-            return self.object_refs;
         }
 
         pub fn asBundleRoot(self: @This()) ObjectRef {
@@ -18358,11 +18351,11 @@ pub const Capsule = struct {
     }
 
     pub fn dependencies(image: Image, allocator: std.mem.Allocator) ![]DependencyRef {
-        return allocator.dupe(DependencyRef, image.dependency_refs);
+        return dependencyRefsForFreeze(allocator, image.manifest, image.runspace_image, image.link_image, image.fabric_image);
     }
 
     pub fn objectRefs(image: Image, allocator: std.mem.Allocator) ![]ObjectRef {
-        return allocator.dupe(ObjectRef, image.object_refs);
+        return objectRefsForFreeze(allocator, image.manifest, image.runspace_image, image.link_image, image.fabric_image);
     }
 
     pub fn asBundleRoot(image: Image) ?ObjectRef {
@@ -19351,6 +19344,55 @@ pub const Capsule = struct {
         for (image.value_images) |value| {
             if (!u64SliceContains(image.value_image_refs, value.value_image_fingerprint)) return error.InvalidFrameEncoding;
         }
+    }
+
+    fn validateCapsuleRefIndexes(image: Image) !void {
+        if (image.dependency_refs.len != 0) {
+            const expected_count: usize =
+                2 +
+                (if (image.link_image != null) @as(usize, 1) else 0) +
+                (if (image.fabric_image != null) @as(usize, 1) else 0) +
+                image.manifest.admission_receipt_fingerprints.len +
+                image.manifest.environment_certificate_fingerprints.len +
+                image.manifest.run_permit_fingerprints.len +
+                image.manifest.transcript_image_fingerprints.len +
+                image.manifest.run_image_fingerprints.len;
+            if (image.dependency_refs.len != expected_count) return error.InvalidFrameEncoding;
+            try validateDependencyRefCovered(image, .manifest, image.manifest.manifest_fingerprint);
+            try validateDependencyRefCovered(image, .runspace_image, image.runspace_image.image_fingerprint);
+            if (image.link_image) |link| try validateDependencyRefCovered(image, .link_image, link.link_image_fingerprint);
+            if (image.fabric_image) |fabric| try validateDependencyRefCovered(image, .fabric_image, fabric.fabric_image_fingerprint);
+            for (image.manifest.admission_receipt_fingerprints) |fingerprint| try validateDependencyRefCovered(image, .admission, fingerprint);
+            for (image.manifest.environment_certificate_fingerprints) |fingerprint| try validateDependencyRefCovered(image, .environment, fingerprint);
+            for (image.manifest.run_permit_fingerprints) |fingerprint| try validateDependencyRefCovered(image, .supervision, fingerprint);
+            for (image.manifest.transcript_image_fingerprints) |fingerprint| try validateDependencyRefCovered(image, .transcript_image, fingerprint);
+            for (image.manifest.run_image_fingerprints) |fingerprint| try validateDependencyRefCovered(image, .run_image, fingerprint);
+        }
+        if (image.object_refs.len != 0) {
+            const expected_count: usize =
+                2 +
+                (if (image.link_image != null) @as(usize, 1) else 0) +
+                (if (image.fabric_image != null) @as(usize, 1) else 0);
+            if (image.object_refs.len != expected_count) return error.InvalidFrameEncoding;
+            try validateObjectRefCovered(image, .capsule_manifest, image.manifest.manifest_fingerprint);
+            try validateObjectRefCovered(image, .runspace_image, image.runspace_image.image_fingerprint);
+            if (image.link_image) |link| try validateObjectRefCovered(image, .link_image, link.link_image_fingerprint);
+            if (image.fabric_image) |fabric| try validateObjectRefCovered(image, .fabric_image, fabric.fabric_image_fingerprint);
+        }
+    }
+
+    fn validateDependencyRefCovered(image: Image, section: SectionKind, fingerprint: u64) !void {
+        for (image.dependency_refs) |ref| {
+            if (ref.section == section and ref.fingerprint == fingerprint) return;
+        }
+        return error.InvalidFrameEncoding;
+    }
+
+    fn validateObjectRefCovered(image: Image, kind: ObjectKind, fingerprint: u64) !void {
+        for (image.object_refs) |ref| {
+            if (ref.kind == kind and ref.fingerprint == fingerprint) return;
+        }
+        return error.InvalidFrameEncoding;
     }
 
     fn validateManifestRootSlotCoverage(image: Image) !void {

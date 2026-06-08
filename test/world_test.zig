@@ -263,17 +263,9 @@ test "capsule image encode decode roundtrips dependency and object refs" {
         .runspace_report_fingerprint = 0x300,
         .mailbox_image = mailbox,
     });
-    const deps = [_]world.Capsule.DependencyRef{
-        world.Capsule.DependencyRef.init(world.Capsule.SectionKind.run_image, 0x400),
-    };
-    const refs = [_]world.Capsule.ObjectRef{
-        world.Capsule.ObjectRef.init(world.Capsule.ObjectKind.capsule_image, 0x500),
-    };
     var image = world.Capsule.Image.init(.{
         .manifest = manifest,
         .runspace_image = runspace_image,
-        .dependency_refs = &deps,
-        .object_refs = &refs,
         .metadata = "capsule image",
     });
     try image.validate(.{});
@@ -283,13 +275,34 @@ test "capsule image encode decode roundtrips dependency and object refs" {
     defer decoded.deinit(allocator);
     try std.testing.expectEqual(image.image_fingerprint, decoded.image_fingerprint);
     try std.testing.expectEqual(image.manifest.manifest_fingerprint, decoded.manifest.manifest_fingerprint);
-    try std.testing.expectEqual(@as(usize, 1), decoded.dependency_refs.len);
-    try std.testing.expectEqual(@as(u64, 0x400), decoded.dependency_refs[0].fingerprint);
-    const copied_deps = decoded.dependencies();
-    try std.testing.expectEqual(@as(usize, 1), copied_deps.len);
-    const copied_refs = decoded.objectRefs();
-    try std.testing.expectEqual(@as(usize, 1), copied_refs.len);
+    try std.testing.expectEqual(@as(usize, 0), decoded.dependency_refs.len);
+    const copied_deps = try world.Capsule.dependencies(decoded, allocator);
+    defer allocator.free(copied_deps);
+    try std.testing.expectEqual(@as(usize, 2), copied_deps.len);
+    try std.testing.expectEqual(world.Capsule.SectionKind.manifest, copied_deps[0].section);
+    try std.testing.expectEqual(decoded.manifest.manifest_fingerprint, copied_deps[0].fingerprint);
+    try std.testing.expectEqual(world.Capsule.SectionKind.runspace_image, copied_deps[1].section);
+    try std.testing.expectEqual(decoded.runspace_image.image_fingerprint, copied_deps[1].fingerprint);
+    const copied_refs = try world.Capsule.objectRefs(decoded, allocator);
+    defer allocator.free(copied_refs);
+    try std.testing.expectEqual(@as(usize, 2), copied_refs.len);
+    try std.testing.expectEqual(world.Capsule.ObjectKind.capsule_manifest, copied_refs[0].kind);
+    try std.testing.expectEqual(world.Capsule.ObjectKind.runspace_image, copied_refs[1].kind);
     try std.testing.expectEqual(@as(u64, decoded.image_fingerprint), decoded.asBundleRoot().fingerprint);
+
+    const stale_deps = [_]world.Capsule.DependencyRef{
+        world.Capsule.DependencyRef.init(world.Capsule.SectionKind.run_image, 0x400),
+    };
+    const stale_refs = [_]world.Capsule.ObjectRef{
+        world.Capsule.ObjectRef.init(world.Capsule.ObjectKind.capsule_image, 0x500),
+    };
+    const stale_image = world.Capsule.Image.init(.{
+        .manifest = manifest,
+        .runspace_image = runspace_image,
+        .dependency_refs = &stale_deps,
+        .object_refs = &stale_refs,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, stale_image.validate(.{}));
 }
 
 test "capsule decode applies dependency limits to link image refs" {
