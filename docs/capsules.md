@@ -56,7 +56,7 @@ It never serializes Machine pointers, allocators, handlers, request tokens, nati
 
 ## Thaw
 
-`Capsule.validate`, `Capsule.planThaw`, and `Capsule.thawIntoRunspace` validate image format, match local targets/modules/catalog, preflight environment refs, require receiver permits when configured, plan handle/mailbox remaps, reject blockers before mutation, and restore supported completed/failed slot metadata into the destination Runspace. Receivers configured with `require_supervision` reject capsule restore until a receiver-local permit object can be validated, not just a permit fingerprint.
+`Capsule.validate`, `Capsule.planThaw`, and `Capsule.thawIntoRunspace` validate image format, match the local root target-ref witness and optional local catalog fingerprint, preflight environment refs, require receiver permits when configured, plan handle/mailbox remaps, reject blockers before mutation, and restore supported completed/failed slot metadata into the destination Runspace. Receivers configured with `require_supervision` reject capsule restore until a receiver-local permit object can be validated, not just a permit fingerprint.
 
 ## Relink verification
 

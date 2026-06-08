@@ -679,7 +679,7 @@ pub fn build(b: *std.Build) void {
             .expected_stdout =
             \\relink_rejected=true
             \\blocker_tag=relink_drift_rejected
-            \\thaw_plan_fingerprint=de657df0dd8564e9
+            \\thaw_plan_fingerprint=2b46501661f7345d
             \\
             ,
         },

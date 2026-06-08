@@ -2381,7 +2381,7 @@ pub const Admission = struct {
         };
         return Capsule.thawBlocker(
             image,
-            plan.local_target_registry_fingerprint,
+            plan.local_root_target_ref_fingerprint,
             environment_fingerprint,
             plan.receiver_run_permit_fingerprint,
             options,
@@ -17579,7 +17579,7 @@ pub const Capsule = struct {
         thaw_plan_fingerprint: u64,
         capsule_image_fingerprint: u64,
         requested_mode: RestoreMode,
-        local_target_registry_fingerprint: u64 = 0,
+        local_root_target_ref_fingerprint: u64 = 0,
         require_local_permit: bool = true,
         require_link_match: bool = true,
         allow_relink_drift: bool = false,
@@ -17602,7 +17602,7 @@ pub const Capsule = struct {
         pub fn init(args: struct {
             capsule_image_fingerprint: u64,
             requested_mode: RestoreMode,
-            local_target_registry_fingerprint: u64 = 0,
+            local_root_target_ref_fingerprint: u64 = 0,
             require_local_permit: bool = true,
             require_link_match: bool = true,
             allow_relink_drift: bool = false,
@@ -17625,7 +17625,7 @@ pub const Capsule = struct {
                 .thaw_plan_fingerprint = 0,
                 .capsule_image_fingerprint = args.capsule_image_fingerprint,
                 .requested_mode = args.requested_mode,
-                .local_target_registry_fingerprint = args.local_target_registry_fingerprint,
+                .local_root_target_ref_fingerprint = args.local_root_target_ref_fingerprint,
                 .require_local_permit = args.require_local_permit,
                 .require_link_match = args.require_link_match,
                 .allow_relink_drift = args.allow_relink_drift,
@@ -17773,14 +17773,14 @@ pub const Capsule = struct {
         pub fn prepare(
             image: Image,
             runspace: *Runspace,
-            registry_fingerprint: u64,
+            local_root_target_ref_fingerprint: u64,
             environment_fingerprint: u64,
             permit_fingerprint: ?u64,
             options: ThawOptions,
         ) !@This() {
             return .{
                 .runspace = runspace,
-                .plan = try planThaw(image, registry_fingerprint, environment_fingerprint, permit_fingerprint, options),
+                .plan = try planThaw(image, local_root_target_ref_fingerprint, environment_fingerprint, permit_fingerprint, options),
                 .slot_count_before = runspace.slots.items.len,
                 .next_run_id_before = runspace.next_run_id,
                 .mailbox_count_before = runspace.mailbox.pending.items.len,
@@ -18496,15 +18496,15 @@ pub const Capsule = struct {
         return image;
     }
 
-    pub fn planThaw(image: Image, registry_fingerprint: u64, environment_fingerprint: u64, permit_fingerprint: ?u64, options: ThawOptions) !ThawPlan {
+    pub fn planThaw(image: Image, local_root_target_ref_fingerprint: u64, environment_fingerprint: u64, permit_fingerprint: ?u64, options: ThawOptions) !ThawPlan {
         try image.validate(.{ .max_image_bytes = options.max_image_bytes });
-        const blocker: ?Blocker = thawBlocker(image, registry_fingerprint, environment_fingerprint, permit_fingerprint, options);
+        const blocker: ?Blocker = thawBlocker(image, local_root_target_ref_fingerprint, environment_fingerprint, permit_fingerprint, options);
         const accepted = blocker == null;
-        const link_status = linkMatchStatusForThaw(image, registry_fingerprint, options);
+        const link_status = linkMatchStatusForThaw(image, options);
         return ThawPlan.init(.{
             .capsule_image_fingerprint = image.image_fingerprint,
             .requested_mode = options.mode,
-            .local_target_registry_fingerprint = registry_fingerprint,
+            .local_root_target_ref_fingerprint = local_root_target_ref_fingerprint,
             .require_local_permit = options.require_local_permit,
             .require_link_match = options.require_link_match,
             .allow_relink_drift = options.allow_relink_drift,
@@ -18522,9 +18522,9 @@ pub const Capsule = struct {
         });
     }
 
-    pub fn thawIntoRunspace(image: Image, runspace: *Runspace, registry_fingerprint: u64, environment_fingerprint: u64, permit_fingerprint: ?u64, options: ThawOptions) !RestoreReport {
+    pub fn thawIntoRunspace(image: Image, runspace: *Runspace, local_root_target_ref_fingerprint: u64, environment_fingerprint: u64, permit_fingerprint: ?u64, options: ThawOptions) !RestoreReport {
         const allocator = runspace.allocator;
-        var transaction = try RestoreTransaction.prepare(image, runspace, registry_fingerprint, environment_fingerprint, permit_fingerprint, options);
+        var transaction = try RestoreTransaction.prepare(image, runspace, local_root_target_ref_fingerprint, environment_fingerprint, permit_fingerprint, options);
         defer transaction.rollbackUnlessCommitted();
         const plan = transaction.plan;
         if (plan.blockers.len != 0) {
@@ -18810,7 +18810,7 @@ pub const Capsule = struct {
             return ThawPlan.init(.{
                 .capsule_image_fingerprint = image.image_fingerprint,
                 .requested_mode = .relink_and_restore,
-                .local_target_registry_fingerprint = local_catalog_fingerprint,
+                .local_root_target_ref_fingerprint = 0,
                 .require_local_permit = false,
                 .local_catalog_fingerprint = local_catalog_fingerprint,
                 .link_certificate_match_status = .missing,
@@ -18843,7 +18843,7 @@ pub const Capsule = struct {
         return ThawPlan.init(.{
             .capsule_image_fingerprint = image.image_fingerprint,
             .requested_mode = .relink_and_restore,
-            .local_target_registry_fingerprint = local_catalog_fingerprint,
+            .local_root_target_ref_fingerprint = 0,
             .require_local_permit = false,
             .allow_relink_drift = policy.allow_relink_drift,
             .local_catalog_fingerprint = local_catalog_fingerprint,
@@ -18857,12 +18857,12 @@ pub const Capsule = struct {
         return verifyLink(image, local_catalog_fingerprint, policy);
     }
 
-    fn thawBlocker(image: Image, registry_fingerprint: u64, environment_fingerprint: u64, permit_fingerprint: ?u64, options: ThawOptions) ?Blocker {
+    fn thawBlocker(image: Image, local_root_target_ref_fingerprint: u64, environment_fingerprint: u64, permit_fingerprint: ?u64, options: ThawOptions) ?Blocker {
         if (!restoreModeAllowedForImage(image, options.mode)) return .malformed_image;
         if (restoreModeRequiresRunHandleMappings(options.mode) and !runspaceImageHandleMappingsMatchSlots(image.runspace_image)) return .malformed_image;
         if (options.mode == .verify_and_restore) return .verification_witness_missing;
         if (options.require_local_permit and permit_fingerprint == null and options.mode != .inspect_only and options.mode != .replay_only) return .permit_denied;
-        if (registry_fingerprint != 0 and registry_fingerprint != image.manifest.root_target_ref_fingerprint) {
+        if (local_root_target_ref_fingerprint != 0 and local_root_target_ref_fingerprint != image.manifest.root_target_ref_fingerprint) {
             return .target_mismatch;
         }
         if (image.manifest.environment_certificate_fingerprints.len != 0) {
@@ -18871,7 +18871,7 @@ pub const Capsule = struct {
         }
         if (options.require_link_match) {
             if (image.link_image) |link| {
-                const local_catalog = localCatalogFingerprintForThaw(image, registry_fingerprint, options);
+                const local_catalog = localCatalogFingerprintForThaw(options);
                 if (link.catalog_fingerprint) |catalog| {
                     if (local_catalog) |local| {
                         if (catalog != local and !options.allow_relink_drift) return .link_plan_mismatch;
@@ -19403,15 +19403,14 @@ pub const Capsule = struct {
         return error.InvalidFrameEncoding;
     }
 
-    fn localCatalogFingerprintForThaw(image: Image, registry_fingerprint: u64, options: ThawOptions) ?u64 {
+    fn localCatalogFingerprintForThaw(options: ThawOptions) ?u64 {
         if (options.local_catalog_fingerprint) |catalog| return catalog;
-        if (registry_fingerprint != 0 and registry_fingerprint != image.manifest.root_target_ref_fingerprint) return registry_fingerprint;
         return null;
     }
 
-    fn linkMatchStatusForThaw(image: Image, registry_fingerprint: u64, options: ThawOptions) LinkCertificateMatchStatus {
+    fn linkMatchStatusForThaw(image: Image, options: ThawOptions) LinkCertificateMatchStatus {
         const link = image.link_image orelse return .missing;
-        const local_catalog = localCatalogFingerprintForThaw(image, registry_fingerprint, options);
+        const local_catalog = localCatalogFingerprintForThaw(options);
         if (link.catalog_fingerprint) |catalog| {
             if (local_catalog) |local| {
                 if (catalog != local) return .mismatched;
@@ -19936,7 +19935,7 @@ pub const Capsule = struct {
         hashU64(&hasher, plan.fingerprint_version);
         hashU64(&hasher, plan.capsule_image_fingerprint);
         hashU64(&hasher, @intFromEnum(plan.requested_mode));
-        hashU64(&hasher, plan.local_target_registry_fingerprint);
+        hashU64(&hasher, plan.local_root_target_ref_fingerprint);
         hashBool(&hasher, plan.require_local_permit);
         hashBool(&hasher, plan.require_link_match);
         hashBool(&hasher, plan.allow_relink_drift);
@@ -21964,12 +21963,12 @@ pub const Handoff = struct {
     pub fn acceptCapsule(
         image: Capsule.Image,
         runspace: *Runspace,
-        registry_fingerprint: u64,
+        local_root_target_ref_fingerprint: u64,
         environment_fingerprint: u64,
         permit_fingerprint: ?u64,
         options: Capsule.ThawOptions,
     ) !Capsule.RestoreReport {
-        return Capsule.thawIntoRunspace(image, runspace, registry_fingerprint, environment_fingerprint, permit_fingerprint, options);
+        return Capsule.thawIntoRunspace(image, runspace, local_root_target_ref_fingerprint, environment_fingerprint, permit_fingerprint, options);
     }
 
     pub fn deinit(self: *@This()) void {

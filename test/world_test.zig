@@ -2221,11 +2221,18 @@ test "capsule relink requires manifest fabric plan coverage" {
     const missing_catalog_thaw = try world.Capsule.planThaw(catalog_image, root_ref.target_ref_fingerprint, 0, 0x5150_3722, .{ .mode = .restore_completed });
     try std.testing.expectEqual(world.Capsule.Blocker.link_plan_mismatch, missing_catalog_thaw.blockers[0]);
     try std.testing.expectEqual(world.Capsule.LinkCertificateMatchStatus.mismatched, missing_catalog_thaw.link_certificate_match_status);
-    const catalog_as_target_thaw = try world.Capsule.planThaw(catalog_image, catalog_image.link_image.?.catalog_fingerprint.?, 0, 0x5150_3723, .{
+    const registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Ports.Target)});
+    const registry_as_target_thaw = try world.Capsule.planThaw(catalog_image, registry.registry_fingerprint, 0, 0x5150_3723, .{
         .mode = .restore_completed,
         .local_catalog_fingerprint = catalog_image.link_image.?.catalog_fingerprint.?,
     });
-    try std.testing.expectEqual(world.Capsule.Blocker.target_mismatch, catalog_as_target_thaw.blockers[0]);
+    try std.testing.expectEqual(world.Capsule.Blocker.target_mismatch, registry_as_target_thaw.blockers[0]);
+    const catalog_and_target_thaw = try world.Capsule.planThaw(catalog_image, root_ref.target_ref_fingerprint, 0, 0x5150_3724, .{
+        .mode = .restore_completed,
+        .local_catalog_fingerprint = catalog_image.link_image.?.catalog_fingerprint.?,
+    });
+    try std.testing.expectEqual(@as(usize, 0), catalog_and_target_thaw.blockers.len);
+    try std.testing.expectEqual(world.Capsule.LinkCertificateMatchStatus.matched, catalog_and_target_thaw.link_certificate_match_status);
     const drift_rejected = try world.Capsule.planThaw(catalog_image, root_ref.target_ref_fingerprint, 0, 0x5150_3714, .{
         .mode = .restore_completed,
         .local_catalog_fingerprint = root_ref.target_ref_fingerprint,
@@ -2389,7 +2396,7 @@ test "capsule handoff admission binds restore witnesses and receiver permit" {
     const forged_environment_thaw = world.Capsule.ThawPlan.init(.{
         .capsule_image_fingerprint = environment_image.image_fingerprint,
         .requested_mode = .restore_completed,
-        .local_target_registry_fingerprint = target_ref.target_ref_fingerprint,
+        .local_root_target_ref_fingerprint = target_ref.target_ref_fingerprint,
         .environment_preflight_refs = &forged_environment_refs,
         .receiver_run_permit_fingerprint = restore.receiver_run_permit_fingerprint,
         .handle_remapping_plan = environment_image.runspace_image.run_handle_mappings,
@@ -2441,7 +2448,7 @@ test "capsule handoff admission binds restore witnesses and receiver permit" {
     const forged_link_thaw = world.Capsule.ThawPlan.init(.{
         .capsule_image_fingerprint = linked_image.image_fingerprint,
         .requested_mode = .restore_completed,
-        .local_target_registry_fingerprint = target_ref.target_ref_fingerprint,
+        .local_root_target_ref_fingerprint = target_ref.target_ref_fingerprint,
         .receiver_run_permit_fingerprint = restore.receiver_run_permit_fingerprint,
         .handle_remapping_plan = linked_image.runspace_image.run_handle_mappings,
     });
