@@ -52,6 +52,8 @@ The public root is intentionally small:
 - `world.Assembly`
 - `world.Capsule`
 - `world.AssemblyCapsule`
+- `world.Actuation`
+- `world.ActuatorRef`
 - `world.ConduitPlan`
 - `world.ConduitRoute`
 - `world.AuditImage`
@@ -188,6 +190,24 @@ Environment says what the host can provide. Supervision says what the host is wi
 `world.Supervisor` owns the policy membrane around `Machine` execution. If no permit is supplied, existing machine behavior is preserved. If a permit is supplied, Machine validates the permit against the target/environment/mode, denies disallowed requests before handler calls, updates the usage ledger, and exposes a receipt on successful `Machine.run`.
 
 Handoff receivers may issue a new local permit with tighter limits using `Handoff.preflightWithPermit` and `Handoff.resumeWithPermit`. `RunImage` can carry prior permit and receipt fingerprints for inspection; receivers do not have to trust them.
+
+## World Actuation
+
+Environment says what the host can provide. Actuation says how the host is allowed to commit an effect, and what receipt proves happened.
+
+`world.Actuation` is the deterministic host-side membrane for residual `WorldPort` requests that reach the host boundary. It turns a pending request into an `Actuation.Intent`, wraps the portable call as an `Actuation.Envelope`, records a policy `Actuation.Decision`, records an `Actuation.Commit`, captures an `Actuation.Response`, and emits an `Actuation.Receipt`. These objects are deterministic local evidence, not cryptographic proof, and they exclude handler pointers, allocator/runtime/thread identity, credentials, URLs, request tokens, model handles, file handles, and network handles.
+
+`world.ActuatorRef` identifies an actuator declaration by stable policy metadata: kind, class, supported modes, allowed response statuses, value policy, optional authority/protocol descriptor fingerprints, label, and metadata. The kind is descriptive; it is not security authority. Built-in kinds include fixture, replay source, native function, byte protocol, guest bridge, model-like, tool-like, file-like, human-like, and custom.
+
+`world.Actuation.Class` describes effect policy: observation, deterministic fixture, idempotent mutation, non-idempotent mutation, irreversible mutation, compensatable mutation, human-gated, and unknown effect. World does not prove real-world idempotency or reversibility. It requires explicit idempotency keys, approvals, and receipts where policy demands them.
+
+`world.Actuation.Descriptor` binds an actuator to a WorldPort-compatible shape without storing the host implementation. `world.Actuation.Binding` connects a residual import requirement to that descriptor. Environment preflight can count actuation bindings as coverage; Runspace can dispatch parked requests through the actuation membrane; Fabric and Linker can carry explicit actuation route metadata; Guest conformance vectors can include actuation receipt summaries.
+
+`world.Actuation.IdempotencyKey` binds target, surface, port id, request fingerprint, actuator ref, and optional run/pending/capsule context. It is deterministic and local; future hosts may map it to external idempotency systems, but World does not claim exactly-once distributed semantics.
+
+`world.Actuation.Journal` is an in-memory run-local sequence of intents, decisions, commits, responses, receipts, and idempotency keys. `Actuation.ReplaySource` satisfies intents from receipts or a journal without a fresh host call. `Actuation.VerifyReport` compares expected and fresh receipt behavior. Pending and deferred responses do not resume the parent run; Capsules can freeze pending intents and completed receipts when policy allows, then thaw under receiver-local policy.
+
+Actuation comes before the future Continuity Vault because future storage should persist stable intent, envelope, commit, response, receipt, and journal objects without knowing any real model, tool, file, browser, network, or human integration.
 
 ## World Admission
 

@@ -313,6 +313,30 @@ pub const world_capsule_certificate_format_version: u32 = 1;
 pub const world_capsule_certificate_fingerprint_version: u32 = 1;
 pub const world_capsule_thaw_plan_fingerprint_version: u32 = 1;
 pub const world_capsule_restore_report_fingerprint_version: u32 = 1;
+pub const world_actuation_class_fingerprint_version: u32 = 1;
+pub const world_actuator_ref_format_version: u32 = 1;
+pub const world_actuator_ref_fingerprint_version: u32 = 1;
+pub const world_actuation_descriptor_format_version: u32 = 1;
+pub const world_actuation_descriptor_fingerprint_version: u32 = 1;
+pub const world_actuation_binding_format_version: u32 = 1;
+pub const world_actuation_binding_fingerprint_version: u32 = 1;
+pub const world_actuation_policy_fingerprint_version: u32 = 1;
+pub const world_actuation_idempotency_key_format_version: u32 = 1;
+pub const world_actuation_idempotency_key_fingerprint_version: u32 = 1;
+pub const world_actuation_intent_format_version: u32 = 1;
+pub const world_actuation_intent_fingerprint_version: u32 = 1;
+pub const world_actuation_envelope_format_version: u32 = 1;
+pub const world_actuation_envelope_fingerprint_version: u32 = 1;
+pub const world_actuation_decision_format_version: u32 = 1;
+pub const world_actuation_decision_fingerprint_version: u32 = 1;
+pub const world_actuation_commit_format_version: u32 = 1;
+pub const world_actuation_commit_fingerprint_version: u32 = 1;
+pub const world_actuation_response_format_version: u32 = 1;
+pub const world_actuation_response_fingerprint_version: u32 = 1;
+pub const world_actuation_receipt_format_version: u32 = 1;
+pub const world_actuation_receipt_fingerprint_version: u32 = 1;
+pub const world_actuation_journal_fingerprint_version: u32 = 1;
+pub const world_actuation_verify_report_fingerprint_version: u32 = 1;
 pub const world_guest_abi_version: u32 = 1;
 pub const world_guest_abi_contract_fingerprint_version: u32 = 1;
 pub const world_guest_conformance_vector_fingerprint_version: u32 = 2;
@@ -399,6 +423,10 @@ pub const AcceptanceBlocker = enum {
     FreshCallDenied,
     ReplayCallDenied,
     VerifyCallDenied,
+    MissingActuator,
+    ActuationPolicyMismatch,
+    ActuationValuePolicyMismatch,
+    ActuationReceiptRequired,
 };
 
 pub const TargetRef = struct {
@@ -816,6 +844,97 @@ pub fn bind(comptime Decl: type, comptime Adapter: type) type {
     };
 }
 
+pub fn actuator(comptime args: anytype) type {
+    const Args = @TypeOf(args);
+    const kind: Actuation.Kind = if (@hasField(Args, "kind")) args.kind else .fixture;
+    const class: Actuation.Class = if (@hasField(Args, "class")) args.class else .deterministic_fixture;
+    const label: []const u8 = if (@hasField(Args, "label")) args.label else "";
+    const supported_modes: Actuation.ModeSet = if (@hasField(Args, "supported_modes")) args.supported_modes else .all;
+    const declared_binding_mode_policy: Actuation.ModeSet = if (@hasField(Args, "binding_mode_policy")) args.binding_mode_policy else supported_modes;
+    const supported_response_statuses: Actuation.ResponseStatusSet = if (@hasField(Args, "supported_response_statuses")) args.supported_response_statuses else .terminal_with_errors;
+    const value_policy: ValuePolicy = if (@hasField(Args, "value_policy")) args.value_policy else .portable;
+    const authority_descriptor_fingerprint: ?u64 = if (@hasField(Args, "authority_descriptor_fingerprint")) args.authority_descriptor_fingerprint else null;
+    const protocol_descriptor_fingerprint: ?u64 = if (@hasField(Args, "protocol_descriptor_fingerprint")) args.protocol_descriptor_fingerprint else null;
+    const metadata: []const u8 = if (@hasField(Args, "metadata")) args.metadata else "";
+    return struct {
+        pub const actuator_kind = kind;
+        pub const actuator_class = class;
+        pub const actuator_label = label;
+        pub const binding_mode_policy = declared_binding_mode_policy;
+        pub const value_policy_decl = value_policy;
+        pub const actuator_ref = Actuation.Ref.init(.{
+            .kind = kind,
+            .class = class,
+            .label = label,
+            .supported_modes = supported_modes,
+            .supported_response_statuses = supported_response_statuses,
+            .value_policy_fingerprint = Actuation.valuePolicyFingerprint(value_policy),
+            .authority_descriptor_fingerprint = authority_descriptor_fingerprint,
+            .protocol_descriptor_fingerprint = protocol_descriptor_fingerprint,
+            .metadata = metadata,
+        });
+    };
+}
+
+pub fn bindActuator(comptime Decl: type, comptime ActuatorDecl: type) type {
+    const BasePortDecl = Decl;
+    return struct {
+        pub const PortDecl = BasePortDecl;
+        pub const TargetType = BasePortDecl.TargetType;
+        pub const SiteType = BasePortDecl.SiteType;
+        pub const Payload = BasePortDecl.Payload;
+        pub const Response = BasePortDecl.Response;
+        pub const Result = BasePortDecl.Result;
+        pub const world_port_id = BasePortDecl.world_port_id;
+        pub const residual_site_index = BasePortDecl.residual_site_index;
+        pub const residual_site_fingerprint = BasePortDecl.residual_site_fingerprint;
+        pub const payload_ref = BasePortDecl.payload_ref;
+        pub const response_ref = BasePortDecl.response_ref;
+        pub const result_ref = BasePortDecl.result_ref;
+        pub const source_ref = BasePortDecl.source_ref;
+        pub const world_port_ref = BasePortDecl.world_port_ref;
+        pub const suggested_name = BasePortDecl.suggested_name;
+        pub const response_deinit = BasePortDecl.response_deinit;
+        pub const actuator_ref = ActuatorDecl.actuator_ref;
+        pub const value_policy: ValuePolicy = if (@hasDecl(ActuatorDecl, "value_policy_decl")) ActuatorDecl.value_policy_decl else .portable;
+        pub const binding_mode_policy: Actuation.ModeSet = if (@hasDecl(ActuatorDecl, "binding_mode_policy")) ActuatorDecl.binding_mode_policy else .all;
+
+        pub fn actuationDescriptor() Actuation.Descriptor {
+            const target_ref = TargetRef.fromTarget(TargetType);
+            const requirement = ImportRequirement.fromTargetPort(TargetType, world_port_id);
+            return Actuation.Descriptor.init(.{
+                .actuator_ref = actuator_ref,
+                .world_surface_fingerprint = TargetType.WorldSurface.surface_fingerprint,
+                .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+                .world_port_id = world_port_id,
+                .world_port_ref_fingerprint = requirement.world_port_ref_fingerprint,
+                .source_effect_shape_ref_fingerprint = requirement.source_effect_shape_ref_fingerprint,
+                .payload_value_ref = requirement.payload_value_table_id,
+                .payload_value_table_id = requirement.payload_value_table_id,
+                .response_value_ref = requirement.response_value_table_id,
+                .response_value_table_id = requirement.response_value_table_id,
+                .allowed_response_kinds = actuator_ref.supported_response_statuses,
+                .value_policy = value_policy,
+                .label = suggested_name,
+            });
+        }
+
+        pub fn actuationBindingRecord() Actuation.Binding {
+            const target_ref = TargetRef.fromTarget(TargetType);
+            const requirement = ImportRequirement.fromTargetPort(TargetType, world_port_id);
+            const descriptor = actuationDescriptor();
+            return Actuation.Binding.fromDescriptor(.{
+                .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+                .import_requirement_fingerprint = requirement.requirement_fingerprint,
+                .descriptor = descriptor,
+                .world_port_id = world_port_id,
+                .port_authority_fingerprint = if (@hasDecl(ActuatorDecl, "port_authority_fingerprint")) ActuatorDecl.port_authority_fingerprint else null,
+                .binding_mode_policy = binding_mode_policy,
+            });
+        }
+    };
+}
+
 pub const EnvironmentPolicy = struct {
     require_all_required_ports_bound: bool = true,
     reject_extra_bindings: bool = true,
@@ -930,6 +1049,11 @@ pub const AcceptanceReport = struct {
     replay_only_port_count: usize = 0,
     native_port_count: usize = 0,
     byte_adapter_port_count: usize = 0,
+    actuation_binding_count: usize = 0,
+    missing_actuator_count: usize = 0,
+    actuation_policy_blocker_count: usize = 0,
+    actuation_value_policy_blocker_count: usize = 0,
+    actuation_receipt_required_count: usize = 0,
     portable_value_compatible_count: usize = 0,
     native_only_value_count: usize = 0,
     blockers: []const AcceptanceBlocker = &.{},
@@ -953,6 +1077,11 @@ pub const AcceptanceReport = struct {
         replay_only_port_count: usize = 0,
         native_port_count: usize = 0,
         byte_adapter_port_count: usize = 0,
+        actuation_binding_count: usize = 0,
+        missing_actuator_count: usize = 0,
+        actuation_policy_blocker_count: usize = 0,
+        actuation_value_policy_blocker_count: usize = 0,
+        actuation_receipt_required_count: usize = 0,
         portable_value_compatible_count: usize = 0,
         native_only_value_count: usize = 0,
         blockers: []const AcceptanceBlocker = &.{},
@@ -977,6 +1106,11 @@ pub const AcceptanceReport = struct {
             .replay_only_port_count = args.replay_only_port_count,
             .native_port_count = args.native_port_count,
             .byte_adapter_port_count = args.byte_adapter_port_count,
+            .actuation_binding_count = args.actuation_binding_count,
+            .missing_actuator_count = args.missing_actuator_count,
+            .actuation_policy_blocker_count = args.actuation_policy_blocker_count,
+            .actuation_value_policy_blocker_count = args.actuation_value_policy_blocker_count,
+            .actuation_receipt_required_count = args.actuation_receipt_required_count,
             .portable_value_compatible_count = args.portable_value_compatible_count,
             .native_only_value_count = args.native_only_value_count,
             .blockers = args.blockers,
@@ -1030,6 +1164,22 @@ pub const ConduitPlan = Fabric.Plan;
 pub const ConduitRoute = Fabric.Route;
 pub const Linker = @import("linker.zig").Linker(@This());
 pub const Assembly = Linker.Assembly;
+pub const ActuatorRef = Actuation.Ref;
+pub const ActuationKind = Actuation.Kind;
+pub const ActuationClass = Actuation.Class;
+pub const ActuationDescriptor = Actuation.Descriptor;
+pub const ActuationBinding = Actuation.Binding;
+pub const ActuationPolicy = Actuation.Policy;
+pub const ActuationIdempotencyKey = Actuation.IdempotencyKey;
+pub const ActuationIntent = Actuation.Intent;
+pub const ActuationEnvelope = Actuation.Envelope;
+pub const ActuationDecision = Actuation.Decision;
+pub const ActuationCommit = Actuation.Commit;
+pub const ActuationResponse = Actuation.Response;
+pub const ActuationReceipt = Actuation.Receipt;
+pub const ActuationJournal = Actuation.Journal;
+pub const ActuationReplaySource = Actuation.ReplaySource;
+pub const ActuationVerifyReport = Actuation.VerifyReport;
 
 test "linker kernel boundary source guard rejects forbidden hot path imports" {
     const source = @embedFile("linker.zig");
@@ -2118,6 +2268,12 @@ pub const Admission = struct {
         capsule_certificate_fingerprint: ?u64 = null,
         capsule_thaw_plan_fingerprint: ?u64 = null,
         capsule_restore_report_fingerprint: ?u64 = null,
+        required_actuator_count: usize = 0,
+        actuation_receipt_count: usize = 0,
+        replay_only_actuation_feasible: bool = false,
+        verify_actuation_feasible: bool = false,
+        actuation_binding_refs: []const u64 = &.{},
+        actuation_receipt_refs: []const u64 = &.{},
         blockers: []const AdmissionBlocker = &.{},
         warnings: []const AdmissionBlocker = &.{},
         summary: []const u8 = "",
@@ -2140,6 +2296,12 @@ pub const Admission = struct {
             capsule_certificate_fingerprint: ?u64 = null,
             capsule_thaw_plan_fingerprint: ?u64 = null,
             capsule_restore_report_fingerprint: ?u64 = null,
+            required_actuator_count: usize = 0,
+            actuation_receipt_count: usize = 0,
+            replay_only_actuation_feasible: bool = false,
+            verify_actuation_feasible: bool = false,
+            actuation_binding_refs: []const u64 = &.{},
+            actuation_receipt_refs: []const u64 = &.{},
             warnings: []const AdmissionBlocker = &.{},
             summary: []const u8 = "admission accepted",
         }) Admission.AdmissionReport {
@@ -2163,6 +2325,12 @@ pub const Admission = struct {
                 .capsule_certificate_fingerprint = args.capsule_certificate_fingerprint,
                 .capsule_thaw_plan_fingerprint = args.capsule_thaw_plan_fingerprint,
                 .capsule_restore_report_fingerprint = args.capsule_restore_report_fingerprint,
+                .required_actuator_count = args.required_actuator_count,
+                .actuation_receipt_count = args.actuation_receipt_count,
+                .replay_only_actuation_feasible = args.replay_only_actuation_feasible,
+                .verify_actuation_feasible = args.verify_actuation_feasible,
+                .actuation_binding_refs = args.actuation_binding_refs,
+                .actuation_receipt_refs = args.actuation_receipt_refs,
                 .warnings = args.warnings,
                 .summary = args.summary,
             };
@@ -2188,6 +2356,12 @@ pub const Admission = struct {
             capsule_certificate_fingerprint: ?u64 = null,
             capsule_thaw_plan_fingerprint: ?u64 = null,
             capsule_restore_report_fingerprint: ?u64 = null,
+            required_actuator_count: usize = 0,
+            actuation_receipt_count: usize = 0,
+            replay_only_actuation_feasible: bool = false,
+            verify_actuation_feasible: bool = false,
+            actuation_binding_refs: []const u64 = &.{},
+            actuation_receipt_refs: []const u64 = &.{},
             blockers: []const AdmissionBlocker,
             warnings: []const AdmissionBlocker = &.{},
             summary: []const u8 = "admission rejected",
@@ -2212,6 +2386,12 @@ pub const Admission = struct {
                 .capsule_certificate_fingerprint = args.capsule_certificate_fingerprint,
                 .capsule_thaw_plan_fingerprint = args.capsule_thaw_plan_fingerprint,
                 .capsule_restore_report_fingerprint = args.capsule_restore_report_fingerprint,
+                .required_actuator_count = args.required_actuator_count,
+                .actuation_receipt_count = args.actuation_receipt_count,
+                .replay_only_actuation_feasible = args.replay_only_actuation_feasible,
+                .verify_actuation_feasible = args.verify_actuation_feasible,
+                .actuation_binding_refs = args.actuation_binding_refs,
+                .actuation_receipt_refs = args.actuation_receipt_refs,
                 .blockers = args.blockers,
                 .warnings = args.warnings,
                 .summary = args.summary,
@@ -2286,6 +2466,11 @@ pub const Admission = struct {
                 .capsule_certificate_fingerprint = if (args.certificate) |cert| cert.certificate_fingerprint else null,
                 .capsule_thaw_plan_fingerprint = if (args.thaw_plan) |plan| plan.thaw_plan_fingerprint else null,
                 .capsule_restore_report_fingerprint = if (args.restore_report) |report| report.restore_report_fingerprint else null,
+                .required_actuator_count = args.image.manifest.actuation_intent_fingerprints.len,
+                .actuation_receipt_count = args.image.manifest.actuation_receipt_fingerprints.len,
+                .replay_only_actuation_feasible = args.mode == .replay_only and args.image.manifest.actuation_receipt_fingerprints.len >= args.image.manifest.actuation_intent_fingerprints.len,
+                .verify_actuation_feasible = args.mode == .verify and args.image.manifest.actuation_receipt_fingerprints.len != 0,
+                .actuation_receipt_refs = args.image.manifest.actuation_receipt_fingerprints,
                 .blockers = if (invalid_witnesses) &.{.PackageInvalid} else &.{.AdmissionModeNotAllowed},
                 .summary = if (invalid_witnesses) "capsule admission witness mismatch" else "capsule admission rejected",
             });
@@ -2302,6 +2487,11 @@ pub const Admission = struct {
             .capsule_certificate_fingerprint = if (args.certificate) |cert| cert.certificate_fingerprint else null,
             .capsule_thaw_plan_fingerprint = if (args.thaw_plan) |plan| plan.thaw_plan_fingerprint else null,
             .capsule_restore_report_fingerprint = if (args.restore_report) |report| report.restore_report_fingerprint else null,
+            .required_actuator_count = args.image.manifest.actuation_intent_fingerprints.len,
+            .actuation_receipt_count = args.image.manifest.actuation_receipt_fingerprints.len,
+            .replay_only_actuation_feasible = args.mode == .replay_only and args.image.manifest.actuation_receipt_fingerprints.len >= args.image.manifest.actuation_intent_fingerprints.len,
+            .verify_actuation_feasible = args.mode == .verify and args.image.manifest.actuation_receipt_fingerprints.len != 0,
+            .actuation_receipt_refs = args.image.manifest.actuation_receipt_fingerprints,
             .summary = "capsule admission accepted",
         });
     }
@@ -3366,6 +3556,8 @@ pub const Supervision = struct {
         fabric_invocations,
         fabric_depth,
         provider_runs,
+        actuation_calls,
+        pending_actuations,
         total_cost_units,
         per_port_requests,
         per_port_fresh_calls,
@@ -3397,6 +3589,13 @@ pub const Supervision = struct {
         allow_guest_routes: bool = false,
         allow_replay_routes: bool = false,
         allow_reject_routes: bool = false,
+        allow_actuation: bool = false,
+        allow_fresh_actuation: bool = false,
+        allow_pending_actuation: bool = false,
+        allow_deferred_actuation: bool = false,
+        require_actuation_receipts: bool = true,
+        require_idempotency_keys: bool = true,
+        allow_irreversible_actuation: bool = false,
         require_portable_value_images: bool = false,
         reject_native_only_values: bool = false,
         require_environment_certificate: bool = true,
@@ -3405,6 +3604,8 @@ pub const Supervision = struct {
         park_on_budget_exceeded: bool = false,
         audit_only_on_budget_exceeded: bool = false,
         max_supervision_events: ?usize = null,
+        max_actuation_calls: ?usize = 0,
+        max_pending_actuations: ?usize = 0,
 
         pub fn init(args: anytype) @This() {
             const Args = @TypeOf(args);
@@ -3564,6 +3765,8 @@ pub const Supervision = struct {
         max_fabric_invocations: ?usize = null,
         max_fabric_depth: ?usize = null,
         max_provider_runs: ?usize = null,
+        max_actuation_calls: ?usize = null,
+        max_pending_actuations: ?usize = null,
         max_total_cost_units: ?u64 = null,
         per_port_budgets: []const PerPortBudget = &.{},
 
@@ -3961,6 +4164,18 @@ pub const Supervision = struct {
         total_fabric_invocations: usize = 0,
         max_fabric_depth_observed: usize = 0,
         total_provider_runs: usize = 0,
+        total_actuation_intents: usize = 0,
+        total_actuation_commits: usize = 0,
+        total_fresh_actuations: usize = 0,
+        total_replay_actuations: usize = 0,
+        total_verify_actuations: usize = 0,
+        total_pending_actuations: usize = 0,
+        total_deferred_actuations: usize = 0,
+        total_failed_actuations: usize = 0,
+        total_rejected_actuations: usize = 0,
+        total_irreversible_actuations: usize = 0,
+        total_idempotent_mutations: usize = 0,
+        total_actuation_bytes: usize = 0,
         total_cost_units: u64 = 0,
         per_port_usage: []PerPortUsage = &.{},
         exceeded_budget: ?BudgetExceededKind = null,
@@ -3997,6 +4212,31 @@ pub const Supervision = struct {
         pub fn perPort(self: *@This(), world_port_id: u32) *PerPortUsage {
             return &self.per_port_usage[world_port_id];
         }
+
+        pub fn recordActuationReceipt(self: *@This(), receipt: Actuation.Receipt, response_bytes: usize) void {
+            self.total_actuation_commits += 1;
+            if (receipt.fresh_called) self.total_fresh_actuations += 1;
+            if (receipt.replayed) self.total_replay_actuations += 1;
+            if (receipt.verified) self.total_verify_actuations += 1;
+            if (receipt.pending) self.total_pending_actuations += 1;
+            if (receipt.deferred) self.total_deferred_actuations += 1;
+            if (receipt.failed) self.total_failed_actuations += 1;
+            if (receipt.rejected) self.total_rejected_actuations += 1;
+            if (receipt.class == .irreversible_mutation) self.total_irreversible_actuations += 1;
+            if (receipt.class == .idempotent_mutation) self.total_idempotent_mutations += 1;
+            self.total_actuation_bytes += response_bytes;
+            if (receipt.world_port_id < self.per_port_usage.len) {
+                const port_usage = self.perPort(receipt.world_port_id);
+                if (receipt.fresh_called) port_usage.fresh_calls += 1;
+                if (receipt.replayed) port_usage.replay_calls += 1;
+                if (receipt.verified) port_usage.verify_calls += 1;
+                if (receipt.pending) port_usage.pending_calls += 1;
+                if (receipt.failed) port_usage.failed_calls += 1;
+                if (receipt.rejected) port_usage.rejected_calls += 1;
+                port_usage.response_bytes += response_bytes;
+            }
+            self.refreshFingerprint();
+        }
     };
 
     pub const SupervisionCheck = struct {
@@ -4026,6 +4266,8 @@ pub const Supervision = struct {
             before_handoff_export,
             before_handoff_accept,
             before_fabric_invocation,
+            before_actuation_commit,
+            after_actuation_response,
         };
 
         pub fn init(args: struct {
@@ -4091,6 +4333,18 @@ pub const Supervision = struct {
         fabric_invocation_count: usize = 0,
         provider_run_count: usize = 0,
         max_fabric_depth: usize = 0,
+        actuation_intent_count: usize = 0,
+        actuation_commit_count: usize = 0,
+        fresh_actuation_count: usize = 0,
+        replay_actuation_count: usize = 0,
+        verify_actuation_count: usize = 0,
+        pending_actuation_count: usize = 0,
+        deferred_actuation_count: usize = 0,
+        failed_actuation_count: usize = 0,
+        rejected_actuation_count: usize = 0,
+        irreversible_actuation_count: usize = 0,
+        idempotent_mutation_count: usize = 0,
+        actuation_bytes: usize = 0,
 
         pub const FinalStatus = enum {
             completed,
@@ -4143,6 +4397,18 @@ pub const Supervision = struct {
                 result.fabric_invocation_count = ledger.total_fabric_invocations;
                 result.provider_run_count = ledger.total_provider_runs;
                 result.max_fabric_depth = ledger.max_fabric_depth_observed;
+                result.actuation_intent_count = ledger.total_actuation_intents;
+                result.actuation_commit_count = ledger.total_actuation_commits;
+                result.fresh_actuation_count = ledger.total_fresh_actuations;
+                result.replay_actuation_count = ledger.total_replay_actuations;
+                result.verify_actuation_count = ledger.total_verify_actuations;
+                result.pending_actuation_count = ledger.total_pending_actuations;
+                result.deferred_actuation_count = ledger.total_deferred_actuations;
+                result.failed_actuation_count = ledger.total_failed_actuations;
+                result.rejected_actuation_count = ledger.total_rejected_actuations;
+                result.irreversible_actuation_count = ledger.total_irreversible_actuations;
+                result.idempotent_mutation_count = ledger.total_idempotent_mutations;
+                result.actuation_bytes = ledger.total_actuation_bytes;
             }
             result.receipt_fingerprint = fingerprintRunReceipt(result);
             return result;
@@ -4488,6 +4754,36 @@ pub const Supervision = struct {
             usage.rejected_calls = addSatUsize(usage.rejected_calls, rejected_delta);
             usage.failed_calls = addSatUsize(usage.failed_calls, failed_delta);
             try self.commitCheck(.after_adapter_response, args.world_port_id, &next, null, rule, "adapter response");
+        }
+
+        pub fn beforeActuationCommit(self: *@This(), intent: Actuation.Intent, key_present: bool) !void {
+            try self.validateWorldPortId(intent.world_port_id);
+            const policy = self.permit.policy;
+            if (!policy.allow_actuation) return self.deny(.before_actuation_commit, intent.world_port_id, .fresh_call_denied, null, "actuation denied");
+            if (intent.requested_mode == .fresh and !policy.allow_fresh_actuation) return self.deny(.before_actuation_commit, intent.world_port_id, .fresh_call_denied, null, "fresh actuation denied");
+            if (intent.requested_mode == .replay and !policy.allow_replay_calls) return self.deny(.before_actuation_commit, intent.world_port_id, .replay_call_denied, null, "replay actuation denied");
+            if (intent.requested_mode == .verify and !policy.allow_verify_calls) return self.deny(.before_actuation_commit, intent.world_port_id, .verify_call_denied, null, "verify actuation denied");
+            if (policy.require_idempotency_keys and intent.requested_mode == .fresh and intent.class.isMutation() and !key_present) return self.deny(.before_actuation_commit, intent.world_port_id, .fresh_call_denied, null, "actuation idempotency key required");
+            if (intent.class == .irreversible_mutation and !policy.allow_irreversible_actuation) return self.deny(.before_actuation_commit, intent.world_port_id, .fresh_call_denied, null, "irreversible actuation denied");
+            var next = try self.ledger.clone(self.allocator);
+            defer next.deinit(self.allocator);
+            next.total_actuation_intents = addSatUsize(next.total_actuation_intents, 1);
+            try self.commitCheck(.before_actuation_commit, intent.world_port_id, &next, null, self.permit.ruleFor(intent.world_port_id), "actuation intent");
+        }
+
+        pub fn afterActuationReceipt(self: *@This(), receipt_value: Actuation.Receipt, response_bytes: usize) !void {
+            try self.validateWorldPortId(receipt_value.world_port_id);
+            const policy = self.permit.policy;
+            if (policy.require_actuation_receipts and receipt_value.receipt_fingerprint == 0) return self.deny(.after_actuation_response, receipt_value.world_port_id, .fresh_call_denied, null, "actuation receipt required");
+            if (receipt_value.pending and !policy.allow_pending_actuation) return self.deny(.after_actuation_response, receipt_value.world_port_id, .pending_denied, null, "pending actuation denied");
+            if (receipt_value.deferred and !policy.allow_deferred_actuation) return self.deny(.after_actuation_response, receipt_value.world_port_id, .pending_denied, null, "deferred actuation denied");
+            if (receipt_value.rejected and !policy.allow_rejected_responses) return self.deny(.after_actuation_response, receipt_value.world_port_id, .rejected_denied, null, "rejected actuation denied");
+            if (receipt_value.failed and !policy.allow_failed_responses) return self.deny(.after_actuation_response, receipt_value.world_port_id, .failed_denied, null, "failed actuation denied");
+            var next = try self.ledger.clone(self.allocator);
+            defer next.deinit(self.allocator);
+            next.recordActuationReceipt(receipt_value, response_bytes);
+            if (next.total_actuation_intents > 0) next.total_actuation_intents -= 1;
+            try self.commitCheck(.after_actuation_response, receipt_value.world_port_id, &next, null, self.permit.ruleFor(receipt_value.world_port_id), "actuation receipt");
         }
 
         pub fn beforeTranscriptAppend(self: *@This(), event_count_after_append: usize, image_bytes_after_append: usize) !void {
@@ -4842,6 +5138,10 @@ pub const Supervision = struct {
         if (budget.max_fabric_invocations) |max| if (ledger.total_fabric_invocations > max) return .fabric_invocations;
         if (budget.max_fabric_depth) |max| if (ledger.max_fabric_depth_observed > max) return .fabric_depth;
         if (budget.max_provider_runs) |max| if (ledger.total_provider_runs > max) return .provider_runs;
+        if (budget.max_actuation_calls) |max| {
+            if (ledger.total_actuation_commits > max or ledger.total_actuation_intents > max - ledger.total_actuation_commits) return .actuation_calls;
+        }
+        if (budget.max_pending_actuations) |max| if (ledger.total_pending_actuations > max) return .pending_actuations;
         if (budget.max_total_cost_units) |max| if (ledger.total_cost_units > max) return .total_cost_units;
         if (world_port_id) |id| {
             if (budget.perPort(id)) |per_port_budget| {
@@ -4888,6 +5188,7 @@ pub const Supervision = struct {
 pub fn Environment(comptime Target: type, comptime Config: anytype) type {
     comptime validateTarget(Target);
     const bindings = if (@hasField(@TypeOf(Config), "bindings")) Config.bindings else .{};
+    const actuation_bindings = if (@hasField(@TypeOf(Config), "actuation_bindings")) Config.actuation_bindings else .{};
     const policy = if (@hasField(@TypeOf(Config), "policy")) Config.policy else EnvironmentPolicy.fresh_and_replay;
     return struct {
         pub const Policy = EnvironmentPolicy;
@@ -4895,13 +5196,15 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
         pub const target_ref = TargetRef.fromTarget(Target);
         pub const import_set = ImportSet.fromTarget(Target);
         pub const bindings_decl = bindings;
+        pub const actuation_bindings_decl = actuation_bindings;
         pub const policy_decl = policy;
         pub const ports = boundPorts(bindings);
         pub const dense_binding_entries = bindingPlanEntries(Target, bindings);
         pub const machine_config = .{ .environment = @This() };
 
         pub fn acceptanceReport(requested_mode: Mode, transcript_image_available: bool) AcceptanceReport {
-            return acceptanceReportFor(Target, bindings, policy, requested_mode, transcript_image_available);
+            const report = acceptanceReportFor(Target, bindings, policy, requested_mode, transcript_image_available);
+            return acceptanceReportWithActuationBindings(report, requested_mode);
         }
 
         pub fn acceptanceReportWithFabricPlan(requested_mode: Mode, transcript_image_available: bool, plan: Fabric.Plan) AcceptanceReport {
@@ -4909,7 +5212,7 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
         }
 
         pub fn acceptanceReportWithFabricPlanEvidence(requested_mode: Mode, transcript_image_available: bool, fabric_replay_transcript_available: bool, plan: Fabric.Plan) AcceptanceReport {
-            const report = acceptanceReportFor(Target, bindings, policy, requested_mode, transcript_image_available);
+            const report = acceptanceReport(requested_mode, transcript_image_available);
             plan.validate() catch return rejectedReport(report, &.{.SupervisionPolicyMismatch});
             plan.assertNoCyclesForTargetRef(target_ref) catch return rejectedReport(report, &.{.SupervisionPolicyMismatch});
             plan.assertDeterministicRouteOrder() catch return rejectedReport(report, &.{.SupervisionPolicyMismatch});
@@ -4969,7 +5272,7 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
         }
 
         pub fn acceptanceReportWithSupervision(requested_mode: Mode, transcript_image_available: bool, supervision_policy: SupervisionPolicy) AcceptanceReport {
-            const report = acceptanceReportFor(Target, bindings, policy, requested_mode, transcript_image_available);
+            const report = acceptanceReport(requested_mode, transcript_image_available);
             return acceptanceReportWithSupervisionFromReport(report, requested_mode, transcript_image_available, supervision_policy, null, false);
         }
 
@@ -4997,7 +5300,7 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
         }
 
         pub fn acceptanceReportWithPermit(requested_mode: Mode, transcript_image_available: bool, permit: RunPermit) AcceptanceReport {
-            return acceptanceReportWithPermitFromReport(acceptanceReportFor(Target, bindings, policy, requested_mode, transcript_image_available), requested_mode, transcript_image_available, permit, null, false, false);
+            return acceptanceReportWithPermitFromReport(acceptanceReport(requested_mode, transcript_image_available), requested_mode, transcript_image_available, permit, null, false, false);
         }
 
         pub fn acceptanceReportWithFabricPlanAndPermit(requested_mode: Mode, transcript_image_available: bool, plan: Fabric.Plan, permit: RunPermit) AcceptanceReport {
@@ -5150,6 +5453,119 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
             result.assembly_fingerprint = assembly.assembly_fingerprint;
             result.report_fingerprint = fingerprintAcceptanceReport(result);
             return result;
+        }
+
+        pub fn bindActuator(comptime ActuationBindingDecl: type) Actuation.Binding {
+            return ActuationBindingDecl.actuationBindingRecord();
+        }
+
+        pub fn preflightActuation(binding: Actuation.Binding, actuation_policy: Actuation.Policy) AcceptanceReport {
+            return preflightActuationMode(binding, .fresh, actuation_policy);
+        }
+
+        pub fn preflightActuationMode(binding: Actuation.Binding, requested_mode: Mode, actuation_policy: Actuation.Policy) AcceptanceReport {
+            if (!actuation_policy.allowsMode(requested_mode)) return rejectedAcceptance(target_ref, requested_mode, &.{.ActuationPolicyMismatch});
+            binding.validate() catch return rejectedAcceptance(target_ref, requested_mode, &.{.MissingActuator});
+            if (!binding.binding_mode_policy.allows(requested_mode)) return rejectedAcceptance(target_ref, requested_mode, &.{.ActuationPolicyMismatch});
+            if (binding.target_ref_fingerprint != target_ref.target_ref_fingerprint) return rejectedAcceptance(target_ref, requested_mode, &.{.HandoffTargetMismatch});
+            if (binding.world_surface_fingerprint != target_ref.world_surface_fingerprint) return rejectedAcceptance(target_ref, requested_mode, &.{.WrongWorldSurface});
+            if (binding.world_port_id >= Target.WorldPortTable.entries.len) return rejectedAcceptance(target_ref, requested_mode, &.{.WrongPortId});
+            const requirement_fingerprint = actuationRequirementFingerprintForPort(binding.world_port_id) orelse return rejectedAcceptance(target_ref, requested_mode, &.{.WrongPortId});
+            if (binding.import_requirement_fingerprint != requirement_fingerprint) return rejectedAcceptance(target_ref, requested_mode, &.{.ActuationValuePolicyMismatch});
+            var report = acceptanceReport(requested_mode, false);
+            report.accepted = true;
+            report.actuation_binding_count += 1;
+            report.missing_actuator_count = 0;
+            report.blockers = &.{};
+            report.summary = "accepted by actuation binding";
+            report.report_fingerprint = fingerprintAcceptanceReport(report);
+            return report;
+        }
+
+        fn acceptanceReportWithActuationBindings(report: AcceptanceReport, requested_mode: Mode) AcceptanceReport {
+            const actuation_count = actuationBindingCountForTarget(requested_mode);
+            if (actuation_count == 0) return report;
+            if (actuationBindingBlocker(requested_mode)) |blocker| return rejectedReport(report, &.{blocker});
+            var result = report;
+            result.actuation_binding_count = actuation_count;
+            if (result.accepted) {
+                result.report_fingerprint = fingerprintAcceptanceReport(result);
+                return result;
+            }
+            if (!acceptanceReportHasOnlyMissingBinding(report)) return result;
+            const covered_missing = actuationCoveredMissingPortCount(requested_mode);
+            const native_bound_count = @min(bindings.len, Target.WorldPortTable.entries.len);
+            const covered_port_count = @min(Target.WorldPortTable.entries.len, native_bound_count + covered_missing);
+            if (covered_port_count < Target.WorldPortTable.entries.len) {
+                result.missing_actuator_count = Target.WorldPortTable.entries.len - covered_port_count;
+                result.report_fingerprint = fingerprintAcceptanceReport(result);
+                return result;
+            }
+            result.accepted = true;
+            result.bound_port_count = covered_port_count;
+            result.missing_port_count = 0;
+            result.missing_actuator_count = 0;
+            result.blockers = &.{};
+            result.summary = "accepted by actuation bindings";
+            result.report_fingerprint = fingerprintAcceptanceReport(result);
+            return result;
+        }
+
+        fn actuationBindingCountForTarget(requested_mode: Mode) usize {
+            var count: usize = 0;
+            inline for (actuation_bindings) |BindingDecl| {
+                if (comptime BindingDecl.TargetType == Target) {
+                    if (BindingDecl.binding_mode_policy.allows(requested_mode)) count += 1;
+                }
+            }
+            return count;
+        }
+
+        fn actuationCoveredMissingPortCount(requested_mode: Mode) usize {
+            var count: usize = 0;
+            inline for (0..Target.WorldPortTable.entries.len) |world_port_id| {
+                const port_id: u32 = @intCast(world_port_id);
+                const environment_has_binding = comptime environmentHasBindingForPort(@This(), port_id);
+                if (environment_has_binding) continue;
+                if (actuationHasBindingForPort(port_id, requested_mode)) count += 1;
+            }
+            return count;
+        }
+
+        fn actuationHasBindingForPort(world_port_id: u32, requested_mode: Mode) bool {
+            inline for (actuation_bindings) |BindingDecl| {
+                if (comptime BindingDecl.TargetType == Target) {
+                    if (BindingDecl.world_port_id == world_port_id and BindingDecl.binding_mode_policy.allows(requested_mode)) return true;
+                }
+            }
+            return false;
+        }
+
+        fn actuationRequirementFingerprintForPort(world_port_id: u32) ?u64 {
+            inline for (0..Target.WorldPortTable.entries.len) |port_index| {
+                const port_id: u32 = @intCast(port_index);
+                if (world_port_id == port_id) {
+                    return ImportRequirement.fromTargetPort(Target, port_id).requirement_fingerprint;
+                }
+            }
+            return null;
+        }
+
+        fn actuationBindingBlocker(requested_mode: Mode) ?AcceptanceBlocker {
+            inline for (actuation_bindings) |BindingDecl| {
+                if (comptime BindingDecl.TargetType == Target) {
+                    if (BindingDecl.binding_mode_policy.allows(requested_mode)) {
+                        if (BindingDecl.world_port_id >= Target.WorldPortTable.entries.len) return .WrongPortId;
+                        const binding = BindingDecl.actuationBindingRecord();
+                        binding.validate() catch return .MissingActuator;
+                        if (binding.target_ref_fingerprint != target_ref.target_ref_fingerprint) return .HandoffTargetMismatch;
+                        if (binding.world_surface_fingerprint != target_ref.world_surface_fingerprint) return .WrongWorldSurface;
+                        const requirement = ImportRequirement.fromTargetPort(Target, BindingDecl.world_port_id);
+                        if (binding.import_requirement_fingerprint != requirement.requirement_fingerprint) return .ActuationValuePolicyMismatch;
+                    }
+                }
+            }
+            return null;
         }
 
         fn acceptanceReportWithPermitFromReport(base_report: AcceptanceReport, requested_mode: Mode, transcript_image_available: bool, permit: RunPermit, fabric_plan: ?Fabric.Plan, comptime fabric_owns_bound_ports: bool, comptime allow_linker_scoped_fabric_plan: bool) AcceptanceReport {
@@ -7883,6 +8299,9 @@ pub const Fabric = struct {
         provider_admission_receipt_fingerprint: ?u64 = null,
         provider_run_image_fingerprint: ?u64 = null,
         provider_transcript_image_fingerprint: ?u64 = null,
+        actuator_ref_fingerprint: ?u64 = null,
+        actuation_descriptor_fingerprint: ?u64 = null,
+        actuation_binding_fingerprint: ?u64 = null,
         value_mapping_fingerprint: ?u64 = null,
         response_value_mapping_fingerprint: ?u64 = null,
         response_status: ResponseStatus = .responded,
@@ -7905,6 +8324,9 @@ pub const Fabric = struct {
             provider_admission_receipt_fingerprint: ?u64 = null,
             provider_run_image_fingerprint: ?u64 = null,
             provider_transcript_image_fingerprint: ?u64 = null,
+            actuator_ref_fingerprint: ?u64 = null,
+            actuation_descriptor_fingerprint: ?u64 = null,
+            actuation_binding_fingerprint: ?u64 = null,
             value_mapping_fingerprint: ?u64 = null,
             response_value_mapping_fingerprint: ?u64 = null,
             response_status: ResponseStatus = .responded,
@@ -7928,6 +8350,9 @@ pub const Fabric = struct {
                 .provider_admission_receipt_fingerprint = args.provider_admission_receipt_fingerprint,
                 .provider_run_image_fingerprint = args.provider_run_image_fingerprint,
                 .provider_transcript_image_fingerprint = args.provider_transcript_image_fingerprint,
+                .actuator_ref_fingerprint = args.actuator_ref_fingerprint,
+                .actuation_descriptor_fingerprint = args.actuation_descriptor_fingerprint,
+                .actuation_binding_fingerprint = args.actuation_binding_fingerprint,
                 .value_mapping_fingerprint = args.value_mapping_fingerprint,
                 .response_value_mapping_fingerprint = args.response_value_mapping_fingerprint,
                 .response_status = args.response_status,
@@ -7944,6 +8369,10 @@ pub const Fabric = struct {
             if (fingerprintFabricRoute(self) != self.route_fingerprint) return error.InvalidFrameEncoding;
             if (self.world_port_id == unspecified_world_port_id and self.parent_world_port_id == unspecified_world_port_id) return error.WrongPortId;
             if (self.world_port_id != self.parent_world_port_id) return error.WrongPortId;
+            if (self.hasActuationMetadata()) {
+                if (self.kind != .adapter) return error.UnsupportedMapping;
+                if (self.actuator_ref_fingerprint == null or self.actuation_binding_fingerprint == null) return error.MissingBinding;
+            }
             switch (self.kind) {
                 .target_export => {
                     if (self.response_status != .responded) return error.UnsupportedMapping;
@@ -7976,6 +8405,12 @@ pub const Fabric = struct {
                 },
                 .adapter => {},
             }
+        }
+
+        pub fn hasActuationMetadata(self: Fabric.Route) bool {
+            return self.actuator_ref_fingerprint != null or
+                self.actuation_descriptor_fingerprint != null or
+                self.actuation_binding_fingerprint != null;
         }
     };
 
@@ -8331,6 +8766,7 @@ pub const Fabric = struct {
         mapped_request_frame_fingerprint: ?u64 = null,
         mapped_response_frame_fingerprint: ?u64 = null,
         run_permit_fingerprint: ?u64 = null,
+        actuation_receipt_fingerprint: ?u64 = null,
         depth: usize = 0,
         sequence: u64 = 0,
         status: InvocationStatus = .planned,
@@ -8346,6 +8782,7 @@ pub const Fabric = struct {
             mapped_request_frame_fingerprint: ?u64 = null,
             mapped_response_frame_fingerprint: ?u64 = null,
             run_permit_fingerprint: ?u64 = null,
+            actuation_receipt_fingerprint: ?u64 = null,
             depth: usize = 0,
             sequence: u64 = 0,
             status: InvocationStatus = .planned,
@@ -8363,6 +8800,7 @@ pub const Fabric = struct {
                 .mapped_request_frame_fingerprint = args.mapped_request_frame_fingerprint,
                 .mapped_response_frame_fingerprint = args.mapped_response_frame_fingerprint,
                 .run_permit_fingerprint = args.run_permit_fingerprint,
+                .actuation_receipt_fingerprint = args.actuation_receipt_fingerprint,
                 .depth = args.depth,
                 .sequence = args.sequence,
                 .status = args.status,
@@ -8390,6 +8828,7 @@ pub const Fabric = struct {
         parent_response_frame_fingerprint: ?u64 = null,
         provider_run_handle_fingerprint: ?u64 = null,
         provider_run_receipt_fingerprint: ?u64 = null,
+        actuation_receipt_fingerprint: ?u64 = null,
         status: InvocationStatus,
         blocker: ?Blocker = null,
         warning_count: usize = 0,
@@ -8401,6 +8840,7 @@ pub const Fabric = struct {
             parent_response_frame_fingerprint: ?u64 = null,
             provider_run_handle_fingerprint: ?u64 = null,
             provider_run_receipt_fingerprint: ?u64 = null,
+            actuation_receipt_fingerprint: ?u64 = null,
             status: InvocationStatus,
             blocker: ?Blocker = null,
             warning_count: usize = 0,
@@ -8413,6 +8853,7 @@ pub const Fabric = struct {
                 .parent_response_frame_fingerprint = args.parent_response_frame_fingerprint,
                 .provider_run_handle_fingerprint = args.provider_run_handle_fingerprint,
                 .provider_run_receipt_fingerprint = args.provider_run_receipt_fingerprint,
+                .actuation_receipt_fingerprint = args.actuation_receipt_fingerprint,
                 .status = args.status,
                 .blocker = args.blocker,
                 .warning_count = args.warning_count,
@@ -8428,6 +8869,10 @@ pub const Fabric = struct {
             if (self.status == .completed and self.parent_response_frame_fingerprint == null) return error.InvalidFrameEncoding;
             if (self.status == .completed and self.blocker != null) return error.InvalidFrameEncoding;
             if (self.status != .completed and self.blocker == null and self.status != .provider_parked and self.status != .provider_installed and self.status != .planned) return error.InvalidFrameEncoding;
+        }
+
+        pub fn recordsActuation(self: Fabric.Receipt) bool {
+            return self.actuation_receipt_fingerprint != null;
         }
     };
 
@@ -8650,6 +9095,8 @@ pub const Runspace = struct {
             beforeResponse: *const fn (*anyopaque, u32, ResponseStatus, usize, usize) anyerror!void,
             beforeTerminalResponse: *const fn (*anyopaque, u32, ResponseStatus, usize, usize) anyerror!void,
             beforeFabricInvocation: *const fn (*anyopaque, u32, Fabric.RouteKind, usize, usize) anyerror!void,
+            beforeActuationCommit: *const fn (*anyopaque, Actuation.Intent, bool) anyerror!void,
+            afterActuationReceipt: *const fn (*anyopaque, Actuation.Receipt, usize) anyerror!void,
             validateFabricResponseValue: *const fn (*anyopaque, u32, Frame.ValueImage) anyerror!void,
             fabricPlanCoversWorldPort: *const fn (*anyopaque, u32) bool,
             fabricPlanCoversHandlerlessWorldPort: *const fn (*anyopaque, u32) bool,
@@ -8693,6 +9140,14 @@ pub const Runspace = struct {
 
         fn beforeFabricInvocation(self: @This(), world_port_id: u32, route_kind: Fabric.RouteKind, depth: usize, provider_runs: usize) !void {
             return self.vtable.beforeFabricInvocation(self.ptr, world_port_id, route_kind, depth, provider_runs);
+        }
+
+        fn beforeActuationCommit(self: @This(), intent: Actuation.Intent, key_present: bool) !void {
+            return self.vtable.beforeActuationCommit(self.ptr, intent, key_present);
+        }
+
+        fn afterActuationReceipt(self: @This(), receipt: Actuation.Receipt, response_bytes: usize) !void {
+            return self.vtable.afterActuationReceipt(self.ptr, receipt, response_bytes);
         }
 
         fn validateFabricResponseValue(self: @This(), world_port_id: u32, image: Frame.ValueImage) !void {
@@ -8873,6 +9328,22 @@ pub const Runspace = struct {
                     }
                 }
 
+                fn runBeforeActuationCommit(ptr: *anyopaque, intent: Actuation.Intent, key_present: bool) anyerror!void {
+                    const active: *RunType = @ptrCast(@alignCast(ptr));
+                    if (@hasDecl(RunType, "beforeRunspaceActuationCommit")) return active.beforeRunspaceActuationCommit(intent, key_present);
+                    if (@hasField(RunType, "supervisor")) {
+                        if (active.supervisor) |*supervisor| return supervisor.beforeActuationCommit(intent, key_present);
+                    }
+                }
+
+                fn runAfterActuationReceipt(ptr: *anyopaque, receipt: Actuation.Receipt, response_bytes: usize) anyerror!void {
+                    const active: *RunType = @ptrCast(@alignCast(ptr));
+                    if (@hasDecl(RunType, "afterRunspaceActuationReceipt")) return active.afterRunspaceActuationReceipt(receipt, response_bytes);
+                    if (@hasField(RunType, "supervisor")) {
+                        if (active.supervisor) |*supervisor| return supervisor.afterActuationReceipt(receipt, response_bytes);
+                    }
+                }
+
                 fn runValidateFabricResponseValue(ptr: *anyopaque, world_port_id: u32, image: Frame.ValueImage) anyerror!void {
                     const active: *RunType = @ptrCast(@alignCast(ptr));
                     if (@hasDecl(RunType, "validateRunspaceFabricResponseValue")) {
@@ -9014,6 +9485,8 @@ pub const Runspace = struct {
                     .beforeResponse = runBeforeResponse,
                     .beforeTerminalResponse = runBeforeTerminalResponse,
                     .beforeFabricInvocation = runBeforeFabricInvocation,
+                    .beforeActuationCommit = runBeforeActuationCommit,
+                    .afterActuationReceipt = runAfterActuationReceipt,
                     .validateFabricResponseValue = runValidateFabricResponseValue,
                     .fabricPlanCoversWorldPort = runFabricPlanCoversWorldPort,
                     .fabricPlanCoversHandlerlessWorldPort = runFabricPlanCoversHandlerlessWorldPort,
@@ -10484,6 +10957,84 @@ pub const Runspace = struct {
 
     pub fn respond(self: *@This(), mailbox_id: u64, response: Frame.Response) !Runspace.RunspaceEvent {
         return self.respondWithFabricOwnership(mailbox_id, response, false);
+    }
+
+    pub fn dispatchActuation(self: *@This(), mailbox_id: u64, execution: Actuation.Membrane.Execution) !Actuation.Receipt {
+        try execution.validate();
+        const pending = try self.mailbox.get(mailbox_id);
+        if (execution.receipt.world_port_id != pending.world_port_id) return error.FramePortMismatch;
+        if (execution.response.request_fingerprint != pending.request_fingerprint) return error.FrameRequestFingerprintMismatch;
+        const index = try self.slotIndex(pending.handle);
+        try self.superviseActuationDispatch(index, execution, 0);
+        switch (execution.response.status) {
+            .pending, .deferred, .cancelled => return execution.receipt,
+            .responded, .rejected, .failed => {},
+        }
+        const response = try self.frameResponseFromActuation(pending, execution.response);
+        _ = try self.respond(mailbox_id, response);
+        return execution.receipt;
+    }
+
+    pub fn dispatchPendingWithActuator(self: *@This(), mailbox_id: u64, execution: Actuation.Membrane.Execution) !Actuation.Receipt {
+        return self.dispatchActuation(mailbox_id, execution);
+    }
+
+    pub fn dispatchAllActuations(self: *@This()) !Runspace.RunspaceReport {
+        return self.report();
+    }
+
+    fn superviseActuationDispatch(self: *@This(), slot_index: usize, execution: Actuation.Membrane.Execution, response_bytes: usize) !void {
+        var supervisor_snapshot = try self.snapshotSlotSupervisor(slot_index);
+        defer supervisor_snapshot.deinit(self.allocator);
+        var slot = &self.slots.items[slot_index];
+        const key_present = execution.receipt.idempotency_key_fingerprint != 0;
+        if (slot.driver) |driver| {
+            driver.beforeActuationCommit(execution.intent, key_present) catch |err| {
+                supervisor_snapshot.restore(self, slot_index);
+                return err;
+            };
+            driver.afterActuationReceipt(execution.receipt, response_bytes) catch |err| {
+                supervisor_snapshot.restore(self, slot_index);
+                return err;
+            };
+            return;
+        }
+        if (slot.supervisor) |*supervisor| {
+            supervisor.beforeActuationCommit(execution.intent, key_present) catch |err| {
+                supervisor_snapshot.restore(self, slot_index);
+                return err;
+            };
+            supervisor.afterActuationReceipt(execution.receipt, response_bytes) catch |err| {
+                supervisor_snapshot.restore(self, slot_index);
+                return err;
+            };
+            return;
+        }
+        if (self.config.require_supervision) return error.SupervisionDenied;
+    }
+
+    fn frameResponseFromActuation(self: *@This(), pending: Runspace.PendingPort, actuation_response: Actuation.Response) !Frame.Response {
+        _ = self;
+        const request = pending.request_frame orelse return error.InvalidPendingPortTransition;
+        const response_fingerprint = actuation_response.frame_response_fingerprint orelse return error.MissingValueImage;
+        const status: ResponseStatus = switch (actuation_response.status) {
+            .responded => .responded,
+            .rejected => .rejected,
+            .failed => .failed,
+            .pending, .deferred, .cancelled => return error.InvalidPendingPortTransition,
+        };
+        return Frame.Response.init(.{
+            .world_surface_fingerprint = pending.world_surface_fingerprint,
+            .target_certificate_fingerprint = pending.target_certificate_fingerprint,
+            .world_port_id = pending.world_port_id,
+            .request_fingerprint = pending.request_fingerprint,
+            .response_kind = actuation_response.response_kind,
+            .response_value_table_id = if (status == .responded) pending.expected_response_value_table_id else null,
+            .response_fingerprint = response_fingerprint,
+            .replay_key = request.replay_key_seed.withResponse(response_fingerprint).fingerprint(),
+            .status = status,
+            .reason = if (actuation_response.reason.len == 0) null else actuation_response.reason,
+        });
     }
 
     fn respondWithFabricOwnership(self: *@This(), mailbox_id: u64, response: Frame.Response, allow_active_fabric: bool) !Runspace.RunspaceEvent {
@@ -14275,6 +14826,7 @@ pub const Guest = struct {
         input_fingerprints: []const u64 = &.{},
         expected_pending_frame_fingerprints: []const u64 = &.{},
         response_frame_fingerprints: []const u64 = &.{},
+        actuation_receipt_fingerprints: []const u64 = &.{},
         expected_final_result_fingerprint: ?u64 = null,
         expected_transcript_fingerprint: ?u64 = null,
         expected_receipt_fingerprint: ?u64 = null,
@@ -14289,6 +14841,7 @@ pub const Guest = struct {
             input_fingerprints: []const u64 = &.{},
             expected_pending_frame_fingerprints: []const u64 = &.{},
             response_frame_fingerprints: []const u64 = &.{},
+            actuation_receipt_fingerprints: []const u64 = &.{},
             expected_final_result_fingerprint: ?u64 = null,
             expected_transcript_fingerprint: ?u64 = null,
             expected_receipt_fingerprint: ?u64 = null,
@@ -14303,6 +14856,7 @@ pub const Guest = struct {
                 .input_fingerprints = args.input_fingerprints,
                 .expected_pending_frame_fingerprints = args.expected_pending_frame_fingerprints,
                 .response_frame_fingerprints = args.response_frame_fingerprints,
+                .actuation_receipt_fingerprints = args.actuation_receipt_fingerprints,
                 .expected_final_result_fingerprint = args.expected_final_result_fingerprint,
                 .expected_transcript_fingerprint = args.expected_transcript_fingerprint,
                 .expected_receipt_fingerprint = args.expected_receipt_fingerprint,
@@ -14323,6 +14877,7 @@ pub const Guest = struct {
         transcript_fingerprint: ?u64 = null,
         receipt_fingerprint: ?u64 = null,
         pending_frame_fingerprints: []const u64 = &.{},
+        actuation_receipt_fingerprints: []const u64 = &.{},
     };
 
     pub const ConformanceReport = struct {
@@ -16256,6 +16811,7 @@ pub const Guest = struct {
         hashU64Slice(&hasher, vector.input_fingerprints);
         hashU64Slice(&hasher, vector.expected_pending_frame_fingerprints);
         hashU64Slice(&hasher, vector.response_frame_fingerprints);
+        hashU64Slice(&hasher, vector.actuation_receipt_fingerprints);
         hashOptionalU64(&hasher, vector.expected_final_result_fingerprint);
         hashOptionalU64(&hasher, vector.expected_transcript_fingerprint);
         hashOptionalU64(&hasher, vector.expected_receipt_fingerprint);
@@ -16288,6 +16844,7 @@ pub const Guest = struct {
         hashOptionalU64(hasher, summary.transcript_fingerprint);
         hashOptionalU64(hasher, summary.receipt_fingerprint);
         hashU64Slice(hasher, summary.pending_frame_fingerprints);
+        hashU64Slice(hasher, summary.actuation_receipt_fingerprints);
     }
 
     fn hashU64Slice(hasher: *std.hash.Wyhash, values: []const u64) void {
@@ -16309,6 +16866,2191 @@ pub const Mailbox = Runspace.Mailbox;
 pub const PendingPort = Runspace.PendingPort;
 pub const RunspaceEvent = Runspace.RunspaceEvent;
 pub const RunspaceReport = Runspace.RunspaceReport;
+
+pub const Actuation = struct {
+    pub const Kind = enum(u8) {
+        fixture = 0,
+        replay_source = 1,
+        native_function = 2,
+        byte_protocol = 3,
+        guest_bridge = 4,
+        model_like = 5,
+        tool_like = 6,
+        file_like = 7,
+        human_like = 8,
+        custom = 9,
+    };
+
+    pub const Class = enum(u8) {
+        observation = 0,
+        deterministic_fixture = 1,
+        idempotent_mutation = 2,
+        non_idempotent_mutation = 3,
+        irreversible_mutation = 4,
+        compensatable_mutation = 5,
+        human_gated = 6,
+        unknown_effect = 7,
+
+        pub fn fingerprint(self: @This()) u64 {
+            var hasher = std.hash.Wyhash.init(0);
+            hashBytes(&hasher, "world.actuation.class.fingerprint");
+            hashU64(&hasher, world_actuation_class_fingerprint_version);
+            hashU64(&hasher, @intFromEnum(self));
+            return hasher.final();
+        }
+
+        pub fn isMutation(self: @This()) bool {
+            return switch (self) {
+                .idempotent_mutation,
+                .non_idempotent_mutation,
+                .irreversible_mutation,
+                .compensatable_mutation,
+                => true,
+                else => false,
+            };
+        }
+    };
+
+    pub const ModeSet = struct {
+        fresh: bool = false,
+        replay: bool = false,
+        verify: bool = false,
+        audit: bool = false,
+
+        pub const none = ModeSet{};
+        pub const fresh_only = ModeSet{ .fresh = true };
+        pub const replay_only = ModeSet{ .replay = true };
+        pub const verify_only = ModeSet{ .verify = true };
+        pub const audit_only = ModeSet{ .audit = true };
+        pub const no_fresh = ModeSet{ .replay = true, .verify = true, .audit = true };
+        pub const all = ModeSet{ .fresh = true, .replay = true, .verify = true, .audit = true };
+
+        pub fn allows(self: @This(), mode: Mode) bool {
+            return switch (mode) {
+                .fresh => self.fresh,
+                .replay => self.replay,
+                .verify => self.verify,
+                .audit => self.audit,
+            };
+        }
+    };
+
+    pub const ResponseStatus = enum(u8) {
+        responded = 0,
+        rejected = 1,
+        failed = 2,
+        pending = 3,
+        deferred = 4,
+        cancelled = 5,
+    };
+
+    pub const ResponseStatusSet = struct {
+        responded: bool = false,
+        rejected: bool = false,
+        failed: bool = false,
+        pending: bool = false,
+        deferred: bool = false,
+        cancelled: bool = false,
+
+        pub const terminal = ResponseStatusSet{ .responded = true };
+        pub const terminal_with_errors = ResponseStatusSet{ .responded = true, .rejected = true, .failed = true };
+        pub const all = ResponseStatusSet{ .responded = true, .rejected = true, .failed = true, .pending = true, .deferred = true, .cancelled = true };
+
+        pub fn allows(self: @This(), status: Actuation.ResponseStatus) bool {
+            return switch (status) {
+                .responded => self.responded,
+                .rejected => self.rejected,
+                .failed => self.failed,
+                .pending => self.pending,
+                .deferred => self.deferred,
+                .cancelled => self.cancelled,
+            };
+        }
+    };
+
+    pub const DecisionStatus = enum(u8) {
+        approved = 0,
+        denied = 1,
+        deferred = 2,
+        cancelled = 3,
+        replay_required = 4,
+        verify_required = 5,
+    };
+
+    pub const CommitStatus = enum(u8) {
+        not_started = 0,
+        committed = 1,
+        commit_pending = 2,
+        commit_failed = 3,
+        replayed = 4,
+        verified = 5,
+        rejected = 6,
+        cancelled = 7,
+    };
+
+    pub const AttemptScope = enum(u8) {
+        per_request = 0,
+        per_run = 1,
+        per_capsule = 2,
+        host_supplied = 3,
+    };
+
+    pub const DivergenceKind = enum(u8) {
+        response_fingerprint_mismatch = 0,
+        response_kind_mismatch = 1,
+        status_mismatch = 2,
+        value_image_mismatch = 3,
+        fresh_failed = 4,
+        expected_missing = 5,
+    };
+
+    pub const ObjectKind = enum(u8) {
+        actuator_ref = 0,
+        descriptor = 1,
+        binding = 2,
+        intent = 3,
+        envelope = 4,
+        decision = 5,
+        commit = 6,
+        response = 7,
+        receipt = 8,
+        journal = 9,
+        replay_source = 10,
+        verify_report = 11,
+        idempotency_key = 12,
+    };
+
+    pub const DependencyKind = enum(u8) {
+        actuator_ref = 0,
+        descriptor = 1,
+        binding = 2,
+        policy = 3,
+        idempotency_key = 4,
+        intent = 5,
+        envelope = 6,
+        decision = 7,
+        commit = 8,
+        response = 9,
+        receipt = 10,
+        journal = 11,
+        replay_source = 12,
+        verify_report = 13,
+        pending_port = 14,
+        run_permit = 15,
+        environment_certificate = 16,
+        run_receipt = 17,
+        capsule = 18,
+    };
+
+    pub const ObjectRef = struct {
+        kind: ObjectKind,
+        fingerprint: u64,
+    };
+
+    pub const DependencyRef = struct {
+        kind: DependencyKind,
+        fingerprint: u64,
+    };
+
+    pub const Ref = struct {
+        format_version: u32 = world_actuator_ref_format_version,
+        fingerprint_version: u32 = world_actuator_ref_fingerprint_version,
+        ref_fingerprint: u64,
+        kind: Kind,
+        class: Class,
+        label: []const u8 = "",
+        supported_modes: ModeSet = .all,
+        supported_response_statuses: ResponseStatusSet = .terminal_with_errors,
+        value_policy_fingerprint: u64 = 0,
+        authority_descriptor_fingerprint: ?u64 = null,
+        protocol_descriptor_fingerprint: ?u64 = null,
+        metadata: []const u8 = "",
+
+        pub fn init(args: struct {
+            kind: Kind,
+            class: Class,
+            label: []const u8 = "",
+            supported_modes: ModeSet = .all,
+            supported_response_statuses: ResponseStatusSet = .terminal_with_errors,
+            value_policy_fingerprint: u64 = 0,
+            authority_descriptor_fingerprint: ?u64 = null,
+            protocol_descriptor_fingerprint: ?u64 = null,
+            metadata: []const u8 = "",
+        }) @This() {
+            var result = @This(){
+                .ref_fingerprint = 0,
+                .kind = args.kind,
+                .class = args.class,
+                .label = args.label,
+                .supported_modes = args.supported_modes,
+                .supported_response_statuses = args.supported_response_statuses,
+                .value_policy_fingerprint = args.value_policy_fingerprint,
+                .authority_descriptor_fingerprint = args.authority_descriptor_fingerprint,
+                .protocol_descriptor_fingerprint = args.protocol_descriptor_fingerprint,
+                .metadata = args.metadata,
+            };
+            result.ref_fingerprint = fingerprintRef(result);
+            return result;
+        }
+
+        pub fn validate(self: @This()) !void {
+            if (self.format_version != world_actuator_ref_format_version) return error.InvalidFrameEncoding;
+            if (self.fingerprint_version != world_actuator_ref_fingerprint_version) return error.InvalidFrameEncoding;
+            if (self.label.len > world_max_decoded_byte_field_len) return error.InvalidFrameEncoding;
+            if (self.metadata.len > world_max_decoded_byte_field_len) return error.InvalidFrameEncoding;
+            if (self.ref_fingerprint != fingerprintRef(self)) return error.InvalidFrameEncoding;
+        }
+
+        pub fn objectRef(self: @This()) ObjectRef {
+            return .{ .kind = .actuator_ref, .fingerprint = self.ref_fingerprint };
+        }
+    };
+
+    pub const Descriptor = struct {
+        format_version: u32 = world_actuation_descriptor_format_version,
+        fingerprint_version: u32 = world_actuation_descriptor_fingerprint_version,
+        descriptor_fingerprint: u64,
+        actuator_ref_fingerprint: u64,
+        world_surface_fingerprint: u64,
+        target_ref_fingerprint: ?u64 = null,
+        world_port_id: ?u32 = null,
+        world_port_ref_fingerprint: ?u64 = null,
+        source_effect_shape_ref_fingerprint: ?u64 = null,
+        payload_value_ref: ?u32 = null,
+        payload_value_table_id: ?u32 = null,
+        response_value_ref: ?u32 = null,
+        response_value_table_id: ?u32 = null,
+        allowed_response_kinds: ResponseStatusSet = .terminal_with_errors,
+        kind: Kind,
+        class: Class,
+        value_policy: ValuePolicy = .portable,
+        label: []const u8 = "",
+        metadata: []const u8 = "",
+
+        pub fn init(args: struct {
+            actuator_ref: Ref,
+            world_surface_fingerprint: u64,
+            target_ref_fingerprint: ?u64 = null,
+            world_port_id: ?u32 = null,
+            world_port_ref_fingerprint: ?u64 = null,
+            source_effect_shape_ref_fingerprint: ?u64 = null,
+            payload_value_ref: ?u32 = null,
+            payload_value_table_id: ?u32 = null,
+            response_value_ref: ?u32 = null,
+            response_value_table_id: ?u32 = null,
+            allowed_response_kinds: ResponseStatusSet = .terminal_with_errors,
+            value_policy: ValuePolicy = .portable,
+            label: []const u8 = "",
+            metadata: []const u8 = "",
+        }) @This() {
+            var result = @This(){
+                .descriptor_fingerprint = 0,
+                .actuator_ref_fingerprint = args.actuator_ref.ref_fingerprint,
+                .world_surface_fingerprint = args.world_surface_fingerprint,
+                .target_ref_fingerprint = args.target_ref_fingerprint,
+                .world_port_id = args.world_port_id,
+                .world_port_ref_fingerprint = args.world_port_ref_fingerprint,
+                .source_effect_shape_ref_fingerprint = args.source_effect_shape_ref_fingerprint,
+                .payload_value_ref = args.payload_value_ref,
+                .payload_value_table_id = args.payload_value_table_id,
+                .response_value_ref = args.response_value_ref,
+                .response_value_table_id = args.response_value_table_id,
+                .allowed_response_kinds = args.allowed_response_kinds,
+                .kind = args.actuator_ref.kind,
+                .class = args.actuator_ref.class,
+                .value_policy = args.value_policy,
+                .label = args.label,
+                .metadata = args.metadata,
+            };
+            result.descriptor_fingerprint = fingerprintDescriptor(result);
+            return result;
+        }
+
+        pub fn validate(self: @This()) !void {
+            if (self.format_version != world_actuation_descriptor_format_version) return error.InvalidFrameEncoding;
+            if (self.fingerprint_version != world_actuation_descriptor_fingerprint_version) return error.InvalidFrameEncoding;
+            if (self.actuator_ref_fingerprint == 0) return error.InvalidFrameEncoding;
+            if (self.world_surface_fingerprint == 0) return error.InvalidFrameEncoding;
+            if (self.label.len > world_max_decoded_byte_field_len) return error.InvalidFrameEncoding;
+            if (self.metadata.len > world_max_decoded_byte_field_len) return error.InvalidFrameEncoding;
+            if (self.descriptor_fingerprint != fingerprintDescriptor(self)) return error.InvalidFrameEncoding;
+        }
+
+        pub fn validatePayloadResponseRefs(self: @This(), payload_ref: ?u32, response_ref: ?u32) !void {
+            if (self.payload_value_ref != null and self.payload_value_ref != payload_ref) return error.PayloadRefMismatch;
+            if (self.response_value_ref != null and self.response_value_ref != response_ref) return error.ProviderResultMismatch;
+        }
+
+        pub fn objectRef(self: @This()) ObjectRef {
+            return .{ .kind = .descriptor, .fingerprint = self.descriptor_fingerprint };
+        }
+    };
+
+    pub const BindingModePolicy = ModeSet;
+
+    pub const Binding = struct {
+        format_version: u32 = world_actuation_binding_format_version,
+        fingerprint_version: u32 = world_actuation_binding_fingerprint_version,
+        binding_fingerprint: u64,
+        target_ref_fingerprint: u64,
+        world_surface_fingerprint: u64,
+        import_requirement_fingerprint: u64,
+        world_port_id: u32,
+        actuator_ref_fingerprint: u64,
+        descriptor_fingerprint: u64,
+        port_authority_fingerprint: ?u64 = null,
+        environment_certificate_fingerprint: ?u64 = null,
+        binding_mode_policy: ModeSet = .all,
+        metadata: []const u8 = "",
+
+        pub fn init(args: struct {
+            target_ref_fingerprint: u64,
+            world_surface_fingerprint: u64,
+            import_requirement_fingerprint: u64,
+            world_port_id: u32,
+            actuator_ref_fingerprint: u64,
+            descriptor_fingerprint: u64,
+            port_authority_fingerprint: ?u64 = null,
+            environment_certificate_fingerprint: ?u64 = null,
+            binding_mode_policy: ModeSet = .all,
+            metadata: []const u8 = "",
+        }) @This() {
+            var result = @This(){
+                .binding_fingerprint = 0,
+                .target_ref_fingerprint = args.target_ref_fingerprint,
+                .world_surface_fingerprint = args.world_surface_fingerprint,
+                .import_requirement_fingerprint = args.import_requirement_fingerprint,
+                .world_port_id = args.world_port_id,
+                .actuator_ref_fingerprint = args.actuator_ref_fingerprint,
+                .descriptor_fingerprint = args.descriptor_fingerprint,
+                .port_authority_fingerprint = args.port_authority_fingerprint,
+                .environment_certificate_fingerprint = args.environment_certificate_fingerprint,
+                .binding_mode_policy = args.binding_mode_policy,
+                .metadata = args.metadata,
+            };
+            result.binding_fingerprint = Actuation.fingerprintBinding(result);
+            return result;
+        }
+
+        pub fn fromDescriptor(args: struct {
+            target_ref_fingerprint: u64,
+            import_requirement_fingerprint: u64,
+            descriptor: Descriptor,
+            world_port_id: u32,
+            port_authority_fingerprint: ?u64 = null,
+            environment_certificate_fingerprint: ?u64 = null,
+            binding_mode_policy: ModeSet = .all,
+            metadata: []const u8 = "",
+        }) @This() {
+            return init(.{
+                .target_ref_fingerprint = args.target_ref_fingerprint,
+                .world_surface_fingerprint = args.descriptor.world_surface_fingerprint,
+                .import_requirement_fingerprint = args.import_requirement_fingerprint,
+                .world_port_id = args.world_port_id,
+                .actuator_ref_fingerprint = args.descriptor.actuator_ref_fingerprint,
+                .descriptor_fingerprint = args.descriptor.descriptor_fingerprint,
+                .port_authority_fingerprint = args.port_authority_fingerprint,
+                .environment_certificate_fingerprint = args.environment_certificate_fingerprint,
+                .binding_mode_policy = args.binding_mode_policy,
+                .metadata = args.metadata,
+            });
+        }
+
+        pub fn validate(self: @This()) !void {
+            if (self.format_version != world_actuation_binding_format_version) return error.InvalidFrameEncoding;
+            if (self.fingerprint_version != world_actuation_binding_fingerprint_version) return error.InvalidFrameEncoding;
+            if (self.target_ref_fingerprint == 0) return error.InvalidFrameEncoding;
+            if (self.world_surface_fingerprint == 0) return error.InvalidFrameEncoding;
+            if (self.import_requirement_fingerprint == 0) return error.InvalidFrameEncoding;
+            if (self.actuator_ref_fingerprint == 0) return error.InvalidFrameEncoding;
+            if (self.descriptor_fingerprint == 0) return error.InvalidFrameEncoding;
+            if (self.metadata.len > world_max_decoded_byte_field_len) return error.InvalidFrameEncoding;
+            if (self.binding_fingerprint != Actuation.fingerprintBinding(self)) return error.InvalidFrameEncoding;
+        }
+
+        pub fn validateForDescriptor(self: @This(), descriptor: Descriptor) !void {
+            try self.validate();
+            if (self.world_surface_fingerprint != descriptor.world_surface_fingerprint) return error.WrongWorldSurface;
+            if (descriptor.world_port_id != null and descriptor.world_port_id.? != self.world_port_id) return error.WrongPortId;
+            if (self.actuator_ref_fingerprint != descriptor.actuator_ref_fingerprint) return error.InvalidFrameEncoding;
+            if (self.descriptor_fingerprint != descriptor.descriptor_fingerprint) return error.InvalidFrameEncoding;
+        }
+
+        pub fn objectRef(self: @This()) ObjectRef {
+            return .{ .kind = .binding, .fingerprint = self.binding_fingerprint };
+        }
+    };
+
+    pub const Policy = struct {
+        allow_fresh_actuation: bool = false,
+        allow_replay_actuation: bool = false,
+        allow_verify_actuation: bool = false,
+        allow_pending_actuation: bool = false,
+        allow_deferred_actuation: bool = false,
+        allow_rejected_responses: bool = false,
+        allow_failed_responses: bool = false,
+        allow_observation: bool = true,
+        allow_deterministic_fixture: bool = false,
+        allow_idempotent_mutation: bool = false,
+        allow_non_idempotent_mutation: bool = false,
+        allow_irreversible_mutation: bool = false,
+        allow_compensatable_mutation: bool = false,
+        allow_human_gated: bool = false,
+        require_idempotency_key: bool = true,
+        require_approval_for_mutation: bool = true,
+        require_approval_for_irreversible: bool = true,
+        require_portable_value_images: bool = true,
+        reject_native_only_values: bool = true,
+        require_actuation_receipts: bool = true,
+        require_actuation_journal: bool = false,
+        allow_retry: bool = false,
+        max_actuation_calls: ?usize = 0,
+        max_pending_actuations: ?usize = 0,
+        max_actuation_response_bytes: ?usize = world_max_decoded_byte_field_len,
+        max_actuation_metadata_bytes: ?usize = world_max_decoded_byte_field_len,
+        policy_fingerprint: u64 = 0,
+
+        pub fn init(args: struct {
+            allow_fresh_actuation: bool = false,
+            allow_replay_actuation: bool = false,
+            allow_verify_actuation: bool = false,
+            allow_pending_actuation: bool = false,
+            allow_deferred_actuation: bool = false,
+            allow_rejected_responses: bool = false,
+            allow_failed_responses: bool = false,
+            allow_observation: bool = true,
+            allow_deterministic_fixture: bool = false,
+            allow_idempotent_mutation: bool = false,
+            allow_non_idempotent_mutation: bool = false,
+            allow_irreversible_mutation: bool = false,
+            allow_compensatable_mutation: bool = false,
+            allow_human_gated: bool = false,
+            require_idempotency_key: bool = true,
+            require_approval_for_mutation: bool = true,
+            require_approval_for_irreversible: bool = true,
+            require_portable_value_images: bool = true,
+            reject_native_only_values: bool = true,
+            require_actuation_receipts: bool = true,
+            require_actuation_journal: bool = false,
+            allow_retry: bool = false,
+            max_actuation_calls: ?usize = 0,
+            max_pending_actuations: ?usize = 0,
+            max_actuation_response_bytes: ?usize = world_max_decoded_byte_field_len,
+            max_actuation_metadata_bytes: ?usize = world_max_decoded_byte_field_len,
+        }) @This() {
+            var result = @This(){
+                .allow_fresh_actuation = args.allow_fresh_actuation,
+                .allow_replay_actuation = args.allow_replay_actuation,
+                .allow_verify_actuation = args.allow_verify_actuation,
+                .allow_pending_actuation = args.allow_pending_actuation,
+                .allow_deferred_actuation = args.allow_deferred_actuation,
+                .allow_rejected_responses = args.allow_rejected_responses,
+                .allow_failed_responses = args.allow_failed_responses,
+                .allow_observation = args.allow_observation,
+                .allow_deterministic_fixture = args.allow_deterministic_fixture,
+                .allow_idempotent_mutation = args.allow_idempotent_mutation,
+                .allow_non_idempotent_mutation = args.allow_non_idempotent_mutation,
+                .allow_irreversible_mutation = args.allow_irreversible_mutation,
+                .allow_compensatable_mutation = args.allow_compensatable_mutation,
+                .allow_human_gated = args.allow_human_gated,
+                .require_idempotency_key = args.require_idempotency_key,
+                .require_approval_for_mutation = args.require_approval_for_mutation,
+                .require_approval_for_irreversible = args.require_approval_for_irreversible,
+                .require_portable_value_images = args.require_portable_value_images,
+                .reject_native_only_values = args.reject_native_only_values,
+                .require_actuation_receipts = args.require_actuation_receipts,
+                .require_actuation_journal = args.require_actuation_journal,
+                .allow_retry = args.allow_retry,
+                .max_actuation_calls = args.max_actuation_calls,
+                .max_pending_actuations = args.max_pending_actuations,
+                .max_actuation_response_bytes = args.max_actuation_response_bytes,
+                .max_actuation_metadata_bytes = args.max_actuation_metadata_bytes,
+                .policy_fingerprint = 0,
+            };
+            result.policy_fingerprint = fingerprintPolicy(result);
+            return result;
+        }
+
+        pub fn validate(self: @This()) !void {
+            if (self.policy_fingerprint != fingerprintPolicy(self)) return error.InvalidFrameEncoding;
+        }
+
+        pub fn allowsMode(self: @This(), mode: Mode) bool {
+            return switch (mode) {
+                .fresh => self.allow_fresh_actuation,
+                .replay => self.allow_replay_actuation,
+                .verify => self.allow_verify_actuation,
+                .audit => true,
+            };
+        }
+
+        pub fn allowsClass(self: @This(), class: Class) bool {
+            return switch (class) {
+                .observation => self.allow_observation,
+                .deterministic_fixture => self.allow_deterministic_fixture,
+                .idempotent_mutation => self.allow_idempotent_mutation,
+                .non_idempotent_mutation => self.allow_non_idempotent_mutation,
+                .irreversible_mutation => self.allow_irreversible_mutation,
+                .compensatable_mutation => self.allow_compensatable_mutation,
+                .human_gated => self.allow_human_gated,
+                .unknown_effect => false,
+            };
+        }
+
+        pub fn allowsResponseStatus(self: @This(), status: Actuation.ResponseStatus) bool {
+            return switch (status) {
+                .responded => true,
+                .rejected => self.allow_rejected_responses,
+                .failed => self.allow_failed_responses,
+                .pending => self.allow_pending_actuation,
+                .deferred => self.allow_deferred_actuation,
+                .cancelled => true,
+            };
+        }
+
+        pub fn requiresKeyForClass(self: @This(), class: Class, mode: Mode) bool {
+            return mode == .fresh and self.require_idempotency_key and class.isMutation();
+        }
+
+        pub const strict_fresh = init(.{
+            .allow_fresh_actuation = true,
+            .allow_observation = true,
+            .allow_deterministic_fixture = true,
+            .allow_idempotent_mutation = true,
+            .require_idempotency_key = true,
+            .require_actuation_receipts = true,
+            .max_actuation_calls = null,
+            .max_pending_actuations = 0,
+        });
+        pub const strict_replay = init(.{
+            .allow_replay_actuation = true,
+            .allow_observation = true,
+            .require_idempotency_key = false,
+            .require_actuation_receipts = true,
+            .max_actuation_calls = null,
+        });
+        pub const verify_replay = init(.{
+            .allow_replay_actuation = true,
+            .allow_verify_actuation = true,
+            .allow_observation = true,
+            .require_idempotency_key = false,
+            .require_actuation_receipts = true,
+            .max_actuation_calls = null,
+        });
+        pub const fixture_test = init(.{
+            .allow_fresh_actuation = true,
+            .allow_replay_actuation = true,
+            .allow_verify_actuation = true,
+            .allow_pending_actuation = true,
+            .allow_deferred_actuation = true,
+            .allow_rejected_responses = true,
+            .allow_failed_responses = true,
+            .allow_observation = true,
+            .allow_deterministic_fixture = true,
+            .allow_idempotent_mutation = true,
+            .require_idempotency_key = false,
+            .require_approval_for_mutation = false,
+            .require_actuation_journal = true,
+            .allow_retry = true,
+            .max_actuation_calls = null,
+            .max_pending_actuations = null,
+        });
+        pub const audit_only = init(.{
+            .allow_verify_actuation = true,
+            .allow_observation = true,
+            .require_idempotency_key = false,
+            .require_actuation_receipts = false,
+            .max_actuation_calls = null,
+        });
+        pub const capsule_restore = init(.{
+            .allow_replay_actuation = true,
+            .allow_pending_actuation = true,
+            .allow_deferred_actuation = true,
+            .allow_observation = true,
+            .require_idempotency_key = false,
+            .require_actuation_journal = true,
+            .allow_retry = true,
+            .max_actuation_calls = null,
+            .max_pending_actuations = null,
+        });
+        pub const handoff_receiver = init(.{
+            .allow_fresh_actuation = true,
+            .allow_replay_actuation = true,
+            .allow_verify_actuation = true,
+            .allow_observation = true,
+            .allow_deterministic_fixture = true,
+            .allow_idempotent_mutation = true,
+            .max_actuation_calls = null,
+        });
+        pub const no_irreversible = init(.{
+            .allow_fresh_actuation = true,
+            .allow_observation = true,
+            .allow_deterministic_fixture = true,
+            .allow_idempotent_mutation = true,
+            .allow_compensatable_mutation = true,
+            .max_actuation_calls = null,
+        });
+        pub const human_gate_required = init(.{
+            .allow_fresh_actuation = true,
+            .allow_deferred_actuation = true,
+            .allow_human_gated = true,
+            .require_approval_for_mutation = true,
+            .max_actuation_calls = null,
+            .max_pending_actuations = null,
+        });
+    };
+
+    pub const IdempotencyKey = struct {
+        format_version: u32 = world_actuation_idempotency_key_format_version,
+        fingerprint_version: u32 = world_actuation_idempotency_key_fingerprint_version,
+        key_fingerprint: u64,
+        target_ref_fingerprint: u64,
+        world_surface_fingerprint: u64,
+        world_port_id: u32,
+        request_fingerprint: u64,
+        replay_key_fingerprint: ?u64 = null,
+        run_handle_fingerprint: ?u64 = null,
+        pending_port_fingerprint: ?u64 = null,
+        capsule_fingerprint: ?u64 = null,
+        actuator_ref_fingerprint: u64,
+        intent_fingerprint: ?u64 = null,
+        attempt_scope: AttemptScope = .per_request,
+        metadata: []const u8 = "",
+
+        pub fn init(args: struct {
+            target_ref_fingerprint: u64,
+            world_surface_fingerprint: u64,
+            world_port_id: u32,
+            request_fingerprint: u64,
+            replay_key_fingerprint: ?u64 = null,
+            run_handle_fingerprint: ?u64 = null,
+            pending_port_fingerprint: ?u64 = null,
+            capsule_fingerprint: ?u64 = null,
+            actuator_ref_fingerprint: u64,
+            intent_fingerprint: ?u64 = null,
+            attempt_scope: AttemptScope = .per_request,
+            metadata: []const u8 = "",
+        }) @This() {
+            var result = @This(){
+                .key_fingerprint = 0,
+                .target_ref_fingerprint = args.target_ref_fingerprint,
+                .world_surface_fingerprint = args.world_surface_fingerprint,
+                .world_port_id = args.world_port_id,
+                .request_fingerprint = args.request_fingerprint,
+                .replay_key_fingerprint = args.replay_key_fingerprint,
+                .run_handle_fingerprint = args.run_handle_fingerprint,
+                .pending_port_fingerprint = args.pending_port_fingerprint,
+                .capsule_fingerprint = args.capsule_fingerprint,
+                .actuator_ref_fingerprint = args.actuator_ref_fingerprint,
+                .intent_fingerprint = args.intent_fingerprint,
+                .attempt_scope = args.attempt_scope,
+                .metadata = args.metadata,
+            };
+            result.key_fingerprint = fingerprintIdempotencyKey(result);
+            return result;
+        }
+
+        pub fn validate(self: @This()) !void {
+            if (self.format_version != world_actuation_idempotency_key_format_version) return error.InvalidFrameEncoding;
+            if (self.fingerprint_version != world_actuation_idempotency_key_fingerprint_version) return error.InvalidFrameEncoding;
+            if (self.target_ref_fingerprint == 0 or self.world_surface_fingerprint == 0) return error.InvalidFrameEncoding;
+            if (self.request_fingerprint == 0 or self.actuator_ref_fingerprint == 0) return error.InvalidFrameEncoding;
+            if (self.metadata.len > world_max_decoded_byte_field_len) return error.InvalidFrameEncoding;
+            if (self.key_fingerprint != fingerprintIdempotencyKey(self)) return error.InvalidFrameEncoding;
+        }
+
+        pub fn objectRef(self: @This()) ObjectRef {
+            return .{ .kind = .idempotency_key, .fingerprint = self.key_fingerprint };
+        }
+    };
+
+    pub const Intent = struct {
+        format_version: u32 = world_actuation_intent_format_version,
+        fingerprint_version: u32 = world_actuation_intent_fingerprint_version,
+        intent_fingerprint: u64,
+        actuator_ref_fingerprint: u64,
+        descriptor_fingerprint: u64,
+        binding_fingerprint: ?u64 = null,
+        target_ref_fingerprint: u64,
+        world_surface_fingerprint: u64,
+        world_port_id: u32,
+        pending_port_fingerprint: ?u64 = null,
+        frame_request_fingerprint: u64,
+        payload_value_image_fingerprint: ?u64 = null,
+        idempotency_key_fingerprint: u64,
+        run_permit_fingerprint: ?u64 = null,
+        environment_certificate_fingerprint: ?u64 = null,
+        fabric_invocation_fingerprint: ?u64 = null,
+        capsule_fingerprint: ?u64 = null,
+        class: Class,
+        requested_mode: Mode = .fresh,
+        metadata: []const u8 = "",
+
+        pub fn init(args: struct {
+            actuator_ref_fingerprint: u64,
+            descriptor_fingerprint: u64,
+            binding_fingerprint: ?u64 = null,
+            target_ref_fingerprint: u64,
+            world_surface_fingerprint: u64,
+            world_port_id: u32,
+            pending_port_fingerprint: ?u64 = null,
+            frame_request_fingerprint: u64,
+            payload_value_image_fingerprint: ?u64 = null,
+            idempotency_key_fingerprint: u64,
+            run_permit_fingerprint: ?u64 = null,
+            environment_certificate_fingerprint: ?u64 = null,
+            fabric_invocation_fingerprint: ?u64 = null,
+            capsule_fingerprint: ?u64 = null,
+            class: Class,
+            requested_mode: Mode = .fresh,
+            metadata: []const u8 = "",
+        }) @This() {
+            var result = @This(){
+                .intent_fingerprint = 0,
+                .actuator_ref_fingerprint = args.actuator_ref_fingerprint,
+                .descriptor_fingerprint = args.descriptor_fingerprint,
+                .binding_fingerprint = args.binding_fingerprint,
+                .target_ref_fingerprint = args.target_ref_fingerprint,
+                .world_surface_fingerprint = args.world_surface_fingerprint,
+                .world_port_id = args.world_port_id,
+                .pending_port_fingerprint = args.pending_port_fingerprint,
+                .frame_request_fingerprint = args.frame_request_fingerprint,
+                .payload_value_image_fingerprint = args.payload_value_image_fingerprint,
+                .idempotency_key_fingerprint = args.idempotency_key_fingerprint,
+                .run_permit_fingerprint = args.run_permit_fingerprint,
+                .environment_certificate_fingerprint = args.environment_certificate_fingerprint,
+                .fabric_invocation_fingerprint = args.fabric_invocation_fingerprint,
+                .capsule_fingerprint = args.capsule_fingerprint,
+                .class = args.class,
+                .requested_mode = args.requested_mode,
+                .metadata = args.metadata,
+            };
+            result.intent_fingerprint = fingerprintIntent(result);
+            return result;
+        }
+
+        pub fn validate(self: @This()) !void {
+            if (self.format_version != world_actuation_intent_format_version) return error.InvalidFrameEncoding;
+            if (self.fingerprint_version != world_actuation_intent_fingerprint_version) return error.InvalidFrameEncoding;
+            if (self.actuator_ref_fingerprint == 0 or self.descriptor_fingerprint == 0) return error.InvalidFrameEncoding;
+            if (self.target_ref_fingerprint == 0 or self.world_surface_fingerprint == 0) return error.InvalidFrameEncoding;
+            if (self.frame_request_fingerprint == 0 or self.idempotency_key_fingerprint == 0) return error.InvalidFrameEncoding;
+            if (self.metadata.len > world_max_decoded_byte_field_len) return error.InvalidFrameEncoding;
+            if (self.intent_fingerprint != fingerprintIntent(self)) return error.InvalidFrameEncoding;
+        }
+
+        pub fn objectRef(self: @This()) ObjectRef {
+            return .{ .kind = .intent, .fingerprint = self.intent_fingerprint };
+        }
+    };
+
+    pub const Envelope = struct {
+        format_version: u32 = world_actuation_envelope_format_version,
+        fingerprint_version: u32 = world_actuation_envelope_fingerprint_version,
+        envelope_fingerprint: u64,
+        intent_fingerprint: u64,
+        encoded_frame_request_fingerprint: ?u64 = null,
+        payload_value_image_fingerprint: ?u64 = null,
+        idempotency_key: IdempotencyKey,
+        expected_response_value_ref: ?u32 = null,
+        expected_response_value_table_id: ?u32 = null,
+        supervision_ref_fingerprints: []const u64 = &.{},
+        metadata: []const u8 = "",
+
+        pub fn init(args: struct {
+            intent_fingerprint: u64,
+            encoded_frame_request_fingerprint: ?u64 = null,
+            payload_value_image_fingerprint: ?u64 = null,
+            idempotency_key: IdempotencyKey,
+            expected_response_value_ref: ?u32 = null,
+            expected_response_value_table_id: ?u32 = null,
+            supervision_ref_fingerprints: []const u64 = &.{},
+            metadata: []const u8 = "",
+        }) @This() {
+            var result = @This(){
+                .envelope_fingerprint = 0,
+                .intent_fingerprint = args.intent_fingerprint,
+                .encoded_frame_request_fingerprint = args.encoded_frame_request_fingerprint,
+                .payload_value_image_fingerprint = args.payload_value_image_fingerprint,
+                .idempotency_key = args.idempotency_key,
+                .expected_response_value_ref = args.expected_response_value_ref,
+                .expected_response_value_table_id = args.expected_response_value_table_id,
+                .supervision_ref_fingerprints = args.supervision_ref_fingerprints,
+                .metadata = args.metadata,
+            };
+            result.envelope_fingerprint = fingerprintEnvelope(result);
+            return result;
+        }
+
+        pub fn validate(self: @This(), policy: Policy) !void {
+            if (self.format_version != world_actuation_envelope_format_version) return error.InvalidFrameEncoding;
+            if (self.fingerprint_version != world_actuation_envelope_fingerprint_version) return error.InvalidFrameEncoding;
+            if (self.intent_fingerprint == 0) return error.InvalidFrameEncoding;
+            try self.idempotency_key.validate();
+            if (self.metadata.len > (policy.max_actuation_metadata_bytes orelse world_max_decoded_byte_field_len)) return error.InvalidFrameEncoding;
+            if (self.envelope_fingerprint != fingerprintEnvelope(self)) return error.InvalidFrameEncoding;
+        }
+
+        pub fn objectRef(self: @This()) ObjectRef {
+            return .{ .kind = .envelope, .fingerprint = self.envelope_fingerprint };
+        }
+    };
+
+    pub const Decision = struct {
+        format_version: u32 = world_actuation_decision_format_version,
+        fingerprint_version: u32 = world_actuation_decision_fingerprint_version,
+        decision_fingerprint: u64,
+        intent_fingerprint: u64,
+        policy_fingerprint: u64,
+        run_permit_fingerprint: ?u64 = null,
+        approved: bool = false,
+        status: DecisionStatus = .denied,
+        blocker_tag_fingerprint: ?u64 = null,
+        reason: []const u8 = "",
+        metadata: []const u8 = "",
+
+        pub fn init(args: struct {
+            intent_fingerprint: u64,
+            policy_fingerprint: u64,
+            run_permit_fingerprint: ?u64 = null,
+            approved: bool = false,
+            status: DecisionStatus = .denied,
+            blocker_tag_fingerprint: ?u64 = null,
+            reason: []const u8 = "",
+            metadata: []const u8 = "",
+        }) @This() {
+            var result = @This(){
+                .decision_fingerprint = 0,
+                .intent_fingerprint = args.intent_fingerprint,
+                .policy_fingerprint = args.policy_fingerprint,
+                .run_permit_fingerprint = args.run_permit_fingerprint,
+                .approved = args.approved,
+                .status = args.status,
+                .blocker_tag_fingerprint = args.blocker_tag_fingerprint,
+                .reason = args.reason,
+                .metadata = args.metadata,
+            };
+            result.decision_fingerprint = fingerprintDecision(result);
+            return result;
+        }
+
+        pub fn approvedDecision(intent: Intent, policy: Policy, run_permit_fingerprint: ?u64) @This() {
+            return init(.{
+                .intent_fingerprint = intent.intent_fingerprint,
+                .policy_fingerprint = policy.policy_fingerprint,
+                .run_permit_fingerprint = run_permit_fingerprint,
+                .approved = true,
+                .status = .approved,
+            });
+        }
+
+        pub fn denied(intent: Intent, policy: Policy, reason: []const u8) @This() {
+            return init(.{
+                .intent_fingerprint = intent.intent_fingerprint,
+                .policy_fingerprint = policy.policy_fingerprint,
+                .approved = false,
+                .status = .denied,
+                .reason = reason,
+            });
+        }
+
+        pub fn validate(self: @This()) !void {
+            if (self.format_version != world_actuation_decision_format_version) return error.InvalidFrameEncoding;
+            if (self.fingerprint_version != world_actuation_decision_fingerprint_version) return error.InvalidFrameEncoding;
+            if (self.intent_fingerprint == 0 or self.policy_fingerprint == 0) return error.InvalidFrameEncoding;
+            if (self.approved != (self.status == .approved)) return error.InvalidFrameEncoding;
+            if (self.reason.len > world_max_decoded_byte_field_len) return error.InvalidFrameEncoding;
+            if (self.metadata.len > world_max_decoded_byte_field_len) return error.InvalidFrameEncoding;
+            if (self.decision_fingerprint != fingerprintDecision(self)) return error.InvalidFrameEncoding;
+        }
+
+        pub fn objectRef(self: @This()) ObjectRef {
+            return .{ .kind = .decision, .fingerprint = self.decision_fingerprint };
+        }
+    };
+
+    pub const Commit = struct {
+        format_version: u32 = world_actuation_commit_format_version,
+        fingerprint_version: u32 = world_actuation_commit_fingerprint_version,
+        commit_fingerprint: u64,
+        intent_fingerprint: u64,
+        decision_fingerprint: u64,
+        envelope_fingerprint: u64,
+        idempotency_key_fingerprint: u64,
+        attempt_number: u32 = 0,
+        status: CommitStatus = .not_started,
+        fresh_called: bool = false,
+        replayed: bool = false,
+        verified: bool = false,
+        metadata: []const u8 = "",
+
+        pub fn init(args: struct {
+            intent_fingerprint: u64,
+            decision_fingerprint: u64,
+            envelope_fingerprint: u64,
+            idempotency_key_fingerprint: u64,
+            attempt_number: u32 = 0,
+            status: CommitStatus = .not_started,
+            fresh_called: bool = false,
+            replayed: bool = false,
+            verified: bool = false,
+            metadata: []const u8 = "",
+        }) @This() {
+            var result = @This(){
+                .commit_fingerprint = 0,
+                .intent_fingerprint = args.intent_fingerprint,
+                .decision_fingerprint = args.decision_fingerprint,
+                .envelope_fingerprint = args.envelope_fingerprint,
+                .idempotency_key_fingerprint = args.idempotency_key_fingerprint,
+                .attempt_number = args.attempt_number,
+                .status = args.status,
+                .fresh_called = args.fresh_called,
+                .replayed = args.replayed,
+                .verified = args.verified,
+                .metadata = args.metadata,
+            };
+            result.commit_fingerprint = fingerprintCommit(result);
+            return result;
+        }
+
+        pub fn validateAfterDecision(self: @This(), decision: Decision) !void {
+            try self.validate();
+            if (self.decision_fingerprint != decision.decision_fingerprint) return error.InvalidFrameEncoding;
+            if (!decision.approved and self.status != .not_started and self.status != .rejected and self.status != .cancelled) return error.SupervisionDenied;
+            if (self.fresh_called and !decision.approved) return error.SupervisionDenied;
+            if (self.status == .replayed and self.fresh_called) return error.InvalidFrameEncoding;
+        }
+
+        pub fn validate(self: @This()) !void {
+            if (self.format_version != world_actuation_commit_format_version) return error.InvalidFrameEncoding;
+            if (self.fingerprint_version != world_actuation_commit_fingerprint_version) return error.InvalidFrameEncoding;
+            if (self.intent_fingerprint == 0 or self.decision_fingerprint == 0 or self.envelope_fingerprint == 0) return error.InvalidFrameEncoding;
+            if (self.idempotency_key_fingerprint == 0) return error.InvalidFrameEncoding;
+            if (self.metadata.len > world_max_decoded_byte_field_len) return error.InvalidFrameEncoding;
+            if (self.commit_fingerprint != fingerprintCommit(self)) return error.InvalidFrameEncoding;
+        }
+
+        pub fn isInFlight(self: @This()) bool {
+            return self.status == .commit_pending;
+        }
+
+        pub fn objectRef(self: @This()) ObjectRef {
+            return .{ .kind = .commit, .fingerprint = self.commit_fingerprint };
+        }
+    };
+
+    pub const Response = struct {
+        format_version: u32 = world_actuation_response_format_version,
+        fingerprint_version: u32 = world_actuation_response_fingerprint_version,
+        response_fingerprint: u64,
+        intent_fingerprint: u64,
+        commit_fingerprint: ?u64 = null,
+        actuator_ref_fingerprint: u64,
+        world_port_id: u32,
+        request_fingerprint: u64,
+        status: Actuation.ResponseStatus = .responded,
+        response_kind: ResponseKind = .@"resume",
+        frame_response_fingerprint: ?u64 = null,
+        value_image_fingerprint: ?u64 = null,
+        code: ?u32 = null,
+        reason: []const u8 = "",
+        metadata: []const u8 = "",
+
+        pub fn init(args: struct {
+            intent_fingerprint: u64,
+            commit_fingerprint: ?u64 = null,
+            actuator_ref_fingerprint: u64,
+            world_port_id: u32,
+            request_fingerprint: u64,
+            status: Actuation.ResponseStatus = .responded,
+            response_kind: ResponseKind = .@"resume",
+            frame_response_fingerprint: ?u64 = null,
+            value_image_fingerprint: ?u64 = null,
+            code: ?u32 = null,
+            reason: []const u8 = "",
+            metadata: []const u8 = "",
+        }) @This() {
+            var result = @This(){
+                .response_fingerprint = 0,
+                .intent_fingerprint = args.intent_fingerprint,
+                .commit_fingerprint = args.commit_fingerprint,
+                .actuator_ref_fingerprint = args.actuator_ref_fingerprint,
+                .world_port_id = args.world_port_id,
+                .request_fingerprint = args.request_fingerprint,
+                .status = args.status,
+                .response_kind = args.response_kind,
+                .frame_response_fingerprint = args.frame_response_fingerprint,
+                .value_image_fingerprint = args.value_image_fingerprint,
+                .code = args.code,
+                .reason = args.reason,
+                .metadata = args.metadata,
+            };
+            result.response_fingerprint = Actuation.fingerprintResponse(result);
+            return result;
+        }
+
+        pub fn validate(self: @This(), policy: Policy, descriptor: ?Descriptor) !void {
+            if (self.format_version != world_actuation_response_format_version) return error.InvalidFrameEncoding;
+            if (self.fingerprint_version != world_actuation_response_fingerprint_version) return error.InvalidFrameEncoding;
+            if (self.intent_fingerprint == 0 or self.actuator_ref_fingerprint == 0 or self.request_fingerprint == 0) return error.InvalidFrameEncoding;
+            if (!policy.allowsResponseStatus(self.status)) return error.PortRuleDenied;
+            if (descriptor) |actual| {
+                if (!actual.allowed_response_kinds.allows(self.status)) return error.PortRuleDenied;
+                if (actual.world_port_id != null and actual.world_port_id.? != self.world_port_id) return error.WrongPortId;
+            }
+            if (self.reason.len > world_max_decoded_byte_field_len) return error.InvalidFrameEncoding;
+            if (self.metadata.len > (policy.max_actuation_metadata_bytes orelse world_max_decoded_byte_field_len)) return error.InvalidFrameEncoding;
+            if (self.response_fingerprint != Actuation.fingerprintResponse(self)) return error.InvalidFrameEncoding;
+        }
+
+        pub fn isTerminalForParent(self: @This()) bool {
+            return self.status == .responded or self.status == .rejected or self.status == .failed or self.status == .cancelled;
+        }
+
+        pub fn objectRef(self: @This()) ObjectRef {
+            return .{ .kind = .response, .fingerprint = self.response_fingerprint };
+        }
+    };
+
+    pub const Receipt = struct {
+        format_version: u32 = world_actuation_receipt_format_version,
+        fingerprint_version: u32 = world_actuation_receipt_fingerprint_version,
+        receipt_fingerprint: u64,
+        intent_fingerprint: u64,
+        envelope_fingerprint: u64,
+        decision_fingerprint: u64,
+        commit_fingerprint: u64,
+        response_fingerprint: u64,
+        actuator_ref_fingerprint: u64,
+        idempotency_key_fingerprint: u64,
+        target_ref_fingerprint: u64,
+        world_surface_fingerprint: u64,
+        world_port_id: u32,
+        class: Class,
+        mode: Mode,
+        fresh_called: bool = false,
+        replayed: bool = false,
+        verified: bool = false,
+        pending: bool = false,
+        deferred: bool = false,
+        rejected: bool = false,
+        failed: bool = false,
+        cancelled: bool = false,
+        attempt_number: u32 = 0,
+        run_permit_fingerprint: ?u64 = null,
+        environment_certificate_fingerprint: ?u64 = null,
+        run_receipt_fingerprint: ?u64 = null,
+        capsule_fingerprint: ?u64 = null,
+        blockers: []const u64 = &.{},
+        warnings: []const u64 = &.{},
+        metadata: []const u8 = "",
+
+        pub fn init(args: struct {
+            intent_fingerprint: u64,
+            envelope_fingerprint: u64,
+            decision_fingerprint: u64,
+            commit_fingerprint: u64,
+            response_fingerprint: u64,
+            actuator_ref_fingerprint: u64,
+            idempotency_key_fingerprint: u64,
+            target_ref_fingerprint: u64,
+            world_surface_fingerprint: u64,
+            world_port_id: u32,
+            class: Class,
+            mode: Mode,
+            fresh_called: bool = false,
+            replayed: bool = false,
+            verified: bool = false,
+            pending: bool = false,
+            deferred: bool = false,
+            rejected: bool = false,
+            failed: bool = false,
+            cancelled: bool = false,
+            attempt_number: u32 = 0,
+            run_permit_fingerprint: ?u64 = null,
+            environment_certificate_fingerprint: ?u64 = null,
+            run_receipt_fingerprint: ?u64 = null,
+            capsule_fingerprint: ?u64 = null,
+            blockers: []const u64 = &.{},
+            warnings: []const u64 = &.{},
+            metadata: []const u8 = "",
+        }) @This() {
+            var result = @This(){
+                .receipt_fingerprint = 0,
+                .intent_fingerprint = args.intent_fingerprint,
+                .envelope_fingerprint = args.envelope_fingerprint,
+                .decision_fingerprint = args.decision_fingerprint,
+                .commit_fingerprint = args.commit_fingerprint,
+                .response_fingerprint = args.response_fingerprint,
+                .actuator_ref_fingerprint = args.actuator_ref_fingerprint,
+                .idempotency_key_fingerprint = args.idempotency_key_fingerprint,
+                .target_ref_fingerprint = args.target_ref_fingerprint,
+                .world_surface_fingerprint = args.world_surface_fingerprint,
+                .world_port_id = args.world_port_id,
+                .class = args.class,
+                .mode = args.mode,
+                .fresh_called = args.fresh_called,
+                .replayed = args.replayed,
+                .verified = args.verified,
+                .pending = args.pending,
+                .deferred = args.deferred,
+                .rejected = args.rejected,
+                .failed = args.failed,
+                .cancelled = args.cancelled,
+                .attempt_number = args.attempt_number,
+                .run_permit_fingerprint = args.run_permit_fingerprint,
+                .environment_certificate_fingerprint = args.environment_certificate_fingerprint,
+                .run_receipt_fingerprint = args.run_receipt_fingerprint,
+                .capsule_fingerprint = args.capsule_fingerprint,
+                .blockers = args.blockers,
+                .warnings = args.warnings,
+                .metadata = args.metadata,
+            };
+            result.receipt_fingerprint = fingerprintReceipt(result);
+            return result;
+        }
+
+        pub fn fromResponse(args: struct {
+            intent: Intent,
+            envelope: Envelope,
+            decision: Decision,
+            commit: Commit,
+            response: Response,
+            target_ref_fingerprint: u64,
+            world_surface_fingerprint: u64,
+            class: Class,
+            mode: Mode,
+            run_receipt_fingerprint: ?u64 = null,
+            capsule_fingerprint: ?u64 = null,
+        }) @This() {
+            return init(.{
+                .intent_fingerprint = args.intent.intent_fingerprint,
+                .envelope_fingerprint = args.envelope.envelope_fingerprint,
+                .decision_fingerprint = args.decision.decision_fingerprint,
+                .commit_fingerprint = args.commit.commit_fingerprint,
+                .response_fingerprint = args.response.response_fingerprint,
+                .actuator_ref_fingerprint = args.response.actuator_ref_fingerprint,
+                .idempotency_key_fingerprint = args.envelope.idempotency_key.key_fingerprint,
+                .target_ref_fingerprint = args.target_ref_fingerprint,
+                .world_surface_fingerprint = args.world_surface_fingerprint,
+                .world_port_id = args.response.world_port_id,
+                .class = args.class,
+                .mode = args.mode,
+                .fresh_called = args.commit.fresh_called,
+                .replayed = args.commit.replayed or args.mode == .replay,
+                .verified = args.commit.verified or args.mode == .verify,
+                .pending = args.response.status == .pending,
+                .deferred = args.response.status == .deferred,
+                .rejected = args.response.status == .rejected,
+                .failed = args.response.status == .failed,
+                .cancelled = args.response.status == .cancelled,
+                .attempt_number = args.commit.attempt_number,
+                .run_permit_fingerprint = args.intent.run_permit_fingerprint,
+                .environment_certificate_fingerprint = args.intent.environment_certificate_fingerprint,
+                .run_receipt_fingerprint = args.run_receipt_fingerprint,
+                .capsule_fingerprint = args.capsule_fingerprint orelse args.intent.capsule_fingerprint,
+            });
+        }
+
+        pub fn validate(self: @This()) !void {
+            if (self.format_version != world_actuation_receipt_format_version) return error.InvalidFrameEncoding;
+            if (self.fingerprint_version != world_actuation_receipt_fingerprint_version) return error.InvalidFrameEncoding;
+            if (self.intent_fingerprint == 0 or self.envelope_fingerprint == 0 or self.decision_fingerprint == 0) return error.InvalidFrameEncoding;
+            if (self.commit_fingerprint == 0 or self.response_fingerprint == 0 or self.actuator_ref_fingerprint == 0) return error.InvalidFrameEncoding;
+            if (self.idempotency_key_fingerprint == 0 or self.target_ref_fingerprint == 0 or self.world_surface_fingerprint == 0) return error.InvalidFrameEncoding;
+            if (self.mode == .replay and self.fresh_called) return error.InvalidFrameEncoding;
+            try validateNoZeroU64(self.blockers);
+            try validateNoZeroU64(self.warnings);
+            if (self.metadata.len > world_max_decoded_byte_field_len) return error.InvalidFrameEncoding;
+            if (self.receipt_fingerprint != fingerprintReceipt(self)) return error.InvalidFrameEncoding;
+        }
+
+        pub fn objectRef(self: @This()) ObjectRef {
+            return .{ .kind = .receipt, .fingerprint = self.receipt_fingerprint };
+        }
+    };
+
+    pub const Journal = struct {
+        pub const Entry = struct {
+            order: u64,
+            intent_fingerprint: ?u64 = null,
+            envelope_fingerprint: ?u64 = null,
+            decision_fingerprint: ?u64 = null,
+            commit_fingerprint: ?u64 = null,
+            response_fingerprint: ?u64 = null,
+            receipt_fingerprint: ?u64 = null,
+            idempotency_key_fingerprint: ?u64 = null,
+            request_fingerprint: ?u64 = null,
+            fresh_called: bool = false,
+            replayed: bool = false,
+            verified: bool = false,
+            pending: bool = false,
+            deferred: bool = false,
+            failed: bool = false,
+            rejected: bool = false,
+        };
+
+        pub const Summary = struct {
+            intent_count: usize = 0,
+            decision_count: usize = 0,
+            commit_count: usize = 0,
+            response_count: usize = 0,
+            receipt_count: usize = 0,
+            fresh_count: usize = 0,
+            replay_count: usize = 0,
+            verify_count: usize = 0,
+            pending_count: usize = 0,
+            deferred_count: usize = 0,
+            failed_count: usize = 0,
+            rejected_count: usize = 0,
+        };
+
+        fingerprint_version: u32 = world_actuation_journal_fingerprint_version,
+        journal_fingerprint: u64 = 0,
+        entries: std.ArrayList(Entry) = .empty,
+        next_order: u64 = 0,
+
+        pub fn init() @This() {
+            var journal = @This(){};
+            journal.refreshFingerprint();
+            return journal;
+        }
+
+        pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+            self.entries.deinit(allocator);
+            self.* = undefined;
+        }
+
+        pub fn appendIntent(self: *@This(), allocator: std.mem.Allocator, intent: Intent) !void {
+            try self.entries.append(allocator, .{
+                .order = self.takeOrder(),
+                .intent_fingerprint = intent.intent_fingerprint,
+                .idempotency_key_fingerprint = intent.idempotency_key_fingerprint,
+                .request_fingerprint = intent.frame_request_fingerprint,
+            });
+            self.refreshFingerprint();
+        }
+
+        pub fn appendDecision(self: *@This(), allocator: std.mem.Allocator, decision: Decision) !void {
+            try self.entries.append(allocator, .{
+                .order = self.takeOrder(),
+                .intent_fingerprint = decision.intent_fingerprint,
+                .decision_fingerprint = decision.decision_fingerprint,
+                .rejected = decision.status == .denied,
+                .deferred = decision.status == .deferred,
+            });
+            self.refreshFingerprint();
+        }
+
+        pub fn appendCommit(self: *@This(), allocator: std.mem.Allocator, commit: Commit) !void {
+            try self.entries.append(allocator, .{
+                .order = self.takeOrder(),
+                .intent_fingerprint = commit.intent_fingerprint,
+                .decision_fingerprint = commit.decision_fingerprint,
+                .commit_fingerprint = commit.commit_fingerprint,
+                .idempotency_key_fingerprint = commit.idempotency_key_fingerprint,
+                .fresh_called = commit.fresh_called,
+                .replayed = commit.replayed,
+                .verified = commit.verified,
+                .pending = commit.status == .commit_pending,
+                .failed = commit.status == .commit_failed,
+                .rejected = commit.status == .rejected,
+            });
+            self.refreshFingerprint();
+        }
+
+        pub fn appendResponse(self: *@This(), allocator: std.mem.Allocator, response: Response) !void {
+            try self.entries.append(allocator, .{
+                .order = self.takeOrder(),
+                .intent_fingerprint = response.intent_fingerprint,
+                .commit_fingerprint = response.commit_fingerprint,
+                .response_fingerprint = response.response_fingerprint,
+                .request_fingerprint = response.request_fingerprint,
+                .pending = response.status == .pending,
+                .deferred = response.status == .deferred,
+                .failed = response.status == .failed,
+                .rejected = response.status == .rejected,
+            });
+            self.refreshFingerprint();
+        }
+
+        pub fn appendReceipt(self: *@This(), allocator: std.mem.Allocator, receipt: Receipt) !void {
+            try self.entries.append(allocator, .{
+                .order = self.takeOrder(),
+                .intent_fingerprint = receipt.intent_fingerprint,
+                .commit_fingerprint = receipt.commit_fingerprint,
+                .response_fingerprint = receipt.response_fingerprint,
+                .receipt_fingerprint = receipt.receipt_fingerprint,
+                .idempotency_key_fingerprint = receipt.idempotency_key_fingerprint,
+                .fresh_called = receipt.fresh_called,
+                .replayed = receipt.replayed,
+                .verified = receipt.verified,
+                .pending = receipt.pending,
+                .deferred = receipt.deferred,
+                .failed = receipt.failed,
+                .rejected = receipt.rejected,
+            });
+            self.refreshFingerprint();
+        }
+
+        pub fn lookupByIdempotencyKey(self: @This(), key_fingerprint: u64) ?Entry {
+            var index = self.entries.items.len;
+            while (index > 0) {
+                index -= 1;
+                const entry = self.entries.items[index];
+                if (entry.idempotency_key_fingerprint == key_fingerprint) return entry;
+            }
+            return null;
+        }
+
+        pub fn lookupByRequestFingerprint(self: @This(), request_fingerprint: u64) ?Entry {
+            var index = self.entries.items.len;
+            while (index > 0) {
+                index -= 1;
+                const entry = self.entries.items[index];
+                if (entry.request_fingerprint == request_fingerprint) return entry;
+            }
+            return null;
+        }
+
+        pub fn assertNoDuplicateFreshCommit(self: @This()) !void {
+            for (self.entries.items, 0..) |entry, index| {
+                if (!entry.fresh_called or entry.commit_fingerprint == null or entry.receipt_fingerprint != null) continue;
+                const key = entry.idempotency_key_fingerprint orelse continue;
+                for (self.entries.items[index + 1 ..]) |later| {
+                    if (later.fresh_called and later.commit_fingerprint != null and later.receipt_fingerprint == null and later.idempotency_key_fingerprint == key) return error.DuplicateBinding;
+                }
+            }
+        }
+
+        pub fn summary(self: @This()) Summary {
+            var result = Summary{};
+            for (self.entries.items) |entry| {
+                if (entry.intent_fingerprint != null) result.intent_count += 1;
+                if (entry.decision_fingerprint != null) result.decision_count += 1;
+                if (entry.commit_fingerprint != null) result.commit_count += 1;
+                if (entry.response_fingerprint != null) result.response_count += 1;
+                if (entry.receipt_fingerprint != null) result.receipt_count += 1;
+                if (entry.fresh_called) result.fresh_count += 1;
+                if (entry.replayed) result.replay_count += 1;
+                if (entry.verified) result.verify_count += 1;
+                if (entry.pending) result.pending_count += 1;
+                if (entry.deferred) result.deferred_count += 1;
+                if (entry.failed) result.failed_count += 1;
+                if (entry.rejected) result.rejected_count += 1;
+            }
+            return result;
+        }
+
+        fn takeOrder(self: *@This()) u64 {
+            const order = self.next_order;
+            self.next_order += 1;
+            return order;
+        }
+
+        fn refreshFingerprint(self: *@This()) void {
+            self.journal_fingerprint = fingerprintJournal(self.*);
+        }
+    };
+
+    pub const ReplaySource = struct {
+        source_fingerprint: u64,
+        receipts: []const Receipt = &.{},
+        journal_fingerprint: ?u64 = null,
+        replay_key_fingerprint: ?u64 = null,
+
+        pub fn init(args: struct {
+            receipts: []const Receipt = &.{},
+            journal_fingerprint: ?u64 = null,
+            replay_key_fingerprint: ?u64 = null,
+        }) @This() {
+            var result = @This(){
+                .source_fingerprint = 0,
+                .receipts = args.receipts,
+                .journal_fingerprint = args.journal_fingerprint,
+                .replay_key_fingerprint = args.replay_key_fingerprint,
+            };
+            result.source_fingerprint = fingerprintReplaySource(result);
+            return result;
+        }
+
+        pub fn lookupByIdempotencyKey(self: @This(), key_fingerprint: u64) !Receipt {
+            for (self.receipts) |receipt| {
+                if (receipt.idempotency_key_fingerprint == key_fingerprint) return receipt;
+            }
+            return error.ReplayMissing;
+        }
+
+        pub fn responseForIntent(self: @This(), intent: Intent, expected_status: Actuation.ResponseStatus, expected_kind: ResponseKind) !Response {
+            const receipt = try self.lookupByIdempotencyKey(intent.idempotency_key_fingerprint);
+            if (receipt.world_port_id != intent.world_port_id) return error.ReplayPortMismatch;
+            if (receipt.intent_fingerprint != intent.intent_fingerprint and receipt.mode != .replay) return error.ReplayRequestFingerprintMismatch;
+            const status: Actuation.ResponseStatus = if (receipt.rejected) .rejected else if (receipt.failed) .failed else if (receipt.pending) .pending else if (receipt.deferred) .deferred else if (receipt.cancelled) .cancelled else .responded;
+            if (status != expected_status) return error.ReplayResponseKindMismatch;
+            return Response.init(.{
+                .intent_fingerprint = intent.intent_fingerprint,
+                .commit_fingerprint = receipt.commit_fingerprint,
+                .actuator_ref_fingerprint = receipt.actuator_ref_fingerprint,
+                .world_port_id = receipt.world_port_id,
+                .request_fingerprint = intent.frame_request_fingerprint,
+                .status = status,
+                .response_kind = expected_kind,
+                .frame_response_fingerprint = receipt.response_fingerprint,
+                .metadata = "replay",
+            });
+        }
+    };
+
+    pub const VerifyReport = struct {
+        fingerprint_version: u32 = world_actuation_verify_report_fingerprint_version,
+        report_fingerprint: u64,
+        intent_fingerprint: u64,
+        expected_receipt_fingerprint: ?u64 = null,
+        fresh_receipt_fingerprint: ?u64 = null,
+        matched: bool = false,
+        divergence_kind: ?DivergenceKind = null,
+        blockers: []const u64 = &.{},
+        warnings: []const u64 = &.{},
+
+        pub fn init(args: struct {
+            intent_fingerprint: u64,
+            expected_receipt_fingerprint: ?u64 = null,
+            fresh_receipt_fingerprint: ?u64 = null,
+            matched: bool = false,
+            divergence_kind: ?DivergenceKind = null,
+            blockers: []const u64 = &.{},
+            warnings: []const u64 = &.{},
+        }) @This() {
+            var result = @This(){
+                .report_fingerprint = 0,
+                .intent_fingerprint = args.intent_fingerprint,
+                .expected_receipt_fingerprint = args.expected_receipt_fingerprint,
+                .fresh_receipt_fingerprint = args.fresh_receipt_fingerprint,
+                .matched = args.matched,
+                .divergence_kind = args.divergence_kind,
+                .blockers = args.blockers,
+                .warnings = args.warnings,
+            };
+            result.report_fingerprint = fingerprintVerifyReport(result);
+            return result;
+        }
+
+        pub fn compare(intent: Intent, expected: ?Receipt, fresh: ?Receipt) @This() {
+            if (expected == null) {
+                return init(.{
+                    .intent_fingerprint = intent.intent_fingerprint,
+                    .fresh_receipt_fingerprint = if (fresh) |receipt| receipt.receipt_fingerprint else null,
+                    .matched = false,
+                    .divergence_kind = .expected_missing,
+                });
+            }
+            if (fresh == null) {
+                return init(.{
+                    .intent_fingerprint = intent.intent_fingerprint,
+                    .expected_receipt_fingerprint = expected.?.receipt_fingerprint,
+                    .matched = false,
+                    .divergence_kind = .fresh_failed,
+                });
+            }
+            const matched = expected.?.response_fingerprint == fresh.?.response_fingerprint;
+            return init(.{
+                .intent_fingerprint = intent.intent_fingerprint,
+                .expected_receipt_fingerprint = expected.?.receipt_fingerprint,
+                .fresh_receipt_fingerprint = fresh.?.receipt_fingerprint,
+                .matched = matched,
+                .divergence_kind = if (matched) null else .response_fingerprint_mismatch,
+            });
+        }
+    };
+
+    pub const Membrane = struct {
+        pub const DecisionInput = struct {
+            policy: Policy,
+            intent: Intent,
+            key_present: bool = true,
+            explicit_mutation_approval: bool = false,
+            explicit_irreversible_approval: bool = false,
+        };
+
+        pub fn decide(input: DecisionInput) Decision {
+            if (!input.policy.allowsMode(input.intent.requested_mode)) return Decision.denied(input.intent, input.policy, "mode denied");
+            if (!input.policy.allowsClass(input.intent.class)) return Decision.denied(input.intent, input.policy, "class denied");
+            if (input.policy.requiresKeyForClass(input.intent.class, input.intent.requested_mode) and !input.key_present) return Decision.denied(input.intent, input.policy, "idempotency key required");
+            if (input.intent.class.isMutation() and input.policy.require_approval_for_mutation and !input.explicit_mutation_approval) return Decision.denied(input.intent, input.policy, "mutation approval required");
+            if (input.intent.class == .irreversible_mutation and input.policy.require_approval_for_irreversible and !input.explicit_irreversible_approval) return Decision.denied(input.intent, input.policy, "irreversible approval required");
+            return Decision.approvedDecision(input.intent, input.policy, input.intent.run_permit_fingerprint);
+        }
+
+        pub fn commit(decision: Decision, envelope: Envelope, status: CommitStatus, attempt_number: u32) !Commit {
+            if (!decision.approved) return error.SupervisionDenied;
+            const fresh_called = status != .not_started and status != .replayed and status != .verified;
+            return Commit.init(.{
+                .intent_fingerprint = decision.intent_fingerprint,
+                .decision_fingerprint = decision.decision_fingerprint,
+                .envelope_fingerprint = envelope.envelope_fingerprint,
+                .idempotency_key_fingerprint = envelope.idempotency_key.key_fingerprint,
+                .attempt_number = attempt_number,
+                .status = status,
+                .fresh_called = fresh_called,
+                .replayed = status == .replayed,
+                .verified = status == .verified,
+            });
+        }
+
+        pub const ResponseTemplate = struct {
+            status: Actuation.ResponseStatus = .responded,
+            response_kind: ResponseKind = .@"resume",
+            frame_response_fingerprint: ?u64 = null,
+            value_image_fingerprint: ?u64 = null,
+            code: ?u32 = null,
+            reason: []const u8 = "",
+            metadata: []const u8 = "",
+
+            pub fn responseFor(self: @This(), intent: Intent, commit_value: Commit) Response {
+                return Response.init(.{
+                    .intent_fingerprint = intent.intent_fingerprint,
+                    .commit_fingerprint = commit_value.commit_fingerprint,
+                    .actuator_ref_fingerprint = intent.actuator_ref_fingerprint,
+                    .world_port_id = intent.world_port_id,
+                    .request_fingerprint = intent.frame_request_fingerprint,
+                    .status = self.status,
+                    .response_kind = self.response_kind,
+                    .frame_response_fingerprint = self.frame_response_fingerprint,
+                    .value_image_fingerprint = self.value_image_fingerprint,
+                    .code = self.code,
+                    .reason = self.reason,
+                    .metadata = self.metadata,
+                });
+            }
+        };
+
+        pub const FixtureActuator = ResponseTemplate;
+        pub const NativeFunctionActuator = ResponseTemplate;
+        pub const ByteProtocolActuator = ResponseTemplate;
+        pub const RejectActuator = ResponseTemplate;
+        pub const PendingActuator = ResponseTemplate;
+        pub const DeferredActuator = ResponseTemplate;
+
+        pub const ReplayActuator = struct {
+            source: ReplaySource,
+            expected_status: Actuation.ResponseStatus = .responded,
+            expected_response_kind: ResponseKind = .@"resume",
+        };
+
+        pub const VerifyActuator = struct {
+            expected_receipt: ?Receipt = null,
+            fresh_receipt: ?Receipt = null,
+            response_template: ResponseTemplate = .{},
+        };
+
+        pub const Interface = union(enum) {
+            fixture: Membrane.FixtureActuator,
+            native_function: Membrane.NativeFunctionActuator,
+            byte_protocol: Membrane.ByteProtocolActuator,
+            reject: Membrane.RejectActuator,
+            pending: Membrane.PendingActuator,
+            deferred: Membrane.DeferredActuator,
+            replay: Membrane.ReplayActuator,
+            verify: Membrane.VerifyActuator,
+        };
+
+        pub const ExecuteArgs = struct {
+            policy: Policy,
+            intent: Intent,
+            envelope: Envelope,
+            actuator: Interface,
+            descriptor: ?Descriptor = null,
+            key_present: bool = true,
+            explicit_mutation_approval: bool = false,
+            explicit_irreversible_approval: bool = false,
+            attempt_number: u32 = 0,
+            target_ref_fingerprint: u64,
+            world_surface_fingerprint: u64,
+            run_receipt_fingerprint: ?u64 = null,
+            capsule_fingerprint: ?u64 = null,
+        };
+
+        pub const Execution = struct {
+            intent: Intent,
+            decision: Decision,
+            commit_value: Commit,
+            response: Response,
+            receipt: Receipt,
+            verify_report: ?VerifyReport = null,
+            fresh_called: bool = false,
+            parent_terminal: bool = false,
+
+            pub fn validate(self: @This()) !void {
+                try self.intent.validate();
+                try self.decision.validate();
+                try self.commit_value.validateAfterDecision(self.decision);
+                try self.receipt.validate();
+                if (self.decision.intent_fingerprint != self.intent.intent_fingerprint) return error.InvalidFrameEncoding;
+                if (self.commit_value.intent_fingerprint != self.intent.intent_fingerprint) return error.InvalidFrameEncoding;
+                if (self.response.intent_fingerprint != self.intent.intent_fingerprint) return error.InvalidFrameEncoding;
+                if (self.receipt.intent_fingerprint != self.intent.intent_fingerprint) return error.InvalidFrameEncoding;
+                if (self.receipt.idempotency_key_fingerprint != self.intent.idempotency_key_fingerprint) return error.InvalidFrameEncoding;
+                if (self.fresh_called != self.commit_value.fresh_called) return error.InvalidFrameEncoding;
+                if (self.parent_terminal != self.response.isTerminalForParent()) return error.InvalidFrameEncoding;
+                if (!self.decision.approved and self.fresh_called) return error.SupervisionDenied;
+                if (self.receipt.mode == .replay and self.fresh_called) return error.InvalidFrameEncoding;
+            }
+        };
+
+        pub fn execute(args: ExecuteArgs) !Execution {
+            try args.intent.validate();
+            try args.envelope.validate(args.policy);
+            try validateExecutionBindings(args);
+            const decision = decide(.{
+                .policy = args.policy,
+                .intent = args.intent,
+                .key_present = args.key_present,
+                .explicit_mutation_approval = args.explicit_mutation_approval,
+                .explicit_irreversible_approval = args.explicit_irreversible_approval,
+            });
+            try decision.validate();
+            if (!decision.approved) return rejectedExecution(args, decision);
+
+            switch (args.actuator) {
+                .replay => |replay| return replayExecution(args, decision, replay),
+                .verify => |verify| return verifyExecution(args, decision, verify),
+                .fixture => |template| return freshExecution(args, decision, template),
+                .native_function => |template| return freshExecution(args, decision, template),
+                .byte_protocol => |template| return freshExecution(args, decision, template),
+                .reject => |template| {
+                    var actual = template;
+                    actual.status = .rejected;
+                    return freshExecution(args, decision, actual);
+                },
+                .pending => |template| {
+                    var actual = template;
+                    actual.status = .pending;
+                    return freshExecution(args, decision, actual);
+                },
+                .deferred => |template| {
+                    var actual = template;
+                    actual.status = .deferred;
+                    return freshExecution(args, decision, actual);
+                },
+            }
+        }
+
+        fn validateExecutionBindings(args: ExecuteArgs) !void {
+            if (args.envelope.intent_fingerprint != args.intent.intent_fingerprint) return error.InvalidFrameEncoding;
+            if (args.envelope.idempotency_key.key_fingerprint != args.intent.idempotency_key_fingerprint) return error.InvalidFrameEncoding;
+            if (args.envelope.idempotency_key.target_ref_fingerprint != args.intent.target_ref_fingerprint) return error.InvalidFrameEncoding;
+            if (args.envelope.idempotency_key.world_surface_fingerprint != args.intent.world_surface_fingerprint) return error.InvalidFrameEncoding;
+            if (args.envelope.idempotency_key.world_port_id != args.intent.world_port_id) return error.InvalidFrameEncoding;
+            if (args.envelope.idempotency_key.request_fingerprint != args.intent.frame_request_fingerprint) return error.InvalidFrameEncoding;
+            if (args.envelope.idempotency_key.actuator_ref_fingerprint != args.intent.actuator_ref_fingerprint) return error.InvalidFrameEncoding;
+            if (args.target_ref_fingerprint != args.intent.target_ref_fingerprint) return error.InvalidFrameEncoding;
+            if (args.world_surface_fingerprint != args.intent.world_surface_fingerprint) return error.InvalidFrameEncoding;
+            if (args.descriptor) |descriptor| {
+                try descriptor.validate();
+                if (descriptor.descriptor_fingerprint != args.intent.descriptor_fingerprint) return error.InvalidFrameEncoding;
+                if (descriptor.actuator_ref_fingerprint != args.intent.actuator_ref_fingerprint) return error.InvalidFrameEncoding;
+                if (descriptor.target_ref_fingerprint) |target| {
+                    if (target != args.intent.target_ref_fingerprint) return error.InvalidFrameEncoding;
+                }
+                if (descriptor.world_surface_fingerprint != args.intent.world_surface_fingerprint) return error.InvalidFrameEncoding;
+                if (descriptor.world_port_id) |descriptor_port_id| {
+                    if (descriptor_port_id != args.intent.world_port_id) return error.WrongPortId;
+                }
+                if (descriptor.response_value_ref) |expected| {
+                    if (args.envelope.expected_response_value_ref != null and args.envelope.expected_response_value_ref.? != expected) return error.ProviderResultMismatch;
+                }
+                if (descriptor.response_value_table_id) |expected| {
+                    if (args.envelope.expected_response_value_table_id != null and args.envelope.expected_response_value_table_id.? != expected) return error.ProviderResultMismatch;
+                }
+            }
+        }
+
+        fn rejectedExecution(args: ExecuteArgs, decision: Decision) Execution {
+            const commit_value = Commit.init(.{
+                .intent_fingerprint = args.intent.intent_fingerprint,
+                .decision_fingerprint = decision.decision_fingerprint,
+                .envelope_fingerprint = args.envelope.envelope_fingerprint,
+                .idempotency_key_fingerprint = args.envelope.idempotency_key.key_fingerprint,
+                .attempt_number = args.attempt_number,
+                .status = .rejected,
+                .fresh_called = false,
+            });
+            const response = Response.init(.{
+                .intent_fingerprint = args.intent.intent_fingerprint,
+                .commit_fingerprint = commit_value.commit_fingerprint,
+                .actuator_ref_fingerprint = args.intent.actuator_ref_fingerprint,
+                .world_port_id = args.intent.world_port_id,
+                .request_fingerprint = args.intent.frame_request_fingerprint,
+                .status = .rejected,
+                .reason = decision.reason,
+            });
+            const receipt = receiptFor(args, decision, commit_value, response);
+            return .{
+                .intent = args.intent,
+                .decision = decision,
+                .commit_value = commit_value,
+                .response = response,
+                .receipt = receipt,
+                .fresh_called = false,
+                .parent_terminal = response.isTerminalForParent(),
+            };
+        }
+
+        fn freshExecution(args: ExecuteArgs, decision: Decision, template: ResponseTemplate) !Execution {
+            const commit_status = commitStatusForFreshResponse(template.status);
+            const commit_value = try commit(decision, args.envelope, commit_status, args.attempt_number);
+            try commit_value.validateAfterDecision(decision);
+            const response = template.responseFor(args.intent, commit_value);
+            try response.validate(args.policy, args.descriptor);
+            const receipt = receiptFor(args, decision, commit_value, response);
+            try receipt.validate();
+            return .{
+                .intent = args.intent,
+                .decision = decision,
+                .commit_value = commit_value,
+                .response = response,
+                .receipt = receipt,
+                .fresh_called = commit_value.fresh_called,
+                .parent_terminal = response.isTerminalForParent(),
+            };
+        }
+
+        fn replayExecution(args: ExecuteArgs, decision: Decision, replay: Membrane.ReplayActuator) !Execution {
+            const commit_value = try commit(decision, args.envelope, .replayed, args.attempt_number);
+            try commit_value.validateAfterDecision(decision);
+            var response = try replay.source.responseForIntent(args.intent, replay.expected_status, replay.expected_response_kind);
+            response.commit_fingerprint = commit_value.commit_fingerprint;
+            response.response_fingerprint = Actuation.fingerprintResponse(response);
+            try response.validate(args.policy, args.descriptor);
+            const receipt = receiptFor(args, decision, commit_value, response);
+            try receipt.validate();
+            return .{
+                .intent = args.intent,
+                .decision = decision,
+                .commit_value = commit_value,
+                .response = response,
+                .receipt = receipt,
+                .fresh_called = false,
+                .parent_terminal = response.isTerminalForParent(),
+            };
+        }
+
+        fn verifyExecution(args: ExecuteArgs, decision: Decision, verify: Membrane.VerifyActuator) !Execution {
+            const commit_value = try commit(decision, args.envelope, .verified, args.attempt_number);
+            try commit_value.validateAfterDecision(decision);
+            const response = verify.response_template.responseFor(args.intent, commit_value);
+            try response.validate(args.policy, args.descriptor);
+            const receipt = receiptFor(args, decision, commit_value, response);
+            try receipt.validate();
+            const report = VerifyReport.compare(args.intent, verify.expected_receipt, verify.fresh_receipt);
+            return .{
+                .intent = args.intent,
+                .decision = decision,
+                .commit_value = commit_value,
+                .response = response,
+                .receipt = receipt,
+                .verify_report = report,
+                .fresh_called = false,
+                .parent_terminal = response.isTerminalForParent(),
+            };
+        }
+
+        fn receiptFor(args: ExecuteArgs, decision: Decision, commit_value: Commit, response: Response) Receipt {
+            return Receipt.fromResponse(.{
+                .intent = args.intent,
+                .envelope = args.envelope,
+                .decision = decision,
+                .commit = commit_value,
+                .response = response,
+                .target_ref_fingerprint = args.target_ref_fingerprint,
+                .world_surface_fingerprint = args.world_surface_fingerprint,
+                .class = args.intent.class,
+                .mode = args.intent.requested_mode,
+                .run_receipt_fingerprint = args.run_receipt_fingerprint,
+                .capsule_fingerprint = args.capsule_fingerprint,
+            });
+        }
+
+        fn commitStatusForFreshResponse(status: Actuation.ResponseStatus) CommitStatus {
+            return switch (status) {
+                .responded => .committed,
+                .rejected => .rejected,
+                .failed => .commit_failed,
+                .pending, .deferred => .commit_pending,
+                .cancelled => .cancelled,
+            };
+        }
+    };
+
+    pub const FixtureActuator = Membrane.FixtureActuator;
+    pub const NativeFunctionActuator = Membrane.NativeFunctionActuator;
+    pub const ReplayActuator = Membrane.ReplayActuator;
+    pub const VerifyActuator = Membrane.VerifyActuator;
+    pub const ByteProtocolActuator = Membrane.ByteProtocolActuator;
+    pub const RejectActuator = Membrane.RejectActuator;
+    pub const PendingActuator = Membrane.PendingActuator;
+    pub const DeferredActuator = Membrane.DeferredActuator;
+
+    pub fn valuePolicyFingerprint(policy: ValuePolicy) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        hashBytes(&hasher, "world.actuation.value_policy.fingerprint");
+        hashValuePolicy(&hasher, policy);
+        return hasher.final();
+    }
+
+    pub fn dependenciesForReceipt(receipt: Receipt, out: []DependencyRef) ![]DependencyRef {
+        var index: usize = 0;
+        try appendDependency(out, &index, .intent, receipt.intent_fingerprint);
+        try appendDependency(out, &index, .envelope, receipt.envelope_fingerprint);
+        try appendDependency(out, &index, .decision, receipt.decision_fingerprint);
+        try appendDependency(out, &index, .commit, receipt.commit_fingerprint);
+        try appendDependency(out, &index, .response, receipt.response_fingerprint);
+        try appendDependency(out, &index, .actuator_ref, receipt.actuator_ref_fingerprint);
+        try appendDependency(out, &index, .idempotency_key, receipt.idempotency_key_fingerprint);
+        if (receipt.run_permit_fingerprint) |fingerprint| try appendDependency(out, &index, .run_permit, fingerprint);
+        if (receipt.environment_certificate_fingerprint) |fingerprint| try appendDependency(out, &index, .environment_certificate, fingerprint);
+        if (receipt.run_receipt_fingerprint) |fingerprint| try appendDependency(out, &index, .run_receipt, fingerprint);
+        if (receipt.capsule_fingerprint) |fingerprint| try appendDependency(out, &index, .capsule, fingerprint);
+        return out[0..index];
+    }
+
+    fn appendDependency(out: []DependencyRef, index: *usize, kind: DependencyKind, fingerprint: u64) !void {
+        if (fingerprint == 0) return error.InvalidFrameEncoding;
+        if (index.* >= out.len) return error.OutOfMemory;
+        out[index.*] = .{ .kind = kind, .fingerprint = fingerprint };
+        index.* += 1;
+    }
+
+    fn fingerprintRef(ref: Ref) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        hashBytes(&hasher, "world.actuator_ref.fingerprint");
+        hashU64(&hasher, ref.fingerprint_version);
+        hashU64(&hasher, @intFromEnum(ref.kind));
+        hashU64(&hasher, @intFromEnum(ref.class));
+        hashBytesWithLen(&hasher, ref.label);
+        hashModeSet(&hasher, ref.supported_modes);
+        hashResponseStatusSet(&hasher, ref.supported_response_statuses);
+        hashU64(&hasher, ref.value_policy_fingerprint);
+        hashOptionalU64(&hasher, ref.authority_descriptor_fingerprint);
+        hashOptionalU64(&hasher, ref.protocol_descriptor_fingerprint);
+        hashBytesWithLen(&hasher, ref.metadata);
+        return hasher.final();
+    }
+
+    fn fingerprintDescriptor(descriptor: Descriptor) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        hashBytes(&hasher, "world.actuation.descriptor.fingerprint");
+        hashU64(&hasher, descriptor.fingerprint_version);
+        hashU64(&hasher, descriptor.actuator_ref_fingerprint);
+        hashU64(&hasher, descriptor.world_surface_fingerprint);
+        hashOptionalU64(&hasher, descriptor.target_ref_fingerprint);
+        hashOptionalU32(&hasher, descriptor.world_port_id);
+        hashOptionalU64(&hasher, descriptor.world_port_ref_fingerprint);
+        hashOptionalU64(&hasher, descriptor.source_effect_shape_ref_fingerprint);
+        hashOptionalU32(&hasher, descriptor.payload_value_ref);
+        hashOptionalU32(&hasher, descriptor.payload_value_table_id);
+        hashOptionalU32(&hasher, descriptor.response_value_ref);
+        hashOptionalU32(&hasher, descriptor.response_value_table_id);
+        hashResponseStatusSet(&hasher, descriptor.allowed_response_kinds);
+        hashU64(&hasher, @intFromEnum(descriptor.kind));
+        hashU64(&hasher, @intFromEnum(descriptor.class));
+        hashValuePolicy(&hasher, descriptor.value_policy);
+        hashBytesWithLen(&hasher, descriptor.label);
+        hashBytesWithLen(&hasher, descriptor.metadata);
+        return hasher.final();
+    }
+
+    fn fingerprintBinding(binding: Actuation.Binding) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        hashBytes(&hasher, "world.actuation.binding.fingerprint");
+        hashU64(&hasher, binding.fingerprint_version);
+        hashU64(&hasher, binding.target_ref_fingerprint);
+        hashU64(&hasher, binding.world_surface_fingerprint);
+        hashU64(&hasher, binding.import_requirement_fingerprint);
+        hashU64(&hasher, binding.world_port_id);
+        hashU64(&hasher, binding.actuator_ref_fingerprint);
+        hashU64(&hasher, binding.descriptor_fingerprint);
+        hashOptionalU64(&hasher, binding.port_authority_fingerprint);
+        hashOptionalU64(&hasher, binding.environment_certificate_fingerprint);
+        hashModeSet(&hasher, binding.binding_mode_policy);
+        hashBytesWithLen(&hasher, binding.metadata);
+        return hasher.final();
+    }
+
+    fn fingerprintPolicy(policy: Policy) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        hashBytes(&hasher, "world.actuation.policy.fingerprint");
+        hashU64(&hasher, world_actuation_policy_fingerprint_version);
+        hashBool(&hasher, policy.allow_fresh_actuation);
+        hashBool(&hasher, policy.allow_replay_actuation);
+        hashBool(&hasher, policy.allow_verify_actuation);
+        hashBool(&hasher, policy.allow_pending_actuation);
+        hashBool(&hasher, policy.allow_deferred_actuation);
+        hashBool(&hasher, policy.allow_rejected_responses);
+        hashBool(&hasher, policy.allow_failed_responses);
+        hashBool(&hasher, policy.allow_observation);
+        hashBool(&hasher, policy.allow_deterministic_fixture);
+        hashBool(&hasher, policy.allow_idempotent_mutation);
+        hashBool(&hasher, policy.allow_non_idempotent_mutation);
+        hashBool(&hasher, policy.allow_irreversible_mutation);
+        hashBool(&hasher, policy.allow_compensatable_mutation);
+        hashBool(&hasher, policy.allow_human_gated);
+        hashBool(&hasher, policy.require_idempotency_key);
+        hashBool(&hasher, policy.require_approval_for_mutation);
+        hashBool(&hasher, policy.require_approval_for_irreversible);
+        hashBool(&hasher, policy.require_portable_value_images);
+        hashBool(&hasher, policy.reject_native_only_values);
+        hashBool(&hasher, policy.require_actuation_receipts);
+        hashBool(&hasher, policy.require_actuation_journal);
+        hashBool(&hasher, policy.allow_retry);
+        hashOptionalUsize(&hasher, policy.max_actuation_calls);
+        hashOptionalUsize(&hasher, policy.max_pending_actuations);
+        hashOptionalUsize(&hasher, policy.max_actuation_response_bytes);
+        hashOptionalUsize(&hasher, policy.max_actuation_metadata_bytes);
+        return hasher.final();
+    }
+
+    fn fingerprintIdempotencyKey(key: IdempotencyKey) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        hashBytes(&hasher, "world.actuation.idempotency_key.fingerprint");
+        hashU64(&hasher, key.fingerprint_version);
+        hashU64(&hasher, key.target_ref_fingerprint);
+        hashU64(&hasher, key.world_surface_fingerprint);
+        hashU64(&hasher, key.world_port_id);
+        hashU64(&hasher, key.request_fingerprint);
+        hashOptionalU64(&hasher, key.replay_key_fingerprint);
+        hashOptionalU64(&hasher, key.run_handle_fingerprint);
+        hashOptionalU64(&hasher, key.pending_port_fingerprint);
+        hashOptionalU64(&hasher, key.capsule_fingerprint);
+        hashU64(&hasher, key.actuator_ref_fingerprint);
+        hashOptionalU64(&hasher, key.intent_fingerprint);
+        hashU64(&hasher, @intFromEnum(key.attempt_scope));
+        hashBytesWithLen(&hasher, key.metadata);
+        return hasher.final();
+    }
+
+    fn fingerprintIntent(intent: Intent) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        hashBytes(&hasher, "world.actuation.intent.fingerprint");
+        hashU64(&hasher, intent.fingerprint_version);
+        hashU64(&hasher, intent.actuator_ref_fingerprint);
+        hashU64(&hasher, intent.descriptor_fingerprint);
+        hashOptionalU64(&hasher, intent.binding_fingerprint);
+        hashU64(&hasher, intent.target_ref_fingerprint);
+        hashU64(&hasher, intent.world_surface_fingerprint);
+        hashU64(&hasher, intent.world_port_id);
+        hashOptionalU64(&hasher, intent.pending_port_fingerprint);
+        hashU64(&hasher, intent.frame_request_fingerprint);
+        hashOptionalU64(&hasher, intent.payload_value_image_fingerprint);
+        hashU64(&hasher, intent.idempotency_key_fingerprint);
+        hashOptionalU64(&hasher, intent.run_permit_fingerprint);
+        hashOptionalU64(&hasher, intent.environment_certificate_fingerprint);
+        hashOptionalU64(&hasher, intent.fabric_invocation_fingerprint);
+        hashOptionalU64(&hasher, intent.capsule_fingerprint);
+        hashU64(&hasher, @intFromEnum(intent.class));
+        hashU64(&hasher, @intFromEnum(intent.requested_mode));
+        hashBytesWithLen(&hasher, intent.metadata);
+        return hasher.final();
+    }
+
+    fn fingerprintEnvelope(envelope: Envelope) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        hashBytes(&hasher, "world.actuation.envelope.fingerprint");
+        hashU64(&hasher, envelope.fingerprint_version);
+        hashU64(&hasher, envelope.intent_fingerprint);
+        hashOptionalU64(&hasher, envelope.encoded_frame_request_fingerprint);
+        hashOptionalU64(&hasher, envelope.payload_value_image_fingerprint);
+        hashU64(&hasher, envelope.idempotency_key.key_fingerprint);
+        hashOptionalU32(&hasher, envelope.expected_response_value_ref);
+        hashOptionalU32(&hasher, envelope.expected_response_value_table_id);
+        hashU64Slice(&hasher, envelope.supervision_ref_fingerprints);
+        hashBytesWithLen(&hasher, envelope.metadata);
+        return hasher.final();
+    }
+
+    fn fingerprintDecision(decision: Decision) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        hashBytes(&hasher, "world.actuation.decision.fingerprint");
+        hashU64(&hasher, decision.fingerprint_version);
+        hashU64(&hasher, decision.intent_fingerprint);
+        hashU64(&hasher, decision.policy_fingerprint);
+        hashOptionalU64(&hasher, decision.run_permit_fingerprint);
+        hashBool(&hasher, decision.approved);
+        hashU64(&hasher, @intFromEnum(decision.status));
+        hashOptionalU64(&hasher, decision.blocker_tag_fingerprint);
+        hashBytesWithLen(&hasher, decision.reason);
+        hashBytesWithLen(&hasher, decision.metadata);
+        return hasher.final();
+    }
+
+    fn fingerprintCommit(commit: Commit) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        hashBytes(&hasher, "world.actuation.commit.fingerprint");
+        hashU64(&hasher, commit.fingerprint_version);
+        hashU64(&hasher, commit.intent_fingerprint);
+        hashU64(&hasher, commit.decision_fingerprint);
+        hashU64(&hasher, commit.envelope_fingerprint);
+        hashU64(&hasher, commit.idempotency_key_fingerprint);
+        hashU64(&hasher, commit.attempt_number);
+        hashU64(&hasher, @intFromEnum(commit.status));
+        hashBool(&hasher, commit.fresh_called);
+        hashBool(&hasher, commit.replayed);
+        hashBool(&hasher, commit.verified);
+        hashBytesWithLen(&hasher, commit.metadata);
+        return hasher.final();
+    }
+
+    fn fingerprintResponse(response: Response) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        hashBytes(&hasher, "world.actuation.response.fingerprint");
+        hashU64(&hasher, response.fingerprint_version);
+        hashU64(&hasher, response.intent_fingerprint);
+        hashOptionalU64(&hasher, response.commit_fingerprint);
+        hashU64(&hasher, response.actuator_ref_fingerprint);
+        hashU64(&hasher, response.world_port_id);
+        hashU64(&hasher, response.request_fingerprint);
+        hashU64(&hasher, @intFromEnum(response.status));
+        hashU64(&hasher, @intFromEnum(response.response_kind));
+        hashOptionalU64(&hasher, response.frame_response_fingerprint);
+        hashOptionalU64(&hasher, response.value_image_fingerprint);
+        hashOptionalU32(&hasher, response.code);
+        hashBytesWithLen(&hasher, response.reason);
+        hashBytesWithLen(&hasher, response.metadata);
+        return hasher.final();
+    }
+
+    fn fingerprintReceipt(receipt: Receipt) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        hashBytes(&hasher, "world.actuation.receipt.fingerprint");
+        hashU64(&hasher, receipt.fingerprint_version);
+        hashU64(&hasher, receipt.intent_fingerprint);
+        hashU64(&hasher, receipt.envelope_fingerprint);
+        hashU64(&hasher, receipt.decision_fingerprint);
+        hashU64(&hasher, receipt.commit_fingerprint);
+        hashU64(&hasher, receipt.response_fingerprint);
+        hashU64(&hasher, receipt.actuator_ref_fingerprint);
+        hashU64(&hasher, receipt.idempotency_key_fingerprint);
+        hashU64(&hasher, receipt.target_ref_fingerprint);
+        hashU64(&hasher, receipt.world_surface_fingerprint);
+        hashU64(&hasher, receipt.world_port_id);
+        hashU64(&hasher, @intFromEnum(receipt.class));
+        hashU64(&hasher, @intFromEnum(receipt.mode));
+        hashBool(&hasher, receipt.fresh_called);
+        hashBool(&hasher, receipt.replayed);
+        hashBool(&hasher, receipt.verified);
+        hashBool(&hasher, receipt.pending);
+        hashBool(&hasher, receipt.deferred);
+        hashBool(&hasher, receipt.rejected);
+        hashBool(&hasher, receipt.failed);
+        hashBool(&hasher, receipt.cancelled);
+        hashU64(&hasher, receipt.attempt_number);
+        hashOptionalU64(&hasher, receipt.run_permit_fingerprint);
+        hashOptionalU64(&hasher, receipt.environment_certificate_fingerprint);
+        hashOptionalU64(&hasher, receipt.run_receipt_fingerprint);
+        hashOptionalU64(&hasher, receipt.capsule_fingerprint);
+        hashU64Slice(&hasher, receipt.blockers);
+        hashU64Slice(&hasher, receipt.warnings);
+        hashBytesWithLen(&hasher, receipt.metadata);
+        return hasher.final();
+    }
+
+    fn fingerprintJournal(journal: Journal) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        hashBytes(&hasher, "world.actuation.journal.fingerprint");
+        hashU64(&hasher, journal.fingerprint_version);
+        hashU64(&hasher, journal.next_order);
+        hashU64(&hasher, journal.entries.items.len);
+        for (journal.entries.items) |entry| {
+            hashU64(&hasher, entry.order);
+            hashOptionalU64(&hasher, entry.intent_fingerprint);
+            hashOptionalU64(&hasher, entry.envelope_fingerprint);
+            hashOptionalU64(&hasher, entry.decision_fingerprint);
+            hashOptionalU64(&hasher, entry.commit_fingerprint);
+            hashOptionalU64(&hasher, entry.response_fingerprint);
+            hashOptionalU64(&hasher, entry.receipt_fingerprint);
+            hashOptionalU64(&hasher, entry.idempotency_key_fingerprint);
+            hashOptionalU64(&hasher, entry.request_fingerprint);
+            hashBool(&hasher, entry.fresh_called);
+            hashBool(&hasher, entry.replayed);
+            hashBool(&hasher, entry.verified);
+            hashBool(&hasher, entry.pending);
+            hashBool(&hasher, entry.deferred);
+            hashBool(&hasher, entry.failed);
+            hashBool(&hasher, entry.rejected);
+        }
+        return hasher.final();
+    }
+
+    fn fingerprintReplaySource(source: ReplaySource) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        hashBytes(&hasher, "world.actuation.replay_source.fingerprint");
+        hashU64(&hasher, source.receipts.len);
+        for (source.receipts) |receipt| hashU64(&hasher, receipt.receipt_fingerprint);
+        hashOptionalU64(&hasher, source.journal_fingerprint);
+        hashOptionalU64(&hasher, source.replay_key_fingerprint);
+        return hasher.final();
+    }
+
+    fn fingerprintVerifyReport(report: VerifyReport) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        hashBytes(&hasher, "world.actuation.verify_report.fingerprint");
+        hashU64(&hasher, report.fingerprint_version);
+        hashU64(&hasher, report.intent_fingerprint);
+        hashOptionalU64(&hasher, report.expected_receipt_fingerprint);
+        hashOptionalU64(&hasher, report.fresh_receipt_fingerprint);
+        hashBool(&hasher, report.matched);
+        if (report.divergence_kind) |kind| {
+            hashBool(&hasher, true);
+            hashU64(&hasher, @intFromEnum(kind));
+        } else {
+            hashBool(&hasher, false);
+        }
+        hashU64Slice(&hasher, report.blockers);
+        hashU64Slice(&hasher, report.warnings);
+        return hasher.final();
+    }
+
+    fn hashModeSet(hasher: *std.hash.Wyhash, modes: ModeSet) void {
+        hashBool(hasher, modes.fresh);
+        hashBool(hasher, modes.replay);
+        hashBool(hasher, modes.verify);
+        hashBool(hasher, modes.audit);
+    }
+
+    fn hashResponseStatusSet(hasher: *std.hash.Wyhash, statuses: ResponseStatusSet) void {
+        hashBool(hasher, statuses.responded);
+        hashBool(hasher, statuses.rejected);
+        hashBool(hasher, statuses.failed);
+        hashBool(hasher, statuses.pending);
+        hashBool(hasher, statuses.deferred);
+        hashBool(hasher, statuses.cancelled);
+    }
+
+    fn hashBytesWithLen(hasher: *std.hash.Wyhash, bytes: []const u8) void {
+        hashU64(hasher, bytes.len);
+        hashBytes(hasher, bytes);
+    }
+
+    fn hashOptionalUsize(hasher: *std.hash.Wyhash, value: ?usize) void {
+        if (value) |actual| {
+            hashBool(hasher, true);
+            hashU64(hasher, actual);
+        } else {
+            hashBool(hasher, false);
+        }
+    }
+
+    fn hashU64Slice(hasher: *std.hash.Wyhash, values: []const u64) void {
+        hashU64(hasher, values.len);
+        for (values) |value| hashU64(hasher, value);
+    }
+
+    fn validateNoZeroU64(values: []const u64) !void {
+        for (values) |value| {
+            if (value == 0) return error.InvalidFrameEncoding;
+        }
+    }
+};
 
 pub const Capsule = struct {
     pub const Kind = enum(u8) {
@@ -16391,6 +19133,9 @@ pub const Capsule = struct {
         dependency = 11,
         run_receipt = 12,
         fabric_receipt = 13,
+        actuation_intent = 14,
+        actuation_receipt = 15,
+        actuation_journal = 16,
     };
 
     pub const ObjectKind = enum(u8) {
@@ -16403,6 +19148,9 @@ pub const Capsule = struct {
         transcript_image = 6,
         value_image = 7,
         certificate = 8,
+        actuation_intent = 9,
+        actuation_receipt = 10,
+        actuation_journal = 11,
     };
 
     pub const Blocker = enum(u8) {
@@ -16606,6 +19354,9 @@ pub const Capsule = struct {
         fabric_invocation_fingerprints: []const u64 = &.{},
         fabric_receipt_fingerprints: []const u64 = &.{},
         guest_conformance_report_fingerprints: []const u64 = &.{},
+        actuation_intent_fingerprints: []const u64 = &.{},
+        actuation_receipt_fingerprints: []const u64 = &.{},
+        actuation_journal_fingerprints: []const u64 = &.{},
         pending_port_count: usize = 0,
         run_slot_count: usize = 0,
         active_fabric_invocation_count: usize = 0,
@@ -16630,6 +19381,9 @@ pub const Capsule = struct {
             fabric_invocation_fingerprints: []const u64 = &.{},
             fabric_receipt_fingerprints: []const u64 = &.{},
             guest_conformance_report_fingerprints: []const u64 = &.{},
+            actuation_intent_fingerprints: []const u64 = &.{},
+            actuation_receipt_fingerprints: []const u64 = &.{},
+            actuation_journal_fingerprints: []const u64 = &.{},
             pending_port_count: usize = 0,
             run_slot_count: usize = 0,
             active_fabric_invocation_count: usize = 0,
@@ -16654,6 +19408,9 @@ pub const Capsule = struct {
                 .fabric_invocation_fingerprints = args.fabric_invocation_fingerprints,
                 .fabric_receipt_fingerprints = args.fabric_receipt_fingerprints,
                 .guest_conformance_report_fingerprints = args.guest_conformance_report_fingerprints,
+                .actuation_intent_fingerprints = args.actuation_intent_fingerprints,
+                .actuation_receipt_fingerprints = args.actuation_receipt_fingerprints,
+                .actuation_journal_fingerprints = args.actuation_journal_fingerprints,
                 .pending_port_count = args.pending_port_count,
                 .run_slot_count = args.run_slot_count,
                 .active_fabric_invocation_count = args.active_fabric_invocation_count,
@@ -16681,6 +19438,12 @@ pub const Capsule = struct {
             if (self.fabric_invocation_fingerprints.len > options.max_dependencies) return error.InvalidFrameEncoding;
             if (self.fabric_receipt_fingerprints.len > options.max_dependencies) return error.InvalidFrameEncoding;
             if (self.guest_conformance_report_fingerprints.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.actuation_intent_fingerprints.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.actuation_receipt_fingerprints.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.actuation_journal_fingerprints.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            try validateNoZeroU64(self.actuation_intent_fingerprints);
+            try validateNoZeroU64(self.actuation_receipt_fingerprints);
+            try validateNoZeroU64(self.actuation_journal_fingerprints);
             if (self.manifest_fingerprint != fingerprintManifest(self)) return error.InvalidFrameEncoding;
         }
 
@@ -16696,6 +19459,9 @@ pub const Capsule = struct {
                 allocator.free(self.fabric_invocation_fingerprints);
                 allocator.free(self.fabric_receipt_fingerprints);
                 allocator.free(self.guest_conformance_report_fingerprints);
+                allocator.free(self.actuation_intent_fingerprints);
+                allocator.free(self.actuation_receipt_fingerprints);
+                allocator.free(self.actuation_journal_fingerprints);
                 allocator.free(self.metadata);
             }
             self.* = undefined;
@@ -16981,6 +19747,8 @@ pub const Capsule = struct {
         generation: u64 = 0,
         single_use_status_fingerprints: []const u64 = &.{},
         response_routing_status_fingerprints: []const u64 = &.{},
+        pending_actuation_intent_fingerprints: []const u64 = &.{},
+        committed_actuation_receipt_fingerprints: []const u64 = &.{},
         owns_memory: bool = false,
 
         pub fn init(args: struct {
@@ -16991,6 +19759,8 @@ pub const Capsule = struct {
             generation: u64 = 0,
             single_use_status_fingerprints: []const u64 = &.{},
             response_routing_status_fingerprints: []const u64 = &.{},
+            pending_actuation_intent_fingerprints: []const u64 = &.{},
+            committed_actuation_receipt_fingerprints: []const u64 = &.{},
         }) @This() {
             var image = @This(){
                 .mailbox_image_fingerprint = 0,
@@ -17001,6 +19771,8 @@ pub const Capsule = struct {
                 .generation = args.generation,
                 .single_use_status_fingerprints = args.single_use_status_fingerprints,
                 .response_routing_status_fingerprints = args.response_routing_status_fingerprints,
+                .pending_actuation_intent_fingerprints = args.pending_actuation_intent_fingerprints,
+                .committed_actuation_receipt_fingerprints = args.committed_actuation_receipt_fingerprints,
             };
             image.mailbox_image_fingerprint = fingerprintMailboxImage(image);
             return image;
@@ -17015,6 +19787,10 @@ pub const Capsule = struct {
             if (status_count > options.max_pending_ports) return error.InvalidFrameEncoding;
             if (self.single_use_status_fingerprints.len != status_count) return error.InvalidFrameEncoding;
             if (self.response_routing_status_fingerprints.len != status_count) return error.InvalidFrameEncoding;
+            if (self.pending_actuation_intent_fingerprints.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.committed_actuation_receipt_fingerprints.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            try validateNoZeroU64(self.pending_actuation_intent_fingerprints);
+            try validateNoZeroU64(self.committed_actuation_receipt_fingerprints);
             if (self.pending_port_entries.len != self.pending_port_fingerprints.len) return error.InvalidFrameEncoding;
             for (self.pending_port_entries, 0..) |entry, index| {
                 try entry.validate();
@@ -17041,6 +19817,8 @@ pub const Capsule = struct {
                 allocator.free(self.consumed_port_fingerprints);
                 allocator.free(self.single_use_status_fingerprints);
                 allocator.free(self.response_routing_status_fingerprints);
+                allocator.free(self.pending_actuation_intent_fingerprints);
+                allocator.free(self.committed_actuation_receipt_fingerprints);
             }
             self.* = undefined;
         }
@@ -17066,6 +19844,9 @@ pub const Capsule = struct {
         admission_receipt_refs: []const u64 = &.{},
         permit_refs: []const u64 = &.{},
         active_fabric_invocation_refs: []const u64 = &.{},
+        actuation_intent_refs: []const u64 = &.{},
+        actuation_receipt_refs: []const u64 = &.{},
+        actuation_journal_refs: []const u64 = &.{},
         metadata: []const u8 = "",
         owns_memory: bool = false,
 
@@ -17086,6 +19867,9 @@ pub const Capsule = struct {
             admission_receipt_refs: []const u64 = &.{},
             permit_refs: []const u64 = &.{},
             active_fabric_invocation_refs: []const u64 = &.{},
+            actuation_intent_refs: []const u64 = &.{},
+            actuation_receipt_refs: []const u64 = &.{},
+            actuation_journal_refs: []const u64 = &.{},
             metadata: []const u8 = "",
         }) @This() {
             var image = @This(){
@@ -17106,6 +19890,9 @@ pub const Capsule = struct {
                 .admission_receipt_refs = args.admission_receipt_refs,
                 .permit_refs = args.permit_refs,
                 .active_fabric_invocation_refs = args.active_fabric_invocation_refs,
+                .actuation_intent_refs = args.actuation_intent_refs,
+                .actuation_receipt_refs = args.actuation_receipt_refs,
+                .actuation_journal_refs = args.actuation_journal_refs,
                 .metadata = args.metadata,
             };
             image.image_fingerprint = fingerprintRunspaceImage(image);
@@ -17129,6 +19916,12 @@ pub const Capsule = struct {
             if (self.admission_receipt_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
             if (self.permit_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
             if (self.active_fabric_invocation_refs.len > options.max_fabric_invocations) return error.InvalidFrameEncoding;
+            if (self.actuation_intent_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.actuation_receipt_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.actuation_journal_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            try validateNoZeroU64(self.actuation_intent_refs);
+            try validateNoZeroU64(self.actuation_receipt_refs);
+            try validateNoZeroU64(self.actuation_journal_refs);
             for (self.run_slots) |slot| try slot.validate(options);
             if (self.run_handle_mappings.len != 0 and !runspaceImageHandleMappingsMatchSlots(self)) return error.InvalidFrameEncoding;
             if (!runspaceImageRoleRefsMatchSlots(self)) return error.InvalidFrameEncoding;
@@ -17156,6 +19949,9 @@ pub const Capsule = struct {
                 allocator.free(self.admission_receipt_refs);
                 allocator.free(self.permit_refs);
                 allocator.free(self.active_fabric_invocation_refs);
+                allocator.free(self.actuation_intent_refs);
+                allocator.free(self.actuation_receipt_refs);
+                allocator.free(self.actuation_journal_refs);
                 allocator.free(self.metadata);
             }
             self.* = undefined;
@@ -17346,6 +20142,9 @@ pub const Capsule = struct {
         transcript_image_refs: []const u64 = &.{},
         run_image_refs: []const u64 = &.{},
         value_image_refs: []const u64 = &.{},
+        actuation_intent_refs: []const u64 = &.{},
+        actuation_receipt_refs: []const u64 = &.{},
+        actuation_journal_refs: []const u64 = &.{},
         transcript_images: []const TranscriptImage = &.{},
         run_images: []const RunImage = &.{},
         value_images: []const Frame.ValueImage = &.{},
@@ -17366,6 +20165,9 @@ pub const Capsule = struct {
             transcript_image_refs: []const u64 = &.{},
             run_image_refs: []const u64 = &.{},
             value_image_refs: []const u64 = &.{},
+            actuation_intent_refs: []const u64 = &.{},
+            actuation_receipt_refs: []const u64 = &.{},
+            actuation_journal_refs: []const u64 = &.{},
             transcript_images: []const TranscriptImage = &.{},
             run_images: []const RunImage = &.{},
             value_images: []const Frame.ValueImage = &.{},
@@ -17386,6 +20188,9 @@ pub const Capsule = struct {
                 .transcript_image_refs = args.transcript_image_refs,
                 .run_image_refs = args.run_image_refs,
                 .value_image_refs = args.value_image_refs,
+                .actuation_intent_refs = args.actuation_intent_refs,
+                .actuation_receipt_refs = args.actuation_receipt_refs,
+                .actuation_journal_refs = args.actuation_journal_refs,
                 .transcript_images = args.transcript_images,
                 .run_images = args.run_images,
                 .value_images = args.value_images,
@@ -17408,8 +20213,14 @@ pub const Capsule = struct {
             if (self.transcript_image_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
             if (self.run_image_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
             if (self.value_image_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.actuation_intent_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.actuation_receipt_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.actuation_journal_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
             if (self.dependency_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
             if (self.object_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            try validateNoZeroU64(self.actuation_intent_refs);
+            try validateNoZeroU64(self.actuation_receipt_refs);
+            try validateNoZeroU64(self.actuation_journal_refs);
             if (self.transcript_images.len > options.max_embedded_images) return error.InvalidFrameEncoding;
             if (self.run_images.len > options.max_embedded_images) return error.InvalidFrameEncoding;
             if (self.value_images.len > options.max_embedded_images) return error.InvalidFrameEncoding;
@@ -17453,6 +20264,9 @@ pub const Capsule = struct {
             try writeU64Slice(&out, allocator, self.transcript_image_refs);
             try writeU64Slice(&out, allocator, self.run_image_refs);
             try writeU64Slice(&out, allocator, self.value_image_refs);
+            try writeU64Slice(&out, allocator, self.actuation_intent_refs);
+            try writeU64Slice(&out, allocator, self.actuation_receipt_refs);
+            try writeU64Slice(&out, allocator, self.actuation_journal_refs);
             try writeTranscriptImageSlice(&out, allocator, self.transcript_images);
             try writeRunImageSlice(&out, allocator, self.run_images);
             try writeValueImageSlice(&out, allocator, self.value_images);
@@ -17505,6 +20319,15 @@ pub const Capsule = struct {
             const value_image_refs = try readU64SliceOwned(allocator, bytes, &cursor, options.max_dependencies);
             var value_image_refs_owned = true;
             errdefer if (value_image_refs_owned) allocator.free(value_image_refs);
+            const actuation_intent_refs = try readU64SliceOwned(allocator, bytes, &cursor, options.max_dependencies);
+            var actuation_intent_refs_owned = true;
+            errdefer if (actuation_intent_refs_owned) allocator.free(actuation_intent_refs);
+            const actuation_receipt_refs = try readU64SliceOwned(allocator, bytes, &cursor, options.max_dependencies);
+            var actuation_receipt_refs_owned = true;
+            errdefer if (actuation_receipt_refs_owned) allocator.free(actuation_receipt_refs);
+            const actuation_journal_refs = try readU64SliceOwned(allocator, bytes, &cursor, options.max_dependencies);
+            var actuation_journal_refs_owned = true;
+            errdefer if (actuation_journal_refs_owned) allocator.free(actuation_journal_refs);
             const transcript_images = try readTranscriptImageSliceOwned(allocator, bytes, &cursor, options.max_embedded_images);
             var transcript_images_owned = true;
             errdefer if (transcript_images_owned) {
@@ -17557,6 +20380,9 @@ pub const Capsule = struct {
                 .transcript_image_refs = transcript_image_refs,
                 .run_image_refs = run_image_refs,
                 .value_image_refs = value_image_refs,
+                .actuation_intent_refs = actuation_intent_refs,
+                .actuation_receipt_refs = actuation_receipt_refs,
+                .actuation_journal_refs = actuation_journal_refs,
                 .transcript_images = transcript_images,
                 .run_images = run_images,
                 .value_images = value_images,
@@ -17576,6 +20402,9 @@ pub const Capsule = struct {
             transcript_image_refs_owned = false;
             run_image_refs_owned = false;
             value_image_refs_owned = false;
+            actuation_intent_refs_owned = false;
+            actuation_receipt_refs_owned = false;
+            actuation_journal_refs_owned = false;
             transcript_images_owned = false;
             run_images_owned = false;
             value_images_owned = false;
@@ -17601,6 +20430,9 @@ pub const Capsule = struct {
                 allocator.free(self.transcript_image_refs);
                 allocator.free(self.run_image_refs);
                 allocator.free(self.value_image_refs);
+                allocator.free(self.actuation_intent_refs);
+                allocator.free(self.actuation_receipt_refs);
+                allocator.free(self.actuation_journal_refs);
                 for (self.transcript_images) |*transcript_const| {
                     var transcript = transcript_const.*;
                     transcript.deinit(allocator);
@@ -17715,6 +20547,8 @@ pub const Capsule = struct {
         guest_conformance_refs: []const u64 = &.{},
         receiver_run_permit_refs: []const u64 = &.{},
         receiver_run_permit_fingerprint: ?u64 = null,
+        sender_actuation_receipt_refs: []const u64 = &.{},
+        receiver_actuation_binding_refs: []const u64 = &.{},
         handle_remapping_plan: []const u64 = &.{},
         mailbox_id_remapping_plan: []const u64 = &.{},
         blockers: []const Blocker = &.{},
@@ -17738,6 +20572,8 @@ pub const Capsule = struct {
             guest_conformance_refs: []const u64 = &.{},
             receiver_run_permit_refs: []const u64 = &.{},
             receiver_run_permit_fingerprint: ?u64 = null,
+            sender_actuation_receipt_refs: []const u64 = &.{},
+            receiver_actuation_binding_refs: []const u64 = &.{},
             handle_remapping_plan: []const u64 = &.{},
             mailbox_id_remapping_plan: []const u64 = &.{},
             blockers: []const Blocker = &.{},
@@ -17761,6 +20597,8 @@ pub const Capsule = struct {
                 .guest_conformance_refs = args.guest_conformance_refs,
                 .receiver_run_permit_refs = args.receiver_run_permit_refs,
                 .receiver_run_permit_fingerprint = args.receiver_run_permit_fingerprint,
+                .sender_actuation_receipt_refs = args.sender_actuation_receipt_refs,
+                .receiver_actuation_binding_refs = args.receiver_actuation_binding_refs,
                 .handle_remapping_plan = args.handle_remapping_plan,
                 .mailbox_id_remapping_plan = args.mailbox_id_remapping_plan,
                 .blockers = args.blockers,
@@ -17777,6 +20615,8 @@ pub const Capsule = struct {
                 allocator.free(self.environment_preflight_refs);
                 allocator.free(self.guest_conformance_refs);
                 allocator.free(self.receiver_run_permit_refs);
+                allocator.free(self.sender_actuation_receipt_refs);
+                allocator.free(self.receiver_actuation_binding_refs);
                 allocator.free(self.handle_remapping_plan);
                 allocator.free(self.mailbox_id_remapping_plan);
                 allocator.free(self.blockers);
@@ -17787,6 +20627,8 @@ pub const Capsule = struct {
 
         pub fn validate(self: @This()) !void {
             if (self.fingerprint_version != world_capsule_thaw_plan_fingerprint_version) return error.InvalidFrameEncoding;
+            try validateNoZeroU64(self.sender_actuation_receipt_refs);
+            try validateNoZeroU64(self.receiver_actuation_binding_refs);
             if (self.thaw_plan_fingerprint != fingerprintThawPlan(self)) return error.InvalidFrameEncoding;
         }
     };
@@ -17804,6 +20646,9 @@ pub const Capsule = struct {
         restored_pending_port_mappings: []const u64 = &.{},
         restored_fabric_invocation_mappings: []const u64 = &.{},
         guest_conformance_refs: []const u64 = &.{},
+        restored_actuation_receipt_refs: []const u64 = &.{},
+        replayed_sender_actuation_receipt_refs: []const u64 = &.{},
+        receiver_local_actuation_receipt_refs: []const u64 = &.{},
         environment_certificate_fingerprint: ?u64 = null,
         receiver_run_permit_fingerprint: ?u64 = null,
         accepted: bool,
@@ -17823,6 +20668,9 @@ pub const Capsule = struct {
             restored_pending_port_mappings: []const u64 = &.{},
             restored_fabric_invocation_mappings: []const u64 = &.{},
             guest_conformance_refs: []const u64 = &.{},
+            restored_actuation_receipt_refs: []const u64 = &.{},
+            replayed_sender_actuation_receipt_refs: []const u64 = &.{},
+            receiver_local_actuation_receipt_refs: []const u64 = &.{},
             environment_certificate_fingerprint: ?u64 = null,
             receiver_run_permit_fingerprint: ?u64 = null,
             accepted: bool,
@@ -17842,6 +20690,9 @@ pub const Capsule = struct {
                 .restored_pending_port_mappings = args.restored_pending_port_mappings,
                 .restored_fabric_invocation_mappings = args.restored_fabric_invocation_mappings,
                 .guest_conformance_refs = args.guest_conformance_refs,
+                .restored_actuation_receipt_refs = args.restored_actuation_receipt_refs,
+                .replayed_sender_actuation_receipt_refs = args.replayed_sender_actuation_receipt_refs,
+                .receiver_local_actuation_receipt_refs = args.receiver_local_actuation_receipt_refs,
                 .environment_certificate_fingerprint = args.environment_certificate_fingerprint,
                 .receiver_run_permit_fingerprint = args.receiver_run_permit_fingerprint,
                 .accepted = args.accepted,
@@ -17861,6 +20712,9 @@ pub const Capsule = struct {
                 allocator.free(self.restored_pending_port_mappings);
                 allocator.free(self.restored_fabric_invocation_mappings);
                 allocator.free(self.guest_conformance_refs);
+                allocator.free(self.restored_actuation_receipt_refs);
+                allocator.free(self.replayed_sender_actuation_receipt_refs);
+                allocator.free(self.receiver_local_actuation_receipt_refs);
                 allocator.free(self.blockers);
                 allocator.free(self.warnings);
                 allocator.free(self.summary);
@@ -17870,6 +20724,9 @@ pub const Capsule = struct {
 
         pub fn validate(self: @This()) !void {
             if (self.fingerprint_version != world_capsule_restore_report_fingerprint_version) return error.InvalidFrameEncoding;
+            try validateNoZeroU64(self.restored_actuation_receipt_refs);
+            try validateNoZeroU64(self.replayed_sender_actuation_receipt_refs);
+            try validateNoZeroU64(self.receiver_local_actuation_receipt_refs);
             if (self.restore_report_fingerprint != fingerprintRestoreReport(self)) return error.InvalidFrameEncoding;
         }
     };
@@ -18653,6 +21510,7 @@ pub const Capsule = struct {
             .environment_preflight_refs = image.manifest.environment_certificate_fingerprints,
             .guest_conformance_refs = image.guest_conformance_refs,
             .receiver_run_permit_fingerprint = permit_fingerprint,
+            .sender_actuation_receipt_refs = image.manifest.actuation_receipt_fingerprints,
             .handle_remapping_plan = image.runspace_image.run_handle_mappings,
             .mailbox_id_remapping_plan = if (image.runspace_image.mailbox_image) |mailbox| mailbox.pending_port_fingerprints else &.{},
             .blockers = if (blocker) |value| blockerSlice(value) else &.{},
@@ -18671,6 +21529,7 @@ pub const Capsule = struct {
                 .thaw_plan_fingerprint = plan.thaw_plan_fingerprint,
                 .restored_runspace_fingerprint = runspace.runspace_fingerprint,
                 .guest_conformance_refs = plan.guest_conformance_refs,
+                .replayed_sender_actuation_receipt_refs = if (options.mode == .replay_only) plan.sender_actuation_receipt_refs else &.{},
                 .receiver_run_permit_fingerprint = plan.receiver_run_permit_fingerprint,
                 .accepted = false,
                 .blockers = plan.blockers,
@@ -18683,6 +21542,7 @@ pub const Capsule = struct {
                 .thaw_plan_fingerprint = plan.thaw_plan_fingerprint,
                 .restored_runspace_fingerprint = runspace.runspace_fingerprint,
                 .guest_conformance_refs = plan.guest_conformance_refs,
+                .replayed_sender_actuation_receipt_refs = if (options.mode == .replay_only) plan.sender_actuation_receipt_refs else &.{},
                 .accepted = true,
                 .warnings = if (options.mode == .replay_only) &.{.replay_only_no_native_handlers} else &.{.metadata_only},
                 .summary = "capsule thaw inspected without runspace mutation",
@@ -18696,6 +21556,7 @@ pub const Capsule = struct {
                 .thaw_plan_fingerprint = plan.thaw_plan_fingerprint,
                 .restored_runspace_fingerprint = runspace.runspace_fingerprint,
                 .guest_conformance_refs = plan.guest_conformance_refs,
+                .restored_actuation_receipt_refs = plan.sender_actuation_receipt_refs,
                 .receiver_run_permit_fingerprint = permit_fingerprint,
                 .accepted = false,
                 .blockers = blockerSlice(blocker),
@@ -18852,6 +21713,7 @@ pub const Capsule = struct {
             .restored_pending_port_mappings = mailbox_slice,
             .restored_fabric_invocation_mappings = fabric_slice,
             .guest_conformance_refs = guest_slice,
+            .restored_actuation_receipt_refs = image.manifest.actuation_receipt_fingerprints,
             .environment_certificate_fingerprint = if (image.manifest.environment_certificate_fingerprints.len == 0) null else environment_fingerprint,
             .receiver_run_permit_fingerprint = permit_fingerprint,
             .accepted = true,
@@ -18874,6 +21736,9 @@ pub const Capsule = struct {
         restored_pending_port_mappings: []const u64 = &.{},
         restored_fabric_invocation_mappings: []const u64 = &.{},
         guest_conformance_refs: []const u64 = &.{},
+        restored_actuation_receipt_refs: []const u64 = &.{},
+        replayed_sender_actuation_receipt_refs: []const u64 = &.{},
+        receiver_local_actuation_receipt_refs: []const u64 = &.{},
         environment_certificate_fingerprint: ?u64 = null,
         receiver_run_permit_fingerprint: ?u64 = null,
         accepted: bool,
@@ -18893,6 +21758,12 @@ pub const Capsule = struct {
         errdefer allocator.free(fabric_mappings);
         const guest_refs = try allocator.dupe(u64, args.guest_conformance_refs);
         errdefer allocator.free(guest_refs);
+        const restored_actuation_receipts = try allocator.dupe(u64, args.restored_actuation_receipt_refs);
+        errdefer allocator.free(restored_actuation_receipts);
+        const replayed_sender_actuation_receipts = try allocator.dupe(u64, args.replayed_sender_actuation_receipt_refs);
+        errdefer allocator.free(replayed_sender_actuation_receipts);
+        const receiver_local_actuation_receipts = try allocator.dupe(u64, args.receiver_local_actuation_receipt_refs);
+        errdefer allocator.free(receiver_local_actuation_receipts);
         const blockers = try allocator.dupe(Blocker, args.blockers);
         errdefer allocator.free(blockers);
         const warnings = try allocator.dupe(Warning, args.warnings);
@@ -18911,6 +21782,9 @@ pub const Capsule = struct {
             .restored_pending_port_mappings = pending_mappings,
             .restored_fabric_invocation_mappings = fabric_mappings,
             .guest_conformance_refs = guest_refs,
+            .restored_actuation_receipt_refs = restored_actuation_receipts,
+            .replayed_sender_actuation_receipt_refs = replayed_sender_actuation_receipts,
+            .receiver_local_actuation_receipt_refs = receiver_local_actuation_receipts,
             .environment_certificate_fingerprint = args.environment_certificate_fingerprint,
             .receiver_run_permit_fingerprint = args.receiver_run_permit_fingerprint,
             .accepted = args.accepted,
@@ -19141,6 +22015,28 @@ pub const Capsule = struct {
         }
         for (image.guest_conformance_refs) |fingerprint| {
             if (fingerprint == 0) return error.InvalidFrameEncoding;
+        }
+        for (manifest.actuation_intent_fingerprints) |fingerprint| {
+            if (!u64SliceContains(image.actuation_intent_refs, fingerprint)) return error.InvalidFrameEncoding;
+            if (!u64SliceContains(runspace_image_value.actuation_intent_refs, fingerprint)) return error.InvalidFrameEncoding;
+        }
+        for (manifest.actuation_receipt_fingerprints) |fingerprint| {
+            if (!u64SliceContains(image.actuation_receipt_refs, fingerprint)) return error.InvalidFrameEncoding;
+            if (!u64SliceContains(runspace_image_value.actuation_receipt_refs, fingerprint)) return error.InvalidFrameEncoding;
+        }
+        for (manifest.actuation_journal_fingerprints) |fingerprint| {
+            if (!u64SliceContains(image.actuation_journal_refs, fingerprint)) return error.InvalidFrameEncoding;
+            if (!u64SliceContains(runspace_image_value.actuation_journal_refs, fingerprint)) return error.InvalidFrameEncoding;
+        }
+        if (runspace_image_value.mailbox_image) |mailbox| {
+            for (mailbox.pending_actuation_intent_fingerprints) |fingerprint| {
+                if (!u64SliceContains(manifest.actuation_intent_fingerprints, fingerprint)) return error.InvalidFrameEncoding;
+                if (!u64SliceContains(runspace_image_value.actuation_intent_refs, fingerprint)) return error.InvalidFrameEncoding;
+            }
+            for (mailbox.committed_actuation_receipt_fingerprints) |fingerprint| {
+                if (!u64SliceContains(manifest.actuation_receipt_fingerprints, fingerprint)) return error.InvalidFrameEncoding;
+                if (!u64SliceContains(runspace_image_value.actuation_receipt_refs, fingerprint)) return error.InvalidFrameEncoding;
+            }
         }
     }
 
@@ -19430,7 +22326,10 @@ pub const Capsule = struct {
                 image.manifest.guest_conformance_report_fingerprints.len +
                 image.manifest.transcript_image_fingerprints.len +
                 image.manifest.run_image_fingerprints.len +
-                image.value_image_refs.len;
+                image.value_image_refs.len +
+                image.manifest.actuation_intent_fingerprints.len +
+                image.manifest.actuation_receipt_fingerprints.len +
+                image.manifest.actuation_journal_fingerprints.len;
             if (image.dependency_refs.len != expected_count) return error.InvalidFrameEncoding;
             try validateDependencyRefCovered(image, .manifest, image.manifest.manifest_fingerprint);
             try validateDependencyRefCovered(image, .runspace_image, image.runspace_image.image_fingerprint);
@@ -19445,17 +22344,26 @@ pub const Capsule = struct {
             for (image.manifest.transcript_image_fingerprints) |fingerprint| try validateDependencyRefCovered(image, .transcript_image, fingerprint);
             for (image.manifest.run_image_fingerprints) |fingerprint| try validateDependencyRefCovered(image, .run_image, fingerprint);
             for (image.value_image_refs) |fingerprint| try validateDependencyRefCovered(image, .value_image, fingerprint);
+            for (image.manifest.actuation_intent_fingerprints) |fingerprint| try validateDependencyRefCovered(image, .actuation_intent, fingerprint);
+            for (image.manifest.actuation_receipt_fingerprints) |fingerprint| try validateDependencyRefCovered(image, .actuation_receipt, fingerprint);
+            for (image.manifest.actuation_journal_fingerprints) |fingerprint| try validateDependencyRefCovered(image, .actuation_journal, fingerprint);
         }
         if (image.object_refs.len != 0) {
             const expected_count: usize =
                 2 +
                 (if (image.link_image != null) @as(usize, 1) else 0) +
-                (if (image.fabric_image != null) @as(usize, 1) else 0);
+                (if (image.fabric_image != null) @as(usize, 1) else 0) +
+                image.manifest.actuation_intent_fingerprints.len +
+                image.manifest.actuation_receipt_fingerprints.len +
+                image.manifest.actuation_journal_fingerprints.len;
             if (image.object_refs.len != expected_count) return error.InvalidFrameEncoding;
             try validateObjectRefCovered(image, .capsule_manifest, image.manifest.manifest_fingerprint);
             try validateObjectRefCovered(image, .runspace_image, image.runspace_image.image_fingerprint);
             if (image.link_image) |link| try validateObjectRefCovered(image, .link_image, link.link_image_fingerprint);
             if (image.fabric_image) |fabric| try validateObjectRefCovered(image, .fabric_image, fabric.fabric_image_fingerprint);
+            for (image.manifest.actuation_intent_fingerprints) |fingerprint| try validateObjectRefCovered(image, .actuation_intent, fingerprint);
+            for (image.manifest.actuation_receipt_fingerprints) |fingerprint| try validateObjectRefCovered(image, .actuation_receipt, fingerprint);
+            for (image.manifest.actuation_journal_fingerprints) |fingerprint| try validateObjectRefCovered(image, .actuation_journal, fingerprint);
         }
     }
 
@@ -20021,6 +22929,9 @@ pub const Capsule = struct {
         for (manifest.transcript_image_fingerprints) |fingerprint| try refs.append(allocator, .{ .section = .transcript_image, .fingerprint = fingerprint });
         for (manifest.run_image_fingerprints) |fingerprint| try refs.append(allocator, .{ .section = .run_image, .fingerprint = fingerprint });
         for (value_image_refs) |fingerprint| try refs.append(allocator, .{ .section = .value_image, .fingerprint = fingerprint });
+        for (manifest.actuation_intent_fingerprints) |fingerprint| try refs.append(allocator, .{ .section = .actuation_intent, .fingerprint = fingerprint });
+        for (manifest.actuation_receipt_fingerprints) |fingerprint| try refs.append(allocator, .{ .section = .actuation_receipt, .fingerprint = fingerprint });
+        for (manifest.actuation_journal_fingerprints) |fingerprint| try refs.append(allocator, .{ .section = .actuation_journal, .fingerprint = fingerprint });
         return refs.toOwnedSlice(allocator);
     }
 
@@ -20037,6 +22948,9 @@ pub const Capsule = struct {
         try refs.append(allocator, .{ .kind = .runspace_image, .fingerprint = runspace_image_value.image_fingerprint });
         if (link_image_value) |value| try refs.append(allocator, .{ .kind = .link_image, .fingerprint = value.link_image_fingerprint });
         if (fabric_image_value) |value| try refs.append(allocator, .{ .kind = .fabric_image, .fingerprint = value.fabric_image_fingerprint });
+        for (manifest.actuation_intent_fingerprints) |fingerprint| try refs.append(allocator, .{ .kind = .actuation_intent, .fingerprint = fingerprint });
+        for (manifest.actuation_receipt_fingerprints) |fingerprint| try refs.append(allocator, .{ .kind = .actuation_receipt, .fingerprint = fingerprint });
+        for (manifest.actuation_journal_fingerprints) |fingerprint| try refs.append(allocator, .{ .kind = .actuation_journal, .fingerprint = fingerprint });
         return refs.toOwnedSlice(allocator);
     }
 
@@ -20059,6 +22973,12 @@ pub const Capsule = struct {
         hashU64Slice(&hasher, manifest.fabric_invocation_fingerprints);
         hashU64Slice(&hasher, manifest.fabric_receipt_fingerprints);
         hashU64Slice(&hasher, manifest.guest_conformance_report_fingerprints);
+        if (manifest.actuation_intent_fingerprints.len != 0 or manifest.actuation_receipt_fingerprints.len != 0 or manifest.actuation_journal_fingerprints.len != 0) {
+            hashBytes(&hasher, "world.capsule.manifest.actuation");
+            hashU64Slice(&hasher, manifest.actuation_intent_fingerprints);
+            hashU64Slice(&hasher, manifest.actuation_receipt_fingerprints);
+            hashU64Slice(&hasher, manifest.actuation_journal_fingerprints);
+        }
         hashU64(&hasher, manifest.pending_port_count);
         hashU64(&hasher, manifest.run_slot_count);
         hashU64(&hasher, manifest.active_fabric_invocation_count);
@@ -20123,6 +23043,11 @@ pub const Capsule = struct {
         hashU64(&hasher, image.generation);
         hashU64Slice(&hasher, image.single_use_status_fingerprints);
         hashU64Slice(&hasher, image.response_routing_status_fingerprints);
+        if (image.pending_actuation_intent_fingerprints.len != 0 or image.committed_actuation_receipt_fingerprints.len != 0) {
+            hashBytes(&hasher, "world.capsule.mailbox.actuation");
+            hashU64Slice(&hasher, image.pending_actuation_intent_fingerprints);
+            hashU64Slice(&hasher, image.committed_actuation_receipt_fingerprints);
+        }
         return hasher.final();
     }
 
@@ -20146,6 +23071,12 @@ pub const Capsule = struct {
         hashU64Slice(&hasher, image.admission_receipt_refs);
         hashU64Slice(&hasher, image.permit_refs);
         hashU64Slice(&hasher, image.active_fabric_invocation_refs);
+        if (image.actuation_intent_refs.len != 0 or image.actuation_receipt_refs.len != 0 or image.actuation_journal_refs.len != 0) {
+            hashBytes(&hasher, "world.capsule.runspace.actuation");
+            hashU64Slice(&hasher, image.actuation_intent_refs);
+            hashU64Slice(&hasher, image.actuation_receipt_refs);
+            hashU64Slice(&hasher, image.actuation_journal_refs);
+        }
         hashU64(&hasher, image.metadata.len);
         hashBytes(&hasher, image.metadata);
         return hasher.final();
@@ -20198,6 +23129,12 @@ pub const Capsule = struct {
         hashU64Slice(&hasher, image.transcript_image_refs);
         hashU64Slice(&hasher, image.run_image_refs);
         hashU64Slice(&hasher, image.value_image_refs);
+        if (image.actuation_intent_refs.len != 0 or image.actuation_receipt_refs.len != 0 or image.actuation_journal_refs.len != 0) {
+            hashBytes(&hasher, "world.capsule.image.actuation");
+            hashU64Slice(&hasher, image.actuation_intent_refs);
+            hashU64Slice(&hasher, image.actuation_receipt_refs);
+            hashU64Slice(&hasher, image.actuation_journal_refs);
+        }
         hashU64(&hasher, image.transcript_images.len);
         for (image.transcript_images) |transcript| hashU64(&hasher, transcript.transcript_image_fingerprint);
         hashU64(&hasher, image.run_images.len);
@@ -20246,6 +23183,11 @@ pub const Capsule = struct {
         hashU64Slice(&hasher, plan.guest_conformance_refs);
         hashU64Slice(&hasher, plan.receiver_run_permit_refs);
         hashOptionalU64(&hasher, plan.receiver_run_permit_fingerprint);
+        if (plan.sender_actuation_receipt_refs.len != 0 or plan.receiver_actuation_binding_refs.len != 0) {
+            hashBytes(&hasher, "world.capsule.thaw.actuation");
+            hashU64Slice(&hasher, plan.sender_actuation_receipt_refs);
+            hashU64Slice(&hasher, plan.receiver_actuation_binding_refs);
+        }
         hashU64Slice(&hasher, plan.handle_remapping_plan);
         hashU64Slice(&hasher, plan.mailbox_id_remapping_plan);
         hashEnumSlice(&hasher, Blocker, plan.blockers);
@@ -20266,6 +23208,12 @@ pub const Capsule = struct {
         hashU64Slice(&hasher, report.restored_pending_port_mappings);
         hashU64Slice(&hasher, report.restored_fabric_invocation_mappings);
         hashU64Slice(&hasher, report.guest_conformance_refs);
+        if (report.restored_actuation_receipt_refs.len != 0 or report.replayed_sender_actuation_receipt_refs.len != 0 or report.receiver_local_actuation_receipt_refs.len != 0) {
+            hashBytes(&hasher, "world.capsule.restore.actuation");
+            hashU64Slice(&hasher, report.restored_actuation_receipt_refs);
+            hashU64Slice(&hasher, report.replayed_sender_actuation_receipt_refs);
+            hashU64Slice(&hasher, report.receiver_local_actuation_receipt_refs);
+        }
         hashOptionalU64(&hasher, report.environment_certificate_fingerprint);
         hashOptionalU64(&hasher, report.receiver_run_permit_fingerprint);
         hashBool(&hasher, report.accepted);
@@ -20507,6 +23455,9 @@ pub const Capsule = struct {
         if (std.mem.eql(u8, name, "transcript_image")) return .transcript_image;
         if (std.mem.eql(u8, name, "run_image")) return .run_image;
         if (std.mem.eql(u8, name, "value_image")) return .value_image;
+        if (std.mem.eql(u8, name, "actuation_intent")) return .actuation_intent;
+        if (std.mem.eql(u8, name, "actuation_receipt")) return .actuation_receipt;
+        if (std.mem.eql(u8, name, "actuation_journal")) return .actuation_journal;
         return .dependency;
     }
 
@@ -20520,12 +23471,21 @@ pub const Capsule = struct {
         if (std.mem.eql(u8, name, "transcript_image")) return .transcript_image;
         if (std.mem.eql(u8, name, "value_image")) return .value_image;
         if (std.mem.eql(u8, name, "certificate")) return .certificate;
+        if (std.mem.eql(u8, name, "actuation_intent")) return .actuation_intent;
+        if (std.mem.eql(u8, name, "actuation_receipt")) return .actuation_receipt;
+        if (std.mem.eql(u8, name, "actuation_journal")) return .actuation_journal;
         return .capsule_image;
     }
 
     fn hashU64Slice(hasher: *std.hash.Wyhash, values: []const u64) void {
         hashU64(hasher, values.len);
         for (values) |value| hashU64(hasher, value);
+    }
+
+    fn validateNoZeroU64(values: []const u64) !void {
+        for (values) |value| {
+            if (value == 0) return error.InvalidFrameEncoding;
+        }
     }
 
     fn hashEnumSlice(hasher: *std.hash.Wyhash, comptime Enum: type, values: []const Enum) void {
@@ -20569,6 +23529,9 @@ pub const Capsule = struct {
         try writeU64Slice(out, allocator, manifest.fabric_invocation_fingerprints);
         try writeU64Slice(out, allocator, manifest.fabric_receipt_fingerprints);
         try writeU64Slice(out, allocator, manifest.guest_conformance_report_fingerprints);
+        try writeU64Slice(out, allocator, manifest.actuation_intent_fingerprints);
+        try writeU64Slice(out, allocator, manifest.actuation_receipt_fingerprints);
+        try writeU64Slice(out, allocator, manifest.actuation_journal_fingerprints);
         try writeU64(out, allocator, manifest.pending_port_count);
         try writeU64(out, allocator, manifest.run_slot_count);
         try writeU64(out, allocator, manifest.active_fabric_invocation_count);
@@ -20616,6 +23579,15 @@ pub const Capsule = struct {
         const guest_conformance_report_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
         var guest_conformance_report_fingerprints_owned = true;
         errdefer if (guest_conformance_report_fingerprints_owned) allocator.free(guest_conformance_report_fingerprints);
+        const actuation_intent_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var actuation_intent_fingerprints_owned = true;
+        errdefer if (actuation_intent_fingerprints_owned) allocator.free(actuation_intent_fingerprints);
+        const actuation_receipt_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var actuation_receipt_fingerprints_owned = true;
+        errdefer if (actuation_receipt_fingerprints_owned) allocator.free(actuation_receipt_fingerprints);
+        const actuation_journal_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var actuation_journal_fingerprints_owned = true;
+        errdefer if (actuation_journal_fingerprints_owned) allocator.free(actuation_journal_fingerprints);
         const pending_port_count = try readU64AsUsize(bytes, cursor);
         const run_slot_count = try readU64AsUsize(bytes, cursor);
         const active_fabric_invocation_count = try readU64AsUsize(bytes, cursor);
@@ -20644,6 +23616,9 @@ pub const Capsule = struct {
             .fabric_invocation_fingerprints = fabric_invocation_fingerprints,
             .fabric_receipt_fingerprints = fabric_receipt_fingerprints,
             .guest_conformance_report_fingerprints = guest_conformance_report_fingerprints,
+            .actuation_intent_fingerprints = actuation_intent_fingerprints,
+            .actuation_receipt_fingerprints = actuation_receipt_fingerprints,
+            .actuation_journal_fingerprints = actuation_journal_fingerprints,
             .pending_port_count = pending_port_count,
             .run_slot_count = run_slot_count,
             .active_fabric_invocation_count = active_fabric_invocation_count,
@@ -20661,6 +23636,9 @@ pub const Capsule = struct {
         fabric_invocation_fingerprints_owned = false;
         fabric_receipt_fingerprints_owned = false;
         guest_conformance_report_fingerprints_owned = false;
+        actuation_intent_fingerprints_owned = false;
+        actuation_receipt_fingerprints_owned = false;
+        actuation_journal_fingerprints_owned = false;
         metadata_owned = false;
         errdefer manifest.deinit(allocator);
         try manifest.validate(options);
@@ -20842,6 +23820,8 @@ pub const Capsule = struct {
         try writeU64(out, allocator, image.generation);
         try writeU64Slice(out, allocator, image.single_use_status_fingerprints);
         try writeU64Slice(out, allocator, image.response_routing_status_fingerprints);
+        try writeU64Slice(out, allocator, image.pending_actuation_intent_fingerprints);
+        try writeU64Slice(out, allocator, image.committed_actuation_receipt_fingerprints);
     }
 
     fn decodeMailboxImage(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, options: ValidateOptions) !MailboxImage {
@@ -20867,6 +23847,12 @@ pub const Capsule = struct {
         const response_routing_status_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_pending_ports);
         var response_routing_status_fingerprints_owned = true;
         errdefer if (response_routing_status_fingerprints_owned) allocator.free(response_routing_status_fingerprints);
+        const pending_actuation_intent_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var pending_actuation_intent_fingerprints_owned = true;
+        errdefer if (pending_actuation_intent_fingerprints_owned) allocator.free(pending_actuation_intent_fingerprints);
+        const committed_actuation_receipt_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var committed_actuation_receipt_fingerprints_owned = true;
+        errdefer if (committed_actuation_receipt_fingerprints_owned) allocator.free(committed_actuation_receipt_fingerprints);
         var image = MailboxImage{
             .fingerprint_version = fingerprint_version,
             .mailbox_image_fingerprint = mailbox_image_fingerprint,
@@ -20877,6 +23863,8 @@ pub const Capsule = struct {
             .generation = generation,
             .single_use_status_fingerprints = single_use_status_fingerprints,
             .response_routing_status_fingerprints = response_routing_status_fingerprints,
+            .pending_actuation_intent_fingerprints = pending_actuation_intent_fingerprints,
+            .committed_actuation_receipt_fingerprints = committed_actuation_receipt_fingerprints,
             .owns_memory = true,
         };
         pending_port_entries_owned = false;
@@ -20884,6 +23872,8 @@ pub const Capsule = struct {
         consumed_port_fingerprints_owned = false;
         single_use_status_fingerprints_owned = false;
         response_routing_status_fingerprints_owned = false;
+        pending_actuation_intent_fingerprints_owned = false;
+        committed_actuation_receipt_fingerprints_owned = false;
         errdefer image.deinit(allocator);
         try image.validate(options);
         return image;
@@ -20923,6 +23913,9 @@ pub const Capsule = struct {
         try writeU64Slice(out, allocator, image.admission_receipt_refs);
         try writeU64Slice(out, allocator, image.permit_refs);
         try writeU64Slice(out, allocator, image.active_fabric_invocation_refs);
+        try writeU64Slice(out, allocator, image.actuation_intent_refs);
+        try writeU64Slice(out, allocator, image.actuation_receipt_refs);
+        try writeU64Slice(out, allocator, image.actuation_journal_refs);
         try writeBytes(out, allocator, image.metadata);
     }
 
@@ -20977,6 +23970,15 @@ pub const Capsule = struct {
         const active_fabric_invocation_refs = try readU64SliceOwned(allocator, bytes, cursor, options.max_fabric_invocations);
         var active_fabric_invocation_refs_owned = true;
         errdefer if (active_fabric_invocation_refs_owned) allocator.free(active_fabric_invocation_refs);
+        const actuation_intent_refs = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var actuation_intent_refs_owned = true;
+        errdefer if (actuation_intent_refs_owned) allocator.free(actuation_intent_refs);
+        const actuation_receipt_refs = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var actuation_receipt_refs_owned = true;
+        errdefer if (actuation_receipt_refs_owned) allocator.free(actuation_receipt_refs);
+        const actuation_journal_refs = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var actuation_journal_refs_owned = true;
+        errdefer if (actuation_journal_refs_owned) allocator.free(actuation_journal_refs);
         const metadata = try readBytesOwned(allocator, bytes, cursor);
         var metadata_owned = true;
         errdefer if (metadata_owned) allocator.free(metadata);
@@ -21001,6 +24003,9 @@ pub const Capsule = struct {
             .admission_receipt_refs = admission_receipt_refs,
             .permit_refs = permit_refs,
             .active_fabric_invocation_refs = active_fabric_invocation_refs,
+            .actuation_intent_refs = actuation_intent_refs,
+            .actuation_receipt_refs = actuation_receipt_refs,
+            .actuation_journal_refs = actuation_journal_refs,
             .metadata = metadata,
             .owns_memory = true,
         };
@@ -21018,6 +24023,9 @@ pub const Capsule = struct {
         admission_receipt_refs_owned = false;
         permit_refs_owned = false;
         active_fabric_invocation_refs_owned = false;
+        actuation_intent_refs_owned = false;
+        actuation_receipt_refs_owned = false;
+        actuation_journal_refs_owned = false;
         metadata_owned = false;
         errdefer image.deinit(allocator);
         try image.validate(options);
@@ -25288,6 +28296,10 @@ fn acceptanceError(report: AcceptanceReport) Error {
         .SurfaceProfileIncompatible => Error.SurfaceProfileIncompatible,
         .PayloadValueMismatch => Error.FrameValueTableMismatch,
         .ResponseValueMismatch => Error.FrameValueTableMismatch,
+        .MissingActuator => Error.MissingBinding,
+        .ActuationPolicyMismatch => Error.SupervisionDenied,
+        .ActuationValuePolicyMismatch => Error.FrameValueTableMismatch,
+        .ActuationReceiptRequired => Error.SupervisionDenied,
     };
 }
 
@@ -27683,6 +30695,11 @@ fn fingerprintAcceptanceReport(report: AcceptanceReport) u64 {
     hashU64(&hasher, report.replay_only_port_count);
     hashU64(&hasher, report.native_port_count);
     hashU64(&hasher, report.byte_adapter_port_count);
+    hashU64(&hasher, report.actuation_binding_count);
+    hashU64(&hasher, report.missing_actuator_count);
+    hashU64(&hasher, report.actuation_policy_blocker_count);
+    hashU64(&hasher, report.actuation_value_policy_blocker_count);
+    hashU64(&hasher, report.actuation_receipt_required_count);
     hashU64(&hasher, report.portable_value_compatible_count);
     hashU64(&hasher, report.native_only_value_count);
     hashU64(&hasher, report.blockers.len);
@@ -27753,6 +30770,13 @@ fn fingerprintSupervisionPolicy(policy: SupervisionPolicy) u64 {
     hashBool(&hasher, policy.allow_guest_routes);
     hashBool(&hasher, policy.allow_replay_routes);
     hashBool(&hasher, policy.allow_reject_routes);
+    hashBool(&hasher, policy.allow_actuation);
+    hashBool(&hasher, policy.allow_fresh_actuation);
+    hashBool(&hasher, policy.allow_pending_actuation);
+    hashBool(&hasher, policy.allow_deferred_actuation);
+    hashBool(&hasher, policy.require_actuation_receipts);
+    hashBool(&hasher, policy.require_idempotency_keys);
+    hashBool(&hasher, policy.allow_irreversible_actuation);
     hashBool(&hasher, policy.require_portable_value_images);
     hashBool(&hasher, policy.reject_native_only_values);
     hashBool(&hasher, policy.require_environment_certificate);
@@ -27761,6 +30785,8 @@ fn fingerprintSupervisionPolicy(policy: SupervisionPolicy) u64 {
     hashBool(&hasher, policy.park_on_budget_exceeded);
     hashBool(&hasher, policy.audit_only_on_budget_exceeded);
     hashOptionalU64(&hasher, policy.max_supervision_events);
+    hashOptionalU64(&hasher, policy.max_actuation_calls);
+    hashOptionalU64(&hasher, policy.max_pending_actuations);
     return hasher.final();
 }
 
@@ -27790,6 +30816,8 @@ fn fingerprintBudget(budget: Budget) u64 {
     hashOptionalU64(&hasher, budget.max_fabric_invocations);
     hashOptionalU64(&hasher, budget.max_fabric_depth);
     hashOptionalU64(&hasher, budget.max_provider_runs);
+    hashOptionalU64(&hasher, budget.max_actuation_calls);
+    hashOptionalU64(&hasher, budget.max_pending_actuations);
     hashOptionalU64(&hasher, budget.max_total_cost_units);
     hashU64(&hasher, budget.per_port_budgets.len);
     for (budget.per_port_budgets) |per_port| {
@@ -27978,6 +31006,18 @@ fn fingerprintUsageLedger(ledger: UsageLedger) u64 {
     hashU64(&hasher, ledger.total_fabric_invocations);
     hashU64(&hasher, ledger.max_fabric_depth_observed);
     hashU64(&hasher, ledger.total_provider_runs);
+    hashU64(&hasher, ledger.total_actuation_intents);
+    hashU64(&hasher, ledger.total_actuation_commits);
+    hashU64(&hasher, ledger.total_fresh_actuations);
+    hashU64(&hasher, ledger.total_replay_actuations);
+    hashU64(&hasher, ledger.total_verify_actuations);
+    hashU64(&hasher, ledger.total_pending_actuations);
+    hashU64(&hasher, ledger.total_deferred_actuations);
+    hashU64(&hasher, ledger.total_failed_actuations);
+    hashU64(&hasher, ledger.total_rejected_actuations);
+    hashU64(&hasher, ledger.total_irreversible_actuations);
+    hashU64(&hasher, ledger.total_idempotent_mutations);
+    hashU64(&hasher, ledger.total_actuation_bytes);
     hashU64(&hasher, ledger.total_cost_units);
     hashU64(&hasher, ledger.per_port_usage.len);
     for (ledger.per_port_usage) |usage| {
@@ -28076,6 +31116,18 @@ fn fingerprintRunReceipt(receipt: RunReceipt) u64 {
     hashU64(&hasher, receipt.fabric_invocation_count);
     hashU64(&hasher, receipt.provider_run_count);
     hashU64(&hasher, receipt.max_fabric_depth);
+    hashU64(&hasher, receipt.actuation_intent_count);
+    hashU64(&hasher, receipt.actuation_commit_count);
+    hashU64(&hasher, receipt.fresh_actuation_count);
+    hashU64(&hasher, receipt.replay_actuation_count);
+    hashU64(&hasher, receipt.verify_actuation_count);
+    hashU64(&hasher, receipt.pending_actuation_count);
+    hashU64(&hasher, receipt.deferred_actuation_count);
+    hashU64(&hasher, receipt.failed_actuation_count);
+    hashU64(&hasher, receipt.rejected_actuation_count);
+    hashU64(&hasher, receipt.irreversible_actuation_count);
+    hashU64(&hasher, receipt.idempotent_mutation_count);
+    hashU64(&hasher, receipt.actuation_bytes);
     return hasher.final();
 }
 
@@ -28266,6 +31318,12 @@ fn fingerprintFabricRoute(route: Fabric.Route) u64 {
     hashOptionalU64(&hasher, route.provider_admission_receipt_fingerprint);
     hashOptionalU64(&hasher, route.provider_run_image_fingerprint);
     hashOptionalU64(&hasher, route.provider_transcript_image_fingerprint);
+    if (route.hasActuationMetadata()) {
+        hashBytes(&hasher, "world.fabric.route.actuation");
+        hashOptionalU64(&hasher, route.actuator_ref_fingerprint);
+        hashOptionalU64(&hasher, route.actuation_descriptor_fingerprint);
+        hashOptionalU64(&hasher, route.actuation_binding_fingerprint);
+    }
     hashOptionalU64(&hasher, route.value_mapping_fingerprint);
     hashOptionalU64(&hasher, route.response_value_mapping_fingerprint);
     hashU64(&hasher, @intFromEnum(route.response_status));
@@ -28329,6 +31387,10 @@ fn fingerprintFabricInvocation(invocation: Fabric.Invocation) u64 {
     hashOptionalU64(&hasher, invocation.provider_run_handle_fingerprint);
     hashOptionalU64(&hasher, invocation.mapped_request_frame_fingerprint);
     hashOptionalU64(&hasher, invocation.run_permit_fingerprint);
+    if (invocation.actuation_receipt_fingerprint) |fingerprint| {
+        hashBytes(&hasher, "world.fabric.invocation.actuation");
+        hashU64(&hasher, fingerprint);
+    }
     hashU64(&hasher, invocation.depth);
     hashU64(&hasher, invocation.sequence);
     return hasher.final();
@@ -28340,6 +31402,10 @@ fn fingerprintFabricInvocationState(invocation: Fabric.Invocation) u64 {
     hashU64(&hasher, world_fabric_invocation_fingerprint_version);
     hashU64(&hasher, invocation.invocation_fingerprint);
     hashOptionalU64(&hasher, invocation.mapped_response_frame_fingerprint);
+    if (invocation.actuation_receipt_fingerprint) |fingerprint| {
+        hashBytes(&hasher, "world.fabric.invocation.state.actuation");
+        hashU64(&hasher, fingerprint);
+    }
     hashU64(&hasher, @intFromEnum(invocation.status));
     return hasher.final();
 }
@@ -28354,6 +31420,10 @@ fn fingerprintFabricReceipt(receipt: Fabric.Receipt) u64 {
     hashOptionalU64(&hasher, receipt.parent_response_frame_fingerprint);
     hashOptionalU64(&hasher, receipt.provider_run_handle_fingerprint);
     hashOptionalU64(&hasher, receipt.provider_run_receipt_fingerprint);
+    if (receipt.actuation_receipt_fingerprint) |fingerprint| {
+        hashBytes(&hasher, "world.fabric.receipt.actuation");
+        hashU64(&hasher, fingerprint);
+    }
     hashU64(&hasher, @intFromEnum(receipt.status));
     if (receipt.blocker) |blocker| {
         hashBool(&hasher, true);
@@ -28682,6 +31752,23 @@ fn fingerprintAdmissionReport(report: Admission.AdmissionReport) u64 {
         hashOptionalU64(&hasher, report.capsule_certificate_fingerprint);
         hashOptionalU64(&hasher, report.capsule_thaw_plan_fingerprint);
         hashOptionalU64(&hasher, report.capsule_restore_report_fingerprint);
+    }
+    if (report.required_actuator_count != 0 or
+        report.actuation_receipt_count != 0 or
+        report.replay_only_actuation_feasible or
+        report.verify_actuation_feasible or
+        report.actuation_binding_refs.len != 0 or
+        report.actuation_receipt_refs.len != 0)
+    {
+        hashBytes(&hasher, "world.admission_report.actuation");
+        hashU64(&hasher, report.required_actuator_count);
+        hashU64(&hasher, report.actuation_receipt_count);
+        hashBool(&hasher, report.replay_only_actuation_feasible);
+        hashBool(&hasher, report.verify_actuation_feasible);
+        hashU64(&hasher, report.actuation_binding_refs.len);
+        for (report.actuation_binding_refs) |fingerprint| hashU64(&hasher, fingerprint);
+        hashU64(&hasher, report.actuation_receipt_refs.len);
+        for (report.actuation_receipt_refs) |fingerprint| hashU64(&hasher, fingerprint);
     }
     hashU64(&hasher, report.blockers.len);
     for (report.blockers) |blocker| hashU64(&hasher, @intFromEnum(blocker));

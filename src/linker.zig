@@ -212,6 +212,9 @@ pub fn Linker(comptime W: type) type {
                 run_permit_fingerprint: ?u64 = null,
                 replay_transcript_image_fingerprint: ?u64 = null,
                 guest_conformance_report_fingerprint: ?u64 = null,
+                actuator_ref_fingerprint: ?u64 = null,
+                actuation_descriptor_fingerprint: ?u64 = null,
+                actuation_binding_fingerprint: ?u64 = null,
                 label: []const u8 = "",
                 metadata: []const u8 = "",
 
@@ -228,6 +231,9 @@ pub fn Linker(comptime W: type) type {
                     run_permit_fingerprint: ?u64 = null,
                     replay_transcript_image_fingerprint: ?u64 = null,
                     guest_conformance_report_fingerprint: ?u64 = null,
+                    actuator_ref_fingerprint: ?u64 = null,
+                    actuation_descriptor_fingerprint: ?u64 = null,
+                    actuation_binding_fingerprint: ?u64 = null,
                     label: []const u8 = "",
                     metadata: []const u8 = "",
                 }) Entry {
@@ -245,6 +251,9 @@ pub fn Linker(comptime W: type) type {
                         .run_permit_fingerprint = args.run_permit_fingerprint,
                         .replay_transcript_image_fingerprint = args.replay_transcript_image_fingerprint,
                         .guest_conformance_report_fingerprint = args.guest_conformance_report_fingerprint,
+                        .actuator_ref_fingerprint = args.actuator_ref_fingerprint,
+                        .actuation_descriptor_fingerprint = args.actuation_descriptor_fingerprint,
+                        .actuation_binding_fingerprint = args.actuation_binding_fingerprint,
                         .label = args.label,
                         .metadata = args.metadata,
                     };
@@ -343,8 +352,33 @@ pub fn Linker(comptime W: type) type {
                     });
                 }
 
+                pub fn actuationAdapter(args: struct {
+                    actuator_ref_fingerprint: u64,
+                    actuation_descriptor_fingerprint: ?u64 = null,
+                    actuation_binding_fingerprint: u64,
+                    environment_certificate_fingerprint: ?u64 = null,
+                    label: []const u8 = "",
+                    metadata: []const u8 = "",
+                }) Entry {
+                    return Entry.init(.{
+                        .provider_kind = .environment_adapter,
+                        .environment_certificate_fingerprint = args.environment_certificate_fingerprint,
+                        .actuator_ref_fingerprint = args.actuator_ref_fingerprint,
+                        .actuation_descriptor_fingerprint = args.actuation_descriptor_fingerprint,
+                        .actuation_binding_fingerprint = args.actuation_binding_fingerprint,
+                        .label = args.label,
+                        .metadata = args.metadata,
+                    });
+                }
+
                 pub fn fingerprint(self: Entry) u64 {
                     return fingerprintCatalogEntry(self);
+                }
+
+                pub fn hasActuationCandidate(self: Entry) bool {
+                    return self.actuator_ref_fingerprint != null or
+                        self.actuation_descriptor_fingerprint != null or
+                        self.actuation_binding_fingerprint != null;
                 }
             };
 
@@ -691,6 +725,7 @@ pub fn Linker(comptime W: type) type {
             if (entry.provider_kind == .replay_provider and !policy.allow_replay_routes) try blockers.append(allocator, .UnsupportedRouteKind);
             if (entry.provider_kind == .reject_route and !policy.allow_reject_routes) try blockers.append(allocator, .UnsupportedRouteKind);
             if (entry.provider_kind == .environment_adapter and !policy.allow_adapter_fallback) try blockers.append(allocator, .UnsupportedRouteKind);
+            if (entry.hasActuationCandidate() and (entry.provider_kind != .environment_adapter or entry.actuator_ref_fingerprint == null or entry.actuation_binding_fingerprint == null)) try blockers.append(allocator, .MissingProvider);
             if (!linkerCanSynthesizeRouteKind(policy, entry)) try blockers.append(allocator, .UnsupportedRouteKind);
             if (entry.provider_kind == .replay_provider and entry.replay_transcript_image_fingerprint == null) try blockers.append(allocator, .MissingProvider);
             if (hint) |present| {
@@ -2317,6 +2352,12 @@ pub fn Linker(comptime W: type) type {
             hashOptionalU64(&hasher, entry.run_permit_fingerprint);
             hashOptionalU64(&hasher, entry.replay_transcript_image_fingerprint);
             hashOptionalU64(&hasher, entry.guest_conformance_report_fingerprint);
+            if (entry.hasActuationCandidate()) {
+                hashBytes(&hasher, "world.linker.catalog.entry.actuation");
+                hashOptionalU64(&hasher, entry.actuator_ref_fingerprint);
+                hashOptionalU64(&hasher, entry.actuation_descriptor_fingerprint);
+                hashOptionalU64(&hasher, entry.actuation_binding_fingerprint);
+            }
             hashBytes(&hasher, entry.label);
             hashBytes(&hasher, entry.metadata);
             return hasher.final();
