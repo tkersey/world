@@ -17965,16 +17965,19 @@ pub const Capsule = struct {
         errdefer routing_refs.deinit(allocator);
 
         for (runspace.mailbox.pending.items) |pending_port| {
-            if (pending_port.status == .pending) {
-                var pending_entry = try PendingPortImage.fromPending(allocator, pending_port.borrowed());
-                var pending_entry_owned = true;
-                errdefer if (pending_entry_owned) pending_entry.deinit(allocator);
-                try pending_entries.append(allocator, pending_entry);
-                pending_entry_owned = false;
-                try pending_refs.append(allocator, pending_port.pending_port_fingerprint);
-            } else {
-                try consumed_refs.append(allocator, pending_port.pending_port_fingerprint);
-            }
+            if (pending_port.status != .pending) continue;
+            var pending_entry = try PendingPortImage.fromPending(allocator, pending_port.borrowed());
+            var pending_entry_owned = true;
+            errdefer if (pending_entry_owned) pending_entry.deinit(allocator);
+            try pending_entries.append(allocator, pending_entry);
+            pending_entry_owned = false;
+            try pending_refs.append(allocator, pending_port.pending_port_fingerprint);
+            try single_use_refs.append(allocator, fingerprintPendingPortSingleUseStatus(pending_port));
+            try routing_refs.append(allocator, fingerprintPendingPortRoutingStatus(pending_port));
+        }
+        for (runspace.mailbox.pending.items) |pending_port| {
+            if (pending_port.status == .pending) continue;
+            try consumed_refs.append(allocator, pending_port.pending_port_fingerprint);
             try single_use_refs.append(allocator, fingerprintPendingPortSingleUseStatus(pending_port));
             try routing_refs.append(allocator, fingerprintPendingPortRoutingStatus(pending_port));
         }

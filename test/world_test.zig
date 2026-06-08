@@ -1017,6 +1017,22 @@ test "capsule runspace and mailbox images capture slots pending ports and events
         .generation = consumed_mailbox_image.generation,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, missing_consumed_status.validate(.{}));
+
+    const later_pending = try runspace.mailbox.push(.{
+        .run_handle = handle,
+        .mailbox_id = 1,
+        .request = request,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .run_permit_fingerprint = 0x900d,
+        .inserted_event_index = 1,
+    });
+    runspace.next_mailbox_id = 2;
+    var mixed_mailbox_image = try world.Capsule.mailboxImage(allocator, &runspace);
+    defer mixed_mailbox_image.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), mixed_mailbox_image.pending_port_fingerprints.len);
+    try std.testing.expectEqual(@as(usize, 1), mixed_mailbox_image.consumed_port_fingerprints.len);
+    try std.testing.expectEqual(later_pending.pending_port_fingerprint, mixed_mailbox_image.pending_port_fingerprints[0]);
+    try mixed_mailbox_image.validate(.{});
 }
 
 test "fabric image captures active invocation completed receipt and witnesses" {
