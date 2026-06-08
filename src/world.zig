@@ -5470,8 +5470,9 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
             if (!actuation_policy.allowsMode(requested_mode)) return rejectedAcceptance(target_ref, requested_mode, &.{.ActuationPolicyMismatch});
             binding.validate() catch return rejectedAcceptance(target_ref, requested_mode, &.{.MissingActuator});
             if (!binding.binding_mode_policy.allows(requested_mode)) return rejectedAcceptance(target_ref, requested_mode, &.{.ActuationPolicyMismatch});
-            const binding_class = actuationBindingClass(binding) orelse return rejectedAcceptance(target_ref, requested_mode, &.{.MissingActuator});
-            if (!actuation_policy.allowsClass(binding_class)) return rejectedAcceptance(target_ref, requested_mode, &.{.ActuationPolicyMismatch});
+            const binding_policy = actuationBindingPolicy(binding) orelse return rejectedAcceptance(target_ref, requested_mode, &.{.MissingActuator});
+            if (!actuation_policy.allowsClass(binding_policy.class)) return rejectedAcceptance(target_ref, requested_mode, &.{.ActuationPolicyMismatch});
+            if (!actuation_policy.allowsValuePolicy(binding_policy.value_policy)) return rejectedAcceptance(target_ref, requested_mode, &.{.ActuationValuePolicyMismatch});
             if (binding.target_ref_fingerprint != target_ref.target_ref_fingerprint) return rejectedAcceptance(target_ref, requested_mode, &.{.HandoffTargetMismatch});
             if (binding.world_surface_fingerprint != target_ref.world_surface_fingerprint) return rejectedAcceptance(target_ref, requested_mode, &.{.WrongWorldSurface});
             if (binding.world_port_id >= Target.WorldPortTable.entries.len) return rejectedAcceptance(target_ref, requested_mode, &.{.WrongPortId});
@@ -5554,11 +5555,14 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
             return true;
         }
 
-        fn actuationBindingClass(binding: Actuation.Binding) ?Actuation.Class {
+        fn actuationBindingPolicy(binding: Actuation.Binding) ?ActuationBindingPolicyView {
             inline for (actuation_bindings) |BindingDecl| {
                 if (comptime BindingDecl.TargetType == Target) {
                     const candidate = BindingDecl.actuationBindingRecord();
-                    if (candidate.binding_fingerprint == binding.binding_fingerprint) return BindingDecl.actuator_ref.class;
+                    if (candidate.binding_fingerprint == binding.binding_fingerprint) return .{
+                        .class = BindingDecl.actuator_ref.class,
+                        .value_policy = BindingDecl.value_policy,
+                    };
                 }
             }
             return null;
@@ -17528,6 +17532,12 @@ pub const Actuation = struct {
             };
         }
 
+        pub fn allowsValuePolicy(self: @This(), value_policy: ValuePolicy) bool {
+            if (self.require_portable_value_images and !value_policy.require_portable_values) return false;
+            if (self.reject_native_only_values and value_policy.allow_native_only_values) return false;
+            return true;
+        }
+
         pub fn allowsResponseStatus(self: @This(), status: Actuation.ResponseStatus) bool {
             return switch (status) {
                 .responded => true,
@@ -18887,6 +18897,7 @@ pub const Actuation = struct {
         }
 
         fn validateDescriptorValuePolicy(policy: Policy, value_policy: ValuePolicy) !void {
+            if (policy.allowsValuePolicy(value_policy)) return;
             if (policy.require_portable_value_images and !value_policy.require_portable_values) return error.PortableValueRequired;
             if (policy.reject_native_only_values and value_policy.allow_native_only_values) return error.NativeValueRejected;
         }
@@ -21130,6 +21141,15 @@ pub const Capsule = struct {
         errdefer single_use_refs.deinit(allocator);
         var routing_refs: std.ArrayList(u64) = .empty;
         errdefer routing_refs.deinit(allocator);
+        var pending_actuation_refs: std.ArrayList(u64) = .empty;
+        errdefer pending_actuation_refs.deinit(allocator);
+        var committed_actuation_receipt_refs: std.ArrayList(u64) = .empty;
+        errdefer committed_actuation_receipt_refs.deinit(allocator);
+
+        for (runspace.mailbox.pending.items) |pending_port| {
+            if (pending_port.pending_actuation_intent_fingerprint) |fingerprint| try appendUniqueU64(&pending_actuation_refs, allocator, fingerprint);
+            if (pending_port.pending_actuation_receipt_fingerprint) |fingerprint| try appendUniqueU64(&committed_actuation_receipt_refs, allocator, fingerprint);
+        }
 
         for (runspace.mailbox.pending.items) |pending_port| {
             if (pending_port.status != .pending) continue;
@@ -21163,6 +21183,10 @@ pub const Capsule = struct {
         errdefer allocator.free(single_use_slice);
         const routing_slice = try routing_refs.toOwnedSlice(allocator);
         errdefer allocator.free(routing_slice);
+        const pending_actuation_slice = try pending_actuation_refs.toOwnedSlice(allocator);
+        errdefer allocator.free(pending_actuation_slice);
+        const committed_actuation_receipt_slice = try committed_actuation_receipt_refs.toOwnedSlice(allocator);
+        errdefer allocator.free(committed_actuation_receipt_slice);
         var image = MailboxImage.init(.{
             .pending_port_entries = pending_entry_slice,
             .pending_port_fingerprints = pending_slice,
@@ -21171,6 +21195,8 @@ pub const Capsule = struct {
             .generation = @intCast(runspace.mailbox.pending.items.len),
             .single_use_status_fingerprints = single_use_slice,
             .response_routing_status_fingerprints = routing_slice,
+            .pending_actuation_intent_fingerprints = pending_actuation_slice,
+            .committed_actuation_receipt_fingerprints = committed_actuation_receipt_slice,
         });
         image.owns_memory = true;
         return image;
@@ -21291,6 +21317,10 @@ pub const Capsule = struct {
         errdefer allocator.free(permit_slice);
         const active_fabric_slice = try active_fabric_refs.toOwnedSlice(allocator);
         errdefer allocator.free(active_fabric_slice);
+        const actuation_intent_slice = try allocator.dupe(u64, mailbox.pending_actuation_intent_fingerprints);
+        errdefer allocator.free(actuation_intent_slice);
+        const actuation_receipt_slice = try allocator.dupe(u64, mailbox.committed_actuation_receipt_fingerprints);
+        errdefer allocator.free(actuation_receipt_slice);
 
         const runspace_report = runspace.report();
         var image = RunspaceImage.init(.{
@@ -21310,6 +21340,8 @@ pub const Capsule = struct {
             .admission_receipt_refs = admission_slice,
             .permit_refs = permit_slice,
             .active_fabric_invocation_refs = active_fabric_slice,
+            .actuation_intent_refs = actuation_intent_slice,
+            .actuation_receipt_refs = actuation_receipt_slice,
         });
         image.owns_memory = true;
         return image;
@@ -21614,6 +21646,12 @@ pub const Capsule = struct {
         const value_refs = try allocator.alloc(u64, 0);
         var value_refs_owned = true;
         errdefer if (value_refs_owned) allocator.free(value_refs);
+        const actuation_intent_refs = try allocator.dupe(u64, runspace_image_value.actuation_intent_refs);
+        var actuation_intent_refs_owned = true;
+        errdefer if (actuation_intent_refs_owned) allocator.free(actuation_intent_refs);
+        const actuation_receipt_refs = try allocator.dupe(u64, runspace_image_value.actuation_receipt_refs);
+        var actuation_receipt_refs_owned = true;
+        errdefer if (actuation_receipt_refs_owned) allocator.free(actuation_receipt_refs);
         const metadata = try allocator.dupe(u8, "");
         var metadata_owned = true;
         errdefer if (metadata_owned) allocator.free(metadata);
@@ -21635,6 +21673,8 @@ pub const Capsule = struct {
             .fabric_invocation_fingerprints = fabric_invocation_refs,
             .fabric_receipt_fingerprints = fabric_receipt_refs,
             .guest_conformance_report_fingerprints = guest_refs,
+            .actuation_intent_fingerprints = actuation_intent_refs,
+            .actuation_receipt_fingerprints = actuation_receipt_refs,
             .pending_port_count = report.pending_port_count,
             .run_slot_count = report.run_count,
             .active_fabric_invocation_count = report.active_fabric_invocation_count,
@@ -21652,6 +21692,8 @@ pub const Capsule = struct {
         fabric_invocation_refs_owned = false;
         fabric_receipt_refs_owned = false;
         guest_refs_owned = false;
+        actuation_intent_refs_owned = false;
+        actuation_receipt_refs_owned = false;
         metadata_owned = false;
         var manifest_owned = true;
         errdefer if (manifest_owned) manifest.deinit(allocator);
@@ -21677,6 +21719,12 @@ pub const Capsule = struct {
         const image_run_image_refs = try allocator.dupe(u64, run_image_refs);
         var image_run_image_refs_owned = true;
         errdefer if (image_run_image_refs_owned) allocator.free(image_run_image_refs);
+        const image_actuation_intent_refs = try allocator.dupe(u64, manifest.actuation_intent_fingerprints);
+        var image_actuation_intent_refs_owned = true;
+        errdefer if (image_actuation_intent_refs_owned) allocator.free(image_actuation_intent_refs);
+        const image_actuation_receipt_refs = try allocator.dupe(u64, manifest.actuation_receipt_fingerprints);
+        var image_actuation_receipt_refs_owned = true;
+        errdefer if (image_actuation_receipt_refs_owned) allocator.free(image_actuation_receipt_refs);
         const image_metadata = try allocator.dupe(u8, "");
         var image_metadata_owned = true;
         errdefer if (image_metadata_owned) allocator.free(image_metadata);
@@ -21693,6 +21741,8 @@ pub const Capsule = struct {
             .transcript_image_refs = image_transcript_refs,
             .run_image_refs = image_run_image_refs,
             .value_image_refs = value_refs,
+            .actuation_intent_refs = image_actuation_intent_refs,
+            .actuation_receipt_refs = image_actuation_receipt_refs,
             .run_images = run_images,
             .dependency_refs = dependency_refs,
             .object_refs = object_refs,
@@ -21712,6 +21762,8 @@ pub const Capsule = struct {
         image_guest_refs_owned = false;
         image_transcript_refs_owned = false;
         image_run_image_refs_owned = false;
+        image_actuation_intent_refs_owned = false;
+        image_actuation_receipt_refs_owned = false;
         value_refs_owned = false;
         image_metadata_owned = false;
         var image_owned = true;

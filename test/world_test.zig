@@ -1123,6 +1123,23 @@ test "actuation environment preflight and supervision ledger account host effect
     const preflight = ActuationEnv.preflightActuation(binding, world.Actuation.Policy.strict_fresh);
     try std.testing.expect(preflight.accepted);
 
+    const NativeValueActuator = world.actuator(.{
+        .kind = .tool_like,
+        .class = .idempotent_mutation,
+        .label = "tool.call.native",
+        .supported_response_statuses = world.Actuation.ResponseStatusSet.all,
+        .value_policy = world.ValuePolicy.native_compatible,
+    });
+    const NativeValueBinding = world.bindActuator(PortsDecl, NativeValueActuator);
+    const NativeValueEnv = world.Environment(fixtures.Ports.Target, .{
+        .actuation_bindings = .{NativeValueBinding},
+        .policy = world.EnvironmentPolicy.fresh_and_replay,
+    });
+    const native_value_binding = NativeValueEnv.bindActuator(NativeValueBinding);
+    const native_value_preflight = NativeValueEnv.preflightActuation(native_value_binding, world.Actuation.Policy.strict_fresh);
+    try std.testing.expect(!native_value_preflight.accepted);
+    try std.testing.expectEqualSlices(world.AcceptanceBlocker, &.{.ActuationValuePolicyMismatch}, native_value_preflight.blockers);
+
     const ReplayOnlyActuator = world.actuator(.{
         .kind = .replay_source,
         .class = .observation,
@@ -1420,6 +1437,24 @@ test "runspace actuation dispatch preserves pending mailbox state" {
     try std.testing.expectEqual(@as(?u64, receipt.receipt_fingerprint), marked_pending.pending_actuation_receipt_fingerprint);
     try std.testing.expectError(error.PendingPortConsumed, runspace.dispatchActuation(0, execution));
     try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try runspace.getSlotSummary(handle)).status);
+
+    var image = try world.Capsule.freezeRunspace(&runspace, .{});
+    defer image.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 1), image.manifest.actuation_intent_fingerprints.len);
+    try std.testing.expectEqual(@as(usize, 1), image.manifest.actuation_receipt_fingerprints.len);
+    try std.testing.expectEqual(intent.intent_fingerprint, image.manifest.actuation_intent_fingerprints[0]);
+    try std.testing.expectEqual(receipt.receipt_fingerprint, image.manifest.actuation_receipt_fingerprints[0]);
+    try std.testing.expectEqual(intent.intent_fingerprint, image.runspace_image.actuation_intent_refs[0]);
+    try std.testing.expectEqual(receipt.receipt_fingerprint, image.runspace_image.actuation_receipt_refs[0]);
+    try std.testing.expectEqual(intent.intent_fingerprint, image.actuation_intent_refs[0]);
+    try std.testing.expectEqual(receipt.receipt_fingerprint, image.actuation_receipt_refs[0]);
+    try std.testing.expectEqual(intent.intent_fingerprint, image.runspace_image.mailbox_image.?.pending_actuation_intent_fingerprints[0]);
+    try std.testing.expectEqual(receipt.receipt_fingerprint, image.runspace_image.mailbox_image.?.committed_actuation_receipt_fingerprints[0]);
+    const thaw = try world.Capsule.planThaw(image, pending.target_ref_fingerprint, 0, null, .{
+        .mode = .replay_only,
+        .require_local_permit = false,
+    });
+    try std.testing.expectEqual(receipt.receipt_fingerprint, thaw.sender_actuation_receipt_refs[0]);
 
     const terminal_key = world.Actuation.IdempotencyKey.init(.{
         .target_ref_fingerprint = pending.target_ref_fingerprint,
