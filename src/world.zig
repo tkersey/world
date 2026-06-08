@@ -18662,6 +18662,7 @@ pub const Capsule = struct {
                 .status = status,
                 .admission_receipt_fingerprint = slot_image.admission_receipt_fingerprint,
                 .run_permit_fingerprint = permit_fingerprint orelse slot_image.run_permit_fingerprint,
+                .run_receipt_fingerprint = if (installed_run_image) |run_image| run_image.prior_run_receipt_fingerprint else null,
                 .pending_mailbox_id = slot_image.current_pending_mailbox_id,
                 .branch_id = slot_image.branch_id,
                 .parent_run_handle_fingerprint = parent_run_handle_fingerprint,

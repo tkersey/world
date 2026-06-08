@@ -539,6 +539,18 @@ test "capsule freezeRunspace honors receipt and transcript exclusion flags" {
     });
     try std.testing.expectError(error.InvalidFrameEncoding, transcriptless_slot_image.validate(.{}));
 
+    var receipt_receiver = world.Runspace.init(allocator, .{});
+    defer receipt_receiver.deinit();
+    var receipt_restore = try world.Capsule.thawIntoRunspace(full, &receipt_receiver, target_ref.target_ref_fingerprint, 0, 0x5150_3343, .{ .mode = .restore_completed });
+    defer receipt_restore.deinit(allocator);
+    try std.testing.expect(receipt_restore.accepted);
+    try std.testing.expectEqual(@as(usize, 1), receipt_receiver.slots.items.len);
+    try std.testing.expectEqual(@as(?u64, 0x5150_3341), receipt_receiver.slots.items[0].run_receipt_fingerprint);
+    var refrozen = try world.Capsule.freezeRunspace(&receipt_receiver, .{});
+    defer refrozen.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), refrozen.runspace_image.run_receipt_refs.len);
+    try std.testing.expectEqual(@as(?u64, 0x5150_3341), refrozen.run_images[0].prior_run_receipt_fingerprint);
+
     var excluded = try world.Capsule.freezeRunspace(&source, .{ .include_receipts = false, .include_transcripts = false });
     defer excluded.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 0), excluded.runspace_image.transcript_image_refs.len);
