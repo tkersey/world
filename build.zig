@@ -651,7 +651,7 @@ pub fn build(b: *std.Build) void {
             .expected_stdout =
             \\active_fabric_invocation_fingerprint=6e1ba40ac216edb1
             \\pending_provider_port_fingerprint=423eef2930e63077
-            \\restore_report_fingerprint=2a0fb0579ea6f107
+            \\restore_report_fingerprint=9332065ccdd19729
             \\restore_accepted=false
             \\final_result=active-fabric-restore-denied
             \\

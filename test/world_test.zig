@@ -2890,6 +2890,25 @@ test "capsule handoff admission binds restore witnesses and receiver permit" {
     try std.testing.expect(!wrong_permit_admission.accepted);
     try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, wrong_permit_admission.blockers[0]);
 
+    const denied_relink_thaw = try world.Capsule.planThaw(imported, target_ref.target_ref_fingerprint, 0, 0x5150_3806, .{ .mode = .relink_and_restore });
+    try std.testing.expectEqual(world.Capsule.Blocker.link_certificate_missing, denied_relink_thaw.blockers[0]);
+    var denied_relink_receiver = world.Runspace.init(allocator, .{});
+    defer denied_relink_receiver.deinit();
+    var denied_relink_restore = try world.Capsule.thawIntoRunspace(imported, &denied_relink_receiver, target_ref.target_ref_fingerprint, 0, 0x5150_3806, .{ .mode = .relink_and_restore });
+    defer denied_relink_restore.deinit(allocator);
+    try std.testing.expect(!denied_relink_restore.accepted);
+    try std.testing.expectEqual(denied_relink_thaw.thaw_plan_fingerprint, denied_relink_restore.thaw_plan_fingerprint);
+    try std.testing.expectEqual(@as(?u64, 0x5150_3806), denied_relink_restore.receiver_run_permit_fingerprint);
+    const denied_relink_admission = world.Admission.capsuleAdmissionReport(.{
+        .mode = .relink_and_restore,
+        .image = imported,
+        .certificate = cert,
+        .thaw_plan = denied_relink_thaw,
+        .restore_report = denied_relink_restore,
+    });
+    try std.testing.expect(!denied_relink_admission.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.AdmissionModeNotAllowed, denied_relink_admission.blockers[0]);
+
     var malformed_image = imported;
     malformed_image.image_fingerprint +%= 1;
     const malformed_image_rejected = world.Admission.capsuleAdmissionReport(.{

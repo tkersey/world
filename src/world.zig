@@ -18634,6 +18634,7 @@ pub const Capsule = struct {
                 .thaw_plan_fingerprint = plan.thaw_plan_fingerprint,
                 .restored_runspace_fingerprint = runspace.runspace_fingerprint,
                 .guest_conformance_refs = plan.guest_conformance_refs,
+                .receiver_run_permit_fingerprint = plan.receiver_run_permit_fingerprint,
                 .accepted = false,
                 .blockers = plan.blockers,
                 .summary = "capsule restore denied before runspace mutation",
