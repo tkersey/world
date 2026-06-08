@@ -1729,6 +1729,67 @@ test "capsule freezeRunspace classifies mixed terminal slots as failed assembly"
     try std.testing.expectEqual(world.Capsule.RestoreMode.replay_only, replay_plan.requested_mode);
 }
 
+test "capsule freeze normalizes failed imported parked snapshots" {
+    const allocator = std.testing.allocator;
+    var source_runtime = boundary.Runtime.init(allocator);
+    defer source_runtime.deinit();
+    var source_runspace = world.Runspace.init(allocator, .{});
+    defer source_runspace.deinit();
+    _ = try source_runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &source_runtime, .{}, .{
+        .allocator = allocator,
+        .mode = world.Mode.fresh,
+    });
+    _ = try source_runspace.tick();
+    var parked_image = try source_runspace.exportPending(0);
+    defer parked_image.deinit(allocator);
+
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_native_adapters = true,
+            .allow_failed_responses = true,
+            .allow_handoff_accept = true,
+            .require_environment_certificate = true,
+        }),
+    });
+    const admitted = world.Admission.AdmittedRun.init(.{
+        .admission_receipt_fingerprint = 0xadd1_7ed1,
+        .target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target),
+        .environment_certificate_fingerprint = PortsEnv.certificate(.fresh, false).certificate_fingerprint,
+        .mode = .continue_fresh,
+        .run_image = parked_image,
+        .run_permit = permit,
+    });
+    var runspace = world.Runspace.init(allocator, .{});
+    defer runspace.deinit();
+    const handle = try runspace.installAdmitted(admitted);
+
+    _ = try runspace.fail(0, "imported failure");
+    try std.testing.expectEqual(world.Runspace.PendingStatus.failed, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.failed, (try runspace.getSlotSummary(handle)).status);
+
+    var image = try world.Capsule.freezeRunspace(&runspace, .{});
+    defer image.deinit(allocator);
+    try std.testing.expectEqual(world.Capsule.Kind.failed_assembly, image.manifest.kind);
+    try std.testing.expectEqual(world.Capsule.NormalForm.quiescent_failed, image.manifest.normal_form);
+    try std.testing.expectEqual(@as(usize, 1), image.run_images.len);
+    try std.testing.expectEqual(world.RunImage.Kind.replay_only_run, image.run_images[0].kind);
+    try std.testing.expectEqual(world.RunState.Status.failed, image.run_images[0].current_state.status);
+    try std.testing.expectEqual(@as(?u64, null), image.run_images[0].current_state.pending_request_fingerprint);
+    try std.testing.expect(image.run_images[0].pending_request_frame == null);
+    try image.validate(.{});
+
+    const replay_plan = try world.Capsule.planThaw(
+        image,
+        world.TargetRef.fromTarget(fixtures.Ports.Target).target_ref_fingerprint,
+        PortsEnv.certificate(.fresh, false).certificate_fingerprint,
+        null,
+        .{ .mode = .replay_only },
+    );
+    try std.testing.expectEqual(@as(usize, 0), replay_plan.blockers.len);
+}
+
 test "capsule thaw preserves branch parent links" {
     const allocator = std.testing.allocator;
     const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);

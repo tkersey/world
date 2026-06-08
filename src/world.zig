@@ -13205,6 +13205,7 @@ pub const Runspace = struct {
             var image = try cloneRunImage(self.allocator, installed_image);
             image.kind = try runImageKindForSlotSnapshot(slot.*, installed_image.kind);
             image.current_state = slot.current_state;
+            scrubTerminalInstalledSlotSnapshot(self.allocator, &image, slot.status);
             image.prior_run_permit_fingerprint = slot.run_permit_fingerprint;
             image.prior_run_receipt_fingerprint = run_receipt_fingerprint;
             image.module_ref_fingerprint = slot.module_ref_fingerprint;
@@ -13249,8 +13250,24 @@ pub const Runspace = struct {
         return switch (slot.status) {
             .completed => if (installed_kind == .parked_run) .completed_run else installed_kind,
             .exported => try runImageKindForExportedSlot(slot),
+            .failed, .rejected => .replay_only_run,
             else => installed_kind,
         };
+    }
+
+    fn scrubTerminalInstalledSlotSnapshot(allocator: std.mem.Allocator, image: *RunImage, slot_status: Runspace.RunStatus) void {
+        switch (slot_status) {
+            .failed, .rejected => {
+                if (image.owns_pending_request_frame) {
+                    if (image.pending_request_frame) |*frame| frame.deinit(allocator);
+                }
+                image.pending_request_frame = null;
+                image.owns_pending_request_frame = false;
+                image.current_state.pending_request_fingerprint = null;
+                image.current_state.run_state_fingerprint = fingerprintRunState(image.current_state);
+            },
+            else => {},
+        }
     }
 
     fn runImageKindForExportedSlot(slot: Runspace.RunSlot) !RunImage.Kind {
