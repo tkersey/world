@@ -890,6 +890,9 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
         .attempt_number = fixture_exec.receipt.attempt_number,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, forged_exec.validate());
+    var forged_response_exec = fixture_exec;
+    forged_response_exec.response.status = .failed;
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_response_exec.validate());
 
     const native_exec = try world.Actuation.Membrane.execute(.{
         .policy = policy,
@@ -1279,6 +1282,26 @@ test "runspace actuation dispatch preserves pending mailbox state" {
     try std.testing.expect(receipt.pending);
     try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
     try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try runspace.getSlotSummary(handle)).status);
+
+    const cancelled = try world.Actuation.Membrane.execute(.{
+        .policy = world.Actuation.Policy.fixture_test,
+        .intent = intent,
+        .envelope = envelope,
+        .actuator = .{ .fixture = .{
+            .status = .cancelled,
+            .frame_response_fingerprint = 0x5150_aaab,
+            .reason = "cancelled fixture",
+        } },
+        .descriptor = descriptor,
+        .attempt_number = 2,
+        .target_ref_fingerprint = pending.target_ref_fingerprint,
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+    });
+    const cancelled_receipt = try runspace.dispatchActuation(0, cancelled);
+    try std.testing.expect(cancelled_receipt.cancelled);
+    try std.testing.expectEqual(world.Runspace.PendingStatus.cancelled, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.failed, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
 }
 
 test "runspace actuation dispatch accounts terminal response bytes" {
@@ -1380,6 +1403,119 @@ test "runspace actuation dispatch accounts terminal response bytes" {
     try std.testing.expectError(error.BudgetExceeded, runspace.dispatchActuation(0, execution));
     try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
     try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try runspace.getSlotSummary(handle)).status);
+}
+
+test "runspace actuation dispatch rolls back supervision on terminal response failure" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const cert = PortsEnv.certificate(.fresh, false);
+    const permit = world.RunPermit.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = target_ref.target_certificate_fingerprint,
+        .environment_certificate_fingerprint = cert.certificate_fingerprint,
+        .binding_plan_fingerprint = cert.binding_plan_fingerprint,
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_native_adapters = true,
+            .allow_actuation = true,
+            .allow_fresh_actuation = true,
+            .allow_failed_responses = true,
+            .require_environment_certificate = true,
+        }),
+        .budget = world.Budget.init(.{ .max_actuation_calls = 1 }),
+    });
+    var runspace = world.Runspace.init(std.testing.allocator, .{ .require_supervision = true });
+    defer runspace.deinit();
+
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .permit = permit,
+    });
+    _ = try runspace.tick();
+    const pending = try runspace.mailbox.get(0);
+    const request = pending.request_frame.?;
+    const ref = world.Actuation.Ref.init(.{
+        .kind = .fixture,
+        .class = .deterministic_fixture,
+        .label = "rollback-fixture",
+        .supported_response_statuses = world.Actuation.ResponseStatusSet.all,
+    });
+    const descriptor = world.Actuation.Descriptor.init(.{
+        .actuator_ref = ref,
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .target_ref_fingerprint = pending.target_ref_fingerprint,
+        .world_port_id = request.world_port_id,
+        .response_value_table_id = request.expected_response_value_table_id,
+        .allowed_response_kinds = world.Actuation.ResponseStatusSet.all,
+    });
+    const key = world.Actuation.IdempotencyKey.init(.{
+        .target_ref_fingerprint = pending.target_ref_fingerprint,
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .world_port_id = request.world_port_id,
+        .request_fingerprint = request.request_fingerprint,
+        .pending_port_fingerprint = pending.pending_port_fingerprint,
+        .actuator_ref_fingerprint = ref.ref_fingerprint,
+    });
+    const intent = world.Actuation.Intent.init(.{
+        .actuator_ref_fingerprint = ref.ref_fingerprint,
+        .descriptor_fingerprint = descriptor.descriptor_fingerprint,
+        .target_ref_fingerprint = pending.target_ref_fingerprint,
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .world_port_id = request.world_port_id,
+        .pending_port_fingerprint = pending.pending_port_fingerprint,
+        .frame_request_fingerprint = request.request_fingerprint,
+        .encoded_frame_request_fingerprint = request.frame_fingerprint,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .class = .deterministic_fixture,
+        .requested_mode = .fresh,
+    });
+    const envelope = world.Actuation.Envelope.init(.{
+        .intent_fingerprint = intent.intent_fingerprint,
+        .encoded_frame_request_fingerprint = request.frame_fingerprint,
+        .idempotency_key = key,
+        .expected_response_value_table_id = request.expected_response_value_table_id,
+    });
+    const bad_execution = try world.Actuation.Membrane.execute(.{
+        .policy = world.Actuation.Policy.fixture_test,
+        .intent = intent,
+        .envelope = envelope,
+        .actuator = .{ .fixture = .{
+            .status = .failed,
+            .response_kind = .return_now,
+            .frame_response_fingerprint = 0x5150_cc01,
+            .reason = "bad kind",
+        } },
+        .descriptor = descriptor,
+        .attempt_number = 1,
+        .target_ref_fingerprint = pending.target_ref_fingerprint,
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+    });
+    try std.testing.expectError(error.VerifyResponseKindMismatch, runspace.dispatchActuation(0, bad_execution));
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try runspace.getSlotSummary(handle)).status);
+
+    const good_execution = try world.Actuation.Membrane.execute(.{
+        .policy = world.Actuation.Policy.fixture_test,
+        .intent = intent,
+        .envelope = envelope,
+        .actuator = .{ .fixture = .{
+            .status = .failed,
+            .frame_response_fingerprint = 0x5150_cc02,
+            .reason = "valid failure",
+        } },
+        .descriptor = descriptor,
+        .attempt_number = 2,
+        .target_ref_fingerprint = pending.target_ref_fingerprint,
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+    });
+    const receipt = try runspace.dispatchActuation(0, good_execution);
+    try std.testing.expect(receipt.failed);
+    try std.testing.expectEqual(world.Runspace.PendingStatus.failed, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.failed, (try runspace.getSlotSummary(handle)).status);
 }
 
 test "runspace actuation dispatch uses installed supervisor before mailbox resume" {

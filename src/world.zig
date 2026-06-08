@@ -10966,16 +10966,21 @@ pub const Runspace = struct {
         if (execution.response.request_fingerprint != pending.request_fingerprint) return error.FrameRequestFingerprintMismatch;
         const index = try self.slotIndex(pending.handle);
         switch (execution.response.status) {
-            .pending, .deferred, .cancelled => {
+            .pending, .deferred => {
                 try self.superviseActuationDispatch(index, execution, 0);
                 return execution.receipt;
             },
-            .responded, .rejected, .failed => {},
+            .responded, .rejected, .failed, .cancelled => {},
         }
         const response = try self.frameResponseFromActuation(pending, execution.response);
         const accounting = try self.responseFrameAccounting(response);
+        var supervisor_snapshot = try self.snapshotSlotSupervisor(index);
+        defer supervisor_snapshot.deinit(self.allocator);
         try self.superviseActuationDispatch(index, execution, accounting.response_bytes);
-        _ = try self.respond(mailbox_id, response);
+        _ = self.respond(mailbox_id, response) catch |err| {
+            supervisor_snapshot.restore(self, index);
+            return err;
+        };
         return execution.receipt;
     }
 
@@ -11023,9 +11028,9 @@ pub const Runspace = struct {
         const response_fingerprint = actuation_response.frame_response_fingerprint orelse return error.MissingValueImage;
         const status: ResponseStatus = switch (actuation_response.status) {
             .responded => .responded,
-            .rejected => .rejected,
+            .rejected, .cancelled => .rejected,
             .failed => .failed,
-            .pending, .deferred, .cancelled => return error.InvalidPendingPortTransition,
+            .pending, .deferred => return error.InvalidPendingPortTransition,
         };
         return Frame.Response.init(.{
             .world_surface_fingerprint = pending.world_surface_fingerprint,
@@ -18499,6 +18504,7 @@ pub const Actuation = struct {
                 try self.decision.validate();
                 try self.commit_value.validateAfterDecision(self.decision);
                 if (self.response.commit_fingerprint == null) return error.InvalidFrameEncoding;
+                if (self.response.response_fingerprint != Actuation.fingerprintResponse(self.response)) return error.InvalidFrameEncoding;
                 try self.receipt.validate();
                 if (self.decision.intent_fingerprint != self.intent.intent_fingerprint) return error.InvalidFrameEncoding;
                 if (self.commit_value.intent_fingerprint != self.intent.intent_fingerprint) return error.InvalidFrameEncoding;
