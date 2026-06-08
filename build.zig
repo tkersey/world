@@ -690,7 +690,7 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Assembly Capsule guest verify example.",
             .expected_stdout =
             \\guest_report_fingerprint=d35a6d645e4511ea
-            \\restore_report_fingerprint=4759324ee6301eeb
+            \\restore_report_fingerprint=b20f8373cb3ca51d
             \\conformance=true
             \\
             ,

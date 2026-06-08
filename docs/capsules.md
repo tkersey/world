@@ -56,7 +56,7 @@ It never serializes Machine pointers, allocators, handlers, request tokens, nati
 
 ## Thaw
 
-`Capsule.validate`, `Capsule.planThaw`, and `Capsule.thawIntoRunspace` validate image format, match the local root target-ref witness and optional local catalog fingerprint, preflight environment refs, require receiver permits when configured, plan handle/mailbox remaps, reject blockers before mutation, and restore supported completed/failed slot metadata into the destination Runspace. Receivers configured with `require_supervision` reject capsule restore until a receiver-local permit object can be validated, not just a permit fingerprint.
+`Capsule.validate`, `Capsule.planThaw`, and `Capsule.thawIntoRunspace` validate image format, match the local root target-ref witness and optional local catalog fingerprint, preflight environment refs, require a receiver permit fingerprint when configured, plan handle/mailbox remaps, reject blockers before mutation, and restore supported completed/failed slot metadata into the destination Runspace. Receivers configured with `require_supervision` reject capsule restore until a receiver-local permit object verifier exists; the current API records permit fingerprints as restore evidence only.
 
 ## Relink verification
 
@@ -76,7 +76,7 @@ Guest conformance report fingerprints can be embedded in the manifest and surfac
 
 ## Supervision and receiver permits
 
-Sender permits and receipts are evidence, not authority. A receiver can require a fresh local permit, issue a stricter permit, deny before mutation, and bind the receiver permit fingerprint into restored state and reports.
+Sender permits and receipts are evidence, not authority. A receiver can require a fresh local permit fingerprint, deny before mutation, and bind that receiver permit fingerprint into restored state and reports. Object-level receiver permit validation is a future verifier boundary, so supervised and parked restores remain fail-closed in this API surface.
 
 ## Handoff integration
 

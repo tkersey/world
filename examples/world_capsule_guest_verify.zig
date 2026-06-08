@@ -6,6 +6,7 @@ pub fn main(init: std.process.Init) !void {
     var stdout_buffer: [1024]u8 = undefined;
     var stdout_writer = std.Io.File.stdout().writer(init.io, &stdout_buffer);
     const stdout = &stdout_writer.interface;
+    const allocator = std.heap.page_allocator;
 
     const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const vector = world.Guest.ConformanceVector.init(.{
@@ -46,13 +47,14 @@ pub fn main(init: std.process.Init) !void {
         }),
         .guest_conformance_refs = &.{guest_report.report_fingerprint},
     });
-    const restore = world.Capsule.RestoreReport.init(.{
-        .capsule_image_fingerprint = capsule.image_fingerprint,
-        .thaw_plan_fingerprint = (try world.Capsule.planThaw(capsule, target_ref.target_ref_fingerprint, 0, null, .{ .mode = .inspect_only })).thaw_plan_fingerprint,
-        .restored_runspace_fingerprint = 0x5150_e005,
-        .guest_conformance_refs = &.{guest_report.report_fingerprint},
-        .accepted = true,
+    var receiver = world.Runspace.init(allocator, .{});
+    defer receiver.deinit();
+    var restore = try world.Capsule.thawIntoRunspace(capsule, &receiver, target_ref.target_ref_fingerprint, 0, null, .{
+        .mode = .inspect_only,
+        .require_local_permit = false,
+        .rerun_guest_conformance = true,
     });
+    defer restore.deinit(allocator);
 
     try stdout.print("guest_report_fingerprint={x}\n", .{guest_report.report_fingerprint});
     try stdout.print("restore_report_fingerprint={x}\n", .{restore.restore_report_fingerprint});
