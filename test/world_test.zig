@@ -2532,6 +2532,23 @@ test "capsule handoff admission binds restore witnesses and receiver permit" {
     defer inspect_restore.deinit(allocator);
     try std.testing.expect(inspect_restore.accepted);
     try std.testing.expectEqual(@as(usize, 0), inspect_receiver.slots.items.len);
+    const inspect_unbound_restore_rejected = world.Admission.capsuleAdmissionReport(.{
+        .mode = .inspect_only,
+        .image = imported,
+        .certificate = cert,
+        .restore_report = restore,
+    });
+    try std.testing.expect(!inspect_unbound_restore_rejected.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, inspect_unbound_restore_rejected.blockers[0]);
+    const inspect_bound_restore_rejected = world.Admission.capsuleAdmissionReport(.{
+        .mode = .inspect_only,
+        .image = imported,
+        .certificate = cert,
+        .thaw_plan = inspect_thaw,
+        .restore_report = inspect_restore,
+    });
+    try std.testing.expect(!inspect_bound_restore_rejected.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, inspect_bound_restore_rejected.blockers[0]);
     const inspect_restore_rejected = world.Admission.capsuleAdmissionReport(.{
         .mode = .restore_parked,
         .image = imported,

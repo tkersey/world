@@ -2247,6 +2247,8 @@ pub const Admission = struct {
         const witnesses_bound =
             (args.certificate == null or capsuleCertificateMatchesImage(args.image, args.certificate.?)) and
             (args.thaw_plan == null or capsuleThawPlanMatchesImage(args.image, args.thaw_plan.?)) and
+            (args.restore_report == null or args.thaw_plan != null) and
+            (args.restore_report == null or capsuleAdmissionModeAllowsRestoreReport(args.mode)) and
             (args.restore_report == null or args.restore_report.?.capsule_image_fingerprint == args.image.image_fingerprint) and
             (args.thaw_plan == null or args.restore_report == null or args.restore_report.?.thaw_plan_fingerprint == args.thaw_plan.?.thaw_plan_fingerprint) and
             (args.thaw_plan == null or args.restore_report == null or args.thaw_plan.?.receiver_run_permit_fingerprint == args.restore_report.?.receiver_run_permit_fingerprint) and
@@ -2474,6 +2476,13 @@ pub const Admission = struct {
             .restore_completed => thaw_mode == .restore_completed,
             .restore_failed => thaw_mode == .restore_failed,
             .relink_and_restore => thaw_mode == .relink_and_restore,
+        };
+    }
+
+    fn capsuleAdmissionModeAllowsRestoreReport(mode: CapsuleAdmissionMode) bool {
+        return switch (mode) {
+            .restore_completed, .restore_failed, .relink_and_restore => true,
+            .inspect_only, .replay_only, .restore_parked, .verify => false,
         };
     }
 
