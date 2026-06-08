@@ -177,7 +177,7 @@ test "fabric route fingerprint stable and route kinds represented" {
 }
 
 test "linker namespace exposes kernel boundary and stable policy fingerprint" {
-    try std.testing.expectEqual(@as(u32, 2), world.world_pending_port_fingerprint_version);
+    try std.testing.expectEqual(@as(u32, 3), world.world_pending_port_fingerprint_version);
     try std.testing.expectEqual(@as(u32, 1), world.world_linker_policy_fingerprint_version);
     try std.testing.expectEqual(@as(u32, 1), world.world_linker_catalog_fingerprint_version);
     try std.testing.expectEqual(@as(u32, 4), world.world_assembly_fingerprint_version);
@@ -1414,13 +1414,46 @@ test "runspace actuation dispatch preserves pending mailbox state" {
     });
     const receipt = try runspace.dispatchActuation(0, execution);
     try std.testing.expect(receipt.pending);
-    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
+    const marked_pending = try runspace.mailbox.get(0);
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, marked_pending.status);
+    try std.testing.expectEqual(@as(?u64, intent.intent_fingerprint), marked_pending.pending_actuation_intent_fingerprint);
+    try std.testing.expectEqual(@as(?u64, receipt.receipt_fingerprint), marked_pending.pending_actuation_receipt_fingerprint);
+    try std.testing.expectError(error.PendingPortConsumed, runspace.dispatchActuation(0, execution));
     try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try runspace.getSlotSummary(handle)).status);
 
+    const terminal_key = world.Actuation.IdempotencyKey.init(.{
+        .target_ref_fingerprint = pending.target_ref_fingerprint,
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .world_port_id = request.world_port_id,
+        .request_fingerprint = request.request_fingerprint,
+        .pending_port_fingerprint = marked_pending.pending_port_fingerprint,
+        .actuator_ref_fingerprint = ref.ref_fingerprint,
+    });
+    const terminal_intent = world.Actuation.Intent.init(.{
+        .actuator_ref_fingerprint = ref.ref_fingerprint,
+        .descriptor_fingerprint = descriptor.descriptor_fingerprint,
+        .target_ref_fingerprint = pending.target_ref_fingerprint,
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .world_port_id = request.world_port_id,
+        .pending_port_fingerprint = marked_pending.pending_port_fingerprint,
+        .frame_request_fingerprint = request.request_fingerprint,
+        .encoded_frame_request_fingerprint = request.frame_fingerprint,
+        .idempotency_key_fingerprint = terminal_key.key_fingerprint,
+        .run_permit_fingerprint = pending.run_permit_fingerprint,
+        .environment_certificate_fingerprint = pending.environment_certificate_fingerprint,
+        .class = .deterministic_fixture,
+        .requested_mode = .fresh,
+    });
+    const terminal_envelope = world.Actuation.Envelope.init(.{
+        .intent_fingerprint = terminal_intent.intent_fingerprint,
+        .encoded_frame_request_fingerprint = request.frame_fingerprint,
+        .idempotency_key = terminal_key,
+        .expected_response_value_table_id = request.expected_response_value_table_id,
+    });
     const cancelled = try world.Actuation.Membrane.execute(.{
         .policy = world.Actuation.Policy.fixture_test,
-        .intent = intent,
-        .envelope = envelope,
+        .intent = terminal_intent,
+        .envelope = terminal_envelope,
         .actuator = .{ .fixture = .{
             .status = .cancelled,
             .frame_response_fingerprint = 0x5150_aaab,

@@ -259,7 +259,7 @@ pub const world_admitted_run_fingerprint_version: u32 = 6;
 pub const world_run_handle_format_version: u32 = 1;
 pub const world_run_handle_fingerprint_version: u32 = 1;
 pub const world_pending_port_format_version: u32 = 1;
-pub const world_pending_port_fingerprint_version: u32 = 2;
+pub const world_pending_port_fingerprint_version: u32 = 3;
 pub const world_runspace_config_fingerprint_version: u32 = 1;
 pub const world_runspace_event_fingerprint_version: u32 = 2;
 pub const world_fabric_format_version: u32 = 1;
@@ -303,7 +303,7 @@ pub const world_capsule_quiescence_report_fingerprint_version: u32 = 1;
 pub const world_capsule_runspace_image_format_version: u32 = 1;
 pub const world_capsule_runspace_image_fingerprint_version: u32 = 1;
 pub const world_capsule_run_slot_image_fingerprint_version: u32 = 1;
-pub const world_capsule_pending_port_image_fingerprint_version: u32 = 1;
+pub const world_capsule_pending_port_image_fingerprint_version: u32 = 2;
 pub const world_capsule_mailbox_image_fingerprint_version: u32 = 1;
 pub const world_capsule_fabric_image_fingerprint_version: u32 = 1;
 pub const world_capsule_link_image_fingerprint_version: u32 = 1;
@@ -9906,6 +9906,8 @@ pub const Runspace = struct {
         target_ref_fingerprint: u64,
         environment_certificate_fingerprint: ?u64 = null,
         run_permit_fingerprint: ?u64 = null,
+        pending_actuation_intent_fingerprint: ?u64 = null,
+        pending_actuation_receipt_fingerprint: ?u64 = null,
         turn_index: usize,
         inserted_event_index: u64,
         status: Runspace.PendingStatus = .pending,
@@ -9920,6 +9922,8 @@ pub const Runspace = struct {
             expected_response_kind: ResponseKind = .@"resume",
             environment_certificate_fingerprint: ?u64 = null,
             run_permit_fingerprint: ?u64 = null,
+            pending_actuation_intent_fingerprint: ?u64 = null,
+            pending_actuation_receipt_fingerprint: ?u64 = null,
             inserted_event_index: u64 = 0,
         }) @This() {
             var result = @This(){
@@ -9940,6 +9944,8 @@ pub const Runspace = struct {
                 .target_ref_fingerprint = if (args.target_ref_fingerprint != 0) args.target_ref_fingerprint else args.handle.target_ref_fingerprint,
                 .environment_certificate_fingerprint = args.environment_certificate_fingerprint,
                 .run_permit_fingerprint = args.run_permit_fingerprint,
+                .pending_actuation_intent_fingerprint = args.pending_actuation_intent_fingerprint,
+                .pending_actuation_receipt_fingerprint = args.pending_actuation_receipt_fingerprint,
                 .turn_index = args.request.turn_index,
                 .inserted_event_index = args.inserted_event_index,
             };
@@ -9950,6 +9956,16 @@ pub const Runspace = struct {
         pub fn withStatus(self: @This(), status: PendingStatus) @This() {
             var result = self;
             result.status = status;
+            result.pending_port_fingerprint = fingerprintPendingPort(result);
+            return result;
+        }
+
+        pub fn withPendingActuation(self: @This(), intent_fingerprint: u64, receipt_fingerprint: u64) !@This() {
+            if (self.status != .pending) return error.PendingPortConsumed;
+            if (self.pending_actuation_intent_fingerprint != null or self.pending_actuation_receipt_fingerprint != null) return error.PendingPortConsumed;
+            var result = self;
+            result.pending_actuation_intent_fingerprint = intent_fingerprint;
+            result.pending_actuation_receipt_fingerprint = receipt_fingerprint;
             result.pending_port_fingerprint = fingerprintPendingPort(result);
             return result;
         }
@@ -9996,6 +10012,7 @@ pub const Runspace = struct {
             if (self.format_version != world_pending_port_format_version) return error.InvalidFrameEncoding;
             if (self.fingerprint_version != world_pending_port_fingerprint_version) return error.InvalidFrameEncoding;
             try self.handle.validate();
+            try validatePendingActuationMarker(self.pending_actuation_intent_fingerprint, self.pending_actuation_receipt_fingerprint);
             if (fingerprintPendingPort(self) != self.pending_port_fingerprint) return error.InvalidFrameEncoding;
         }
 
@@ -10090,6 +10107,14 @@ pub const Runspace = struct {
             if (current.status != .pending) return error.PendingPortConsumed;
             const responded = current.withStatus(.responded);
             self.pending.items[index] = responded;
+            return self.pending.items[index].borrowed();
+        }
+
+        fn markPendingActuation(self: *@This(), mailbox_id: u64, intent_fingerprint: u64, receipt_fingerprint: u64) !Runspace.PendingPort {
+            const index = try self.indexOf(mailbox_id);
+            const current = self.pending.items[index];
+            const marked = try current.withPendingActuation(intent_fingerprint, receipt_fingerprint);
+            self.pending.items[index] = marked;
             return self.pending.items[index].borrowed();
         }
 
@@ -11029,6 +11054,7 @@ pub const Runspace = struct {
         switch (execution.response.status) {
             .pending, .deferred => {
                 try self.superviseActuationDispatch(index, execution, 0);
+                _ = try self.mailbox.markPendingActuation(mailbox_id, execution.intent.intent_fingerprint, execution.receipt.receipt_fingerprint);
                 return execution.receipt;
             },
             .responded, .rejected, .failed, .cancelled => {},
@@ -11090,6 +11116,11 @@ pub const Runspace = struct {
         if (execution.intent.frame_request_fingerprint != pending.request_fingerprint) return error.FrameRequestFingerprintMismatch;
         if (execution.intent.encoded_frame_request_fingerprint) |encoded| {
             if (encoded != pending.request_frame_fingerprint) return error.FrameRequestFingerprintMismatch;
+        }
+        if ((execution.response.status == .pending or execution.response.status == .deferred) and
+            (pending.pending_actuation_intent_fingerprint != null or pending.pending_actuation_receipt_fingerprint != null))
+        {
+            return error.PendingPortConsumed;
         }
         if (execution.intent.pending_port_fingerprint == null or execution.intent.pending_port_fingerprint.? != pending.pending_port_fingerprint) return error.InvalidPendingPortTransition;
         if (execution.intent.run_permit_fingerprint != pending.run_permit_fingerprint) return error.InvalidRunspaceTransition;
@@ -19845,6 +19876,8 @@ pub const Capsule = struct {
         target_ref_fingerprint: u64,
         environment_certificate_fingerprint: ?u64 = null,
         run_permit_fingerprint: ?u64 = null,
+        pending_actuation_intent_fingerprint: ?u64 = null,
+        pending_actuation_receipt_fingerprint: ?u64 = null,
         inserted_event_index: u64 = 0,
         status: Runspace.PendingStatus = .pending,
         owns_memory: bool = false,
@@ -19859,6 +19892,8 @@ pub const Capsule = struct {
             target_ref_fingerprint: u64,
             environment_certificate_fingerprint: ?u64 = null,
             run_permit_fingerprint: ?u64 = null,
+            pending_actuation_intent_fingerprint: ?u64 = null,
+            pending_actuation_receipt_fingerprint: ?u64 = null,
             inserted_event_index: u64 = 0,
             status: Runspace.PendingStatus = .pending,
         }) @This() {
@@ -19873,6 +19908,8 @@ pub const Capsule = struct {
                 .target_ref_fingerprint = args.target_ref_fingerprint,
                 .environment_certificate_fingerprint = args.environment_certificate_fingerprint,
                 .run_permit_fingerprint = args.run_permit_fingerprint,
+                .pending_actuation_intent_fingerprint = args.pending_actuation_intent_fingerprint,
+                .pending_actuation_receipt_fingerprint = args.pending_actuation_receipt_fingerprint,
                 .inserted_event_index = args.inserted_event_index,
                 .status = args.status,
             };
@@ -19894,6 +19931,8 @@ pub const Capsule = struct {
                 .target_ref_fingerprint = pending_port.target_ref_fingerprint,
                 .environment_certificate_fingerprint = pending_port.environment_certificate_fingerprint,
                 .run_permit_fingerprint = pending_port.run_permit_fingerprint,
+                .pending_actuation_intent_fingerprint = pending_port.pending_actuation_intent_fingerprint,
+                .pending_actuation_receipt_fingerprint = pending_port.pending_actuation_receipt_fingerprint,
                 .inserted_event_index = pending_port.inserted_event_index,
                 .status = pending_port.status,
             });
@@ -19906,6 +19945,7 @@ pub const Capsule = struct {
             if (self.status != .pending) return error.PendingPortConsumed;
             try validateRequestFrameImage(self.request_frame);
             try validateRequestFramePolicy(self.request_frame, .portable);
+            try validatePendingActuationMarker(self.pending_actuation_intent_fingerprint, self.pending_actuation_receipt_fingerprint);
             if (self.request_frame.expected_response_value_table_id != self.expected_response_value_table_id) return error.InvalidFrameEncoding;
             if (self.pending_port_fingerprint != fingerprintPendingPortImageProjection(self)) return error.InvalidFrameEncoding;
             if (self.pending_port_image_fingerprint != fingerprint(self)) return error.InvalidFrameEncoding;
@@ -23951,6 +23991,8 @@ pub const Capsule = struct {
         try writeU64(out, allocator, image.target_ref_fingerprint);
         try writeOptionalU64(out, allocator, image.environment_certificate_fingerprint);
         try writeOptionalU64(out, allocator, image.run_permit_fingerprint);
+        try writeOptionalU64(out, allocator, image.pending_actuation_intent_fingerprint);
+        try writeOptionalU64(out, allocator, image.pending_actuation_receipt_fingerprint);
         try writeU64(out, allocator, image.inserted_event_index);
         try writeU8(out, allocator, @intFromEnum(image.status));
     }
@@ -23978,6 +24020,8 @@ pub const Capsule = struct {
             .target_ref_fingerprint = try readU64(bytes, cursor),
             .environment_certificate_fingerprint = try readOptionalU64(bytes, cursor),
             .run_permit_fingerprint = try readOptionalU64(bytes, cursor),
+            .pending_actuation_intent_fingerprint = try readOptionalU64(bytes, cursor),
+            .pending_actuation_receipt_fingerprint = try readOptionalU64(bytes, cursor),
             .inserted_event_index = try readU64(bytes, cursor),
             .status = try enumFromByte(Runspace.PendingStatus, try readU8(bytes, cursor)),
             .owns_memory = true,
@@ -28859,6 +28903,16 @@ fn validateAdmissionEventWitness(event: TranscriptImage.EventImage) !void {
     }
 }
 
+fn validatePendingActuationMarker(intent_fingerprint: ?u64, receipt_fingerprint: ?u64) !void {
+    if ((intent_fingerprint == null) != (receipt_fingerprint == null)) return error.InvalidFrameEncoding;
+    if (intent_fingerprint) |fingerprint| {
+        if (fingerprint == 0) return error.InvalidFrameEncoding;
+    }
+    if (receipt_fingerprint) |fingerprint| {
+        if (fingerprint == 0) return error.InvalidFrameEncoding;
+    }
+}
+
 fn validateResponseFrameImage(frame: Frame.Response, allow_mapped_boundary_value: bool) !void {
     if (frame.format_version != world_frame_response_format_version) return error.InvalidFrameEncoding;
     if (frame.fingerprint_version != world_frame_response_fingerprint_version) return error.InvalidFrameEncoding;
@@ -31395,6 +31449,8 @@ fn fingerprintPendingPort(pending_port: PendingPort) u64 {
         .target_ref_fingerprint = pending_port.target_ref_fingerprint,
         .environment_certificate_fingerprint = pending_port.environment_certificate_fingerprint,
         .run_permit_fingerprint = pending_port.run_permit_fingerprint,
+        .pending_actuation_intent_fingerprint = pending_port.pending_actuation_intent_fingerprint,
+        .pending_actuation_receipt_fingerprint = pending_port.pending_actuation_receipt_fingerprint,
         .turn_index = pending_port.turn_index,
         .inserted_event_index = pending_port.inserted_event_index,
         .status = pending_port.status,
@@ -31417,6 +31473,8 @@ fn fingerprintPendingPortImageProjection(image: Capsule.PendingPortImage) u64 {
         .target_ref_fingerprint = image.target_ref_fingerprint,
         .environment_certificate_fingerprint = image.environment_certificate_fingerprint,
         .run_permit_fingerprint = image.run_permit_fingerprint,
+        .pending_actuation_intent_fingerprint = image.pending_actuation_intent_fingerprint,
+        .pending_actuation_receipt_fingerprint = image.pending_actuation_receipt_fingerprint,
         .turn_index = image.request_frame.turn_index,
         .inserted_event_index = image.inserted_event_index,
         .status = image.status,
@@ -31438,6 +31496,8 @@ fn fingerprintPendingPortFields(args: struct {
     target_ref_fingerprint: u64,
     environment_certificate_fingerprint: ?u64,
     run_permit_fingerprint: ?u64,
+    pending_actuation_intent_fingerprint: ?u64,
+    pending_actuation_receipt_fingerprint: ?u64,
     turn_index: usize,
     inserted_event_index: u64,
     status: Runspace.PendingStatus,
@@ -31459,6 +31519,8 @@ fn fingerprintPendingPortFields(args: struct {
     hashU64(&hasher, args.target_ref_fingerprint);
     hashOptionalU64(&hasher, args.environment_certificate_fingerprint);
     hashOptionalU64(&hasher, args.run_permit_fingerprint);
+    hashOptionalU64(&hasher, args.pending_actuation_intent_fingerprint);
+    hashOptionalU64(&hasher, args.pending_actuation_receipt_fingerprint);
     hashU64(&hasher, args.turn_index);
     hashU64(&hasher, args.inserted_event_index);
     hashU64(&hasher, @intFromEnum(args.status));

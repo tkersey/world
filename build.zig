@@ -500,7 +500,7 @@ pub fn build(b: *std.Build) void {
             .expected_stdout =
             \\parent_run_handle=367cb72b9a8188ae
             \\provider_run_handle=a53ebdcc0976217b
-            \\fabric_receipt_fingerprint=33d8e8ba055c1f54
+            \\fabric_receipt_fingerprint=c7b59ae1ee527603
             \\final_result=7
             \\native_handler_calls=0
             \\
@@ -540,7 +540,7 @@ pub fn build(b: *std.Build) void {
             .expected_stdout =
             \\fabric_invocation_count=1
             \\budget_exceeded=true
-            \\run_receipt_fingerprint=5a1a3633c012b161
+            \\run_receipt_fingerprint=7d17ba794c9056b
             \\
             ,
         },
@@ -649,9 +649,9 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-capsule-active-fabric",
             .desc = "Run the World Assembly Capsule active Fabric restore example.",
             .expected_stdout =
-            \\active_fabric_invocation_fingerprint=6e1ba40ac216edb1
-            \\pending_provider_port_fingerprint=423eef2930e63077
-            \\restore_report_fingerprint=9332065ccdd19729
+            \\active_fabric_invocation_fingerprint=d9487a5904fb7697
+            \\pending_provider_port_fingerprint=6bafb463c1684c8d
+            \\restore_report_fingerprint=c6cba64ead584b4c
             \\restore_accepted=false
             \\final_result=active-fabric-restore-denied
             \\
@@ -663,7 +663,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-capsule-agent-transfer",
             .desc = "Run the World Assembly Capsule agent transfer example.",
             .expected_stdout =
-            \\capsule_fingerprint=32c33e5c253635b2
+            \\capsule_fingerprint=be68ab26d9df6e24
             \\residual_external_import_count=1
             \\receiver_permit_fingerprint=aaf08a876eb0a575
             \\restore_accepted=false
