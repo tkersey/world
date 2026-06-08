@@ -2252,7 +2252,6 @@ pub const Admission = struct {
             (args.restore_report == null or args.restore_report.?.capsule_image_fingerprint == args.image.image_fingerprint) and
             (args.thaw_plan == null or args.restore_report == null or args.restore_report.?.thaw_plan_fingerprint == args.thaw_plan.?.thaw_plan_fingerprint) and
             (args.thaw_plan == null or args.restore_report == null or args.thaw_plan.?.receiver_run_permit_fingerprint == args.restore_report.?.receiver_run_permit_fingerprint) and
-            (args.thaw_plan == null or args.restore_report != null or capsulePlanOnlyThawMatchesPolicy(args.image, args.thaw_plan.?)) and
             (args.thaw_plan == null or args.restore_report == null or !args.restore_report.?.accepted or capsuleRestoreReportMatchesImageAndPlan(args.image, args.thaw_plan.?, args.restore_report.?));
         const witness_modes_bound = args.thaw_plan == null or capsuleAdmissionModeAllowsThaw(args.mode, args.thaw_plan.?.requested_mode);
         const has_required_witnesses = switch (args.mode) {
@@ -2331,7 +2330,7 @@ pub const Admission = struct {
         if (!Capsule.u64SlicesEqual(plan.handle_remapping_plan, image.runspace_image.run_handle_mappings)) return false;
         const mailbox_refs = if (image.runspace_image.mailbox_image) |mailbox| mailbox.pending_port_fingerprints else &.{};
         if (!Capsule.u64SlicesEqual(plan.mailbox_id_remapping_plan, mailbox_refs)) return false;
-        return true;
+        return capsuleThawPlanMatchesCanonical(image, plan);
     }
 
     fn capsuleRestoreReportValid(report: Capsule.RestoreReport) bool {
@@ -2343,7 +2342,7 @@ pub const Admission = struct {
         return report.accepted and report.blockers.len == 0;
     }
 
-    fn capsulePlanOnlyThawMatchesPolicy(image: Capsule.Image, plan: Capsule.ThawPlan) bool {
+    fn capsuleThawPlanMatchesCanonical(image: Capsule.Image, plan: Capsule.ThawPlan) bool {
         const environment_fingerprint = if (plan.environment_preflight_refs.len == 1) plan.environment_preflight_refs[0] else 0;
         const options = Capsule.ThawOptions{
             .mode = plan.requested_mode,
@@ -2353,13 +2352,14 @@ pub const Admission = struct {
             .local_catalog_fingerprint = plan.local_catalog_fingerprint,
             .rerun_guest_conformance = plan.rerun_guest_conformance,
         };
-        return Capsule.thawBlocker(
+        const canonical = Capsule.planThaw(
             image,
             plan.local_root_target_ref_fingerprint,
             environment_fingerprint,
             plan.receiver_run_permit_fingerprint,
             options,
-        ) == null;
+        ) catch return false;
+        return canonical.thaw_plan_fingerprint == plan.thaw_plan_fingerprint;
     }
 
     fn capsuleRestoreReportMatchesImageAndPlan(image: Capsule.Image, plan: Capsule.ThawPlan, report: Capsule.RestoreReport) bool {
@@ -2399,13 +2399,14 @@ pub const Admission = struct {
             .local_catalog_fingerprint = plan.local_catalog_fingerprint,
             .rerun_guest_conformance = plan.rerun_guest_conformance,
         };
-        return Capsule.thawBlocker(
+        const canonical = Capsule.planThaw(
             image,
             plan.local_root_target_ref_fingerprint,
             environment_fingerprint,
             plan.receiver_run_permit_fingerprint,
             options,
-        ) == null;
+        ) catch return false;
+        return canonical.thaw_plan_fingerprint == plan.thaw_plan_fingerprint;
     }
 
     fn capsuleRestoreReportRunMappingsMatchImage(image: Capsule.Image, report: Capsule.RestoreReport) bool {
@@ -16388,6 +16389,8 @@ pub const Capsule = struct {
         run_image = 9,
         value_image = 10,
         dependency = 11,
+        run_receipt = 12,
+        fabric_receipt = 13,
     };
 
     pub const ObjectKind = enum(u8) {
@@ -19408,6 +19411,8 @@ pub const Capsule = struct {
                 image.manifest.admission_receipt_fingerprints.len +
                 image.manifest.environment_certificate_fingerprints.len +
                 image.manifest.run_permit_fingerprints.len +
+                image.manifest.run_receipt_fingerprints.len +
+                image.manifest.fabric_receipt_fingerprints.len +
                 image.manifest.guest_conformance_report_fingerprints.len +
                 image.manifest.transcript_image_fingerprints.len +
                 image.manifest.run_image_fingerprints.len;
@@ -19419,6 +19424,8 @@ pub const Capsule = struct {
             for (image.manifest.admission_receipt_fingerprints) |fingerprint| try validateDependencyRefCovered(image, .admission, fingerprint);
             for (image.manifest.environment_certificate_fingerprints) |fingerprint| try validateDependencyRefCovered(image, .environment, fingerprint);
             for (image.manifest.run_permit_fingerprints) |fingerprint| try validateDependencyRefCovered(image, .supervision, fingerprint);
+            for (image.manifest.run_receipt_fingerprints) |fingerprint| try validateDependencyRefCovered(image, .run_receipt, fingerprint);
+            for (image.manifest.fabric_receipt_fingerprints) |fingerprint| try validateDependencyRefCovered(image, .fabric_receipt, fingerprint);
             for (image.manifest.guest_conformance_report_fingerprints) |fingerprint| try validateDependencyRefCovered(image, .guest_conformance, fingerprint);
             for (image.manifest.transcript_image_fingerprints) |fingerprint| try validateDependencyRefCovered(image, .transcript_image, fingerprint);
             for (image.manifest.run_image_fingerprints) |fingerprint| try validateDependencyRefCovered(image, .run_image, fingerprint);
@@ -19987,6 +19994,8 @@ pub const Capsule = struct {
         for (manifest.admission_receipt_fingerprints) |fingerprint| try refs.append(allocator, .{ .section = .admission, .fingerprint = fingerprint });
         for (manifest.environment_certificate_fingerprints) |fingerprint| try refs.append(allocator, .{ .section = .environment, .fingerprint = fingerprint });
         for (manifest.run_permit_fingerprints) |fingerprint| try refs.append(allocator, .{ .section = .supervision, .fingerprint = fingerprint });
+        for (manifest.run_receipt_fingerprints) |fingerprint| try refs.append(allocator, .{ .section = .run_receipt, .fingerprint = fingerprint });
+        for (manifest.fabric_receipt_fingerprints) |fingerprint| try refs.append(allocator, .{ .section = .fabric_receipt, .fingerprint = fingerprint });
         for (manifest.guest_conformance_report_fingerprints) |fingerprint| try refs.append(allocator, .{ .section = .guest_conformance, .fingerprint = fingerprint });
         for (manifest.transcript_image_fingerprints) |fingerprint| try refs.append(allocator, .{ .section = .transcript_image, .fingerprint = fingerprint });
         for (manifest.run_image_fingerprints) |fingerprint| try refs.append(allocator, .{ .section = .run_image, .fingerprint = fingerprint });
@@ -20470,6 +20479,8 @@ pub const Capsule = struct {
         if (std.mem.eql(u8, name, "admission")) return .admission;
         if (std.mem.eql(u8, name, "environment")) return .environment;
         if (std.mem.eql(u8, name, "supervision")) return .supervision;
+        if (std.mem.eql(u8, name, "run_receipt")) return .run_receipt;
+        if (std.mem.eql(u8, name, "fabric_receipt")) return .fabric_receipt;
         if (std.mem.eql(u8, name, "guest_conformance")) return .guest_conformance;
         if (std.mem.eql(u8, name, "transcript_image")) return .transcript_image;
         if (std.mem.eql(u8, name, "run_image")) return .run_image;
@@ -21515,6 +21526,24 @@ test "capsule fabric image captures active invocation and completed receipt" {
         .fabric_image = image,
     });
     try capsule_image.validate(.{});
+    const dependency_refs = try Capsule.dependencies(capsule_image, allocator);
+    defer allocator.free(dependency_refs);
+    const fabric_receipt_dependency_found = for (dependency_refs) |dependency| {
+        if (dependency.section == .fabric_receipt and dependency.fingerprint == runspace.fabric_receipts.items[0].receipt_fingerprint) break true;
+    } else false;
+    try std.testing.expect(fabric_receipt_dependency_found);
+    const missing_fabric_receipt_dependency_refs = [_]Capsule.DependencyRef{
+        Capsule.DependencyRef.init(.manifest, manifest.manifest_fingerprint),
+        Capsule.DependencyRef.init(.runspace_image, runspace_image.image_fingerprint),
+        Capsule.DependencyRef.init(.fabric_image, image.fabric_image_fingerprint),
+    };
+    const missing_fabric_receipt_dependency_image = Capsule.Image.init(.{
+        .manifest = manifest,
+        .runspace_image = runspace_image,
+        .fabric_image = image,
+        .dependency_refs = &missing_fabric_receipt_dependency_refs,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, missing_fabric_receipt_dependency_image.validate(.{}));
 
     const forged_active_refs = [_]u64{invocation.invocation_fingerprint ^ 1};
     const forged_runspace_image = Capsule.RunspaceImage.init(.{

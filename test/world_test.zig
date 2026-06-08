@@ -574,6 +574,25 @@ test "capsule freezeRunspace honors receipt and transcript exclusion flags" {
     try std.testing.expectEqual(@as(usize, 1), full.run_images.len);
     try std.testing.expect(full.run_images[0].transcript_image != null);
     try std.testing.expectEqual(@as(?u64, 0x5150_3341), full.run_images[0].prior_run_receipt_fingerprint);
+    const run_receipt_dependency_found = for (full.dependency_refs) |dependency| {
+        if (dependency.section == .run_receipt and dependency.fingerprint == 0x5150_3341) break true;
+    } else false;
+    try std.testing.expect(run_receipt_dependency_found);
+    const missing_run_receipt_dependency_refs = [_]world.Capsule.DependencyRef{
+        world.Capsule.DependencyRef.init(.manifest, full.manifest.manifest_fingerprint),
+        world.Capsule.DependencyRef.init(.runspace_image, full.runspace_image.image_fingerprint),
+        world.Capsule.DependencyRef.init(.transcript_image, full.manifest.transcript_image_fingerprints[0]),
+        world.Capsule.DependencyRef.init(.run_image, full.manifest.run_image_fingerprints[0]),
+    };
+    const missing_run_receipt_dependency_image = world.Capsule.Image.init(.{
+        .manifest = full.manifest,
+        .runspace_image = full.runspace_image,
+        .transcript_image_refs = full.transcript_image_refs,
+        .run_image_refs = full.run_image_refs,
+        .run_images = full.run_images,
+        .dependency_refs = &missing_run_receipt_dependency_refs,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, missing_run_receipt_dependency_image.validate(.{}));
     var stale_embedded_transcript = full.run_images[0].transcript_image orelse return error.ExpectedTranscriptImage;
     stale_embedded_transcript.response_count +%= 1;
     const stale_transcript_images = [_]world.TranscriptImage{stale_embedded_transcript};
@@ -3012,6 +3031,33 @@ test "capsule handoff admission binds restore witnesses and receiver permit" {
     });
     try std.testing.expect(replay_admission.accepted);
     try std.testing.expectEqual(replay_thaw.thaw_plan_fingerprint, replay_admission.capsule_thaw_plan_fingerprint.?);
+    const noncanonical_replay_thaw = world.Capsule.ThawPlan.init(.{
+        .capsule_image_fingerprint = replay_thaw.capsule_image_fingerprint,
+        .requested_mode = replay_thaw.requested_mode,
+        .local_root_target_ref_fingerprint = replay_thaw.local_root_target_ref_fingerprint,
+        .require_local_permit = replay_thaw.require_local_permit,
+        .require_link_match = replay_thaw.require_link_match,
+        .allow_relink_drift = replay_thaw.allow_relink_drift,
+        .local_catalog_fingerprint = replay_thaw.local_catalog_fingerprint,
+        .rerun_guest_conformance = replay_thaw.rerun_guest_conformance,
+        .link_certificate_match_status = replay_thaw.link_certificate_match_status,
+        .relink_status = replay_thaw.relink_status,
+        .environment_preflight_refs = replay_thaw.environment_preflight_refs,
+        .guest_conformance_refs = replay_thaw.guest_conformance_refs,
+        .receiver_run_permit_fingerprint = replay_thaw.receiver_run_permit_fingerprint,
+        .handle_remapping_plan = replay_thaw.handle_remapping_plan,
+        .mailbox_id_remapping_plan = replay_thaw.mailbox_id_remapping_plan,
+        .blockers = replay_thaw.blockers,
+        .warnings = &.{},
+    });
+    const noncanonical_replay_admission = world.Admission.capsuleAdmissionReport(.{
+        .mode = .replay_only,
+        .image = imported,
+        .certificate = cert,
+        .thaw_plan = noncanonical_replay_thaw,
+    });
+    try std.testing.expect(!noncanonical_replay_admission.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, noncanonical_replay_admission.blockers[0]);
     const environment_replay_manifest = world.Capsule.Manifest.init(.{
         .kind = imported.manifest.kind,
         .root_target_ref_fingerprint = imported.manifest.root_target_ref_fingerprint,
