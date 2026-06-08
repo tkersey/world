@@ -208,8 +208,8 @@ pub const world_transcript_image_format_version: u32 = 3;
 pub const world_transcript_image_fingerprint_version: u32 = 1;
 pub const world_timeline_event_format_version: u32 = 1;
 pub const world_timeline_event_fingerprint_version: u32 = 1;
-pub const world_timeline_checkpoint_format_version: u32 = 1;
-pub const world_timeline_checkpoint_fingerprint_version: u32 = 1;
+pub const world_timeline_checkpoint_format_version: u32 = 2;
+pub const world_timeline_checkpoint_fingerprint_version: u32 = 2;
 pub const world_timeline_branch_format_version: u32 = 1;
 pub const world_timeline_branch_fingerprint_version: u32 = 1;
 pub const world_audit_image_format_version: u32 = 1;
@@ -7350,6 +7350,10 @@ pub const RunImage = struct {
             if (!found_checkpoint and (self.kind == .branched_run or self.checkpoints.len != 0)) return error.HandoffCheckpointMismatch;
         }
         for (self.checkpoints) |checkpoint| {
+            if (!isSupportedTimelineCheckpointFormatVersion(checkpoint.format_version)) return error.InvalidFrameEncoding;
+            if (!isSupportedTimelineCheckpointFingerprintVersion(checkpoint.fingerprint_version)) return error.InvalidFrameEncoding;
+            if (checkpoint.format_version != checkpoint.fingerprint_version) return error.InvalidFrameEncoding;
+            if (fingerprintCheckpoint(checkpoint) != checkpoint.checkpoint_fingerprint) return error.InvalidFrameEncoding;
             if (checkpoint.world_surface_fingerprint != self.target_ref.world_surface_fingerprint) return error.HandoffCheckpointMismatch;
             if (checkpoint.target_certificate_fingerprint != self.target_ref.target_certificate_fingerprint) return error.HandoffCheckpointMismatch;
         }
@@ -26495,7 +26499,7 @@ fn checkpointEncodedByteSize(checkpoint: Timeline.Checkpoint) usize {
     var size: usize = 4 + 4 + 8 + 8 + 8 + 8 + 8;
     size = addSatEncodedSize(size, optionalU64EncodedByteSize(checkpoint.current_request_fingerprint));
     size = addSatEncodedSize(size, optionalU64EncodedByteSize(checkpoint.last_response_fingerprint));
-    size = addSatEncodedSize(size, optionalU64EncodedByteSize(checkpoint.capsule_image_fingerprint));
+    if (checkpoint.format_version >= 2) size = addSatEncodedSize(size, optionalU64EncodedByteSize(checkpoint.capsule_image_fingerprint));
     size = addSatEncodedSize(size, 8 + 8 + 1);
     return size;
 }
@@ -27304,6 +27308,9 @@ fn decodeRunState(bytes: []const u8, cursor: *usize) !RunState {
 }
 
 fn encodeCheckpoint(out: *std.ArrayList(u8), allocator: std.mem.Allocator, checkpoint: Timeline.Checkpoint) !void {
+    if (!isSupportedTimelineCheckpointFormatVersion(checkpoint.format_version)) return error.InvalidFrameEncoding;
+    if (!isSupportedTimelineCheckpointFingerprintVersion(checkpoint.fingerprint_version)) return error.InvalidFrameEncoding;
+    if (checkpoint.format_version != checkpoint.fingerprint_version) return error.InvalidFrameEncoding;
     try writeU32(out, allocator, checkpoint.format_version);
     try writeU32(out, allocator, checkpoint.fingerprint_version);
     try writeU64(out, allocator, checkpoint.checkpoint_fingerprint);
@@ -27313,7 +27320,11 @@ fn encodeCheckpoint(out: *std.ArrayList(u8), allocator: std.mem.Allocator, check
     try writeU64(out, allocator, checkpoint.turn_index);
     try writeOptionalU64(out, allocator, checkpoint.current_request_fingerprint);
     try writeOptionalU64(out, allocator, checkpoint.last_response_fingerprint);
-    try writeOptionalU64(out, allocator, checkpoint.capsule_image_fingerprint);
+    if (checkpoint.format_version >= 2) {
+        try writeOptionalU64(out, allocator, checkpoint.capsule_image_fingerprint);
+    } else if (checkpoint.capsule_image_fingerprint != null) {
+        return error.InvalidFrameEncoding;
+    }
     try writeU64(out, allocator, checkpoint.transcript_prefix_fingerprint);
     try writeU64(out, allocator, checkpoint.branch_id);
     try writeU8(out, allocator, @intFromEnum(checkpoint.status));
@@ -27321,10 +27332,13 @@ fn encodeCheckpoint(out: *std.ArrayList(u8), allocator: std.mem.Allocator, check
 
 fn decodeCheckpoint(bytes: []const u8, cursor: *usize) !Timeline.Checkpoint {
     const format_version = try readU32(bytes, cursor);
-    if (format_version != world_timeline_checkpoint_format_version) return error.InvalidFrameEncoding;
+    if (!isSupportedTimelineCheckpointFormatVersion(format_version)) return error.InvalidFrameEncoding;
     const fingerprint_version = try readU32(bytes, cursor);
-    if (fingerprint_version != world_timeline_checkpoint_fingerprint_version) return error.InvalidFrameEncoding;
+    if (!isSupportedTimelineCheckpointFingerprintVersion(fingerprint_version)) return error.InvalidFrameEncoding;
+    if (format_version != fingerprint_version) return error.InvalidFrameEncoding;
     const checkpoint = Timeline.Checkpoint{
+        .format_version = format_version,
+        .fingerprint_version = fingerprint_version,
         .checkpoint_fingerprint = try readU64(bytes, cursor),
         .world_surface_fingerprint = try readU64(bytes, cursor),
         .target_certificate_fingerprint = try readU64(bytes, cursor),
@@ -27332,13 +27346,21 @@ fn decodeCheckpoint(bytes: []const u8, cursor: *usize) !Timeline.Checkpoint {
         .turn_index = try readU64AsUsize(bytes, cursor),
         .current_request_fingerprint = try readOptionalU64(bytes, cursor),
         .last_response_fingerprint = try readOptionalU64(bytes, cursor),
-        .capsule_image_fingerprint = try readOptionalU64(bytes, cursor),
+        .capsule_image_fingerprint = if (format_version >= 2) try readOptionalU64(bytes, cursor) else null,
         .transcript_prefix_fingerprint = try readU64(bytes, cursor),
         .branch_id = try readU64(bytes, cursor),
         .status = try enumFromByte(Timeline.Checkpoint.Status, try readU8(bytes, cursor)),
     };
     if (fingerprintCheckpoint(checkpoint) != checkpoint.checkpoint_fingerprint) return error.InvalidFrameEncoding;
     return checkpoint;
+}
+
+fn isSupportedTimelineCheckpointFormatVersion(version: u32) bool {
+    return version == 1 or version == world_timeline_checkpoint_format_version;
+}
+
+fn isSupportedTimelineCheckpointFingerprintVersion(version: u32) bool {
+    return version == 1 or version == world_timeline_checkpoint_fingerprint_version;
 }
 
 fn encodeBranch(out: *std.ArrayList(u8), allocator: std.mem.Allocator, branch: Timeline.Branch) !void {
@@ -28818,14 +28840,14 @@ fn fingerprintTimelineEvent(event: Timeline.Event) u64 {
 fn fingerprintCheckpoint(checkpoint: Timeline.Checkpoint) u64 {
     var hasher = std.hash.Wyhash.init(0);
     hashBytes(&hasher, "world.timeline.checkpoint.fingerprint");
-    hashU64(&hasher, world_timeline_checkpoint_fingerprint_version);
+    hashU64(&hasher, checkpoint.fingerprint_version);
     hashU64(&hasher, checkpoint.world_surface_fingerprint);
     hashU64(&hasher, checkpoint.target_certificate_fingerprint);
     hashU64(&hasher, checkpoint.event_index);
     hashU64(&hasher, checkpoint.turn_index);
     hashOptionalU64(&hasher, checkpoint.current_request_fingerprint);
     hashOptionalU64(&hasher, checkpoint.last_response_fingerprint);
-    hashOptionalU64(&hasher, checkpoint.capsule_image_fingerprint);
+    if (checkpoint.fingerprint_version >= 2) hashOptionalU64(&hasher, checkpoint.capsule_image_fingerprint);
     hashU64(&hasher, checkpoint.transcript_prefix_fingerprint);
     hashU64(&hasher, checkpoint.branch_id);
     hashU64(&hasher, @intFromEnum(checkpoint.status));

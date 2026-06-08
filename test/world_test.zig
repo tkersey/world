@@ -11170,6 +11170,23 @@ fn hashTestOptionalU64(hasher: *std.hash.Wyhash, value: ?u64) void {
     }
 }
 
+fn timelineCheckpointFingerprintForTest(checkpoint: world.Timeline.Checkpoint) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashTestBytes(&hasher, "world.timeline.checkpoint.fingerprint");
+    hashTestU64(&hasher, checkpoint.fingerprint_version);
+    hashTestU64(&hasher, checkpoint.world_surface_fingerprint);
+    hashTestU64(&hasher, checkpoint.target_certificate_fingerprint);
+    hashTestU64(&hasher, checkpoint.event_index);
+    hashTestU64(&hasher, checkpoint.turn_index);
+    hashTestOptionalU64(&hasher, checkpoint.current_request_fingerprint);
+    hashTestOptionalU64(&hasher, checkpoint.last_response_fingerprint);
+    if (checkpoint.fingerprint_version >= 2) hashTestOptionalU64(&hasher, checkpoint.capsule_image_fingerprint);
+    hashTestU64(&hasher, checkpoint.transcript_prefix_fingerprint);
+    hashTestU64(&hasher, checkpoint.branch_id);
+    hashTestU64(&hasher, @intFromEnum(checkpoint.status));
+    return hasher.final();
+}
+
 fn hashTestOptionalU32(hasher: *std.hash.Wyhash, value: ?u32) void {
     if (value) |present| {
         hashTestBool(hasher, true);
@@ -26658,6 +26675,63 @@ test "run image encode decode roundtrip includes TargetRef TranscriptImage branc
         .pending_request_frame = request,
     });
     try std.testing.expectError(error.HandoffCheckpointMismatch, wrong_target_checkpoint_image.validate(.{}));
+}
+
+test "RunImage decoder accepts legacy v1 checkpoint layout" {
+    const allocator = std.testing.allocator;
+    const target_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    var legacy_checkpoint = world.Timeline.Checkpoint{
+        .format_version = 1,
+        .fingerprint_version = 1,
+        .checkpoint_fingerprint = 0,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = target_ref.target_certificate_fingerprint,
+        .event_index = 1,
+        .turn_index = 2,
+        .current_request_fingerprint = 0x1001,
+        .last_response_fingerprint = 0x1002,
+        .transcript_prefix_fingerprint = 0x1003,
+        .branch_id = 4,
+        .status = .completed,
+    };
+    legacy_checkpoint.checkpoint_fingerprint = timelineCheckpointFingerprintForTest(legacy_checkpoint);
+    const state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .checkpoint_fingerprint = legacy_checkpoint.checkpoint_fingerprint,
+        .status = .completed,
+    });
+    const run_image = world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Strict.Target).import_set_fingerprint,
+        .current_state = state,
+        .checkpoints = &.{legacy_checkpoint},
+    });
+
+    const encoded = try run_image.encode(allocator);
+    defer allocator.free(encoded);
+    var decoded = try world.RunImage.decode(allocator, encoded);
+    defer decoded.deinit(allocator);
+    try decoded.validate(.{});
+    try std.testing.expectEqual(@as(usize, 1), decoded.checkpoints.len);
+    try std.testing.expectEqual(@as(u32, 1), decoded.checkpoints[0].format_version);
+    try std.testing.expectEqual(@as(u32, 1), decoded.checkpoints[0].fingerprint_version);
+    try std.testing.expectEqual(@as(?u64, null), decoded.checkpoints[0].capsule_image_fingerprint);
+    try std.testing.expectEqual(legacy_checkpoint.transcript_prefix_fingerprint, decoded.checkpoints[0].transcript_prefix_fingerprint);
+    try std.testing.expectEqual(legacy_checkpoint.checkpoint_fingerprint, decoded.checkpoints[0].checkpoint_fingerprint);
+
+    const current_checkpoint = world.Timeline.Checkpoint.init(.{
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = target_ref.target_certificate_fingerprint,
+        .event_index = 1,
+        .turn_index = 2,
+        .capsule_image_fingerprint = 0x5150_cafe,
+        .transcript_prefix_fingerprint = 0x1003,
+        .status = .completed,
+    });
+    try std.testing.expectEqual(@as(u32, world.world_timeline_checkpoint_format_version), current_checkpoint.format_version);
+    try std.testing.expectEqual(@as(u32, world.world_timeline_checkpoint_fingerprint_version), current_checkpoint.fingerprint_version);
+    try std.testing.expectEqual(@as(?u64, 0x5150_cafe), current_checkpoint.capsule_image_fingerprint);
 }
 
 test "run image decode rejects oversized timeline counts before allocation" {

@@ -256,7 +256,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-agent-branch",
             .desc = "Run the agent branch World example.",
             .expected_stdout =
-            \\checkpoint_fingerprint=41a07ca32c074d08
+            \\checkpoint_fingerprint=2b11bbc8bca81ece
             \\baseline_transcript_fingerprint=aa3dd05381fca5cb
             \\branch_transcript_fingerprint=7cc91fbb223c4ca
             \\baseline_final_result=final=actuate skeleton complete
@@ -319,8 +319,8 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-agent-handoff",
             .desc = "Run the agent World handoff example.",
             .expected_stdout =
-            \\run_image_fingerprint=f55a3fb93cf4962
-            \\checkpoint_fingerprint=41a07ca32c074d08
+            \\run_image_fingerprint=7948ea7d8f9c5e1a
+            \\checkpoint_fingerprint=2b11bbc8bca81ece
             \\branch_id=1
             \\model_port_id=0
             \\tool_port_id=1
@@ -752,7 +752,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-supervised-branch",
             .desc = "Run the supervised branch World example.",
             .expected_stdout =
-            \\checkpoint_fingerprint=f8e9ec205791e870
+            \\checkpoint_fingerprint=287104bce23139a9
             \\first_branch_result=allowed
             \\second_branch_denied=true
             \\
