@@ -290,6 +290,35 @@ test "capsule image encode decode roundtrips dependency and object refs" {
     try std.testing.expectEqual(world.Capsule.ObjectKind.runspace_image, copied_refs[1].kind);
     try std.testing.expectEqual(@as(u64, decoded.image_fingerprint), decoded.asBundleRoot().fingerprint);
 
+    var value_image = try world.Frame.ValueImage.fromValue(allocator, 0, 0x5150_cafe, null, @as(i32, 7), world.ValuePolicy.portable);
+    defer value_image.deinit(allocator);
+    const value_refs = [_]u64{value_image.value_image_fingerprint};
+    const value_images = [_]world.Frame.ValueImage{value_image};
+    const value_image_capsule = world.Capsule.Image.init(.{
+        .manifest = manifest,
+        .runspace_image = runspace_image,
+        .value_image_refs = &value_refs,
+        .value_images = &value_images,
+    });
+    try value_image_capsule.validate(.{});
+    const value_deps = try world.Capsule.dependencies(value_image_capsule, allocator);
+    defer allocator.free(value_deps);
+    try std.testing.expectEqual(@as(usize, 3), value_deps.len);
+    try std.testing.expectEqual(world.Capsule.SectionKind.value_image, value_deps[2].section);
+    try std.testing.expectEqual(value_image.value_image_fingerprint, value_deps[2].fingerprint);
+    const missing_value_deps = [_]world.Capsule.DependencyRef{
+        world.Capsule.DependencyRef.init(.manifest, manifest.manifest_fingerprint),
+        world.Capsule.DependencyRef.init(.runspace_image, runspace_image.image_fingerprint),
+    };
+    const missing_value_dep_capsule = world.Capsule.Image.init(.{
+        .manifest = manifest,
+        .runspace_image = runspace_image,
+        .value_image_refs = &value_refs,
+        .value_images = &value_images,
+        .dependency_refs = &missing_value_deps,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, missing_value_dep_capsule.validate(.{}));
+
     const stale_deps = [_]world.Capsule.DependencyRef{
         world.Capsule.DependencyRef.init(world.Capsule.SectionKind.run_image, 0x400),
     };

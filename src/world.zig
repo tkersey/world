@@ -18385,7 +18385,7 @@ pub const Capsule = struct {
     }
 
     pub fn dependencies(image: Image, allocator: std.mem.Allocator) ![]DependencyRef {
-        return dependencyRefsForFreeze(allocator, image.manifest, image.runspace_image, image.link_image, image.fabric_image);
+        return dependencyRefsForFreeze(allocator, image.manifest, image.runspace_image, image.link_image, image.fabric_image, image.value_image_refs);
     }
 
     pub fn objectRefs(image: Image, allocator: std.mem.Allocator) ![]ObjectRef {
@@ -18559,7 +18559,7 @@ pub const Capsule = struct {
         var manifest_owned = true;
         errdefer if (manifest_owned) manifest.deinit(allocator);
 
-        const dependency_refs = try dependencyRefsForFreeze(allocator, manifest, runspace_image_value, maybe_link_image, maybe_fabric_image);
+        const dependency_refs = try dependencyRefsForFreeze(allocator, manifest, runspace_image_value, maybe_link_image, maybe_fabric_image, value_refs);
         var dependency_refs_owned = true;
         errdefer if (dependency_refs_owned) allocator.free(dependency_refs);
         const object_refs = try objectRefsForFreeze(allocator, manifest, runspace_image_value, maybe_link_image, maybe_fabric_image);
@@ -19420,7 +19420,8 @@ pub const Capsule = struct {
                 image.manifest.fabric_receipt_fingerprints.len +
                 image.manifest.guest_conformance_report_fingerprints.len +
                 image.manifest.transcript_image_fingerprints.len +
-                image.manifest.run_image_fingerprints.len;
+                image.manifest.run_image_fingerprints.len +
+                image.value_image_refs.len;
             if (image.dependency_refs.len != expected_count) return error.InvalidFrameEncoding;
             try validateDependencyRefCovered(image, .manifest, image.manifest.manifest_fingerprint);
             try validateDependencyRefCovered(image, .runspace_image, image.runspace_image.image_fingerprint);
@@ -19434,6 +19435,7 @@ pub const Capsule = struct {
             for (image.manifest.guest_conformance_report_fingerprints) |fingerprint| try validateDependencyRefCovered(image, .guest_conformance, fingerprint);
             for (image.manifest.transcript_image_fingerprints) |fingerprint| try validateDependencyRefCovered(image, .transcript_image, fingerprint);
             for (image.manifest.run_image_fingerprints) |fingerprint| try validateDependencyRefCovered(image, .run_image, fingerprint);
+            for (image.value_image_refs) |fingerprint| try validateDependencyRefCovered(image, .value_image, fingerprint);
         }
         if (image.object_refs.len != 0) {
             const expected_count: usize =
@@ -19989,6 +19991,7 @@ pub const Capsule = struct {
         runspace_image_value: RunspaceImage,
         link_image_value: ?LinkImage,
         fabric_image_value: ?FabricImage,
+        value_image_refs: []const u64,
     ) ![]DependencyRef {
         var refs: std.ArrayList(DependencyRef) = .empty;
         errdefer refs.deinit(allocator);
@@ -20004,6 +20007,7 @@ pub const Capsule = struct {
         for (manifest.guest_conformance_report_fingerprints) |fingerprint| try refs.append(allocator, .{ .section = .guest_conformance, .fingerprint = fingerprint });
         for (manifest.transcript_image_fingerprints) |fingerprint| try refs.append(allocator, .{ .section = .transcript_image, .fingerprint = fingerprint });
         for (manifest.run_image_fingerprints) |fingerprint| try refs.append(allocator, .{ .section = .run_image, .fingerprint = fingerprint });
+        for (value_image_refs) |fingerprint| try refs.append(allocator, .{ .section = .value_image, .fingerprint = fingerprint });
         return refs.toOwnedSlice(allocator);
     }
 
