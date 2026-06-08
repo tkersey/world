@@ -108,6 +108,7 @@ pub fn receiptWithResponseFingerprint(receipt: world.Actuation.Receipt, response
         .decision_fingerprint = receipt.decision_fingerprint,
         .commit_fingerprint = receipt.commit_fingerprint,
         .response_fingerprint = response_fingerprint,
+        .frame_response_fingerprint = receipt.frame_response_fingerprint orelse response_fingerprint,
         .actuator_ref_fingerprint = receipt.actuator_ref_fingerprint,
         .idempotency_key_fingerprint = receipt.idempotency_key_fingerprint,
         .target_ref_fingerprint = receipt.target_ref_fingerprint,

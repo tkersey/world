@@ -547,6 +547,7 @@ test "actuation commit response receipt journal and replay bind idempotency" {
     const replay_source = world.Actuation.ReplaySource.init(.{ .receipts = &.{receipt} });
     const replay_response = try replay_source.responseForIntent(intent, .responded, .@"resume");
     try std.testing.expectEqual(world.Actuation.ResponseStatus.responded, replay_response.status);
+    try std.testing.expectEqual(@as(?u64, 0x4106), replay_response.frame_response_fingerprint);
 
     var deps_buffer: [12]world.Actuation.DependencyRef = undefined;
     const deps = try world.Actuation.dependenciesForReceipt(receipt, &deps_buffer);
@@ -629,6 +630,38 @@ test "actuation membrane rejects mismatched envelope and descriptor bindings" {
         .envelope = wrong_key_envelope,
         .descriptor = descriptor,
         .actuator = .{ .fixture = .{ .frame_response_fingerprint = 0x4206 } },
+        .target_ref_fingerprint = 0x4201,
+        .world_surface_fingerprint = 0x4202,
+    }));
+
+    const native_descriptor = world.Actuation.Descriptor.init(.{
+        .actuator_ref = ref,
+        .world_surface_fingerprint = 0x4202,
+        .target_ref_fingerprint = 0x4201,
+        .world_port_id = 0,
+        .value_policy = .native_compatible,
+    });
+    const native_policy_intent = world.Actuation.Intent.init(.{
+        .actuator_ref_fingerprint = ref.ref_fingerprint,
+        .descriptor_fingerprint = native_descriptor.descriptor_fingerprint,
+        .target_ref_fingerprint = 0x4201,
+        .world_surface_fingerprint = 0x4202,
+        .world_port_id = 0,
+        .frame_request_fingerprint = 0x4203,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .class = .deterministic_fixture,
+        .requested_mode = .fresh,
+    });
+    const native_policy_envelope = world.Actuation.Envelope.init(.{
+        .intent_fingerprint = native_policy_intent.intent_fingerprint,
+        .idempotency_key = key,
+    });
+    try std.testing.expectError(error.PortableValueRequired, world.Actuation.Membrane.execute(.{
+        .policy = world.Actuation.Policy.strict_fresh,
+        .intent = native_policy_intent,
+        .envelope = native_policy_envelope,
+        .descriptor = native_descriptor,
+        .actuator = .{ .fixture = .{ .frame_response_fingerprint = 0x4207 } },
         .target_ref_fingerprint = 0x4201,
         .world_surface_fingerprint = 0x4202,
     }));
@@ -752,6 +785,25 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
     try fixture_exec.validate();
     try std.testing.expect(fixture_exec.fresh_called);
     try std.testing.expect(fixture_exec.receipt.receipt_fingerprint != 0);
+    var forged_exec = fixture_exec;
+    forged_exec.receipt = world.Actuation.Receipt.init(.{
+        .intent_fingerprint = fixture_exec.receipt.intent_fingerprint,
+        .envelope_fingerprint = fixture_exec.receipt.envelope_fingerprint,
+        .decision_fingerprint = fixture_exec.receipt.decision_fingerprint,
+        .commit_fingerprint = fixture_exec.receipt.commit_fingerprint,
+        .response_fingerprint = fixture_exec.response.response_fingerprint +% 1,
+        .frame_response_fingerprint = fixture_exec.receipt.frame_response_fingerprint,
+        .actuator_ref_fingerprint = fixture_exec.receipt.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = fixture_exec.receipt.idempotency_key_fingerprint,
+        .target_ref_fingerprint = fixture_exec.receipt.target_ref_fingerprint,
+        .world_surface_fingerprint = fixture_exec.receipt.world_surface_fingerprint,
+        .world_port_id = fixture_exec.receipt.world_port_id,
+        .class = fixture_exec.receipt.class,
+        .mode = fixture_exec.receipt.mode,
+        .fresh_called = fixture_exec.receipt.fresh_called,
+        .attempt_number = fixture_exec.receipt.attempt_number,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_exec.validate());
 
     const native_exec = try world.Actuation.Membrane.execute(.{
         .policy = policy,
@@ -840,6 +892,7 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
         .decision_fingerprint = 0x6303,
         .commit_fingerprint = 0x6304,
         .response_fingerprint = 0x6305,
+        .frame_response_fingerprint = 0x6306,
         .actuator_ref_fingerprint = ref.ref_fingerprint,
         .idempotency_key_fingerprint = key.key_fingerprint,
         .target_ref_fingerprint = 0x6102,
@@ -862,6 +915,7 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
     try replay_exec.validate();
     try std.testing.expect(!replay_exec.fresh_called);
     try std.testing.expect(replay_exec.receipt.replayed);
+    try std.testing.expectEqual(@as(?u64, 0x6306), replay_exec.response.frame_response_fingerprint);
 
     const verify_intent = world.Actuation.Intent.init(.{
         .actuator_ref_fingerprint = ref.ref_fingerprint,
@@ -1134,6 +1188,106 @@ test "runspace actuation dispatch preserves pending mailbox state" {
     });
     const receipt = try runspace.dispatchActuation(0, execution);
     try std.testing.expect(receipt.pending);
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try runspace.getSlotSummary(handle)).status);
+}
+
+test "runspace actuation dispatch accounts terminal response bytes" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const cert = PortsEnv.certificate(.fresh, false);
+    const actuation_byte_budget = [_]world.Supervision.PerPortBudget{.{
+        .world_port_id = 0,
+        .max_response_bytes = 1,
+    }};
+    const permit = world.RunPermit.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = target_ref.target_certificate_fingerprint,
+        .environment_certificate_fingerprint = cert.certificate_fingerprint,
+        .binding_plan_fingerprint = cert.binding_plan_fingerprint,
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_native_adapters = true,
+            .allow_actuation = true,
+            .allow_fresh_actuation = true,
+            .allow_failed_responses = true,
+            .require_environment_certificate = true,
+        }),
+        .budget = world.Budget.init(.{
+            .max_actuation_calls = 1,
+            .per_port_budgets = &actuation_byte_budget,
+        }),
+    });
+    var runspace = world.Runspace.init(std.testing.allocator, .{ .require_supervision = true });
+    defer runspace.deinit();
+
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .permit = permit,
+    });
+    _ = try runspace.tick();
+    const pending = try runspace.mailbox.get(0);
+    const request = pending.request_frame.?;
+    const ref = world.Actuation.Ref.init(.{
+        .kind = .fixture,
+        .class = .deterministic_fixture,
+        .label = "accounted-fixture",
+        .supported_response_statuses = world.Actuation.ResponseStatusSet.all,
+    });
+    const descriptor = world.Actuation.Descriptor.init(.{
+        .actuator_ref = ref,
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .target_ref_fingerprint = pending.target_ref_fingerprint,
+        .world_port_id = request.world_port_id,
+        .response_value_table_id = request.expected_response_value_table_id,
+        .allowed_response_kinds = world.Actuation.ResponseStatusSet.all,
+    });
+    const key = world.Actuation.IdempotencyKey.init(.{
+        .target_ref_fingerprint = pending.target_ref_fingerprint,
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .world_port_id = request.world_port_id,
+        .request_fingerprint = request.request_fingerprint,
+        .pending_port_fingerprint = pending.pending_port_fingerprint,
+        .actuator_ref_fingerprint = ref.ref_fingerprint,
+    });
+    const intent = world.Actuation.Intent.init(.{
+        .actuator_ref_fingerprint = ref.ref_fingerprint,
+        .descriptor_fingerprint = descriptor.descriptor_fingerprint,
+        .target_ref_fingerprint = pending.target_ref_fingerprint,
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .world_port_id = request.world_port_id,
+        .pending_port_fingerprint = pending.pending_port_fingerprint,
+        .frame_request_fingerprint = request.request_fingerprint,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .class = .deterministic_fixture,
+        .requested_mode = .fresh,
+    });
+    const envelope = world.Actuation.Envelope.init(.{
+        .intent_fingerprint = intent.intent_fingerprint,
+        .encoded_frame_request_fingerprint = request.frame_fingerprint,
+        .idempotency_key = key,
+        .expected_response_value_table_id = request.expected_response_value_table_id,
+    });
+    const execution = try world.Actuation.Membrane.execute(.{
+        .policy = world.Actuation.Policy.fixture_test,
+        .intent = intent,
+        .envelope = envelope,
+        .actuator = .{ .fixture = .{
+            .status = .failed,
+            .frame_response_fingerprint = 0x5150_bbcd,
+            .reason = "accounting witness",
+        } },
+        .descriptor = descriptor,
+        .attempt_number = 1,
+        .target_ref_fingerprint = pending.target_ref_fingerprint,
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+    });
+
+    try std.testing.expectError(error.BudgetExceeded, runspace.dispatchActuation(0, execution));
     try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
     try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try runspace.getSlotSummary(handle)).status);
 }

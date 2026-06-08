@@ -10965,12 +10965,16 @@ pub const Runspace = struct {
         if (execution.receipt.world_port_id != pending.world_port_id) return error.FramePortMismatch;
         if (execution.response.request_fingerprint != pending.request_fingerprint) return error.FrameRequestFingerprintMismatch;
         const index = try self.slotIndex(pending.handle);
-        try self.superviseActuationDispatch(index, execution, 0);
         switch (execution.response.status) {
-            .pending, .deferred, .cancelled => return execution.receipt,
+            .pending, .deferred, .cancelled => {
+                try self.superviseActuationDispatch(index, execution, 0);
+                return execution.receipt;
+            },
             .responded, .rejected, .failed => {},
         }
         const response = try self.frameResponseFromActuation(pending, execution.response);
+        const accounting = try self.responseFrameAccounting(response);
+        try self.superviseActuationDispatch(index, execution, accounting.response_bytes);
         _ = try self.respond(mailbox_id, response);
         return execution.receipt;
     }
@@ -17921,6 +17925,7 @@ pub const Actuation = struct {
         decision_fingerprint: u64,
         commit_fingerprint: u64,
         response_fingerprint: u64,
+        frame_response_fingerprint: ?u64 = null,
         actuator_ref_fingerprint: u64,
         idempotency_key_fingerprint: u64,
         target_ref_fingerprint: u64,
@@ -17951,6 +17956,7 @@ pub const Actuation = struct {
             decision_fingerprint: u64,
             commit_fingerprint: u64,
             response_fingerprint: u64,
+            frame_response_fingerprint: ?u64 = null,
             actuator_ref_fingerprint: u64,
             idempotency_key_fingerprint: u64,
             target_ref_fingerprint: u64,
@@ -17982,6 +17988,7 @@ pub const Actuation = struct {
                 .decision_fingerprint = args.decision_fingerprint,
                 .commit_fingerprint = args.commit_fingerprint,
                 .response_fingerprint = args.response_fingerprint,
+                .frame_response_fingerprint = args.frame_response_fingerprint,
                 .actuator_ref_fingerprint = args.actuator_ref_fingerprint,
                 .idempotency_key_fingerprint = args.idempotency_key_fingerprint,
                 .target_ref_fingerprint = args.target_ref_fingerprint,
@@ -18029,6 +18036,7 @@ pub const Actuation = struct {
                 .decision_fingerprint = args.decision.decision_fingerprint,
                 .commit_fingerprint = args.commit.commit_fingerprint,
                 .response_fingerprint = args.response.response_fingerprint,
+                .frame_response_fingerprint = args.response.frame_response_fingerprint,
                 .actuator_ref_fingerprint = args.response.actuator_ref_fingerprint,
                 .idempotency_key_fingerprint = args.envelope.idempotency_key.key_fingerprint,
                 .target_ref_fingerprint = args.target_ref_fingerprint,
@@ -18078,6 +18086,7 @@ pub const Actuation = struct {
             decision_fingerprint: ?u64 = null,
             commit_fingerprint: ?u64 = null,
             response_fingerprint: ?u64 = null,
+            frame_response_fingerprint: ?u64 = null,
             receipt_fingerprint: ?u64 = null,
             idempotency_key_fingerprint: ?u64 = null,
             request_fingerprint: ?u64 = null,
@@ -18165,6 +18174,7 @@ pub const Actuation = struct {
                 .intent_fingerprint = response.intent_fingerprint,
                 .commit_fingerprint = response.commit_fingerprint,
                 .response_fingerprint = response.response_fingerprint,
+                .frame_response_fingerprint = response.frame_response_fingerprint,
                 .request_fingerprint = response.request_fingerprint,
                 .pending = response.status == .pending,
                 .deferred = response.status == .deferred,
@@ -18180,6 +18190,7 @@ pub const Actuation = struct {
                 .intent_fingerprint = receipt.intent_fingerprint,
                 .commit_fingerprint = receipt.commit_fingerprint,
                 .response_fingerprint = receipt.response_fingerprint,
+                .frame_response_fingerprint = receipt.frame_response_fingerprint,
                 .receipt_fingerprint = receipt.receipt_fingerprint,
                 .idempotency_key_fingerprint = receipt.idempotency_key_fingerprint,
                 .fresh_called = receipt.fresh_called,
@@ -18295,7 +18306,7 @@ pub const Actuation = struct {
                 .request_fingerprint = intent.frame_request_fingerprint,
                 .status = status,
                 .response_kind = expected_kind,
-                .frame_response_fingerprint = receipt.response_fingerprint,
+                .frame_response_fingerprint = receipt.frame_response_fingerprint orelse return error.ReplayMissing,
                 .metadata = "replay",
             });
         }
@@ -18484,12 +18495,25 @@ pub const Actuation = struct {
                 try self.intent.validate();
                 try self.decision.validate();
                 try self.commit_value.validateAfterDecision(self.decision);
+                if (self.response.commit_fingerprint == null) return error.InvalidFrameEncoding;
                 try self.receipt.validate();
                 if (self.decision.intent_fingerprint != self.intent.intent_fingerprint) return error.InvalidFrameEncoding;
                 if (self.commit_value.intent_fingerprint != self.intent.intent_fingerprint) return error.InvalidFrameEncoding;
                 if (self.response.intent_fingerprint != self.intent.intent_fingerprint) return error.InvalidFrameEncoding;
                 if (self.receipt.intent_fingerprint != self.intent.intent_fingerprint) return error.InvalidFrameEncoding;
+                if (self.response.commit_fingerprint.? != self.commit_value.commit_fingerprint) return error.InvalidFrameEncoding;
+                if (self.receipt.envelope_fingerprint != self.commit_value.envelope_fingerprint) return error.InvalidFrameEncoding;
+                if (self.receipt.decision_fingerprint != self.decision.decision_fingerprint) return error.InvalidFrameEncoding;
+                if (self.receipt.commit_fingerprint != self.commit_value.commit_fingerprint) return error.InvalidFrameEncoding;
+                if (self.receipt.response_fingerprint != self.response.response_fingerprint) return error.InvalidFrameEncoding;
+                if (self.receipt.frame_response_fingerprint != self.response.frame_response_fingerprint) return error.InvalidFrameEncoding;
+                if (self.receipt.actuator_ref_fingerprint != self.intent.actuator_ref_fingerprint) return error.InvalidFrameEncoding;
                 if (self.receipt.idempotency_key_fingerprint != self.intent.idempotency_key_fingerprint) return error.InvalidFrameEncoding;
+                if (self.receipt.target_ref_fingerprint != self.intent.target_ref_fingerprint) return error.InvalidFrameEncoding;
+                if (self.receipt.world_surface_fingerprint != self.intent.world_surface_fingerprint) return error.InvalidFrameEncoding;
+                if (self.receipt.world_port_id != self.intent.world_port_id) return error.InvalidFrameEncoding;
+                if (self.receipt.class != self.intent.class) return error.InvalidFrameEncoding;
+                if (self.receipt.mode != self.intent.requested_mode) return error.InvalidFrameEncoding;
                 if (self.fresh_called != self.commit_value.fresh_called) return error.InvalidFrameEncoding;
                 if (self.parent_terminal != self.response.isTerminalForParent()) return error.InvalidFrameEncoding;
                 if (!self.decision.approved and self.fresh_called) return error.SupervisionDenied;
@@ -18547,6 +18571,7 @@ pub const Actuation = struct {
             if (args.world_surface_fingerprint != args.intent.world_surface_fingerprint) return error.InvalidFrameEncoding;
             if (args.descriptor) |descriptor| {
                 try descriptor.validate();
+                try validateDescriptorValuePolicy(args.policy, descriptor.value_policy);
                 if (descriptor.descriptor_fingerprint != args.intent.descriptor_fingerprint) return error.InvalidFrameEncoding;
                 if (descriptor.actuator_ref_fingerprint != args.intent.actuator_ref_fingerprint) return error.InvalidFrameEncoding;
                 if (descriptor.target_ref_fingerprint) |target| {
@@ -18669,6 +18694,11 @@ pub const Actuation = struct {
                 .run_receipt_fingerprint = args.run_receipt_fingerprint,
                 .capsule_fingerprint = args.capsule_fingerprint,
             });
+        }
+
+        fn validateDescriptorValuePolicy(policy: Policy, value_policy: ValuePolicy) !void {
+            if (policy.require_portable_value_images and !value_policy.require_portable_values) return error.PortableValueRequired;
+            if (policy.reject_native_only_values and value_policy.allow_native_only_values) return error.NativeValueRejected;
         }
 
         fn commitStatusForFreshResponse(status: Actuation.ResponseStatus) CommitStatus {
@@ -18928,6 +18958,7 @@ pub const Actuation = struct {
         hashU64(&hasher, receipt.decision_fingerprint);
         hashU64(&hasher, receipt.commit_fingerprint);
         hashU64(&hasher, receipt.response_fingerprint);
+        hashOptionalU64(&hasher, receipt.frame_response_fingerprint);
         hashU64(&hasher, receipt.actuator_ref_fingerprint);
         hashU64(&hasher, receipt.idempotency_key_fingerprint);
         hashU64(&hasher, receipt.target_ref_fingerprint);
@@ -18967,6 +18998,7 @@ pub const Actuation = struct {
             hashOptionalU64(&hasher, entry.decision_fingerprint);
             hashOptionalU64(&hasher, entry.commit_fingerprint);
             hashOptionalU64(&hasher, entry.response_fingerprint);
+            hashOptionalU64(&hasher, entry.frame_response_fingerprint);
             hashOptionalU64(&hasher, entry.receipt_fingerprint);
             hashOptionalU64(&hasher, entry.idempotency_key_fingerprint);
             hashOptionalU64(&hasher, entry.request_fingerprint);
