@@ -18959,8 +18959,9 @@ pub const Capsule = struct {
                 .warnings = if (accepted) &.{.relink_not_performed} else &.{},
             });
         };
+        const local_catalog_present = local_catalog_fingerprint != 0;
         const catalog_matched = link.catalog_fingerprint == null or
-            (local_catalog_fingerprint != 0 and link.catalog_fingerprint.? == local_catalog_fingerprint);
+            (local_catalog_present and link.catalog_fingerprint.? == local_catalog_fingerprint);
         const residual_matched = !policy.require_residual_import_match or
             if (policy.expected_residual_import_set_fingerprint) |expected|
                 link.residual_import_set_fingerprint == expected
@@ -18969,7 +18970,7 @@ pub const Capsule = struct {
         const fabric_matched = !policy.require_fabric_plan_match or linkFabricPlanWitnessesCover(image.manifest.fabric_plan_fingerprints, link.route_synthesis_refs);
         const guest_conformance_matched = !policy.require_guest_conformance or guestConformanceRefsCovered(image.manifest.guest_conformance_report_fingerprints, image.guest_conformance_refs);
         const matched = catalog_matched and residual_matched and fabric_matched and guest_conformance_matched;
-        const catalog_drift_allowed = policy.allow_relink_drift and !catalog_matched and residual_matched and fabric_matched and guest_conformance_matched;
+        const catalog_drift_allowed = policy.allow_relink_drift and local_catalog_present and !catalog_matched and residual_matched and fabric_matched and guest_conformance_matched;
         const accepted = matched or catalog_drift_allowed;
         const blocker: Blocker = if (!catalog_matched)
             .relink_drift_rejected
@@ -19017,7 +19018,7 @@ pub const Capsule = struct {
                 if (link.catalog_fingerprint) |catalog| {
                     if (local_catalog) |local| {
                         if (catalog != local and !options.allow_relink_drift) return .link_plan_mismatch;
-                    } else if (!options.allow_relink_drift) return .link_plan_mismatch;
+                    } else return .link_plan_mismatch;
                 }
                 if (link.residual_import_set_fingerprint != 0) return .residual_import_mismatch;
                 if (!linkFabricPlanWitnessesCover(image.manifest.fabric_plan_fingerprints, link.route_synthesis_refs)) return .fabric_plan_mismatch;

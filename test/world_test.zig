@@ -2800,6 +2800,10 @@ test "capsule relink requires manifest fabric plan coverage" {
     try std.testing.expectEqual(world.Capsule.LinkCertificateMatchStatus.mismatched, missing_local_catalog.link_certificate_match_status);
     try std.testing.expectEqual(world.Capsule.RelinkStatus.rejected, missing_local_catalog.relink_status);
     try std.testing.expectEqual(world.Capsule.Blocker.relink_drift_rejected, missing_local_catalog.blockers[0]);
+    const missing_local_catalog_drift_allowed = try world.Capsule.verifyLink(catalog_image, 0, .{ .allow_relink_drift = true });
+    try std.testing.expectEqual(world.Capsule.LinkCertificateMatchStatus.mismatched, missing_local_catalog_drift_allowed.link_certificate_match_status);
+    try std.testing.expectEqual(world.Capsule.RelinkStatus.rejected, missing_local_catalog_drift_allowed.relink_status);
+    try std.testing.expectEqual(world.Capsule.Blocker.relink_drift_rejected, missing_local_catalog_drift_allowed.blockers[0]);
     const encoded_catalog = try catalog_image.encode(std.testing.allocator);
     defer std.testing.allocator.free(encoded_catalog);
     for (0..encoded_catalog.len) |len| {
@@ -2828,6 +2832,22 @@ test "capsule relink requires manifest fabric plan coverage" {
     const missing_catalog_thaw = try world.Capsule.planThaw(catalog_image, root_ref.target_ref_fingerprint, 0, 0x5150_3722, .{ .mode = .restore_completed });
     try std.testing.expectEqual(world.Capsule.Blocker.link_plan_mismatch, missing_catalog_thaw.blockers[0]);
     try std.testing.expectEqual(world.Capsule.LinkCertificateMatchStatus.mismatched, missing_catalog_thaw.link_certificate_match_status);
+    const missing_catalog_drift_thaw = try world.Capsule.planThaw(catalog_image, root_ref.target_ref_fingerprint, 0, 0x5150_3725, .{
+        .mode = .restore_completed,
+        .allow_relink_drift = true,
+    });
+    try std.testing.expectEqual(world.Capsule.Blocker.link_plan_mismatch, missing_catalog_drift_thaw.blockers[0]);
+    try std.testing.expectEqual(world.Capsule.RelinkStatus.rejected, missing_catalog_drift_thaw.relink_status);
+    var missing_catalog_drift_receiver = world.Runspace.init(std.testing.allocator, .{});
+    defer missing_catalog_drift_receiver.deinit();
+    var missing_catalog_drift_restore = try world.Capsule.thawIntoRunspace(catalog_image, &missing_catalog_drift_receiver, root_ref.target_ref_fingerprint, 0, 0x5150_3726, .{
+        .mode = .restore_completed,
+        .allow_relink_drift = true,
+    });
+    defer missing_catalog_drift_restore.deinit(std.testing.allocator);
+    try std.testing.expect(!missing_catalog_drift_restore.accepted);
+    try std.testing.expectEqual(world.Capsule.Blocker.link_plan_mismatch, missing_catalog_drift_restore.blockers[0]);
+    try std.testing.expectEqual(@as(usize, 0), missing_catalog_drift_receiver.slots.items.len);
     const registry = world.Admission.TargetRegistry.init(&.{world.Admission.TargetRegistry.register(fixtures.Ports.Target)});
     const registry_as_target_thaw = try world.Capsule.planThaw(catalog_image, registry.registry_fingerprint, 0, 0x5150_3723, .{
         .mode = .restore_completed,
