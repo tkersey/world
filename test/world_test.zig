@@ -4248,6 +4248,86 @@ test "capsule freeze preserves supervised port parked mailbox" {
     try std.testing.expectEqual(@as(usize, 1), image.runspace_image.mailbox_image.?.pending_port_entries.len);
     try std.testing.expectEqual(world.RunImage.Kind.parked_run, image.run_images[0].kind);
     try std.testing.expectEqual(world.RunState.Status.parked_on_port, image.run_images[0].current_state.status);
+    const forged_request = world.Frame.Request.init(.{
+        .world_surface_fingerprint = fixtures.Ports.Target.WorldSurface.surface_fingerprint,
+        .world_surface_replay_scope_fingerprint = fixtures.Ports.Target.WorldSurface.replayScopeRef().fingerprint,
+        .target_certificate_fingerprint = fixtures.Ports.Target.Certificate.certificate_fingerprint,
+        .world_port_id = 0,
+        .residual_site_index = fixtures.Ports.ApprovalRequest.index,
+        .residual_site_fingerprint = fixtures.Ports.ApprovalRequest.fingerprint,
+        .request_fingerprint = request.request_fingerprint +% 1,
+        .turn_index = request.turn_index,
+        .payload_value_table_id = 0,
+        .expected_response_value_table_id = 1,
+    });
+    const forged_state = world.RunState.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .pending_request_fingerprint = forged_request.frame_fingerprint,
+        .turn_index = forged_request.turn_index,
+        .status = .parked_on_port,
+    });
+    const forged_run_image = world.RunImage.init(.{
+        .kind = .parked_run,
+        .target_ref = target_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .current_state = forged_state,
+        .pending_request_frame = forged_request,
+    });
+    const forged_run_images = [_]world.RunImage{forged_run_image};
+    const forged_run_image_refs = [_]u64{forged_run_image.run_image_fingerprint};
+    const forged_slot = world.Capsule.RunSlotImage.init(.{
+        .original_run_handle_fingerprint = image.runspace_image.run_slots[0].original_run_handle_fingerprint,
+        .parent_run_handle_fingerprint = image.runspace_image.run_slots[0].parent_run_handle_fingerprint,
+        .role = image.runspace_image.run_slots[0].role,
+        .target_ref_fingerprint = image.runspace_image.run_slots[0].target_ref_fingerprint,
+        .module_ref_fingerprint = image.runspace_image.run_slots[0].module_ref_fingerprint,
+        .admission_receipt_fingerprint = image.runspace_image.run_slots[0].admission_receipt_fingerprint,
+        .environment_certificate_fingerprint = image.runspace_image.run_slots[0].environment_certificate_fingerprint,
+        .run_permit_fingerprint = image.runspace_image.run_slots[0].run_permit_fingerprint,
+        .run_state_fingerprint = forged_state.run_state_fingerprint,
+        .run_image_fingerprint = forged_run_image.run_image_fingerprint,
+        .transcript_image_fingerprint = image.runspace_image.run_slots[0].transcript_image_fingerprint,
+        .current_pending_mailbox_id = image.runspace_image.run_slots[0].current_pending_mailbox_id,
+        .branch_id = image.runspace_image.run_slots[0].branch_id,
+        .checkpoint_refs = image.runspace_image.run_slots[0].checkpoint_refs,
+        .fabric_invocation_refs = image.runspace_image.run_slots[0].fabric_invocation_refs,
+        .status = image.runspace_image.run_slots[0].status,
+    });
+    const forged_slots = [_]world.Capsule.RunSlotImage{forged_slot};
+    const forged_manifest = world.Capsule.Manifest.init(.{
+        .kind = image.manifest.kind,
+        .root_target_ref_fingerprint = image.manifest.root_target_ref_fingerprint,
+        .root_module_ref_fingerprint = image.manifest.root_module_ref_fingerprint,
+        .run_image_fingerprints = &forged_run_image_refs,
+        .pending_port_count = image.manifest.pending_port_count,
+        .run_slot_count = image.manifest.run_slot_count,
+        .normal_form = image.manifest.normal_form,
+    });
+    const forged_runspace_image = world.Capsule.RunspaceImage.init(.{
+        .runspace_fingerprint = image.runspace_image.runspace_fingerprint,
+        .runspace_report_fingerprint = image.runspace_image.runspace_report_fingerprint,
+        .run_handle_mappings = image.runspace_image.run_handle_mappings,
+        .run_slots = &forged_slots,
+        .mailbox_image = image.runspace_image.mailbox_image,
+        .runspace_event_fingerprints = image.runspace_image.runspace_event_fingerprints,
+        .root_run_handle_fingerprints = image.runspace_image.root_run_handle_fingerprints,
+        .provider_run_handle_fingerprints = image.runspace_image.provider_run_handle_fingerprints,
+        .branch_refs = image.runspace_image.branch_refs,
+        .checkpoint_refs = image.runspace_image.checkpoint_refs,
+        .transcript_image_refs = image.runspace_image.transcript_image_refs,
+        .run_image_refs = &forged_run_image_refs,
+        .run_receipt_refs = image.runspace_image.run_receipt_refs,
+        .admission_receipt_refs = image.runspace_image.admission_receipt_refs,
+        .permit_refs = image.runspace_image.permit_refs,
+        .active_fabric_invocation_refs = image.runspace_image.active_fabric_invocation_refs,
+    });
+    const forged_image = world.Capsule.Image.init(.{
+        .manifest = forged_manifest,
+        .runspace_image = forged_runspace_image,
+        .run_image_refs = &forged_run_image_refs,
+        .run_images = &forged_run_images,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_image.validate(.{}));
     var receiver = world.Runspace.init(allocator, .{});
     defer receiver.deinit();
     var restore = try world.Capsule.thawIntoRunspace(image, &receiver, target_ref.target_ref_fingerprint, 0, 0x5150_3a04, .{ .mode = .restore_parked });

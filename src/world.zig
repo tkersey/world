@@ -19295,15 +19295,7 @@ pub const Capsule = struct {
                 if (entry.mailbox_id != mailbox_id) continue;
                 if (entry.original_run_handle_fingerprint != slot.original_run_handle_fingerprint) return error.InvalidFrameEncoding;
                 if (entry.target_ref_fingerprint != slot.target_ref_fingerprint) return error.InvalidFrameEncoding;
-                if (slot.status == .parked_on_port or slot.status == .exported) {
-                    const run_image_fingerprint = slot.run_image_fingerprint orelse return error.InvalidFrameEncoding;
-                    const run_image = capsuleRunImageByFingerprint(image.run_images, run_image_fingerprint) orelse return error.InvalidFrameEncoding;
-                    if (run_image.current_state.run_state_fingerprint != slot.run_state_fingerprint) return error.InvalidFrameEncoding;
-                    if ((run_image.current_state.pending_request_fingerprint orelse return error.InvalidFrameEncoding) != entry.request_frame.frame_fingerprint) return error.InvalidFrameEncoding;
-                    if (run_image.pending_request_frame) |frame| {
-                        if (frame.frame_fingerprint != entry.request_frame.frame_fingerprint) return error.InvalidFrameEncoding;
-                    }
-                }
+                if (slotRequiresMailboxRunImageFrameCheck(slot.status)) try validateMailboxEntryRunImageMatch(image, slot, entry);
                 coverage_count += 1;
             }
             if (coverage_count != 1) return error.InvalidFrameEncoding;
@@ -19317,19 +19309,32 @@ pub const Capsule = struct {
                     if (mailbox_id != entry.mailbox_id) continue;
                     if (slot.original_run_handle_fingerprint != entry.original_run_handle_fingerprint) continue;
                     if (slot.target_ref_fingerprint != entry.target_ref_fingerprint) continue;
-                    if (slot.status == .exported) {
-                        const run_image_fingerprint = slot.run_image_fingerprint orelse return error.InvalidFrameEncoding;
-                        const run_image = capsuleRunImageByFingerprint(image.run_images, run_image_fingerprint) orelse return error.InvalidFrameEncoding;
-                        if (run_image.current_state.run_state_fingerprint != slot.run_state_fingerprint) return error.InvalidFrameEncoding;
-                        if ((run_image.current_state.pending_request_fingerprint orelse return error.InvalidFrameEncoding) != entry.request_frame.frame_fingerprint) return error.InvalidFrameEncoding;
-                        if (run_image.pending_request_frame) |frame| {
-                            if (frame.frame_fingerprint != entry.request_frame.frame_fingerprint) return error.InvalidFrameEncoding;
-                        }
-                    }
+                    if (slotRequiresMailboxRunImageFrameCheck(slot.status)) try validateMailboxEntryRunImageMatch(image, slot, entry);
                     coverage_count += 1;
                 }
                 if (coverage_count != 1) return error.InvalidFrameEncoding;
             }
+        }
+    }
+
+    fn slotRequiresMailboxRunImageFrameCheck(status: RunSlotStatus) bool {
+        return switch (status) {
+            .parked_on_port, .parked_on_supervision, .exported => true,
+            .admitted, .runnable, .completed, .failed, .rejected => false,
+        };
+    }
+
+    fn validateMailboxEntryRunImageMatch(image: Image, slot: RunSlotImage, entry: PendingPortImage) !void {
+        const run_image_fingerprint = slot.run_image_fingerprint orelse return error.InvalidFrameEncoding;
+        const run_image = capsuleRunImageByFingerprint(image.run_images, run_image_fingerprint) orelse return error.InvalidFrameEncoding;
+        if (run_image.current_state.run_state_fingerprint != slot.run_state_fingerprint) return error.InvalidFrameEncoding;
+        switch (run_image.current_state.status) {
+            .parked_on_port, .parked_on_supervision => {},
+            .not_started, .running, .completed, .failed => return error.InvalidFrameEncoding,
+        }
+        if ((run_image.current_state.pending_request_fingerprint orelse return error.InvalidFrameEncoding) != entry.request_frame.frame_fingerprint) return error.InvalidFrameEncoding;
+        if (run_image.pending_request_frame) |frame| {
+            if (frame.frame_fingerprint != entry.request_frame.frame_fingerprint) return error.InvalidFrameEncoding;
         }
     }
 
