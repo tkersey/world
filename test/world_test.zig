@@ -2147,6 +2147,95 @@ test "actuation environment preflight and supervision ledger account host effect
     try std.testing.expectEqual(@as(usize, 1), supervisor.ledger.total_fresh_actuations);
     try std.testing.expectEqual(@as(usize, 1), supervisor.ledger.total_idempotent_mutations);
 
+    const replay_intent = world.Actuation.Intent.init(.{
+        .actuator_ref_fingerprint = ToolActuator.actuator_ref.ref_fingerprint,
+        .descriptor_fingerprint = descriptor.descriptor_fingerprint,
+        .binding_fingerprint = binding.binding_fingerprint,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+        .world_port_id = 0,
+        .frame_request_fingerprint = 0xfeed_1001,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .class = .idempotent_mutation,
+        .requested_mode = .replay,
+    });
+    const replay_calls_only_permit = world.RunPermit.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = target_ref.target_certificate_fingerprint,
+        .environment_certificate_fingerprint = cert.certificate_fingerprint,
+        .binding_plan_fingerprint = cert.binding_plan_fingerprint,
+        .transcript_image_available = true,
+        .mode = .replay,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_actuation = true,
+            .allow_replay_calls = true,
+        }),
+    });
+    var replay_calls_only_supervisor = try world.Supervision.Supervisor.init(std.testing.allocator, replay_calls_only_permit, 1);
+    defer replay_calls_only_supervisor.deinit();
+    try std.testing.expectError(error.ReplayCallDenied, replay_calls_only_supervisor.beforeActuationCommit(replay_intent, true));
+    const replay_actuation_permit = world.RunPermit.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = target_ref.target_certificate_fingerprint,
+        .environment_certificate_fingerprint = cert.certificate_fingerprint,
+        .binding_plan_fingerprint = cert.binding_plan_fingerprint,
+        .transcript_image_available = true,
+        .mode = .replay,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_actuation = true,
+            .allow_replay_actuation = true,
+        }),
+    });
+    var replay_actuation_supervisor = try world.Supervision.Supervisor.init(std.testing.allocator, replay_actuation_permit, 1);
+    defer replay_actuation_supervisor.deinit();
+    try replay_actuation_supervisor.beforeActuationCommit(replay_intent, true);
+    const verify_intent = world.Actuation.Intent.init(.{
+        .actuator_ref_fingerprint = ToolActuator.actuator_ref.ref_fingerprint,
+        .descriptor_fingerprint = descriptor.descriptor_fingerprint,
+        .binding_fingerprint = binding.binding_fingerprint,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+        .world_port_id = 0,
+        .frame_request_fingerprint = 0xfeed_1001,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .class = .idempotent_mutation,
+        .requested_mode = .verify,
+    });
+    const verify_calls_only_permit = world.RunPermit.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = target_ref.target_certificate_fingerprint,
+        .environment_certificate_fingerprint = cert.certificate_fingerprint,
+        .binding_plan_fingerprint = cert.binding_plan_fingerprint,
+        .transcript_image_available = true,
+        .mode = .verify,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_actuation = true,
+            .allow_verify_calls = true,
+        }),
+    });
+    var verify_calls_only_supervisor = try world.Supervision.Supervisor.init(std.testing.allocator, verify_calls_only_permit, 1);
+    defer verify_calls_only_supervisor.deinit();
+    try std.testing.expectError(error.SupervisionDenied, verify_calls_only_supervisor.beforeActuationCommit(verify_intent, true));
+    const verify_actuation_permit = world.RunPermit.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = target_ref.target_certificate_fingerprint,
+        .environment_certificate_fingerprint = cert.certificate_fingerprint,
+        .binding_plan_fingerprint = cert.binding_plan_fingerprint,
+        .transcript_image_available = true,
+        .mode = .verify,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_actuation = true,
+            .allow_verify_actuation = true,
+        }),
+    });
+    var verify_actuation_supervisor = try world.Supervision.Supervisor.init(std.testing.allocator, verify_actuation_permit, 1);
+    defer verify_actuation_supervisor.deinit();
+    try verify_actuation_supervisor.beforeActuationCommit(verify_intent, true);
+
     const run_receipt = supervisor.receipt(.parked, 0x5150, null, null);
     try std.testing.expectEqual(@as(usize, 1), run_receipt.actuation_commit_count);
     try std.testing.expectEqual(@as(usize, 16), run_receipt.actuation_bytes);

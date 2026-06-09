@@ -3627,6 +3627,8 @@ pub const Supervision = struct {
         allow_reject_routes: bool = false,
         allow_actuation: bool = false,
         allow_fresh_actuation: bool = false,
+        allow_replay_actuation: bool = false,
+        allow_verify_actuation: bool = false,
         allow_pending_actuation: bool = false,
         allow_deferred_actuation: bool = false,
         require_actuation_receipts: bool = true,
@@ -3680,6 +3682,7 @@ pub const Supervision = struct {
         });
         pub const strict_replay = init(.{
             .allow_replay_calls = true,
+            .allow_replay_actuation = true,
             .allow_replay_adapters = true,
             .allow_fabric_routes = true,
             .allow_replay_routes = true,
@@ -3692,6 +3695,8 @@ pub const Supervision = struct {
             .allow_fresh_calls = true,
             .allow_replay_calls = true,
             .allow_verify_calls = true,
+            .allow_replay_actuation = true,
+            .allow_verify_actuation = true,
             .allow_native_adapters = true,
             .allow_replay_adapters = true,
             .allow_fabric_routes = true,
@@ -3706,6 +3711,8 @@ pub const Supervision = struct {
             .allow_fresh_calls = true,
             .allow_replay_calls = true,
             .allow_verify_calls = true,
+            .allow_replay_actuation = true,
+            .allow_verify_actuation = true,
             .allow_native_adapters = true,
             .allow_replay_adapters = true,
             .allow_pending_responses = false,
@@ -3725,6 +3732,8 @@ pub const Supervision = struct {
             .allow_fresh_calls = true,
             .allow_replay_calls = true,
             .allow_verify_calls = true,
+            .allow_replay_actuation = true,
+            .allow_verify_actuation = true,
             .allow_native_adapters = true,
             .allow_byte_adapters = true,
             .allow_replay_adapters = true,
@@ -3747,6 +3756,8 @@ pub const Supervision = struct {
             .allow_fresh_calls = true,
             .allow_replay_calls = true,
             .allow_verify_calls = true,
+            .allow_replay_actuation = true,
+            .allow_verify_actuation = true,
             .allow_native_adapters = true,
             .allow_replay_adapters = true,
             .allow_handoff_accept = true,
@@ -4810,8 +4821,8 @@ pub const Supervision = struct {
             const policy = self.permit.policy;
             if (!policy.allow_actuation) return self.deny(.before_actuation_commit, intent.world_port_id, .fresh_call_denied, null, "actuation denied");
             if (intent.requested_mode == .fresh and !policy.allow_fresh_actuation) return self.deny(.before_actuation_commit, intent.world_port_id, .fresh_call_denied, null, "fresh actuation denied");
-            if (intent.requested_mode == .replay and !policy.allow_replay_calls) return self.deny(.before_actuation_commit, intent.world_port_id, .replay_call_denied, null, "replay actuation denied");
-            if (intent.requested_mode == .verify and !policy.allow_verify_calls) return self.deny(.before_actuation_commit, intent.world_port_id, .verify_call_denied, null, "verify actuation denied");
+            if (intent.requested_mode == .replay and !policy.allow_replay_actuation) return self.deny(.before_actuation_commit, intent.world_port_id, .replay_call_denied, null, "replay actuation denied");
+            if (intent.requested_mode == .verify and !policy.allow_verify_actuation) return self.deny(.before_actuation_commit, intent.world_port_id, .verify_call_denied, null, "verify actuation denied");
             if (policy.require_idempotency_keys and intent.requested_mode == .fresh and intent.class.isMutation() and !key_present) return self.deny(.before_actuation_commit, intent.world_port_id, .fresh_call_denied, null, "actuation idempotency key required");
             if (intent.class == .irreversible_mutation and !policy.allow_irreversible_actuation) return self.deny(.before_actuation_commit, intent.world_port_id, .fresh_call_denied, null, "irreversible actuation denied");
             var next = try self.ledger.clone(self.allocator);
@@ -5153,8 +5164,8 @@ pub const Supervision = struct {
         return switch (mode) {
             .fresh => policy.allow_fresh_calls,
             .audit => policy.allow_audit_only,
-            .replay => policy.allow_replay_calls,
-            .verify => policy.allow_verify_calls,
+            .replay => policy.allow_replay_calls or policy.allow_replay_actuation,
+            .verify => policy.allow_verify_calls or policy.allow_verify_actuation,
         };
     }
 
@@ -5619,8 +5630,8 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
             if (!supervision_policy.allow_actuation) return false;
             switch (requested_mode) {
                 .fresh => if (!supervision_policy.allow_fresh_actuation) return false,
-                .replay => if (!supervision_policy.allow_replay_calls) return false,
-                .verify => if (!supervision_policy.allow_verify_calls) return false,
+                .replay => if (!supervision_policy.allow_replay_actuation) return false,
+                .verify => if (!supervision_policy.allow_verify_actuation) return false,
                 .audit => if (!supervision_policy.allow_audit_only) return false,
             }
             if (class == .irreversible_mutation and !supervision_policy.allow_irreversible_actuation) return false;
@@ -19099,8 +19110,8 @@ pub const Actuation = struct {
             if (!policy.allow_actuation) return error.SupervisionDenied;
             switch (args.intent.requested_mode) {
                 .fresh => if (!policy.allow_fresh_actuation) return error.SupervisionDenied,
-                .replay => if (!policy.allow_replay_calls) return error.SupervisionDenied,
-                .verify => if (!policy.allow_verify_calls) return error.SupervisionDenied,
+                .replay => if (!policy.allow_replay_actuation) return error.SupervisionDenied,
+                .verify => if (!policy.allow_verify_actuation) return error.SupervisionDenied,
                 .audit => return error.SupervisionDenied,
             }
             if (policy.require_idempotency_keys and args.intent.requested_mode == .fresh and args.intent.class.isMutation() and !args.key_present) return error.SupervisionDenied;
@@ -31885,6 +31896,8 @@ fn fingerprintSupervisionPolicy(policy: SupervisionPolicy) u64 {
     hashBool(&hasher, policy.allow_reject_routes);
     hashBool(&hasher, policy.allow_actuation);
     hashBool(&hasher, policy.allow_fresh_actuation);
+    hashBool(&hasher, policy.allow_replay_actuation);
+    hashBool(&hasher, policy.allow_verify_actuation);
     hashBool(&hasher, policy.allow_pending_actuation);
     hashBool(&hasher, policy.allow_deferred_actuation);
     hashBool(&hasher, policy.require_actuation_receipts);
