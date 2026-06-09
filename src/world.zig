@@ -18104,6 +18104,7 @@ pub const Actuation = struct {
             if (self.fingerprint_version != world_actuation_response_fingerprint_version) return error.InvalidFrameEncoding;
             if (self.intent_fingerprint == 0 or self.actuator_ref_fingerprint == 0 or self.request_fingerprint == 0) return error.InvalidFrameEncoding;
             if (!policy.allowsResponseStatus(self.status)) return error.PortRuleDenied;
+            if (self.status == .responded and self.frame_response_fingerprint == null) return error.MissingValueImage;
             if (descriptor) |actual| {
                 if (!actual.allowed_response_kinds.allows(self.status)) return error.PortRuleDenied;
                 if (actual.world_port_id != null and actual.world_port_id.? != self.world_port_id) return error.WrongPortId;

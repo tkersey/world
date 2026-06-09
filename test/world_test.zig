@@ -558,6 +558,14 @@ test "actuation commit response receipt journal and replay bind idempotency" {
         .frame_response_fingerprint = 0x4106,
     });
     try response.validate(policy, null);
+    try std.testing.expectError(error.MissingValueImage, world.Actuation.Membrane.execute(.{
+        .policy = policy,
+        .intent = intent,
+        .envelope = envelope,
+        .actuator = .{ .fixture = .{} },
+        .target_ref_fingerprint = 0x4101,
+        .world_surface_fingerprint = 0x4102,
+    }));
     const receipt = world.Actuation.Receipt.fromResponse(.{
         .intent = intent,
         .envelope = envelope,
