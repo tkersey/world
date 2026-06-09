@@ -1882,12 +1882,24 @@ test "actuation environment preflight and supervision ledger account host effect
         .value_policy = world.ValuePolicy.portable,
     });
     const AgentActuationBinding = world.bindActuator(AgentDecideDecl, AgentActuator);
+    const AgentToolActuator = world.actuator(.{
+        .kind = .tool_like,
+        .class = .idempotent_mutation,
+        .label = "agent.tool",
+        .supported_response_statuses = world.Actuation.ResponseStatusSet.all,
+        .value_policy = world.ValuePolicy.portable,
+    });
+    const AgentToolActuationBinding = world.bindActuator(AgentToolDecl, AgentToolActuator);
     const AgentPartialActuationEnv = world.Environment(fixtures.Agent.Target, .{
         .actuation_bindings = .{AgentActuationBinding},
         .policy = world.EnvironmentPolicy.fresh_and_replay,
     });
     const AgentDuplicateActuationEnv = world.Environment(fixtures.Agent.Target, .{
         .actuation_bindings = .{ AgentActuationBinding, AgentActuationBinding },
+        .policy = world.EnvironmentPolicy.fresh_and_replay,
+    });
+    const AgentFullActuationEnv = world.Environment(fixtures.Agent.Target, .{
+        .actuation_bindings = .{ AgentActuationBinding, AgentToolActuationBinding },
         .policy = world.EnvironmentPolicy.fresh_and_replay,
     });
     const partial_agent_binding = AgentPartialActuationEnv.bindActuator(AgentActuationBinding);
@@ -1900,6 +1912,29 @@ test "actuation environment preflight and supervision ledger account host effect
     try std.testing.expect(!duplicate_agent_preflight.accepted);
     try std.testing.expectEqual(@as(usize, 1), duplicate_agent_preflight.actuation_binding_count);
     try std.testing.expectEqual(@as(usize, 1), duplicate_agent_preflight.missing_port_count);
+    const agent_full_cert = AgentFullActuationEnv.certificate(.fresh, false);
+    const agent_tool_denied_rules = [_]world.PortRule{world.PortRule.init(.{
+        .world_surface_fingerprint = agent_full_cert.world_surface_fingerprint,
+        .world_port_id = AgentToolDecl.world_port_id,
+        .allow_fresh = false,
+    })};
+    const agent_tool_denied_permit = world.RunPermit.init(.{
+        .target_ref_fingerprint = agent_full_cert.target_ref_fingerprint,
+        .world_surface_fingerprint = agent_full_cert.world_surface_fingerprint,
+        .target_certificate_fingerprint = agent_full_cert.target_certificate_fingerprint,
+        .environment_certificate_fingerprint = agent_full_cert.certificate_fingerprint,
+        .binding_plan_fingerprint = agent_full_cert.binding_plan_fingerprint,
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_actuation = true,
+            .allow_fresh_actuation = true,
+        }),
+        .port_rules = &agent_tool_denied_rules,
+    });
+    const agent_tool_denied_report = AgentFullActuationEnv.acceptanceReportWithPermit(.fresh, false, agent_tool_denied_permit);
+    try std.testing.expect(!agent_tool_denied_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.SupervisionPortRuleDenied, agent_tool_denied_report.blockers[0]);
     const denied_audit_preflight = ActuationEnv.preflightActuationMode(binding, .audit, world.Actuation.Policy.strict_fresh);
     try std.testing.expect(!denied_audit_preflight.accepted);
     try std.testing.expectEqualSlices(world.AcceptanceBlocker, &.{.ActuationPolicyMismatch}, denied_audit_preflight.blockers);
@@ -2328,6 +2363,32 @@ test "actuation environment preflight and supervision ledger account host effect
         .warnings = pending_receipt.warnings,
         .metadata = pending_receipt.metadata,
     });
+    const pending_rule_denied_rules = [_]world.PortRule{world.PortRule.init(.{
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+        .world_port_id = 0,
+        .allow_pending = false,
+    })};
+    const pending_rule_denied_permit = world.RunPermit.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = target_ref.target_certificate_fingerprint,
+        .environment_certificate_fingerprint = cert.certificate_fingerprint,
+        .binding_plan_fingerprint = cert.binding_plan_fingerprint,
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_actuation = true,
+            .allow_fresh_actuation = true,
+            .allow_pending_actuation = true,
+            .require_idempotency_keys = true,
+            .max_actuation_calls = null,
+            .max_pending_actuations = null,
+        }),
+        .port_rules = &pending_rule_denied_rules,
+    });
+    var pending_rule_denied_supervisor = try world.Supervision.Supervisor.init(std.testing.allocator, pending_rule_denied_permit, 1);
+    defer pending_rule_denied_supervisor.deinit();
+    try std.testing.expectError(error.PortRuleDenied, pending_rule_denied_supervisor.afterActuationReceipt(pending_receipt, 16));
     try std.testing.expectError(error.BudgetExceeded, pending_limited_supervisor.afterActuationReceipt(pending_receipt, 16));
     try std.testing.expectEqual(world.Supervision.BudgetExceededKind.pending_actuations, pending_limited_supervisor.ledger.exceeded_budget.?);
 }

@@ -4840,11 +4840,15 @@ pub const Supervision = struct {
             if (receipt_value.deferred and !policy.allow_deferred_actuation) return self.deny(.after_actuation_response, receipt_value.world_port_id, .pending_denied, null, "deferred actuation denied");
             if (receipt_value.rejected and !policy.allow_rejected_responses) return self.deny(.after_actuation_response, receipt_value.world_port_id, .rejected_denied, null, "rejected actuation denied");
             if (receipt_value.failed and !policy.allow_failed_responses) return self.deny(.after_actuation_response, receipt_value.world_port_id, .failed_denied, null, "failed actuation denied");
+            const rule = self.permit.ruleFor(receipt_value.world_port_id);
+            if (rule) |port_rule| {
+                if (!portRuleAllowsActuationReceiptStatus(port_rule, receipt_value.responseStatus())) return self.deny(.after_actuation_response, receipt_value.world_port_id, .port_rule_denied, port_rule.rule_fingerprint, "rule actuation response denied");
+            }
             var next = try self.ledger.clone(self.allocator);
             defer next.deinit(self.allocator);
             next.recordActuationReceipt(receipt_value, response_bytes);
             if (next.total_actuation_intents > 0) next.total_actuation_intents -= 1;
-            try self.commitCheck(.after_actuation_response, receipt_value.world_port_id, &next, null, self.permit.ruleFor(receipt_value.world_port_id), "actuation receipt");
+            try self.commitCheck(.after_actuation_response, receipt_value.world_port_id, &next, null, rule, "actuation receipt");
         }
 
         pub fn afterActuationResolution(self: *@This(), receipt_value: Actuation.Receipt, response_bytes: usize) !void {
@@ -4854,10 +4858,14 @@ pub const Supervision = struct {
             if (policy.require_actuation_receipts and receipt_value.receipt_fingerprint == 0) return self.deny(.after_actuation_response, receipt_value.world_port_id, .fresh_call_denied, null, "actuation receipt required");
             if (receipt_value.rejected and !policy.allow_rejected_responses) return self.deny(.after_actuation_response, receipt_value.world_port_id, .rejected_denied, null, "rejected actuation denied");
             if (receipt_value.failed and !policy.allow_failed_responses) return self.deny(.after_actuation_response, receipt_value.world_port_id, .failed_denied, null, "failed actuation denied");
+            const rule = self.permit.ruleFor(receipt_value.world_port_id);
+            if (rule) |port_rule| {
+                if (!portRuleAllowsActuationReceiptStatus(port_rule, receipt_value.responseStatus())) return self.deny(.after_actuation_response, receipt_value.world_port_id, .port_rule_denied, port_rule.rule_fingerprint, "rule actuation resolution denied");
+            }
             var next = try self.ledger.clone(self.allocator);
             defer next.deinit(self.allocator);
             next.recordActuationResolution(receipt_value, response_bytes);
-            try self.commitCheck(.after_actuation_response, receipt_value.world_port_id, &next, null, self.permit.ruleFor(receipt_value.world_port_id), "actuation resolution");
+            try self.commitCheck(.after_actuation_response, receipt_value.world_port_id, &next, null, rule, "actuation resolution");
         }
 
         pub fn beforeTranscriptAppend(self: *@This(), event_count_after_append: usize, image_bytes_after_append: usize) !void {
@@ -5800,6 +5808,17 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
                         } else if (!std.meta.eql(rule.allowed_authority_kinds, Supervision.AllowedAuthorityKinds.all)) {
                             return rejectedReport(report, &.{.SupervisionPortRuleDenied});
                         }
+                    }
+                }
+            }
+            inline for (0..Target.WorldPortTable.entries.len) |world_port_index| {
+                const world_port_id: u32 = @intCast(world_port_index);
+                const environment_has_binding = comptime environmentHasBindingForPort(@This(), world_port_id);
+                if (environment_has_binding) continue;
+                if (actuationBindingForPort(world_port_id, requested_mode)) |actuation_binding| {
+                    if (permit.ruleFor(world_port_id)) |rule| {
+                        if (!rule.permitsMode(requested_mode)) return rejectedReport(report, &.{.SupervisionPortRuleDenied});
+                        if (rule.require_portable_values and !actuation_binding.value_policy.require_portable_values) return rejectedReport(report, &.{.SupervisionPortRuleDenied});
                     }
                 }
             }
@@ -29255,6 +29274,15 @@ fn portRuleAllowsResponseStatus(rule: Supervision.PortRule, status: ResponseStat
         .responded => true,
         .pending => rule.allow_pending,
         .rejected => rule.allow_reject,
+        .failed => rule.allow_fail,
+    };
+}
+
+fn portRuleAllowsActuationReceiptStatus(rule: Supervision.PortRule, status: Actuation.ResponseStatus) bool {
+    return switch (status) {
+        .responded => true,
+        .pending, .deferred => rule.allow_pending,
+        .rejected, .cancelled => rule.allow_reject,
         .failed => rule.allow_fail,
     };
 }
