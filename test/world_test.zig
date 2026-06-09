@@ -510,6 +510,15 @@ test "actuation policy idempotency key and intent gates are deterministic" {
     try std.testing.expect(!strict.allowsClass(.irreversible_mutation));
     try std.testing.expect(!strict.allowsResponseStatus(.pending));
     try std.testing.expect(!strict.allowsResponseStatus(.deferred));
+    try std.testing.expect(!strict.allowsResponseStatus(.cancelled));
+    const cancelled_response = world.Actuation.Response.init(.{
+        .intent_fingerprint = intent.intent_fingerprint,
+        .actuator_ref_fingerprint = ref.ref_fingerprint,
+        .world_port_id = 1,
+        .request_fingerprint = 0x3103,
+        .status = .cancelled,
+    });
+    try std.testing.expectError(error.PortRuleDenied, cancelled_response.validate(strict, null));
     const denied = world.Actuation.Membrane.decide(.{ .policy = strict, .intent = intent, .key_present = false });
     try denied.validate();
     try std.testing.expect(!denied.approved);
@@ -3600,6 +3609,67 @@ test "actuation capsule refs thaw replay evidence and admission summaries" {
     });
     try std.testing.expect(!duplicate_receipt_admission.accepted);
     try std.testing.expect(!duplicate_receipt_admission.replay_only_actuation_feasible);
+
+    const partial_receipt_intent_refs = [_]u64{ 0xacc7_1111, 0xacc7_1112 };
+    const partial_receipt_refs = [_]u64{0xacc7_2211};
+    const partial_manifest = world.Capsule.Manifest.init(.{
+        .kind = .replay_only,
+        .root_target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .actuation_intent_fingerprints = &partial_receipt_intent_refs,
+        .actuation_receipt_fingerprints = &partial_receipt_refs,
+        .actuation_journal_fingerprints = &journal_refs,
+        .normal_form = .quiescent_completed,
+    });
+    const partial_mailbox = world.Capsule.MailboxImage.init(.{
+        .pending_actuation_intent_fingerprints = &partial_receipt_intent_refs,
+        .committed_actuation_receipt_fingerprints = &partial_receipt_refs,
+    });
+    const partial_runspace_image = world.Capsule.RunspaceImage.init(.{
+        .runspace_fingerprint = 0x5150_a021,
+        .runspace_report_fingerprint = 0x5150_a022,
+        .mailbox_image = partial_mailbox,
+        .actuation_intent_refs = &partial_receipt_intent_refs,
+        .actuation_receipt_refs = &partial_receipt_refs,
+        .actuation_journal_refs = &journal_refs,
+    });
+    const partial_dependency_refs = [_]world.Capsule.DependencyRef{
+        world.Capsule.DependencyRef.init(.manifest, partial_manifest.manifest_fingerprint),
+        world.Capsule.DependencyRef.init(.runspace_image, partial_runspace_image.image_fingerprint),
+        world.Capsule.DependencyRef.init(.actuation_intent, partial_receipt_intent_refs[0]),
+        world.Capsule.DependencyRef.init(.actuation_intent, partial_receipt_intent_refs[1]),
+        world.Capsule.DependencyRef.init(.actuation_receipt, partial_receipt_refs[0]),
+        world.Capsule.DependencyRef.init(.actuation_journal, journal_refs[0]),
+    };
+    const partial_object_refs = [_]world.Capsule.ObjectRef{
+        world.Capsule.ObjectRef.init(.capsule_manifest, partial_manifest.manifest_fingerprint),
+        world.Capsule.ObjectRef.init(.runspace_image, partial_runspace_image.image_fingerprint),
+        world.Capsule.ObjectRef.init(.actuation_intent, partial_receipt_intent_refs[0]),
+        world.Capsule.ObjectRef.init(.actuation_intent, partial_receipt_intent_refs[1]),
+        world.Capsule.ObjectRef.init(.actuation_receipt, partial_receipt_refs[0]),
+        world.Capsule.ObjectRef.init(.actuation_journal, journal_refs[0]),
+    };
+    const partial_receipt_image = world.Capsule.Image.init(.{
+        .manifest = partial_manifest,
+        .runspace_image = partial_runspace_image,
+        .actuation_intent_refs = &partial_receipt_intent_refs,
+        .actuation_receipt_refs = &partial_receipt_refs,
+        .actuation_journal_refs = &journal_refs,
+        .dependency_refs = &partial_dependency_refs,
+        .object_refs = &partial_object_refs,
+    });
+    try partial_receipt_image.validate(.{});
+    var partial_thaw = try world.Capsule.planThaw(partial_receipt_image, target_ref.target_ref_fingerprint, 0, null, .{
+        .mode = .replay_only,
+        .require_local_permit = false,
+    });
+    defer partial_thaw.deinit(std.testing.allocator);
+    const partial_receipt_admission = world.Admission.capsuleAdmissionReport(.{
+        .mode = .replay_only,
+        .image = partial_receipt_image,
+        .thaw_plan = partial_thaw,
+    });
+    try std.testing.expect(!partial_receipt_admission.accepted);
+    try std.testing.expect(!partial_receipt_admission.replay_only_actuation_feasible);
 
     const verify_thaw = world.Capsule.ThawPlan.init(.{
         .capsule_image_fingerprint = decoded.image_fingerprint,

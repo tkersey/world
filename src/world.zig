@@ -2513,6 +2513,7 @@ pub const Admission = struct {
         if (!admissionActuationRefsUnique(image.manifest.actuation_intent_fingerprints)) return false;
         if (!admissionActuationRefsUnique(image.manifest.actuation_receipt_fingerprints)) return false;
         if (!admissionActuationRefsUnique(image.manifest.actuation_journal_fingerprints)) return false;
+        if (image.manifest.actuation_receipt_fingerprints.len != image.manifest.actuation_intent_fingerprints.len) return false;
         if (!Capsule.u64SlicesEqual(plan.sender_actuation_receipt_refs, image.manifest.actuation_receipt_fingerprints)) return false;
         if (!Capsule.u64SlicesEqual(image.runspace_image.actuation_intent_refs, image.manifest.actuation_intent_fingerprints)) return false;
         if (!Capsule.u64SlicesEqual(image.runspace_image.actuation_receipt_refs, image.manifest.actuation_receipt_fingerprints)) return false;
@@ -4838,7 +4839,7 @@ pub const Supervision = struct {
             if (policy.require_actuation_receipts and receipt_value.receipt_fingerprint == 0) return self.deny(.after_actuation_response, receipt_value.world_port_id, .fresh_call_denied, null, "actuation receipt required");
             if (receipt_value.pending and !policy.allow_pending_actuation) return self.deny(.after_actuation_response, receipt_value.world_port_id, .pending_denied, null, "pending actuation denied");
             if (receipt_value.deferred and !policy.allow_deferred_actuation) return self.deny(.after_actuation_response, receipt_value.world_port_id, .pending_denied, null, "deferred actuation denied");
-            if (receipt_value.rejected and !policy.allow_rejected_responses) return self.deny(.after_actuation_response, receipt_value.world_port_id, .rejected_denied, null, "rejected actuation denied");
+            if ((receipt_value.rejected or receipt_value.cancelled) and !policy.allow_rejected_responses) return self.deny(.after_actuation_response, receipt_value.world_port_id, .rejected_denied, null, "rejected actuation denied");
             if (receipt_value.failed and !policy.allow_failed_responses) return self.deny(.after_actuation_response, receipt_value.world_port_id, .failed_denied, null, "failed actuation denied");
             const rule = self.permit.ruleFor(receipt_value.world_port_id);
             if (rule) |port_rule| {
@@ -4856,7 +4857,7 @@ pub const Supervision = struct {
             try self.validateWorldPortId(receipt_value.world_port_id);
             const policy = self.permit.policy;
             if (policy.require_actuation_receipts and receipt_value.receipt_fingerprint == 0) return self.deny(.after_actuation_response, receipt_value.world_port_id, .fresh_call_denied, null, "actuation receipt required");
-            if (receipt_value.rejected and !policy.allow_rejected_responses) return self.deny(.after_actuation_response, receipt_value.world_port_id, .rejected_denied, null, "rejected actuation denied");
+            if ((receipt_value.rejected or receipt_value.cancelled) and !policy.allow_rejected_responses) return self.deny(.after_actuation_response, receipt_value.world_port_id, .rejected_denied, null, "rejected actuation denied");
             if (receipt_value.failed and !policy.allow_failed_responses) return self.deny(.after_actuation_response, receipt_value.world_port_id, .failed_denied, null, "failed actuation denied");
             const rule = self.permit.ruleFor(receipt_value.world_port_id);
             if (rule) |port_rule| {
@@ -17785,7 +17786,7 @@ pub const Actuation = struct {
                 .failed => self.allow_failed_responses,
                 .pending => self.allow_pending_actuation,
                 .deferred => self.allow_deferred_actuation,
-                .cancelled => true,
+                .cancelled => self.allow_rejected_responses,
             };
         }
 
