@@ -2446,14 +2446,21 @@ pub const Admission = struct {
             .verify => false,
             .restore_parked, .restore_completed, .restore_failed, .relink_and_restore => if (args.thaw_plan) |plan| if (args.restore_report) |report| plan.blockers.len == 0 and capsuleRestoreReportAccepted(report) else false else false,
         };
+        const replay_only_actuation_feasible = args.mode == .replay_only and args.image.manifest.actuation_receipt_fingerprints.len >= args.image.manifest.actuation_intent_fingerprints.len;
+        const verify_actuation_feasible = args.mode == .verify and args.image.manifest.actuation_receipt_fingerprints.len != 0;
+        const actuation_feasible = switch (args.mode) {
+            .replay_only => replay_only_actuation_feasible,
+            .verify => verify_actuation_feasible,
+            else => true,
+        };
         const request = Admission.AdmissionRequest.init(.{
             .package_fingerprint = args.image.image_fingerprint,
             .mode = admissionModeForCapsuleAdmission(args.mode),
             .policy_fingerprint = 0,
         });
-        const accepted = image_valid and witnesses_valid and witnesses_bound and witness_modes_bound and has_required_witnesses and witnesses_accept;
+        const accepted = image_valid and witnesses_valid and witnesses_bound and witness_modes_bound and has_required_witnesses and witnesses_accept and actuation_feasible;
         if (!accepted) {
-            const invalid_witnesses = !image_valid or !witnesses_valid or !witnesses_bound or !witness_modes_bound or !has_required_witnesses;
+            const invalid_witnesses = !image_valid or !witnesses_valid or !witnesses_bound or !witness_modes_bound or !has_required_witnesses or !actuation_feasible;
             return Admission.AdmissionReport.rejected(.{
                 .request = request,
                 .package_fingerprint = args.image.image_fingerprint,
@@ -2468,8 +2475,8 @@ pub const Admission = struct {
                 .capsule_restore_report_fingerprint = if (args.restore_report) |report| report.restore_report_fingerprint else null,
                 .required_actuator_count = args.image.manifest.actuation_intent_fingerprints.len,
                 .actuation_receipt_count = args.image.manifest.actuation_receipt_fingerprints.len,
-                .replay_only_actuation_feasible = args.mode == .replay_only and args.image.manifest.actuation_receipt_fingerprints.len >= args.image.manifest.actuation_intent_fingerprints.len,
-                .verify_actuation_feasible = args.mode == .verify and args.image.manifest.actuation_receipt_fingerprints.len != 0,
+                .replay_only_actuation_feasible = replay_only_actuation_feasible,
+                .verify_actuation_feasible = verify_actuation_feasible,
                 .actuation_receipt_refs = args.image.manifest.actuation_receipt_fingerprints,
                 .blockers = if (invalid_witnesses) &.{.PackageInvalid} else &.{.AdmissionModeNotAllowed},
                 .summary = if (invalid_witnesses) "capsule admission witness mismatch" else "capsule admission rejected",
@@ -2489,8 +2496,8 @@ pub const Admission = struct {
             .capsule_restore_report_fingerprint = if (args.restore_report) |report| report.restore_report_fingerprint else null,
             .required_actuator_count = args.image.manifest.actuation_intent_fingerprints.len,
             .actuation_receipt_count = args.image.manifest.actuation_receipt_fingerprints.len,
-            .replay_only_actuation_feasible = args.mode == .replay_only and args.image.manifest.actuation_receipt_fingerprints.len >= args.image.manifest.actuation_intent_fingerprints.len,
-            .verify_actuation_feasible = args.mode == .verify and args.image.manifest.actuation_receipt_fingerprints.len != 0,
+            .replay_only_actuation_feasible = replay_only_actuation_feasible,
+            .verify_actuation_feasible = verify_actuation_feasible,
             .actuation_receipt_refs = args.image.manifest.actuation_receipt_fingerprints,
             .summary = "capsule admission accepted",
         });
@@ -18676,6 +18683,7 @@ pub const Actuation = struct {
             envelope: Envelope,
             actuator: Interface,
             descriptor: ?Descriptor = null,
+            run_permit: ?RunPermit = null,
             key_present: bool = true,
             explicit_mutation_approval: bool = false,
             explicit_irreversible_approval: bool = false,
@@ -18749,6 +18757,7 @@ pub const Actuation = struct {
             try decision.validate();
             if (!decision.approved) return rejectedExecution(args, decision);
             if (!actuatorMatchesRequestedMode(args.actuator, args.intent.requested_mode)) return error.InvalidMode;
+            try validatePrecommitActuationPermit(args);
 
             switch (args.actuator) {
                 .replay => |replay| return replayExecution(args, decision, replay),
@@ -18780,6 +18789,30 @@ pub const Actuation = struct {
                 .verify => requested_mode == .verify,
                 .fixture, .native_function, .byte_protocol, .reject, .pending, .deferred => requested_mode == .fresh,
             };
+        }
+
+        fn validatePrecommitActuationPermit(args: ExecuteArgs) !void {
+            if (args.intent.run_permit_fingerprint == null) return;
+            const permit = args.run_permit orelse return error.SupervisionDenied;
+            if (permit.permit_fingerprint != args.intent.run_permit_fingerprint.?) return error.SupervisionDenied;
+            if (permit.target_ref_fingerprint != args.intent.target_ref_fingerprint) return error.SupervisionDenied;
+            if (permit.world_surface_fingerprint != args.intent.world_surface_fingerprint) return error.SupervisionDenied;
+            if (permit.mode != args.intent.requested_mode) return error.SupervisionDenied;
+            const policy = permit.policy;
+            if (!policy.allow_actuation) return error.SupervisionDenied;
+            switch (args.intent.requested_mode) {
+                .fresh => if (!policy.allow_fresh_actuation) return error.SupervisionDenied,
+                .replay => if (!policy.allow_replay_calls) return error.SupervisionDenied,
+                .verify => if (!policy.allow_verify_calls) return error.SupervisionDenied,
+                .audit => return error.SupervisionDenied,
+            }
+            if (policy.require_idempotency_keys and args.intent.requested_mode == .fresh and args.intent.class.isMutation() and !args.key_present) return error.SupervisionDenied;
+            if (args.intent.class == .irreversible_mutation and !policy.allow_irreversible_actuation) return error.SupervisionDenied;
+            if (permit.ruleFor(args.intent.world_port_id)) |rule| {
+                if (rule.rule_fingerprint != fingerprintPortRule(rule)) return error.SupervisionDenied;
+                if (rule.world_surface_fingerprint != args.intent.world_surface_fingerprint) return error.SupervisionDenied;
+                if (!rule.permitsMode(args.intent.requested_mode)) return error.SupervisionDenied;
+            }
         }
 
         fn validateExecutionBindings(args: ExecuteArgs) !void {

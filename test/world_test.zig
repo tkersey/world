@@ -1738,6 +1738,7 @@ test "runspace actuation dispatch accounts terminal response bytes" {
             .reason = "accounting witness",
         } },
         .descriptor = descriptor,
+        .run_permit = permit,
         .attempt_number = 1,
         .target_ref_fingerprint = pending.target_ref_fingerprint,
         .world_surface_fingerprint = request.world_surface_fingerprint,
@@ -1835,6 +1836,7 @@ test "runspace actuation dispatch rolls back supervision on terminal response fa
             .reason = "bad kind",
         } },
         .descriptor = descriptor,
+        .run_permit = permit,
         .attempt_number = 1,
         .target_ref_fingerprint = pending.target_ref_fingerprint,
         .world_surface_fingerprint = request.world_surface_fingerprint,
@@ -1853,6 +1855,7 @@ test "runspace actuation dispatch rolls back supervision on terminal response fa
             .reason = "valid failure",
         } },
         .descriptor = descriptor,
+        .run_permit = permit,
         .attempt_number = 2,
         .target_ref_fingerprint = pending.target_ref_fingerprint,
         .world_surface_fingerprint = request.world_surface_fingerprint,
@@ -1938,7 +1941,7 @@ test "runspace actuation dispatch uses installed supervisor before mailbox resum
         .idempotency_key = key,
         .expected_response_value_table_id = request.expected_response_value_table_id,
     });
-    const execution = try world.Actuation.Membrane.execute(.{
+    try std.testing.expectError(error.SupervisionDenied, world.Actuation.Membrane.execute(.{
         .policy = world.Actuation.Policy.init(.{
             .allow_fresh_actuation = true,
             .allow_irreversible_mutation = true,
@@ -1947,14 +1950,14 @@ test "runspace actuation dispatch uses installed supervisor before mailbox resum
         .envelope = envelope,
         .actuator = .{ .fixture = .{ .frame_response_fingerprint = 0x5150_abcd } },
         .descriptor = descriptor,
+        .run_permit = permit,
         .explicit_mutation_approval = true,
         .explicit_irreversible_approval = true,
         .attempt_number = 1,
         .target_ref_fingerprint = pending.target_ref_fingerprint,
         .world_surface_fingerprint = request.world_surface_fingerprint,
-    });
+    }));
 
-    try std.testing.expectError(error.FreshCallDenied, runspace.dispatchActuation(0, execution));
     try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
     try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try runspace.getSlotSummary(handle)).status);
 }
@@ -2126,7 +2129,9 @@ test "actuation capsule refs thaw replay evidence and admission summaries" {
         .image = missing_receipt_image,
         .thaw_plan = missing_receipt_thaw,
     });
+    try std.testing.expect(!rejected_admission.accepted);
     try std.testing.expect(!rejected_admission.replay_only_actuation_feasible);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, rejected_admission.blockers[0]);
 }
 
 test "capsule image encode decode roundtrips dependency and object refs" {
