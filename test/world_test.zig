@@ -1419,6 +1419,15 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
     try std.testing.expect(reject_exec.fresh_called);
     try std.testing.expect(reject_exec.receipt.rejected);
 
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Actuation.Membrane.execute(.{
+        .policy = policy,
+        .intent = intent,
+        .envelope = envelope,
+        .descriptor = descriptor,
+        .actuator = .{ .pending = .{ .response_image = capped_response_image } },
+        .target_ref_fingerprint = 0x6102,
+        .world_surface_fingerprint = 0x6101,
+    }));
     const pending_exec = try world.Actuation.Membrane.execute(.{
         .policy = policy,
         .intent = intent,

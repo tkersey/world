@@ -18144,6 +18144,7 @@ pub const Actuation = struct {
             if (!policy.allowsResponseStatus(self.status)) return error.PortRuleDenied;
             if (self.status == .responded and self.frame_response_fingerprint == null) return error.MissingValueImage;
             if (self.status == .pending or self.status == .deferred) {
+                if (self.response_image != null or self.value_image_fingerprint != null) return error.InvalidFrameEncoding;
                 if (policy.max_pending_actuations) |max_pending| {
                     if (max_pending == 0) return error.PortRuleDenied;
                 }
