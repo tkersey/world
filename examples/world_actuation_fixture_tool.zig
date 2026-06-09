@@ -15,8 +15,13 @@ pub fn main(init: std.process.Init) !void {
         .request_fingerprint = 0xacc7_1001,
         .response_value_table_id = 1,
     });
+    var response_image = try world.Frame.ValueImage.fromValue(allocator, 1, 0xacc7_1002, null, @as(i32, 7), .portable);
+    defer response_image.deinit(allocator);
     const execution = try common.execute(ctx, world.Actuation.Policy.fixture_test, .{
-        .fixture = .{ .frame_response_fingerprint = 0xacc7_1002 },
+        .fixture = .{
+            .frame_response_fingerprint = 0xacc7_1002,
+            .response_image = response_image,
+        },
     }, 1);
     try execution.validate();
 

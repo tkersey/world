@@ -667,6 +667,21 @@ test "actuation membrane rejects mismatched envelope and descriptor bindings" {
         .world_surface_fingerprint = 0x4202,
     }));
 
+    const correct_table = world.Actuation.Envelope.init(.{
+        .intent_fingerprint = intent.intent_fingerprint,
+        .idempotency_key = key,
+        .expected_response_value_table_id = 7,
+    });
+    try std.testing.expectError(error.MissingValueImage, world.Actuation.Membrane.execute(.{
+        .policy = policy,
+        .intent = intent,
+        .envelope = correct_table,
+        .descriptor = descriptor,
+        .actuator = .{ .fixture = .{ .frame_response_fingerprint = 0x4208 } },
+        .target_ref_fingerprint = 0x4201,
+        .world_surface_fingerprint = 0x4202,
+    }));
+
     const wrong_intent_envelope = world.Actuation.Envelope.init(.{
         .intent_fingerprint = intent.intent_fingerprint +% 1,
         .idempotency_key = key,
@@ -1142,7 +1157,7 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
         .idempotency_key = key,
     });
     const replay_seed = world.Actuation.Receipt.init(.{
-        .intent_fingerprint = 0x6301,
+        .intent_fingerprint = replay_intent.intent_fingerprint,
         .envelope_fingerprint = 0x6302,
         .decision_fingerprint = 0x6303,
         .commit_fingerprint = 0x6304,
@@ -1162,7 +1177,7 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
         .policy = policy,
         .intent = replay_intent,
         .envelope = replay_envelope,
-        .descriptor = descriptor,
+        .descriptor = null,
         .actuator = .{ .replay = .{ .source = replay_source } },
         .target_ref_fingerprint = 0x6102,
         .world_surface_fingerprint = 0x6101,
@@ -1171,6 +1186,24 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
     try std.testing.expect(!replay_exec.fresh_called);
     try std.testing.expect(replay_exec.receipt.replayed);
     try std.testing.expectEqual(@as(?u64, 0x6306), replay_exec.response.frame_response_fingerprint);
+    const forged_replay_seed = world.Actuation.Receipt.init(.{
+        .intent_fingerprint = replay_intent.intent_fingerprint,
+        .envelope_fingerprint = 0x6302,
+        .decision_fingerprint = 0x6303,
+        .commit_fingerprint = 0x6304,
+        .response_fingerprint = 0x6305,
+        .frame_response_fingerprint = 0x6306,
+        .actuator_ref_fingerprint = ref.ref_fingerprint +% 1,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .target_ref_fingerprint = 0x6102,
+        .world_surface_fingerprint = 0x6101,
+        .world_port_id = 7,
+        .class = .deterministic_fixture,
+        .mode = .replay,
+        .replayed = true,
+    });
+    const forged_replay_source = world.Actuation.ReplaySource.init(.{ .receipts = &.{forged_replay_seed} });
+    try std.testing.expectError(error.ReplayRequestFingerprintMismatch, forged_replay_source.responseForIntent(replay_intent, .responded, .@"resume"));
     const rejected_replay_source = world.Actuation.ReplaySource.init(.{ .receipts = &.{reject_exec.receipt} });
     const rejected_replay_response = try rejected_replay_source.responseForIntent(replay_intent, .rejected, .@"resume");
     try std.testing.expectEqual(world.Actuation.ResponseStatus.rejected, rejected_replay_response.status);
@@ -1388,11 +1421,16 @@ test "actuation environment preflight and supervision ledger account host effect
         .expected_response_value_ref = descriptor.response_value_ref,
         .expected_response_value_table_id = descriptor.response_value_table_id,
     });
+    var response_image = try world.Frame.ValueImage.fromValue(std.testing.allocator, descriptor.response_value_table_id, 0xfeed_2002, null, @as(i32, 7), .portable);
+    defer response_image.deinit(std.testing.allocator);
     const execution = try world.Actuation.Membrane.execute(.{
         .policy = world.Actuation.Policy.strict_fresh,
         .intent = intent,
         .envelope = envelope,
-        .actuator = .{ .fixture = .{ .frame_response_fingerprint = 0xfeed_2002 } },
+        .actuator = .{ .fixture = .{
+            .frame_response_fingerprint = 0xfeed_2002,
+            .response_image = response_image,
+        } },
         .descriptor = descriptor,
         .explicit_mutation_approval = true,
         .attempt_number = 1,

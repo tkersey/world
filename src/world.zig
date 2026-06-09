@@ -18088,6 +18088,7 @@ pub const Actuation = struct {
             if (descriptor) |actual| {
                 if (!actual.allowed_response_kinds.allows(self.status)) return error.PortRuleDenied;
                 if (actual.world_port_id != null and actual.world_port_id.? != self.world_port_id) return error.WrongPortId;
+                if (self.status == .responded and actual.response_value_table_id != null and self.response_image == null) return error.MissingValueImage;
                 if (self.response_image) |image| {
                     if (actual.response_value_table_id) |expected| {
                         if (image.value_table_id != expected) return error.ProviderResultMismatch;
@@ -18525,8 +18526,16 @@ pub const Actuation = struct {
 
         pub fn responseForIntent(self: @This(), intent: Intent, expected_status: Actuation.ResponseStatus, expected_kind: ResponseKind) !Response {
             const receipt = try self.lookupByIdempotencyKey(intent.idempotency_key_fingerprint);
+            try receipt.validate();
+            if (receipt.actuator_ref_fingerprint != intent.actuator_ref_fingerprint) return error.ReplayRequestFingerprintMismatch;
+            if (receipt.target_ref_fingerprint != intent.target_ref_fingerprint) return error.ReplayRequestFingerprintMismatch;
+            if (receipt.world_surface_fingerprint != intent.world_surface_fingerprint) return error.ReplayRequestFingerprintMismatch;
             if (receipt.world_port_id != intent.world_port_id) return error.ReplayPortMismatch;
-            if (receipt.intent_fingerprint != intent.intent_fingerprint and receipt.mode != .replay and !(intent.requested_mode == .replay and receipt.mode == .fresh)) return error.ReplayRequestFingerprintMismatch;
+            if (receipt.class != intent.class) return error.ReplayRequestFingerprintMismatch;
+            if (receipt.idempotency_key_fingerprint != intent.idempotency_key_fingerprint) return error.ReplayRequestFingerprintMismatch;
+            const same_intent = receipt.intent_fingerprint == intent.intent_fingerprint;
+            const replaying_prior_receipt = intent.requested_mode == .replay and (receipt.mode == .fresh or receipt.mode == .replay);
+            if (!same_intent and !replaying_prior_receipt) return error.ReplayRequestFingerprintMismatch;
             const status = receipt.responseStatus();
             if (status != expected_status) return error.ReplayResponseKindMismatch;
             if (receipt.response_kind != expected_kind) return error.ReplayResponseKindMismatch;

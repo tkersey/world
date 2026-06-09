@@ -714,7 +714,7 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Actuation fixture tool example.",
             .expected_stdout =
             \\actuator_ref=10721e5b053f1ab3
-            \\actuation_receipt_fingerprint=738828b0a3041427
+            \\actuation_receipt_fingerprint=7fc95d40ba2c7ba5
             \\final_result=fixture-tool-ok
             \\
             ,
