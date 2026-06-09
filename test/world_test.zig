@@ -2758,10 +2758,10 @@ test "actuation capsule refs thaw replay evidence and admission summaries" {
         .image = decoded,
         .thaw_plan = thaw,
     });
-    try std.testing.expect(!admission.accepted);
+    try std.testing.expect(admission.accepted);
     try std.testing.expectEqual(@as(usize, 1), admission.required_actuator_count);
     try std.testing.expectEqual(@as(usize, 1), admission.actuation_receipt_count);
-    try std.testing.expect(!admission.replay_only_actuation_feasible);
+    try std.testing.expect(admission.replay_only_actuation_feasible);
     try std.testing.expectEqual(receipt_refs[0], admission.actuation_receipt_refs[0]);
 
     const duplicate_intent_refs = [_]u64{ 0xacc7_1101, 0xacc7_1102 };

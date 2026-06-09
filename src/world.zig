@@ -2446,7 +2446,7 @@ pub const Admission = struct {
             .verify => false,
             .restore_parked, .restore_completed, .restore_failed, .relink_and_restore => if (args.thaw_plan) |plan| if (args.restore_report) |report| plan.blockers.len == 0 and capsuleRestoreReportAccepted(report) else false else false,
         };
-        const replay_only_actuation_feasible = args.mode == .replay_only and capsuleReplayOnlyActuationEvidenceBound(args.image);
+        const replay_only_actuation_feasible = args.mode == .replay_only and capsuleReplayOnlyActuationEvidenceBound(args.image, args.thaw_plan);
         const verify_actuation_feasible = false;
         const actuation_feasible = switch (args.mode) {
             .replay_only => replay_only_actuation_feasible,
@@ -2503,10 +2503,33 @@ pub const Admission = struct {
         });
     }
 
-    fn capsuleReplayOnlyActuationEvidenceBound(image: Capsule.Image) bool {
-        return image.manifest.actuation_intent_fingerprints.len == 0 and
+    fn capsuleReplayOnlyActuationEvidenceBound(image: Capsule.Image, thaw_plan: ?Capsule.ThawPlan) bool {
+        if (image.manifest.actuation_intent_fingerprints.len == 0 and
             image.manifest.actuation_receipt_fingerprints.len == 0 and
-            image.manifest.actuation_journal_fingerprints.len == 0;
+            image.manifest.actuation_journal_fingerprints.len == 0) return true;
+        if (image.manifest.actuation_receipt_fingerprints.len == 0) return false;
+        const plan = thaw_plan orelse return false;
+        if (plan.receiver_actuation_binding_refs.len != 0) return false;
+        if (!admissionActuationRefsUnique(image.manifest.actuation_intent_fingerprints)) return false;
+        if (!admissionActuationRefsUnique(image.manifest.actuation_receipt_fingerprints)) return false;
+        if (!admissionActuationRefsUnique(image.manifest.actuation_journal_fingerprints)) return false;
+        if (!Capsule.u64SlicesEqual(plan.sender_actuation_receipt_refs, image.manifest.actuation_receipt_fingerprints)) return false;
+        if (!Capsule.u64SlicesEqual(image.runspace_image.actuation_intent_refs, image.manifest.actuation_intent_fingerprints)) return false;
+        if (!Capsule.u64SlicesEqual(image.runspace_image.actuation_receipt_refs, image.manifest.actuation_receipt_fingerprints)) return false;
+        if (!Capsule.u64SlicesEqual(image.runspace_image.actuation_journal_refs, image.manifest.actuation_journal_fingerprints)) return false;
+        if (!Capsule.u64SlicesEqual(image.actuation_intent_refs, image.manifest.actuation_intent_fingerprints)) return false;
+        if (!Capsule.u64SlicesEqual(image.actuation_receipt_refs, image.manifest.actuation_receipt_fingerprints)) return false;
+        if (!Capsule.u64SlicesEqual(image.actuation_journal_refs, image.manifest.actuation_journal_fingerprints)) return false;
+        return true;
+    }
+
+    fn admissionActuationRefsUnique(values: []const u64) bool {
+        for (values, 0..) |value, index| {
+            for (values[index + 1 ..]) |other| {
+                if (value == other) return false;
+            }
+        }
+        return true;
     }
 
     fn capsuleImageValid(image: Capsule.Image) bool {
@@ -24542,7 +24565,7 @@ pub const Capsule = struct {
         };
         request_owned = false;
         errdefer image.deinit(allocator);
-        try image.validate();
+        try image.validateForRunspaceImageFormat(runspace_image_format_version);
         return image;
     }
 
