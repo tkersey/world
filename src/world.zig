@@ -18231,6 +18231,15 @@ pub const Actuation = struct {
             if (self.receipt_fingerprint != fingerprintReceipt(self)) return error.InvalidFrameEncoding;
         }
 
+        pub fn responseStatus(self: @This()) Actuation.ResponseStatus {
+            if (self.rejected) return .rejected;
+            if (self.failed) return .failed;
+            if (self.pending) return .pending;
+            if (self.deferred) return .deferred;
+            if (self.cancelled) return .cancelled;
+            return .responded;
+        }
+
         fn receiptResponseStatusFlagCount(receipt: @This()) usize {
             return @as(usize, @intFromBool(receipt.pending)) +
                 @as(usize, @intFromBool(receipt.deferred)) +
@@ -18468,7 +18477,7 @@ pub const Actuation = struct {
             const receipt = try self.lookupByIdempotencyKey(intent.idempotency_key_fingerprint);
             if (receipt.world_port_id != intent.world_port_id) return error.ReplayPortMismatch;
             if (receipt.intent_fingerprint != intent.intent_fingerprint and receipt.mode != .replay and !(intent.requested_mode == .replay and receipt.mode == .fresh)) return error.ReplayRequestFingerprintMismatch;
-            const status: Actuation.ResponseStatus = if (receipt.rejected) .rejected else if (receipt.failed) .failed else if (receipt.pending) .pending else if (receipt.deferred) .deferred else if (receipt.cancelled) .cancelled else .responded;
+            const status = receipt.responseStatus();
             if (status != expected_status) return error.ReplayResponseKindMismatch;
             if (receipt.response_kind != expected_kind) return error.ReplayResponseKindMismatch;
             return Response.init(.{
@@ -18479,7 +18488,7 @@ pub const Actuation = struct {
                 .request_fingerprint = intent.frame_request_fingerprint,
                 .status = status,
                 .response_kind = receipt.response_kind,
-                .frame_response_fingerprint = receipt.frame_response_fingerprint orelse return error.ReplayMissing,
+                .frame_response_fingerprint = if (status == .responded) receipt.frame_response_fingerprint orelse return error.ReplayMissing else receipt.frame_response_fingerprint,
                 .value_image_fingerprint = receipt.response_value_image_fingerprint,
                 .metadata = "replay",
             });
@@ -18725,6 +18734,7 @@ pub const Actuation = struct {
                 if (self.receipt.commit_fingerprint != self.commit_value.commit_fingerprint) return error.InvalidFrameEncoding;
                 if (self.receipt.response_fingerprint != self.response.response_fingerprint) return error.InvalidFrameEncoding;
                 if (self.receipt.response_kind != self.response.response_kind) return error.InvalidFrameEncoding;
+                if (self.receipt.responseStatus() != self.response.status) return error.InvalidFrameEncoding;
                 if (self.receipt.frame_response_fingerprint != self.response.frame_response_fingerprint) return error.InvalidFrameEncoding;
                 if (self.receipt.response_value_image_fingerprint != self.response.value_image_fingerprint) return error.InvalidFrameEncoding;
                 if (self.receipt.actuator_ref_fingerprint != self.intent.actuator_ref_fingerprint) return error.InvalidFrameEncoding;

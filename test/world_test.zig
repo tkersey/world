@@ -1003,6 +1003,38 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
     var forged_response_exec = fixture_exec;
     forged_response_exec.response.status = .failed;
     try std.testing.expectError(error.InvalidFrameEncoding, forged_response_exec.validate());
+    var forged_status_exec = fixture_exec;
+    forged_status_exec.response = world.Actuation.Response.init(.{
+        .intent_fingerprint = fixture_exec.response.intent_fingerprint,
+        .commit_fingerprint = fixture_exec.response.commit_fingerprint,
+        .actuator_ref_fingerprint = fixture_exec.response.actuator_ref_fingerprint,
+        .world_port_id = fixture_exec.response.world_port_id,
+        .request_fingerprint = fixture_exec.response.request_fingerprint,
+        .status = .pending,
+        .response_kind = fixture_exec.response.response_kind,
+        .frame_response_fingerprint = fixture_exec.response.frame_response_fingerprint,
+        .value_image_fingerprint = fixture_exec.response.value_image_fingerprint,
+    });
+    forged_status_exec.receipt = world.Actuation.Receipt.init(.{
+        .intent_fingerprint = fixture_exec.receipt.intent_fingerprint,
+        .envelope_fingerprint = fixture_exec.receipt.envelope_fingerprint,
+        .decision_fingerprint = fixture_exec.receipt.decision_fingerprint,
+        .commit_fingerprint = fixture_exec.receipt.commit_fingerprint,
+        .response_fingerprint = forged_status_exec.response.response_fingerprint,
+        .response_kind = forged_status_exec.response.response_kind,
+        .frame_response_fingerprint = forged_status_exec.response.frame_response_fingerprint,
+        .response_value_image_fingerprint = forged_status_exec.response.value_image_fingerprint,
+        .actuator_ref_fingerprint = fixture_exec.receipt.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = fixture_exec.receipt.idempotency_key_fingerprint,
+        .target_ref_fingerprint = fixture_exec.receipt.target_ref_fingerprint,
+        .world_surface_fingerprint = fixture_exec.receipt.world_surface_fingerprint,
+        .world_port_id = fixture_exec.receipt.world_port_id,
+        .class = fixture_exec.receipt.class,
+        .mode = fixture_exec.receipt.mode,
+        .fresh_called = fixture_exec.receipt.fresh_called,
+        .attempt_number = fixture_exec.receipt.attempt_number,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_status_exec.validate());
 
     const native_exec = try world.Actuation.Membrane.execute(.{
         .policy = policy,
@@ -1116,6 +1148,10 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
     try std.testing.expect(!replay_exec.fresh_called);
     try std.testing.expect(replay_exec.receipt.replayed);
     try std.testing.expectEqual(@as(?u64, 0x6306), replay_exec.response.frame_response_fingerprint);
+    const rejected_replay_source = world.Actuation.ReplaySource.init(.{ .receipts = &.{reject_exec.receipt} });
+    const rejected_replay_response = try rejected_replay_source.responseForIntent(replay_intent, .rejected, .@"resume");
+    try std.testing.expectEqual(world.Actuation.ResponseStatus.rejected, rejected_replay_response.status);
+    try std.testing.expectEqual(@as(?u64, null), rejected_replay_response.frame_response_fingerprint);
     try std.testing.expectError(error.ReplayResponseKindMismatch, world.Actuation.Membrane.execute(.{
         .policy = policy,
         .intent = replay_intent,
