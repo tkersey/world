@@ -8495,6 +8495,14 @@ pub const Fabric = struct {
                 self.actuation_descriptor_fingerprint != null or
                 self.actuation_binding_fingerprint != null;
         }
+
+        pub fn coversRequiredPort(self: Fabric.Route) bool {
+            return switch (self.kind) {
+                .unsupported => false,
+                .adapter => self.hasActuationMetadata(),
+                else => true,
+            };
+        }
     };
 
     pub const Binding = struct {
@@ -8700,7 +8708,7 @@ pub const Fabric = struct {
             var port_id: u32 = 0;
             while (port_id < import_set.required_count) : (port_id += 1) {
                 const route = self.findRouteForPort(port_id) orelse return error.FabricMissingRoute;
-                if (route.kind == .unsupported or route.kind == .adapter) return error.FabricMissingRoute;
+                if (!route.coversRequiredPort()) return error.FabricMissingRoute;
             }
         }
 
@@ -8795,7 +8803,7 @@ pub const Fabric = struct {
             var unsupported_route_count: usize = 0;
             for (self.routes, 0..) |route, index| {
                 if (route.parent_world_port_id >= import_set.required_count) continue;
-                if (route.kind == .unsupported or route.kind == .adapter) {
+                if (!route.coversRequiredPort()) {
                     unsupported_route_count += 1;
                     continue;
                 }
@@ -10073,6 +10081,8 @@ pub const Runspace = struct {
             expected_response_kind: ResponseKind = .@"resume",
             environment_certificate_fingerprint: ?u64 = null,
             run_permit_fingerprint: ?u64 = null,
+            pending_actuation_intent_fingerprint: ?u64 = null,
+            pending_actuation_receipt_fingerprint: ?u64 = null,
             inserted_event_index: u64,
         }) !Runspace.PendingPort {
             if (self.max_pending_ports) |max| {
@@ -10091,6 +10101,8 @@ pub const Runspace = struct {
                 .expected_response_kind = args.expected_response_kind,
                 .environment_certificate_fingerprint = args.environment_certificate_fingerprint,
                 .run_permit_fingerprint = args.run_permit_fingerprint,
+                .pending_actuation_intent_fingerprint = args.pending_actuation_intent_fingerprint,
+                .pending_actuation_receipt_fingerprint = args.pending_actuation_receipt_fingerprint,
                 .inserted_event_index = args.inserted_event_index,
             });
             try self.pending.append(self.allocator, pending_port);
@@ -22149,6 +22161,8 @@ pub const Capsule = struct {
                     .expected_response_kind = pending_entry.expected_response_kind,
                     .environment_certificate_fingerprint = pending_entry.environment_certificate_fingerprint,
                     .run_permit_fingerprint = permit_fingerprint orelse pending_entry.run_permit_fingerprint,
+                    .pending_actuation_intent_fingerprint = pending_entry.pending_actuation_intent_fingerprint,
+                    .pending_actuation_receipt_fingerprint = pending_entry.pending_actuation_receipt_fingerprint,
                     .inserted_event_index = pending_entry.inserted_event_index,
                 });
                 runspace.next_mailbox_id += 1;
@@ -28828,7 +28842,7 @@ fn fabricCoveredMissingEnvironmentPortCount(comptime Target: type, comptime bind
         }
         if (!host_bound) {
             const route = plan.findRouteForPort(@intCast(world_port_id)) orelse return null;
-            if (route.kind == .unsupported or route.kind == .adapter) return null;
+            if (!route.coversRequiredPort()) return null;
             fabric_covered_missing += 1;
         }
     }
@@ -28854,7 +28868,7 @@ fn assemblyFabricCoveredMissingEnvironmentPortCount(comptime Target: type, compt
                     continue;
                 }
                 const route = plan.findRouteForPort(@intCast(world_port_id)) orelse continue;
-                if (route.kind == .unsupported or route.kind == .adapter) return error.InvalidFrameEncoding;
+                if (!route.coversRequiredPort()) return error.InvalidFrameEncoding;
                 if (covered) return error.InvalidFrameEncoding;
                 covered = true;
             }

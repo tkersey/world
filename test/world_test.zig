@@ -1631,6 +1631,25 @@ test "runspace actuation dispatch preserves pending mailbox state" {
     });
     try std.testing.expectEqual(receipt.receipt_fingerprint, thaw.sender_actuation_receipt_refs[0]);
 
+    var restored_mailbox = world.Runspace.Mailbox.init(std.testing.allocator, 8);
+    defer restored_mailbox.deinit();
+    const restored_pending = try restored_mailbox.push(.{
+        .run_handle = handle,
+        .mailbox_id = 0,
+        .request = marked_pending.request_frame.?,
+        .target_ref_fingerprint = marked_pending.target_ref_fingerprint,
+        .expected_response_kind = marked_pending.expected_response_kind,
+        .environment_certificate_fingerprint = marked_pending.environment_certificate_fingerprint,
+        .run_permit_fingerprint = marked_pending.run_permit_fingerprint,
+        .pending_actuation_intent_fingerprint = marked_pending.pending_actuation_intent_fingerprint,
+        .pending_actuation_receipt_fingerprint = marked_pending.pending_actuation_receipt_fingerprint,
+        .inserted_event_index = marked_pending.inserted_event_index,
+    });
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, restored_pending.status);
+    try std.testing.expectEqual(@as(?u64, intent.intent_fingerprint), restored_pending.pending_actuation_intent_fingerprint);
+    try std.testing.expectEqual(@as(?u64, receipt.receipt_fingerprint), restored_pending.pending_actuation_receipt_fingerprint);
+    try std.testing.expectError(error.PendingPortConsumed, restored_pending.withPendingActuation(intent.intent_fingerprint, receipt.receipt_fingerprint));
+
     const terminal_key = world.Actuation.IdempotencyKey.init(.{
         .target_ref_fingerprint = pending.target_ref_fingerprint,
         .world_surface_fingerprint = request.world_surface_fingerprint,
@@ -8588,6 +8607,13 @@ test "link actuation adapter fallback preserves route metadata" {
     try std.testing.expectEqual(@as(?u64, 0xacc7_0101), route.actuator_ref_fingerprint);
     try std.testing.expectEqual(@as(?u64, 0xacc7_0102), route.actuation_descriptor_fingerprint);
     try std.testing.expectEqual(@as(?u64, 0xacc7_0103), route.actuation_binding_fingerprint);
+    const coverage = linked.plan.fabric_plans[0].coverage(root_ref, world.ImportSet.fromTarget(fixtures.Ports.Target));
+    try coverage.validate();
+    try std.testing.expect(coverage.accepted);
+    try std.testing.expectEqual(@as(usize, 1), coverage.fabric_covered_port_count);
+    try std.testing.expectEqual(@as(usize, 0), coverage.missing_port_count);
+    try std.testing.expectEqual(@as(usize, 0), coverage.unsupported_port_count);
+    try linked.plan.fabric_plans[0].assertCoverage(world.ImportSet.fromTarget(fixtures.Ports.Target));
 }
 
 test "link unsupported descriptorless providers do not consume candidate cap" {
@@ -9559,6 +9585,32 @@ test "fabric plan coverage ordering depth and provider limits fail closed" {
     try std.testing.expectEqual(@as(usize, 0), adapter_coverage.fabric_covered_port_count);
     try std.testing.expectEqual(@as(usize, 1), adapter_coverage.missing_port_count);
     try std.testing.expectEqual(@as(usize, 1), adapter_coverage.unsupported_port_count);
+
+    const actuation_adapter_route = world.Fabric.Route.init(.{
+        .route_id = 3,
+        .kind = .adapter,
+        .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .parent_world_port_id = 0,
+        .actuator_ref_fingerprint = 0xacc7_0201,
+        .actuation_descriptor_fingerprint = 0xacc7_0202,
+        .actuation_binding_fingerprint = 0xacc7_0203,
+    });
+    const actuation_adapter_plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .routes = &.{actuation_adapter_route},
+    });
+    try actuation_adapter_plan.validate();
+    try actuation_adapter_plan.assertExecutableMappings();
+    try actuation_adapter_plan.assertCoverage(import_set);
+    const actuation_adapter_coverage = actuation_adapter_plan.coverage(parent_ref, import_set);
+    try actuation_adapter_coverage.validate();
+    try std.testing.expect(actuation_adapter_coverage.accepted);
+    try std.testing.expectEqual(@as(usize, 1), actuation_adapter_coverage.fabric_covered_port_count);
+    try std.testing.expectEqual(@as(usize, 0), actuation_adapter_coverage.missing_port_count);
+    try std.testing.expectEqual(@as(usize, 0), actuation_adapter_coverage.unsupported_port_count);
 }
 
 test "fabric binding invocation receipt and coverage fingerprints are stable" {
