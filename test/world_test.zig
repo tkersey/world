@@ -846,8 +846,19 @@ test "actuation verify report records matches and divergences" {
         .class = .observation,
         .requested_mode = .verify,
     });
+    const prior_replay_intent = world.Actuation.Intent.init(.{
+        .actuator_ref_fingerprint = 0x5101,
+        .descriptor_fingerprint = 0x5102,
+        .target_ref_fingerprint = 0x5103,
+        .world_surface_fingerprint = 0x5104,
+        .world_port_id = 0,
+        .frame_request_fingerprint = 0x5105,
+        .idempotency_key_fingerprint = 0x5106,
+        .class = .observation,
+        .requested_mode = .replay,
+    });
     const expected = world.Actuation.Receipt.init(.{
-        .intent_fingerprint = intent.intent_fingerprint,
+        .intent_fingerprint = prior_replay_intent.intent_fingerprint,
         .envelope_fingerprint = 0x5201,
         .decision_fingerprint = 0x5202,
         .commit_fingerprint = 0x5203,
@@ -880,6 +891,7 @@ test "actuation verify report records matches and divergences" {
     });
     const report = world.Actuation.VerifyReport.compare(intent, expected, fresh);
     const same = world.Actuation.VerifyReport.compare(intent, expected, fresh);
+    try std.testing.expect(prior_replay_intent.intent_fingerprint != intent.intent_fingerprint);
     try std.testing.expect(report.matched);
     try std.testing.expectEqual(report.report_fingerprint, same.report_fingerprint);
 
@@ -1156,6 +1168,22 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
         .encoded_frame_request_fingerprint = replay_intent.frame_request_fingerprint,
         .idempotency_key = key,
     });
+    const stale_replay_seed = world.Actuation.Receipt.init(.{
+        .intent_fingerprint = replay_intent.intent_fingerprint,
+        .envelope_fingerprint = 0x6312,
+        .decision_fingerprint = 0x6313,
+        .commit_fingerprint = 0x6314,
+        .response_fingerprint = 0x6315,
+        .frame_response_fingerprint = 0x6316,
+        .actuator_ref_fingerprint = ref.ref_fingerprint,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .target_ref_fingerprint = 0x6102,
+        .world_surface_fingerprint = 0x6101,
+        .world_port_id = 7,
+        .class = .deterministic_fixture,
+        .mode = .replay,
+        .replayed = true,
+    });
     const replay_seed = world.Actuation.Receipt.init(.{
         .intent_fingerprint = replay_intent.intent_fingerprint,
         .envelope_fingerprint = 0x6302,
@@ -1172,7 +1200,7 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
         .mode = .replay,
         .replayed = true,
     });
-    const replay_source = world.Actuation.ReplaySource.init(.{ .receipts = &.{replay_seed} });
+    const replay_source = world.Actuation.ReplaySource.init(.{ .receipts = &.{ stale_replay_seed, replay_seed } });
     const replay_exec = try world.Actuation.Membrane.execute(.{
         .policy = policy,
         .intent = replay_intent,
@@ -8610,6 +8638,30 @@ test "link descriptorless adapter reports unsupported route kind" {
     try std.testing.expectEqual(world.Linker.NormalForm.partial_with_blockers, linked.plan.normal_form);
     try std.testing.expectEqual(@as(usize, 0), linked.plan.fabric_plans.len);
     try std.testing.expect(linked.graph.hasBlocker(.UnsupportedRouteKind));
+}
+
+test "link actuation catalog fingerprint distinguishes missing and zero port metadata" {
+    const missing_port = world.Linker.Catalog.Entry.init(.{
+        .provider_kind = .environment_adapter,
+        .actuator_ref_fingerprint = 0xacc7_0201,
+        .actuation_descriptor_fingerprint = 0xacc7_0202,
+        .actuation_binding_fingerprint = 0xacc7_0203,
+        .actuation_import_requirement_fingerprint = 0xacc7_0204,
+        .label = "actuation-adapter",
+    });
+    const port_zero = world.Linker.Catalog.Entry.init(.{
+        .provider_kind = .environment_adapter,
+        .actuator_ref_fingerprint = 0xacc7_0201,
+        .actuation_descriptor_fingerprint = 0xacc7_0202,
+        .actuation_binding_fingerprint = 0xacc7_0203,
+        .actuation_import_requirement_fingerprint = 0xacc7_0204,
+        .actuation_world_port_id = 0,
+        .label = "actuation-adapter",
+    });
+
+    try std.testing.expect(missing_port.hasActuationCandidate());
+    try std.testing.expect(port_zero.hasActuationCandidate());
+    try std.testing.expect(missing_port.entry_fingerprint != port_zero.entry_fingerprint);
 }
 
 test "link actuation adapter fallback preserves route metadata" {

@@ -2391,7 +2391,7 @@ pub fn Linker(comptime W: type) type {
                 hashOptionalU64(&hasher, entry.actuation_descriptor_fingerprint);
                 hashOptionalU64(&hasher, entry.actuation_binding_fingerprint);
                 hashOptionalU64(&hasher, entry.actuation_import_requirement_fingerprint);
-                if (entry.actuation_world_port_id) |world_port_id| hashU64(&hasher, world_port_id) else hashU64(&hasher, 0);
+                hashOptionalU32(&hasher, entry.actuation_world_port_id);
             }
             hashBytes(&hasher, entry.label);
             hashBytes(&hasher, entry.metadata);

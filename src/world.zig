@@ -18518,7 +18518,10 @@ pub const Actuation = struct {
         }
 
         pub fn lookupByIdempotencyKey(self: @This(), key_fingerprint: u64) !Receipt {
-            for (self.receipts) |receipt| {
+            var index = self.receipts.len;
+            while (index > 0) {
+                index -= 1;
+                const receipt = self.receipts[index];
                 if (receipt.idempotency_key_fingerprint == key_fingerprint) return receipt;
             }
             return error.ReplayMissing;
@@ -18607,7 +18610,7 @@ pub const Actuation = struct {
             }
             const expected_status = statusFromReceipt(expected.?);
             const fresh_status = statusFromReceipt(fresh.?);
-            const identity_matched = receiptBindsIntent(expected.?, intent) and receiptBindsIntent(fresh.?, intent);
+            const identity_matched = receiptBindsRequest(expected.?, intent) and receiptBindsRequest(fresh.?, intent);
             const matched = identity_matched and
                 expected_status == fresh_status and
                 expected.?.response_kind == fresh.?.response_kind and
@@ -18634,9 +18637,8 @@ pub const Actuation = struct {
             });
         }
 
-        fn receiptBindsIntent(receipt: Receipt, intent: Intent) bool {
-            return receipt.intent_fingerprint == intent.intent_fingerprint and
-                receipt.idempotency_key_fingerprint == intent.idempotency_key_fingerprint and
+        fn receiptBindsRequest(receipt: Receipt, intent: Intent) bool {
+            return receipt.idempotency_key_fingerprint == intent.idempotency_key_fingerprint and
                 receipt.actuator_ref_fingerprint == intent.actuator_ref_fingerprint and
                 receipt.target_ref_fingerprint == intent.target_ref_fingerprint and
                 receipt.world_surface_fingerprint == intent.world_surface_fingerprint and
