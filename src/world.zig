@@ -17497,7 +17497,6 @@ pub const Actuation = struct {
         require_portable_value_images: bool = true,
         reject_native_only_values: bool = true,
         require_actuation_receipts: bool = true,
-        require_actuation_journal: bool = false,
         allow_retry: bool = false,
         max_actuation_calls: ?usize = 0,
         max_pending_actuations: ?usize = 0,
@@ -17527,7 +17526,6 @@ pub const Actuation = struct {
             require_portable_value_images: bool = true,
             reject_native_only_values: bool = true,
             require_actuation_receipts: bool = true,
-            require_actuation_journal: bool = false,
             allow_retry: bool = false,
             max_actuation_calls: ?usize = 0,
             max_pending_actuations: ?usize = 0,
@@ -17556,7 +17554,6 @@ pub const Actuation = struct {
                 .require_portable_value_images = args.require_portable_value_images,
                 .reject_native_only_values = args.reject_native_only_values,
                 .require_actuation_receipts = args.require_actuation_receipts,
-                .require_actuation_journal = args.require_actuation_journal,
                 .allow_retry = args.allow_retry,
                 .max_actuation_calls = args.max_actuation_calls,
                 .max_pending_actuations = args.max_pending_actuations,
@@ -17653,7 +17650,6 @@ pub const Actuation = struct {
             .allow_idempotent_mutation = true,
             .require_idempotency_key = false,
             .require_approval_for_mutation = false,
-            .require_actuation_journal = true,
             .allow_retry = true,
             .max_actuation_calls = null,
             .max_pending_actuations = null,
@@ -17672,7 +17668,6 @@ pub const Actuation = struct {
             .allow_deferred_actuation = true,
             .allow_observation = true,
             .require_idempotency_key = false,
-            .require_actuation_journal = true,
             .allow_retry = true,
             .max_actuation_calls = null,
             .max_pending_actuations = null,
@@ -18105,6 +18100,11 @@ pub const Actuation = struct {
             if (self.intent_fingerprint == 0 or self.actuator_ref_fingerprint == 0 or self.request_fingerprint == 0) return error.InvalidFrameEncoding;
             if (!policy.allowsResponseStatus(self.status)) return error.PortRuleDenied;
             if (self.status == .responded and self.frame_response_fingerprint == null) return error.MissingValueImage;
+            if (self.status == .pending or self.status == .deferred) {
+                if (policy.max_pending_actuations) |max_pending| {
+                    if (max_pending == 0) return error.PortRuleDenied;
+                }
+            }
             if (descriptor) |actual| {
                 if (!actual.allowed_response_kinds.allows(self.status)) return error.PortRuleDenied;
                 if (actual.world_port_id != null and actual.world_port_id.? != self.world_port_id) return error.WrongPortId;
@@ -18718,6 +18718,9 @@ pub const Actuation = struct {
         pub fn decide(input: DecisionInput) Decision {
             if (!input.policy.allowsMode(input.intent.requested_mode)) return Decision.denied(input.intent, input.policy, "mode denied");
             if (!input.policy.allowsClass(input.intent.class)) return Decision.denied(input.intent, input.policy, "class denied");
+            if (input.policy.max_actuation_calls) |max_calls| {
+                if (max_calls == 0) return Decision.denied(input.intent, input.policy, "actuation call limit reached");
+            }
             if (input.attempt_number > 1 and !input.policy.allow_retry) return Decision.denied(input.intent, input.policy, "retry denied");
             if (input.policy.requiresKeyForClass(input.intent.class, input.intent.requested_mode) and !input.key_present) return Decision.denied(input.intent, input.policy, "idempotency key required");
             if (input.intent.class.isMutation() and input.policy.require_approval_for_mutation and !input.explicit_mutation_approval) return Decision.denied(input.intent, input.policy, "mutation approval required");
@@ -18924,6 +18927,7 @@ pub const Actuation = struct {
         fn validatePrecommitActuationPermit(args: ExecuteArgs) !void {
             if (args.intent.run_permit_fingerprint == null) return;
             const permit = args.run_permit orelse return error.SupervisionDenied;
+            try validateActuationRunPermitIntegrity(permit);
             if (permit.permit_fingerprint != args.intent.run_permit_fingerprint.?) return error.SupervisionDenied;
             if (permit.target_ref_fingerprint != args.intent.target_ref_fingerprint) return error.SupervisionDenied;
             if (permit.world_surface_fingerprint != args.intent.world_surface_fingerprint) return error.SupervisionDenied;
@@ -18943,6 +18947,26 @@ pub const Actuation = struct {
                 if (rule.world_surface_fingerprint != args.intent.world_surface_fingerprint) return error.SupervisionDenied;
                 if (!rule.permitsMode(args.intent.requested_mode)) return error.SupervisionDenied;
             }
+        }
+
+        fn validateActuationRunPermitIntegrity(permit: RunPermit) !void {
+            const policy = permit.policy.withFingerprint();
+            if (permit.policy.policy_fingerprint != policy.policy_fingerprint) return error.SupervisionDenied;
+            if (permit.supervision_policy_fingerprint != policy.policy_fingerprint) return error.SupervisionDenied;
+            const budget = permit.budget.withFingerprint();
+            if (permit.budget.budget_fingerprint != budget.budget_fingerprint) return error.SupervisionDenied;
+            if (permit.budget_fingerprint != budget.budget_fingerprint) return error.SupervisionDenied;
+            const cost_model = permit.cost_model.withFingerprint();
+            if (permit.cost_model.cost_model_fingerprint != cost_model.cost_model_fingerprint) return error.SupervisionDenied;
+            if (permit.cost_model_fingerprint != cost_model.cost_model_fingerprint) return error.SupervisionDenied;
+            for (permit.port_rules, 0..) |rule, index| {
+                if (rule.world_surface_fingerprint != permit.world_surface_fingerprint) return error.SupervisionDenied;
+                if (rule.rule_fingerprint != fingerprintPortRule(rule)) return error.SupervisionDenied;
+                for (permit.port_rules[0..index]) |previous| {
+                    if (previous.world_port_id == rule.world_port_id) return error.SupervisionDenied;
+                }
+            }
+            if (permit.permit_fingerprint != fingerprintRunPermit(permit)) return error.SupervisionDenied;
         }
 
         fn validateExecutionBindings(args: ExecuteArgs) !void {
@@ -19230,7 +19254,6 @@ pub const Actuation = struct {
         hashBool(&hasher, policy.require_portable_value_images);
         hashBool(&hasher, policy.reject_native_only_values);
         hashBool(&hasher, policy.require_actuation_receipts);
-        hashBool(&hasher, policy.require_actuation_journal);
         hashBool(&hasher, policy.allow_retry);
         hashOptionalUsize(&hasher, policy.max_actuation_calls);
         hashOptionalUsize(&hasher, policy.max_pending_actuations);

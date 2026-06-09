@@ -506,6 +506,19 @@ test "actuation policy idempotency key and intent gates are deterministic" {
     const denied = world.Actuation.Membrane.decide(.{ .policy = strict, .intent = intent, .key_present = false });
     try denied.validate();
     try std.testing.expect(!denied.approved);
+    const call_limited_policy = world.Actuation.Policy.init(.{
+        .allow_fresh_actuation = true,
+        .allow_deterministic_fixture = true,
+        .max_actuation_calls = 0,
+    });
+    const call_limited = world.Actuation.Membrane.decide(.{
+        .policy = call_limited_policy,
+        .intent = intent,
+        .key_present = true,
+        .explicit_mutation_approval = true,
+    });
+    try call_limited.validate();
+    try std.testing.expect(!call_limited.approved);
     const approved = world.Actuation.Membrane.decide(.{
         .policy = strict,
         .intent = intent,
@@ -1577,6 +1590,22 @@ test "actuation environment preflight and supervision ledger account host effect
         .expected_response_value_ref = descriptor.response_value_ref,
         .expected_response_value_table_id = descriptor.response_value_table_id,
     });
+    const pending_limited_policy = world.Actuation.Policy.init(.{
+        .allow_fresh_actuation = true,
+        .allow_pending_actuation = true,
+        .allow_idempotent_mutation = true,
+        .max_actuation_calls = null,
+        .max_pending_actuations = 0,
+    });
+    try std.testing.expectError(error.PortRuleDenied, world.Actuation.Membrane.execute(.{
+        .policy = pending_limited_policy,
+        .intent = intent,
+        .envelope = envelope,
+        .actuator = .{ .pending = .{} },
+        .explicit_mutation_approval = true,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+    }));
     var response_image = try world.Frame.ValueImage.fromValue(std.testing.allocator, descriptor.response_value_table_id, 0xfeed_2002, null, @as(i32, 7), .portable);
     defer response_image.deinit(std.testing.allocator);
     const execution = try world.Actuation.Membrane.execute(.{
@@ -1610,6 +1639,42 @@ test "actuation environment preflight and supervision ledger account host effect
         }),
         .budget = world.Budget.init(.{ .max_actuation_calls = 1 }),
     });
+    const permitted_intent = world.Actuation.Intent.init(.{
+        .actuator_ref_fingerprint = ToolActuator.actuator_ref.ref_fingerprint,
+        .descriptor_fingerprint = descriptor.descriptor_fingerprint,
+        .binding_fingerprint = binding.binding_fingerprint,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+        .world_port_id = 0,
+        .frame_request_fingerprint = 0xfeed_1001,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .class = .idempotent_mutation,
+        .requested_mode = .fresh,
+        .run_permit_fingerprint = permit.permit_fingerprint,
+    });
+    const permitted_envelope = world.Actuation.Envelope.init(.{
+        .intent_fingerprint = permitted_intent.intent_fingerprint,
+        .idempotency_key = key,
+        .expected_response_value_ref = descriptor.response_value_ref,
+        .expected_response_value_table_id = descriptor.response_value_table_id,
+    });
+    var forged_permit = permit;
+    forged_permit.policy.allow_actuation = false;
+    try std.testing.expectError(error.SupervisionDenied, world.Actuation.Membrane.execute(.{
+        .policy = world.Actuation.Policy.strict_fresh,
+        .intent = permitted_intent,
+        .envelope = permitted_envelope,
+        .actuator = .{ .fixture = .{
+            .frame_response_fingerprint = 0xfeed_2002,
+            .response_image = response_image,
+        } },
+        .descriptor = descriptor,
+        .run_permit = forged_permit,
+        .explicit_mutation_approval = true,
+        .attempt_number = 1,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+    }));
     var supervisor = try world.Supervision.Supervisor.init(std.testing.allocator, permit, 1);
     defer supervisor.deinit();
     try supervisor.beforeActuationCommit(intent, true);
@@ -2498,6 +2563,7 @@ test "runspace actuation dispatch uses installed supervisor before mailbox resum
         .policy = world.Actuation.Policy.init(.{
             .allow_fresh_actuation = true,
             .allow_irreversible_mutation = true,
+            .max_actuation_calls = null,
         }),
         .intent = intent,
         .envelope = envelope,
