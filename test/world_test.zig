@@ -2277,7 +2277,7 @@ test "runspace actuation dispatch preserves pending mailbox state" {
     try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
 }
 
-test "runspace pending actuation completion does not consume second call budget" {
+test "runspace pending actuation fresh completion consumes call budget" {
     var runtime = boundary.Runtime.init(std.testing.allocator);
     defer runtime.deinit();
     const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
@@ -2383,10 +2383,9 @@ test "runspace pending actuation completion does not consume second call budget"
         .target_ref_fingerprint = pending.target_ref_fingerprint,
         .world_surface_fingerprint = request.world_surface_fingerprint,
     });
-    const terminal_receipt = try runspace.dispatchActuation(0, terminal_execution);
-    try std.testing.expect(terminal_receipt.cancelled);
-    try std.testing.expectEqual(world.Runspace.PendingStatus.cancelled, (try runspace.mailbox.get(0)).status);
-    try std.testing.expectEqual(world.Runspace.RunStatus.failed, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectError(error.BudgetExceeded, runspace.dispatchActuation(0, terminal_execution));
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try runspace.getSlotSummary(handle)).status);
 }
 
 test "runspace actuation dispatch preserves successful response value image" {

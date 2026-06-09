@@ -11196,7 +11196,8 @@ pub const Runspace = struct {
         const accounting = try self.responseFrameAccounting(response);
         var supervisor_snapshot = try self.snapshotSlotSupervisor(index);
         defer supervisor_snapshot.deinit(self.allocator);
-        const resolves_pending_actuation = pending.pending_actuation_intent_fingerprint == execution.intent.intent_fingerprint;
+        const resolves_pending_actuation = pending.pending_actuation_intent_fingerprint == execution.intent.intent_fingerprint and
+            !execution.receipt.fresh_called;
         if (resolves_pending_actuation) {
             try self.superviseActuationResolution(index, execution, accounting.response_bytes);
         } else {
