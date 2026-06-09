@@ -18020,6 +18020,7 @@ pub const Actuation = struct {
             if (self.decision_fingerprint != decision.decision_fingerprint) return error.InvalidFrameEncoding;
             if (!decision.approved and self.status != .not_started and self.status != .rejected and self.status != .cancelled) return error.SupervisionDenied;
             if (self.fresh_called and !decision.approved) return error.SupervisionDenied;
+            if (decision.approved and self.status == .rejected and !self.fresh_called) return error.InvalidFrameEncoding;
             if (self.status == .replayed and self.fresh_called) return error.InvalidFrameEncoding;
         }
 
@@ -18029,6 +18030,13 @@ pub const Actuation = struct {
             if (self.intent_fingerprint == 0 or self.decision_fingerprint == 0 or self.envelope_fingerprint == 0) return error.InvalidFrameEncoding;
             if (self.idempotency_key_fingerprint == 0) return error.InvalidFrameEncoding;
             if (self.metadata.len > world_max_decoded_byte_field_len) return error.InvalidFrameEncoding;
+            if (self.replayed != (self.status == .replayed)) return error.InvalidFrameEncoding;
+            if (self.verified != (self.status == .verified)) return error.InvalidFrameEncoding;
+            const status_requires_fresh = switch (self.status) {
+                .committed, .commit_pending, .commit_failed, .cancelled => true,
+                .not_started, .replayed, .verified, .rejected => false,
+            };
+            if (self.status != .rejected and self.fresh_called != status_requires_fresh) return error.InvalidFrameEncoding;
             if (self.commit_fingerprint != fingerprintCommit(self)) return error.InvalidFrameEncoding;
         }
 
@@ -20289,6 +20297,12 @@ pub const Capsule = struct {
                 if (self.pending_port_fingerprints[index] != entry.pending_port_fingerprint) return error.InvalidFrameEncoding;
                 if (self.single_use_status_fingerprints[index] != fingerprintPendingPortImageSingleUseStatus(entry)) return error.InvalidFrameEncoding;
                 if (self.response_routing_status_fingerprints[index] != fingerprintPendingPortImageRoutingStatus(entry)) return error.InvalidFrameEncoding;
+                if (entry.pending_actuation_intent_fingerprint) |fingerprint| {
+                    if (!u64SliceContains(self.pending_actuation_intent_fingerprints, fingerprint)) return error.InvalidFrameEncoding;
+                }
+                if (entry.pending_actuation_receipt_fingerprint) |fingerprint| {
+                    if (!u64SliceContains(self.committed_actuation_receipt_fingerprints, fingerprint)) return error.InvalidFrameEncoding;
+                }
             }
             try validateUniqueU64Slice(self.pending_port_fingerprints);
             try validateUniqueU64Slice(self.consumed_port_fingerprints);

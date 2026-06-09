@@ -1035,6 +1035,36 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
     try fixture_exec.validate();
     try std.testing.expect(fixture_exec.fresh_called);
     try std.testing.expect(fixture_exec.receipt.receipt_fingerprint != 0);
+    const forged_committed_without_fresh = world.Actuation.Commit.init(.{
+        .intent_fingerprint = fixture_exec.commit_value.intent_fingerprint,
+        .decision_fingerprint = fixture_exec.commit_value.decision_fingerprint,
+        .envelope_fingerprint = fixture_exec.commit_value.envelope_fingerprint,
+        .idempotency_key_fingerprint = fixture_exec.commit_value.idempotency_key_fingerprint,
+        .attempt_number = fixture_exec.commit_value.attempt_number,
+        .status = .committed,
+        .fresh_called = false,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_committed_without_fresh.validateAfterDecision(fixture_exec.decision));
+    const forged_pending_without_fresh = world.Actuation.Commit.init(.{
+        .intent_fingerprint = fixture_exec.commit_value.intent_fingerprint,
+        .decision_fingerprint = fixture_exec.commit_value.decision_fingerprint,
+        .envelope_fingerprint = fixture_exec.commit_value.envelope_fingerprint,
+        .idempotency_key_fingerprint = fixture_exec.commit_value.idempotency_key_fingerprint,
+        .attempt_number = fixture_exec.commit_value.attempt_number,
+        .status = .commit_pending,
+        .fresh_called = false,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_pending_without_fresh.validateAfterDecision(fixture_exec.decision));
+    const forged_verified_without_flag = world.Actuation.Commit.init(.{
+        .intent_fingerprint = fixture_exec.commit_value.intent_fingerprint,
+        .decision_fingerprint = fixture_exec.commit_value.decision_fingerprint,
+        .envelope_fingerprint = fixture_exec.commit_value.envelope_fingerprint,
+        .idempotency_key_fingerprint = fixture_exec.commit_value.idempotency_key_fingerprint,
+        .attempt_number = fixture_exec.commit_value.attempt_number,
+        .status = .verified,
+        .verified = false,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_verified_without_flag.validateAfterDecision(fixture_exec.decision));
     const retry_denied = try world.Actuation.Membrane.execute(.{
         .policy = world.Actuation.Policy.strict_fresh,
         .intent = intent,
@@ -1884,6 +1914,17 @@ test "runspace actuation dispatch preserves pending mailbox state" {
     try std.testing.expectEqual(receipt.receipt_fingerprint, image.actuation_receipt_refs[0]);
     try std.testing.expectEqual(intent.intent_fingerprint, image.runspace_image.mailbox_image.?.pending_actuation_intent_fingerprints[0]);
     try std.testing.expectEqual(receipt.receipt_fingerprint, image.runspace_image.mailbox_image.?.committed_actuation_receipt_fingerprints[0]);
+    const original_mailbox_image = image.runspace_image.mailbox_image.?;
+    const hidden_entry_actuation_mailbox = world.Capsule.MailboxImage.init(.{
+        .pending_port_entries = original_mailbox_image.pending_port_entries,
+        .pending_port_fingerprints = original_mailbox_image.pending_port_fingerprints,
+        .consumed_port_fingerprints = original_mailbox_image.consumed_port_fingerprints,
+        .next_mailbox_id = original_mailbox_image.next_mailbox_id,
+        .generation = original_mailbox_image.generation,
+        .single_use_status_fingerprints = original_mailbox_image.single_use_status_fingerprints,
+        .response_routing_status_fingerprints = original_mailbox_image.response_routing_status_fingerprints,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, hidden_entry_actuation_mailbox.validate(.{}));
     const thaw = try world.Capsule.planThaw(image, pending.target_ref_fingerprint, 0, null, .{
         .mode = .replay_only,
         .require_local_permit = false,
