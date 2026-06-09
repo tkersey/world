@@ -24691,7 +24691,7 @@ pub const Capsule = struct {
         pending_actuation_intent_fingerprints_owned = false;
         committed_actuation_receipt_fingerprints_owned = false;
         errdefer image.deinit(allocator);
-        try image.validate(options);
+        try image.validateForRunspaceImageFormat(options, runspace_image_format_version);
         return image;
     }
 
