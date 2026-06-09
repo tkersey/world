@@ -8498,8 +8498,7 @@ pub const Fabric = struct {
 
         pub fn coversRequiredPort(self: Fabric.Route) bool {
             return switch (self.kind) {
-                .unsupported => false,
-                .adapter => self.hasActuationMetadata(),
+                .unsupported, .adapter => false,
                 else => true,
             };
         }
@@ -24348,7 +24347,7 @@ pub const Capsule = struct {
         try writeU8(out, allocator, @intFromEnum(image.status));
     }
 
-    fn decodePendingPortImage(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) !PendingPortImage {
+    fn decodePendingPortImage(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, runspace_image_format_version: u32) !PendingPortImage {
         const fingerprint_version = try readU32(bytes, cursor);
         const pending_port_image_fingerprint = try readU64(bytes, cursor);
         const pending_port_fingerprint = try readU64(bytes, cursor);
@@ -24359,6 +24358,19 @@ pub const Capsule = struct {
         var request = try Frame.Request.decode(allocator, request_bytes);
         var request_owned = true;
         errdefer if (request_owned) request.deinit(allocator);
+        const expected_response_kind = try enumFromByte(ResponseKind, try readU8(bytes, cursor));
+        const expected_response_value_table_id = try readOptionalU32(bytes, cursor);
+        const target_ref_fingerprint = try readU64(bytes, cursor);
+        const environment_certificate_fingerprint = try readOptionalU64(bytes, cursor);
+        const run_permit_fingerprint = try readOptionalU64(bytes, cursor);
+        const pending_actuation_intent_fingerprint = if (capsuleRunspaceImageFormatSupportsActuationRefs(runspace_image_format_version))
+            try readOptionalU64(bytes, cursor)
+        else
+            null;
+        const pending_actuation_receipt_fingerprint = if (capsuleRunspaceImageFormatSupportsActuationRefs(runspace_image_format_version))
+            try readOptionalU64(bytes, cursor)
+        else
+            null;
         var image = PendingPortImage{
             .fingerprint_version = fingerprint_version,
             .pending_port_image_fingerprint = pending_port_image_fingerprint,
@@ -24366,13 +24378,13 @@ pub const Capsule = struct {
             .original_run_handle_fingerprint = original_run_handle_fingerprint,
             .mailbox_id = mailbox_id,
             .request_frame = request,
-            .expected_response_kind = try enumFromByte(ResponseKind, try readU8(bytes, cursor)),
-            .expected_response_value_table_id = try readOptionalU32(bytes, cursor),
-            .target_ref_fingerprint = try readU64(bytes, cursor),
-            .environment_certificate_fingerprint = try readOptionalU64(bytes, cursor),
-            .run_permit_fingerprint = try readOptionalU64(bytes, cursor),
-            .pending_actuation_intent_fingerprint = try readOptionalU64(bytes, cursor),
-            .pending_actuation_receipt_fingerprint = try readOptionalU64(bytes, cursor),
+            .expected_response_kind = expected_response_kind,
+            .expected_response_value_table_id = expected_response_value_table_id,
+            .target_ref_fingerprint = target_ref_fingerprint,
+            .environment_certificate_fingerprint = environment_certificate_fingerprint,
+            .run_permit_fingerprint = run_permit_fingerprint,
+            .pending_actuation_intent_fingerprint = pending_actuation_intent_fingerprint,
+            .pending_actuation_receipt_fingerprint = pending_actuation_receipt_fingerprint,
             .inserted_event_index = try readU64(bytes, cursor),
             .status = try enumFromByte(Runspace.PendingStatus, try readU8(bytes, cursor)),
             .owns_memory = true,
@@ -24388,7 +24400,7 @@ pub const Capsule = struct {
         for (values) |value| try encodePendingPortImage(out, allocator, value);
     }
 
-    fn readPendingPortImageSliceOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, options: ValidateOptions) ![]PendingPortImage {
+    fn readPendingPortImageSliceOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, options: ValidateOptions, runspace_image_format_version: u32) ![]PendingPortImage {
         const count = try readU64AsUsize(bytes, cursor);
         if (count > options.max_pending_ports) return error.InvalidFrameEncoding;
         const values = try allocator.alloc(PendingPortImage, count);
@@ -24398,7 +24410,7 @@ pub const Capsule = struct {
             allocator.free(values);
         }
         for (values) |*value| {
-            value.* = try decodePendingPortImage(allocator, bytes, cursor);
+            value.* = try decodePendingPortImage(allocator, bytes, cursor, runspace_image_format_version);
             initialized += 1;
         }
         return values;
@@ -24418,10 +24430,10 @@ pub const Capsule = struct {
         try writeU64Slice(out, allocator, image.committed_actuation_receipt_fingerprints);
     }
 
-    fn decodeMailboxImage(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, options: ValidateOptions) !MailboxImage {
+    fn decodeMailboxImage(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, options: ValidateOptions, runspace_image_format_version: u32) !MailboxImage {
         const fingerprint_version = try readU32(bytes, cursor);
         const mailbox_image_fingerprint = try readU64(bytes, cursor);
-        const pending_port_entries = try readPendingPortImageSliceOwned(allocator, bytes, cursor, options);
+        const pending_port_entries = try readPendingPortImageSliceOwned(allocator, bytes, cursor, options, runspace_image_format_version);
         var pending_port_entries_owned = true;
         errdefer if (pending_port_entries_owned) {
             for (pending_port_entries) |*entry| entry.deinit(allocator);
@@ -24441,12 +24453,18 @@ pub const Capsule = struct {
         const response_routing_status_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_pending_ports);
         var response_routing_status_fingerprints_owned = true;
         errdefer if (response_routing_status_fingerprints_owned) allocator.free(response_routing_status_fingerprints);
-        const pending_actuation_intent_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
-        var pending_actuation_intent_fingerprints_owned = true;
+        var pending_actuation_intent_fingerprints: []const u64 = &.{};
+        var pending_actuation_intent_fingerprints_owned = false;
         errdefer if (pending_actuation_intent_fingerprints_owned) allocator.free(pending_actuation_intent_fingerprints);
-        const committed_actuation_receipt_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
-        var committed_actuation_receipt_fingerprints_owned = true;
+        var committed_actuation_receipt_fingerprints: []const u64 = &.{};
+        var committed_actuation_receipt_fingerprints_owned = false;
         errdefer if (committed_actuation_receipt_fingerprints_owned) allocator.free(committed_actuation_receipt_fingerprints);
+        if (capsuleRunspaceImageFormatSupportsActuationRefs(runspace_image_format_version)) {
+            pending_actuation_intent_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+            pending_actuation_intent_fingerprints_owned = true;
+            committed_actuation_receipt_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+            committed_actuation_receipt_fingerprints_owned = true;
+        }
         var image = MailboxImage{
             .fingerprint_version = fingerprint_version,
             .mailbox_image_fingerprint = mailbox_image_fingerprint,
@@ -24482,9 +24500,9 @@ pub const Capsule = struct {
         }
     }
 
-    fn readOptionalMailboxImage(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, options: ValidateOptions) !?MailboxImage {
+    fn readOptionalMailboxImage(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, options: ValidateOptions, runspace_image_format_version: u32) !?MailboxImage {
         if (!try readBool(bytes, cursor)) return null;
-        return try decodeMailboxImage(allocator, bytes, cursor, options);
+        return try decodeMailboxImage(allocator, bytes, cursor, options, runspace_image_format_version);
     }
 
     fn encodeRunspaceImage(out: *std.ArrayList(u8), allocator: std.mem.Allocator, image: RunspaceImage) !void {
@@ -24528,7 +24546,7 @@ pub const Capsule = struct {
             for (run_slots) |*slot| slot.deinit(allocator);
             allocator.free(run_slots);
         };
-        var mailbox_image = try readOptionalMailboxImage(allocator, bytes, cursor, options);
+        var mailbox_image = try readOptionalMailboxImage(allocator, bytes, cursor, options, format_version);
         var mailbox_image_owned = mailbox_image != null;
         errdefer if (mailbox_image_owned) if (mailbox_image) |*mailbox| mailbox.deinit(allocator);
         const runspace_event_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
@@ -24678,6 +24696,63 @@ pub const Capsule = struct {
         try std.testing.expectEqual(@as(usize, 0), decoded.actuation_receipt_refs.len);
         try std.testing.expectEqual(@as(usize, 0), decoded.actuation_journal_refs.len);
         try std.testing.expectEqualStrings("legacy-runspace", decoded.metadata);
+
+        const legacy_mailbox = MailboxImage.init(.{ .next_mailbox_id = 7 });
+        const legacy_events = [_]u64{0x5150_aa03};
+        var legacy_with_mailbox = RunspaceImage{
+            .format_version = 1,
+            .fingerprint_version = world_capsule_runspace_image_fingerprint_version,
+            .image_fingerprint = 0,
+            .runspace_fingerprint = 0x5150_aa04,
+            .runspace_report_fingerprint = 0x5150_aa05,
+            .mailbox_image = legacy_mailbox,
+            .runspace_event_fingerprints = &legacy_events,
+            .metadata = "legacy-runspace-mailbox",
+        };
+        legacy_with_mailbox.image_fingerprint = fingerprintRunspaceImage(legacy_with_mailbox);
+
+        var encoded_mailbox: std.ArrayList(u8) = .empty;
+        defer encoded_mailbox.deinit(allocator);
+        try writeU32(&encoded_mailbox, allocator, legacy_with_mailbox.format_version);
+        try writeU32(&encoded_mailbox, allocator, legacy_with_mailbox.fingerprint_version);
+        try writeU64(&encoded_mailbox, allocator, legacy_with_mailbox.image_fingerprint);
+        try writeU64(&encoded_mailbox, allocator, legacy_with_mailbox.runspace_fingerprint);
+        try writeU64(&encoded_mailbox, allocator, legacy_with_mailbox.runspace_report_fingerprint);
+        try writeU64Slice(&encoded_mailbox, allocator, legacy_with_mailbox.run_handle_mappings);
+        try writeRunSlotImageSlice(&encoded_mailbox, allocator, legacy_with_mailbox.run_slots);
+        try writeBool(&encoded_mailbox, allocator, true);
+        try writeU32(&encoded_mailbox, allocator, legacy_mailbox.fingerprint_version);
+        try writeU64(&encoded_mailbox, allocator, legacy_mailbox.mailbox_image_fingerprint);
+        try writePendingPortImageSlice(&encoded_mailbox, allocator, legacy_mailbox.pending_port_entries);
+        try writeU64Slice(&encoded_mailbox, allocator, legacy_mailbox.pending_port_fingerprints);
+        try writeU64Slice(&encoded_mailbox, allocator, legacy_mailbox.consumed_port_fingerprints);
+        try writeU64(&encoded_mailbox, allocator, legacy_mailbox.next_mailbox_id);
+        try writeU64(&encoded_mailbox, allocator, legacy_mailbox.generation);
+        try writeU64Slice(&encoded_mailbox, allocator, legacy_mailbox.single_use_status_fingerprints);
+        try writeU64Slice(&encoded_mailbox, allocator, legacy_mailbox.response_routing_status_fingerprints);
+        try writeU64Slice(&encoded_mailbox, allocator, legacy_with_mailbox.runspace_event_fingerprints);
+        try writeU64Slice(&encoded_mailbox, allocator, legacy_with_mailbox.root_run_handle_fingerprints);
+        try writeU64Slice(&encoded_mailbox, allocator, legacy_with_mailbox.provider_run_handle_fingerprints);
+        try writeU64Slice(&encoded_mailbox, allocator, legacy_with_mailbox.branch_refs);
+        try writeU64Slice(&encoded_mailbox, allocator, legacy_with_mailbox.checkpoint_refs);
+        try writeU64Slice(&encoded_mailbox, allocator, legacy_with_mailbox.transcript_image_refs);
+        try writeU64Slice(&encoded_mailbox, allocator, legacy_with_mailbox.run_image_refs);
+        try writeU64Slice(&encoded_mailbox, allocator, legacy_with_mailbox.run_receipt_refs);
+        try writeU64Slice(&encoded_mailbox, allocator, legacy_with_mailbox.admission_receipt_refs);
+        try writeU64Slice(&encoded_mailbox, allocator, legacy_with_mailbox.permit_refs);
+        try writeU64Slice(&encoded_mailbox, allocator, legacy_with_mailbox.active_fabric_invocation_refs);
+        try writeBytes(&encoded_mailbox, allocator, legacy_with_mailbox.metadata);
+
+        var mailbox_cursor: usize = 0;
+        var decoded_mailbox = try decodeRunspaceImage(allocator, encoded_mailbox.items, &mailbox_cursor, .{});
+        defer decoded_mailbox.deinit(allocator);
+        try std.testing.expectEqual(encoded_mailbox.items.len, mailbox_cursor);
+        try std.testing.expect(decoded_mailbox.mailbox_image != null);
+        try std.testing.expectEqual(@as(usize, 0), decoded_mailbox.mailbox_image.?.pending_actuation_intent_fingerprints.len);
+        try std.testing.expectEqual(@as(usize, 0), decoded_mailbox.mailbox_image.?.committed_actuation_receipt_fingerprints.len);
+        try std.testing.expectEqual(@as(usize, 1), decoded_mailbox.runspace_event_fingerprints.len);
+        try std.testing.expectEqual(legacy_events[0], decoded_mailbox.runspace_event_fingerprints[0]);
+        try std.testing.expectEqualStrings("legacy-runspace-mailbox", decoded_mailbox.metadata);
     }
 
     fn encodeFabricImage(out: *std.ArrayList(u8), allocator: std.mem.Allocator, image: FabricImage) !void {
