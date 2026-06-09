@@ -18810,6 +18810,10 @@ pub const Actuation = struct {
                 if (self.receipt.run_permit_fingerprint != self.intent.run_permit_fingerprint) return error.InvalidFrameEncoding;
                 if (self.receipt.environment_certificate_fingerprint != self.intent.environment_certificate_fingerprint) return error.InvalidFrameEncoding;
                 if (self.fresh_called != self.commit_value.fresh_called) return error.InvalidFrameEncoding;
+                if (self.receipt.fresh_called != self.commit_value.fresh_called) return error.InvalidFrameEncoding;
+                if (self.receipt.replayed != self.commit_value.replayed) return error.InvalidFrameEncoding;
+                if (self.receipt.verified != self.commit_value.verified) return error.InvalidFrameEncoding;
+                if (self.receipt.attempt_number != self.commit_value.attempt_number) return error.InvalidFrameEncoding;
                 if (self.parent_terminal != self.response.isTerminalForParent()) return error.InvalidFrameEncoding;
                 if (!self.decision.approved and self.fresh_called) return error.SupervisionDenied;
                 if (self.receipt.mode == .replay and self.fresh_called) return error.InvalidFrameEncoding;
@@ -18818,6 +18822,7 @@ pub const Actuation = struct {
 
         pub fn execute(args: ExecuteArgs) !Execution {
             try args.intent.validate();
+            try args.policy.validate();
             try args.envelope.validate(args.policy);
             try validateExecutionBindings(args);
             const decision = decide(.{

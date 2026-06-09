@@ -1008,6 +1008,17 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
     try fixture_exec.validate();
     try std.testing.expect(fixture_exec.fresh_called);
     try std.testing.expect(fixture_exec.receipt.receipt_fingerprint != 0);
+    var stale_policy = policy;
+    stale_policy.allow_deterministic_fixture = false;
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Actuation.Membrane.execute(.{
+        .policy = stale_policy,
+        .intent = intent,
+        .envelope = envelope,
+        .descriptor = descriptor,
+        .actuator = .{ .fixture = .{ .frame_response_fingerprint = 0x6201 } },
+        .target_ref_fingerprint = 0x6102,
+        .world_surface_fingerprint = 0x6101,
+    }));
     var capped_response_image = try world.Frame.ValueImage.fromValue(std.testing.allocator, null, 0x6201, null, @as(i32, 7), .portable);
     defer capped_response_image.deinit(std.testing.allocator);
     const capped_response_policy = world.Actuation.Policy.init(.{
@@ -1050,6 +1061,49 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
         .attempt_number = fixture_exec.receipt.attempt_number,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, forged_exec.validate());
+    var forged_attempt_exec = fixture_exec;
+    forged_attempt_exec.receipt = world.Actuation.Receipt.init(.{
+        .intent_fingerprint = fixture_exec.receipt.intent_fingerprint,
+        .envelope_fingerprint = fixture_exec.receipt.envelope_fingerprint,
+        .decision_fingerprint = fixture_exec.receipt.decision_fingerprint,
+        .commit_fingerprint = fixture_exec.receipt.commit_fingerprint,
+        .response_fingerprint = fixture_exec.response.response_fingerprint,
+        .response_kind = fixture_exec.response.response_kind,
+        .frame_response_fingerprint = fixture_exec.receipt.frame_response_fingerprint,
+        .response_value_image_fingerprint = fixture_exec.receipt.response_value_image_fingerprint,
+        .actuator_ref_fingerprint = fixture_exec.receipt.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = fixture_exec.receipt.idempotency_key_fingerprint,
+        .target_ref_fingerprint = fixture_exec.receipt.target_ref_fingerprint,
+        .world_surface_fingerprint = fixture_exec.receipt.world_surface_fingerprint,
+        .world_port_id = fixture_exec.receipt.world_port_id,
+        .class = fixture_exec.receipt.class,
+        .mode = fixture_exec.receipt.mode,
+        .fresh_called = fixture_exec.receipt.fresh_called,
+        .attempt_number = fixture_exec.receipt.attempt_number +% 1,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_attempt_exec.validate());
+    var forged_replayed_exec = fixture_exec;
+    forged_replayed_exec.receipt = world.Actuation.Receipt.init(.{
+        .intent_fingerprint = fixture_exec.receipt.intent_fingerprint,
+        .envelope_fingerprint = fixture_exec.receipt.envelope_fingerprint,
+        .decision_fingerprint = fixture_exec.receipt.decision_fingerprint,
+        .commit_fingerprint = fixture_exec.receipt.commit_fingerprint,
+        .response_fingerprint = fixture_exec.response.response_fingerprint,
+        .response_kind = fixture_exec.response.response_kind,
+        .frame_response_fingerprint = fixture_exec.receipt.frame_response_fingerprint,
+        .response_value_image_fingerprint = fixture_exec.receipt.response_value_image_fingerprint,
+        .actuator_ref_fingerprint = fixture_exec.receipt.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = fixture_exec.receipt.idempotency_key_fingerprint,
+        .target_ref_fingerprint = fixture_exec.receipt.target_ref_fingerprint,
+        .world_surface_fingerprint = fixture_exec.receipt.world_surface_fingerprint,
+        .world_port_id = fixture_exec.receipt.world_port_id,
+        .class = fixture_exec.receipt.class,
+        .mode = fixture_exec.receipt.mode,
+        .fresh_called = fixture_exec.receipt.fresh_called,
+        .replayed = true,
+        .attempt_number = fixture_exec.receipt.attempt_number,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_replayed_exec.validate());
     var forged_response_exec = fixture_exec;
     forged_response_exec.response.status = .failed;
     try std.testing.expectError(error.InvalidFrameEncoding, forged_response_exec.validate());
