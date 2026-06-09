@@ -5480,6 +5480,7 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
             const binding_policy = actuationBindingPolicy(binding) orelse return rejectedAcceptance(target_ref, requested_mode, &.{.MissingActuator});
             if (!actuation_policy.allowsClass(binding_policy.class)) return rejectedAcceptance(target_ref, requested_mode, &.{.ActuationPolicyMismatch});
             if (!actuation_policy.allowsValuePolicy(binding_policy.value_policy)) return rejectedAcceptance(target_ref, requested_mode, &.{.ActuationValuePolicyMismatch});
+            if (!environmentAllowsActuationValuePolicy(binding_policy.value_policy)) return rejectedAcceptance(target_ref, requested_mode, &.{.ActuationValuePolicyMismatch});
             if (binding.target_ref_fingerprint != target_ref.target_ref_fingerprint) return rejectedAcceptance(target_ref, requested_mode, &.{.HandoffTargetMismatch});
             if (binding.world_surface_fingerprint != target_ref.world_surface_fingerprint) return rejectedAcceptance(target_ref, requested_mode, &.{.WrongWorldSurface});
             if (binding.world_port_id >= Target.WorldPortTable.entries.len) return rejectedAcceptance(target_ref, requested_mode, &.{.WrongPortId});
@@ -5591,7 +5592,7 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
                 const port_id: u32 = @intCast(world_port_id);
                 const environment_has_binding = comptime environmentHasBindingForPort(@This(), port_id);
                 if (environment_has_binding) continue;
-                if (actuationHasBindingForPort(port_id, requested_mode)) count += 1;
+                if (actuationBindingForPort(port_id, requested_mode)) |_| count += 1;
             }
             return count;
         }
@@ -5604,10 +5605,12 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
             inline for (actuation_bindings) |BindingDecl| {
                 if (comptime BindingDecl.TargetType == Target) {
                     if (BindingDecl.world_port_id == world_port_id and BindingDecl.binding_mode_policy.allows(requested_mode)) {
-                        return .{
-                            .class = BindingDecl.actuator_ref.class,
-                            .value_policy = BindingDecl.value_policy,
-                        };
+                        if (environmentAllowsActuationValuePolicy(BindingDecl.value_policy)) {
+                            return .{
+                                .class = BindingDecl.actuator_ref.class,
+                                .value_policy = BindingDecl.value_policy,
+                            };
+                        }
                     }
                 }
             }
@@ -5633,12 +5636,19 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
                         binding.validate() catch return .MissingActuator;
                         if (binding.target_ref_fingerprint != target_ref.target_ref_fingerprint) return .HandoffTargetMismatch;
                         if (binding.world_surface_fingerprint != target_ref.world_surface_fingerprint) return .WrongWorldSurface;
+                        if (!environmentAllowsActuationValuePolicy(BindingDecl.value_policy)) return .ActuationValuePolicyMismatch;
                         const requirement = ImportRequirement.fromTargetPort(Target, BindingDecl.world_port_id);
                         if (binding.import_requirement_fingerprint != requirement.requirement_fingerprint) return .ActuationValuePolicyMismatch;
                     }
                 }
             }
             return null;
+        }
+
+        fn environmentAllowsActuationValuePolicy(value_policy: ValuePolicy) bool {
+            if (policy.require_portable_values and !value_policy.require_portable_values) return false;
+            if (!policy.allow_native_only_values and value_policy.allow_native_only_values) return false;
+            return true;
         }
 
         fn acceptanceReportWithPermitFromReport(base_report: AcceptanceReport, requested_mode: Mode, transcript_image_available: bool, permit: RunPermit, fabric_plan: ?Fabric.Plan, comptime fabric_owns_bound_ports: bool, comptime allow_linker_scoped_fabric_plan: bool) AcceptanceReport {
@@ -18076,6 +18086,9 @@ pub const Actuation = struct {
             if (self.response_image) |image| {
                 try validateValueImage(image);
                 if (self.value_image_fingerprint == null or self.value_image_fingerprint.? != image.value_image_fingerprint) return error.InvalidFrameEncoding;
+                if (policy.max_actuation_response_bytes) |max| {
+                    if (image.bytes.len > max or valueImageEncodedByteSize(image) > max) return error.PortRuleDenied;
+                }
             }
             if (self.reason.len > world_max_decoded_byte_field_len) return error.InvalidFrameEncoding;
             if (self.metadata.len > (policy.max_actuation_metadata_bytes orelse world_max_decoded_byte_field_len)) return error.InvalidFrameEncoding;

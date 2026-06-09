@@ -981,6 +981,29 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
     try fixture_exec.validate();
     try std.testing.expect(fixture_exec.fresh_called);
     try std.testing.expect(fixture_exec.receipt.receipt_fingerprint != 0);
+    var capped_response_image = try world.Frame.ValueImage.fromValue(std.testing.allocator, null, 0x6201, null, @as(i32, 7), .portable);
+    defer capped_response_image.deinit(std.testing.allocator);
+    const capped_response_policy = world.Actuation.Policy.init(.{
+        .allow_fresh_actuation = true,
+        .allow_deterministic_fixture = true,
+        .require_idempotency_key = false,
+        .require_approval_for_mutation = false,
+        .max_actuation_calls = null,
+        .max_pending_actuations = null,
+        .max_actuation_response_bytes = 1,
+    });
+    try std.testing.expectError(error.PortRuleDenied, world.Actuation.Membrane.execute(.{
+        .policy = capped_response_policy,
+        .intent = intent,
+        .envelope = envelope,
+        .descriptor = descriptor,
+        .actuator = .{ .fixture = .{
+            .frame_response_fingerprint = 0x6201,
+            .response_image = capped_response_image,
+        } },
+        .target_ref_fingerprint = 0x6102,
+        .world_surface_fingerprint = 0x6101,
+    }));
     var forged_exec = fixture_exec;
     forged_exec.receipt = world.Actuation.Receipt.init(.{
         .intent_fingerprint = fixture_exec.receipt.intent_fingerprint,
@@ -1282,6 +1305,13 @@ test "actuation environment preflight and supervision ledger account host effect
     const native_value_preflight = NativeValueEnv.preflightActuation(native_value_binding, world.Actuation.Policy.strict_fresh);
     try std.testing.expect(!native_value_preflight.accepted);
     try std.testing.expectEqualSlices(world.AcceptanceBlocker, &.{.ActuationValuePolicyMismatch}, native_value_preflight.blockers);
+    const NativeStrictReplayEnv = world.Environment(fixtures.Ports.Target, .{
+        .actuation_bindings = .{NativeValueBinding},
+        .policy = world.EnvironmentPolicy.strict_replay,
+    });
+    const native_strict_replay = NativeStrictReplayEnv.acceptanceReport(.replay, true);
+    try std.testing.expect(!native_strict_replay.accepted);
+    try std.testing.expectEqualSlices(world.AcceptanceBlocker, &.{.ActuationValuePolicyMismatch}, native_strict_replay.blockers);
 
     const ReplayOnlyActuator = world.actuator(.{
         .kind = .replay_source,
