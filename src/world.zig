@@ -9670,6 +9670,7 @@ pub const Runspace = struct {
         current_state: RunState,
         status: RunStatus,
         admission_receipt_fingerprint: ?u64 = null,
+        environment_certificate_fingerprint: ?u64 = null,
         run_permit_fingerprint: ?u64 = null,
         fabric_plan_fingerprint: ?u64 = null,
         run_receipt_fingerprint: ?u64 = null,
@@ -9714,6 +9715,7 @@ pub const Runspace = struct {
                 .current_state = state,
                 .status = .admitted,
                 .admission_receipt_fingerprint = handle.admission_receipt_fingerprint,
+                .environment_certificate_fingerprint = null,
                 .run_permit_fingerprint = handle.permit_fingerprint,
                 .branch_id = handle.branch_id,
             };
@@ -9725,6 +9727,7 @@ pub const Runspace = struct {
             current_state: RunState,
             status: RunStatus = .admitted,
             admission_receipt_fingerprint: ?u64 = null,
+            environment_certificate_fingerprint: ?u64 = null,
             run_permit_fingerprint: ?u64 = null,
             fabric_plan_fingerprint: ?u64 = null,
             run_receipt_fingerprint: ?u64 = null,
@@ -9748,6 +9751,7 @@ pub const Runspace = struct {
                 .current_state = args.current_state,
                 .status = args.status,
                 .admission_receipt_fingerprint = args.admission_receipt_fingerprint,
+                .environment_certificate_fingerprint = args.environment_certificate_fingerprint,
                 .run_permit_fingerprint = args.run_permit_fingerprint,
                 .fabric_plan_fingerprint = args.fabric_plan_fingerprint,
                 .run_receipt_fingerprint = args.run_receipt_fingerprint,
@@ -9922,6 +9926,7 @@ pub const Runspace = struct {
                 .run_state_fingerprint = self.current_state.run_state_fingerprint,
                 .status = self.status,
                 .admission_receipt_fingerprint = self.admission_receipt_fingerprint,
+                .environment_certificate_fingerprint = self.environment_certificate_fingerprint,
                 .run_permit_fingerprint = self.run_permit_fingerprint,
                 .run_receipt_fingerprint = self.run_receipt_fingerprint,
                 .pending_mailbox_id = self.pending_mailbox_id,
@@ -9940,6 +9945,7 @@ pub const Runspace = struct {
         run_state_fingerprint: u64,
         status: RunStatus,
         admission_receipt_fingerprint: ?u64 = null,
+        environment_certificate_fingerprint: ?u64 = null,
         run_permit_fingerprint: ?u64 = null,
         run_receipt_fingerprint: ?u64 = null,
         pending_mailbox_id: ?u64 = null,
@@ -10645,6 +10651,7 @@ pub const Runspace = struct {
             .current_state = slot_current_state,
             .status = if (installed_image == null) .admitted else try statusFromInstallableRunImageState(slot_current_state),
             .admission_receipt_fingerprint = admitted_run.admission_receipt_fingerprint,
+            .environment_certificate_fingerprint = admitted_run.environment_certificate_fingerprint,
             .run_permit_fingerprint = installed_permit_fingerprint,
             .fabric_plan_fingerprint = if (admitted_run.fabric_plan) |plan| plan.plan_fingerprint else null,
             .run_receipt_fingerprint = if (installed_image) |image| image.prior_run_receipt_fingerprint else null,
@@ -10732,6 +10739,7 @@ pub const Runspace = struct {
             .target_ref = installed_target_ref,
             .current_state = installed_state,
             .status = run_status,
+            .environment_certificate_fingerprint = image.environment_certificate_fingerprint,
             .run_permit_fingerprint = image.prior_run_permit_fingerprint,
             .run_receipt_fingerprint = image.prior_run_receipt_fingerprint,
             .branch_id = if (installed_state.branch_id == 0) null else installed_state.branch_id,
@@ -10783,6 +10791,7 @@ pub const Runspace = struct {
             .target_ref = target_ref,
             .current_state = state,
             .status = .admitted,
+            .environment_certificate_fingerprint = if (permit) |run_permit| run_permit.environment_certificate_fingerprint else null,
             .run_permit_fingerprint = if (permit) |run_permit| run_permit.permit_fingerprint else null,
             .supervisor = supervisor,
         });
@@ -10872,6 +10881,7 @@ pub const Runspace = struct {
             .target_ref = target_ref,
             .current_state = state,
             .status = .runnable,
+            .environment_certificate_fingerprint = if (maybe_permit) |permit| permit.environment_certificate_fingerprint else null,
             .run_permit_fingerprint = if (maybe_permit) |permit| permit.permit_fingerprint else null,
             .driver = driver,
             .driver_world_port_count = Target.WorldPortTable.entries.len,
@@ -10931,6 +10941,7 @@ pub const Runspace = struct {
             .target_ref = installed_target_ref,
             .current_state = installed_state,
             .status = statusFromRunState(installed_state),
+            .environment_certificate_fingerprint = if (permit) |run_permit| run_permit.environment_certificate_fingerprint else image.environment_certificate_fingerprint,
             .run_permit_fingerprint = image.prior_run_permit_fingerprint,
             .branch_id = if (installed_state.branch_id == 0) null else installed_state.branch_id,
             .checkpoint_fingerprint = installed_state.checkpoint_fingerprint,
@@ -13580,6 +13591,7 @@ pub const Runspace = struct {
             .current_state = branch_state,
             .status = .admitted,
             .admission_receipt_fingerprint = parent.admission_receipt_fingerprint,
+            .environment_certificate_fingerprint = parent.environment_certificate_fingerprint,
             .run_permit_fingerprint = parent.run_permit_fingerprint,
             .run_receipt_fingerprint = parent.run_receipt_fingerprint,
             .branch_id = branch_id,
@@ -14112,7 +14124,7 @@ pub const Runspace = struct {
             .mailbox_id = mailbox_id,
             .request = request,
             .target_ref_fingerprint = slot.target_ref.target_ref_fingerprint,
-            .environment_certificate_fingerprint = null,
+            .environment_certificate_fingerprint = slot.environment_certificate_fingerprint,
             .run_permit_fingerprint = slot.run_permit_fingerprint,
             .inserted_event_index = self.next_event_index,
         });
@@ -14268,7 +14280,7 @@ pub const Runspace = struct {
                     .mailbox_id = mailbox_id,
                     .request = owned_request,
                     .target_ref_fingerprint = slot.target_ref.target_ref_fingerprint,
-                    .environment_certificate_fingerprint = null,
+                    .environment_certificate_fingerprint = slot.environment_certificate_fingerprint,
                     .run_permit_fingerprint = slot.run_permit_fingerprint,
                     .inserted_event_index = self.next_event_index,
                 }) catch |err| {
@@ -18973,6 +18985,8 @@ pub const Actuation = struct {
             if (permit.permit_fingerprint != args.intent.run_permit_fingerprint.?) return error.SupervisionDenied;
             if (permit.target_ref_fingerprint != args.intent.target_ref_fingerprint) return error.SupervisionDenied;
             if (permit.world_surface_fingerprint != args.intent.world_surface_fingerprint) return error.SupervisionDenied;
+            if (args.intent.environment_certificate_fingerprint == null or
+                permit.environment_certificate_fingerprint != args.intent.environment_certificate_fingerprint.?) return error.SupervisionDenied;
             if (permit.mode != args.intent.requested_mode) return error.SupervisionDenied;
             const policy = permit.policy;
             if (!policy.allow_actuation) return error.SupervisionDenied;

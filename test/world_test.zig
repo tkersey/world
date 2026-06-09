@@ -1090,6 +1090,89 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
     try fixture_exec.validate();
     try std.testing.expect(fixture_exec.fresh_called);
     try std.testing.expect(fixture_exec.receipt.receipt_fingerprint != 0);
+    const permit_policy = world.SupervisionPolicy.init(.{
+        .allow_actuation = true,
+        .allow_fresh_actuation = true,
+        .allow_fresh_calls = true,
+        .allow_native_adapters = true,
+    });
+    const valid_permit = world.RunPermit.init(.{
+        .target_ref_fingerprint = 0x6102,
+        .world_surface_fingerprint = 0x6101,
+        .target_certificate_fingerprint = 0x6108,
+        .environment_certificate_fingerprint = 0x6109,
+        .binding_plan_fingerprint = 0x610a,
+        .mode = .fresh,
+        .policy = permit_policy,
+    });
+    const permitted_intent = world.Actuation.Intent.init(.{
+        .actuator_ref_fingerprint = ref.ref_fingerprint,
+        .descriptor_fingerprint = descriptor.descriptor_fingerprint,
+        .target_ref_fingerprint = 0x6102,
+        .world_surface_fingerprint = 0x6101,
+        .world_port_id = 7,
+        .frame_request_fingerprint = 0x6103,
+        .encoded_frame_request_fingerprint = 0x6103,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .run_permit_fingerprint = valid_permit.permit_fingerprint,
+        .environment_certificate_fingerprint = valid_permit.environment_certificate_fingerprint,
+        .class = .deterministic_fixture,
+        .requested_mode = .fresh,
+    });
+    const permitted_envelope = world.Actuation.Envelope.init(.{
+        .intent_fingerprint = permitted_intent.intent_fingerprint,
+        .encoded_frame_request_fingerprint = permitted_intent.frame_request_fingerprint,
+        .idempotency_key = key,
+    });
+    const permitted_exec = try world.Actuation.Membrane.execute(.{
+        .policy = policy,
+        .intent = permitted_intent,
+        .envelope = permitted_envelope,
+        .descriptor = descriptor,
+        .actuator = .{ .fixture = .{ .frame_response_fingerprint = 0x6205 } },
+        .run_permit = valid_permit,
+        .target_ref_fingerprint = 0x6102,
+        .world_surface_fingerprint = 0x6101,
+    });
+    try permitted_exec.validate();
+    const wrong_environment_permit = world.RunPermit.init(.{
+        .target_ref_fingerprint = valid_permit.target_ref_fingerprint,
+        .world_surface_fingerprint = valid_permit.world_surface_fingerprint,
+        .target_certificate_fingerprint = valid_permit.target_certificate_fingerprint,
+        .environment_certificate_fingerprint = valid_permit.environment_certificate_fingerprint +% 1,
+        .binding_plan_fingerprint = valid_permit.binding_plan_fingerprint,
+        .mode = valid_permit.mode,
+        .policy = permit_policy,
+    });
+    const forged_permit_intent = world.Actuation.Intent.init(.{
+        .actuator_ref_fingerprint = ref.ref_fingerprint,
+        .descriptor_fingerprint = descriptor.descriptor_fingerprint,
+        .target_ref_fingerprint = 0x6102,
+        .world_surface_fingerprint = 0x6101,
+        .world_port_id = 7,
+        .frame_request_fingerprint = 0x6103,
+        .encoded_frame_request_fingerprint = 0x6103,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .run_permit_fingerprint = wrong_environment_permit.permit_fingerprint,
+        .environment_certificate_fingerprint = valid_permit.environment_certificate_fingerprint,
+        .class = .deterministic_fixture,
+        .requested_mode = .fresh,
+    });
+    const forged_permit_envelope = world.Actuation.Envelope.init(.{
+        .intent_fingerprint = forged_permit_intent.intent_fingerprint,
+        .encoded_frame_request_fingerprint = forged_permit_intent.frame_request_fingerprint,
+        .idempotency_key = key,
+    });
+    try std.testing.expectError(error.SupervisionDenied, world.Actuation.Membrane.execute(.{
+        .policy = policy,
+        .intent = forged_permit_intent,
+        .envelope = forged_permit_envelope,
+        .descriptor = descriptor,
+        .actuator = .{ .fixture = .{ .frame_response_fingerprint = 0x6206 } },
+        .run_permit = wrong_environment_permit,
+        .target_ref_fingerprint = 0x6102,
+        .world_surface_fingerprint = 0x6101,
+    }));
     const forged_committed_without_fresh = world.Actuation.Commit.init(.{
         .intent_fingerprint = fixture_exec.commit_value.intent_fingerprint,
         .decision_fingerprint = fixture_exec.commit_value.decision_fingerprint,
@@ -2490,7 +2573,7 @@ test "runspace actuation dispatch accounts terminal response bytes" {
         .encoded_frame_request_fingerprint = request.frame_fingerprint,
         .idempotency_key_fingerprint = key.key_fingerprint,
         .run_permit_fingerprint = pending.run_permit_fingerprint,
-        .environment_certificate_fingerprint = pending.environment_certificate_fingerprint,
+        .environment_certificate_fingerprint = permit.environment_certificate_fingerprint,
         .class = .deterministic_fixture,
         .requested_mode = .fresh,
     });
@@ -2587,7 +2670,7 @@ test "runspace actuation dispatch rolls back supervision on terminal response fa
         .encoded_frame_request_fingerprint = request.frame_fingerprint,
         .idempotency_key_fingerprint = key.key_fingerprint,
         .run_permit_fingerprint = pending.run_permit_fingerprint,
-        .environment_certificate_fingerprint = pending.environment_certificate_fingerprint,
+        .environment_certificate_fingerprint = permit.environment_certificate_fingerprint,
         .class = .deterministic_fixture,
         .requested_mode = .fresh,
     });
