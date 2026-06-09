@@ -307,7 +307,7 @@ pub const world_capsule_pending_port_image_fingerprint_version: u32 = 2;
 pub const world_capsule_mailbox_image_fingerprint_version: u32 = 1;
 pub const world_capsule_fabric_image_fingerprint_version: u32 = 1;
 pub const world_capsule_link_image_fingerprint_version: u32 = 1;
-pub const world_capsule_image_format_version: u32 = 1;
+pub const world_capsule_image_format_version: u32 = 2;
 pub const world_capsule_image_fingerprint_version: u32 = 1;
 pub const world_capsule_certificate_format_version: u32 = 1;
 pub const world_capsule_certificate_fingerprint_version: u32 = 1;
@@ -11072,7 +11072,8 @@ pub const Runspace = struct {
             },
             .responded, .rejected, .failed, .cancelled => {},
         }
-        const response = try self.frameResponseFromActuation(pending, execution.response);
+        var response = try self.frameResponseFromActuation(pending, execution.response);
+        defer response.deinit(self.allocator);
         const accounting = try self.responseFrameAccounting(response);
         var supervisor_snapshot = try self.snapshotSlotSupervisor(index);
         defer supervisor_snapshot.deinit(self.allocator);
@@ -11154,7 +11155,6 @@ pub const Runspace = struct {
     }
 
     fn frameResponseFromActuation(self: *@This(), pending: Runspace.PendingPort, actuation_response: Actuation.Response) !Frame.Response {
-        _ = self;
         const request = pending.request_frame orelse return error.InvalidPendingPortTransition;
         const status: ResponseStatus = switch (actuation_response.status) {
             .responded => .responded,
@@ -11162,12 +11162,23 @@ pub const Runspace = struct {
             .failed => .failed,
             .pending, .deferred => return error.InvalidPendingPortTransition,
         };
+        var response_image: ?Frame.ValueImage = if (status == .responded) image: {
+            const source = actuation_response.response_image orelse return error.MissingValueImage;
+            if (actuation_response.value_image_fingerprint) |expected| {
+                if (source.value_image_fingerprint != expected) return error.InvalidFrameEncoding;
+            } else {
+                return error.MissingValueImage;
+            }
+            if (source.value_table_id != pending.expected_response_value_table_id) return error.FrameValueTableMismatch;
+            break :image try source.clone(self.allocator);
+        } else null;
+        errdefer if (response_image) |*image| image.deinit(self.allocator);
         const response_fingerprint = actuation_response.frame_response_fingerprint orelse switch (status) {
             .responded => return error.MissingValueImage,
             .rejected, .failed => actuation_response.response_fingerprint,
             .pending => unreachable,
         };
-        return Frame.Response.init(.{
+        const response = Frame.Response.init(.{
             .world_surface_fingerprint = pending.world_surface_fingerprint,
             .target_certificate_fingerprint = pending.target_certificate_fingerprint,
             .world_port_id = pending.world_port_id,
@@ -11175,10 +11186,13 @@ pub const Runspace = struct {
             .response_kind = actuation_response.response_kind,
             .response_value_table_id = if (status == .responded) pending.expected_response_value_table_id else null,
             .response_fingerprint = response_fingerprint,
+            .response_image = response_image,
             .replay_key = request.replay_key_seed.withResponse(response_fingerprint).fingerprint(),
             .status = status,
             .reason = if (actuation_response.reason.len == 0) null else actuation_response.reason,
         });
+        response_image = null;
+        return response;
     }
 
     fn respondWithFabricOwnership(self: *@This(), mailbox_id: u64, response: Frame.Response, allow_active_fabric: bool) !Runspace.RunspaceEvent {
@@ -18005,6 +18019,7 @@ pub const Actuation = struct {
         response_kind: ResponseKind = .@"resume",
         frame_response_fingerprint: ?u64 = null,
         value_image_fingerprint: ?u64 = null,
+        response_image: ?Frame.ValueImage = null,
         code: ?u32 = null,
         reason: []const u8 = "",
         metadata: []const u8 = "",
@@ -18019,6 +18034,7 @@ pub const Actuation = struct {
             response_kind: ResponseKind = .@"resume",
             frame_response_fingerprint: ?u64 = null,
             value_image_fingerprint: ?u64 = null,
+            response_image: ?Frame.ValueImage = null,
             code: ?u32 = null,
             reason: []const u8 = "",
             metadata: []const u8 = "",
@@ -18033,7 +18049,8 @@ pub const Actuation = struct {
                 .status = args.status,
                 .response_kind = args.response_kind,
                 .frame_response_fingerprint = args.frame_response_fingerprint,
-                .value_image_fingerprint = args.value_image_fingerprint,
+                .value_image_fingerprint = args.value_image_fingerprint orelse if (args.response_image) |image| image.value_image_fingerprint else null,
+                .response_image = args.response_image,
                 .code = args.code,
                 .reason = args.reason,
                 .metadata = args.metadata,
@@ -18050,6 +18067,15 @@ pub const Actuation = struct {
             if (descriptor) |actual| {
                 if (!actual.allowed_response_kinds.allows(self.status)) return error.PortRuleDenied;
                 if (actual.world_port_id != null and actual.world_port_id.? != self.world_port_id) return error.WrongPortId;
+                if (self.response_image) |image| {
+                    if (actual.response_value_table_id) |expected| {
+                        if (image.value_table_id != expected) return error.ProviderResultMismatch;
+                    }
+                }
+            }
+            if (self.response_image) |image| {
+                try validateValueImage(image);
+                if (self.value_image_fingerprint == null or self.value_image_fingerprint.? != image.value_image_fingerprint) return error.InvalidFrameEncoding;
             }
             if (self.reason.len > world_max_decoded_byte_field_len) return error.InvalidFrameEncoding;
             if (self.metadata.len > (policy.max_actuation_metadata_bytes orelse world_max_decoded_byte_field_len)) return error.InvalidFrameEncoding;
@@ -18634,6 +18660,7 @@ pub const Actuation = struct {
             response_kind: ResponseKind = .@"resume",
             frame_response_fingerprint: ?u64 = null,
             value_image_fingerprint: ?u64 = null,
+            response_image: ?Frame.ValueImage = null,
             code: ?u32 = null,
             reason: []const u8 = "",
             metadata: []const u8 = "",
@@ -18649,6 +18676,7 @@ pub const Actuation = struct {
                     .response_kind = self.response_kind,
                     .frame_response_fingerprint = self.frame_response_fingerprint,
                     .value_image_fingerprint = self.value_image_fingerprint,
+                    .response_image = self.response_image,
                     .code = self.code,
                     .reason = self.reason,
                     .metadata = self.metadata,
@@ -20538,7 +20566,7 @@ pub const Capsule = struct {
         }
 
         pub fn validate(self: @This(), options: ValidateOptions) !void {
-            if (self.format_version != world_capsule_image_format_version) return error.InvalidFrameEncoding;
+            if (!capsuleImageFormatVersionSupported(self.format_version)) return error.InvalidFrameEncoding;
             if (self.fingerprint_version != world_capsule_image_fingerprint_version) return error.InvalidFrameEncoding;
             if (self.metadata.len > options.max_image_bytes) return error.InvalidFrameEncoding;
             if (self.admission_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
@@ -20551,6 +20579,11 @@ pub const Capsule = struct {
             if (self.actuation_intent_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
             if (self.actuation_receipt_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
             if (self.actuation_journal_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (!capsuleImageFormatSupportsActuationRefs(self.format_version) and
+                (self.actuation_intent_refs.len != 0 or self.actuation_receipt_refs.len != 0 or self.actuation_journal_refs.len != 0))
+            {
+                return error.InvalidFrameEncoding;
+            }
             if (self.dependency_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
             if (self.object_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
             try validateNoZeroU64(self.actuation_intent_refs);
@@ -20599,9 +20632,11 @@ pub const Capsule = struct {
             try writeU64Slice(&out, allocator, self.transcript_image_refs);
             try writeU64Slice(&out, allocator, self.run_image_refs);
             try writeU64Slice(&out, allocator, self.value_image_refs);
-            try writeU64Slice(&out, allocator, self.actuation_intent_refs);
-            try writeU64Slice(&out, allocator, self.actuation_receipt_refs);
-            try writeU64Slice(&out, allocator, self.actuation_journal_refs);
+            if (capsuleImageFormatSupportsActuationRefs(self.format_version)) {
+                try writeU64Slice(&out, allocator, self.actuation_intent_refs);
+                try writeU64Slice(&out, allocator, self.actuation_receipt_refs);
+                try writeU64Slice(&out, allocator, self.actuation_journal_refs);
+            }
             try writeTranscriptImageSlice(&out, allocator, self.transcript_images);
             try writeRunImageSlice(&out, allocator, self.run_images);
             try writeValueImageSlice(&out, allocator, self.value_images);
@@ -20654,15 +20689,23 @@ pub const Capsule = struct {
             const value_image_refs = try readU64SliceOwned(allocator, bytes, &cursor, options.max_dependencies);
             var value_image_refs_owned = true;
             errdefer if (value_image_refs_owned) allocator.free(value_image_refs);
-            const actuation_intent_refs = try readU64SliceOwned(allocator, bytes, &cursor, options.max_dependencies);
-            var actuation_intent_refs_owned = true;
+            var actuation_intent_refs: []const u64 = &.{};
+            var actuation_intent_refs_owned = false;
             errdefer if (actuation_intent_refs_owned) allocator.free(actuation_intent_refs);
-            const actuation_receipt_refs = try readU64SliceOwned(allocator, bytes, &cursor, options.max_dependencies);
-            var actuation_receipt_refs_owned = true;
+            var actuation_receipt_refs: []const u64 = &.{};
+            var actuation_receipt_refs_owned = false;
             errdefer if (actuation_receipt_refs_owned) allocator.free(actuation_receipt_refs);
-            const actuation_journal_refs = try readU64SliceOwned(allocator, bytes, &cursor, options.max_dependencies);
-            var actuation_journal_refs_owned = true;
+            var actuation_journal_refs: []const u64 = &.{};
+            var actuation_journal_refs_owned = false;
             errdefer if (actuation_journal_refs_owned) allocator.free(actuation_journal_refs);
+            if (capsuleImageFormatSupportsActuationRefs(format_version)) {
+                actuation_intent_refs = try readU64SliceOwned(allocator, bytes, &cursor, options.max_dependencies);
+                actuation_intent_refs_owned = true;
+                actuation_receipt_refs = try readU64SliceOwned(allocator, bytes, &cursor, options.max_dependencies);
+                actuation_receipt_refs_owned = true;
+                actuation_journal_refs = try readU64SliceOwned(allocator, bytes, &cursor, options.max_dependencies);
+                actuation_journal_refs_owned = true;
+            }
             const transcript_images = try readTranscriptImageSliceOwned(allocator, bytes, &cursor, options.max_embedded_images);
             var transcript_images_owned = true;
             errdefer if (transcript_images_owned) {
@@ -20790,6 +20833,60 @@ pub const Capsule = struct {
             self.* = undefined;
         }
     };
+
+    test "capsule image v1 decode skips actuation reference slices" {
+        const allocator = std.testing.allocator;
+        const manifest = Manifest.init(.{
+            .kind = .replay_only,
+            .root_target_ref_fingerprint = 0x5150_ca01,
+            .normal_form = .quiescent_parked,
+            .metadata = "legacy-manifest",
+        });
+        var runspace_image = RunspaceImage{
+            .runspace_fingerprint = 0x5150_ca02,
+            .runspace_report_fingerprint = 0x5150_ca03,
+            .metadata = "legacy-runspace",
+        };
+        runspace_image.image_fingerprint = fingerprintRunspaceImage(runspace_image);
+        var legacy = Image.init(.{
+            .manifest = manifest,
+            .runspace_image = runspace_image,
+            .metadata = "legacy-image",
+        });
+        legacy.format_version = 1;
+        legacy.image_fingerprint = fingerprintImage(legacy);
+
+        var encoded: std.ArrayList(u8) = .empty;
+        defer encoded.deinit(allocator);
+        try writeU32(&encoded, allocator, legacy.format_version);
+        try writeU32(&encoded, allocator, legacy.fingerprint_version);
+        try writeU64(&encoded, allocator, legacy.image_fingerprint);
+        try encodeManifest(&encoded, allocator, legacy.manifest);
+        try encodeRunspaceImage(&encoded, allocator, legacy.runspace_image);
+        try writeOptionalLinkImage(&encoded, allocator, legacy.link_image);
+        try writeOptionalFabricImage(&encoded, allocator, legacy.fabric_image);
+        try writeU64Slice(&encoded, allocator, legacy.admission_refs);
+        try writeU64Slice(&encoded, allocator, legacy.environment_refs);
+        try writeU64Slice(&encoded, allocator, legacy.supervision_refs);
+        try writeU64Slice(&encoded, allocator, legacy.guest_conformance_refs);
+        try writeU64Slice(&encoded, allocator, legacy.transcript_image_refs);
+        try writeU64Slice(&encoded, allocator, legacy.run_image_refs);
+        try writeU64Slice(&encoded, allocator, legacy.value_image_refs);
+        try writeTranscriptImageSlice(&encoded, allocator, legacy.transcript_images);
+        try writeRunImageSlice(&encoded, allocator, legacy.run_images);
+        try writeValueImageSlice(&encoded, allocator, legacy.value_images);
+        try writeDependencyRefSlice(&encoded, allocator, legacy.dependency_refs);
+        try writeObjectRefSlice(&encoded, allocator, legacy.object_refs);
+        try writeBytes(&encoded, allocator, legacy.metadata);
+
+        var decoded = try Image.decode(allocator, encoded.items);
+        defer decoded.deinit(allocator);
+        try std.testing.expectEqual(@as(u32, 1), decoded.format_version);
+        try std.testing.expectEqual(@as(usize, 0), decoded.actuation_intent_refs.len);
+        try std.testing.expectEqual(@as(usize, 0), decoded.actuation_receipt_refs.len);
+        try std.testing.expectEqual(@as(usize, 0), decoded.actuation_journal_refs.len);
+        try std.testing.expectEqualStrings("legacy-image", decoded.metadata);
+    }
 
     pub const Certificate = struct {
         format_version: u32 = world_capsule_certificate_format_version,
@@ -23379,6 +23476,14 @@ pub const Capsule = struct {
     }
 
     fn capsuleRunspaceImageFormatSupportsActuationRefs(format_version: u32) bool {
+        return format_version >= 2;
+    }
+
+    fn capsuleImageFormatVersionSupported(format_version: u32) bool {
+        return format_version == 1 or format_version == world_capsule_image_format_version;
+    }
+
+    fn capsuleImageFormatSupportsActuationRefs(format_version: u32) bool {
         return format_version >= 2;
     }
 
