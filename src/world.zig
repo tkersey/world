@@ -5644,10 +5644,9 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
 
         fn actuationBindingCountForTarget(requested_mode: Mode) usize {
             var count: usize = 0;
-            inline for (actuation_bindings) |BindingDecl| {
-                if (comptime BindingDecl.TargetType == Target) {
-                    if (BindingDecl.binding_mode_policy.allows(requested_mode)) count += 1;
-                }
+            inline for (0..Target.WorldPortTable.entries.len) |world_port_id| {
+                const port_id: u32 = @intCast(world_port_id);
+                if (actuationHasBindingDeclForPort(port_id, requested_mode)) count += 1;
             }
             return count;
         }
@@ -5665,6 +5664,15 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
 
         fn actuationHasBindingForPort(world_port_id: u32, requested_mode: Mode) bool {
             return actuationBindingForPort(world_port_id, requested_mode) != null;
+        }
+
+        fn actuationHasBindingDeclForPort(world_port_id: u32, requested_mode: Mode) bool {
+            inline for (actuation_bindings) |BindingDecl| {
+                if (comptime BindingDecl.TargetType == Target) {
+                    if (BindingDecl.world_port_id == world_port_id and BindingDecl.binding_mode_policy.allows(requested_mode)) return true;
+                }
+            }
+            return false;
         }
 
         fn actuationBindingForPort(world_port_id: u32, requested_mode: Mode) ?ActuationBindingPolicyView {
@@ -18439,8 +18447,8 @@ pub const Actuation = struct {
             if (self.replayed and self.verified) return error.InvalidFrameEncoding;
             switch (self.mode) {
                 .fresh => if (self.replayed or self.verified) return error.InvalidFrameEncoding,
-                .replay => if (self.verified) return error.InvalidFrameEncoding,
-                .verify => if (self.fresh_called or self.replayed) return error.InvalidFrameEncoding,
+                .replay => if (self.verified or (!self.replayed and !self.rejected)) return error.InvalidFrameEncoding,
+                .verify => if (self.fresh_called or self.replayed or (!self.verified and !self.rejected)) return error.InvalidFrameEncoding,
                 .audit => if (self.fresh_called or self.replayed or self.verified) return error.InvalidFrameEncoding,
             }
             if (receiptResponseStatusFlagCount(self) > 1) return error.InvalidFrameEncoding;

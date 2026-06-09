@@ -1112,6 +1112,37 @@ test "actuation verify report records matches and divergences" {
     });
     try std.testing.expectError(error.InvalidFrameEncoding, contradictory_status.validate());
 
+    const replay_without_replay_evidence = world.Actuation.Receipt.init(.{
+        .intent_fingerprint = prior_replay_intent.intent_fingerprint,
+        .envelope_fingerprint = 0x520b,
+        .decision_fingerprint = 0x520c,
+        .commit_fingerprint = 0x520d,
+        .response_fingerprint = 0x520e,
+        .actuator_ref_fingerprint = 0x5101,
+        .idempotency_key_fingerprint = 0x5106,
+        .target_ref_fingerprint = 0x5103,
+        .world_surface_fingerprint = 0x5104,
+        .world_port_id = 0,
+        .class = .observation,
+        .mode = .replay,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, replay_without_replay_evidence.validate());
+    const verify_without_verify_evidence = world.Actuation.Receipt.init(.{
+        .intent_fingerprint = intent.intent_fingerprint,
+        .envelope_fingerprint = 0x520f,
+        .decision_fingerprint = 0x5210,
+        .commit_fingerprint = 0x5211,
+        .response_fingerprint = 0x5212,
+        .actuator_ref_fingerprint = 0x5101,
+        .idempotency_key_fingerprint = 0x5106,
+        .target_ref_fingerprint = 0x5103,
+        .world_surface_fingerprint = 0x5104,
+        .world_port_id = 0,
+        .class = .observation,
+        .mode = .verify,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, verify_without_verify_evidence.validate());
+
     const fresh_with_replay_evidence = world.Actuation.Receipt.init(.{
         .intent_fingerprint = intent.intent_fingerprint,
         .envelope_fingerprint = 0x5211,
@@ -1855,11 +1886,20 @@ test "actuation environment preflight and supervision ledger account host effect
         .actuation_bindings = .{AgentActuationBinding},
         .policy = world.EnvironmentPolicy.fresh_and_replay,
     });
+    const AgentDuplicateActuationEnv = world.Environment(fixtures.Agent.Target, .{
+        .actuation_bindings = .{ AgentActuationBinding, AgentActuationBinding },
+        .policy = world.EnvironmentPolicy.fresh_and_replay,
+    });
     const partial_agent_binding = AgentPartialActuationEnv.bindActuator(AgentActuationBinding);
     const partial_agent_preflight = AgentPartialActuationEnv.preflightActuation(partial_agent_binding, world.Actuation.Policy.strict_fresh);
     try std.testing.expect(!partial_agent_preflight.accepted);
     try std.testing.expectEqual(@as(usize, 1), partial_agent_preflight.actuation_binding_count);
     try std.testing.expectEqual(@as(usize, 1), partial_agent_preflight.missing_port_count);
+    const duplicate_agent_binding = AgentDuplicateActuationEnv.bindActuator(AgentActuationBinding);
+    const duplicate_agent_preflight = AgentDuplicateActuationEnv.preflightActuation(duplicate_agent_binding, world.Actuation.Policy.strict_fresh);
+    try std.testing.expect(!duplicate_agent_preflight.accepted);
+    try std.testing.expectEqual(@as(usize, 1), duplicate_agent_preflight.actuation_binding_count);
+    try std.testing.expectEqual(@as(usize, 1), duplicate_agent_preflight.missing_port_count);
     const denied_audit_preflight = ActuationEnv.preflightActuationMode(binding, .audit, world.Actuation.Policy.strict_fresh);
     try std.testing.expect(!denied_audit_preflight.accepted);
     try std.testing.expectEqualSlices(world.AcceptanceBlocker, &.{.ActuationPolicyMismatch}, denied_audit_preflight.blockers);
