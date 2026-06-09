@@ -4273,6 +4273,19 @@ pub const Supervision = struct {
             }
             self.refreshFingerprint();
         }
+
+        pub fn recordActuationResolution(self: *@This(), receipt: Actuation.Receipt, response_bytes: usize) void {
+            if (receipt.failed) self.total_failed_actuations += 1;
+            if (receipt.rejected) self.total_rejected_actuations += 1;
+            self.total_actuation_bytes += response_bytes;
+            if (receipt.world_port_id < self.per_port_usage.len) {
+                const port_usage = self.perPort(receipt.world_port_id);
+                if (receipt.failed) port_usage.failed_calls += 1;
+                if (receipt.rejected) port_usage.rejected_calls += 1;
+                port_usage.response_bytes += response_bytes;
+            }
+            self.refreshFingerprint();
+        }
     };
 
     pub const SupervisionCheck = struct {
@@ -4808,6 +4821,7 @@ pub const Supervision = struct {
         }
 
         pub fn afterActuationReceipt(self: *@This(), receipt_value: Actuation.Receipt, response_bytes: usize) !void {
+            try receipt_value.validate();
             try self.validateWorldPortId(receipt_value.world_port_id);
             const policy = self.permit.policy;
             if (policy.require_actuation_receipts and receipt_value.receipt_fingerprint == 0) return self.deny(.after_actuation_response, receipt_value.world_port_id, .fresh_call_denied, null, "actuation receipt required");
@@ -4820,6 +4834,19 @@ pub const Supervision = struct {
             next.recordActuationReceipt(receipt_value, response_bytes);
             if (next.total_actuation_intents > 0) next.total_actuation_intents -= 1;
             try self.commitCheck(.after_actuation_response, receipt_value.world_port_id, &next, null, self.permit.ruleFor(receipt_value.world_port_id), "actuation receipt");
+        }
+
+        pub fn afterActuationResolution(self: *@This(), receipt_value: Actuation.Receipt, response_bytes: usize) !void {
+            try receipt_value.validate();
+            try self.validateWorldPortId(receipt_value.world_port_id);
+            const policy = self.permit.policy;
+            if (policy.require_actuation_receipts and receipt_value.receipt_fingerprint == 0) return self.deny(.after_actuation_response, receipt_value.world_port_id, .fresh_call_denied, null, "actuation receipt required");
+            if (receipt_value.rejected and !policy.allow_rejected_responses) return self.deny(.after_actuation_response, receipt_value.world_port_id, .rejected_denied, null, "rejected actuation denied");
+            if (receipt_value.failed and !policy.allow_failed_responses) return self.deny(.after_actuation_response, receipt_value.world_port_id, .failed_denied, null, "failed actuation denied");
+            var next = try self.ledger.clone(self.allocator);
+            defer next.deinit(self.allocator);
+            next.recordActuationResolution(receipt_value, response_bytes);
+            try self.commitCheck(.after_actuation_response, receipt_value.world_port_id, &next, null, self.permit.ruleFor(receipt_value.world_port_id), "actuation resolution");
         }
 
         pub fn beforeTranscriptAppend(self: *@This(), event_count_after_append: usize, image_bytes_after_append: usize) !void {
@@ -9220,6 +9247,7 @@ pub const Runspace = struct {
             beforeFabricInvocation: *const fn (*anyopaque, u32, Fabric.RouteKind, usize, usize) anyerror!void,
             beforeActuationCommit: *const fn (*anyopaque, Actuation.Intent, bool) anyerror!void,
             afterActuationReceipt: *const fn (*anyopaque, Actuation.Receipt, usize) anyerror!void,
+            afterActuationResolution: *const fn (*anyopaque, Actuation.Receipt, usize) anyerror!void,
             validateFabricResponseValue: *const fn (*anyopaque, u32, Frame.ValueImage) anyerror!void,
             fabricPlanCoversWorldPort: *const fn (*anyopaque, u32) bool,
             fabricPlanCoversHandlerlessWorldPort: *const fn (*anyopaque, u32) bool,
@@ -9271,6 +9299,10 @@ pub const Runspace = struct {
 
         fn afterActuationReceipt(self: @This(), receipt: Actuation.Receipt, response_bytes: usize) !void {
             return self.vtable.afterActuationReceipt(self.ptr, receipt, response_bytes);
+        }
+
+        fn afterActuationResolution(self: @This(), receipt: Actuation.Receipt, response_bytes: usize) !void {
+            return self.vtable.afterActuationResolution(self.ptr, receipt, response_bytes);
         }
 
         fn validateFabricResponseValue(self: @This(), world_port_id: u32, image: Frame.ValueImage) !void {
@@ -9467,6 +9499,14 @@ pub const Runspace = struct {
                     }
                 }
 
+                fn runAfterActuationResolution(ptr: *anyopaque, receipt: Actuation.Receipt, response_bytes: usize) anyerror!void {
+                    const active: *RunType = @ptrCast(@alignCast(ptr));
+                    if (@hasDecl(RunType, "afterRunspaceActuationResolution")) return active.afterRunspaceActuationResolution(receipt, response_bytes);
+                    if (@hasField(RunType, "supervisor")) {
+                        if (active.supervisor) |*supervisor| return supervisor.afterActuationResolution(receipt, response_bytes);
+                    }
+                }
+
                 fn runValidateFabricResponseValue(ptr: *anyopaque, world_port_id: u32, image: Frame.ValueImage) anyerror!void {
                     const active: *RunType = @ptrCast(@alignCast(ptr));
                     if (@hasDecl(RunType, "validateRunspaceFabricResponseValue")) {
@@ -9610,6 +9650,7 @@ pub const Runspace = struct {
                     .beforeFabricInvocation = runBeforeFabricInvocation,
                     .beforeActuationCommit = runBeforeActuationCommit,
                     .afterActuationReceipt = runAfterActuationReceipt,
+                    .afterActuationResolution = runAfterActuationResolution,
                     .validateFabricResponseValue = runValidateFabricResponseValue,
                     .fabricPlanCoversWorldPort = runFabricPlanCoversWorldPort,
                     .fabricPlanCoversHandlerlessWorldPort = runFabricPlanCoversHandlerlessWorldPort,
@@ -11156,7 +11197,11 @@ pub const Runspace = struct {
         var supervisor_snapshot = try self.snapshotSlotSupervisor(index);
         defer supervisor_snapshot.deinit(self.allocator);
         const resolves_pending_actuation = pending.pending_actuation_intent_fingerprint == execution.intent.intent_fingerprint;
-        if (!resolves_pending_actuation) try self.superviseActuationDispatch(index, execution, accounting.response_bytes);
+        if (resolves_pending_actuation) {
+            try self.superviseActuationResolution(index, execution, accounting.response_bytes);
+        } else {
+            try self.superviseActuationDispatch(index, execution, accounting.response_bytes);
+        }
         const mailbox_index = try self.mailbox.indexOf(mailbox_id);
         const mailbox_snapshot = self.mailbox.pending.items[mailbox_index];
         _ = try self.mailbox.recordActuationReceipt(mailbox_id, execution.intent.intent_fingerprint, execution.receipt.receipt_fingerprint);
@@ -11198,6 +11243,27 @@ pub const Runspace = struct {
                 return err;
             };
             supervisor.afterActuationReceipt(execution.receipt, response_bytes) catch |err| {
+                supervisor_snapshot.restore(self, slot_index);
+                return err;
+            };
+            return;
+        }
+        if (self.config.require_supervision) return error.SupervisionDenied;
+    }
+
+    fn superviseActuationResolution(self: *@This(), slot_index: usize, execution: Actuation.Membrane.Execution, response_bytes: usize) !void {
+        var supervisor_snapshot = try self.snapshotSlotSupervisor(slot_index);
+        defer supervisor_snapshot.deinit(self.allocator);
+        var slot = &self.slots.items[slot_index];
+        if (slot.driver) |driver| {
+            driver.afterActuationResolution(execution.receipt, response_bytes) catch |err| {
+                supervisor_snapshot.restore(self, slot_index);
+                return err;
+            };
+            return;
+        }
+        if (slot.supervisor) |*supervisor| {
+            supervisor.afterActuationResolution(execution.receipt, response_bytes) catch |err| {
                 supervisor_snapshot.restore(self, slot_index);
                 return err;
             };
@@ -19046,6 +19112,9 @@ pub const Actuation = struct {
         fn validateExecutionBindings(args: ExecuteArgs) !void {
             if (args.envelope.intent_fingerprint != args.intent.intent_fingerprint) return error.InvalidFrameEncoding;
             if (args.envelope.idempotency_key.key_fingerprint != args.intent.idempotency_key_fingerprint) return error.InvalidFrameEncoding;
+            if (args.envelope.idempotency_key.intent_fingerprint) |key_intent| {
+                if (key_intent != args.intent.intent_fingerprint) return error.InvalidFrameEncoding;
+            }
             if (args.envelope.idempotency_key.target_ref_fingerprint != args.intent.target_ref_fingerprint) return error.InvalidFrameEncoding;
             if (args.envelope.idempotency_key.world_surface_fingerprint != args.intent.world_surface_fingerprint) return error.InvalidFrameEncoding;
             if (args.envelope.idempotency_key.world_port_id != args.intent.world_port_id) return error.InvalidFrameEncoding;

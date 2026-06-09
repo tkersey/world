@@ -1857,6 +1857,46 @@ test "actuation environment preflight and supervision ledger account host effect
         .target_ref_fingerprint = target_ref.target_ref_fingerprint,
         .world_surface_fingerprint = target_ref.world_surface_fingerprint,
     });
+    const foreign_intent_key = world.Actuation.IdempotencyKey.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+        .world_port_id = 0,
+        .request_fingerprint = 0xfeed_1001,
+        .actuator_ref_fingerprint = ToolActuator.actuator_ref.ref_fingerprint,
+        .intent_fingerprint = 0xfeed_9999,
+    });
+    const foreign_key_intent = world.Actuation.Intent.init(.{
+        .actuator_ref_fingerprint = ToolActuator.actuator_ref.ref_fingerprint,
+        .descriptor_fingerprint = descriptor.descriptor_fingerprint,
+        .binding_fingerprint = binding.binding_fingerprint,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+        .world_port_id = 0,
+        .frame_request_fingerprint = 0xfeed_1001,
+        .idempotency_key_fingerprint = foreign_intent_key.key_fingerprint,
+        .class = .idempotent_mutation,
+        .requested_mode = .fresh,
+    });
+    const foreign_key_envelope = world.Actuation.Envelope.init(.{
+        .intent_fingerprint = foreign_key_intent.intent_fingerprint,
+        .idempotency_key = foreign_intent_key,
+        .expected_response_value_ref = descriptor.response_value_ref,
+        .expected_response_value_table_id = descriptor.response_value_table_id,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Actuation.Membrane.execute(.{
+        .policy = world.Actuation.Policy.strict_fresh,
+        .intent = foreign_key_intent,
+        .envelope = foreign_key_envelope,
+        .actuator = .{ .fixture = .{
+            .frame_response_fingerprint = 0xfeed_2002,
+            .response_image = response_image,
+        } },
+        .descriptor = descriptor,
+        .explicit_mutation_approval = true,
+        .attempt_number = 1,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+    }));
 
     const cert = ActuationEnv.certificate(.fresh, false);
     const permit = world.RunPermit.init(.{
@@ -1912,6 +1952,9 @@ test "actuation environment preflight and supervision ledger account host effect
     }));
     var supervisor = try world.Supervision.Supervisor.init(std.testing.allocator, permit, 1);
     defer supervisor.deinit();
+    var forged_receipt = execution.receipt;
+    forged_receipt.receipt_fingerprint +%= 1;
+    try std.testing.expectError(error.InvalidFrameEncoding, supervisor.afterActuationReceipt(forged_receipt, 16));
     try supervisor.beforeActuationCommit(intent, true);
     try supervisor.afterActuationReceipt(execution.receipt, 16);
     try std.testing.expectEqual(@as(usize, 0), supervisor.ledger.total_actuation_intents);
