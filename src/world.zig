@@ -18217,10 +18217,19 @@ pub const Actuation = struct {
             if (self.commit_fingerprint == 0 or self.response_fingerprint == 0 or self.actuator_ref_fingerprint == 0) return error.InvalidFrameEncoding;
             if (self.idempotency_key_fingerprint == 0 or self.target_ref_fingerprint == 0 or self.world_surface_fingerprint == 0) return error.InvalidFrameEncoding;
             if (self.mode == .replay and self.fresh_called) return error.InvalidFrameEncoding;
+            if (receiptResponseStatusFlagCount(self) > 1) return error.InvalidFrameEncoding;
             try validateNoZeroU64(self.blockers);
             try validateNoZeroU64(self.warnings);
             if (self.metadata.len > world_max_decoded_byte_field_len) return error.InvalidFrameEncoding;
             if (self.receipt_fingerprint != fingerprintReceipt(self)) return error.InvalidFrameEncoding;
+        }
+
+        fn receiptResponseStatusFlagCount(receipt: @This()) usize {
+            return @as(usize, @intFromBool(receipt.pending)) +
+                @as(usize, @intFromBool(receipt.deferred)) +
+                @as(usize, @intFromBool(receipt.rejected)) +
+                @as(usize, @intFromBool(receipt.failed)) +
+                @as(usize, @intFromBool(receipt.cancelled));
         }
 
         pub fn objectRef(self: @This()) ObjectRef {
@@ -18739,6 +18748,7 @@ pub const Actuation = struct {
             });
             try decision.validate();
             if (!decision.approved) return rejectedExecution(args, decision);
+            if (!actuatorMatchesRequestedMode(args.actuator, args.intent.requested_mode)) return error.InvalidMode;
 
             switch (args.actuator) {
                 .replay => |replay| return replayExecution(args, decision, replay),
@@ -18762,6 +18772,14 @@ pub const Actuation = struct {
                     return freshExecution(args, decision, actual);
                 },
             }
+        }
+
+        fn actuatorMatchesRequestedMode(selected_actuator: Interface, requested_mode: Mode) bool {
+            return switch (selected_actuator) {
+                .replay => requested_mode == .replay,
+                .verify => requested_mode == .verify,
+                .fixture, .native_function, .byte_protocol, .reject, .pending, .deferred => requested_mode == .fresh,
+            };
         }
 
         fn validateExecutionBindings(args: ExecuteArgs) !void {

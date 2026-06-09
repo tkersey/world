@@ -215,6 +215,8 @@ pub fn Linker(comptime W: type) type {
                 actuator_ref_fingerprint: ?u64 = null,
                 actuation_descriptor_fingerprint: ?u64 = null,
                 actuation_binding_fingerprint: ?u64 = null,
+                actuation_import_requirement_fingerprint: ?u64 = null,
+                actuation_world_port_id: ?u32 = null,
                 label: []const u8 = "",
                 metadata: []const u8 = "",
 
@@ -234,6 +236,8 @@ pub fn Linker(comptime W: type) type {
                     actuator_ref_fingerprint: ?u64 = null,
                     actuation_descriptor_fingerprint: ?u64 = null,
                     actuation_binding_fingerprint: ?u64 = null,
+                    actuation_import_requirement_fingerprint: ?u64 = null,
+                    actuation_world_port_id: ?u32 = null,
                     label: []const u8 = "",
                     metadata: []const u8 = "",
                 }) Entry {
@@ -254,6 +258,8 @@ pub fn Linker(comptime W: type) type {
                         .actuator_ref_fingerprint = args.actuator_ref_fingerprint,
                         .actuation_descriptor_fingerprint = args.actuation_descriptor_fingerprint,
                         .actuation_binding_fingerprint = args.actuation_binding_fingerprint,
+                        .actuation_import_requirement_fingerprint = args.actuation_import_requirement_fingerprint,
+                        .actuation_world_port_id = args.actuation_world_port_id,
                         .label = args.label,
                         .metadata = args.metadata,
                     };
@@ -356,6 +362,8 @@ pub fn Linker(comptime W: type) type {
                     actuator_ref_fingerprint: u64,
                     actuation_descriptor_fingerprint: ?u64 = null,
                     actuation_binding_fingerprint: u64,
+                    actuation_import_requirement_fingerprint: u64,
+                    actuation_world_port_id: u32,
                     environment_certificate_fingerprint: ?u64 = null,
                     label: []const u8 = "",
                     metadata: []const u8 = "",
@@ -366,6 +374,8 @@ pub fn Linker(comptime W: type) type {
                         .actuator_ref_fingerprint = args.actuator_ref_fingerprint,
                         .actuation_descriptor_fingerprint = args.actuation_descriptor_fingerprint,
                         .actuation_binding_fingerprint = args.actuation_binding_fingerprint,
+                        .actuation_import_requirement_fingerprint = args.actuation_import_requirement_fingerprint,
+                        .actuation_world_port_id = args.actuation_world_port_id,
                         .label = args.label,
                         .metadata = args.metadata,
                     });
@@ -461,6 +471,7 @@ pub fn Linker(comptime W: type) type {
                 for (self.catalog.entries) |entry| {
                     const descriptor = entry.export_descriptor orelse {
                         if ((entry.provider_kind == .replay_provider or entry.provider_kind == .reject_route or entry.provider_kind == .environment_adapter) and linkerCanSynthesizeRouteKind(policy, entry)) {
+                            if (entry.provider_kind == .environment_adapter and !actuationAdapterMatchesImport(entry, import_requirement)) continue;
                             try candidates.append(allocator, entry);
                             if (candidates.items.len > policy.max_candidates_per_import) break;
                         } else if (unsupported_policy_candidate == null and linkerPolicyPermitsUnsupportedRouteKind(policy, entry)) {
@@ -726,6 +737,7 @@ pub fn Linker(comptime W: type) type {
             if (entry.provider_kind == .reject_route and !policy.allow_reject_routes) try blockers.append(allocator, .UnsupportedRouteKind);
             if (entry.provider_kind == .environment_adapter and !policy.allow_adapter_fallback) try blockers.append(allocator, .UnsupportedRouteKind);
             if (entry.hasActuationCandidate() and (entry.provider_kind != .environment_adapter or entry.actuator_ref_fingerprint == null or entry.actuation_binding_fingerprint == null)) try blockers.append(allocator, .MissingProvider);
+            if (entry.provider_kind == .environment_adapter and entry.hasActuationCandidate() and !actuationAdapterMatchesImport(entry, requirement)) try blockers.append(allocator, .MissingProvider);
             if (!linkerCanSynthesizeRouteKind(policy, entry)) try blockers.append(allocator, .UnsupportedRouteKind);
             if (entry.provider_kind == .replay_provider and entry.replay_transcript_image_fingerprint == null) try blockers.append(allocator, .MissingProvider);
             if (hint) |present| {
@@ -2066,6 +2078,13 @@ pub fn Linker(comptime W: type) type {
             };
         }
 
+        fn actuationAdapterMatchesImport(entry: Catalog.Entry, requirement: W.ImportRequirement) bool {
+            if (entry.provider_kind != .environment_adapter or !entry.hasActuationCandidate()) return false;
+            if (entry.actuation_import_requirement_fingerprint == null or entry.actuation_world_port_id == null) return false;
+            return entry.actuation_import_requirement_fingerprint.? == requirement.requirement_fingerprint and
+                entry.actuation_world_port_id.? == requirement.world_port_id;
+        }
+
         fn linkerPolicyPermitsUnsupportedRouteKind(policy: Policy, entry: Catalog.Entry) bool {
             return switch (entry.provider_kind) {
                 .guest_provider => policy.allow_guest_routes,
@@ -2364,6 +2383,8 @@ pub fn Linker(comptime W: type) type {
                 hashOptionalU64(&hasher, entry.actuator_ref_fingerprint);
                 hashOptionalU64(&hasher, entry.actuation_descriptor_fingerprint);
                 hashOptionalU64(&hasher, entry.actuation_binding_fingerprint);
+                hashOptionalU64(&hasher, entry.actuation_import_requirement_fingerprint);
+                if (entry.actuation_world_port_id) |world_port_id| hashU64(&hasher, world_port_id) else hashU64(&hasher, 0);
             }
             hashBytes(&hasher, entry.label);
             hashBytes(&hasher, entry.metadata);

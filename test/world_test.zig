@@ -272,10 +272,13 @@ test "fabric adapter route records actuation receipt metadata" {
 }
 
 test "linker catalog carries explicit actuation adapter candidates" {
+    const requirement = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
     const entry = world.Linker.Catalog.Entry.actuationAdapter(.{
         .actuator_ref_fingerprint = 0xacc7_0001,
         .actuation_descriptor_fingerprint = 0xacc7_0002,
         .actuation_binding_fingerprint = 0xacc7_0003,
+        .actuation_import_requirement_fingerprint = requirement.requirement_fingerprint,
+        .actuation_world_port_id = requirement.world_port_id,
         .environment_certificate_fingerprint = 0xeeee,
         .label = "fixture adapter",
     });
@@ -283,6 +286,8 @@ test "linker catalog carries explicit actuation adapter candidates" {
         .actuator_ref_fingerprint = 0xacc7_0001,
         .actuation_descriptor_fingerprint = 0xacc7_0002,
         .actuation_binding_fingerprint = 0xacc7_0003,
+        .actuation_import_requirement_fingerprint = requirement.requirement_fingerprint,
+        .actuation_world_port_id = requirement.world_port_id,
         .environment_certificate_fingerprint = 0xeeee,
         .label = "fixture adapter",
     });
@@ -293,13 +298,20 @@ test "linker catalog carries explicit actuation adapter candidates" {
     const catalog = world.Linker.Catalog.init(&.{entry});
     try std.testing.expectEqual(catalog.fingerprint(), world.Linker.Catalog.init(&.{same}).fingerprint());
 
-    const requirement = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
     const match = try world.Linker.matchEntry(std.testing.allocator, world.Linker.Policy.audit_only, requirement, entry, null);
     defer std.testing.allocator.free(match.blockers);
     defer std.testing.allocator.free(match.warnings);
     try std.testing.expectEqual(world.Linker.MatchKind.adapter, match.kind);
     try std.testing.expect(match.accepted());
     try std.testing.expectEqual(@as(usize, 0), match.blockers.len);
+
+    var wrong_requirement = requirement;
+    wrong_requirement.requirement_fingerprint +%= 1;
+    const mismatch = try world.Linker.matchEntry(std.testing.allocator, world.Linker.Policy.audit_only, wrong_requirement, entry, null);
+    defer std.testing.allocator.free(mismatch.blockers);
+    defer std.testing.allocator.free(mismatch.warnings);
+    try std.testing.expect(!mismatch.accepted());
+    try std.testing.expectEqual(world.Linker.Blocker.MissingProvider, mismatch.blockers[0]);
 }
 
 test "actuation guest conformance vector includes receipt summaries" {
@@ -650,6 +662,20 @@ test "actuation membrane rejects mismatched envelope and descriptor bindings" {
         .world_surface_fingerprint = 0x4202,
     }));
 
+    const replay_source = world.Actuation.ReplaySource.init(.{ .receipts = &.{} });
+    try std.testing.expectError(error.InvalidMode, world.Actuation.Membrane.execute(.{
+        .policy = policy,
+        .intent = intent,
+        .envelope = world.Actuation.Envelope.init(.{
+            .intent_fingerprint = intent.intent_fingerprint,
+            .idempotency_key = key,
+        }),
+        .descriptor = descriptor,
+        .actuator = .{ .replay = .{ .source = replay_source } },
+        .target_ref_fingerprint = 0x4201,
+        .world_surface_fingerprint = 0x4202,
+    }));
+
     const wrong_request_envelope = world.Actuation.Envelope.init(.{
         .intent_fingerprint = intent.intent_fingerprint,
         .encoded_frame_request_fingerprint = 0x9998,
@@ -820,6 +846,26 @@ test "actuation verify report records matches and divergences" {
     const forged_report = world.Actuation.VerifyReport.compare(intent, expected, forged_identity);
     try std.testing.expect(!forged_report.matched);
     try std.testing.expectEqual(world.Actuation.DivergenceKind.response_fingerprint_mismatch, forged_report.divergence_kind.?);
+
+    const contradictory_status = world.Actuation.Receipt.init(.{
+        .intent_fingerprint = intent.intent_fingerprint,
+        .envelope_fingerprint = 0x5201,
+        .decision_fingerprint = 0x5202,
+        .commit_fingerprint = 0x520a,
+        .response_fingerprint = 0x5208,
+        .frame_response_fingerprint = 0x5207,
+        .actuator_ref_fingerprint = 0x5101,
+        .idempotency_key_fingerprint = 0x5106,
+        .target_ref_fingerprint = 0x5103,
+        .world_surface_fingerprint = 0x5104,
+        .world_port_id = 0,
+        .class = .observation,
+        .mode = .verify,
+        .verified = true,
+        .pending = true,
+        .failed = true,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, contradictory_status.validate());
 
     const changed = world.Actuation.Receipt.init(.{
         .intent_fingerprint = intent.intent_fingerprint,
@@ -8306,6 +8352,8 @@ test "link actuation adapter fallback preserves route metadata" {
             .actuator_ref_fingerprint = 0xacc7_0101,
             .actuation_descriptor_fingerprint = 0xacc7_0102,
             .actuation_binding_fingerprint = 0xacc7_0103,
+            .actuation_import_requirement_fingerprint = root_import.requirement_fingerprint,
+            .actuation_world_port_id = root_import.world_port_id,
             .environment_certificate_fingerprint = 0xe4e4,
             .label = "actuation-adapter",
         }),
