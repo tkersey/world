@@ -20110,13 +20110,20 @@ pub const Capsule = struct {
         }
 
         pub fn validate(self: @This()) !void {
-            if (self.fingerprint_version != world_capsule_pending_port_image_fingerprint_version) return error.InvalidFrameEncoding;
+            try self.validateForRunspaceImageFormat(world_capsule_runspace_image_format_version);
+        }
+
+        fn validateForRunspaceImageFormat(self: @This(), runspace_image_format_version: u32) !void {
+            const legacy = runspace_image_format_version == 1;
+            const expected_fingerprint_version: u32 = if (legacy) 1 else world_capsule_pending_port_image_fingerprint_version;
+            if (self.fingerprint_version != expected_fingerprint_version) return error.InvalidFrameEncoding;
             if (self.status != .pending) return error.PendingPortConsumed;
             try validateRequestFrameImage(self.request_frame);
             try validateRequestFramePolicy(self.request_frame, .portable);
             try validatePendingActuationMarker(self.pending_actuation_intent_fingerprint, self.pending_actuation_receipt_fingerprint);
             if (self.request_frame.expected_response_value_table_id != self.expected_response_value_table_id) return error.InvalidFrameEncoding;
-            if (self.pending_port_fingerprint != fingerprintPendingPortImageProjection(self)) return error.InvalidFrameEncoding;
+            const expected_pending_port_fingerprint = if (legacy) fingerprintPendingPortImageProjectionV1(self) else fingerprintPendingPortImageProjection(self);
+            if (self.pending_port_fingerprint != expected_pending_port_fingerprint) return error.InvalidFrameEncoding;
             if (self.pending_port_image_fingerprint != fingerprint(self)) return error.InvalidFrameEncoding;
         }
 
@@ -20185,6 +20192,10 @@ pub const Capsule = struct {
         }
 
         pub fn validate(self: @This(), options: ValidateOptions) !void {
+            try self.validateForRunspaceImageFormat(options, world_capsule_runspace_image_format_version);
+        }
+
+        fn validateForRunspaceImageFormat(self: @This(), options: ValidateOptions, runspace_image_format_version: u32) !void {
             if (self.fingerprint_version != world_capsule_mailbox_image_fingerprint_version) return error.InvalidFrameEncoding;
             if (self.pending_port_entries.len > options.max_pending_ports) return error.InvalidFrameEncoding;
             if (self.pending_port_fingerprints.len > options.max_pending_ports) return error.InvalidFrameEncoding;
@@ -20195,11 +20206,16 @@ pub const Capsule = struct {
             if (self.response_routing_status_fingerprints.len != status_count) return error.InvalidFrameEncoding;
             if (self.pending_actuation_intent_fingerprints.len > options.max_dependencies) return error.InvalidFrameEncoding;
             if (self.committed_actuation_receipt_fingerprints.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (!capsuleRunspaceImageFormatSupportsActuationRefs(runspace_image_format_version) and
+                (self.pending_actuation_intent_fingerprints.len != 0 or self.committed_actuation_receipt_fingerprints.len != 0))
+            {
+                return error.InvalidFrameEncoding;
+            }
             try validateNoZeroU64(self.pending_actuation_intent_fingerprints);
             try validateNoZeroU64(self.committed_actuation_receipt_fingerprints);
             if (self.pending_port_entries.len != self.pending_port_fingerprints.len) return error.InvalidFrameEncoding;
             for (self.pending_port_entries, 0..) |entry, index| {
-                try entry.validate();
+                try entry.validateForRunspaceImageFormat(runspace_image_format_version);
                 if (self.pending_port_fingerprints[index] != entry.pending_port_fingerprint) return error.InvalidFrameEncoding;
                 if (self.single_use_status_fingerprints[index] != fingerprintPendingPortImageSingleUseStatus(entry)) return error.InvalidFrameEncoding;
                 if (self.response_routing_status_fingerprints[index] != fingerprintPendingPortImageRoutingStatus(entry)) return error.InvalidFrameEncoding;
@@ -20336,7 +20352,7 @@ pub const Capsule = struct {
             for (self.run_slots) |slot| try slot.validate(options);
             if (self.run_handle_mappings.len != 0 and !runspaceImageHandleMappingsMatchSlots(self)) return error.InvalidFrameEncoding;
             if (!runspaceImageRoleRefsMatchSlots(self)) return error.InvalidFrameEncoding;
-            if (self.mailbox_image) |mailbox| try mailbox.validate(options);
+            if (self.mailbox_image) |mailbox| try mailbox.validateForRunspaceImageFormat(options, self.format_version);
             if (self.image_fingerprint != fingerprintRunspaceImage(self)) return error.InvalidFrameEncoding;
         }
 
@@ -24756,7 +24772,36 @@ pub const Capsule = struct {
         try std.testing.expectEqual(@as(usize, 0), decoded.actuation_journal_refs.len);
         try std.testing.expectEqualStrings("legacy-runspace", decoded.metadata);
 
-        const legacy_mailbox = MailboxImage.init(.{ .next_mailbox_id = 7 });
+        const legacy_request = Frame.Request.init(.{
+            .world_surface_fingerprint = 0x5150_ab01,
+            .target_certificate_fingerprint = 0x5150_ab02,
+            .world_port_id = 0,
+            .request_fingerprint = 0x5150_ab03,
+            .residual_site_index = 0,
+            .residual_site_fingerprint = 0x5150_ab04,
+            .turn_index = 0,
+        });
+        var legacy_pending_entry = PendingPortImage.init(.{
+            .pending_port_fingerprint = 0,
+            .original_run_handle_fingerprint = 0x5150_ab05,
+            .mailbox_id = 0,
+            .request_frame = legacy_request,
+            .target_ref_fingerprint = 0x5150_ab06,
+        });
+        legacy_pending_entry.fingerprint_version = 1;
+        legacy_pending_entry.pending_port_fingerprint = fingerprintPendingPortImageProjectionV1(legacy_pending_entry);
+        legacy_pending_entry.pending_port_image_fingerprint = PendingPortImage.fingerprint(legacy_pending_entry);
+        const legacy_pending_entries = [_]PendingPortImage{legacy_pending_entry};
+        const legacy_pending_fingerprints = [_]u64{legacy_pending_entry.pending_port_fingerprint};
+        const legacy_single_use_statuses = [_]u64{fingerprintPendingPortImageSingleUseStatus(legacy_pending_entry)};
+        const legacy_routing_statuses = [_]u64{fingerprintPendingPortImageRoutingStatus(legacy_pending_entry)};
+        const legacy_mailbox = MailboxImage.init(.{
+            .pending_port_entries = &legacy_pending_entries,
+            .pending_port_fingerprints = &legacy_pending_fingerprints,
+            .next_mailbox_id = 7,
+            .single_use_status_fingerprints = &legacy_single_use_statuses,
+            .response_routing_status_fingerprints = &legacy_routing_statuses,
+        });
         const legacy_events = [_]u64{0x5150_aa03};
         var legacy_with_mailbox = RunspaceImage{
             .format_version = 1,
@@ -32050,6 +32095,28 @@ fn fingerprintPendingPortImageProjection(image: Capsule.PendingPortImage) u64 {
     });
 }
 
+fn fingerprintPendingPortImageProjectionV1(image: Capsule.PendingPortImage) u64 {
+    return fingerprintPendingPortFieldsV1(.{
+        .handle_fingerprint = image.original_run_handle_fingerprint,
+        .mailbox_id = image.mailbox_id,
+        .world_surface_fingerprint = image.request_frame.world_surface_fingerprint,
+        .target_certificate_fingerprint = image.request_frame.target_certificate_fingerprint,
+        .world_port_id = image.request_frame.world_port_id,
+        .request_fingerprint = image.request_frame.request_fingerprint,
+        .request_frame_fingerprint = image.request_frame.frame_fingerprint,
+        .expected_response_kind = image.expected_response_kind,
+        .expected_response_value_table_id = image.expected_response_value_table_id,
+        .residual_site_index = image.request_frame.residual_site_index,
+        .residual_site_fingerprint = image.request_frame.residual_site_fingerprint,
+        .target_ref_fingerprint = image.target_ref_fingerprint,
+        .environment_certificate_fingerprint = image.environment_certificate_fingerprint,
+        .run_permit_fingerprint = image.run_permit_fingerprint,
+        .turn_index = image.request_frame.turn_index,
+        .inserted_event_index = image.inserted_event_index,
+        .status = image.status,
+    });
+}
+
 fn fingerprintPendingPortFields(args: struct {
     handle_fingerprint: u64,
     mailbox_id: u64,
@@ -32090,6 +32157,48 @@ fn fingerprintPendingPortFields(args: struct {
     hashOptionalU64(&hasher, args.run_permit_fingerprint);
     hashOptionalU64(&hasher, args.pending_actuation_intent_fingerprint);
     hashOptionalU64(&hasher, args.pending_actuation_receipt_fingerprint);
+    hashU64(&hasher, args.turn_index);
+    hashU64(&hasher, args.inserted_event_index);
+    hashU64(&hasher, @intFromEnum(args.status));
+    return hasher.final();
+}
+
+fn fingerprintPendingPortFieldsV1(args: struct {
+    handle_fingerprint: u64,
+    mailbox_id: u64,
+    world_surface_fingerprint: u64,
+    target_certificate_fingerprint: u64,
+    world_port_id: u32,
+    request_fingerprint: u64,
+    request_frame_fingerprint: u64,
+    expected_response_kind: ResponseKind,
+    expected_response_value_table_id: ?u32,
+    residual_site_index: usize,
+    residual_site_fingerprint: u64,
+    target_ref_fingerprint: u64,
+    environment_certificate_fingerprint: ?u64,
+    run_permit_fingerprint: ?u64,
+    turn_index: usize,
+    inserted_event_index: u64,
+    status: Runspace.PendingStatus,
+}) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.pending_port.fingerprint");
+    hashU64(&hasher, 2);
+    hashU64(&hasher, args.handle_fingerprint);
+    hashU64(&hasher, args.mailbox_id);
+    hashU64(&hasher, args.world_surface_fingerprint);
+    hashU64(&hasher, args.target_certificate_fingerprint);
+    hashU64(&hasher, args.world_port_id);
+    hashU64(&hasher, args.request_fingerprint);
+    hashU64(&hasher, args.request_frame_fingerprint);
+    hashU64(&hasher, @intFromEnum(args.expected_response_kind));
+    hashOptionalU32(&hasher, args.expected_response_value_table_id);
+    hashU64(&hasher, args.residual_site_index);
+    hashU64(&hasher, args.residual_site_fingerprint);
+    hashU64(&hasher, args.target_ref_fingerprint);
+    hashOptionalU64(&hasher, args.environment_certificate_fingerprint);
+    hashOptionalU64(&hasher, args.run_permit_fingerprint);
     hashU64(&hasher, args.turn_index);
     hashU64(&hasher, args.inserted_event_index);
     hashU64(&hasher, @intFromEnum(args.status));
