@@ -16,9 +16,19 @@ pub fn main(init: std.process.Init) !void {
         .request_fingerprint = 0xacc7_4001,
         .pending_port_fingerprint = 0xacc7_4aaa,
     });
-    const pending = try common.execute(ctx, world.Actuation.Policy.fixture_test, .{
+    const pending_policy = world.Actuation.Policy.init(.{
+        .allow_fresh_actuation = true,
+        .allow_pending_actuation = true,
+        .allow_human_gated = true,
+        .require_idempotency_key = false,
+        .require_approval_for_mutation = false,
+        .max_actuation_calls = null,
+        .max_pending_actuations = null,
+    });
+    const pending = try common.execute(ctx, pending_policy, .{
         .pending = .{ .frame_response_fingerprint = 0xacc7_4002 },
     }, 1);
+    if (!pending.receipt.pending) return error.InvalidFrameEncoding;
 
     const intent_refs = [_]u64{ctx.intent.intent_fingerprint};
     const receipt_refs = [_]u64{pending.receipt.receipt_fingerprint};

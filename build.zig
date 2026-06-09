@@ -750,8 +750,8 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Actuation pending Capsule example.",
             .expected_stdout =
             \\pending_actuation_intent_fingerprint=a59bf43266789296
-            \\capsule_fingerprint=39a0aef3ae14fe0e
-            \\restore_report_fingerprint=fde998d1d83b5186
+            \\capsule_fingerprint=b38dbaa2c3441e5
+            \\restore_report_fingerprint=9760cf0f6dccef2d
             \\final_result=true
             \\
             ,
