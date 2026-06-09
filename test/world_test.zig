@@ -298,8 +298,8 @@ test "linker catalog carries explicit actuation adapter candidates" {
     defer std.testing.allocator.free(match.blockers);
     defer std.testing.allocator.free(match.warnings);
     try std.testing.expectEqual(world.Linker.MatchKind.adapter, match.kind);
-    try std.testing.expect(!match.accepted());
-    try std.testing.expectEqual(world.Linker.Blocker.UnsupportedRouteKind, match.blockers[0]);
+    try std.testing.expect(match.accepted());
+    try std.testing.expectEqual(@as(usize, 0), match.blockers.len);
 }
 
 test "actuation guest conformance vector includes receipt summaries" {
@@ -800,6 +800,26 @@ test "actuation verify report records matches and divergences" {
     const same = world.Actuation.VerifyReport.compare(intent, expected, fresh);
     try std.testing.expect(report.matched);
     try std.testing.expectEqual(report.report_fingerprint, same.report_fingerprint);
+
+    const forged_identity = world.Actuation.Receipt.init(.{
+        .intent_fingerprint = intent.intent_fingerprint +% 1,
+        .envelope_fingerprint = 0x5201,
+        .decision_fingerprint = 0x5202,
+        .commit_fingerprint = 0x5209,
+        .response_fingerprint = 0x5208,
+        .frame_response_fingerprint = 0x5207,
+        .actuator_ref_fingerprint = 0x5101,
+        .idempotency_key_fingerprint = 0x5106 +% 1,
+        .target_ref_fingerprint = 0x5103,
+        .world_surface_fingerprint = 0x5104,
+        .world_port_id = 0,
+        .class = .observation,
+        .mode = .verify,
+        .verified = true,
+    });
+    const forged_report = world.Actuation.VerifyReport.compare(intent, expected, forged_identity);
+    try std.testing.expect(!forged_report.matched);
+    try std.testing.expectEqual(world.Actuation.DivergenceKind.response_fingerprint_mismatch, forged_report.divergence_kind.?);
 
     const changed = world.Actuation.Receipt.init(.{
         .intent_fingerprint = intent.intent_fingerprint,
@@ -8276,6 +8296,39 @@ test "link descriptorless adapter reports unsupported route kind" {
     try std.testing.expectEqual(world.Linker.NormalForm.partial_with_blockers, linked.plan.normal_form);
     try std.testing.expectEqual(@as(usize, 0), linked.plan.fabric_plans.len);
     try std.testing.expect(linked.graph.hasBlocker(.UnsupportedRouteKind));
+}
+
+test "link actuation adapter fallback preserves route metadata" {
+    const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
+    const entries = [_]world.Linker.Catalog.Entry{
+        world.Linker.Catalog.Entry.actuationAdapter(.{
+            .actuator_ref_fingerprint = 0xacc7_0101,
+            .actuation_descriptor_fingerprint = 0xacc7_0102,
+            .actuation_binding_fingerprint = 0xacc7_0103,
+            .environment_certificate_fingerprint = 0xe4e4,
+            .label = "actuation-adapter",
+        }),
+    };
+    var policy = world.Linker.Policy.strict_closed;
+    policy.allow_adapter_fallback = true;
+    var linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
+        .root_imports = &.{root_import},
+        .catalog = world.Linker.Catalog.init(&entries),
+        .policy = policy,
+    });
+    defer linked.deinit();
+
+    try std.testing.expect(linked.plan.accepted());
+    try std.testing.expectEqual(@as(usize, 1), linked.plan.fabric_plans.len);
+    const route = linked.plan.fabric_plans[0].routes[0];
+    try std.testing.expectEqual(world.Fabric.RouteKind.adapter, route.kind);
+    try std.testing.expect(route.hasActuationMetadata());
+    try std.testing.expectEqual(@as(?u64, 0xacc7_0101), route.actuator_ref_fingerprint);
+    try std.testing.expectEqual(@as(?u64, 0xacc7_0102), route.actuation_descriptor_fingerprint);
+    try std.testing.expectEqual(@as(?u64, 0xacc7_0103), route.actuation_binding_fingerprint);
 }
 
 test "link unsupported descriptorless providers do not consume candidate cap" {

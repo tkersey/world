@@ -8655,7 +8655,9 @@ pub const Fabric = struct {
                 }
                 switch (route.kind) {
                     .target_export, .admitted_run => if (response_mapping == null) return error.UnsupportedMapping,
-                    .adapter => return error.UnsupportedMapping,
+                    .adapter => {
+                        if (!route.hasActuationMetadata() or response_mapping != null) return error.UnsupportedMapping;
+                    },
                     .guest, .replay, .reject, .unsupported => {
                         if (request_mapping != null or response_mapping != null) return error.UnsupportedMapping;
                     },
@@ -18521,12 +18523,16 @@ pub const Actuation = struct {
             }
             const expected_status = statusFromReceipt(expected.?);
             const fresh_status = statusFromReceipt(fresh.?);
-            const matched = expected_status == fresh_status and
+            const identity_matched = receiptBindsIntent(expected.?, intent) and receiptBindsIntent(fresh.?, intent);
+            const matched = identity_matched and
+                expected_status == fresh_status and
                 expected.?.response_kind == fresh.?.response_kind and
                 expected.?.frame_response_fingerprint == fresh.?.frame_response_fingerprint and
                 expected.?.response_value_image_fingerprint == fresh.?.response_value_image_fingerprint;
             const divergence_kind: ?DivergenceKind = if (matched)
                 null
+            else if (!identity_matched)
+                .response_fingerprint_mismatch
             else if (expected_status != fresh_status)
                 .status_mismatch
             else if (expected.?.response_kind != fresh.?.response_kind)
@@ -18542,6 +18548,16 @@ pub const Actuation = struct {
                 .matched = matched,
                 .divergence_kind = divergence_kind,
             });
+        }
+
+        fn receiptBindsIntent(receipt: Receipt, intent: Intent) bool {
+            return receipt.intent_fingerprint == intent.intent_fingerprint and
+                receipt.idempotency_key_fingerprint == intent.idempotency_key_fingerprint and
+                receipt.actuator_ref_fingerprint == intent.actuator_ref_fingerprint and
+                receipt.target_ref_fingerprint == intent.target_ref_fingerprint and
+                receipt.world_surface_fingerprint == intent.world_surface_fingerprint and
+                receipt.world_port_id == intent.world_port_id and
+                receipt.class == intent.class;
         }
 
         fn statusFromReceipt(receipt: Receipt) Actuation.ResponseStatus {

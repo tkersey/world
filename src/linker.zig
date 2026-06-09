@@ -1644,6 +1644,9 @@ pub fn Linker(comptime W: type) type {
                     .provider_admission_receipt_fingerprint = if (requires_provider_run) entry.admission_receipt_fingerprint else null,
                     .provider_transcript_image_fingerprint = entry.replay_transcript_image_fingerprint,
                     .response_value_mapping_fingerprint = if (mapping) |value| value.mapping_fingerprint else null,
+                    .actuator_ref_fingerprint = entry.actuator_ref_fingerprint,
+                    .actuation_descriptor_fingerprint = entry.actuation_descriptor_fingerprint,
+                    .actuation_binding_fingerprint = entry.actuation_binding_fingerprint,
                     .response_status = if (route_kind == .reject) .rejected else .responded,
                     .max_depth = policy.max_link_depth,
                     .metadata = "world-linker-route",
@@ -1965,7 +1968,10 @@ pub fn Linker(comptime W: type) type {
                         if (route.response_value_mapping_fingerprint == null and route.value_mapping_fingerprint == null) return error.UnsupportedMapping;
                     },
                     .reject, .unsupported, .replay => {},
-                    .guest, .adapter => return error.UnsupportedMapping,
+                    .guest => return error.UnsupportedMapping,
+                    .adapter => {
+                        if (!route.hasActuationMetadata()) return error.UnsupportedMapping;
+                    },
                 }
                 if (route.metadata.len == 0) return error.InvalidFrameEncoding;
             }
@@ -2055,7 +2061,8 @@ pub fn Linker(comptime W: type) type {
                 .target, .module_ref, .admitted_run => true,
                 .replay_provider => policy.allow_replay_routes,
                 .reject_route => policy.allow_reject_routes,
-                .guest_provider, .environment_adapter => false,
+                .guest_provider => false,
+                .environment_adapter => policy.allow_adapter_fallback and entry.hasActuationCandidate(),
             };
         }
 
