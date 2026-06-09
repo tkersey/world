@@ -1862,6 +1862,112 @@ test "runspace actuation dispatch preserves successful response value image" {
     try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try runspace.getSlotSummary(handle)).status);
 }
 
+test "runspace actuation dispatch does not require value image without response table" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    _ = try runspace.tick();
+    const original_pending = try runspace.mailbox.get(0);
+    const original_request = original_pending.request_frame.?;
+    var payload_image: ?world.Frame.ValueImage = if (original_request.payload_image) |image| try image.clone(std.testing.allocator) else null;
+    errdefer if (payload_image) |*image| image.deinit(std.testing.allocator);
+    const native_request = world.Frame.Request.init(.{
+        .world_surface_fingerprint = original_request.world_surface_fingerprint,
+        .world_surface_replay_scope_fingerprint = original_request.world_surface_replay_scope_fingerprint,
+        .target_certificate_fingerprint = original_request.target_certificate_fingerprint,
+        .world_port_id = original_request.world_port_id,
+        .residual_site_index = original_request.residual_site_index,
+        .residual_site_fingerprint = original_request.residual_site_fingerprint,
+        .request_fingerprint = original_request.request_fingerprint,
+        .turn_index = original_request.turn_index,
+        .payload_value_table_id = original_request.payload_value_table_id,
+        .expected_response_value_table_id = null,
+        .payload_image = payload_image,
+        .flags = original_request.flags,
+    });
+    payload_image = null;
+    var native_pending = world.Runspace.PendingPort.init(.{
+        .handle = original_pending.handle,
+        .mailbox_id = original_pending.mailbox_id,
+        .request = native_request,
+        .target_ref_fingerprint = original_pending.target_ref_fingerprint,
+        .expected_response_kind = original_pending.expected_response_kind,
+        .environment_certificate_fingerprint = original_pending.environment_certificate_fingerprint,
+        .run_permit_fingerprint = original_pending.run_permit_fingerprint,
+        .pending_actuation_intent_fingerprint = original_pending.pending_actuation_intent_fingerprint,
+        .pending_actuation_receipt_fingerprint = original_pending.pending_actuation_receipt_fingerprint,
+        .inserted_event_index = original_pending.inserted_event_index,
+    });
+    runspace.mailbox.pending.items[0].deinit(std.testing.allocator);
+    runspace.mailbox.pending.items[0] = native_pending;
+    native_pending = undefined;
+
+    const pending = try runspace.mailbox.get(0);
+    const request = pending.request_frame.?;
+    try std.testing.expectEqual(@as(?u32, null), request.expected_response_value_table_id);
+    const ref = world.Actuation.Ref.init(.{
+        .kind = .fixture,
+        .class = .deterministic_fixture,
+        .label = "native-only-fixture",
+    });
+    const descriptor = world.Actuation.Descriptor.init(.{
+        .actuator_ref = ref,
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .target_ref_fingerprint = pending.target_ref_fingerprint,
+        .world_port_id = request.world_port_id,
+    });
+    const key = world.Actuation.IdempotencyKey.init(.{
+        .target_ref_fingerprint = pending.target_ref_fingerprint,
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .world_port_id = request.world_port_id,
+        .request_fingerprint = request.request_fingerprint,
+        .pending_port_fingerprint = pending.pending_port_fingerprint,
+        .actuator_ref_fingerprint = ref.ref_fingerprint,
+    });
+    const intent = world.Actuation.Intent.init(.{
+        .actuator_ref_fingerprint = ref.ref_fingerprint,
+        .descriptor_fingerprint = descriptor.descriptor_fingerprint,
+        .target_ref_fingerprint = pending.target_ref_fingerprint,
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .world_port_id = request.world_port_id,
+        .pending_port_fingerprint = pending.pending_port_fingerprint,
+        .frame_request_fingerprint = request.request_fingerprint,
+        .encoded_frame_request_fingerprint = request.frame_fingerprint,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .run_permit_fingerprint = pending.run_permit_fingerprint,
+        .environment_certificate_fingerprint = pending.environment_certificate_fingerprint,
+        .class = .deterministic_fixture,
+        .requested_mode = .fresh,
+    });
+    const envelope = world.Actuation.Envelope.init(.{
+        .intent_fingerprint = intent.intent_fingerprint,
+        .encoded_frame_request_fingerprint = request.frame_fingerprint,
+        .idempotency_key = key,
+    });
+    const execution = try world.Actuation.Membrane.execute(.{
+        .policy = world.Actuation.Policy.fixture_test,
+        .intent = intent,
+        .envelope = envelope,
+        .actuator = .{ .fixture = .{ .frame_response_fingerprint = 0xacc7_4001 } },
+        .descriptor = descriptor,
+        .attempt_number = 1,
+        .target_ref_fingerprint = pending.target_ref_fingerprint,
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+    });
+    try execution.validate();
+    try std.testing.expect(execution.response.response_image == null);
+
+    try std.testing.expectError(error.FrameValueTableMismatch, runspace.dispatchActuation(0, execution));
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try runspace.getSlotSummary(handle)).status);
+}
+
 test "runspace actuation dispatch accepts rejected terminal execution without frame fingerprint" {
     var runtime = boundary.Runtime.init(std.testing.allocator);
     defer runtime.deinit();

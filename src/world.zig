@@ -11183,7 +11183,7 @@ pub const Runspace = struct {
             .failed => .failed,
             .pending, .deferred => return error.InvalidPendingPortTransition,
         };
-        var response_image: ?Frame.ValueImage = if (status == .responded) image: {
+        var response_image: ?Frame.ValueImage = if (status == .responded and (actuation_response.response_image != null or pending.expected_response_value_table_id != null)) image: {
             const source = actuation_response.response_image orelse return error.MissingValueImage;
             if (actuation_response.value_image_fingerprint) |expected| {
                 if (source.value_image_fingerprint != expected) return error.InvalidFrameEncoding;
