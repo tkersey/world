@@ -8454,7 +8454,7 @@ pub const Fabric = struct {
             if (self.world_port_id != self.parent_world_port_id) return error.WrongPortId;
             if (self.hasActuationMetadata()) {
                 if (self.kind != .adapter) return error.UnsupportedMapping;
-                if (self.actuator_ref_fingerprint == null or self.actuation_binding_fingerprint == null) return error.MissingBinding;
+                if (!self.hasActuationRouteBinding()) return error.MissingBinding;
             }
             switch (self.kind) {
                 .target_export => {
@@ -8496,9 +8496,14 @@ pub const Fabric = struct {
                 self.actuation_binding_fingerprint != null;
         }
 
+        pub fn hasActuationRouteBinding(self: Fabric.Route) bool {
+            return self.actuator_ref_fingerprint != null and self.actuation_binding_fingerprint != null;
+        }
+
         pub fn coversRequiredPort(self: Fabric.Route) bool {
             return switch (self.kind) {
-                .unsupported, .adapter => false,
+                .unsupported => false,
+                .adapter => self.hasActuationRouteBinding(),
                 else => true,
             };
         }
@@ -13202,7 +13207,7 @@ pub const Runspace = struct {
         if (route.parent_target_certificate_fingerprint != 0 and route.parent_target_certificate_fingerprint != pending.target_certificate_fingerprint) return false;
         if (route.parent_world_port_id != pending.world_port_id) return false;
         return switch (route.kind) {
-            .adapter => false,
+            .adapter => route.hasActuationRouteBinding(),
             .target_export, .admitted_run, .guest, .replay, .reject, .unsupported => true,
         };
     }

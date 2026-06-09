@@ -9937,13 +9937,13 @@ test "fabric plan coverage ordering depth and provider limits fail closed" {
     });
     try actuation_adapter_plan.validate();
     try actuation_adapter_plan.assertExecutableMappings();
-    try std.testing.expectError(error.FabricMissingRoute, actuation_adapter_plan.assertCoverage(import_set));
+    try actuation_adapter_plan.assertCoverage(import_set);
     const actuation_adapter_coverage = actuation_adapter_plan.coverage(parent_ref, import_set);
     try actuation_adapter_coverage.validate();
-    try std.testing.expect(!actuation_adapter_coverage.accepted);
-    try std.testing.expectEqual(@as(usize, 0), actuation_adapter_coverage.fabric_covered_port_count);
-    try std.testing.expectEqual(@as(usize, 1), actuation_adapter_coverage.missing_port_count);
-    try std.testing.expectEqual(@as(usize, 1), actuation_adapter_coverage.unsupported_port_count);
+    try std.testing.expect(actuation_adapter_coverage.accepted);
+    try std.testing.expectEqual(@as(usize, 1), actuation_adapter_coverage.fabric_covered_port_count);
+    try std.testing.expectEqual(@as(usize, 0), actuation_adapter_coverage.missing_port_count);
+    try std.testing.expectEqual(@as(usize, 0), actuation_adapter_coverage.unsupported_port_count);
 }
 
 test "fabric binding invocation receipt and coverage fingerprints are stable" {
