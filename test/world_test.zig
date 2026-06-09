@@ -575,12 +575,17 @@ test "actuation commit response receipt journal and replay bind idempotency" {
     var journal = world.Actuation.Journal.init();
     defer journal.deinit(std.testing.allocator);
     try journal.appendIntent(std.testing.allocator, intent);
+    try journal.appendDecision(std.testing.allocator, decision);
     try journal.appendCommit(std.testing.allocator, commit);
     try journal.appendResponse(std.testing.allocator, response);
     try journal.appendReceipt(std.testing.allocator, receipt);
     try std.testing.expect(journal.lookupByIdempotencyKey(key.key_fingerprint) != null);
     try journal.assertNoDuplicateFreshCommit();
     const summary = journal.summary();
+    try std.testing.expectEqual(@as(usize, 1), summary.intent_count);
+    try std.testing.expectEqual(@as(usize, 1), summary.decision_count);
+    try std.testing.expectEqual(@as(usize, 1), summary.commit_count);
+    try std.testing.expectEqual(@as(usize, 1), summary.response_count);
     try std.testing.expectEqual(@as(usize, 1), summary.receipt_count);
     try std.testing.expectEqual(@as(usize, 2), summary.fresh_count);
 
@@ -2633,6 +2638,69 @@ test "actuation capsule refs thaw replay evidence and admission summaries" {
     try std.testing.expectEqual(@as(usize, 1), admission.actuation_receipt_count);
     try std.testing.expect(admission.replay_only_actuation_feasible);
     try std.testing.expectEqual(receipt_refs[0], admission.actuation_receipt_refs[0]);
+
+    const duplicate_intent_refs = [_]u64{ 0xacc7_1101, 0xacc7_1102 };
+    const duplicate_receipt_refs = [_]u64{ 0xacc7_2201, 0xacc7_2201 };
+    const duplicate_manifest = world.Capsule.Manifest.init(.{
+        .kind = .replay_only,
+        .root_target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .actuation_intent_fingerprints = &duplicate_intent_refs,
+        .actuation_receipt_fingerprints = &duplicate_receipt_refs,
+        .actuation_journal_fingerprints = &journal_refs,
+        .normal_form = .quiescent_completed,
+    });
+    const duplicate_mailbox = world.Capsule.MailboxImage.init(.{
+        .pending_actuation_intent_fingerprints = &duplicate_intent_refs,
+        .committed_actuation_receipt_fingerprints = &duplicate_receipt_refs,
+    });
+    const duplicate_runspace_image = world.Capsule.RunspaceImage.init(.{
+        .runspace_fingerprint = 0x5150_a011,
+        .runspace_report_fingerprint = 0x5150_a012,
+        .mailbox_image = duplicate_mailbox,
+        .actuation_intent_refs = &duplicate_intent_refs,
+        .actuation_receipt_refs = &duplicate_receipt_refs,
+        .actuation_journal_refs = &journal_refs,
+    });
+    const duplicate_dependency_refs = [_]world.Capsule.DependencyRef{
+        world.Capsule.DependencyRef.init(.manifest, duplicate_manifest.manifest_fingerprint),
+        world.Capsule.DependencyRef.init(.runspace_image, duplicate_runspace_image.image_fingerprint),
+        world.Capsule.DependencyRef.init(.actuation_intent, duplicate_intent_refs[0]),
+        world.Capsule.DependencyRef.init(.actuation_intent, duplicate_intent_refs[1]),
+        world.Capsule.DependencyRef.init(.actuation_receipt, duplicate_receipt_refs[0]),
+        world.Capsule.DependencyRef.init(.actuation_receipt, duplicate_receipt_refs[1]),
+        world.Capsule.DependencyRef.init(.actuation_journal, journal_refs[0]),
+    };
+    const duplicate_object_refs = [_]world.Capsule.ObjectRef{
+        world.Capsule.ObjectRef.init(.capsule_manifest, duplicate_manifest.manifest_fingerprint),
+        world.Capsule.ObjectRef.init(.runspace_image, duplicate_runspace_image.image_fingerprint),
+        world.Capsule.ObjectRef.init(.actuation_intent, duplicate_intent_refs[0]),
+        world.Capsule.ObjectRef.init(.actuation_intent, duplicate_intent_refs[1]),
+        world.Capsule.ObjectRef.init(.actuation_receipt, duplicate_receipt_refs[0]),
+        world.Capsule.ObjectRef.init(.actuation_receipt, duplicate_receipt_refs[1]),
+        world.Capsule.ObjectRef.init(.actuation_journal, journal_refs[0]),
+    };
+    const duplicate_receipt_image = world.Capsule.Image.init(.{
+        .manifest = duplicate_manifest,
+        .runspace_image = duplicate_runspace_image,
+        .actuation_intent_refs = &duplicate_intent_refs,
+        .actuation_receipt_refs = &duplicate_receipt_refs,
+        .actuation_journal_refs = &journal_refs,
+        .dependency_refs = &duplicate_dependency_refs,
+        .object_refs = &duplicate_object_refs,
+    });
+    try duplicate_receipt_image.validate(.{});
+    var duplicate_thaw = try world.Capsule.planThaw(duplicate_receipt_image, target_ref.target_ref_fingerprint, 0, null, .{
+        .mode = .replay_only,
+        .require_local_permit = false,
+    });
+    defer duplicate_thaw.deinit(std.testing.allocator);
+    const duplicate_receipt_admission = world.Admission.capsuleAdmissionReport(.{
+        .mode = .replay_only,
+        .image = duplicate_receipt_image,
+        .thaw_plan = duplicate_thaw,
+    });
+    try std.testing.expect(!duplicate_receipt_admission.accepted);
+    try std.testing.expect(!duplicate_receipt_admission.replay_only_actuation_feasible);
 
     const verify_thaw = world.Capsule.ThawPlan.init(.{
         .capsule_image_fingerprint = decoded.image_fingerprint,

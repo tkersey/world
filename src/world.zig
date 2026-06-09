@@ -2446,7 +2446,8 @@ pub const Admission = struct {
             .verify => false,
             .restore_parked, .restore_completed, .restore_failed, .relink_and_restore => if (args.thaw_plan) |plan| if (args.restore_report) |report| plan.blockers.len == 0 and capsuleRestoreReportAccepted(report) else false else false,
         };
-        const replay_only_actuation_feasible = args.mode == .replay_only and args.image.manifest.actuation_receipt_fingerprints.len >= args.image.manifest.actuation_intent_fingerprints.len;
+        const replay_only_actuation_feasible = args.mode == .replay_only and
+            distinctNonZeroU64Count(args.image.manifest.actuation_receipt_fingerprints) >= args.image.manifest.actuation_intent_fingerprints.len;
         const verify_actuation_feasible = false;
         const actuation_feasible = switch (args.mode) {
             .replay_only => replay_only_actuation_feasible,
@@ -2501,6 +2502,22 @@ pub const Admission = struct {
             .actuation_receipt_refs = args.image.manifest.actuation_receipt_fingerprints,
             .summary = "capsule admission accepted",
         });
+    }
+
+    fn distinctNonZeroU64Count(values: []const u64) usize {
+        var count: usize = 0;
+        for (values, 0..) |value, index| {
+            if (value == 0) continue;
+            var seen = false;
+            for (values[0..index]) |prior| {
+                if (prior == value) {
+                    seen = true;
+                    break;
+                }
+            }
+            if (!seen) count += 1;
+        }
+        return count;
     }
 
     fn capsuleImageValid(image: Capsule.Image) bool {
@@ -18478,11 +18495,17 @@ pub const Actuation = struct {
         pub fn summary(self: @This()) Summary {
             var result = Summary{};
             for (self.entries.items) |entry| {
-                if (entry.intent_fingerprint != null) result.intent_count += 1;
-                if (entry.decision_fingerprint != null) result.decision_count += 1;
-                if (entry.commit_fingerprint != null) result.commit_count += 1;
-                if (entry.response_fingerprint != null) result.response_count += 1;
-                if (entry.receipt_fingerprint != null) result.receipt_count += 1;
+                if (entry.receipt_fingerprint != null) {
+                    result.receipt_count += 1;
+                } else if (entry.response_fingerprint != null) {
+                    result.response_count += 1;
+                } else if (entry.commit_fingerprint != null) {
+                    result.commit_count += 1;
+                } else if (entry.decision_fingerprint != null) {
+                    result.decision_count += 1;
+                } else if (entry.intent_fingerprint != null) {
+                    result.intent_count += 1;
+                }
                 if (entry.fresh_called) result.fresh_count += 1;
                 if (entry.replayed) result.replay_count += 1;
                 if (entry.verified) result.verify_count += 1;
