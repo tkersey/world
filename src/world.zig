@@ -8531,8 +8531,7 @@ pub const Fabric = struct {
 
         pub fn coversRequiredPort(self: Fabric.Route) bool {
             return switch (self.kind) {
-                .unsupported => false,
-                .adapter => self.hasActuationRouteBinding(),
+                .adapter, .unsupported => false,
                 else => true,
             };
         }
@@ -8713,9 +8712,7 @@ pub const Fabric = struct {
                 }
                 switch (route.kind) {
                     .target_export, .admitted_run => if (response_mapping == null) return error.UnsupportedMapping,
-                    .adapter => {
-                        if (!route.hasActuationMetadata() or response_mapping != null) return error.UnsupportedMapping;
-                    },
+                    .adapter => return error.UnsupportedMapping,
                     .guest, .replay, .reject, .unsupported => {
                         if (request_mapping != null or response_mapping != null) return error.UnsupportedMapping;
                     },
@@ -10192,6 +10189,21 @@ pub const Runspace = struct {
             return self.pending.items[index].borrowed();
         }
 
+        fn recordActuationReceipt(self: *@This(), mailbox_id: u64, intent_fingerprint: u64, receipt_fingerprint: u64) !Runspace.PendingPort {
+            const index = try self.indexOf(mailbox_id);
+            const current = self.pending.items[index];
+            if (current.status != .pending) return error.PendingPortConsumed;
+            if (current.pending_actuation_intent_fingerprint != null or current.pending_actuation_receipt_fingerprint != null) {
+                if (current.pending_actuation_intent_fingerprint != intent_fingerprint) return error.PendingPortConsumed;
+            }
+            var marked = current;
+            marked.pending_actuation_intent_fingerprint = intent_fingerprint;
+            marked.pending_actuation_receipt_fingerprint = receipt_fingerprint;
+            marked.pending_port_fingerprint = fingerprintPendingPort(marked);
+            self.pending.items[index] = marked;
+            return self.pending.items[index].borrowed();
+        }
+
         fn cancel(self: *@This(), mailbox_id: u64, reason: []const u8) !Runspace.PendingPort {
             _ = reason;
             const index = try self.indexOf(mailbox_id);
@@ -11144,7 +11156,11 @@ pub const Runspace = struct {
         var supervisor_snapshot = try self.snapshotSlotSupervisor(index);
         defer supervisor_snapshot.deinit(self.allocator);
         try self.superviseActuationDispatch(index, execution, accounting.response_bytes);
+        const mailbox_index = try self.mailbox.indexOf(mailbox_id);
+        const mailbox_snapshot = self.mailbox.pending.items[mailbox_index];
+        _ = try self.mailbox.recordActuationReceipt(mailbox_id, execution.intent.intent_fingerprint, execution.receipt.receipt_fingerprint);
         _ = self.respond(mailbox_id, response) catch |err| {
+            self.mailbox.pending.items[mailbox_index] = mailbox_snapshot;
             supervisor_snapshot.restore(self, index);
             return err;
         };
@@ -13247,7 +13263,7 @@ pub const Runspace = struct {
         if (route.parent_target_certificate_fingerprint != 0 and route.parent_target_certificate_fingerprint != pending.target_certificate_fingerprint) return false;
         if (route.parent_world_port_id != pending.world_port_id) return false;
         return switch (route.kind) {
-            .adapter => route.hasActuationRouteBinding(),
+            .adapter => false,
             .target_export, .admitted_run, .guest, .replay, .reject, .unsupported => true,
         };
     }
