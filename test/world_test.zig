@@ -1283,6 +1283,25 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
     try std.testing.expect(!replay_exec.fresh_called);
     try std.testing.expect(replay_exec.receipt.replayed);
     try std.testing.expectEqual(@as(?u64, 0x6306), replay_exec.response.frame_response_fingerprint);
+    const value_replay_seed = world.Actuation.Receipt.init(.{
+        .intent_fingerprint = replay_intent.intent_fingerprint,
+        .envelope_fingerprint = 0x6322,
+        .decision_fingerprint = 0x6323,
+        .commit_fingerprint = 0x6324,
+        .response_fingerprint = 0x6325,
+        .frame_response_fingerprint = 0x6326,
+        .response_value_image_fingerprint = 0x6327,
+        .actuator_ref_fingerprint = ref.ref_fingerprint,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .target_ref_fingerprint = 0x6102,
+        .world_surface_fingerprint = 0x6101,
+        .world_port_id = 7,
+        .class = .deterministic_fixture,
+        .mode = .replay,
+        .replayed = true,
+    });
+    const value_replay_source = world.Actuation.ReplaySource.init(.{ .receipts = &.{value_replay_seed} });
+    try std.testing.expectError(error.MissingValueImage, value_replay_source.responseForIntent(replay_intent, .responded, .@"resume"));
     const forged_replay_seed = world.Actuation.Receipt.init(.{
         .intent_fingerprint = replay_intent.intent_fingerprint,
         .envelope_fingerprint = 0x6302,

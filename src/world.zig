@@ -18546,6 +18546,7 @@ pub const Actuation = struct {
             const status = receipt.responseStatus();
             if (status != expected_status) return error.ReplayResponseKindMismatch;
             if (receipt.response_kind != expected_kind) return error.ReplayResponseKindMismatch;
+            if (status == .responded and receipt.response_value_image_fingerprint != null) return error.MissingValueImage;
             return Response.init(.{
                 .intent_fingerprint = intent.intent_fingerprint,
                 .commit_fingerprint = receipt.commit_fingerprint,
@@ -24077,9 +24078,13 @@ pub const Capsule = struct {
         try writeU64Slice(out, allocator, manifest.fabric_invocation_fingerprints);
         try writeU64Slice(out, allocator, manifest.fabric_receipt_fingerprints);
         try writeU64Slice(out, allocator, manifest.guest_conformance_report_fingerprints);
-        try writeU64Slice(out, allocator, manifest.actuation_intent_fingerprints);
-        try writeU64Slice(out, allocator, manifest.actuation_receipt_fingerprints);
-        try writeU64Slice(out, allocator, manifest.actuation_journal_fingerprints);
+        if (capsuleManifestFormatSupportsActuationRefs(manifest.format_version)) {
+            try writeU64Slice(out, allocator, manifest.actuation_intent_fingerprints);
+            try writeU64Slice(out, allocator, manifest.actuation_receipt_fingerprints);
+            try writeU64Slice(out, allocator, manifest.actuation_journal_fingerprints);
+        } else if (manifest.actuation_intent_fingerprints.len != 0 or manifest.actuation_receipt_fingerprints.len != 0 or manifest.actuation_journal_fingerprints.len != 0) {
+            return error.InvalidFrameEncoding;
+        }
         try writeU64(out, allocator, manifest.pending_port_count);
         try writeU64(out, allocator, manifest.run_slot_count);
         try writeU64(out, allocator, manifest.active_fabric_invocation_count);
@@ -24255,6 +24260,24 @@ pub const Capsule = struct {
         try std.testing.expectEqual(@as(usize, 1), decoded.pending_port_count);
         try std.testing.expectEqual(@as(usize, 2), decoded.run_slot_count);
         try std.testing.expectEqual(@as(usize, 3), decoded.active_fabric_invocation_count);
+
+        var encoded_legacy: std.ArrayList(u8) = .empty;
+        defer encoded_legacy.deinit(allocator);
+        try encodeManifest(&encoded_legacy, allocator, legacy);
+        var legacy_cursor: usize = 0;
+        var decoded_legacy = try decodeManifest(allocator, encoded_legacy.items, &legacy_cursor, .{});
+        defer decoded_legacy.deinit(allocator);
+        try std.testing.expectEqual(encoded_legacy.items.len, legacy_cursor);
+        try std.testing.expectEqual(@as(u32, 1), decoded_legacy.format_version);
+        try std.testing.expectEqual(@as(usize, 0), decoded_legacy.actuation_intent_fingerprints.len);
+
+        const actuation_refs = [_]u64{0xaaaa_0001};
+        var legacy_with_actuation = legacy;
+        legacy_with_actuation.actuation_intent_fingerprints = &actuation_refs;
+        legacy_with_actuation.manifest_fingerprint = fingerprintManifest(legacy_with_actuation);
+        var rejected_legacy: std.ArrayList(u8) = .empty;
+        defer rejected_legacy.deinit(allocator);
+        try std.testing.expectError(error.InvalidFrameEncoding, encodeManifest(&rejected_legacy, allocator, legacy_with_actuation));
     }
 
     fn encodeRunSlotImage(out: *std.ArrayList(u8), allocator: std.mem.Allocator, image: RunSlotImage) !void {
@@ -24350,7 +24373,7 @@ pub const Capsule = struct {
         return values;
     }
 
-    fn encodePendingPortImage(out: *std.ArrayList(u8), allocator: std.mem.Allocator, image: PendingPortImage) !void {
+    fn encodePendingPortImage(out: *std.ArrayList(u8), allocator: std.mem.Allocator, image: PendingPortImage, runspace_image_format_version: u32) !void {
         try writeU32(out, allocator, image.fingerprint_version);
         try writeU64(out, allocator, image.pending_port_image_fingerprint);
         try writeU64(out, allocator, image.pending_port_fingerprint);
@@ -24364,8 +24387,12 @@ pub const Capsule = struct {
         try writeU64(out, allocator, image.target_ref_fingerprint);
         try writeOptionalU64(out, allocator, image.environment_certificate_fingerprint);
         try writeOptionalU64(out, allocator, image.run_permit_fingerprint);
-        try writeOptionalU64(out, allocator, image.pending_actuation_intent_fingerprint);
-        try writeOptionalU64(out, allocator, image.pending_actuation_receipt_fingerprint);
+        if (capsuleRunspaceImageFormatSupportsActuationRefs(runspace_image_format_version)) {
+            try writeOptionalU64(out, allocator, image.pending_actuation_intent_fingerprint);
+            try writeOptionalU64(out, allocator, image.pending_actuation_receipt_fingerprint);
+        } else if (image.pending_actuation_intent_fingerprint != null or image.pending_actuation_receipt_fingerprint != null) {
+            return error.InvalidFrameEncoding;
+        }
         try writeU64(out, allocator, image.inserted_event_index);
         try writeU8(out, allocator, @intFromEnum(image.status));
     }
@@ -24418,9 +24445,9 @@ pub const Capsule = struct {
         return image;
     }
 
-    fn writePendingPortImageSlice(out: *std.ArrayList(u8), allocator: std.mem.Allocator, values: []const PendingPortImage) !void {
+    fn writePendingPortImageSlice(out: *std.ArrayList(u8), allocator: std.mem.Allocator, values: []const PendingPortImage, runspace_image_format_version: u32) !void {
         try writeU64(out, allocator, values.len);
-        for (values) |value| try encodePendingPortImage(out, allocator, value);
+        for (values) |value| try encodePendingPortImage(out, allocator, value, runspace_image_format_version);
     }
 
     fn readPendingPortImageSliceOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, options: ValidateOptions, runspace_image_format_version: u32) ![]PendingPortImage {
@@ -24439,18 +24466,22 @@ pub const Capsule = struct {
         return values;
     }
 
-    fn encodeMailboxImage(out: *std.ArrayList(u8), allocator: std.mem.Allocator, image: MailboxImage) !void {
+    fn encodeMailboxImage(out: *std.ArrayList(u8), allocator: std.mem.Allocator, image: MailboxImage, runspace_image_format_version: u32) !void {
         try writeU32(out, allocator, image.fingerprint_version);
         try writeU64(out, allocator, image.mailbox_image_fingerprint);
-        try writePendingPortImageSlice(out, allocator, image.pending_port_entries);
+        try writePendingPortImageSlice(out, allocator, image.pending_port_entries, runspace_image_format_version);
         try writeU64Slice(out, allocator, image.pending_port_fingerprints);
         try writeU64Slice(out, allocator, image.consumed_port_fingerprints);
         try writeU64(out, allocator, image.next_mailbox_id);
         try writeU64(out, allocator, image.generation);
         try writeU64Slice(out, allocator, image.single_use_status_fingerprints);
         try writeU64Slice(out, allocator, image.response_routing_status_fingerprints);
-        try writeU64Slice(out, allocator, image.pending_actuation_intent_fingerprints);
-        try writeU64Slice(out, allocator, image.committed_actuation_receipt_fingerprints);
+        if (capsuleRunspaceImageFormatSupportsActuationRefs(runspace_image_format_version)) {
+            try writeU64Slice(out, allocator, image.pending_actuation_intent_fingerprints);
+            try writeU64Slice(out, allocator, image.committed_actuation_receipt_fingerprints);
+        } else if (image.pending_actuation_intent_fingerprints.len != 0 or image.committed_actuation_receipt_fingerprints.len != 0) {
+            return error.InvalidFrameEncoding;
+        }
     }
 
     fn decodeMailboxImage(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, options: ValidateOptions, runspace_image_format_version: u32) !MailboxImage {
@@ -24514,10 +24545,10 @@ pub const Capsule = struct {
         return image;
     }
 
-    fn writeOptionalMailboxImage(out: *std.ArrayList(u8), allocator: std.mem.Allocator, image: ?MailboxImage) !void {
+    fn writeOptionalMailboxImage(out: *std.ArrayList(u8), allocator: std.mem.Allocator, image: ?MailboxImage, runspace_image_format_version: u32) !void {
         if (image) |present| {
             try writeBool(out, allocator, true);
-            try encodeMailboxImage(out, allocator, present);
+            try encodeMailboxImage(out, allocator, present, runspace_image_format_version);
         } else {
             try writeBool(out, allocator, false);
         }
@@ -24536,7 +24567,7 @@ pub const Capsule = struct {
         try writeU64(out, allocator, image.runspace_report_fingerprint);
         try writeU64Slice(out, allocator, image.run_handle_mappings);
         try writeRunSlotImageSlice(out, allocator, image.run_slots);
-        try writeOptionalMailboxImage(out, allocator, image.mailbox_image);
+        try writeOptionalMailboxImage(out, allocator, image.mailbox_image, image.format_version);
         try writeU64Slice(out, allocator, image.runspace_event_fingerprints);
         try writeU64Slice(out, allocator, image.root_run_handle_fingerprints);
         try writeU64Slice(out, allocator, image.provider_run_handle_fingerprints);
@@ -24548,9 +24579,13 @@ pub const Capsule = struct {
         try writeU64Slice(out, allocator, image.admission_receipt_refs);
         try writeU64Slice(out, allocator, image.permit_refs);
         try writeU64Slice(out, allocator, image.active_fabric_invocation_refs);
-        try writeU64Slice(out, allocator, image.actuation_intent_refs);
-        try writeU64Slice(out, allocator, image.actuation_receipt_refs);
-        try writeU64Slice(out, allocator, image.actuation_journal_refs);
+        if (capsuleRunspaceImageFormatSupportsActuationRefs(image.format_version)) {
+            try writeU64Slice(out, allocator, image.actuation_intent_refs);
+            try writeU64Slice(out, allocator, image.actuation_receipt_refs);
+            try writeU64Slice(out, allocator, image.actuation_journal_refs);
+        } else if (image.actuation_intent_refs.len != 0 or image.actuation_receipt_refs.len != 0 or image.actuation_journal_refs.len != 0) {
+            return error.InvalidFrameEncoding;
+        }
         try writeBytes(out, allocator, image.metadata);
     }
 
@@ -24696,7 +24731,7 @@ pub const Capsule = struct {
         try writeU64(&encoded, allocator, legacy.runspace_report_fingerprint);
         try writeU64Slice(&encoded, allocator, legacy.run_handle_mappings);
         try writeRunSlotImageSlice(&encoded, allocator, legacy.run_slots);
-        try writeOptionalMailboxImage(&encoded, allocator, legacy.mailbox_image);
+        try writeOptionalMailboxImage(&encoded, allocator, legacy.mailbox_image, legacy.format_version);
         try writeU64Slice(&encoded, allocator, legacy.runspace_event_fingerprints);
         try writeU64Slice(&encoded, allocator, legacy.root_run_handle_fingerprints);
         try writeU64Slice(&encoded, allocator, legacy.provider_run_handle_fingerprints);
@@ -24746,7 +24781,7 @@ pub const Capsule = struct {
         try writeBool(&encoded_mailbox, allocator, true);
         try writeU32(&encoded_mailbox, allocator, legacy_mailbox.fingerprint_version);
         try writeU64(&encoded_mailbox, allocator, legacy_mailbox.mailbox_image_fingerprint);
-        try writePendingPortImageSlice(&encoded_mailbox, allocator, legacy_mailbox.pending_port_entries);
+        try writePendingPortImageSlice(&encoded_mailbox, allocator, legacy_mailbox.pending_port_entries, legacy_with_mailbox.format_version);
         try writeU64Slice(&encoded_mailbox, allocator, legacy_mailbox.pending_port_fingerprints);
         try writeU64Slice(&encoded_mailbox, allocator, legacy_mailbox.consumed_port_fingerprints);
         try writeU64(&encoded_mailbox, allocator, legacy_mailbox.next_mailbox_id);
@@ -24776,6 +24811,36 @@ pub const Capsule = struct {
         try std.testing.expectEqual(@as(usize, 1), decoded_mailbox.runspace_event_fingerprints.len);
         try std.testing.expectEqual(legacy_events[0], decoded_mailbox.runspace_event_fingerprints[0]);
         try std.testing.expectEqualStrings("legacy-runspace-mailbox", decoded_mailbox.metadata);
+
+        var encoded_legacy: std.ArrayList(u8) = .empty;
+        defer encoded_legacy.deinit(allocator);
+        try encodeRunspaceImage(&encoded_legacy, allocator, legacy_with_mailbox);
+        var legacy_cursor: usize = 0;
+        var decoded_legacy = try decodeRunspaceImage(allocator, encoded_legacy.items, &legacy_cursor, .{});
+        defer decoded_legacy.deinit(allocator);
+        try std.testing.expectEqual(encoded_legacy.items.len, legacy_cursor);
+        try std.testing.expectEqual(@as(u32, 1), decoded_legacy.format_version);
+        try std.testing.expectEqual(@as(usize, 0), decoded_legacy.actuation_intent_refs.len);
+
+        const actuation_refs = [_]u64{0x5150_aa06};
+        var legacy_with_actuation_refs = legacy_with_mailbox;
+        legacy_with_actuation_refs.actuation_intent_refs = &actuation_refs;
+        legacy_with_actuation_refs.image_fingerprint = fingerprintRunspaceImage(legacy_with_actuation_refs);
+        var rejected_runspace: std.ArrayList(u8) = .empty;
+        defer rejected_runspace.deinit(allocator);
+        try std.testing.expectError(error.InvalidFrameEncoding, encodeRunspaceImage(&rejected_runspace, allocator, legacy_with_actuation_refs));
+
+        const mailbox_actuation_refs = [_]u64{0x5150_aa07};
+        const legacy_actuation_mailbox = MailboxImage.init(.{
+            .next_mailbox_id = 7,
+            .pending_actuation_intent_fingerprints = &mailbox_actuation_refs,
+        });
+        var legacy_with_actuation_mailbox = legacy_with_mailbox;
+        legacy_with_actuation_mailbox.mailbox_image = legacy_actuation_mailbox;
+        legacy_with_actuation_mailbox.image_fingerprint = fingerprintRunspaceImage(legacy_with_actuation_mailbox);
+        var rejected_mailbox: std.ArrayList(u8) = .empty;
+        defer rejected_mailbox.deinit(allocator);
+        try std.testing.expectError(error.InvalidFrameEncoding, encodeRunspaceImage(&rejected_mailbox, allocator, legacy_with_actuation_mailbox));
     }
 
     fn encodeFabricImage(out: *std.ArrayList(u8), allocator: std.mem.Allocator, image: FabricImage) !void {
