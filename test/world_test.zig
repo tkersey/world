@@ -302,8 +302,8 @@ test "linker catalog carries explicit actuation adapter candidates" {
     defer std.testing.allocator.free(match.blockers);
     defer std.testing.allocator.free(match.warnings);
     try std.testing.expectEqual(world.Linker.MatchKind.adapter, match.kind);
-    try std.testing.expect(!match.accepted());
-    try std.testing.expectEqual(world.Linker.Blocker.UnsupportedRouteKind, match.blockers[0]);
+    try std.testing.expect(match.accepted());
+    try std.testing.expectEqual(@as(usize, 0), match.blockers.len);
 
     var wrong_requirement = requirement;
     wrong_requirement.requirement_fingerprint +%= 1;
@@ -8689,10 +8689,17 @@ test "link actuation adapter fallback preserves route metadata" {
     });
     defer linked.deinit();
 
-    try std.testing.expect(!linked.plan.accepted());
-    try std.testing.expectEqual(world.Linker.NormalForm.partial_with_blockers, linked.plan.normal_form);
-    try std.testing.expectEqual(@as(usize, 0), linked.plan.fabric_plans.len);
-    try std.testing.expect(linked.graph.hasBlocker(.UnsupportedRouteKind));
+    try std.testing.expect(linked.plan.accepted());
+    try std.testing.expectEqual(world.Linker.NormalForm.closed_fabric, linked.plan.normal_form);
+    try std.testing.expectEqual(@as(usize, 1), linked.plan.fabric_plans.len);
+    try std.testing.expectEqual(@as(usize, 1), linked.plan.fabric_plans[0].routes.len);
+    const route = linked.plan.fabric_plans[0].routes[0];
+    try std.testing.expectEqual(world.Fabric.RouteKind.adapter, route.kind);
+    try std.testing.expectEqual(root_import.world_port_id, route.world_port_id);
+    try std.testing.expectEqual(@as(?u64, 0xacc7_0101), route.actuator_ref_fingerprint);
+    try std.testing.expectEqual(@as(?u64, 0xacc7_0102), route.actuation_descriptor_fingerprint);
+    try std.testing.expectEqual(@as(?u64, 0xacc7_0103), route.actuation_binding_fingerprint);
+    try std.testing.expectEqual(@as(?u64, null), route.response_value_mapping_fingerprint);
 }
 
 test "link unsupported descriptorless providers do not consume candidate cap" {
