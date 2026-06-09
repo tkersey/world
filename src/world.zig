@@ -20887,10 +20887,11 @@ pub const Capsule = struct {
         const manifest = Manifest.init(.{
             .kind = .replay_only,
             .root_target_ref_fingerprint = 0x5150_ca01,
-            .normal_form = .quiescent_parked,
+            .normal_form = .quiescent_completed,
             .metadata = "legacy-manifest",
         });
         var runspace_image = RunspaceImage{
+            .image_fingerprint = 0,
             .runspace_fingerprint = 0x5150_ca02,
             .runspace_report_fingerprint = 0x5150_ca03,
             .metadata = "legacy-runspace",
