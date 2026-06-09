@@ -2617,6 +2617,20 @@ test "actuation capsule refs thaw replay evidence and admission summaries" {
     try std.testing.expect(admission.replay_only_actuation_feasible);
     try std.testing.expectEqual(receipt_refs[0], admission.actuation_receipt_refs[0]);
 
+    const verify_thaw = world.Capsule.ThawPlan.init(.{
+        .capsule_image_fingerprint = decoded.image_fingerprint,
+        .requested_mode = .verify_and_restore,
+        .sender_actuation_receipt_refs = &receipt_refs,
+    });
+    const verify_admission = world.Admission.capsuleAdmissionReport(.{
+        .mode = .verify,
+        .image = decoded,
+        .thaw_plan = verify_thaw,
+    });
+    try std.testing.expect(!verify_admission.accepted);
+    try std.testing.expect(!verify_admission.verify_actuation_feasible);
+    try std.testing.expectEqual(receipt_refs[0], verify_admission.actuation_receipt_refs[0]);
+
     const missing_receipt_manifest = world.Capsule.Manifest.init(.{
         .kind = .replay_only,
         .root_target_ref_fingerprint = target_ref.target_ref_fingerprint,

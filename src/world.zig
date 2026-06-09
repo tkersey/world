@@ -2447,7 +2447,7 @@ pub const Admission = struct {
             .restore_parked, .restore_completed, .restore_failed, .relink_and_restore => if (args.thaw_plan) |plan| if (args.restore_report) |report| plan.blockers.len == 0 and capsuleRestoreReportAccepted(report) else false else false,
         };
         const replay_only_actuation_feasible = args.mode == .replay_only and args.image.manifest.actuation_receipt_fingerprints.len >= args.image.manifest.actuation_intent_fingerprints.len;
-        const verify_actuation_feasible = args.mode == .verify and args.image.manifest.actuation_receipt_fingerprints.len != 0;
+        const verify_actuation_feasible = false;
         const actuation_feasible = switch (args.mode) {
             .replay_only => replay_only_actuation_feasible,
             .verify => verify_actuation_feasible,
