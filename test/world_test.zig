@@ -1459,6 +1459,16 @@ test "actuation environment preflight and supervision ledger account host effect
     const binding = ActuationEnv.bindActuator(ToolBinding);
     const preflight = ActuationEnv.preflightActuation(binding, world.Actuation.Policy.strict_fresh);
     try std.testing.expect(preflight.accepted);
+    const denied_audit_preflight = ActuationEnv.preflightActuationMode(binding, .audit, world.Actuation.Policy.strict_fresh);
+    try std.testing.expect(!denied_audit_preflight.accepted);
+    try std.testing.expectEqualSlices(world.AcceptanceBlocker, &.{.ActuationPolicyMismatch}, denied_audit_preflight.blockers);
+    const explicit_audit_policy = world.Actuation.Policy.init(.{
+        .allow_audit_actuation = true,
+        .allow_idempotent_mutation = true,
+        .max_actuation_calls = null,
+    });
+    const audit_preflight = ActuationEnv.preflightActuationMode(binding, .audit, explicit_audit_policy);
+    try std.testing.expect(audit_preflight.accepted);
 
     const NativeValueActuator = world.actuator(.{
         .kind = .tool_like,
@@ -2633,10 +2643,10 @@ test "actuation capsule refs thaw replay evidence and admission summaries" {
         .image = decoded,
         .thaw_plan = thaw,
     });
-    try std.testing.expect(admission.accepted);
+    try std.testing.expect(!admission.accepted);
     try std.testing.expectEqual(@as(usize, 1), admission.required_actuator_count);
     try std.testing.expectEqual(@as(usize, 1), admission.actuation_receipt_count);
-    try std.testing.expect(admission.replay_only_actuation_feasible);
+    try std.testing.expect(!admission.replay_only_actuation_feasible);
     try std.testing.expectEqual(receipt_refs[0], admission.actuation_receipt_refs[0]);
 
     const duplicate_intent_refs = [_]u64{ 0xacc7_1101, 0xacc7_1102 };

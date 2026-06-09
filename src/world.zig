@@ -2446,8 +2446,7 @@ pub const Admission = struct {
             .verify => false,
             .restore_parked, .restore_completed, .restore_failed, .relink_and_restore => if (args.thaw_plan) |plan| if (args.restore_report) |report| plan.blockers.len == 0 and capsuleRestoreReportAccepted(report) else false else false,
         };
-        const replay_only_actuation_feasible = args.mode == .replay_only and
-            distinctNonZeroU64Count(args.image.manifest.actuation_receipt_fingerprints) >= args.image.manifest.actuation_intent_fingerprints.len;
+        const replay_only_actuation_feasible = args.mode == .replay_only and capsuleReplayOnlyActuationEvidenceBound(args.image);
         const verify_actuation_feasible = false;
         const actuation_feasible = switch (args.mode) {
             .replay_only => replay_only_actuation_feasible,
@@ -2504,20 +2503,10 @@ pub const Admission = struct {
         });
     }
 
-    fn distinctNonZeroU64Count(values: []const u64) usize {
-        var count: usize = 0;
-        for (values, 0..) |value, index| {
-            if (value == 0) continue;
-            var seen = false;
-            for (values[0..index]) |prior| {
-                if (prior == value) {
-                    seen = true;
-                    break;
-                }
-            }
-            if (!seen) count += 1;
-        }
-        return count;
+    fn capsuleReplayOnlyActuationEvidenceBound(image: Capsule.Image) bool {
+        return image.manifest.actuation_intent_fingerprints.len == 0 and
+            image.manifest.actuation_receipt_fingerprints.len == 0 and
+            image.manifest.actuation_journal_fingerprints.len == 0;
     }
 
     fn capsuleImageValid(image: Capsule.Image) bool {
@@ -17490,6 +17479,7 @@ pub const Actuation = struct {
         allow_fresh_actuation: bool = false,
         allow_replay_actuation: bool = false,
         allow_verify_actuation: bool = false,
+        allow_audit_actuation: bool = false,
         allow_pending_actuation: bool = false,
         allow_deferred_actuation: bool = false,
         allow_rejected_responses: bool = false,
@@ -17519,6 +17509,7 @@ pub const Actuation = struct {
             allow_fresh_actuation: bool = false,
             allow_replay_actuation: bool = false,
             allow_verify_actuation: bool = false,
+            allow_audit_actuation: bool = false,
             allow_pending_actuation: bool = false,
             allow_deferred_actuation: bool = false,
             allow_rejected_responses: bool = false,
@@ -17547,6 +17538,7 @@ pub const Actuation = struct {
                 .allow_fresh_actuation = args.allow_fresh_actuation,
                 .allow_replay_actuation = args.allow_replay_actuation,
                 .allow_verify_actuation = args.allow_verify_actuation,
+                .allow_audit_actuation = args.allow_audit_actuation,
                 .allow_pending_actuation = args.allow_pending_actuation,
                 .allow_deferred_actuation = args.allow_deferred_actuation,
                 .allow_rejected_responses = args.allow_rejected_responses,
@@ -17585,7 +17577,7 @@ pub const Actuation = struct {
                 .fresh => self.allow_fresh_actuation,
                 .replay => self.allow_replay_actuation,
                 .verify => self.allow_verify_actuation,
-                .audit => true,
+                .audit => self.allow_audit_actuation,
             };
         }
 
@@ -17667,6 +17659,7 @@ pub const Actuation = struct {
             .max_pending_actuations = null,
         });
         pub const audit_only = init(.{
+            .allow_audit_actuation = true,
             .allow_verify_actuation = true,
             .allow_observation = true,
             .require_idempotency_key = false,
@@ -19218,6 +19211,7 @@ pub const Actuation = struct {
         hashBool(&hasher, policy.allow_fresh_actuation);
         hashBool(&hasher, policy.allow_replay_actuation);
         hashBool(&hasher, policy.allow_verify_actuation);
+        hashBool(&hasher, policy.allow_audit_actuation);
         hashBool(&hasher, policy.allow_pending_actuation);
         hashBool(&hasher, policy.allow_deferred_actuation);
         hashBool(&hasher, policy.allow_rejected_responses);
