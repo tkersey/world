@@ -1008,6 +1008,21 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
     try fixture_exec.validate();
     try std.testing.expect(fixture_exec.fresh_called);
     try std.testing.expect(fixture_exec.receipt.receipt_fingerprint != 0);
+    const retry_denied = try world.Actuation.Membrane.execute(.{
+        .policy = world.Actuation.Policy.strict_fresh,
+        .intent = intent,
+        .envelope = envelope,
+        .descriptor = descriptor,
+        .actuator = .{ .fixture = .{ .frame_response_fingerprint = 0x6201 } },
+        .attempt_number = 2,
+        .target_ref_fingerprint = 0x6102,
+        .world_surface_fingerprint = 0x6101,
+    });
+    try retry_denied.validate();
+    try std.testing.expect(!retry_denied.decision.approved);
+    try std.testing.expect(!retry_denied.fresh_called);
+    try std.testing.expect(retry_denied.receipt.rejected);
+    try std.testing.expectEqual(world.Actuation.CommitStatus.rejected, retry_denied.commit_value.status);
     var stale_policy = policy;
     stale_policy.allow_deterministic_fixture = false;
     try std.testing.expectError(error.InvalidFrameEncoding, world.Actuation.Membrane.execute(.{

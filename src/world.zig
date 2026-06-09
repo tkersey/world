@@ -18663,11 +18663,13 @@ pub const Actuation = struct {
             key_present: bool = true,
             explicit_mutation_approval: bool = false,
             explicit_irreversible_approval: bool = false,
+            attempt_number: u32 = 0,
         };
 
         pub fn decide(input: DecisionInput) Decision {
             if (!input.policy.allowsMode(input.intent.requested_mode)) return Decision.denied(input.intent, input.policy, "mode denied");
             if (!input.policy.allowsClass(input.intent.class)) return Decision.denied(input.intent, input.policy, "class denied");
+            if (input.attempt_number > 1 and !input.policy.allow_retry) return Decision.denied(input.intent, input.policy, "retry denied");
             if (input.policy.requiresKeyForClass(input.intent.class, input.intent.requested_mode) and !input.key_present) return Decision.denied(input.intent, input.policy, "idempotency key required");
             if (input.intent.class.isMutation() and input.policy.require_approval_for_mutation and !input.explicit_mutation_approval) return Decision.denied(input.intent, input.policy, "mutation approval required");
             if (input.intent.class == .irreversible_mutation and input.policy.require_approval_for_irreversible and !input.explicit_irreversible_approval) return Decision.denied(input.intent, input.policy, "irreversible approval required");
@@ -18831,6 +18833,7 @@ pub const Actuation = struct {
                 .key_present = args.key_present,
                 .explicit_mutation_approval = args.explicit_mutation_approval,
                 .explicit_irreversible_approval = args.explicit_irreversible_approval,
+                .attempt_number = args.attempt_number,
             });
             try decision.validate();
             if (!decision.approved) return rejectedExecution(args, decision);
