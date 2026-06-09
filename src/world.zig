@@ -11155,7 +11155,8 @@ pub const Runspace = struct {
         const accounting = try self.responseFrameAccounting(response);
         var supervisor_snapshot = try self.snapshotSlotSupervisor(index);
         defer supervisor_snapshot.deinit(self.allocator);
-        try self.superviseActuationDispatch(index, execution, accounting.response_bytes);
+        const resolves_pending_actuation = pending.pending_actuation_intent_fingerprint == execution.intent.intent_fingerprint;
+        if (!resolves_pending_actuation) try self.superviseActuationDispatch(index, execution, accounting.response_bytes);
         const mailbox_index = try self.mailbox.indexOf(mailbox_id);
         const mailbox_snapshot = self.mailbox.pending.items[mailbox_index];
         _ = try self.mailbox.recordActuationReceipt(mailbox_id, execution.intent.intent_fingerprint, execution.receipt.receipt_fingerprint);
