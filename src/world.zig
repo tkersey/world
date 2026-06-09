@@ -5543,8 +5543,18 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
             const requirement_fingerprint = actuationRequirementFingerprintForPort(binding.world_port_id) orelse return rejectedAcceptance(target_ref, requested_mode, &.{.WrongPortId});
             if (binding.import_requirement_fingerprint != requirement_fingerprint) return rejectedAcceptance(target_ref, requested_mode, &.{.ActuationValuePolicyMismatch});
             var report = acceptanceReport(requested_mode, false);
+            const covered_port_count = @min(Target.WorldPortTable.entries.len, actuationBindingCountForTarget(requested_mode));
+            report.actuation_binding_count = covered_port_count;
+            if (covered_port_count < Target.WorldPortTable.entries.len) {
+                report.bound_port_count = covered_port_count;
+                report.missing_port_count = Target.WorldPortTable.entries.len - covered_port_count;
+                report.missing_actuator_count = report.missing_port_count;
+                report.report_fingerprint = fingerprintAcceptanceReport(report);
+                return report;
+            }
             report.accepted = true;
-            report.actuation_binding_count += 1;
+            report.bound_port_count = covered_port_count;
+            report.missing_port_count = 0;
             report.missing_actuator_count = 0;
             report.blockers = &.{};
             report.summary = "accepted by actuation binding";
@@ -17583,6 +17593,9 @@ pub const Actuation = struct {
 
         pub fn validateForDescriptor(self: @This(), descriptor: Descriptor) !void {
             try self.validate();
+            if (descriptor.target_ref_fingerprint) |descriptor_target| {
+                if (self.target_ref_fingerprint != descriptor_target) return error.WrongTarget;
+            }
             if (self.world_surface_fingerprint != descriptor.world_surface_fingerprint) return error.WrongWorldSurface;
             if (descriptor.world_port_id != null and descriptor.world_port_id.? != self.world_port_id) return error.WrongPortId;
             if (self.actuator_ref_fingerprint != descriptor.actuator_ref_fingerprint) return error.InvalidFrameEncoding;

@@ -456,6 +456,13 @@ test "actuation namespace exposes v1 core model and stable descriptor fingerprin
         .world_port_id = 4,
     });
     try std.testing.expectError(error.WrongPortId, wrong_port.validateForDescriptor(descriptor));
+    const wrong_target = world.Actuation.Binding.fromDescriptor(.{
+        .target_ref_fingerprint = 0x1009,
+        .import_requirement_fingerprint = 0x2001,
+        .descriptor = descriptor,
+        .world_port_id = 3,
+    });
+    try std.testing.expectError(error.WrongTarget, wrong_target.validateForDescriptor(descriptor));
 }
 
 test "actuation policy idempotency key and intent gates are deterministic" {
@@ -1715,6 +1722,23 @@ test "actuation environment preflight and supervision ledger account host effect
     const binding = ActuationEnv.bindActuator(ToolBinding);
     const preflight = ActuationEnv.preflightActuation(binding, world.Actuation.Policy.strict_fresh);
     try std.testing.expect(preflight.accepted);
+    const AgentActuator = world.actuator(.{
+        .kind = .tool_like,
+        .class = .idempotent_mutation,
+        .label = "agent.partial",
+        .supported_response_statuses = world.Actuation.ResponseStatusSet.all,
+        .value_policy = world.ValuePolicy.portable,
+    });
+    const AgentActuationBinding = world.bindActuator(AgentDecideDecl, AgentActuator);
+    const AgentPartialActuationEnv = world.Environment(fixtures.Agent.Target, .{
+        .actuation_bindings = .{AgentActuationBinding},
+        .policy = world.EnvironmentPolicy.fresh_and_replay,
+    });
+    const partial_agent_binding = AgentPartialActuationEnv.bindActuator(AgentActuationBinding);
+    const partial_agent_preflight = AgentPartialActuationEnv.preflightActuation(partial_agent_binding, world.Actuation.Policy.strict_fresh);
+    try std.testing.expect(!partial_agent_preflight.accepted);
+    try std.testing.expectEqual(@as(usize, 1), partial_agent_preflight.actuation_binding_count);
+    try std.testing.expectEqual(@as(usize, 1), partial_agent_preflight.missing_port_count);
     const denied_audit_preflight = ActuationEnv.preflightActuationMode(binding, .audit, world.Actuation.Policy.strict_fresh);
     try std.testing.expect(!denied_audit_preflight.accepted);
     try std.testing.expectEqualSlices(world.AcceptanceBlocker, &.{.ActuationPolicyMismatch}, denied_audit_preflight.blockers);
