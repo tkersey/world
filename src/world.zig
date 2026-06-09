@@ -18503,17 +18503,20 @@ pub const Actuation = struct {
     pub const ReplaySource = struct {
         source_fingerprint: u64,
         receipts: []const Receipt = &.{},
+        response_images: []const Frame.ValueImage = &.{},
         journal_fingerprint: ?u64 = null,
         replay_key_fingerprint: ?u64 = null,
 
         pub fn init(args: struct {
             receipts: []const Receipt = &.{},
+            response_images: []const Frame.ValueImage = &.{},
             journal_fingerprint: ?u64 = null,
             replay_key_fingerprint: ?u64 = null,
         }) @This() {
             var result = @This(){
                 .source_fingerprint = 0,
                 .receipts = args.receipts,
+                .response_images = args.response_images,
                 .journal_fingerprint = args.journal_fingerprint,
                 .replay_key_fingerprint = args.replay_key_fingerprint,
             };
@@ -18531,6 +18534,19 @@ pub const Actuation = struct {
             return error.ReplayMissing;
         }
 
+        fn responseImageForFingerprint(self: @This(), value_image_fingerprint: u64) !Frame.ValueImage {
+            var index = self.response_images.len;
+            while (index > 0) {
+                index -= 1;
+                const image = self.response_images[index];
+                if (image.value_image_fingerprint == value_image_fingerprint) {
+                    try validateValueImage(image);
+                    return image;
+                }
+            }
+            return error.MissingValueImage;
+        }
+
         pub fn responseForIntent(self: @This(), intent: Intent, expected_status: Actuation.ResponseStatus, expected_kind: ResponseKind) !Response {
             const receipt = try self.lookupByIdempotencyKey(intent.idempotency_key_fingerprint);
             try receipt.validate();
@@ -18546,7 +18562,12 @@ pub const Actuation = struct {
             const status = receipt.responseStatus();
             if (status != expected_status) return error.ReplayResponseKindMismatch;
             if (receipt.response_kind != expected_kind) return error.ReplayResponseKindMismatch;
-            if (status == .responded and receipt.response_value_image_fingerprint != null) return error.MissingValueImage;
+            const response_image: ?Frame.ValueImage = if (status == .responded) image: {
+                if (receipt.response_value_image_fingerprint) |fingerprint| {
+                    break :image try self.responseImageForFingerprint(fingerprint);
+                }
+                break :image null;
+            } else null;
             return Response.init(.{
                 .intent_fingerprint = intent.intent_fingerprint,
                 .commit_fingerprint = receipt.commit_fingerprint,
@@ -18557,6 +18578,7 @@ pub const Actuation = struct {
                 .response_kind = receipt.response_kind,
                 .frame_response_fingerprint = if (status == .responded) receipt.frame_response_fingerprint orelse return error.ReplayMissing else receipt.frame_response_fingerprint,
                 .value_image_fingerprint = receipt.response_value_image_fingerprint,
+                .response_image = response_image,
                 .metadata = "replay",
             });
         }
@@ -19378,6 +19400,8 @@ pub const Actuation = struct {
         hashBytes(&hasher, "world.actuation.replay_source.fingerprint");
         hashU64(&hasher, source.receipts.len);
         for (source.receipts) |receipt| hashU64(&hasher, receipt.receipt_fingerprint);
+        hashU64(&hasher, source.response_images.len);
+        for (source.response_images) |image| hashU64(&hasher, image.value_image_fingerprint);
         hashOptionalU64(&hasher, source.journal_fingerprint);
         hashOptionalU64(&hasher, source.replay_key_fingerprint);
         return hasher.final();

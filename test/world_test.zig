@@ -302,8 +302,9 @@ test "linker catalog carries explicit actuation adapter candidates" {
     defer std.testing.allocator.free(match.blockers);
     defer std.testing.allocator.free(match.warnings);
     try std.testing.expectEqual(world.Linker.MatchKind.adapter, match.kind);
-    try std.testing.expect(match.accepted());
-    try std.testing.expectEqual(@as(usize, 0), match.blockers.len);
+    try std.testing.expect(!match.accepted());
+    try std.testing.expectEqual(@as(usize, 1), match.blockers.len);
+    try std.testing.expectEqual(world.Linker.Blocker.UnsupportedRouteKind, match.blockers[0]);
 
     var wrong_requirement = requirement;
     wrong_requirement.requirement_fingerprint +%= 1;
@@ -1283,6 +1284,15 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
     try std.testing.expect(!replay_exec.fresh_called);
     try std.testing.expect(replay_exec.receipt.replayed);
     try std.testing.expectEqual(@as(?u64, 0x6306), replay_exec.response.frame_response_fingerprint);
+    var value_response_image = try world.Frame.ValueImage.fromValue(
+        std.testing.allocator,
+        null,
+        null,
+        null,
+        @as(i32, 7),
+        .portable,
+    );
+    defer value_response_image.deinit(std.testing.allocator);
     const value_replay_seed = world.Actuation.Receipt.init(.{
         .intent_fingerprint = replay_intent.intent_fingerprint,
         .envelope_fingerprint = 0x6322,
@@ -1290,7 +1300,7 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
         .commit_fingerprint = 0x6324,
         .response_fingerprint = 0x6325,
         .frame_response_fingerprint = 0x6326,
-        .response_value_image_fingerprint = 0x6327,
+        .response_value_image_fingerprint = value_response_image.value_image_fingerprint,
         .actuator_ref_fingerprint = ref.ref_fingerprint,
         .idempotency_key_fingerprint = key.key_fingerprint,
         .target_ref_fingerprint = 0x6102,
@@ -1302,6 +1312,13 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
     });
     const value_replay_source = world.Actuation.ReplaySource.init(.{ .receipts = &.{value_replay_seed} });
     try std.testing.expectError(error.MissingValueImage, value_replay_source.responseForIntent(replay_intent, .responded, .@"resume"));
+    const witnessed_value_replay_source = world.Actuation.ReplaySource.init(.{
+        .receipts = &.{value_replay_seed},
+        .response_images = &.{value_response_image},
+    });
+    const witnessed_value_replay_response = try witnessed_value_replay_source.responseForIntent(replay_intent, .responded, .@"resume");
+    try std.testing.expect(witnessed_value_replay_response.response_image != null);
+    try std.testing.expectEqual(@as(?u64, value_response_image.value_image_fingerprint), witnessed_value_replay_response.value_image_fingerprint);
     const forged_replay_seed = world.Actuation.Receipt.init(.{
         .intent_fingerprint = replay_intent.intent_fingerprint,
         .envelope_fingerprint = 0x6302,
@@ -8901,7 +8918,7 @@ test "link actuation catalog fingerprint distinguishes missing and zero port met
     try std.testing.expect(missing_port.entry_fingerprint != port_zero.entry_fingerprint);
 }
 
-test "link actuation adapter fallback preserves route metadata" {
+test "link actuation adapter fallback remains non-executable without adapter dispatcher" {
     const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
     const entries = [_]world.Linker.Catalog.Entry{
@@ -8926,17 +8943,10 @@ test "link actuation adapter fallback preserves route metadata" {
     });
     defer linked.deinit();
 
-    try std.testing.expect(linked.plan.accepted());
-    try std.testing.expectEqual(world.Linker.NormalForm.closed_fabric, linked.plan.normal_form);
-    try std.testing.expectEqual(@as(usize, 1), linked.plan.fabric_plans.len);
-    try std.testing.expectEqual(@as(usize, 1), linked.plan.fabric_plans[0].routes.len);
-    const route = linked.plan.fabric_plans[0].routes[0];
-    try std.testing.expectEqual(world.Fabric.RouteKind.adapter, route.kind);
-    try std.testing.expectEqual(root_import.world_port_id, route.world_port_id);
-    try std.testing.expectEqual(@as(?u64, 0xacc7_0101), route.actuator_ref_fingerprint);
-    try std.testing.expectEqual(@as(?u64, 0xacc7_0102), route.actuation_descriptor_fingerprint);
-    try std.testing.expectEqual(@as(?u64, 0xacc7_0103), route.actuation_binding_fingerprint);
-    try std.testing.expectEqual(@as(?u64, null), route.response_value_mapping_fingerprint);
+    try std.testing.expect(!linked.plan.accepted());
+    try std.testing.expectEqual(world.Linker.NormalForm.partial_with_blockers, linked.plan.normal_form);
+    try std.testing.expectEqual(@as(usize, 0), linked.plan.fabric_plans.len);
+    try std.testing.expect(linked.graph.hasBlocker(.UnsupportedRouteKind));
 }
 
 test "link unsupported descriptorless providers do not consume candidate cap" {
