@@ -1785,39 +1785,68 @@ test "runspace actuation dispatch preserves pending mailbox state" {
     try std.testing.expectEqual(@as(?u64, receipt.receipt_fingerprint), restored_pending.pending_actuation_receipt_fingerprint);
     try std.testing.expectError(error.PendingPortConsumed, restored_pending.withPendingActuation(intent.intent_fingerprint, receipt.receipt_fingerprint));
 
-    const terminal_key = world.Actuation.IdempotencyKey.init(.{
+    const other_ref = world.Actuation.Ref.init(.{
+        .kind = .fixture,
+        .class = .deterministic_fixture,
+        .label = "other-terminal-fixture",
+        .supported_response_statuses = world.Actuation.ResponseStatusSet.all,
+    });
+    const other_descriptor = world.Actuation.Descriptor.init(.{
+        .actuator_ref = other_ref,
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .target_ref_fingerprint = pending.target_ref_fingerprint,
+        .world_port_id = request.world_port_id,
+        .response_value_table_id = request.expected_response_value_table_id,
+        .allowed_response_kinds = world.Actuation.ResponseStatusSet.all,
+    });
+    const other_terminal_key = world.Actuation.IdempotencyKey.init(.{
         .target_ref_fingerprint = pending.target_ref_fingerprint,
         .world_surface_fingerprint = request.world_surface_fingerprint,
         .world_port_id = request.world_port_id,
         .request_fingerprint = request.request_fingerprint,
         .pending_port_fingerprint = marked_pending.pending_port_fingerprint,
-        .actuator_ref_fingerprint = ref.ref_fingerprint,
+        .actuator_ref_fingerprint = other_ref.ref_fingerprint,
     });
-    const terminal_intent = world.Actuation.Intent.init(.{
-        .actuator_ref_fingerprint = ref.ref_fingerprint,
-        .descriptor_fingerprint = descriptor.descriptor_fingerprint,
+    const other_terminal_intent = world.Actuation.Intent.init(.{
+        .actuator_ref_fingerprint = other_ref.ref_fingerprint,
+        .descriptor_fingerprint = other_descriptor.descriptor_fingerprint,
         .target_ref_fingerprint = pending.target_ref_fingerprint,
         .world_surface_fingerprint = request.world_surface_fingerprint,
         .world_port_id = request.world_port_id,
         .pending_port_fingerprint = marked_pending.pending_port_fingerprint,
         .frame_request_fingerprint = request.request_fingerprint,
         .encoded_frame_request_fingerprint = request.frame_fingerprint,
-        .idempotency_key_fingerprint = terminal_key.key_fingerprint,
+        .idempotency_key_fingerprint = other_terminal_key.key_fingerprint,
         .run_permit_fingerprint = pending.run_permit_fingerprint,
         .environment_certificate_fingerprint = pending.environment_certificate_fingerprint,
         .class = .deterministic_fixture,
         .requested_mode = .fresh,
     });
-    const terminal_envelope = world.Actuation.Envelope.init(.{
-        .intent_fingerprint = terminal_intent.intent_fingerprint,
+    const other_terminal_envelope = world.Actuation.Envelope.init(.{
+        .intent_fingerprint = other_terminal_intent.intent_fingerprint,
         .encoded_frame_request_fingerprint = request.frame_fingerprint,
-        .idempotency_key = terminal_key,
+        .idempotency_key = other_terminal_key,
         .expected_response_value_table_id = request.expected_response_value_table_id,
     });
+    const other_cancelled = try world.Actuation.Membrane.execute(.{
+        .policy = world.Actuation.Policy.fixture_test,
+        .intent = other_terminal_intent,
+        .envelope = other_terminal_envelope,
+        .actuator = .{ .fixture = .{
+            .status = .cancelled,
+            .frame_response_fingerprint = 0x5150_aaac,
+            .reason = "other cancelled fixture",
+        } },
+        .descriptor = other_descriptor,
+        .attempt_number = 2,
+        .target_ref_fingerprint = pending.target_ref_fingerprint,
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+    });
+    try std.testing.expectError(error.InvalidPendingPortTransition, runspace.dispatchActuation(0, other_cancelled));
     const cancelled = try world.Actuation.Membrane.execute(.{
         .policy = world.Actuation.Policy.fixture_test,
-        .intent = terminal_intent,
-        .envelope = terminal_envelope,
+        .intent = intent,
+        .envelope = envelope,
         .actuator = .{ .fixture = .{
             .status = .cancelled,
             .frame_response_fingerprint = 0x5150_aaab,

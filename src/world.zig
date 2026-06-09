@@ -11152,12 +11152,15 @@ pub const Runspace = struct {
         if (execution.intent.encoded_frame_request_fingerprint) |encoded| {
             if (encoded != pending.request_frame_fingerprint) return error.FrameRequestFingerprintMismatch;
         }
-        if ((execution.response.status == .pending or execution.response.status == .deferred) and
-            (pending.pending_actuation_intent_fingerprint != null or pending.pending_actuation_receipt_fingerprint != null))
-        {
-            return error.PendingPortConsumed;
-        }
-        if (execution.intent.pending_port_fingerprint == null or execution.intent.pending_port_fingerprint.? != pending.pending_port_fingerprint) return error.InvalidPendingPortTransition;
+        try validatePendingActuationMarker(pending.pending_actuation_intent_fingerprint, pending.pending_actuation_receipt_fingerprint);
+        const matches_pending_actuation = if (pending.pending_actuation_intent_fingerprint) |pending_intent_fingerprint| matches: {
+            if (execution.response.status == .pending or execution.response.status == .deferred) return error.PendingPortConsumed;
+            if (execution.intent.intent_fingerprint != pending_intent_fingerprint) return error.InvalidPendingPortTransition;
+            if (execution.receipt.intent_fingerprint != pending_intent_fingerprint) return error.InvalidPendingPortTransition;
+            break :matches true;
+        } else false;
+        if (execution.intent.pending_port_fingerprint == null) return error.InvalidPendingPortTransition;
+        if (execution.intent.pending_port_fingerprint.? != pending.pending_port_fingerprint and !matches_pending_actuation) return error.InvalidPendingPortTransition;
         if (execution.intent.run_permit_fingerprint != pending.run_permit_fingerprint) return error.InvalidRunspaceTransition;
         if (execution.intent.environment_certificate_fingerprint != pending.environment_certificate_fingerprint) return error.InvalidRunspaceTransition;
         const key = execution.envelope.idempotency_key;
@@ -11165,7 +11168,8 @@ pub const Runspace = struct {
         if (key.target_ref_fingerprint != pending.target_ref_fingerprint) return error.WrongTarget;
         if (key.world_port_id != pending.world_port_id) return error.FramePortMismatch;
         if (key.request_fingerprint != pending.request_fingerprint) return error.FrameRequestFingerprintMismatch;
-        if (key.pending_port_fingerprint == null or key.pending_port_fingerprint.? != pending.pending_port_fingerprint) return error.InvalidPendingPortTransition;
+        if (key.pending_port_fingerprint == null) return error.InvalidPendingPortTransition;
+        if (key.pending_port_fingerprint.? != pending.pending_port_fingerprint and !matches_pending_actuation) return error.InvalidPendingPortTransition;
         if (execution.response.world_port_id != pending.world_port_id) return error.FramePortMismatch;
         if (execution.response.request_fingerprint != pending.request_fingerprint) return error.FrameRequestFingerprintMismatch;
         if (execution.receipt.target_ref_fingerprint != pending.target_ref_fingerprint) return error.WrongTarget;
