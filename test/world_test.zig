@@ -773,6 +773,127 @@ test "actuation membrane rejects mismatched envelope and descriptor bindings" {
         .world_surface_fingerprint = 0x4202,
     }));
 
+    const capsule_descriptor = world.Actuation.Descriptor.init(.{
+        .actuator_ref = ref,
+        .world_surface_fingerprint = 0x4202,
+        .target_ref_fingerprint = 0x4201,
+        .world_port_id = 0,
+    });
+    const capsule_key = world.Actuation.IdempotencyKey.init(.{
+        .target_ref_fingerprint = 0x4201,
+        .world_surface_fingerprint = 0x4202,
+        .world_port_id = 0,
+        .request_fingerprint = 0x4203,
+        .capsule_fingerprint = 0x4242,
+        .actuator_ref_fingerprint = ref.ref_fingerprint,
+    });
+    const capsule_intent = world.Actuation.Intent.init(.{
+        .actuator_ref_fingerprint = ref.ref_fingerprint,
+        .descriptor_fingerprint = capsule_descriptor.descriptor_fingerprint,
+        .target_ref_fingerprint = 0x4201,
+        .world_surface_fingerprint = 0x4202,
+        .world_port_id = 0,
+        .frame_request_fingerprint = 0x4203,
+        .idempotency_key_fingerprint = capsule_key.key_fingerprint,
+        .capsule_fingerprint = 0x4242,
+        .class = .deterministic_fixture,
+        .requested_mode = .fresh,
+    });
+    const capsule_envelope = world.Actuation.Envelope.init(.{
+        .intent_fingerprint = capsule_intent.intent_fingerprint,
+        .idempotency_key = capsule_key,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Actuation.Membrane.execute(.{
+        .policy = policy,
+        .intent = capsule_intent,
+        .envelope = capsule_envelope,
+        .descriptor = capsule_descriptor,
+        .actuator = .{ .fixture = .{ .frame_response_fingerprint = 0x4210 } },
+        .target_ref_fingerprint = 0x4201,
+        .world_surface_fingerprint = 0x4202,
+        .capsule_fingerprint = 0x4343,
+    }));
+
+    const wrong_capsule_key = world.Actuation.IdempotencyKey.init(.{
+        .target_ref_fingerprint = 0x4201,
+        .world_surface_fingerprint = 0x4202,
+        .world_port_id = 0,
+        .request_fingerprint = 0x4203,
+        .capsule_fingerprint = 0x4343,
+        .actuator_ref_fingerprint = ref.ref_fingerprint,
+    });
+    const wrong_capsule_intent = world.Actuation.Intent.init(.{
+        .actuator_ref_fingerprint = ref.ref_fingerprint,
+        .descriptor_fingerprint = capsule_descriptor.descriptor_fingerprint,
+        .target_ref_fingerprint = 0x4201,
+        .world_surface_fingerprint = 0x4202,
+        .world_port_id = 0,
+        .frame_request_fingerprint = 0x4203,
+        .idempotency_key_fingerprint = wrong_capsule_key.key_fingerprint,
+        .capsule_fingerprint = 0x4242,
+        .class = .deterministic_fixture,
+        .requested_mode = .fresh,
+    });
+    const wrong_capsule_envelope = world.Actuation.Envelope.init(.{
+        .intent_fingerprint = wrong_capsule_intent.intent_fingerprint,
+        .idempotency_key = wrong_capsule_key,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Actuation.Membrane.execute(.{
+        .policy = policy,
+        .intent = wrong_capsule_intent,
+        .envelope = wrong_capsule_envelope,
+        .descriptor = capsule_descriptor,
+        .actuator = .{ .fixture = .{ .frame_response_fingerprint = 0x4211 } },
+        .target_ref_fingerprint = 0x4201,
+        .world_surface_fingerprint = 0x4202,
+    }));
+
+    var capsule_execution = try world.Actuation.Membrane.execute(.{
+        .policy = policy,
+        .intent = capsule_intent,
+        .envelope = capsule_envelope,
+        .descriptor = capsule_descriptor,
+        .actuator = .{ .fixture = .{ .frame_response_fingerprint = 0x4212 } },
+        .target_ref_fingerprint = 0x4201,
+        .world_surface_fingerprint = 0x4202,
+        .capsule_fingerprint = 0x4242,
+    });
+    try std.testing.expectEqual(@as(?u64, 0x4242), capsule_execution.receipt.capsule_fingerprint);
+    capsule_execution.receipt = world.Actuation.Receipt.init(.{
+        .intent_fingerprint = capsule_execution.receipt.intent_fingerprint,
+        .envelope_fingerprint = capsule_execution.receipt.envelope_fingerprint,
+        .decision_fingerprint = capsule_execution.receipt.decision_fingerprint,
+        .commit_fingerprint = capsule_execution.receipt.commit_fingerprint,
+        .response_fingerprint = capsule_execution.receipt.response_fingerprint,
+        .response_kind = capsule_execution.receipt.response_kind,
+        .frame_response_fingerprint = capsule_execution.receipt.frame_response_fingerprint,
+        .response_value_image_fingerprint = capsule_execution.receipt.response_value_image_fingerprint,
+        .actuator_ref_fingerprint = capsule_execution.receipt.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = capsule_execution.receipt.idempotency_key_fingerprint,
+        .target_ref_fingerprint = capsule_execution.receipt.target_ref_fingerprint,
+        .world_surface_fingerprint = capsule_execution.receipt.world_surface_fingerprint,
+        .world_port_id = capsule_execution.receipt.world_port_id,
+        .class = capsule_execution.receipt.class,
+        .mode = capsule_execution.receipt.mode,
+        .fresh_called = capsule_execution.receipt.fresh_called,
+        .replayed = capsule_execution.receipt.replayed,
+        .verified = capsule_execution.receipt.verified,
+        .pending = capsule_execution.receipt.pending,
+        .deferred = capsule_execution.receipt.deferred,
+        .rejected = capsule_execution.receipt.rejected,
+        .failed = capsule_execution.receipt.failed,
+        .cancelled = capsule_execution.receipt.cancelled,
+        .attempt_number = capsule_execution.receipt.attempt_number,
+        .run_permit_fingerprint = capsule_execution.receipt.run_permit_fingerprint,
+        .environment_certificate_fingerprint = capsule_execution.receipt.environment_certificate_fingerprint,
+        .run_receipt_fingerprint = capsule_execution.receipt.run_receipt_fingerprint,
+        .capsule_fingerprint = 0x4343,
+        .blockers = capsule_execution.receipt.blockers,
+        .warnings = capsule_execution.receipt.warnings,
+        .metadata = capsule_execution.receipt.metadata,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, capsule_execution.validate());
+
     const replay_source = world.Actuation.ReplaySource.init(.{ .receipts = &.{} });
     try std.testing.expectError(error.InvalidMode, world.Actuation.Membrane.execute(.{
         .policy = policy,

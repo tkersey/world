@@ -19015,6 +19015,7 @@ pub const Actuation = struct {
                 if (self.receipt.mode != self.intent.requested_mode) return error.InvalidFrameEncoding;
                 if (self.receipt.run_permit_fingerprint != self.intent.run_permit_fingerprint) return error.InvalidFrameEncoding;
                 if (self.receipt.environment_certificate_fingerprint != self.intent.environment_certificate_fingerprint) return error.InvalidFrameEncoding;
+                if (self.receipt.capsule_fingerprint != self.intent.capsule_fingerprint) return error.InvalidFrameEncoding;
                 if (self.fresh_called != self.commit_value.fresh_called) return error.InvalidFrameEncoding;
                 if (self.receipt.fresh_called != self.commit_value.fresh_called) return error.InvalidFrameEncoding;
                 if (self.receipt.replayed != self.commit_value.replayed) return error.InvalidFrameEncoding;
@@ -19134,6 +19135,10 @@ pub const Actuation = struct {
             if (args.envelope.idempotency_key.world_port_id != args.intent.world_port_id) return error.InvalidFrameEncoding;
             if (args.envelope.idempotency_key.request_fingerprint != args.intent.frame_request_fingerprint) return error.InvalidFrameEncoding;
             if (args.envelope.idempotency_key.actuator_ref_fingerprint != args.intent.actuator_ref_fingerprint) return error.InvalidFrameEncoding;
+            if (args.envelope.idempotency_key.capsule_fingerprint != args.intent.capsule_fingerprint) return error.InvalidFrameEncoding;
+            if (args.capsule_fingerprint) |capsule_fingerprint| {
+                if (args.intent.capsule_fingerprint == null or args.intent.capsule_fingerprint.? != capsule_fingerprint) return error.InvalidFrameEncoding;
+            }
             if (args.envelope.encoded_frame_request_fingerprint) |encoded| {
                 if (args.intent.encoded_frame_request_fingerprint == null or args.intent.encoded_frame_request_fingerprint.? != encoded) return error.InvalidFrameEncoding;
             }
@@ -19270,7 +19275,7 @@ pub const Actuation = struct {
                 .class = args.intent.class,
                 .mode = args.intent.requested_mode,
                 .run_receipt_fingerprint = args.run_receipt_fingerprint,
-                .capsule_fingerprint = args.capsule_fingerprint,
+                .capsule_fingerprint = args.intent.capsule_fingerprint,
             });
         }
 
