@@ -653,6 +653,20 @@ test "actuation membrane rejects mismatched envelope and descriptor bindings" {
         .world_surface_fingerprint = 0x4202,
     }));
 
+    const missing_table = world.Actuation.Envelope.init(.{
+        .intent_fingerprint = intent.intent_fingerprint,
+        .idempotency_key = key,
+    });
+    try std.testing.expectError(error.ProviderResultMismatch, world.Actuation.Membrane.execute(.{
+        .policy = policy,
+        .intent = intent,
+        .envelope = missing_table,
+        .descriptor = descriptor,
+        .actuator = .{ .fixture = .{ .frame_response_fingerprint = 0x4207 } },
+        .target_ref_fingerprint = 0x4201,
+        .world_surface_fingerprint = 0x4202,
+    }));
+
     const wrong_intent_envelope = world.Actuation.Envelope.init(.{
         .intent_fingerprint = intent.intent_fingerprint +% 1,
         .idempotency_key = key,
@@ -695,6 +709,7 @@ test "actuation membrane rejects mismatched envelope and descriptor bindings" {
         .envelope = world.Actuation.Envelope.init(.{
             .intent_fingerprint = intent.intent_fingerprint,
             .idempotency_key = key,
+            .expected_response_value_table_id = 7,
         }),
         .descriptor = descriptor,
         .actuator = .{ .replay = .{ .source = replay_source } },
@@ -1304,6 +1319,8 @@ test "actuation environment preflight and supervision ledger account host effect
     const envelope = world.Actuation.Envelope.init(.{
         .intent_fingerprint = intent.intent_fingerprint,
         .idempotency_key = key,
+        .expected_response_value_ref = descriptor.response_value_ref,
+        .expected_response_value_table_id = descriptor.response_value_table_id,
     });
     const execution = try world.Actuation.Membrane.execute(.{
         .policy = world.Actuation.Policy.strict_fresh,
@@ -2017,6 +2034,7 @@ test "capsule namespace exposes kernel model and stable manifest fingerprint" {
         .metadata = "capsule manifest",
     });
     try std.testing.expectEqual(@as(u32, 2), world.world_capsule_manifest_format_version);
+    try std.testing.expectEqual(@as(u32, 2), world.world_capsule_runspace_image_format_version);
     try std.testing.expectEqual(manifest.manifest_fingerprint, again.manifest_fingerprint);
     try std.testing.expect(manifest.manifest_fingerprint != 0);
     try std.testing.expectEqual(@as(u64, 0xaaaa), manifest.root_target_ref_fingerprint);

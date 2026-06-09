@@ -300,7 +300,7 @@ pub const world_assembly_fingerprint_version: u32 = 4;
 pub const world_capsule_manifest_format_version: u32 = 2;
 pub const world_capsule_manifest_fingerprint_version: u32 = 1;
 pub const world_capsule_quiescence_report_fingerprint_version: u32 = 1;
-pub const world_capsule_runspace_image_format_version: u32 = 1;
+pub const world_capsule_runspace_image_format_version: u32 = 2;
 pub const world_capsule_runspace_image_fingerprint_version: u32 = 1;
 pub const world_capsule_run_slot_image_fingerprint_version: u32 = 1;
 pub const world_capsule_pending_port_image_fingerprint_version: u32 = 2;
@@ -18845,10 +18845,10 @@ pub const Actuation = struct {
                     if (descriptor_port_id != args.intent.world_port_id) return error.WrongPortId;
                 }
                 if (descriptor.response_value_ref) |expected| {
-                    if (args.envelope.expected_response_value_ref != null and args.envelope.expected_response_value_ref.? != expected) return error.ProviderResultMismatch;
+                    if (args.envelope.expected_response_value_ref == null or args.envelope.expected_response_value_ref.? != expected) return error.ProviderResultMismatch;
                 }
                 if (descriptor.response_value_table_id) |expected| {
-                    if (args.envelope.expected_response_value_table_id != null and args.envelope.expected_response_value_table_id.? != expected) return error.ProviderResultMismatch;
+                    if (args.envelope.expected_response_value_table_id == null or args.envelope.expected_response_value_table_id.? != expected) return error.ProviderResultMismatch;
                 }
             }
         }
@@ -20220,7 +20220,7 @@ pub const Capsule = struct {
         }
 
         pub fn validate(self: @This(), options: ValidateOptions) !void {
-            if (self.format_version != world_capsule_runspace_image_format_version) return error.InvalidFrameEncoding;
+            if (!capsuleRunspaceImageFormatVersionSupported(self.format_version)) return error.InvalidFrameEncoding;
             if (self.fingerprint_version != world_capsule_runspace_image_fingerprint_version) return error.InvalidFrameEncoding;
             if (self.metadata.len > options.max_image_bytes) return error.InvalidFrameEncoding;
             if (self.run_handle_mappings.len > options.max_run_slots) return error.InvalidFrameEncoding;
@@ -20239,6 +20239,11 @@ pub const Capsule = struct {
             if (self.actuation_intent_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
             if (self.actuation_receipt_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
             if (self.actuation_journal_refs.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (!capsuleRunspaceImageFormatSupportsActuationRefs(self.format_version) and
+                (self.actuation_intent_refs.len != 0 or self.actuation_receipt_refs.len != 0 or self.actuation_journal_refs.len != 0))
+            {
+                return error.InvalidFrameEncoding;
+            }
             try validateNoZeroU64(self.actuation_intent_refs);
             try validateNoZeroU64(self.actuation_receipt_refs);
             try validateNoZeroU64(self.actuation_journal_refs);
@@ -23359,6 +23364,14 @@ pub const Capsule = struct {
         return format_version >= 2;
     }
 
+    fn capsuleRunspaceImageFormatVersionSupported(format_version: u32) bool {
+        return format_version == 1 or format_version == world_capsule_runspace_image_format_version;
+    }
+
+    fn capsuleRunspaceImageFormatSupportsActuationRefs(format_version: u32) bool {
+        return format_version >= 2;
+    }
+
     fn fingerprintQuiescenceReport(report: QuiescenceReport) u64 {
         var hasher = std.hash.Wyhash.init(0x6361_7073_7175_6965);
         hashU64(&hasher, report.fingerprint_version);
@@ -24409,15 +24422,23 @@ pub const Capsule = struct {
         const active_fabric_invocation_refs = try readU64SliceOwned(allocator, bytes, cursor, options.max_fabric_invocations);
         var active_fabric_invocation_refs_owned = true;
         errdefer if (active_fabric_invocation_refs_owned) allocator.free(active_fabric_invocation_refs);
-        const actuation_intent_refs = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
-        var actuation_intent_refs_owned = true;
+        var actuation_intent_refs: []const u64 = &.{};
+        var actuation_intent_refs_owned = false;
         errdefer if (actuation_intent_refs_owned) allocator.free(actuation_intent_refs);
-        const actuation_receipt_refs = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
-        var actuation_receipt_refs_owned = true;
+        var actuation_receipt_refs: []const u64 = &.{};
+        var actuation_receipt_refs_owned = false;
         errdefer if (actuation_receipt_refs_owned) allocator.free(actuation_receipt_refs);
-        const actuation_journal_refs = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
-        var actuation_journal_refs_owned = true;
+        var actuation_journal_refs: []const u64 = &.{};
+        var actuation_journal_refs_owned = false;
         errdefer if (actuation_journal_refs_owned) allocator.free(actuation_journal_refs);
+        if (capsuleRunspaceImageFormatSupportsActuationRefs(format_version)) {
+            actuation_intent_refs = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+            actuation_intent_refs_owned = true;
+            actuation_receipt_refs = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+            actuation_receipt_refs_owned = true;
+            actuation_journal_refs = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+            actuation_journal_refs_owned = true;
+        }
         const metadata = try readBytesOwned(allocator, bytes, cursor);
         var metadata_owned = true;
         errdefer if (metadata_owned) allocator.free(metadata);
@@ -24469,6 +24490,52 @@ pub const Capsule = struct {
         errdefer image.deinit(allocator);
         try image.validate(options);
         return image;
+    }
+
+    test "capsule runspace image v1 decode skips actuation reference slices" {
+        const allocator = std.testing.allocator;
+        var legacy = RunspaceImage{
+            .format_version = 1,
+            .fingerprint_version = world_capsule_runspace_image_fingerprint_version,
+            .image_fingerprint = 0,
+            .runspace_fingerprint = 0x5150_aa01,
+            .runspace_report_fingerprint = 0x5150_aa02,
+            .metadata = "legacy-runspace",
+        };
+        legacy.image_fingerprint = fingerprintRunspaceImage(legacy);
+
+        var encoded: std.ArrayList(u8) = .empty;
+        defer encoded.deinit(allocator);
+        try writeU32(&encoded, allocator, legacy.format_version);
+        try writeU32(&encoded, allocator, legacy.fingerprint_version);
+        try writeU64(&encoded, allocator, legacy.image_fingerprint);
+        try writeU64(&encoded, allocator, legacy.runspace_fingerprint);
+        try writeU64(&encoded, allocator, legacy.runspace_report_fingerprint);
+        try writeU64Slice(&encoded, allocator, legacy.run_handle_mappings);
+        try writeRunSlotImageSlice(&encoded, allocator, legacy.run_slots);
+        try writeOptionalMailboxImage(&encoded, allocator, legacy.mailbox_image);
+        try writeU64Slice(&encoded, allocator, legacy.runspace_event_fingerprints);
+        try writeU64Slice(&encoded, allocator, legacy.root_run_handle_fingerprints);
+        try writeU64Slice(&encoded, allocator, legacy.provider_run_handle_fingerprints);
+        try writeU64Slice(&encoded, allocator, legacy.branch_refs);
+        try writeU64Slice(&encoded, allocator, legacy.checkpoint_refs);
+        try writeU64Slice(&encoded, allocator, legacy.transcript_image_refs);
+        try writeU64Slice(&encoded, allocator, legacy.run_image_refs);
+        try writeU64Slice(&encoded, allocator, legacy.run_receipt_refs);
+        try writeU64Slice(&encoded, allocator, legacy.admission_receipt_refs);
+        try writeU64Slice(&encoded, allocator, legacy.permit_refs);
+        try writeU64Slice(&encoded, allocator, legacy.active_fabric_invocation_refs);
+        try writeBytes(&encoded, allocator, legacy.metadata);
+
+        var cursor: usize = 0;
+        var decoded = try decodeRunspaceImage(allocator, encoded.items, &cursor, .{});
+        defer decoded.deinit(allocator);
+        try std.testing.expectEqual(encoded.items.len, cursor);
+        try std.testing.expectEqual(@as(u32, 1), decoded.format_version);
+        try std.testing.expectEqual(@as(usize, 0), decoded.actuation_intent_refs.len);
+        try std.testing.expectEqual(@as(usize, 0), decoded.actuation_receipt_refs.len);
+        try std.testing.expectEqual(@as(usize, 0), decoded.actuation_journal_refs.len);
+        try std.testing.expectEqualStrings("legacy-runspace", decoded.metadata);
     }
 
     fn encodeFabricImage(out: *std.ArrayList(u8), allocator: std.mem.Allocator, image: FabricImage) !void {
