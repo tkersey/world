@@ -3642,8 +3642,8 @@ pub const Supervision = struct {
         park_on_budget_exceeded: bool = false,
         audit_only_on_budget_exceeded: bool = false,
         max_supervision_events: ?usize = null,
-        max_actuation_calls: ?usize = 0,
-        max_pending_actuations: ?usize = 0,
+        max_actuation_calls: ?usize = null,
+        max_pending_actuations: ?usize = null,
 
         pub fn init(args: anytype) @This() {
             const Args = @TypeOf(args);
@@ -5016,6 +5016,9 @@ pub const Supervision = struct {
 
         fn commitCheck(self: *@This(), kind: Supervision.SupervisionCheck.EventKind, world_port_id: ?u32, candidate: *Supervision.UsageLedger, blocker: ?Supervision.Blocker, rule: ?Supervision.PortRule, summary: []const u8) !void {
             candidate.refreshFingerprint();
+            if (policyActuationLimitExceeded(self.permit.policy, candidate.*)) |exceeded_kind| {
+                return self.exceed(kind, world_port_id, exceeded_kind, candidate, if (rule) |r| r.rule_fingerprint else null, summary);
+            }
             if (budgetExceeded(self.permit.budget, candidate.*, world_port_id)) |exceeded_kind| {
                 return self.exceed(kind, world_port_id, exceeded_kind, candidate, if (rule) |r| r.rule_fingerprint else null, summary);
             }
@@ -5228,6 +5231,14 @@ pub const Supervision = struct {
                 if (per_port_budget.max_cost_units) |max| if (usage.cost_units > max) return .per_port_cost_units;
             }
         }
+        return null;
+    }
+
+    fn policyActuationLimitExceeded(policy: Supervision.SupervisionPolicy, ledger: Supervision.UsageLedger) ?Supervision.BudgetExceededKind {
+        if (policy.max_actuation_calls) |max| {
+            if (ledger.total_actuation_commits > max or ledger.total_actuation_intents > max - ledger.total_actuation_commits) return .actuation_calls;
+        }
+        if (policy.max_pending_actuations) |max| if (ledger.total_pending_actuations > max) return .pending_actuations;
         return null;
     }
 

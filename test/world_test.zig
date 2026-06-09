@@ -2260,6 +2260,76 @@ test "actuation environment preflight and supervision ledger account host effect
     try std.testing.expectError(error.BudgetExceeded, exhausted_supervisor.beforeActuationCommit(intent, true));
     try std.testing.expectEqual(@as(usize, 1), exhausted_supervisor.ledger.total_actuation_intents);
     try std.testing.expectEqual(@as(usize, 0), exhausted_supervisor.ledger.total_actuation_commits);
+
+    const policy_exhausted_permit = world.RunPermit.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = target_ref.target_certificate_fingerprint,
+        .environment_certificate_fingerprint = cert.certificate_fingerprint,
+        .binding_plan_fingerprint = cert.binding_plan_fingerprint,
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_actuation = true,
+            .allow_fresh_actuation = true,
+            .require_idempotency_keys = true,
+            .max_actuation_calls = 0,
+        }),
+    });
+    var policy_exhausted_supervisor = try world.Supervision.Supervisor.init(std.testing.allocator, policy_exhausted_permit, 1);
+    defer policy_exhausted_supervisor.deinit();
+    try std.testing.expectError(error.BudgetExceeded, policy_exhausted_supervisor.beforeActuationCommit(intent, true));
+    try std.testing.expectEqual(world.Supervision.BudgetExceededKind.actuation_calls, policy_exhausted_supervisor.ledger.exceeded_budget.?);
+
+    const pending_limited_permit = world.RunPermit.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = target_ref.target_certificate_fingerprint,
+        .environment_certificate_fingerprint = cert.certificate_fingerprint,
+        .binding_plan_fingerprint = cert.binding_plan_fingerprint,
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_actuation = true,
+            .allow_fresh_actuation = true,
+            .allow_pending_actuation = true,
+            .require_idempotency_keys = true,
+            .max_actuation_calls = null,
+            .max_pending_actuations = 0,
+        }),
+    });
+    var pending_limited_supervisor = try world.Supervision.Supervisor.init(std.testing.allocator, pending_limited_permit, 1);
+    defer pending_limited_supervisor.deinit();
+    var pending_receipt = execution.receipt;
+    pending_receipt = world.Actuation.Receipt.init(.{
+        .intent_fingerprint = pending_receipt.intent_fingerprint,
+        .envelope_fingerprint = pending_receipt.envelope_fingerprint,
+        .decision_fingerprint = pending_receipt.decision_fingerprint,
+        .commit_fingerprint = pending_receipt.commit_fingerprint,
+        .response_fingerprint = pending_receipt.response_fingerprint,
+        .response_kind = pending_receipt.response_kind,
+        .frame_response_fingerprint = pending_receipt.frame_response_fingerprint,
+        .response_value_image_fingerprint = pending_receipt.response_value_image_fingerprint,
+        .actuator_ref_fingerprint = pending_receipt.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = pending_receipt.idempotency_key_fingerprint,
+        .target_ref_fingerprint = pending_receipt.target_ref_fingerprint,
+        .world_surface_fingerprint = pending_receipt.world_surface_fingerprint,
+        .world_port_id = pending_receipt.world_port_id,
+        .class = pending_receipt.class,
+        .mode = pending_receipt.mode,
+        .fresh_called = pending_receipt.fresh_called,
+        .pending = true,
+        .attempt_number = pending_receipt.attempt_number,
+        .run_permit_fingerprint = pending_receipt.run_permit_fingerprint,
+        .environment_certificate_fingerprint = pending_receipt.environment_certificate_fingerprint,
+        .run_receipt_fingerprint = pending_receipt.run_receipt_fingerprint,
+        .capsule_fingerprint = pending_receipt.capsule_fingerprint,
+        .blockers = pending_receipt.blockers,
+        .warnings = pending_receipt.warnings,
+        .metadata = pending_receipt.metadata,
+    });
+    try std.testing.expectError(error.BudgetExceeded, pending_limited_supervisor.afterActuationReceipt(pending_receipt, 16));
+    try std.testing.expectEqual(world.Supervision.BudgetExceededKind.pending_actuations, pending_limited_supervisor.ledger.exceeded_budget.?);
 }
 
 test "runspace actuation dispatch preserves pending mailbox state" {
