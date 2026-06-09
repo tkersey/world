@@ -18304,8 +18304,8 @@ pub const Actuation = struct {
                 .class = args.class,
                 .mode = args.mode,
                 .fresh_called = args.commit.fresh_called,
-                .replayed = args.commit.replayed or args.mode == .replay,
-                .verified = args.commit.verified or args.mode == .verify,
+                .replayed = args.commit.replayed,
+                .verified = args.commit.verified,
                 .pending = args.response.status == .pending,
                 .deferred = args.response.status == .deferred,
                 .rejected = args.response.status == .rejected,
@@ -18326,6 +18326,13 @@ pub const Actuation = struct {
             if (self.commit_fingerprint == 0 or self.response_fingerprint == 0 or self.actuator_ref_fingerprint == 0) return error.InvalidFrameEncoding;
             if (self.idempotency_key_fingerprint == 0 or self.target_ref_fingerprint == 0 or self.world_surface_fingerprint == 0) return error.InvalidFrameEncoding;
             if (self.mode == .replay and self.fresh_called) return error.InvalidFrameEncoding;
+            if (self.replayed and self.verified) return error.InvalidFrameEncoding;
+            switch (self.mode) {
+                .fresh => if (self.replayed or self.verified) return error.InvalidFrameEncoding,
+                .replay => if (self.verified) return error.InvalidFrameEncoding,
+                .verify => if (self.fresh_called or self.replayed) return error.InvalidFrameEncoding,
+                .audit => if (self.fresh_called or self.replayed or self.verified) return error.InvalidFrameEncoding,
+            }
             if (receiptResponseStatusFlagCount(self) > 1) return error.InvalidFrameEncoding;
             try validateNoZeroU64(self.blockers);
             try validateNoZeroU64(self.warnings);
@@ -18509,10 +18516,12 @@ pub const Actuation = struct {
 
         pub fn assertNoDuplicateFreshCommit(self: @This()) !void {
             for (self.entries.items, 0..) |entry, index| {
-                if (!entry.fresh_called or entry.commit_fingerprint == null or entry.receipt_fingerprint != null) continue;
+                if (!entry.fresh_called or entry.commit_fingerprint == null) continue;
                 const key = entry.idempotency_key_fingerprint orelse continue;
                 for (self.entries.items[index + 1 ..]) |later| {
-                    if (later.fresh_called and later.commit_fingerprint != null and later.receipt_fingerprint == null and later.idempotency_key_fingerprint == key) return error.DuplicateBinding;
+                    if (!later.fresh_called or later.commit_fingerprint == null or later.idempotency_key_fingerprint != key) continue;
+                    if (later.commit_fingerprint == entry.commit_fingerprint) continue;
+                    return error.DuplicateBinding;
                 }
             }
         }
@@ -18877,6 +18886,7 @@ pub const Actuation = struct {
                 if (self.response.intent_fingerprint != self.intent.intent_fingerprint) return error.InvalidFrameEncoding;
                 if (self.receipt.intent_fingerprint != self.intent.intent_fingerprint) return error.InvalidFrameEncoding;
                 if (self.response.commit_fingerprint.? != self.commit_value.commit_fingerprint) return error.InvalidFrameEncoding;
+                if (self.response.actuator_ref_fingerprint != self.intent.actuator_ref_fingerprint) return error.InvalidFrameEncoding;
                 if (self.receipt.envelope_fingerprint != self.commit_value.envelope_fingerprint) return error.InvalidFrameEncoding;
                 if (self.receipt.decision_fingerprint != self.decision.decision_fingerprint) return error.InvalidFrameEncoding;
                 if (self.receipt.commit_fingerprint != self.commit_value.commit_fingerprint) return error.InvalidFrameEncoding;
@@ -18886,6 +18896,7 @@ pub const Actuation = struct {
                 if (self.receipt.frame_response_fingerprint != self.response.frame_response_fingerprint) return error.InvalidFrameEncoding;
                 if (self.receipt.response_value_image_fingerprint != self.response.value_image_fingerprint) return error.InvalidFrameEncoding;
                 if (self.receipt.actuator_ref_fingerprint != self.intent.actuator_ref_fingerprint) return error.InvalidFrameEncoding;
+                if (self.receipt.actuator_ref_fingerprint != self.response.actuator_ref_fingerprint) return error.InvalidFrameEncoding;
                 if (self.receipt.idempotency_key_fingerprint != self.intent.idempotency_key_fingerprint) return error.InvalidFrameEncoding;
                 if (self.receipt.target_ref_fingerprint != self.intent.target_ref_fingerprint) return error.InvalidFrameEncoding;
                 if (self.receipt.world_surface_fingerprint != self.intent.world_surface_fingerprint) return error.InvalidFrameEncoding;

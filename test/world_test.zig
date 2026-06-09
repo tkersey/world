@@ -610,6 +610,28 @@ test "actuation commit response receipt journal and replay bind idempotency" {
     try std.testing.expectEqual(@as(usize, 1), summary.receipt_count);
     try std.testing.expectEqual(@as(usize, 2), summary.fresh_count);
 
+    const duplicate_fresh_receipt = world.Actuation.Receipt.init(.{
+        .intent_fingerprint = receipt.intent_fingerprint,
+        .envelope_fingerprint = receipt.envelope_fingerprint,
+        .decision_fingerprint = receipt.decision_fingerprint,
+        .commit_fingerprint = receipt.commit_fingerprint +% 1,
+        .response_fingerprint = receipt.response_fingerprint +% 1,
+        .actuator_ref_fingerprint = receipt.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = receipt.idempotency_key_fingerprint,
+        .target_ref_fingerprint = receipt.target_ref_fingerprint,
+        .world_surface_fingerprint = receipt.world_surface_fingerprint,
+        .world_port_id = receipt.world_port_id,
+        .class = receipt.class,
+        .mode = .fresh,
+        .fresh_called = true,
+        .attempt_number = receipt.attempt_number +% 1,
+    });
+    var duplicate_journal = world.Actuation.Journal.init();
+    defer duplicate_journal.deinit(std.testing.allocator);
+    try duplicate_journal.appendReceipt(std.testing.allocator, receipt);
+    try duplicate_journal.appendReceipt(std.testing.allocator, duplicate_fresh_receipt);
+    try std.testing.expectError(error.DuplicateBinding, duplicate_journal.assertNoDuplicateFreshCommit());
+
     const replay_source = world.Actuation.ReplaySource.init(.{ .receipts = &.{receipt} });
     const replay_response = try replay_source.responseForIntent(intent, .responded, .@"resume");
     try std.testing.expectEqual(world.Actuation.ResponseStatus.responded, replay_response.status);
@@ -962,6 +984,39 @@ test "actuation verify report records matches and divergences" {
     });
     try std.testing.expectError(error.InvalidFrameEncoding, contradictory_status.validate());
 
+    const fresh_with_replay_evidence = world.Actuation.Receipt.init(.{
+        .intent_fingerprint = intent.intent_fingerprint,
+        .envelope_fingerprint = 0x5211,
+        .decision_fingerprint = 0x5212,
+        .commit_fingerprint = 0x5213,
+        .response_fingerprint = 0x5214,
+        .actuator_ref_fingerprint = 0x5101,
+        .idempotency_key_fingerprint = 0x5106,
+        .target_ref_fingerprint = 0x5103,
+        .world_surface_fingerprint = 0x5104,
+        .world_port_id = 0,
+        .class = .observation,
+        .mode = .fresh,
+        .replayed = true,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, fresh_with_replay_evidence.validate());
+    const verify_with_replay_evidence = world.Actuation.Receipt.init(.{
+        .intent_fingerprint = intent.intent_fingerprint,
+        .envelope_fingerprint = 0x5215,
+        .decision_fingerprint = 0x5216,
+        .commit_fingerprint = 0x5217,
+        .response_fingerprint = 0x5218,
+        .actuator_ref_fingerprint = 0x5101,
+        .idempotency_key_fingerprint = 0x5106,
+        .target_ref_fingerprint = 0x5103,
+        .world_surface_fingerprint = 0x5104,
+        .world_port_id = 0,
+        .class = .observation,
+        .mode = .verify,
+        .replayed = true,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, verify_with_replay_evidence.validate());
+
     const changed = world.Actuation.Receipt.init(.{
         .intent_fingerprint = intent.intent_fingerprint,
         .envelope_fingerprint = 0x5201,
@@ -1179,6 +1234,38 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
     var forged_response_exec = fixture_exec;
     forged_response_exec.response.status = .failed;
     try std.testing.expectError(error.InvalidFrameEncoding, forged_response_exec.validate());
+    var forged_response_actuator_exec = fixture_exec;
+    forged_response_actuator_exec.response = world.Actuation.Response.init(.{
+        .intent_fingerprint = fixture_exec.response.intent_fingerprint,
+        .commit_fingerprint = fixture_exec.response.commit_fingerprint,
+        .actuator_ref_fingerprint = fixture_exec.response.actuator_ref_fingerprint +% 1,
+        .world_port_id = fixture_exec.response.world_port_id,
+        .request_fingerprint = fixture_exec.response.request_fingerprint,
+        .status = fixture_exec.response.status,
+        .response_kind = fixture_exec.response.response_kind,
+        .frame_response_fingerprint = fixture_exec.response.frame_response_fingerprint,
+        .value_image_fingerprint = fixture_exec.response.value_image_fingerprint,
+    });
+    forged_response_actuator_exec.receipt = world.Actuation.Receipt.init(.{
+        .intent_fingerprint = fixture_exec.receipt.intent_fingerprint,
+        .envelope_fingerprint = fixture_exec.receipt.envelope_fingerprint,
+        .decision_fingerprint = fixture_exec.receipt.decision_fingerprint,
+        .commit_fingerprint = fixture_exec.receipt.commit_fingerprint,
+        .response_fingerprint = forged_response_actuator_exec.response.response_fingerprint,
+        .response_kind = forged_response_actuator_exec.response.response_kind,
+        .frame_response_fingerprint = forged_response_actuator_exec.response.frame_response_fingerprint,
+        .response_value_image_fingerprint = forged_response_actuator_exec.response.value_image_fingerprint,
+        .actuator_ref_fingerprint = fixture_exec.receipt.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = fixture_exec.receipt.idempotency_key_fingerprint,
+        .target_ref_fingerprint = fixture_exec.receipt.target_ref_fingerprint,
+        .world_surface_fingerprint = fixture_exec.receipt.world_surface_fingerprint,
+        .world_port_id = fixture_exec.receipt.world_port_id,
+        .class = fixture_exec.receipt.class,
+        .mode = fixture_exec.receipt.mode,
+        .fresh_called = fixture_exec.receipt.fresh_called,
+        .attempt_number = fixture_exec.receipt.attempt_number,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_response_actuator_exec.validate());
     var forged_status_exec = fixture_exec;
     forged_status_exec.response = world.Actuation.Response.init(.{
         .intent_fingerprint = fixture_exec.response.intent_fingerprint,
@@ -1477,6 +1564,32 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
     try denied.validate();
     try std.testing.expect(!denied.decision.approved);
     try std.testing.expect(!denied.fresh_called);
+    const denied_replay = try world.Actuation.Membrane.execute(.{
+        .policy = world.Actuation.Policy.strict_fresh,
+        .intent = replay_intent,
+        .envelope = replay_envelope,
+        .descriptor = descriptor,
+        .actuator = .{ .replay = .{ .source = replay_source } },
+        .target_ref_fingerprint = 0x6102,
+        .world_surface_fingerprint = 0x6101,
+    });
+    try denied_replay.validate();
+    try std.testing.expect(!denied_replay.decision.approved);
+    try std.testing.expect(!denied_replay.receipt.replayed);
+    try std.testing.expect(!denied_replay.receipt.verified);
+    const denied_verify = try world.Actuation.Membrane.execute(.{
+        .policy = world.Actuation.Policy.strict_fresh,
+        .intent = verify_intent,
+        .envelope = verify_envelope,
+        .descriptor = descriptor,
+        .actuator = .{ .verify = .{} },
+        .target_ref_fingerprint = 0x6102,
+        .world_surface_fingerprint = 0x6101,
+    });
+    try denied_verify.validate();
+    try std.testing.expect(!denied_verify.decision.approved);
+    try std.testing.expect(!denied_verify.receipt.replayed);
+    try std.testing.expect(!denied_verify.receipt.verified);
 }
 
 test "actuation environment preflight and supervision ledger account host effects" {
