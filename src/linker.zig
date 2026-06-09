@@ -736,7 +736,7 @@ pub fn Linker(comptime W: type) type {
             if (entry.provider_kind == .replay_provider and !policy.allow_replay_routes) try blockers.append(allocator, .UnsupportedRouteKind);
             if (entry.provider_kind == .reject_route and !policy.allow_reject_routes) try blockers.append(allocator, .UnsupportedRouteKind);
             if (entry.provider_kind == .environment_adapter and !policy.allow_adapter_fallback) try blockers.append(allocator, .UnsupportedRouteKind);
-            if (entry.hasActuationCandidate() and (entry.provider_kind != .environment_adapter or entry.actuator_ref_fingerprint == null or entry.actuation_binding_fingerprint == null)) try blockers.append(allocator, .MissingProvider);
+            if (entry.hasActuationCandidate() and !entryHasValidActuationAdapterMetadata(entry)) try blockers.append(allocator, .MissingProvider);
             if (entry.provider_kind == .environment_adapter and entry.hasActuationCandidate() and !actuationAdapterMatchesImport(entry, requirement)) try blockers.append(allocator, .MissingProvider);
             if (!linkerCanSynthesizeRouteKind(policy, entry)) try blockers.append(allocator, .UnsupportedRouteKind);
             if (entry.provider_kind == .replay_provider and entry.replay_transcript_image_fingerprint == null) try blockers.append(allocator, .MissingProvider);
@@ -2079,10 +2079,17 @@ pub fn Linker(comptime W: type) type {
         }
 
         fn actuationAdapterMatchesImport(entry: Catalog.Entry, requirement: W.ImportRequirement) bool {
-            if (entry.provider_kind != .environment_adapter or !entry.hasActuationCandidate()) return false;
+            if (!entryHasValidActuationAdapterMetadata(entry)) return false;
             if (entry.actuation_import_requirement_fingerprint == null or entry.actuation_world_port_id == null) return false;
             return entry.actuation_import_requirement_fingerprint.? == requirement.requirement_fingerprint and
                 entry.actuation_world_port_id.? == requirement.world_port_id;
+        }
+
+        fn entryHasValidActuationAdapterMetadata(entry: Catalog.Entry) bool {
+            if (entry.provider_kind != .environment_adapter or !entry.hasActuationCandidate()) return false;
+            if (entry.actuator_ref_fingerprint == null or entry.actuator_ref_fingerprint.? == 0) return false;
+            if (entry.actuation_binding_fingerprint == null or entry.actuation_binding_fingerprint.? == 0) return false;
+            return true;
         }
 
         fn linkerPolicyPermitsUnsupportedRouteKind(policy: Policy, entry: Catalog.Entry) bool {

@@ -297,7 +297,7 @@ pub const world_linker_report_fingerprint_version: u32 = 1;
 pub const world_linker_certificate_format_version: u32 = 1;
 pub const world_linker_certificate_fingerprint_version: u32 = 1;
 pub const world_assembly_fingerprint_version: u32 = 4;
-pub const world_capsule_manifest_format_version: u32 = 1;
+pub const world_capsule_manifest_format_version: u32 = 2;
 pub const world_capsule_manifest_fingerprint_version: u32 = 1;
 pub const world_capsule_quiescence_report_fingerprint_version: u32 = 1;
 pub const world_capsule_runspace_image_format_version: u32 = 1;
@@ -339,7 +339,7 @@ pub const world_actuation_journal_fingerprint_version: u32 = 1;
 pub const world_actuation_verify_report_fingerprint_version: u32 = 1;
 pub const world_guest_abi_version: u32 = 1;
 pub const world_guest_abi_contract_fingerprint_version: u32 = 1;
-pub const world_guest_conformance_vector_fingerprint_version: u32 = 2;
+pub const world_guest_conformance_vector_fingerprint_version: u32 = 3;
 pub const world_guest_conformance_report_fingerprint_version: u32 = 1;
 
 var next_runspace_instance_id = std.atomic.Value(u64).init(0);
@@ -19728,7 +19728,7 @@ pub const Capsule = struct {
         }
 
         pub fn validate(self: @This(), options: ValidateOptions) !void {
-            if (self.format_version != world_capsule_manifest_format_version) return error.InvalidFrameEncoding;
+            if (!capsuleManifestFormatVersionSupported(self.format_version)) return error.InvalidFrameEncoding;
             if (self.fingerprint_version != world_capsule_manifest_fingerprint_version) return error.InvalidFrameEncoding;
             if (self.metadata.len > options.max_image_bytes) return error.InvalidFrameEncoding;
             if (self.run_slot_count > options.max_run_slots) return error.InvalidFrameEncoding;
@@ -19747,6 +19747,11 @@ pub const Capsule = struct {
             if (self.actuation_intent_fingerprints.len > options.max_dependencies) return error.InvalidFrameEncoding;
             if (self.actuation_receipt_fingerprints.len > options.max_dependencies) return error.InvalidFrameEncoding;
             if (self.actuation_journal_fingerprints.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (!capsuleManifestFormatSupportsActuationRefs(self.format_version) and
+                (self.actuation_intent_fingerprints.len != 0 or self.actuation_receipt_fingerprints.len != 0 or self.actuation_journal_fingerprints.len != 0))
+            {
+                return error.InvalidFrameEncoding;
+            }
             try validateNoZeroU64(self.actuation_intent_fingerprints);
             try validateNoZeroU64(self.actuation_receipt_fingerprints);
             try validateNoZeroU64(self.actuation_journal_fingerprints);
@@ -23346,6 +23351,14 @@ pub const Capsule = struct {
         return hasher.final();
     }
 
+    fn capsuleManifestFormatVersionSupported(format_version: u32) bool {
+        return format_version == 1 or format_version == world_capsule_manifest_format_version;
+    }
+
+    fn capsuleManifestFormatSupportsActuationRefs(format_version: u32) bool {
+        return format_version >= 2;
+    }
+
     fn fingerprintQuiescenceReport(report: QuiescenceReport) u64 {
         var hasher = std.hash.Wyhash.init(0x6361_7073_7175_6965);
         hashU64(&hasher, report.fingerprint_version);
@@ -23937,15 +23950,23 @@ pub const Capsule = struct {
         const guest_conformance_report_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
         var guest_conformance_report_fingerprints_owned = true;
         errdefer if (guest_conformance_report_fingerprints_owned) allocator.free(guest_conformance_report_fingerprints);
-        const actuation_intent_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
-        var actuation_intent_fingerprints_owned = true;
+        var actuation_intent_fingerprints: []const u64 = &.{};
+        var actuation_intent_fingerprints_owned = false;
         errdefer if (actuation_intent_fingerprints_owned) allocator.free(actuation_intent_fingerprints);
-        const actuation_receipt_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
-        var actuation_receipt_fingerprints_owned = true;
+        var actuation_receipt_fingerprints: []const u64 = &.{};
+        var actuation_receipt_fingerprints_owned = false;
         errdefer if (actuation_receipt_fingerprints_owned) allocator.free(actuation_receipt_fingerprints);
-        const actuation_journal_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
-        var actuation_journal_fingerprints_owned = true;
+        var actuation_journal_fingerprints: []const u64 = &.{};
+        var actuation_journal_fingerprints_owned = false;
         errdefer if (actuation_journal_fingerprints_owned) allocator.free(actuation_journal_fingerprints);
+        if (capsuleManifestFormatSupportsActuationRefs(format_version)) {
+            actuation_intent_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+            actuation_intent_fingerprints_owned = true;
+            actuation_receipt_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+            actuation_receipt_fingerprints_owned = true;
+            actuation_journal_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+            actuation_journal_fingerprints_owned = true;
+        }
         const pending_port_count = try readU64AsUsize(bytes, cursor);
         const run_slot_count = try readU64AsUsize(bytes, cursor);
         const active_fabric_invocation_count = try readU64AsUsize(bytes, cursor);
@@ -24001,6 +24022,62 @@ pub const Capsule = struct {
         errdefer manifest.deinit(allocator);
         try manifest.validate(options);
         return manifest;
+    }
+
+    test "capsule manifest v1 decode skips actuation reference slices" {
+        const allocator = std.testing.allocator;
+        var legacy = Manifest{
+            .format_version = 1,
+            .fingerprint_version = world_capsule_manifest_fingerprint_version,
+            .manifest_fingerprint = 0,
+            .kind = .completed_assembly,
+            .root_target_ref_fingerprint = 0xaaaa,
+            .pending_port_count = 1,
+            .run_slot_count = 2,
+            .active_fabric_invocation_count = 3,
+            .normal_form = .quiescent_completed,
+            .metadata = "legacy",
+        };
+        legacy.manifest_fingerprint = fingerprintManifest(legacy);
+
+        var encoded: std.ArrayList(u8) = .empty;
+        defer encoded.deinit(allocator);
+        try writeU32(&encoded, allocator, legacy.format_version);
+        try writeU32(&encoded, allocator, legacy.fingerprint_version);
+        try writeU64(&encoded, allocator, legacy.manifest_fingerprint);
+        try writeU8(&encoded, allocator, @intFromEnum(legacy.kind));
+        try writeU64(&encoded, allocator, legacy.root_target_ref_fingerprint);
+        try writeOptionalU64(&encoded, allocator, legacy.root_module_ref_fingerprint);
+        try writeOptionalU64(&encoded, allocator, legacy.link_plan_fingerprint);
+        try writeOptionalU64(&encoded, allocator, legacy.link_certificate_fingerprint);
+        try writeOptionalU64(&encoded, allocator, legacy.assembly_fingerprint);
+        try writeU64Slice(&encoded, allocator, legacy.admission_receipt_fingerprints);
+        try writeU64Slice(&encoded, allocator, legacy.environment_certificate_fingerprints);
+        try writeU64Slice(&encoded, allocator, legacy.run_permit_fingerprints);
+        try writeU64Slice(&encoded, allocator, legacy.run_receipt_fingerprints);
+        try writeU64Slice(&encoded, allocator, legacy.run_image_fingerprints);
+        try writeU64Slice(&encoded, allocator, legacy.transcript_image_fingerprints);
+        try writeU64Slice(&encoded, allocator, legacy.fabric_plan_fingerprints);
+        try writeU64Slice(&encoded, allocator, legacy.fabric_invocation_fingerprints);
+        try writeU64Slice(&encoded, allocator, legacy.fabric_receipt_fingerprints);
+        try writeU64Slice(&encoded, allocator, legacy.guest_conformance_report_fingerprints);
+        try writeU64(&encoded, allocator, legacy.pending_port_count);
+        try writeU64(&encoded, allocator, legacy.run_slot_count);
+        try writeU64(&encoded, allocator, legacy.active_fabric_invocation_count);
+        try writeU8(&encoded, allocator, @intFromEnum(legacy.normal_form));
+        try writeBytes(&encoded, allocator, legacy.metadata);
+
+        var cursor: usize = 0;
+        var decoded = try decodeManifest(allocator, encoded.items, &cursor, .{});
+        defer decoded.deinit(allocator);
+        try std.testing.expectEqual(encoded.items.len, cursor);
+        try std.testing.expectEqual(@as(u32, 1), decoded.format_version);
+        try std.testing.expectEqual(@as(usize, 0), decoded.actuation_intent_fingerprints.len);
+        try std.testing.expectEqual(@as(usize, 0), decoded.actuation_receipt_fingerprints.len);
+        try std.testing.expectEqual(@as(usize, 0), decoded.actuation_journal_fingerprints.len);
+        try std.testing.expectEqual(@as(usize, 1), decoded.pending_port_count);
+        try std.testing.expectEqual(@as(usize, 2), decoded.run_slot_count);
+        try std.testing.expectEqual(@as(usize, 3), decoded.active_fabric_invocation_count);
     }
 
     fn encodeRunSlotImage(out: *std.ArrayList(u8), allocator: std.mem.Allocator, image: RunSlotImage) !void {

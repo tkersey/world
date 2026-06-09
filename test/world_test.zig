@@ -312,6 +312,32 @@ test "linker catalog carries explicit actuation adapter candidates" {
     defer std.testing.allocator.free(mismatch.warnings);
     try std.testing.expect(!mismatch.accepted());
     try std.testing.expectEqual(world.Linker.Blocker.MissingProvider, mismatch.blockers[0]);
+
+    const zero_actuator = world.Linker.Catalog.Entry.actuationAdapter(.{
+        .actuator_ref_fingerprint = 0,
+        .actuation_binding_fingerprint = 0xacc7_0003,
+        .actuation_import_requirement_fingerprint = requirement.requirement_fingerprint,
+        .actuation_world_port_id = requirement.world_port_id,
+        .label = "zero actuator",
+    });
+    const zero_actuator_match = try world.Linker.matchEntry(std.testing.allocator, world.Linker.Policy.audit_only, requirement, zero_actuator, null);
+    defer std.testing.allocator.free(zero_actuator_match.blockers);
+    defer std.testing.allocator.free(zero_actuator_match.warnings);
+    try std.testing.expect(!zero_actuator_match.accepted());
+    try std.testing.expectEqual(world.Linker.Blocker.MissingProvider, zero_actuator_match.blockers[0]);
+
+    const zero_binding = world.Linker.Catalog.Entry.actuationAdapter(.{
+        .actuator_ref_fingerprint = 0xacc7_0001,
+        .actuation_binding_fingerprint = 0,
+        .actuation_import_requirement_fingerprint = requirement.requirement_fingerprint,
+        .actuation_world_port_id = requirement.world_port_id,
+        .label = "zero binding",
+    });
+    const zero_binding_match = try world.Linker.matchEntry(std.testing.allocator, world.Linker.Policy.audit_only, requirement, zero_binding, null);
+    defer std.testing.allocator.free(zero_binding_match.blockers);
+    defer std.testing.allocator.free(zero_binding_match.warnings);
+    try std.testing.expect(!zero_binding_match.accepted());
+    try std.testing.expectEqual(world.Linker.Blocker.MissingProvider, zero_binding_match.blockers[0]);
 }
 
 test "actuation guest conformance vector includes receipt summaries" {
@@ -1990,7 +2016,7 @@ test "capsule namespace exposes kernel model and stable manifest fingerprint" {
         .normal_form = .quiescent_completed,
         .metadata = "capsule manifest",
     });
-    try std.testing.expectEqual(@as(u32, 1), world.world_capsule_manifest_format_version);
+    try std.testing.expectEqual(@as(u32, 2), world.world_capsule_manifest_format_version);
     try std.testing.expectEqual(manifest.manifest_fingerprint, again.manifest_fingerprint);
     try std.testing.expect(manifest.manifest_fingerprint != 0);
     try std.testing.expectEqual(@as(u64, 0xaaaa), manifest.root_target_ref_fingerprint);
@@ -9598,7 +9624,7 @@ const PortsRequestMachine = world.Machine(fixtures.Ports.Target, .{
 test "guest abi exposes stable v0 contract and status ordinals" {
     try std.testing.expectEqual(@as(u32, 1), world.world_guest_abi_version);
     try std.testing.expectEqual(@as(u32, 1), world.world_guest_abi_contract_fingerprint_version);
-    try std.testing.expectEqual(@as(u32, 2), world.world_guest_conformance_vector_fingerprint_version);
+    try std.testing.expectEqual(@as(u32, 3), world.world_guest_conformance_vector_fingerprint_version);
     try std.testing.expectEqual(@as(u32, 1), world.world_guest_conformance_report_fingerprint_version);
     try std.testing.expectEqual(@as(u32, 0), @intFromEnum(world.Guest.Status.ok));
     try std.testing.expectEqual(@as(u32, 3), @intFromEnum(world.Guest.Status.parked));

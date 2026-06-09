@@ -473,8 +473,8 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-guest-conformance",
             .desc = "Run the World native guest conformance report example.",
             .expected_stdout =
-            \\vector_fingerprint=b769d2f98dc5f015
-            \\report_fingerprint=999b3f8415c77e85
+            \\vector_fingerprint=5c032f86d77efdd5
+            \\report_fingerprint=ca89b6c0215f0483
             \\conformance=true
             \\
             ,
@@ -625,7 +625,7 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Linker guest conformance example.",
             .expected_stdout =
             \\assembly_fingerprint=9dd84e749e687387
-            \\conformance_report_fingerprint=2a041350c9148d51
+            \\conformance_report_fingerprint=2656e2c63825bfdb
             \\conformance=true
             \\
             ,
@@ -689,8 +689,8 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-capsule-guest-verify",
             .desc = "Run the World Assembly Capsule guest verify example.",
             .expected_stdout =
-            \\guest_report_fingerprint=dc1c585b58e0b71c
-            \\restore_report_fingerprint=4dda9c0bab78f2fb
+            \\guest_report_fingerprint=51763d4dbbec2098
+            \\restore_report_fingerprint=899cd4ee86628f80
             \\conformance=true
             \\
             ,
