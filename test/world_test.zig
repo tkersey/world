@@ -2120,6 +2120,71 @@ test "actuation environment preflight and supervision ledger account host effect
     const native_value_preflight = NativeValueEnv.preflightActuation(native_value_binding, world.Actuation.Policy.strict_fresh);
     try std.testing.expect(!native_value_preflight.accepted);
     try std.testing.expectEqualSlices(world.AcceptanceBlocker, &.{.ActuationValuePolicyMismatch}, native_value_preflight.blockers);
+    const native_descriptor = NativeValueBinding.actuationDescriptor();
+    const native_target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const native_key = world.Actuation.IdempotencyKey.init(.{
+        .target_ref_fingerprint = native_target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = native_target_ref.world_surface_fingerprint,
+        .world_port_id = 0,
+        .request_fingerprint = 0xfeed_1101,
+        .actuator_ref_fingerprint = NativeValueActuator.actuator_ref.ref_fingerprint,
+    });
+    const native_value_cert = NativeValueEnv.certificate(.fresh, false);
+    const portable_permit = world.RunPermit.init(.{
+        .target_ref_fingerprint = native_target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = native_target_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = native_target_ref.target_certificate_fingerprint,
+        .environment_certificate_fingerprint = native_value_cert.certificate_fingerprint,
+        .binding_plan_fingerprint = native_value_cert.binding_plan_fingerprint,
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_actuation = true,
+            .allow_fresh_actuation = true,
+            .require_portable_value_images = true,
+        }),
+    });
+    const native_permit_intent = world.Actuation.Intent.init(.{
+        .actuator_ref_fingerprint = NativeValueActuator.actuator_ref.ref_fingerprint,
+        .descriptor_fingerprint = native_descriptor.descriptor_fingerprint,
+        .binding_fingerprint = native_value_binding.binding_fingerprint,
+        .target_ref_fingerprint = native_target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = native_target_ref.world_surface_fingerprint,
+        .world_port_id = 0,
+        .frame_request_fingerprint = 0xfeed_1101,
+        .idempotency_key_fingerprint = native_key.key_fingerprint,
+        .class = .idempotent_mutation,
+        .requested_mode = .fresh,
+        .run_permit_fingerprint = portable_permit.permit_fingerprint,
+        .environment_certificate_fingerprint = native_value_cert.certificate_fingerprint,
+    });
+    const native_permit_envelope = world.Actuation.Envelope.init(.{
+        .intent_fingerprint = native_permit_intent.intent_fingerprint,
+        .idempotency_key = native_key,
+        .expected_response_value_ref = native_descriptor.response_value_ref,
+        .expected_response_value_table_id = native_descriptor.response_value_table_id,
+    });
+    const permissive_native_policy = world.Actuation.Policy.init(.{
+        .allow_fresh_actuation = true,
+        .allow_idempotent_mutation = true,
+        .require_portable_value_images = false,
+        .reject_native_only_values = false,
+        .max_actuation_calls = null,
+    });
+    try std.testing.expectError(error.SupervisionDenied, world.Actuation.Membrane.execute(.{
+        .policy = permissive_native_policy,
+        .intent = native_permit_intent,
+        .envelope = native_permit_envelope,
+        .actuator = .{ .fixture = .{
+            .frame_response_fingerprint = 0xfeed_2101,
+        } },
+        .descriptor = native_descriptor,
+        .run_permit = portable_permit,
+        .explicit_mutation_approval = true,
+        .attempt_number = 1,
+        .target_ref_fingerprint = native_target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = native_target_ref.world_surface_fingerprint,
+    }));
     const NativeStrictReplayEnv = world.Environment(fixtures.Ports.Target, .{
         .actuation_bindings = .{NativeValueBinding},
         .policy = world.EnvironmentPolicy.strict_replay,
@@ -2339,6 +2404,58 @@ test "actuation environment preflight and supervision ledger account host effect
     try std.testing.expectEqual(@as(usize, 1), supervisor.ledger.total_actuation_commits);
     try std.testing.expectEqual(@as(usize, 1), supervisor.ledger.total_fresh_actuations);
     try std.testing.expectEqual(@as(usize, 1), supervisor.ledger.total_idempotent_mutations);
+    try std.testing.expectEqual(@as(usize, 16), supervisor.ledger.total_frame_response_bytes);
+    const actuation_response_cap_rules = [_]world.PortRule{world.PortRule.init(.{
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+        .world_port_id = 0,
+        .max_response_image_bytes = 1,
+    })};
+    const actuation_response_cap_permit = world.RunPermit.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = target_ref.target_certificate_fingerprint,
+        .environment_certificate_fingerprint = cert.certificate_fingerprint,
+        .binding_plan_fingerprint = cert.binding_plan_fingerprint,
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_actuation = true,
+            .allow_fresh_actuation = true,
+            .require_idempotency_keys = true,
+        }),
+        .port_rules = &actuation_response_cap_rules,
+    });
+    var actuation_response_cap_supervisor = try world.Supervision.Supervisor.init(std.testing.allocator, actuation_response_cap_permit, 1);
+    defer actuation_response_cap_supervisor.deinit();
+    try actuation_response_cap_supervisor.beforeActuationCommit(intent, true);
+    try std.testing.expectError(error.PortRuleDenied, actuation_response_cap_supervisor.afterActuationReceiptAccounting(execution.receipt, .{
+        .response_bytes = 8,
+        .value_image_bytes = 2,
+    }));
+    try std.testing.expectEqual(@as(usize, 0), actuation_response_cap_supervisor.ledger.total_value_image_bytes);
+    const actuation_value_budget_permit = world.RunPermit.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = target_ref.target_certificate_fingerprint,
+        .environment_certificate_fingerprint = cert.certificate_fingerprint,
+        .binding_plan_fingerprint = cert.binding_plan_fingerprint,
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_actuation = true,
+            .allow_fresh_actuation = true,
+            .require_idempotency_keys = true,
+        }),
+        .budget = world.Budget.init(.{ .max_value_image_bytes = 1 }),
+    });
+    var actuation_value_budget_supervisor = try world.Supervision.Supervisor.init(std.testing.allocator, actuation_value_budget_permit, 1);
+    defer actuation_value_budget_supervisor.deinit();
+    try actuation_value_budget_supervisor.beforeActuationCommit(intent, true);
+    try std.testing.expectError(error.BudgetExceeded, actuation_value_budget_supervisor.afterActuationReceiptAccounting(execution.receipt, .{
+        .response_bytes = 8,
+        .value_image_bytes = 2,
+    }));
+    try std.testing.expectEqual(world.Supervision.BudgetExceededKind.value_image_bytes, actuation_value_budget_supervisor.ledger.exceeded_budget.?);
 
     const replay_intent = world.Actuation.Intent.init(.{
         .actuator_ref_fingerprint = ToolActuator.actuator_ref.ref_fingerprint,
