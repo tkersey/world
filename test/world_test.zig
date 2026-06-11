@@ -1518,6 +1518,51 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
         .world_surface_fingerprint = 0x6101,
     });
     try permitted_exec.validate();
+    const no_certificate_permit_policy = world.SupervisionPolicy.init(.{
+        .allow_actuation = true,
+        .allow_fresh_actuation = true,
+        .allow_fresh_calls = true,
+        .allow_native_adapters = true,
+        .require_environment_certificate = false,
+    });
+    const no_certificate_permit = world.RunPermit.init(.{
+        .target_ref_fingerprint = valid_permit.target_ref_fingerprint,
+        .world_surface_fingerprint = valid_permit.world_surface_fingerprint,
+        .target_certificate_fingerprint = valid_permit.target_certificate_fingerprint,
+        .environment_certificate_fingerprint = 0,
+        .binding_plan_fingerprint = valid_permit.binding_plan_fingerprint,
+        .mode = valid_permit.mode,
+        .policy = no_certificate_permit_policy,
+    });
+    const no_certificate_intent = world.Actuation.Intent.init(.{
+        .actuator_ref_fingerprint = ref.ref_fingerprint,
+        .descriptor_fingerprint = descriptor.descriptor_fingerprint,
+        .target_ref_fingerprint = 0x6102,
+        .world_surface_fingerprint = 0x6101,
+        .world_port_id = 7,
+        .frame_request_fingerprint = 0x6103,
+        .encoded_frame_request_fingerprint = 0x6103,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .run_permit_fingerprint = no_certificate_permit.permit_fingerprint,
+        .class = .deterministic_fixture,
+        .requested_mode = .fresh,
+    });
+    const no_certificate_envelope = world.Actuation.Envelope.init(.{
+        .intent_fingerprint = no_certificate_intent.intent_fingerprint,
+        .encoded_frame_request_fingerprint = no_certificate_intent.frame_request_fingerprint,
+        .idempotency_key = key,
+    });
+    const no_certificate_exec = try world.Actuation.Membrane.execute(.{
+        .policy = policy,
+        .intent = no_certificate_intent,
+        .envelope = no_certificate_envelope,
+        .descriptor = descriptor,
+        .actuator = .{ .fixture = .{ .frame_response_fingerprint = 0x620a } },
+        .run_permit = no_certificate_permit,
+        .target_ref_fingerprint = 0x6102,
+        .world_surface_fingerprint = 0x6101,
+    });
+    try no_certificate_exec.validate();
     const authority_denied_rules = [_]world.PortRule{world.PortRule.init(.{
         .world_surface_fingerprint = 0x6101,
         .world_port_id = 7,

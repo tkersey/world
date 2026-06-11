@@ -19594,8 +19594,7 @@ pub const Actuation = struct {
             if (permit.target_ref_fingerprint != args.intent.target_ref_fingerprint) return error.SupervisionDenied;
             if (permit.world_surface_fingerprint != args.intent.world_surface_fingerprint) return error.SupervisionDenied;
             if (permit.mode != args.intent.requested_mode) return error.SupervisionDenied;
-            if (args.intent.environment_certificate_fingerprint == null or
-                permit.environment_certificate_fingerprint != args.intent.environment_certificate_fingerprint.?) return error.SupervisionDenied;
+            try validatePermitEnvironmentCertificateBinding(permit, args.intent.environment_certificate_fingerprint);
             const policy = permit.policy;
             if (!policy.allow_actuation) return error.SupervisionDenied;
             switch (args.intent.requested_mode) {
@@ -19629,6 +19628,16 @@ pub const Actuation = struct {
                 if (max == 0) return true;
             }
             return false;
+        }
+
+        fn validatePermitEnvironmentCertificateBinding(permit: RunPermit, certificate_fingerprint: ?u64) !void {
+            if (permit.environment_certificate_fingerprint == 0) {
+                if (certificate_fingerprint) |fingerprint| {
+                    if (fingerprint != 0) return error.SupervisionDenied;
+                }
+                return;
+            }
+            if (certificate_fingerprint == null or certificate_fingerprint.? != permit.environment_certificate_fingerprint) return error.SupervisionDenied;
         }
 
         fn permitAllowsActuationDescriptorValuePolicy(permit: RunPermit, world_port_id: u32, descriptor: ?Descriptor) bool {
