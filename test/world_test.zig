@@ -1481,6 +1481,25 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
         .world_surface_fingerprint = 0x6101,
     });
     try permitted_exec.validate();
+    const class_denied_policy = world.Actuation.Policy.init(.{
+        .allow_fresh_actuation = true,
+        .allow_observation = true,
+        .require_idempotency_key = false,
+        .max_actuation_calls = null,
+    });
+    const class_denied_with_permit = try world.Actuation.Membrane.execute(.{
+        .policy = class_denied_policy,
+        .intent = permitted_intent,
+        .envelope = permitted_envelope,
+        .descriptor = descriptor,
+        .actuator = .{ .fixture = .{ .frame_response_fingerprint = 0x6209 } },
+        .run_permit = valid_permit,
+        .target_ref_fingerprint = 0x6102,
+        .world_surface_fingerprint = 0x6101,
+    });
+    try class_denied_with_permit.validate();
+    try std.testing.expect(!class_denied_with_permit.decision.approved);
+    try std.testing.expectEqual(@as(?u64, valid_permit.permit_fingerprint), class_denied_with_permit.decision.run_permit_fingerprint);
     const wrong_mode_permit = world.RunPermit.init(.{
         .target_ref_fingerprint = valid_permit.target_ref_fingerprint,
         .world_surface_fingerprint = valid_permit.world_surface_fingerprint,
@@ -2690,6 +2709,7 @@ test "actuation environment preflight and supervision ledger account host effect
     try supervisor.afterActuationReceipt(execution.receipt, 16);
     try std.testing.expectEqual(@as(usize, 0), supervisor.ledger.total_actuation_intents);
     try std.testing.expectEqual(@as(usize, 1), supervisor.ledger.total_actuation_commits);
+    try std.testing.expectEqual(@as(?world.Supervision.BudgetExceededKind, null), supervisor.ledger.exceeded_budget);
     try std.testing.expectEqual(@as(usize, 1), supervisor.ledger.total_fresh_actuations);
     try std.testing.expectEqual(@as(usize, 1), supervisor.ledger.total_idempotent_mutations);
     try std.testing.expectEqual(@as(usize, 16), supervisor.ledger.total_frame_response_bytes);

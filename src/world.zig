@@ -5335,7 +5335,7 @@ pub const Supervision = struct {
         if (budget.max_fabric_depth) |max| if (ledger.max_fabric_depth_observed > max) return .fabric_depth;
         if (budget.max_provider_runs) |max| if (ledger.total_provider_runs > max) return .provider_runs;
         if (budget.max_actuation_calls) |max| {
-            if (ledger.total_actuation_commits > max or ledger.total_actuation_intents > max - ledger.total_actuation_commits) return .actuation_calls;
+            if (actuationCallLimitExceeded(max, ledger)) return .actuation_calls;
         }
         if (budget.max_pending_actuations) |max| if (ledger.total_pending_actuations > max) return .pending_actuations;
         if (budget.max_total_cost_units) |max| if (ledger.total_cost_units > max) return .total_cost_units;
@@ -5355,10 +5355,14 @@ pub const Supervision = struct {
 
     fn policyActuationLimitExceeded(policy: Supervision.SupervisionPolicy, ledger: Supervision.UsageLedger) ?Supervision.BudgetExceededKind {
         if (policy.max_actuation_calls) |max| {
-            if (ledger.total_actuation_commits > max or ledger.total_actuation_intents > max - ledger.total_actuation_commits) return .actuation_calls;
+            if (actuationCallLimitExceeded(max, ledger)) return .actuation_calls;
         }
         if (policy.max_pending_actuations) |max| if (ledger.total_pending_actuations > max) return .pending_actuations;
         return null;
+    }
+
+    fn actuationCallLimitExceeded(max: usize, ledger: Supervision.UsageLedger) bool {
+        return ledger.total_actuation_commits +| ledger.total_actuation_intents > max;
     }
 
     fn errorForBlocker(blocker: Supervision.Blocker) Error {
@@ -18419,6 +18423,7 @@ pub const Actuation = struct {
             return init(.{
                 .intent_fingerprint = intent.intent_fingerprint,
                 .policy_fingerprint = policy.policy_fingerprint,
+                .run_permit_fingerprint = intent.run_permit_fingerprint,
                 .approved = false,
                 .status = .denied,
                 .reason = reason,
