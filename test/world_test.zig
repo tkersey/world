@@ -1400,6 +1400,42 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
     try fixture_exec.validate();
     try std.testing.expect(fixture_exec.fresh_called);
     try std.testing.expect(fixture_exec.receipt.receipt_fingerprint != 0);
+    const restrictive_policy = world.Actuation.Policy.init(.{
+        .allow_fresh_actuation = true,
+        .allow_observation = true,
+        .require_idempotency_key = false,
+        .require_approval_for_mutation = false,
+        .max_actuation_calls = null,
+        .max_pending_actuations = null,
+    });
+    const forged_restrictive_decision = world.Actuation.Decision.approvedDecision(intent, restrictive_policy, null);
+    const forged_restrictive_commit = try world.Actuation.Membrane.commit(forged_restrictive_decision, envelope, .committed, 0);
+    const forged_restrictive_response = (world.Actuation.Membrane.ResponseTemplate{
+        .frame_response_fingerprint = 0x6207,
+    }).responseFor(intent, forged_restrictive_commit);
+    const forged_restrictive_receipt = world.Actuation.Receipt.fromResponse(.{
+        .intent = intent,
+        .envelope = envelope,
+        .decision = forged_restrictive_decision,
+        .commit = forged_restrictive_commit,
+        .response = forged_restrictive_response,
+        .target_ref_fingerprint = 0x6102,
+        .world_surface_fingerprint = 0x6101,
+        .class = intent.class,
+        .mode = intent.requested_mode,
+    });
+    const forged_restrictive_execution = world.Actuation.Membrane.Execution{
+        .policy = restrictive_policy,
+        .intent = intent,
+        .envelope = envelope,
+        .decision = forged_restrictive_decision,
+        .commit_value = forged_restrictive_commit,
+        .response = forged_restrictive_response,
+        .receipt = forged_restrictive_receipt,
+        .fresh_called = forged_restrictive_commit.fresh_called,
+        .parent_terminal = forged_restrictive_response.isTerminalForParent(),
+    };
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_restrictive_execution.validate());
     const permit_policy = world.SupervisionPolicy.init(.{
         .allow_actuation = true,
         .allow_fresh_actuation = true,

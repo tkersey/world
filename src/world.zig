@@ -19318,6 +19318,8 @@ pub const Actuation = struct {
             receipt: Receipt,
             verify_report: ?VerifyReport = null,
             key_present: bool = true,
+            explicit_mutation_approval: bool = false,
+            explicit_irreversible_approval: bool = false,
             fresh_called: bool = false,
             parent_terminal: bool = false,
 
@@ -19327,6 +19329,7 @@ pub const Actuation = struct {
                 try self.envelope.validate(self.policy);
                 try self.decision.validate();
                 try self.commit_value.validateAfterDecision(self.decision);
+                try self.validateDecisionBinding();
                 if (self.response.commit_fingerprint == null) return error.InvalidFrameEncoding;
                 if (self.decision.approved) {
                     try self.response.validate(self.policy, null);
@@ -19368,6 +19371,20 @@ pub const Actuation = struct {
                 if (self.parent_terminal != self.response.isTerminalForParent()) return error.InvalidFrameEncoding;
                 if (!self.decision.approved and self.fresh_called) return error.SupervisionDenied;
                 if (self.receipt.mode == .replay and self.fresh_called) return error.InvalidFrameEncoding;
+            }
+
+            fn validateDecisionBinding(self: @This()) !void {
+                if (self.decision.policy_fingerprint != self.policy.policy_fingerprint) return error.InvalidFrameEncoding;
+                if (self.decision.run_permit_fingerprint != self.intent.run_permit_fingerprint) return error.InvalidFrameEncoding;
+                const expected = decide(.{
+                    .policy = self.policy,
+                    .intent = self.intent,
+                    .key_present = self.key_present,
+                    .explicit_mutation_approval = self.explicit_mutation_approval,
+                    .explicit_irreversible_approval = self.explicit_irreversible_approval,
+                    .attempt_number = self.commit_value.attempt_number,
+                });
+                if (self.decision.decision_fingerprint != expected.decision_fingerprint) return error.InvalidFrameEncoding;
             }
         };
 
@@ -19567,6 +19584,8 @@ pub const Actuation = struct {
                 .response = response,
                 .receipt = receipt,
                 .key_present = args.key_present,
+                .explicit_mutation_approval = args.explicit_mutation_approval,
+                .explicit_irreversible_approval = args.explicit_irreversible_approval,
                 .fresh_called = false,
                 .parent_terminal = response.isTerminalForParent(),
             };
@@ -19589,6 +19608,8 @@ pub const Actuation = struct {
                 .response = response,
                 .receipt = receipt,
                 .key_present = args.key_present,
+                .explicit_mutation_approval = args.explicit_mutation_approval,
+                .explicit_irreversible_approval = args.explicit_irreversible_approval,
                 .fresh_called = commit_value.fresh_called,
                 .parent_terminal = response.isTerminalForParent(),
             };
@@ -19612,6 +19633,8 @@ pub const Actuation = struct {
                 .response = response,
                 .receipt = receipt,
                 .key_present = args.key_present,
+                .explicit_mutation_approval = args.explicit_mutation_approval,
+                .explicit_irreversible_approval = args.explicit_irreversible_approval,
                 .fresh_called = false,
                 .parent_terminal = response.isTerminalForParent(),
             };
@@ -19637,6 +19660,8 @@ pub const Actuation = struct {
                 .receipt = receipt,
                 .verify_report = report,
                 .key_present = args.key_present,
+                .explicit_mutation_approval = args.explicit_mutation_approval,
+                .explicit_irreversible_approval = args.explicit_irreversible_approval,
                 .fresh_called = false,
                 .parent_terminal = response.isTerminalForParent(),
             };
