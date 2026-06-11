@@ -4832,10 +4832,14 @@ pub const Supervision = struct {
             if (intent.requested_mode == .verify and !policy.allow_verify_actuation) return self.deny(.before_actuation_commit, intent.world_port_id, .verify_call_denied, null, "verify actuation denied");
             if (policy.require_idempotency_keys and intent.requested_mode == .fresh and intent.class.isMutation() and !key_present) return self.deny(.before_actuation_commit, intent.world_port_id, .fresh_call_denied, null, "actuation idempotency key required");
             if (intent.class == .irreversible_mutation and !policy.allow_irreversible_actuation) return self.deny(.before_actuation_commit, intent.world_port_id, .fresh_call_denied, null, "irreversible actuation denied");
+            const rule = self.permit.ruleFor(intent.world_port_id);
+            if (rule) |port_rule| {
+                if (!port_rule.permitsMode(intent.requested_mode)) return self.deny(.before_actuation_commit, intent.world_port_id, .port_rule_denied, port_rule.rule_fingerprint, "rule actuation mode denied");
+            }
             var next = try self.ledger.clone(self.allocator);
             defer next.deinit(self.allocator);
             next.total_actuation_intents = addSatUsize(next.total_actuation_intents, 1);
-            try self.commitCheck(.before_actuation_commit, intent.world_port_id, &next, null, self.permit.ruleFor(intent.world_port_id), "actuation intent");
+            try self.commitCheck(.before_actuation_commit, intent.world_port_id, &next, null, rule, "actuation intent");
         }
 
         pub fn afterActuationReceipt(self: *@This(), receipt_value: Actuation.Receipt, response_bytes: usize) !void {
@@ -5182,8 +5186,8 @@ pub const Supervision = struct {
         return switch (mode) {
             .fresh => policy.allow_fresh_calls,
             .audit => policy.allow_audit_only,
-            .replay => policy.allow_replay_calls or policy.allow_replay_actuation,
-            .verify => policy.allow_verify_calls or policy.allow_verify_actuation,
+            .replay => policy.allow_replay_calls,
+            .verify => policy.allow_verify_calls,
         };
     }
 

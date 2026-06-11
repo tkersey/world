@@ -2253,14 +2253,16 @@ test "actuation environment preflight and supervision ledger account host effect
         .environment_certificate_fingerprint = cert.certificate_fingerprint,
         .binding_plan_fingerprint = cert.binding_plan_fingerprint,
         .transcript_image_available = true,
-        .mode = .replay,
+        .mode = .fresh,
         .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
             .allow_actuation = true,
             .allow_replay_actuation = true,
         }),
     });
     var replay_actuation_supervisor = try world.Supervision.Supervisor.init(std.testing.allocator, replay_actuation_permit, 1);
     defer replay_actuation_supervisor.deinit();
+    try std.testing.expect(!world.Supervision.modeAllowedByPolicy(replay_actuation_permit.policy, .replay));
     try replay_actuation_supervisor.beforeActuationCommit(replay_intent, true);
     try std.testing.expect(world.SupervisionPolicy.strict_replay.allow_actuation);
     try std.testing.expect(world.SupervisionPolicy.strict_replay.allow_replay_actuation);
@@ -2299,20 +2301,45 @@ test "actuation environment preflight and supervision ledger account host effect
         .environment_certificate_fingerprint = cert.certificate_fingerprint,
         .binding_plan_fingerprint = cert.binding_plan_fingerprint,
         .transcript_image_available = true,
-        .mode = .verify,
+        .mode = .fresh,
         .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
             .allow_actuation = true,
             .allow_verify_actuation = true,
         }),
     });
     var verify_actuation_supervisor = try world.Supervision.Supervisor.init(std.testing.allocator, verify_actuation_permit, 1);
     defer verify_actuation_supervisor.deinit();
+    try std.testing.expect(!world.Supervision.modeAllowedByPolicy(verify_actuation_permit.policy, .verify));
     try verify_actuation_supervisor.beforeActuationCommit(verify_intent, true);
     try std.testing.expect(world.SupervisionPolicy.verify_replay.allow_actuation);
     try std.testing.expect(world.SupervisionPolicy.verify_replay.allow_verify_actuation);
     try std.testing.expect(world.SupervisionPolicy.agent_fixture.allow_actuation);
     try std.testing.expect(world.SupervisionPolicy.audit_only.allow_actuation);
     try std.testing.expect(world.SupervisionPolicy.handoff_receiver.allow_actuation);
+
+    const fresh_denied_rules = [_]world.PortRule{world.PortRule.init(.{
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+        .world_port_id = 0,
+        .allow_fresh = false,
+    })};
+    const actuation_rule_denied_permit = world.RunPermit.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = target_ref.target_certificate_fingerprint,
+        .environment_certificate_fingerprint = cert.certificate_fingerprint,
+        .binding_plan_fingerprint = cert.binding_plan_fingerprint,
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_actuation = true,
+            .allow_fresh_actuation = true,
+        }),
+        .port_rules = &fresh_denied_rules,
+    });
+    var actuation_rule_denied_supervisor = try world.Supervision.Supervisor.init(std.testing.allocator, actuation_rule_denied_permit, 1);
+    defer actuation_rule_denied_supervisor.deinit();
+    try std.testing.expectError(error.PortRuleDenied, actuation_rule_denied_supervisor.beforeActuationCommit(intent, true));
 
     const run_receipt = supervisor.receipt(.parked, 0x5150, null, null);
     try std.testing.expectEqual(@as(usize, 1), run_receipt.actuation_commit_count);
