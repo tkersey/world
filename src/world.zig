@@ -11377,6 +11377,10 @@ pub const Runspace = struct {
             if (execution.response.status == .pending or execution.response.status == .deferred) return error.PendingPortConsumed;
             if (execution.intent.intent_fingerprint != pending_intent_fingerprint) return error.InvalidPendingPortTransition;
             if (execution.receipt.intent_fingerprint != pending_intent_fingerprint) return error.InvalidPendingPortTransition;
+            if (!execution.receipt.fresh_called) {
+                const pending_receipt_fingerprint = pending.pending_actuation_receipt_fingerprint orelse return error.InvalidPendingPortTransition;
+                if (execution.receipt.receipt_fingerprint != pending_receipt_fingerprint) return error.InvalidPendingPortTransition;
+            }
             break :matches true;
         } else false;
         if (execution.intent.pending_port_fingerprint == null) return error.InvalidPendingPortTransition;
@@ -18558,7 +18562,7 @@ pub const Actuation = struct {
             if (self.mode == .replay and self.fresh_called) return error.InvalidFrameEncoding;
             if (self.replayed and self.verified) return error.InvalidFrameEncoding;
             switch (self.mode) {
-                .fresh => if (self.replayed or self.verified) return error.InvalidFrameEncoding,
+                .fresh => if (self.replayed or self.verified or (!self.fresh_called and !self.rejected)) return error.InvalidFrameEncoding,
                 .replay => if (self.verified or (!self.replayed and !self.rejected)) return error.InvalidFrameEncoding,
                 .verify => if (self.fresh_called or self.replayed or (!self.verified and !self.rejected)) return error.InvalidFrameEncoding,
                 .audit => if (self.fresh_called or self.replayed or self.verified) return error.InvalidFrameEncoding,

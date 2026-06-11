@@ -624,6 +624,22 @@ test "actuation commit response receipt journal and replay bind idempotency" {
     });
     try receipt.validate();
     try std.testing.expect(receipt.fresh_called);
+    const fresh_without_call = world.Actuation.Receipt.init(.{
+        .intent_fingerprint = receipt.intent_fingerprint,
+        .envelope_fingerprint = receipt.envelope_fingerprint,
+        .decision_fingerprint = receipt.decision_fingerprint,
+        .commit_fingerprint = receipt.commit_fingerprint,
+        .response_fingerprint = receipt.response_fingerprint,
+        .frame_response_fingerprint = receipt.frame_response_fingerprint,
+        .actuator_ref_fingerprint = receipt.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = receipt.idempotency_key_fingerprint,
+        .target_ref_fingerprint = receipt.target_ref_fingerprint,
+        .world_surface_fingerprint = receipt.world_surface_fingerprint,
+        .world_port_id = receipt.world_port_id,
+        .class = receipt.class,
+        .mode = .fresh,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, fresh_without_call.validate());
 
     var journal = world.Actuation.Journal.init();
     defer journal.deinit(std.testing.allocator);
