@@ -31924,6 +31924,7 @@ fn fabricPreflightRouteForPort(admitted_fabric_plan: ?Fabric.Plan, world_port_id
 const ActuationRoutePolicyView = struct {
     class: Actuation.Class,
     value_policy: ValuePolicy,
+    authority_kind: PortAuthority.Kind,
 };
 
 fn actuationRoutePolicyViewForEnvironment(comptime Env: type, route: Fabric.Route, requested_mode: Mode) ?ActuationRoutePolicyView {
@@ -31939,6 +31940,7 @@ fn actuationRoutePolicyViewForEnvironment(comptime Env: type, route: Fabric.Rout
                     return .{
                         .class = BindingDecl.actuator_ref.class,
                         .value_policy = BindingDecl.value_policy,
+                        .authority_kind = comptime authorityKindForActuationKind(BindingDecl.actuator_ref.kind),
                     };
                 }
             }
@@ -31982,7 +31984,7 @@ fn preflightRouteForPendingWithSupervisor(comptime Target: type, comptime Env: t
         .class = view.class,
         .requested_mode = requested_mode,
     });
-    try supervisor.beforeActuationCommit(intent, true);
+    try supervisor.beforeActuationCommitWithAuthority(intent, true, view.authority_kind);
 }
 
 fn fabricReplayRouteForPort(admitted_fabric_plan: ?Fabric.Plan, world_port_id: u32) ?Fabric.Route {
