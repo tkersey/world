@@ -2944,6 +2944,43 @@ test "actuation environment preflight and supervision ledger account host effect
     try std.testing.expectError(error.BudgetExceeded, policy_exhausted_supervisor.beforeActuationCommit(intent, true));
     try std.testing.expectEqual(world.Supervision.BudgetExceededKind.actuation_calls, policy_exhausted_supervisor.ledger.exceeded_budget.?);
 
+    const failed_actuation_budget_permit = world.RunPermit.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = target_ref.target_certificate_fingerprint,
+        .environment_certificate_fingerprint = cert.certificate_fingerprint,
+        .binding_plan_fingerprint = cert.binding_plan_fingerprint,
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_actuation = true,
+            .allow_fresh_actuation = true,
+            .allow_failed_responses = true,
+            .require_idempotency_keys = true,
+        }),
+        .budget = world.Budget.init(.{ .max_failed_calls = 0 }),
+    });
+    var failed_actuation_budget_supervisor = try world.Supervision.Supervisor.init(std.testing.allocator, failed_actuation_budget_permit, 1);
+    defer failed_actuation_budget_supervisor.deinit();
+    const failed_execution = try world.Actuation.Membrane.execute(.{
+        .policy = world.Actuation.Policy.fixture_test,
+        .intent = intent,
+        .envelope = envelope,
+        .actuator = .{ .fixture = .{
+            .status = .failed,
+            .frame_response_fingerprint = 0xfeed_2003,
+            .reason = "failed budget witness",
+        } },
+        .descriptor = descriptor,
+        .explicit_mutation_approval = true,
+        .attempt_number = 0,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+    });
+    try failed_actuation_budget_supervisor.beforeActuationCommit(intent, true);
+    try std.testing.expectError(error.BudgetExceeded, failed_actuation_budget_supervisor.afterActuationReceipt(failed_execution.receipt, 16));
+    try std.testing.expectEqual(world.Supervision.BudgetExceededKind.failed_calls, failed_actuation_budget_supervisor.ledger.exceeded_budget.?);
+
     const pending_limited_permit = world.RunPermit.init(.{
         .target_ref_fingerprint = target_ref.target_ref_fingerprint,
         .world_surface_fingerprint = target_ref.world_surface_fingerprint,
