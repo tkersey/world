@@ -5536,6 +5536,108 @@ test "capsule freezeRunspace honors receipt and transcript exclusion flags" {
     try std.testing.expect(receipt_restore.accepted);
     try std.testing.expectEqual(@as(usize, 1), receipt_receiver.slots.items.len);
     try std.testing.expectEqual(@as(?u64, 0x5150_3341), receipt_receiver.slots.items[0].run_receipt_fingerprint);
+
+    const actuation_receipt_refs = [_]u64{0xacc7_4401};
+    const actuation_manifest = world.Capsule.Manifest.init(.{
+        .kind = full.manifest.kind,
+        .root_target_ref_fingerprint = full.manifest.root_target_ref_fingerprint,
+        .root_module_ref_fingerprint = full.manifest.root_module_ref_fingerprint,
+        .link_plan_fingerprint = full.manifest.link_plan_fingerprint,
+        .link_certificate_fingerprint = full.manifest.link_certificate_fingerprint,
+        .assembly_fingerprint = full.manifest.assembly_fingerprint,
+        .admission_receipt_fingerprints = full.manifest.admission_receipt_fingerprints,
+        .environment_certificate_fingerprints = full.manifest.environment_certificate_fingerprints,
+        .run_permit_fingerprints = full.manifest.run_permit_fingerprints,
+        .run_receipt_fingerprints = full.manifest.run_receipt_fingerprints,
+        .run_image_fingerprints = full.manifest.run_image_fingerprints,
+        .transcript_image_fingerprints = full.manifest.transcript_image_fingerprints,
+        .fabric_plan_fingerprints = full.manifest.fabric_plan_fingerprints,
+        .fabric_invocation_fingerprints = full.manifest.fabric_invocation_fingerprints,
+        .fabric_receipt_fingerprints = full.manifest.fabric_receipt_fingerprints,
+        .guest_conformance_report_fingerprints = full.manifest.guest_conformance_report_fingerprints,
+        .actuation_receipt_fingerprints = &actuation_receipt_refs,
+        .pending_port_count = full.manifest.pending_port_count,
+        .run_slot_count = full.manifest.run_slot_count,
+        .active_fabric_invocation_count = full.manifest.active_fabric_invocation_count,
+        .normal_form = full.manifest.normal_form,
+        .metadata = full.manifest.metadata,
+    });
+    const actuation_runspace = world.Capsule.RunspaceImage.init(.{
+        .runspace_fingerprint = full.runspace_image.runspace_fingerprint,
+        .runspace_report_fingerprint = full.runspace_image.runspace_report_fingerprint,
+        .run_handle_mappings = full.runspace_image.run_handle_mappings,
+        .run_slots = full.runspace_image.run_slots,
+        .mailbox_image = full.runspace_image.mailbox_image,
+        .runspace_event_fingerprints = full.runspace_image.runspace_event_fingerprints,
+        .root_run_handle_fingerprints = full.runspace_image.root_run_handle_fingerprints,
+        .provider_run_handle_fingerprints = full.runspace_image.provider_run_handle_fingerprints,
+        .branch_refs = full.runspace_image.branch_refs,
+        .checkpoint_refs = full.runspace_image.checkpoint_refs,
+        .transcript_image_refs = full.runspace_image.transcript_image_refs,
+        .run_image_refs = full.runspace_image.run_image_refs,
+        .run_receipt_refs = full.runspace_image.run_receipt_refs,
+        .admission_receipt_refs = full.runspace_image.admission_receipt_refs,
+        .permit_refs = full.runspace_image.permit_refs,
+        .active_fabric_invocation_refs = full.runspace_image.active_fabric_invocation_refs,
+        .actuation_receipt_refs = &actuation_receipt_refs,
+        .metadata = full.runspace_image.metadata,
+    });
+    const actuation_full = world.Capsule.Image.init(.{
+        .manifest = actuation_manifest,
+        .runspace_image = actuation_runspace,
+        .link_image = full.link_image,
+        .fabric_image = full.fabric_image,
+        .admission_refs = full.admission_refs,
+        .environment_refs = full.environment_refs,
+        .supervision_refs = full.supervision_refs,
+        .guest_conformance_refs = full.guest_conformance_refs,
+        .transcript_image_refs = full.transcript_image_refs,
+        .run_image_refs = full.run_image_refs,
+        .value_image_refs = full.value_image_refs,
+        .actuation_receipt_refs = &actuation_receipt_refs,
+        .transcript_images = full.transcript_images,
+        .run_images = full.run_images,
+        .value_images = full.value_images,
+        .metadata = full.metadata,
+    });
+    try actuation_full.validate(.{});
+    var actuation_receiver = world.Runspace.init(allocator, .{});
+    defer actuation_receiver.deinit();
+    var actuation_thaw = try world.Capsule.planThaw(actuation_full, target_ref.target_ref_fingerprint, 0, 0x5150_3344, .{ .mode = .restore_completed });
+    defer actuation_thaw.deinit(allocator);
+    var actuation_restore = try world.Capsule.thawIntoRunspace(actuation_full, &actuation_receiver, target_ref.target_ref_fingerprint, 0, 0x5150_3344, .{ .mode = .restore_completed });
+    defer actuation_restore.deinit(allocator);
+    try std.testing.expect(actuation_restore.accepted);
+    try std.testing.expectEqual(actuation_receipt_refs[0], actuation_restore.restored_actuation_receipt_refs[0]);
+    const forged_restored_actuation_refs = [_]u64{actuation_receipt_refs[0] +% 1};
+    const forged_actuation_restore = world.Capsule.RestoreReport.init(.{
+        .capsule_image_fingerprint = actuation_restore.capsule_image_fingerprint,
+        .thaw_plan_fingerprint = actuation_restore.thaw_plan_fingerprint,
+        .restored_runspace_fingerprint = actuation_restore.restored_runspace_fingerprint,
+        .restored_local_run_id_start = actuation_restore.restored_local_run_id_start,
+        .restored_run_handle_mappings = actuation_restore.restored_run_handle_mappings,
+        .restored_root_run_handles = actuation_restore.restored_root_run_handles,
+        .restored_provider_run_handles = actuation_restore.restored_provider_run_handles,
+        .restored_pending_port_mappings = actuation_restore.restored_pending_port_mappings,
+        .restored_fabric_invocation_mappings = actuation_restore.restored_fabric_invocation_mappings,
+        .guest_conformance_refs = actuation_restore.guest_conformance_refs,
+        .restored_actuation_receipt_refs = &forged_restored_actuation_refs,
+        .replayed_sender_actuation_receipt_refs = actuation_restore.replayed_sender_actuation_receipt_refs,
+        .receiver_local_actuation_receipt_refs = actuation_restore.receiver_local_actuation_receipt_refs,
+        .environment_certificate_fingerprint = actuation_restore.environment_certificate_fingerprint,
+        .receiver_run_permit_fingerprint = actuation_restore.receiver_run_permit_fingerprint,
+        .accepted = true,
+        .warnings = actuation_restore.warnings,
+        .summary = actuation_restore.summary,
+    });
+    const forged_restore_admission = world.Admission.capsuleAdmissionReport(.{
+        .mode = .restore_completed,
+        .image = actuation_full,
+        .thaw_plan = actuation_thaw,
+        .restore_report = forged_actuation_restore,
+    });
+    try std.testing.expect(!forged_restore_admission.accepted);
+
     var refrozen = try world.Capsule.freezeRunspace(&receipt_receiver, .{});
     defer refrozen.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 1), refrozen.runspace_image.run_receipt_refs.len);

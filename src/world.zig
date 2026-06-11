@@ -2627,6 +2627,8 @@ pub const Admission = struct {
         }
         const mailbox_refs = if (image.runspace_image.mailbox_image) |mailbox| mailbox.pending_port_fingerprints else &.{};
         if (!Capsule.u64SlicesEqual(plan.mailbox_id_remapping_plan, mailbox_refs)) return false;
+        if (!Capsule.u64SlicesEqual(report.restored_actuation_receipt_refs, plan.sender_actuation_receipt_refs)) return false;
+        if (!Capsule.u64SlicesEqual(report.restored_actuation_receipt_refs, image.manifest.actuation_receipt_fingerprints)) return false;
 
         return switch (plan.requested_mode) {
             .restore_completed, .restore_failed, .relink_and_restore => capsuleRestoreReportRunMappingsMatchImage(image, report) and
