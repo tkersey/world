@@ -11261,6 +11261,8 @@ pub const Runspace = struct {
         const pending = try self.mailbox.get(mailbox_id);
         try validateActuationDispatchForPending(pending, execution);
         const index = try self.slotIndex(pending.handle);
+        const slot = &self.slots.items[index];
+        if (slot.pending_mailbox_id != mailbox_id or slot.status != .parked_on_port) return error.StaleRunHandle;
         switch (execution.response.status) {
             .pending, .deferred => {
                 try self.superviseActuationDispatch(index, execution, 0);
@@ -11365,6 +11367,7 @@ pub const Runspace = struct {
     }
 
     fn validateActuationDispatchForPending(pending: Runspace.PendingPort, execution: Actuation.Membrane.Execution) !void {
+        if (pending.status != .pending) return error.PendingPortConsumed;
         if (execution.intent.world_surface_fingerprint != pending.world_surface_fingerprint) return error.FrameSurfaceMismatch;
         if (execution.intent.target_ref_fingerprint != pending.target_ref_fingerprint) return error.WrongTarget;
         if (execution.intent.world_port_id != pending.world_port_id) return error.FramePortMismatch;

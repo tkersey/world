@@ -2913,6 +2913,7 @@ test "runspace actuation dispatch preserves pending mailbox state" {
     try std.testing.expectEqual(world.Runspace.PendingStatus.cancelled, (try runspace.mailbox.get(0)).status);
     try std.testing.expectEqual(world.Runspace.RunStatus.failed, (try runspace.getSlotSummary(handle)).status);
     try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
+    try std.testing.expectError(error.PendingPortConsumed, runspace.dispatchActuation(0, cancelled));
 }
 
 test "runspace pending actuation fresh completion consumes call budget" {
