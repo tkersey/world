@@ -1481,6 +1481,44 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
         .world_surface_fingerprint = 0x6101,
     });
     try permitted_exec.validate();
+    const wrong_mode_permit = world.RunPermit.init(.{
+        .target_ref_fingerprint = valid_permit.target_ref_fingerprint,
+        .world_surface_fingerprint = valid_permit.world_surface_fingerprint,
+        .target_certificate_fingerprint = valid_permit.target_certificate_fingerprint,
+        .environment_certificate_fingerprint = valid_permit.environment_certificate_fingerprint,
+        .binding_plan_fingerprint = valid_permit.binding_plan_fingerprint,
+        .mode = .replay,
+        .policy = permit_policy,
+    });
+    const wrong_mode_intent = world.Actuation.Intent.init(.{
+        .actuator_ref_fingerprint = ref.ref_fingerprint,
+        .descriptor_fingerprint = descriptor.descriptor_fingerprint,
+        .target_ref_fingerprint = 0x6102,
+        .world_surface_fingerprint = 0x6101,
+        .world_port_id = 7,
+        .frame_request_fingerprint = 0x6103,
+        .encoded_frame_request_fingerprint = 0x6103,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .run_permit_fingerprint = wrong_mode_permit.permit_fingerprint,
+        .environment_certificate_fingerprint = valid_permit.environment_certificate_fingerprint,
+        .class = .deterministic_fixture,
+        .requested_mode = .fresh,
+    });
+    const wrong_mode_envelope = world.Actuation.Envelope.init(.{
+        .intent_fingerprint = wrong_mode_intent.intent_fingerprint,
+        .encoded_frame_request_fingerprint = wrong_mode_intent.frame_request_fingerprint,
+        .idempotency_key = key,
+    });
+    try std.testing.expectError(error.SupervisionDenied, world.Actuation.Membrane.execute(.{
+        .policy = policy,
+        .intent = wrong_mode_intent,
+        .envelope = wrong_mode_envelope,
+        .descriptor = descriptor,
+        .actuator = .{ .fixture = .{ .frame_response_fingerprint = 0x6208 } },
+        .run_permit = wrong_mode_permit,
+        .target_ref_fingerprint = 0x6102,
+        .world_surface_fingerprint = 0x6101,
+    }));
     const wrong_environment_permit = world.RunPermit.init(.{
         .target_ref_fingerprint = valid_permit.target_ref_fingerprint,
         .world_surface_fingerprint = valid_permit.world_surface_fingerprint,

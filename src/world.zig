@@ -19445,6 +19445,7 @@ pub const Actuation = struct {
             if (permit.permit_fingerprint != args.intent.run_permit_fingerprint.?) return error.SupervisionDenied;
             if (permit.target_ref_fingerprint != args.intent.target_ref_fingerprint) return error.SupervisionDenied;
             if (permit.world_surface_fingerprint != args.intent.world_surface_fingerprint) return error.SupervisionDenied;
+            if (permit.mode != args.intent.requested_mode) return error.SupervisionDenied;
             if (args.intent.environment_certificate_fingerprint == null or
                 permit.environment_certificate_fingerprint != args.intent.environment_certificate_fingerprint.?) return error.SupervisionDenied;
             const policy = permit.policy;
