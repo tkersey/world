@@ -18984,7 +18984,7 @@ pub const Actuation = struct {
             if (!input.policy.allowsMode(input.intent.requested_mode)) return Decision.denied(input.intent, input.policy, "mode denied");
             if (!input.policy.allowsClass(input.intent.class)) return Decision.denied(input.intent, input.policy, "class denied");
             if (input.policy.max_actuation_calls) |max_calls| {
-                if (max_calls == 0) return Decision.denied(input.intent, input.policy, "actuation call limit reached");
+                if (max_calls == 0 or input.attempt_number > max_calls) return Decision.denied(input.intent, input.policy, "actuation call limit reached");
             }
             if (input.attempt_number > 1 and !input.policy.allow_retry) return Decision.denied(input.intent, input.policy, "retry denied");
             if (input.policy.requiresKeyForClass(input.intent.class, input.intent.requested_mode) and !input.key_present) return Decision.denied(input.intent, input.policy, "idempotency key required");
@@ -19364,6 +19364,8 @@ pub const Actuation = struct {
             try response.validate(args.policy, args.descriptor);
             const receipt = receiptFor(args, decision, commit_value, response);
             try receipt.validate();
+            if (verify.expected_receipt) |expected_receipt| try expected_receipt.validate();
+            if (verify.fresh_receipt) |fresh_receipt| try fresh_receipt.validate();
             const report = VerifyReport.compare(args.intent, verify.expected_receipt, verify.fresh_receipt);
             return .{
                 .intent = args.intent,

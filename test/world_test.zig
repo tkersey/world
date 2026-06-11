@@ -535,6 +535,22 @@ test "actuation policy idempotency key and intent gates are deterministic" {
     });
     try call_limited.validate();
     try std.testing.expect(!call_limited.approved);
+    const retry_limited_policy = world.Actuation.Policy.init(.{
+        .allow_fresh_actuation = true,
+        .allow_deterministic_fixture = true,
+        .allow_idempotent_mutation = true,
+        .allow_retry = true,
+        .max_actuation_calls = 1,
+    });
+    const retry_limited = world.Actuation.Membrane.decide(.{
+        .policy = retry_limited_policy,
+        .intent = intent,
+        .key_present = true,
+        .explicit_mutation_approval = true,
+        .attempt_number = 2,
+    });
+    try retry_limited.validate();
+    try std.testing.expect(!retry_limited.approved);
     const approved = world.Actuation.Membrane.decide(.{
         .policy = strict,
         .intent = intent,
@@ -1100,6 +1116,60 @@ test "actuation verify report records matches and divergences" {
     const forged_report = world.Actuation.VerifyReport.compare(intent, expected, forged_identity);
     try std.testing.expect(!forged_report.matched);
     try std.testing.expectEqual(world.Actuation.DivergenceKind.response_fingerprint_mismatch, forged_report.divergence_kind.?);
+
+    const verify_key = world.Actuation.IdempotencyKey.init(.{
+        .target_ref_fingerprint = 0x7101,
+        .world_surface_fingerprint = 0x7102,
+        .world_port_id = 0,
+        .request_fingerprint = 0x7103,
+        .actuator_ref_fingerprint = 0x7104,
+    });
+    const verify_intent = world.Actuation.Intent.init(.{
+        .actuator_ref_fingerprint = 0x7104,
+        .descriptor_fingerprint = 0x7105,
+        .target_ref_fingerprint = 0x7101,
+        .world_surface_fingerprint = 0x7102,
+        .world_port_id = 0,
+        .frame_request_fingerprint = 0x7103,
+        .idempotency_key_fingerprint = verify_key.key_fingerprint,
+        .class = .observation,
+        .requested_mode = .verify,
+    });
+    const verify_envelope = world.Actuation.Envelope.init(.{
+        .intent_fingerprint = verify_intent.intent_fingerprint,
+        .idempotency_key = verify_key,
+    });
+    const valid_verify_receipt = world.Actuation.Receipt.init(.{
+        .intent_fingerprint = verify_intent.intent_fingerprint,
+        .envelope_fingerprint = verify_envelope.envelope_fingerprint,
+        .decision_fingerprint = 0x7106,
+        .commit_fingerprint = 0x7107,
+        .response_fingerprint = 0x7108,
+        .frame_response_fingerprint = 0x7109,
+        .actuator_ref_fingerprint = 0x7104,
+        .idempotency_key_fingerprint = verify_key.key_fingerprint,
+        .target_ref_fingerprint = 0x7101,
+        .world_surface_fingerprint = 0x7102,
+        .world_port_id = 0,
+        .class = .observation,
+        .mode = .verify,
+        .verified = true,
+    });
+    var forged_verify_receipt = valid_verify_receipt;
+    forged_verify_receipt.receipt_fingerprint +%= 1;
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Actuation.Membrane.execute(.{
+        .policy = world.Actuation.Policy.verify_replay,
+        .intent = verify_intent,
+        .envelope = verify_envelope,
+        .actuator = .{ .verify = .{
+            .expected_receipt = forged_verify_receipt,
+            .fresh_receipt = valid_verify_receipt,
+            .response_template = .{ .frame_response_fingerprint = 0x7110 },
+        } },
+        .attempt_number = 1,
+        .target_ref_fingerprint = 0x7101,
+        .world_surface_fingerprint = 0x7102,
+    }));
 
     const contradictory_status = world.Actuation.Receipt.init(.{
         .intent_fingerprint = intent.intent_fingerprint,
@@ -1786,28 +1856,32 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
         .encoded_frame_request_fingerprint = verify_intent.frame_request_fingerprint,
         .idempotency_key = key,
     });
-    var changed_fresh = replay_seed;
-    changed_fresh.response_fingerprint = 0x9999;
-    changed_fresh.frame_response_fingerprint = 0x9998;
-    changed_fresh.receipt_fingerprint = 0;
-    changed_fresh.receipt_fingerprint = @TypeOf(changed_fresh).init(.{
-        .intent_fingerprint = changed_fresh.intent_fingerprint,
-        .envelope_fingerprint = changed_fresh.envelope_fingerprint,
-        .decision_fingerprint = changed_fresh.decision_fingerprint,
-        .commit_fingerprint = changed_fresh.commit_fingerprint,
-        .response_fingerprint = changed_fresh.response_fingerprint,
-        .frame_response_fingerprint = changed_fresh.frame_response_fingerprint,
-        .actuator_ref_fingerprint = changed_fresh.actuator_ref_fingerprint,
-        .idempotency_key_fingerprint = changed_fresh.idempotency_key_fingerprint,
-        .target_ref_fingerprint = changed_fresh.target_ref_fingerprint,
-        .world_surface_fingerprint = changed_fresh.world_surface_fingerprint,
-        .world_port_id = changed_fresh.world_port_id,
-        .class = changed_fresh.class,
+    const changed_fresh = world.Actuation.Receipt.init(.{
+        .intent_fingerprint = replay_seed.intent_fingerprint,
+        .envelope_fingerprint = replay_seed.envelope_fingerprint,
+        .decision_fingerprint = replay_seed.decision_fingerprint,
+        .commit_fingerprint = replay_seed.commit_fingerprint,
+        .response_fingerprint = 0x9999,
+        .frame_response_fingerprint = 0x9998,
+        .actuator_ref_fingerprint = replay_seed.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = replay_seed.idempotency_key_fingerprint,
+        .target_ref_fingerprint = replay_seed.target_ref_fingerprint,
+        .world_surface_fingerprint = replay_seed.world_surface_fingerprint,
+        .world_port_id = replay_seed.world_port_id,
+        .class = replay_seed.class,
         .mode = .verify,
         .verified = true,
-        .response_kind = changed_fresh.response_kind,
-        .response_value_image_fingerprint = changed_fresh.response_value_image_fingerprint,
-    }).receipt_fingerprint;
+        .response_kind = replay_seed.response_kind,
+        .response_value_image_fingerprint = replay_seed.response_value_image_fingerprint,
+        .attempt_number = replay_seed.attempt_number,
+        .run_permit_fingerprint = replay_seed.run_permit_fingerprint,
+        .environment_certificate_fingerprint = replay_seed.environment_certificate_fingerprint,
+        .run_receipt_fingerprint = replay_seed.run_receipt_fingerprint,
+        .capsule_fingerprint = replay_seed.capsule_fingerprint,
+        .blockers = replay_seed.blockers,
+        .warnings = replay_seed.warnings,
+        .metadata = replay_seed.metadata,
+    });
     const verify_exec = try world.Actuation.Membrane.execute(.{
         .policy = policy,
         .intent = verify_intent,
