@@ -5574,8 +5574,11 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
             const requirement_fingerprint = actuationRequirementFingerprintForPort(binding.world_port_id) orelse return rejectedAcceptance(target_ref, requested_mode, &.{.WrongPortId});
             if (binding.import_requirement_fingerprint != requirement_fingerprint) return rejectedAcceptance(target_ref, requested_mode, &.{.ActuationValuePolicyMismatch});
             var report = acceptanceReport(requested_mode, false);
-            const covered_port_count = @min(Target.WorldPortTable.entries.len, actuationBindingCountForTarget(requested_mode));
-            report.actuation_binding_count = covered_port_count;
+            const actuation_count = actuationBindingCountForTarget(requested_mode);
+            const native_bound_count = @min(bindings.len, Target.WorldPortTable.entries.len);
+            const covered_missing = actuationCoveredMissingPortCount(requested_mode);
+            const covered_port_count = @min(Target.WorldPortTable.entries.len, native_bound_count + covered_missing);
+            report.actuation_binding_count = actuation_count;
             if (covered_port_count < Target.WorldPortTable.entries.len) {
                 report.bound_port_count = covered_port_count;
                 report.missing_port_count = Target.WorldPortTable.entries.len - covered_port_count;

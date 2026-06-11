@@ -1936,6 +1936,18 @@ test "actuation environment preflight and supervision ledger account host effect
     try std.testing.expect(!duplicate_agent_preflight.accepted);
     try std.testing.expectEqual(@as(usize, 1), duplicate_agent_preflight.actuation_binding_count);
     try std.testing.expectEqual(@as(usize, 1), duplicate_agent_preflight.missing_port_count);
+    const AgentMixedActuationEnv = world.Environment(fixtures.Agent.Target, .{
+        .bindings = .{world.bind(AgentDecideDecl, world.NativeAdapter(decide))},
+        .actuation_bindings = .{AgentToolActuationBinding},
+        .policy = world.EnvironmentPolicy.fresh_and_replay,
+    });
+    const mixed_agent_binding = AgentMixedActuationEnv.bindActuator(AgentToolActuationBinding);
+    const mixed_agent_preflight = AgentMixedActuationEnv.preflightActuation(mixed_agent_binding, world.Actuation.Policy.strict_fresh);
+    try std.testing.expect(mixed_agent_preflight.accepted);
+    try std.testing.expectEqual(@as(usize, 1), mixed_agent_preflight.actuation_binding_count);
+    try std.testing.expectEqual(fixtures.Agent.Target.WorldPortTable.entries.len, mixed_agent_preflight.bound_port_count);
+    try std.testing.expectEqual(@as(usize, 0), mixed_agent_preflight.missing_port_count);
+    try std.testing.expectEqual(@as(usize, 0), mixed_agent_preflight.missing_actuator_count);
     const agent_full_cert = AgentFullActuationEnv.certificate(.fresh, false);
     const agent_tool_denied_rules = [_]world.PortRule{world.PortRule.init(.{
         .world_surface_fingerprint = agent_full_cert.world_surface_fingerprint,
