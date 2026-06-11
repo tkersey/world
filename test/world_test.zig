@@ -17203,6 +17203,27 @@ test "runspace install consumes explicit fabric plan for missing environment bin
     try std.testing.expect(accepted.admitted_run.?.fabric_plan != null);
     try std.testing.expectEqual(fabric_plan.plan_fingerprint, accepted.admitted_run.?.fabric_plan.?.plan_fingerprint);
 
+    const unowned_actuation_adapter_route = world.Fabric.Route.init(.{
+        .route_id = 0x51ace_fab2,
+        .kind = .adapter,
+        .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .parent_world_port_id = 0,
+        .actuator_ref_fingerprint = 0xacc7_a001,
+        .actuation_descriptor_fingerprint = 0xacc7_a002,
+        .actuation_binding_fingerprint = 0xacc7_a003,
+    });
+    const unowned_actuation_adapter_plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .routes = &.{unowned_actuation_adapter_route},
+    });
+    const unowned_actuation_adapter_report = PortsMissingEnv.acceptanceReportWithFabricPlan(.fresh, false, unowned_actuation_adapter_plan);
+    try std.testing.expect(!unowned_actuation_adapter_report.accepted);
+    try std.testing.expectEqualSlices(world.AcceptanceBlocker, &.{.MissingBinding}, unowned_actuation_adapter_report.blockers);
+
     const unpinned_import_plan = world.Fabric.Plan.init(.{
         .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
         .world_surface_fingerprint = parent_ref.world_surface_fingerprint,

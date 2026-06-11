@@ -5531,7 +5531,7 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
             }
             if (!acceptanceReportHasOnlyMissingBinding(report)) return report;
             const coverage = plan.coverage(target_ref, import_set);
-            const fabric_covered_missing = fabricCoveredMissingEnvironmentPortCount(Target, bindings, coverage, plan) orelse return report;
+            const fabric_covered_missing = fabricCoveredMissingEnvironmentPortCount(Target, bindings, actuation_bindings, coverage, plan, requested_mode) orelse return report;
             var accepted = report;
             accepted.accepted = true;
             accepted.bound_port_count = bindings.len + fabric_covered_missing;
@@ -5688,7 +5688,7 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
                 return report;
             }
             if (!acceptanceReportHasOnlyMissingBinding(report)) return report;
-            const fabric_covered_missing = assemblyFabricCoveredMissingEnvironmentPortCount(Target, bindings, assembly) catch {
+            const fabric_covered_missing = assemblyFabricCoveredMissingEnvironmentPortCount(Target, bindings, actuation_bindings, assembly, requested_mode) catch {
                 return rejectedReport(report, &.{.SupervisionPolicyMismatch});
             } orelse return base_report;
             report.accepted = true;
@@ -29998,7 +29998,7 @@ fn acceptanceReportHasOnlyTranscriptRequirement(report: AcceptanceReport) bool {
     return report.blockers[0] == .TranscriptImageRequired;
 }
 
-fn fabricCoveredMissingEnvironmentPortCount(comptime Target: type, comptime bindings: anytype, coverage: Fabric.CoverageReport, plan: Fabric.Plan) ?usize {
+fn fabricCoveredMissingEnvironmentPortCount(comptime Target: type, comptime bindings: anytype, comptime actuation_bindings: anytype, coverage: Fabric.CoverageReport, plan: Fabric.Plan, requested_mode: Mode) ?usize {
     const target_ref = TargetRef.fromTarget(Target);
     if (coverage.target_ref_fingerprint != target_ref.target_ref_fingerprint) return null;
     if (coverage.world_surface_fingerprint != target_ref.world_surface_fingerprint) return null;
@@ -30012,7 +30012,7 @@ fn fabricCoveredMissingEnvironmentPortCount(comptime Target: type, comptime bind
         }
         if (!host_bound) {
             const route = plan.findRouteForPort(@intCast(world_port_id)) orelse return null;
-            if (!route.coversRequiredPort()) return null;
+            if (!fabricRouteCoversMissingEnvironmentPort(Target, actuation_bindings, route, @intCast(world_port_id), requested_mode)) return null;
             fabric_covered_missing += 1;
         }
     }
@@ -30020,7 +30020,7 @@ fn fabricCoveredMissingEnvironmentPortCount(comptime Target: type, comptime bind
     return fabric_covered_missing;
 }
 
-fn assemblyFabricCoveredMissingEnvironmentPortCount(comptime Target: type, comptime bindings: anytype, assembly: Assembly) !?usize {
+fn assemblyFabricCoveredMissingEnvironmentPortCount(comptime Target: type, comptime bindings: anytype, comptime actuation_bindings: anytype, assembly: Assembly, requested_mode: Mode) !?usize {
     const target_ref = TargetRef.fromTarget(Target);
     var fabric_covered_missing: usize = 0;
     inline for (0..Target.WorldPortTable.entries.len) |world_port_id| {
@@ -30038,7 +30038,7 @@ fn assemblyFabricCoveredMissingEnvironmentPortCount(comptime Target: type, compt
                     continue;
                 }
                 const route = plan.findRouteForPort(@intCast(world_port_id)) orelse continue;
-                if (!route.coversRequiredPort()) return error.InvalidFrameEncoding;
+                if (!fabricRouteCoversMissingEnvironmentPort(Target, actuation_bindings, route, @intCast(world_port_id), requested_mode)) return error.InvalidFrameEncoding;
                 if (covered) return error.InvalidFrameEncoding;
                 covered = true;
             }
@@ -30048,6 +30048,25 @@ fn assemblyFabricCoveredMissingEnvironmentPortCount(comptime Target: type, compt
     }
     if (bindings.len + fabric_covered_missing < Target.WorldPortTable.entries.len) return null;
     return fabric_covered_missing;
+}
+
+fn fabricRouteCoversMissingEnvironmentPort(comptime Target: type, comptime actuation_bindings: anytype, route: Fabric.Route, world_port_id: u32, requested_mode: Mode) bool {
+    if (!route.coversRequiredPort()) return false;
+    if (route.kind != .adapter) return true;
+    if (!route.hasActuationRouteBinding()) return false;
+    inline for (actuation_bindings) |BindingDecl| {
+        if (BindingDecl.TargetType == Target and BindingDecl.binding_mode_policy.allows(requested_mode)) {
+            const binding = BindingDecl.actuationBindingRecord();
+            if (binding.world_port_id == world_port_id and
+                binding.binding_fingerprint == route.actuation_binding_fingerprint.? and
+                binding.actuator_ref_fingerprint == route.actuator_ref_fingerprint.? and
+                binding.descriptor_fingerprint == route.actuation_descriptor_fingerprint.?)
+            {
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 fn fabricPlanHasReplayRoute(plan: Fabric.Plan) bool {
