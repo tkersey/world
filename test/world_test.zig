@@ -720,6 +720,30 @@ test "actuation commit response receipt journal and replay bind idempotency" {
     try duplicate_journal.appendReceipt(std.testing.allocator, duplicate_fresh_receipt);
     try std.testing.expectError(error.DuplicateBinding, duplicate_journal.assertNoDuplicateFreshCommit());
 
+    const pending_commit = world.Actuation.Commit.init(.{
+        .intent_fingerprint = intent.intent_fingerprint,
+        .decision_fingerprint = decision.decision_fingerprint,
+        .envelope_fingerprint = envelope.envelope_fingerprint,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .attempt_number = 1,
+        .status = .commit_pending,
+        .fresh_called = true,
+    });
+    const terminal_commit = world.Actuation.Commit.init(.{
+        .intent_fingerprint = intent.intent_fingerprint,
+        .decision_fingerprint = decision.decision_fingerprint,
+        .envelope_fingerprint = envelope.envelope_fingerprint,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .attempt_number = 2,
+        .status = .committed,
+        .fresh_called = true,
+    });
+    var pending_resolution_journal = world.Actuation.Journal.init();
+    defer pending_resolution_journal.deinit(std.testing.allocator);
+    try pending_resolution_journal.appendCommit(std.testing.allocator, pending_commit);
+    try pending_resolution_journal.appendCommit(std.testing.allocator, terminal_commit);
+    try pending_resolution_journal.assertNoDuplicateFreshCommit();
+
     const replay_source = world.Actuation.ReplaySource.init(.{ .receipts = &.{receipt} });
     const replay_response = try replay_source.responseForIntent(intent, .responded, .@"resume");
     try std.testing.expectEqual(world.Actuation.ResponseStatus.responded, replay_response.status);

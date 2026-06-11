@@ -19069,14 +19069,21 @@ pub const Actuation = struct {
 
         pub fn assertNoDuplicateFreshCommit(self: @This()) !void {
             for (self.entries.items, 0..) |entry, index| {
-                if (!entry.fresh_called or entry.commit_fingerprint == null) continue;
+                if (!isTerminalFreshCommitEntry(entry)) continue;
                 const key = entry.idempotency_key_fingerprint orelse continue;
                 for (self.entries.items[index + 1 ..]) |later| {
-                    if (!later.fresh_called or later.commit_fingerprint == null or later.idempotency_key_fingerprint != key) continue;
+                    if (!isTerminalFreshCommitEntry(later) or later.idempotency_key_fingerprint != key) continue;
                     if (later.commit_fingerprint == entry.commit_fingerprint) continue;
                     return error.DuplicateBinding;
                 }
             }
+        }
+
+        fn isTerminalFreshCommitEntry(entry: Entry) bool {
+            return entry.fresh_called and
+                entry.commit_fingerprint != null and
+                !entry.pending and
+                !entry.deferred;
         }
 
         pub fn summary(self: @This()) Summary {
