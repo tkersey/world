@@ -3784,6 +3784,7 @@ pub const Supervision = struct {
             .allow_replay_calls = true,
             .allow_verify_calls = true,
             .allow_actuation = true,
+            .allow_fresh_actuation = true,
             .allow_replay_actuation = true,
             .allow_verify_actuation = true,
             .allow_native_adapters = true,

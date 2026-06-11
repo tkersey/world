@@ -3449,6 +3449,19 @@ test "actuation environment preflight and supervision ledger account host effect
     try std.testing.expect(world.SupervisionPolicy.agent_fixture.allow_actuation);
     try std.testing.expect(world.SupervisionPolicy.audit_only.allow_actuation);
     try std.testing.expect(world.SupervisionPolicy.handoff_receiver.allow_actuation);
+    try std.testing.expect(world.SupervisionPolicy.handoff_receiver.allow_fresh_actuation);
+    const handoff_receiver_permit = world.RunPermit.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = target_ref.target_certificate_fingerprint,
+        .environment_certificate_fingerprint = cert.certificate_fingerprint,
+        .binding_plan_fingerprint = cert.binding_plan_fingerprint,
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.handoff_receiver,
+    });
+    var handoff_receiver_supervisor = try world.Supervision.Supervisor.init(std.testing.allocator, handoff_receiver_permit, 1);
+    defer handoff_receiver_supervisor.deinit();
+    try handoff_receiver_supervisor.beforeActuationCommit(bindIntentToPermit(intent, handoff_receiver_permit), true);
 
     const fresh_denied_rules = [_]world.PortRule{world.PortRule.init(.{
         .world_surface_fingerprint = target_ref.world_surface_fingerprint,
