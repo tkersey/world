@@ -20144,6 +20144,35 @@ test "environment preflight accepts host and fabric complement coverage" {
     try std.testing.expectEqual(fixtures.Agent.Target.WorldPortTable.entries.len, accepted.bound_port_count);
     try std.testing.expectEqual(@as(usize, 0), accepted.missing_port_count);
 
+    const BoundDecideActuator = world.actuator(.{
+        .kind = .tool_like,
+        .class = .idempotent_mutation,
+        .label = "agent.decide.bound-only",
+        .supported_response_statuses = world.Actuation.ResponseStatusSet.all,
+        .value_policy = world.ValuePolicy.portable,
+    });
+    const BoundDecideActuationBinding = world.bindActuator(AgentDecideDecl, BoundDecideActuator);
+    const AgentDecideNativeWithBoundActuationEnv = world.Environment(fixtures.Agent.Target, .{
+        .bindings = .{world.bind(AgentDecideDecl, world.NativeAdapter(decide))},
+        .actuation_bindings = .{BoundDecideActuationBinding},
+        .policy = world.EnvironmentPolicy.fresh_and_replay,
+    });
+    const fabric_only_missing_permit = world.Supervision.issue(fixtures.Agent.Target, AgentDecideNativeWithBoundActuationEnv, .{
+        .mode = .fresh,
+        .fabric_plan_fingerprint = covered.plan_fingerprint,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_native_adapters = true,
+            .allow_fabric_routes = true,
+            .allow_reject_routes = true,
+            .allow_rejected_responses = true,
+        }),
+    });
+    const fabric_only_missing_report = AgentDecideNativeWithBoundActuationEnv.acceptanceReportWithFabricPlanAndPermit(.fresh, false, covered, fabric_only_missing_permit);
+    try std.testing.expect(fabric_only_missing_report.accepted);
+    try std.testing.expectEqual(@as(usize, 1), fabric_only_missing_report.actuation_binding_count);
+    try std.testing.expectEqual(@as(?u64, covered.plan_fingerprint), fabric_only_missing_report.fabric_plan_fingerprint);
+
     const bound_replay_route = world.Fabric.Route.init(.{
         .route_id = 428,
         .kind = .replay,

@@ -5485,7 +5485,7 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
                     }
                 }
             }
-            if (reportUsesActuationCoverage(report) and !actuationCoverageAllowedBySupervision(requested_mode, supervision_policy)) {
+            if (reportUsesActuationCoverage(report, requested_mode) and !actuationCoverageAllowedBySupervision(requested_mode, supervision_policy)) {
                 return rejectedReport(report, &.{.SupervisionPolicyMismatch});
             }
             return report;
@@ -5741,8 +5741,8 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
             return result;
         }
 
-        fn reportUsesActuationCoverage(report: AcceptanceReport) bool {
-            return report.accepted and report.actuation_binding_count != 0 and report.bound_port_count > bindings.len;
+        fn reportUsesActuationCoverage(report: AcceptanceReport, requested_mode: Mode) bool {
+            return report.accepted and report.actuation_binding_count != 0 and actuationCoveredMissingPortCount(requested_mode) != 0;
         }
 
         fn actuationCoverageAllowedBySupervision(requested_mode: Mode, supervision_policy: SupervisionPolicy) bool {
