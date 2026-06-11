@@ -19279,6 +19279,12 @@ pub const Actuation = struct {
             });
         }
 
+        pub fn validate(self: @This()) !void {
+            if (self.fingerprint_version != world_actuation_verify_report_fingerprint_version) return error.InvalidFrameEncoding;
+            if (self.intent_fingerprint == 0) return error.InvalidFrameEncoding;
+            if (self.report_fingerprint != fingerprintVerifyReport(self)) return error.InvalidFrameEncoding;
+        }
+
         fn receiptBindsRequest(receipt: Receipt, intent: Intent) bool {
             return receipt.idempotency_key_fingerprint == intent.idempotency_key_fingerprint and
                 receipt.actuator_ref_fingerprint == intent.actuator_ref_fingerprint and
@@ -19488,6 +19494,13 @@ pub const Actuation = struct {
                 if (self.parent_terminal != self.response.isTerminalForParent()) return error.InvalidFrameEncoding;
                 if (!self.decision.approved and self.fresh_called) return error.SupervisionDenied;
                 if (self.receipt.mode == .replay and self.fresh_called) return error.InvalidFrameEncoding;
+                if (self.commit_value.verified) {
+                    const report = self.verify_report orelse return error.InvalidFrameEncoding;
+                    try report.validate();
+                    if (report.intent_fingerprint != self.intent.intent_fingerprint) return error.InvalidFrameEncoding;
+                } else if (self.verify_report != null) {
+                    return error.InvalidFrameEncoding;
+                }
             }
 
             fn validateDecisionBinding(self: @This()) !void {

@@ -2112,6 +2112,18 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
     try std.testing.expect(!verify_exec.fresh_called);
     try std.testing.expect(verify_exec.verify_report != null);
     try std.testing.expect(!verify_exec.verify_report.?.matched);
+    var missing_verify_report = verify_exec;
+    missing_verify_report.verify_report = null;
+    try std.testing.expectError(error.InvalidFrameEncoding, missing_verify_report.validate());
+    var forged_verify_report = verify_exec;
+    forged_verify_report.verify_report = world.Actuation.VerifyReport.init(.{
+        .intent_fingerprint = verify_intent.intent_fingerprint +% 1,
+        .expected_receipt_fingerprint = replay_seed.receipt_fingerprint,
+        .fresh_receipt_fingerprint = changed_fresh.receipt_fingerprint,
+        .matched = false,
+        .divergence_kind = .response_fingerprint_mismatch,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_verify_report.validate());
 
     const denied = try world.Actuation.Membrane.execute(.{
         .policy = world.Actuation.Policy.strict_replay,
@@ -2126,6 +2138,9 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
     try denied.validate();
     try std.testing.expect(!denied.decision.approved);
     try std.testing.expect(!denied.fresh_called);
+    var non_verify_with_report = denied;
+    non_verify_with_report.verify_report = verify_exec.verify_report;
+    try std.testing.expectError(error.InvalidFrameEncoding, non_verify_with_report.validate());
     const denied_replay = try world.Actuation.Membrane.execute(.{
         .policy = world.Actuation.Policy.strict_fresh,
         .intent = replay_intent,
