@@ -31922,7 +31922,8 @@ fn valuePolicyForHandoffRequestFrame(comptime Target: type, comptime Env: type, 
     const route = plan.findRouteForPort(world_port_id) orelse return error.MissingBinding;
     return switch (route.kind) {
         .target_export, .admitted_run, .guest, .replay, .reject => ValuePolicy.portable,
-        .adapter, .unsupported => error.MissingBinding,
+        .adapter => if (actuationRoutePolicyViewForEnvironment(Env, route, .fresh)) |view| view.value_policy else error.MissingBinding,
+        .unsupported => error.MissingBinding,
     };
 }
 
@@ -31933,7 +31934,8 @@ fn replayImageValuePolicyForHandoffResponseFrame(comptime Target: type, comptime
         if (plan.findRouteForPort(world_port_id)) |route| {
             return switch (route.kind) {
                 .target_export, .admitted_run, .guest, .replay, .reject => fabricReplayResponseValuePolicy(),
-                .adapter, .unsupported => error.MissingBinding,
+                .adapter => if (actuationRoutePolicyViewForEnvironment(Env, route, .replay)) |view| view.value_policy else error.MissingBinding,
+                .unsupported => error.MissingBinding,
             };
         }
     }
