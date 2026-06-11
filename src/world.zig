@@ -19594,6 +19594,7 @@ pub const Actuation = struct {
                 if (rule.rule_fingerprint != fingerprintPortRule(rule)) return error.SupervisionDenied;
                 if (rule.world_surface_fingerprint != args.intent.world_surface_fingerprint) return error.SupervisionDenied;
                 if (!rule.permitsMode(args.intent.requested_mode)) return error.SupervisionDenied;
+                try validateSelectedActuatorAuthority(args, rule);
                 if (authorityKindForExecuteArgs(args)) |kind| {
                     if (!rule.allowed_authority_kinds.allows(kind)) return error.AuthorityDenied;
                 } else if (!std.meta.eql(rule.allowed_authority_kinds, Supervision.AllowedAuthorityKinds.all)) {
@@ -19841,7 +19842,25 @@ pub const Actuation = struct {
 
         fn authorityKindForExecuteArgs(args: ExecuteArgs) ?PortAuthority.Kind {
             const descriptor = args.descriptor orelse return null;
+            if (concreteAuthorityKindForActuator(args.actuator)) |kind| return kind;
             return authorityKindForActuationKind(descriptor.kind);
+        }
+
+        fn validateSelectedActuatorAuthority(args: ExecuteArgs, rule: Supervision.PortRule) !void {
+            if (std.meta.eql(rule.allowed_authority_kinds, Supervision.AllowedAuthorityKinds.all)) return;
+            const descriptor = args.descriptor orelse return error.AuthorityDenied;
+            const selected = concreteAuthorityKindForActuator(args.actuator) orelse return;
+            if (selected != authorityKindForActuationKind(descriptor.kind)) return error.AuthorityDenied;
+        }
+
+        fn concreteAuthorityKindForActuator(selected_actuator: Interface) ?PortAuthority.Kind {
+            return switch (selected_actuator) {
+                .fixture => .fixture,
+                .native_function => .native_function,
+                .byte_protocol => .byte_adapter,
+                .replay => .replay_source,
+                .verify, .reject, .pending, .deferred => null,
+            };
         }
 
         fn receiptFor(args: ExecuteArgs, decision: Decision, commit_value: Commit, response: Response) Receipt {

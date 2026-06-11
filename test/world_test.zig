@@ -2756,6 +2756,50 @@ test "actuation environment preflight and supervision ledger account host effect
         .expected_response_value_ref = descriptor.response_value_ref,
         .expected_response_value_table_id = descriptor.response_value_table_id,
     });
+    const tool_authority_rules = [_]world.PortRule{world.PortRule.init(.{
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+        .world_port_id = 0,
+        .allowed_authority_kinds = world.Supervision.AllowedAuthorityKinds{ .tool_like = true },
+    })};
+    const tool_authority_permit = world.RunPermit.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = target_ref.target_certificate_fingerprint,
+        .environment_certificate_fingerprint = cert.certificate_fingerprint,
+        .binding_plan_fingerprint = cert.binding_plan_fingerprint,
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_actuation = true,
+            .allow_fresh_actuation = true,
+            .require_idempotency_keys = true,
+        }),
+        .port_rules = &tool_authority_rules,
+    });
+    const tool_authority_intent = bindIntentToPermit(intent, tool_authority_permit);
+    const tool_authority_envelope = world.Actuation.Envelope.init(.{
+        .intent_fingerprint = tool_authority_intent.intent_fingerprint,
+        .encoded_frame_request_fingerprint = 0xfeed_1000,
+        .idempotency_key = key,
+        .expected_response_value_ref = descriptor.response_value_ref,
+        .expected_response_value_table_id = descriptor.response_value_table_id,
+    });
+    try std.testing.expectError(error.AuthorityDenied, world.Actuation.Membrane.execute(.{
+        .policy = world.Actuation.Policy.strict_fresh,
+        .intent = tool_authority_intent,
+        .envelope = tool_authority_envelope,
+        .actuator = .{ .fixture = .{
+            .frame_response_fingerprint = 0xfeed_2002,
+            .response_image = response_image,
+        } },
+        .descriptor = descriptor,
+        .binding = binding,
+        .run_permit = tool_authority_permit,
+        .explicit_mutation_approval = true,
+        .attempt_number = 0,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+    }));
     try std.testing.expectError(error.InvalidFrameEncoding, world.Actuation.Membrane.execute(.{
         .policy = world.Actuation.Policy.strict_fresh,
         .intent = permitted_intent,
