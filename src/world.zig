@@ -19550,6 +19550,7 @@ pub const Actuation = struct {
             });
             try decision.validate();
             if (!decision.approved) return rejectedExecution(args, decision);
+            if (args.descriptor == null) return error.InvalidFrameEncoding;
             if (!actuatorMatchesRequestedMode(args.actuator, args.intent.requested_mode)) return error.InvalidMode;
             try validatePrecommitActuationPermit(args);
 

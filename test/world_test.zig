@@ -643,7 +643,7 @@ test "actuation commit response receipt journal and replay bind idempotency" {
         .frame_response_fingerprint = 0x4106,
     });
     try response.validate(policy, null);
-    try std.testing.expectError(error.MissingValueImage, world.Actuation.Membrane.execute(.{
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Actuation.Membrane.execute(.{
         .policy = policy,
         .intent = intent,
         .envelope = envelope,
@@ -1411,6 +1411,15 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
         .encoded_frame_request_fingerprint = intent.frame_request_fingerprint,
         .idempotency_key = key,
     });
+
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Actuation.Membrane.execute(.{
+        .policy = policy,
+        .intent = intent,
+        .envelope = envelope,
+        .actuator = .{ .fixture = .{ .frame_response_fingerprint = 0x6200 } },
+        .target_ref_fingerprint = 0x6102,
+        .world_surface_fingerprint = 0x6101,
+    }));
 
     const fixture_exec = try world.Actuation.Membrane.execute(.{
         .policy = policy,
@@ -2636,6 +2645,8 @@ test "actuation environment preflight and supervision ledger account host effect
         .intent = intent,
         .envelope = envelope,
         .actuator = .{ .pending = .{} },
+        .descriptor = descriptor,
+        .binding = binding,
         .explicit_mutation_approval = true,
         .target_ref_fingerprint = target_ref.target_ref_fingerprint,
         .world_surface_fingerprint = target_ref.world_surface_fingerprint,
