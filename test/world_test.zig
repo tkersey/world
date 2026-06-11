@@ -2568,6 +2568,8 @@ test "actuation environment preflight and supervision ledger account host effect
     defer pending_window_supervisor.deinit();
     try pending_window_supervisor.afterActuationReceipt(pending_receipt, 16);
     try std.testing.expectEqual(@as(usize, 1), pending_window_supervisor.ledger.total_pending_actuations);
+    try std.testing.expectError(error.PendingDenied, pending_window_supervisor.afterActuationResolution(pending_receipt, 16));
+    try std.testing.expectEqual(@as(usize, 1), pending_window_supervisor.ledger.total_pending_actuations);
     try pending_window_supervisor.afterActuationResolution(execution.receipt, 16);
     try std.testing.expectEqual(@as(usize, 0), pending_window_supervisor.ledger.total_pending_actuations);
     try pending_window_supervisor.afterActuationReceipt(pending_receipt, 16);

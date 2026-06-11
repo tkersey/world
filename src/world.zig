@@ -4867,6 +4867,7 @@ pub const Supervision = struct {
             try self.validateWorldPortId(receipt_value.world_port_id);
             const policy = self.permit.policy;
             if (policy.require_actuation_receipts and receipt_value.receipt_fingerprint == 0) return self.deny(.after_actuation_response, receipt_value.world_port_id, .fresh_call_denied, null, "actuation receipt required");
+            if (receipt_value.pending or receipt_value.deferred) return self.deny(.after_actuation_response, receipt_value.world_port_id, .pending_denied, null, "non-terminal actuation resolution denied");
             if ((receipt_value.rejected or receipt_value.cancelled) and !policy.allow_rejected_responses) return self.deny(.after_actuation_response, receipt_value.world_port_id, .rejected_denied, null, "rejected actuation denied");
             if (receipt_value.failed and !policy.allow_failed_responses) return self.deny(.after_actuation_response, receipt_value.world_port_id, .failed_denied, null, "failed actuation denied");
             const rule = self.permit.ruleFor(receipt_value.world_port_id);
