@@ -5775,6 +5775,7 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
         const ActuationBindingPolicyView = struct {
             class: Actuation.Class,
             value_policy: ValuePolicy,
+            authority_kind: PortAuthority.Kind,
         };
 
         fn supervisionAllowsActuationBinding(requested_mode: Mode, supervision_policy: SupervisionPolicy, class: Actuation.Class, value_policy: ValuePolicy) bool {
@@ -5798,6 +5799,7 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
                     if (candidate.binding_fingerprint == binding.binding_fingerprint) return .{
                         .class = BindingDecl.actuator_ref.class,
                         .value_policy = BindingDecl.value_policy,
+                        .authority_kind = comptime authorityKindForActuationKind(BindingDecl.actuator_ref.kind),
                     };
                 }
             }
@@ -5887,6 +5889,7 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
                             return .{
                                 .class = BindingDecl.actuator_ref.class,
                                 .value_policy = BindingDecl.value_policy,
+                                .authority_kind = comptime authorityKindForActuationKind(BindingDecl.actuator_ref.kind),
                             };
                         }
                     }
@@ -6006,6 +6009,7 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
                 if (actuationBindingForPort(world_port_id, requested_mode)) |actuation_binding| {
                     if (permit.ruleFor(world_port_id)) |rule| {
                         if (!rule.permitsMode(requested_mode)) return rejectedReport(report, &.{.SupervisionPortRuleDenied});
+                        if (!rule.allowed_authority_kinds.allows(actuation_binding.authority_kind)) return rejectedReport(report, &.{.SupervisionPortRuleDenied});
                         if (rule.require_portable_values and !actuation_binding.value_policy.require_portable_values) return rejectedReport(report, &.{.SupervisionPortRuleDenied});
                     }
                 }

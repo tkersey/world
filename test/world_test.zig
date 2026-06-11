@@ -2246,6 +2246,28 @@ test "actuation environment preflight and supervision ledger account host effect
     const agent_tool_denied_report = AgentFullActuationEnv.acceptanceReportWithPermit(.fresh, false, agent_tool_denied_permit);
     try std.testing.expect(!agent_tool_denied_report.accepted);
     try std.testing.expectEqual(world.AcceptanceBlocker.SupervisionPortRuleDenied, agent_tool_denied_report.blockers[0]);
+    const agent_tool_authority_denied_rules = [_]world.PortRule{world.PortRule.init(.{
+        .world_surface_fingerprint = agent_full_cert.world_surface_fingerprint,
+        .world_port_id = AgentToolDecl.world_port_id,
+        .allowed_authority_kinds = world.Supervision.AllowedAuthorityKinds.fixtures,
+    })};
+    const agent_tool_authority_denied_permit = world.RunPermit.init(.{
+        .target_ref_fingerprint = agent_full_cert.target_ref_fingerprint,
+        .world_surface_fingerprint = agent_full_cert.world_surface_fingerprint,
+        .target_certificate_fingerprint = agent_full_cert.target_certificate_fingerprint,
+        .environment_certificate_fingerprint = agent_full_cert.certificate_fingerprint,
+        .binding_plan_fingerprint = agent_full_cert.binding_plan_fingerprint,
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_actuation = true,
+            .allow_fresh_actuation = true,
+        }),
+        .port_rules = &agent_tool_authority_denied_rules,
+    });
+    const agent_tool_authority_denied_report = AgentFullActuationEnv.acceptanceReportWithPermit(.fresh, false, agent_tool_authority_denied_permit);
+    try std.testing.expect(!agent_tool_authority_denied_report.accepted);
+    try std.testing.expectEqual(world.AcceptanceBlocker.SupervisionPortRuleDenied, agent_tool_authority_denied_report.blockers[0]);
     const denied_audit_preflight = ActuationEnv.preflightActuationMode(binding, .audit, world.Actuation.Policy.strict_fresh);
     try std.testing.expect(!denied_audit_preflight.accepted);
     try std.testing.expectEqualSlices(world.AcceptanceBlocker, &.{.ActuationPolicyMismatch}, denied_audit_preflight.blockers);
