@@ -3187,10 +3187,6 @@ test "runspace actuation dispatch accounts terminal response bytes" {
     defer runtime.deinit();
     const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const cert = PortsEnv.certificate(.fresh, false);
-    const actuation_byte_budget = [_]world.Supervision.PerPortBudget{.{
-        .world_port_id = 0,
-        .max_response_bytes = 1,
-    }};
     const permit = world.RunPermit.init(.{
         .target_ref_fingerprint = target_ref.target_ref_fingerprint,
         .world_surface_fingerprint = target_ref.world_surface_fingerprint,
@@ -3208,7 +3204,7 @@ test "runspace actuation dispatch accounts terminal response bytes" {
         }),
         .budget = world.Budget.init(.{
             .max_actuation_calls = 1,
-            .per_port_budgets = &actuation_byte_budget,
+            .max_frame_response_bytes = 1,
         }),
     });
     var runspace = world.Runspace.init(std.testing.allocator, .{ .require_supervision = true });
@@ -3281,9 +3277,11 @@ test "runspace actuation dispatch accounts terminal response bytes" {
         .world_surface_fingerprint = request.world_surface_fingerprint,
     });
 
+    const event_count_before = runspace.events.items.len;
     try std.testing.expectError(error.BudgetExceeded, runspace.dispatchActuation(0, execution));
     try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
     try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(event_count_before, runspace.events.items.len);
 }
 
 test "runspace actuation dispatch rolls back supervision on terminal response failure" {

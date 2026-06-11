@@ -11272,11 +11272,24 @@ pub const Runspace = struct {
         } else {
             try self.superviseActuationDispatch(index, execution, accounting.response_bytes);
         }
+        const slot_status_snapshot = self.slots.items[index].status;
+        const slot_current_state_snapshot = self.slots.items[index].current_state;
+        const slot_pending_mailbox_id_snapshot = self.slots.items[index].pending_mailbox_id;
+        const event_count_snapshot = self.events.items.len;
+        const next_event_index_snapshot = self.next_event_index;
         const mailbox_index = try self.mailbox.indexOf(mailbox_id);
         const mailbox_snapshot = self.mailbox.pending.items[mailbox_index];
         _ = try self.mailbox.recordActuationReceipt(mailbox_id, execution.intent.intent_fingerprint, execution.receipt.receipt_fingerprint);
         _ = self.respond(mailbox_id, response) catch |err| {
             self.mailbox.pending.items[mailbox_index] = mailbox_snapshot;
+            self.rollbackSlotResponseMutation(
+                index,
+                slot_status_snapshot,
+                slot_current_state_snapshot,
+                slot_pending_mailbox_id_snapshot,
+                event_count_snapshot,
+                next_event_index_snapshot,
+            );
             supervisor_snapshot.restore(self, index);
             return err;
         };
@@ -14145,6 +14158,24 @@ pub const Runspace = struct {
         self.next_run_id = next_run_id;
         self.next_mailbox_id = next_mailbox_id;
         self.next_event_index = next_event_index;
+    }
+
+    fn rollbackSlotResponseMutation(
+        self: *@This(),
+        slot_index: usize,
+        status: RunStatus,
+        current_state: RunState,
+        pending_mailbox_id: ?u64,
+        event_count: usize,
+        next_event_index: u64,
+    ) void {
+        for (self.events.items[event_count..]) |*event| event.deinit(self.allocator);
+        self.events.shrinkRetainingCapacity(event_count);
+        self.next_event_index = next_event_index;
+        var slot = &self.slots.items[slot_index];
+        slot.status = status;
+        slot.current_state = current_state;
+        slot.pending_mailbox_id = pending_mailbox_id;
     }
 
     fn snapshotSlotImage(self: *@This(), index: usize) !RunImage {
