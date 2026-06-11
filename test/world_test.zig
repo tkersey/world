@@ -12842,6 +12842,14 @@ const PortsWrongDescriptorRecordBinding = struct {
         return mutatedPortsBindingRecord(.wrong_descriptor);
     }
 };
+const PortsActuationOnlyActuator = world.actuator(.{
+    .kind = .tool_like,
+    .class = .idempotent_mutation,
+    .label = "ports.actuation-only",
+    .supported_response_statuses = world.Actuation.ResponseStatusSet.all,
+    .value_policy = world.ValuePolicy.portable,
+});
+const PortsActuationOnlyBinding = world.bindActuator(PortsDecl, PortsActuationOnlyActuator);
 const PortsEnv = world.Environment(fixtures.Ports.Target, .{
     .bindings = .{PortsNativeBinding},
     .policy = world.EnvironmentPolicy.fresh_and_replay,
@@ -12865,6 +12873,10 @@ const PortsByteEnv = world.Environment(fixtures.Ports.Target, .{
 const PortsMissingEnv = world.Environment(fixtures.Ports.Target, .{
     .bindings = .{},
     .policy = world.EnvironmentPolicy.strict_fresh,
+});
+const PortsActuationOnlyEnv = world.Environment(fixtures.Ports.Target, .{
+    .actuation_bindings = .{PortsActuationOnlyBinding},
+    .policy = world.EnvironmentPolicy.fresh_and_replay,
 });
 const PortsDuplicateEnv = world.Environment(fixtures.Ports.Target, .{
     .bindings = .{ PortsNativeBinding, PortsAltNativeBinding },
@@ -22975,6 +22987,24 @@ test "direct machine nextFrame exposes handlerless fabric request" {
         .allocator = std.testing.allocator,
         .mode = world.Mode.fresh,
         .fabric_plan = plan,
+    });
+    defer run.deinit();
+
+    var request = switch (try run.nextFrame()) {
+        .port_request => |frame| frame,
+        else => return error.ExpectedFrameRequest,
+    };
+    defer request.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u32, 0), request.world_port_id);
+}
+
+test "direct machine nextFrame exposes handlerless actuation request" {
+    const ActuationOnlyMachine = world.Machine(fixtures.Ports.Target, .{ .environment = PortsActuationOnlyEnv });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var run = try ActuationOnlyMachine.start(&runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
     });
     defer run.deinit();
 

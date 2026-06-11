@@ -28130,6 +28130,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     else
                         mode_value;
                     if (effective == .audit) return Error.InvalidMode;
+                    const handlerless_ports_covered_by_actuation = actuationBindingsCoverHandlerlessTargetPorts(effective);
                     const per_port_counts = try allocator.alloc(usize, Target.WorldPortTable.entries.len);
                     @memset(per_port_counts, 0);
                     errdefer allocator.free(per_port_counts);
@@ -28145,7 +28146,8 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         (@hasField(Options, "transcript_image") or admitted_transcript_image != null) and
                         ConfigPorts.len == 0 and
                         Target.WorldPortTable.entries.len != 0 and
-                        !handlerless_ports_covered_by_fabric)
+                        !handlerless_ports_covered_by_fabric and
+                        !handlerless_ports_covered_by_actuation)
                     {
                         return Error.MissingHandler;
                     }
@@ -28461,6 +28463,8 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                                     // Runspace owns the invocation record after it receives the frame.
                                 } else if (self.fabricPlanCoversHandlerlessWorldPort(frame.world_port_id)) {
                                     try self.accountPendingFabricInvocation(frame.world_port_id);
+                                } else if (self.actuationBindingCoversWorldPort(frame.world_port_id)) {
+                                    // dispatchActuation owns actuation supervision accounting.
                                 } else {
                                     try self.accountPendingAdapterCall(frame.world_port_id);
                                 }
@@ -28585,6 +28589,26 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     if (self.admitted_fabric_plan) |plan| return plan;
                     if (comptime @hasField(Options, "fabric_plan")) return @field(self.options, "fabric_plan");
                     return null;
+                }
+
+                fn actuationBindingCoversWorldPort(self: *Self, world_port_id: u32) bool {
+                    if (comptime @hasField(@TypeOf(Config), "environment")) {
+                        return Config.environment.actuationHasBindingForPort(world_port_id, self.effective_mode);
+                    }
+                    return false;
+                }
+
+                fn actuationBindingsCoverHandlerlessTargetPorts(mode: Mode) bool {
+                    if (comptime @hasField(@TypeOf(Config), "environment")) {
+                        inline for (0..Target.WorldPortTable.entries.len) |world_port_index| {
+                            const world_port_id: u32 = @intCast(world_port_index);
+                            if (comptime handlerForWorldPortId(Target, Config, world_port_id) == null) {
+                                if (!Config.environment.actuationHasBindingForPort(world_port_id, mode)) return false;
+                            }
+                        }
+                        return true;
+                    }
+                    return false;
                 }
 
                 pub fn snapshotRunImage(self: *Self) !RunImage {
@@ -28833,7 +28857,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
 
                 fn pendingFabricRequestFrame(self: *Self, request: Request, world_port_id: u32, record_event: bool) !Frame.Request {
                     const trace = request.trace();
-                    if (!self.fabricPlanCoversWorldPort(world_port_id)) return self.markMissingHandlerFrame(world_port_id, trace);
+                    if (!self.fabricPlanCoversWorldPort(world_port_id) and !self.actuationBindingCoversWorldPort(world_port_id)) return self.markMissingHandlerFrame(world_port_id, trace);
                     var payload_image: ?Frame.ValueImage = null;
                     errdefer if (payload_image) |*image| image.deinit(self.allocator);
                     if (Target.WorldPortTable.entries.len != 0) {
@@ -29132,6 +29156,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     switch (world_port_id) {
                         inline 0...Target.WorldPortTable.entries.len - 1 => |id| {
                             if (self.runspace_fabric_route_frame_request and self.fabricPlanCoversWorldPort(world_port_id)) return;
+                            if (self.actuationBindingCoversWorldPort(world_port_id)) return;
                             const Handler = comptime handlerForWorldPortId(Target, Config, @intCast(id));
                             if (Handler) |Decl| {
                                 try self.accountPendingAdapterCallDecl(Decl);
