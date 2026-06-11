@@ -4869,6 +4869,10 @@ pub const Supervision = struct {
         }
 
         pub fn beforeActuationCommit(self: *@This(), intent: Actuation.Intent, key_present: bool) !void {
+            return self.beforeActuationCommitWithAuthority(intent, key_present, null);
+        }
+
+        pub fn beforeActuationCommitWithAuthority(self: *@This(), intent: Actuation.Intent, key_present: bool, authority_kind: ?PortAuthority.Kind) !void {
             try self.validateWorldPortId(intent.world_port_id);
             const policy = self.permit.policy;
             if (!policy.allow_actuation) return self.deny(.before_actuation_commit, intent.world_port_id, .fresh_call_denied, null, "actuation denied");
@@ -4881,6 +4885,11 @@ pub const Supervision = struct {
             const rule = self.permit.ruleFor(intent.world_port_id);
             if (rule) |port_rule| {
                 if (!port_rule.permitsMode(intent.requested_mode)) return self.deny(.before_actuation_commit, intent.world_port_id, .port_rule_denied, port_rule.rule_fingerprint, "rule actuation mode denied");
+                if (authority_kind) |kind| {
+                    if (!port_rule.allowed_authority_kinds.allows(kind)) return self.deny(.before_actuation_commit, intent.world_port_id, .authority_denied, port_rule.rule_fingerprint, "rule actuation authority denied");
+                } else if (!std.meta.eql(port_rule.allowed_authority_kinds, Supervision.AllowedAuthorityKinds.all)) {
+                    return self.deny(.before_actuation_commit, intent.world_port_id, .authority_denied, port_rule.rule_fingerprint, "rule actuation authority missing");
+                }
             }
             var next = try self.ledger.clone(self.allocator);
             defer next.deinit(self.allocator);
@@ -11527,7 +11536,7 @@ pub const Runspace = struct {
             return;
         }
         if (slot.supervisor) |*supervisor| {
-            supervisor.beforeActuationCommit(execution.intent, key_present) catch |err| {
+            supervisor.beforeActuationCommitWithAuthority(execution.intent, key_present, execution.authority_kind) catch |err| {
                 supervisor_snapshot.restore(self, slot_index);
                 return err;
             };
@@ -19317,6 +19326,7 @@ pub const Actuation = struct {
             key_present: bool = true,
             explicit_mutation_approval: bool = false,
             explicit_irreversible_approval: bool = false,
+            authority_kind: ?PortAuthority.Kind = null,
             fresh_called: bool = false,
             parent_terminal: bool = false,
 
@@ -19584,6 +19594,7 @@ pub const Actuation = struct {
                 .key_present = args.key_present,
                 .explicit_mutation_approval = args.explicit_mutation_approval,
                 .explicit_irreversible_approval = args.explicit_irreversible_approval,
+                .authority_kind = authorityKindForExecuteArgs(args),
                 .fresh_called = false,
                 .parent_terminal = response.isTerminalForParent(),
             };
@@ -19608,6 +19619,7 @@ pub const Actuation = struct {
                 .key_present = args.key_present,
                 .explicit_mutation_approval = args.explicit_mutation_approval,
                 .explicit_irreversible_approval = args.explicit_irreversible_approval,
+                .authority_kind = authorityKindForExecuteArgs(args),
                 .fresh_called = commit_value.fresh_called,
                 .parent_terminal = response.isTerminalForParent(),
             };
@@ -19633,6 +19645,7 @@ pub const Actuation = struct {
                 .key_present = args.key_present,
                 .explicit_mutation_approval = args.explicit_mutation_approval,
                 .explicit_irreversible_approval = args.explicit_irreversible_approval,
+                .authority_kind = authorityKindForExecuteArgs(args),
                 .fresh_called = false,
                 .parent_terminal = response.isTerminalForParent(),
             };
@@ -19660,9 +19673,15 @@ pub const Actuation = struct {
                 .key_present = args.key_present,
                 .explicit_mutation_approval = args.explicit_mutation_approval,
                 .explicit_irreversible_approval = args.explicit_irreversible_approval,
+                .authority_kind = authorityKindForExecuteArgs(args),
                 .fresh_called = false,
                 .parent_terminal = response.isTerminalForParent(),
             };
+        }
+
+        fn authorityKindForExecuteArgs(args: ExecuteArgs) ?PortAuthority.Kind {
+            const descriptor = args.descriptor orelse return null;
+            return authorityKindForActuationKind(descriptor.kind);
         }
 
         fn receiptFor(args: ExecuteArgs, decision: Decision, commit_value: Commit, response: Response) Receipt {
@@ -29618,6 +29637,20 @@ fn authorityAllowsMode(authority: PortAuthority, requested_mode: Mode) bool {
         .replay => authority.allows_replay,
         .verify => authority.allows_verify,
         .audit => true,
+    };
+}
+
+fn authorityKindForActuationKind(kind: Actuation.Kind) PortAuthority.Kind {
+    return switch (kind) {
+        .fixture => .fixture,
+        .replay_source => .replay_source,
+        .native_function => .native_function,
+        .byte_protocol, .guest_bridge => .byte_adapter,
+        .model_like => .model_like,
+        .tool_like => .tool_like,
+        .file_like => .file_like,
+        .human_like => .human_like,
+        .custom => .custom,
     };
 }
 

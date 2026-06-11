@@ -2862,6 +2862,30 @@ test "actuation environment preflight and supervision ledger account host effect
     defer actuation_rule_denied_supervisor.deinit();
     try std.testing.expectError(error.PortRuleDenied, actuation_rule_denied_supervisor.beforeActuationCommit(intent, true));
 
+    const actuation_authority_denied_rules = [_]world.PortRule{world.PortRule.init(.{
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+        .world_port_id = 0,
+        .allowed_authority_kinds = world.Supervision.AllowedAuthorityKinds.fixtures,
+    })};
+    const actuation_authority_denied_permit = world.RunPermit.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = target_ref.target_certificate_fingerprint,
+        .environment_certificate_fingerprint = cert.certificate_fingerprint,
+        .binding_plan_fingerprint = cert.binding_plan_fingerprint,
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_actuation = true,
+            .allow_fresh_actuation = true,
+            .require_idempotency_keys = true,
+        }),
+        .port_rules = &actuation_authority_denied_rules,
+    });
+    var actuation_authority_denied_supervisor = try world.Supervision.Supervisor.init(std.testing.allocator, actuation_authority_denied_permit, 1);
+    defer actuation_authority_denied_supervisor.deinit();
+    try std.testing.expectError(error.AuthorityDenied, actuation_authority_denied_supervisor.beforeActuationCommitWithAuthority(intent, true, .tool_like));
+
     const run_receipt = supervisor.receipt(.parked, 0x5150, null, null);
     try std.testing.expectEqual(@as(usize, 1), run_receipt.actuation_commit_count);
     try std.testing.expectEqual(@as(usize, 16), run_receipt.actuation_bytes);
