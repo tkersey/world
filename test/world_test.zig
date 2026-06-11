@@ -1400,6 +1400,9 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
     try fixture_exec.validate();
     try std.testing.expect(fixture_exec.fresh_called);
     try std.testing.expect(fixture_exec.receipt.receipt_fingerprint != 0);
+    var missing_descriptor_execution = fixture_exec;
+    missing_descriptor_execution.descriptor = null;
+    try std.testing.expectError(error.InvalidFrameEncoding, missing_descriptor_execution.validate());
     const restrictive_policy = world.Actuation.Policy.init(.{
         .allow_fresh_actuation = true,
         .allow_observation = true,
@@ -1428,6 +1431,7 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
         .policy = restrictive_policy,
         .intent = intent,
         .envelope = envelope,
+        .descriptor = descriptor,
         .decision = forged_restrictive_decision,
         .commit_value = forged_restrictive_commit,
         .response = forged_restrictive_response,
@@ -1972,7 +1976,7 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
         .policy = policy,
         .intent = replay_intent,
         .envelope = replay_envelope,
-        .descriptor = null,
+        .descriptor = descriptor,
         .actuator = .{ .replay = .{ .source = replay_source } },
         .target_ref_fingerprint = 0x6102,
         .world_surface_fingerprint = 0x6101,

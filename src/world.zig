@@ -19327,6 +19327,7 @@ pub const Actuation = struct {
             policy: Policy = Policy.strict_fresh,
             intent: Intent,
             envelope: Envelope,
+            descriptor: ?Descriptor = null,
             decision: Decision,
             commit_value: Commit,
             response: Response,
@@ -19343,12 +19344,17 @@ pub const Actuation = struct {
                 try self.policy.validate();
                 try self.intent.validate();
                 try self.envelope.validate(self.policy);
+                if (self.descriptor) |descriptor| {
+                    try validateDescriptorValuePolicy(self.policy, descriptor.value_policy);
+                    try validateDescriptorBindingForIntent(descriptor, self.intent, self.envelope);
+                }
                 try self.decision.validate();
                 try self.commit_value.validateAfterDecision(self.decision);
                 try self.validateDecisionBinding();
                 if (self.response.commit_fingerprint == null) return error.InvalidFrameEncoding;
                 if (self.decision.approved) {
-                    try self.response.validate(self.policy, null);
+                    const descriptor = self.descriptor orelse return error.InvalidFrameEncoding;
+                    try self.response.validate(self.policy, descriptor);
                 } else if (self.response.response_fingerprint != Actuation.fingerprintResponse(self.response)) return error.InvalidFrameEncoding;
                 try self.receipt.validate();
                 if (self.decision.intent_fingerprint != self.intent.intent_fingerprint) return error.InvalidFrameEncoding;
@@ -19553,27 +19559,31 @@ pub const Actuation = struct {
             if (args.target_ref_fingerprint != args.intent.target_ref_fingerprint) return error.InvalidFrameEncoding;
             if (args.world_surface_fingerprint != args.intent.world_surface_fingerprint) return error.InvalidFrameEncoding;
             if (args.descriptor) |descriptor| {
-                try descriptor.validate();
                 try validateDescriptorValuePolicy(args.policy, descriptor.value_policy);
-                if (descriptor.descriptor_fingerprint != args.intent.descriptor_fingerprint) return error.InvalidFrameEncoding;
-                if (descriptor.actuator_ref_fingerprint != args.intent.actuator_ref_fingerprint) return error.InvalidFrameEncoding;
-                if (descriptor.class != args.intent.class) return error.InvalidFrameEncoding;
-                if (descriptor.target_ref_fingerprint) |target| {
-                    if (target != args.intent.target_ref_fingerprint) return error.InvalidFrameEncoding;
-                }
-                if (descriptor.world_surface_fingerprint != args.intent.world_surface_fingerprint) return error.InvalidFrameEncoding;
-                if (descriptor.world_port_id) |descriptor_port_id| {
-                    if (descriptor_port_id != args.intent.world_port_id) return error.WrongPortId;
-                }
-                if ((descriptor.payload_value_ref != null or descriptor.payload_value_table_id != null) and
-                    args.intent.encoded_frame_request_fingerprint == null and
-                    args.intent.payload_value_image_fingerprint == null) return error.PayloadRefMismatch;
-                if (descriptor.response_value_ref) |expected| {
-                    if (args.envelope.expected_response_value_ref == null or args.envelope.expected_response_value_ref.? != expected) return error.ProviderResultMismatch;
-                }
-                if (descriptor.response_value_table_id) |expected| {
-                    if (args.envelope.expected_response_value_table_id == null or args.envelope.expected_response_value_table_id.? != expected) return error.ProviderResultMismatch;
-                }
+                try validateDescriptorBindingForIntent(descriptor, args.intent, args.envelope);
+            }
+        }
+
+        fn validateDescriptorBindingForIntent(descriptor: Descriptor, intent: Intent, envelope: Envelope) !void {
+            try descriptor.validate();
+            if (descriptor.descriptor_fingerprint != intent.descriptor_fingerprint) return error.InvalidFrameEncoding;
+            if (descriptor.actuator_ref_fingerprint != intent.actuator_ref_fingerprint) return error.InvalidFrameEncoding;
+            if (descriptor.class != intent.class) return error.InvalidFrameEncoding;
+            if (descriptor.target_ref_fingerprint) |target| {
+                if (target != intent.target_ref_fingerprint) return error.InvalidFrameEncoding;
+            }
+            if (descriptor.world_surface_fingerprint != intent.world_surface_fingerprint) return error.InvalidFrameEncoding;
+            if (descriptor.world_port_id) |descriptor_port_id| {
+                if (descriptor_port_id != intent.world_port_id) return error.WrongPortId;
+            }
+            if ((descriptor.payload_value_ref != null or descriptor.payload_value_table_id != null) and
+                intent.encoded_frame_request_fingerprint == null and
+                intent.payload_value_image_fingerprint == null) return error.PayloadRefMismatch;
+            if (descriptor.response_value_ref) |expected| {
+                if (envelope.expected_response_value_ref == null or envelope.expected_response_value_ref.? != expected) return error.ProviderResultMismatch;
+            }
+            if (descriptor.response_value_table_id) |expected| {
+                if (envelope.expected_response_value_table_id == null or envelope.expected_response_value_table_id.? != expected) return error.ProviderResultMismatch;
             }
         }
 
@@ -19601,6 +19611,7 @@ pub const Actuation = struct {
                 .policy = args.policy,
                 .intent = args.intent,
                 .envelope = args.envelope,
+                .descriptor = args.descriptor,
                 .decision = decision,
                 .commit_value = commit_value,
                 .response = response,
@@ -19626,6 +19637,7 @@ pub const Actuation = struct {
                 .policy = args.policy,
                 .intent = args.intent,
                 .envelope = args.envelope,
+                .descriptor = args.descriptor,
                 .decision = decision,
                 .commit_value = commit_value,
                 .response = response,
@@ -19652,6 +19664,7 @@ pub const Actuation = struct {
                 .policy = args.policy,
                 .intent = args.intent,
                 .envelope = args.envelope,
+                .descriptor = args.descriptor,
                 .decision = decision,
                 .commit_value = commit_value,
                 .response = response,
@@ -19679,6 +19692,7 @@ pub const Actuation = struct {
                 .policy = args.policy,
                 .intent = args.intent,
                 .envelope = args.envelope,
+                .descriptor = args.descriptor,
                 .decision = decision,
                 .commit_value = commit_value,
                 .response = response,
