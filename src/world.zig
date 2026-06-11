@@ -19480,6 +19480,11 @@ pub const Actuation = struct {
                 if (rule.rule_fingerprint != fingerprintPortRule(rule)) return error.SupervisionDenied;
                 if (rule.world_surface_fingerprint != args.intent.world_surface_fingerprint) return error.SupervisionDenied;
                 if (!rule.permitsMode(args.intent.requested_mode)) return error.SupervisionDenied;
+                if (authorityKindForExecuteArgs(args)) |kind| {
+                    if (!rule.allowed_authority_kinds.allows(kind)) return error.AuthorityDenied;
+                } else if (!std.meta.eql(rule.allowed_authority_kinds, Supervision.AllowedAuthorityKinds.all)) {
+                    return error.AuthorityDenied;
+                }
             }
         }
 

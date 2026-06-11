@@ -1481,6 +1481,50 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
         .world_surface_fingerprint = 0x6101,
     });
     try permitted_exec.validate();
+    const authority_denied_rules = [_]world.PortRule{world.PortRule.init(.{
+        .world_surface_fingerprint = 0x6101,
+        .world_port_id = 7,
+        .allowed_authority_kinds = world.Supervision.AllowedAuthorityKinds.native,
+    })};
+    const authority_denied_permit = world.RunPermit.init(.{
+        .target_ref_fingerprint = 0x6102,
+        .world_surface_fingerprint = 0x6101,
+        .target_certificate_fingerprint = 0x6108,
+        .environment_certificate_fingerprint = 0x6109,
+        .binding_plan_fingerprint = 0x610a,
+        .mode = .fresh,
+        .policy = permit_policy,
+        .port_rules = &authority_denied_rules,
+    });
+    const authority_denied_intent = world.Actuation.Intent.init(.{
+        .actuator_ref_fingerprint = ref.ref_fingerprint,
+        .descriptor_fingerprint = descriptor.descriptor_fingerprint,
+        .target_ref_fingerprint = 0x6102,
+        .world_surface_fingerprint = 0x6101,
+        .world_port_id = 7,
+        .frame_request_fingerprint = 0x6103,
+        .encoded_frame_request_fingerprint = 0x6103,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .run_permit_fingerprint = authority_denied_permit.permit_fingerprint,
+        .environment_certificate_fingerprint = authority_denied_permit.environment_certificate_fingerprint,
+        .class = .deterministic_fixture,
+        .requested_mode = .fresh,
+    });
+    const authority_denied_envelope = world.Actuation.Envelope.init(.{
+        .intent_fingerprint = authority_denied_intent.intent_fingerprint,
+        .encoded_frame_request_fingerprint = authority_denied_intent.frame_request_fingerprint,
+        .idempotency_key = key,
+    });
+    try std.testing.expectError(error.AuthorityDenied, world.Actuation.Membrane.execute(.{
+        .policy = policy,
+        .intent = authority_denied_intent,
+        .envelope = authority_denied_envelope,
+        .descriptor = descriptor,
+        .actuator = .{ .fixture = .{ .frame_response_fingerprint = 0x6208 } },
+        .run_permit = authority_denied_permit,
+        .target_ref_fingerprint = 0x6102,
+        .world_surface_fingerprint = 0x6101,
+    }));
     const class_denied_policy = world.Actuation.Policy.init(.{
         .allow_fresh_actuation = true,
         .allow_observation = true,
