@@ -2423,6 +2423,7 @@ test "actuation environment preflight and supervision ledger account host effect
             .frame_response_fingerprint = 0xfeed_2101,
         } },
         .descriptor = native_descriptor,
+        .binding = native_value_binding,
         .run_permit = portable_permit,
         .explicit_mutation_approval = true,
         .attempt_number = 0,
@@ -2740,6 +2741,21 @@ test "actuation environment preflight and supervision ledger account host effect
         .expected_response_value_ref = descriptor.response_value_ref,
         .expected_response_value_table_id = descriptor.response_value_table_id,
     });
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Actuation.Membrane.execute(.{
+        .policy = world.Actuation.Policy.strict_fresh,
+        .intent = permitted_intent,
+        .envelope = permitted_envelope,
+        .actuator = .{ .fixture = .{
+            .frame_response_fingerprint = 0xfeed_2002,
+            .response_image = response_image,
+        } },
+        .descriptor = descriptor,
+        .run_permit = permit,
+        .explicit_mutation_approval = true,
+        .attempt_number = 0,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+    }));
     var forged_permit = permit;
     forged_permit.policy.allow_actuation = false;
     try std.testing.expectError(error.SupervisionDenied, world.Actuation.Membrane.execute(.{
@@ -2751,6 +2767,7 @@ test "actuation environment preflight and supervision ledger account host effect
             .response_image = response_image,
         } },
         .descriptor = descriptor,
+        .binding = binding,
         .run_permit = forged_permit,
         .explicit_mutation_approval = true,
         .attempt_number = 0,
@@ -2804,6 +2821,7 @@ test "actuation environment preflight and supervision ledger account host effect
             .response_image = response_image,
         } },
         .descriptor = descriptor,
+        .binding = binding,
         .run_permit = missing_certificate_permit,
         .explicit_mutation_approval = true,
         .attempt_number = 0,
@@ -3094,6 +3112,7 @@ test "actuation environment preflight and supervision ledger account host effect
             .response_image = response_image,
         } },
         .descriptor = descriptor,
+        .binding = binding,
         .run_permit = exhausted_permit,
         .explicit_mutation_approval = true,
         .attempt_number = 0,

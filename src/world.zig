@@ -19402,6 +19402,7 @@ pub const Actuation = struct {
             envelope: Envelope,
             actuator: Interface,
             descriptor: ?Descriptor = null,
+            binding: ?Actuation.Binding = null,
             run_permit: ?RunPermit = null,
             key_present: bool = true,
             explicit_mutation_approval: bool = false,
@@ -19418,6 +19419,7 @@ pub const Actuation = struct {
             intent: Intent,
             envelope: Envelope,
             descriptor: ?Descriptor = null,
+            binding: ?Actuation.Binding = null,
             decision: Decision,
             commit_value: Commit,
             response: Response,
@@ -19437,6 +19439,9 @@ pub const Actuation = struct {
                 if (self.descriptor) |descriptor| {
                     try validateDescriptorValuePolicy(self.policy, descriptor.value_policy);
                     try validateDescriptorBindingForIntent(descriptor, self.intent, self.envelope);
+                    try validateActuationBindingWitness(self.binding, descriptor, self.intent);
+                } else if (self.intent.run_permit_fingerprint != null and self.intent.binding_fingerprint != null) {
+                    return error.InvalidFrameEncoding;
                 }
                 try self.decision.validate();
                 try self.commit_value.validateAfterDecision(self.decision);
@@ -19651,6 +19656,26 @@ pub const Actuation = struct {
             if (args.descriptor) |descriptor| {
                 try validateDescriptorValuePolicy(args.policy, descriptor.value_policy);
                 try validateDescriptorBindingForIntent(descriptor, args.intent, args.envelope);
+                try validateActuationBindingWitness(args.binding, descriptor, args.intent);
+            } else if (args.intent.run_permit_fingerprint != null and args.intent.binding_fingerprint != null) {
+                return error.InvalidFrameEncoding;
+            }
+        }
+
+        fn validateActuationBindingWitness(binding_value: ?Actuation.Binding, descriptor: Descriptor, intent: Intent) !void {
+            if (intent.run_permit_fingerprint == null and intent.binding_fingerprint == null) return;
+            const binding = binding_value orelse {
+                if (intent.run_permit_fingerprint != null and intent.binding_fingerprint != null) return error.InvalidFrameEncoding;
+                return;
+            };
+            try binding.validateForDescriptor(descriptor);
+            if (intent.binding_fingerprint == null or intent.binding_fingerprint.? != binding.binding_fingerprint) return error.InvalidFrameEncoding;
+            if (binding.target_ref_fingerprint != intent.target_ref_fingerprint) return error.WrongTarget;
+            if (binding.world_surface_fingerprint != intent.world_surface_fingerprint) return error.WrongWorldSurface;
+            if (binding.world_port_id != intent.world_port_id) return error.WrongPortId;
+            if (!binding.binding_mode_policy.allows(intent.requested_mode)) return error.InvalidMode;
+            if (binding.environment_certificate_fingerprint) |fingerprint| {
+                if (intent.environment_certificate_fingerprint == null or intent.environment_certificate_fingerprint.? != fingerprint) return error.SupervisionDenied;
             }
         }
 
@@ -19702,6 +19727,7 @@ pub const Actuation = struct {
                 .intent = args.intent,
                 .envelope = args.envelope,
                 .descriptor = args.descriptor,
+                .binding = args.binding,
                 .decision = decision,
                 .commit_value = commit_value,
                 .response = response,
@@ -19728,6 +19754,7 @@ pub const Actuation = struct {
                 .intent = args.intent,
                 .envelope = args.envelope,
                 .descriptor = args.descriptor,
+                .binding = args.binding,
                 .decision = decision,
                 .commit_value = commit_value,
                 .response = response,
@@ -19755,6 +19782,7 @@ pub const Actuation = struct {
                 .intent = args.intent,
                 .envelope = args.envelope,
                 .descriptor = args.descriptor,
+                .binding = args.binding,
                 .decision = decision,
                 .commit_value = commit_value,
                 .response = response,
@@ -19783,6 +19811,7 @@ pub const Actuation = struct {
                 .intent = args.intent,
                 .envelope = args.envelope,
                 .descriptor = args.descriptor,
+                .binding = args.binding,
                 .decision = decision,
                 .commit_value = commit_value,
                 .response = response,
