@@ -4931,6 +4931,7 @@ pub const Supervision = struct {
         }
 
         pub fn beforeActuationCommitWithAuthority(self: *@This(), intent: Actuation.Intent, key_present: bool, authority_kind: ?PortAuthority.Kind) !void {
+            try intent.validate();
             try self.validateWorldPortId(intent.world_port_id);
             try self.validateActuationIntentPermitBinding(intent);
             const policy = self.permit.policy;

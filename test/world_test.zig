@@ -3090,6 +3090,23 @@ test "actuation environment preflight and supervision ledger account host effect
     forged_receipt.receipt_fingerprint +%= 1;
     try std.testing.expectError(error.InvalidFrameEncoding, supervisor.afterActuationReceipt(forged_receipt, 16));
     try std.testing.expectError(error.SupervisionDenied, supervisor.afterActuationReceipt(bindReceiptToPermit(execution.receipt, missing_certificate_permit), 16));
+    const missing_key_intent = world.Actuation.Intent.init(.{
+        .actuator_ref_fingerprint = ToolActuator.actuator_ref.ref_fingerprint,
+        .descriptor_fingerprint = descriptor.descriptor_fingerprint,
+        .binding_fingerprint = binding.binding_fingerprint,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+        .world_port_id = 0,
+        .frame_request_fingerprint = 0xfeed_1001,
+        .encoded_frame_request_fingerprint = 0xfeed_1000,
+        .idempotency_key_fingerprint = 0,
+        .class = .idempotent_mutation,
+        .requested_mode = .fresh,
+        .run_permit_fingerprint = permit.permit_fingerprint,
+        .environment_certificate_fingerprint = permit.environment_certificate_fingerprint,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, supervisor.beforeActuationCommit(missing_key_intent, true));
+    try std.testing.expectEqual(@as(usize, 0), supervisor.ledger.total_actuation_intents);
     try supervisor.beforeActuationCommit(permitted_intent, true);
     try supervisor.afterActuationReceipt(bindReceiptToPermit(execution.receipt, permit), 16);
     try std.testing.expectEqual(@as(usize, 0), supervisor.ledger.total_actuation_intents);
