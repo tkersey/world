@@ -4271,7 +4271,7 @@ pub const Supervision = struct {
             if (receipt.fresh_called) self.total_fresh_actuations += 1;
             if (receipt.replayed) self.total_replay_actuations += 1;
             if (receipt.verified) self.total_verify_actuations += 1;
-            if (receipt.pending) self.total_pending_actuations += 1;
+            if (receipt.pending or receipt.deferred) self.total_pending_actuations += 1;
             if (receipt.deferred) self.total_deferred_actuations += 1;
             if (receipt.failed) self.total_failed_actuations += 1;
             if (receipt.rejected) self.total_rejected_actuations += 1;
@@ -4292,6 +4292,7 @@ pub const Supervision = struct {
         }
 
         pub fn recordActuationResolution(self: *@This(), receipt: Actuation.Receipt, response_bytes: usize) void {
+            if (self.total_pending_actuations > 0) self.total_pending_actuations -= 1;
             if (receipt.failed) self.total_failed_actuations += 1;
             if (receipt.rejected) self.total_rejected_actuations += 1;
             self.total_actuation_bytes += response_bytes;
