@@ -4315,19 +4315,19 @@ pub const Supervision = struct {
 
         pub fn recordActuationReceipt(self: *@This(), allocator: std.mem.Allocator, receipt: Actuation.Receipt, response_bytes: usize, value_image_bytes: usize, cost_units: u64) !void {
             if (receipt.pending or receipt.deferred) try self.appendPendingActuation(allocator, PendingActuationRef.fromReceipt(receipt));
-            self.total_actuation_commits += 1;
-            if (receipt.fresh_called) self.total_fresh_actuations += 1;
-            if (receipt.replayed) self.total_replay_actuations += 1;
-            if (receipt.verified) self.total_verify_actuations += 1;
-            if (receipt.pending or receipt.deferred) self.total_pending_actuations += 1;
-            if (receipt.deferred) self.total_deferred_actuations += 1;
-            if (receipt.failed) self.total_failed_actuations += 1;
-            if (receipt.rejected) self.total_rejected_actuations += 1;
-            if (receipt.failed) self.total_failed_calls += 1;
-            if (receipt.rejected or receipt.cancelled) self.total_rejected_calls += 1;
-            if (receipt.class == .irreversible_mutation) self.total_irreversible_actuations += 1;
-            if (receipt.class == .idempotent_mutation) self.total_idempotent_mutations += 1;
-            self.total_actuation_bytes += response_bytes;
+            self.total_actuation_commits = self.total_actuation_commits +| 1;
+            if (receipt.fresh_called) self.total_fresh_actuations = self.total_fresh_actuations +| 1;
+            if (receipt.replayed) self.total_replay_actuations = self.total_replay_actuations +| 1;
+            if (receipt.verified) self.total_verify_actuations = self.total_verify_actuations +| 1;
+            if (receipt.pending or receipt.deferred) self.total_pending_actuations = self.total_pending_actuations +| 1;
+            if (receipt.deferred) self.total_deferred_actuations = self.total_deferred_actuations +| 1;
+            if (receipt.failed) self.total_failed_actuations = self.total_failed_actuations +| 1;
+            if (receipt.rejected) self.total_rejected_actuations = self.total_rejected_actuations +| 1;
+            if (receipt.failed) self.total_failed_calls = self.total_failed_calls +| 1;
+            if (receipt.rejected or receipt.cancelled) self.total_rejected_calls = self.total_rejected_calls +| 1;
+            if (receipt.class == .irreversible_mutation) self.total_irreversible_actuations = self.total_irreversible_actuations +| 1;
+            if (receipt.class == .idempotent_mutation) self.total_idempotent_mutations = self.total_idempotent_mutations +| 1;
+            self.total_actuation_bytes = self.total_actuation_bytes +| response_bytes;
             if (receipt.pending or receipt.deferred) {
                 self.total_pending_calls = self.total_pending_calls +| 1;
             } else {
@@ -4338,15 +4338,15 @@ pub const Supervision = struct {
             self.total_cost_units = self.total_cost_units +| cost_units;
             if (receipt.world_port_id < self.per_port_usage.len) {
                 const port_usage = self.perPort(receipt.world_port_id);
-                if (receipt.fresh_called) port_usage.fresh_calls += 1;
-                if (receipt.replayed) port_usage.replay_calls += 1;
-                if (receipt.verified) port_usage.verify_calls += 1;
-                if (receipt.pending or receipt.deferred) port_usage.pending_calls += 1;
-                if (receipt.failed) port_usage.failed_calls += 1;
-                if (receipt.rejected) port_usage.rejected_calls += 1;
-                if (receipt.cancelled) port_usage.rejected_calls += 1;
+                if (receipt.fresh_called) port_usage.fresh_calls = port_usage.fresh_calls +| 1;
+                if (receipt.replayed) port_usage.replay_calls = port_usage.replay_calls +| 1;
+                if (receipt.verified) port_usage.verify_calls = port_usage.verify_calls +| 1;
+                if (receipt.pending or receipt.deferred) port_usage.pending_calls = port_usage.pending_calls +| 1;
+                if (receipt.failed) port_usage.failed_calls = port_usage.failed_calls +| 1;
+                if (receipt.rejected) port_usage.rejected_calls = port_usage.rejected_calls +| 1;
+                if (receipt.cancelled) port_usage.rejected_calls = port_usage.rejected_calls +| 1;
                 if (!receipt.pending and !receipt.deferred) port_usage.responses = port_usage.responses +| 1;
-                port_usage.response_bytes += response_bytes;
+                port_usage.response_bytes = port_usage.response_bytes +| response_bytes;
                 port_usage.value_image_bytes = port_usage.value_image_bytes +| value_image_bytes;
                 port_usage.cost_units = port_usage.cost_units +| cost_units;
             }
@@ -4361,21 +4361,21 @@ pub const Supervision = struct {
             _ = (try self.removePendingActuation(allocator, receipt)) orelse return false;
             self.total_pending_actuations -= 1;
             port_usage.pending_calls -= 1;
-            if (receipt.failed) self.total_failed_actuations += 1;
-            if (receipt.rejected) self.total_rejected_actuations += 1;
-            if (receipt.failed) self.total_failed_calls += 1;
-            if (receipt.rejected or receipt.cancelled) self.total_rejected_calls += 1;
-            self.total_actuation_bytes += response_bytes;
+            if (receipt.failed) self.total_failed_actuations = self.total_failed_actuations +| 1;
+            if (receipt.rejected) self.total_rejected_actuations = self.total_rejected_actuations +| 1;
+            if (receipt.failed) self.total_failed_calls = self.total_failed_calls +| 1;
+            if (receipt.rejected or receipt.cancelled) self.total_rejected_calls = self.total_rejected_calls +| 1;
+            self.total_actuation_bytes = self.total_actuation_bytes +| response_bytes;
             self.total_port_responses = self.total_port_responses +| 1;
             self.total_frame_response_bytes = self.total_frame_response_bytes +| response_bytes;
             self.total_value_image_bytes = self.total_value_image_bytes +| value_image_bytes;
             self.total_cost_units = self.total_cost_units +| cost_units;
             if (receipt.world_port_id < self.per_port_usage.len) {
-                if (receipt.failed) port_usage.failed_calls += 1;
-                if (receipt.rejected) port_usage.rejected_calls += 1;
-                if (receipt.cancelled) port_usage.rejected_calls += 1;
+                if (receipt.failed) port_usage.failed_calls = port_usage.failed_calls +| 1;
+                if (receipt.rejected) port_usage.rejected_calls = port_usage.rejected_calls +| 1;
+                if (receipt.cancelled) port_usage.rejected_calls = port_usage.rejected_calls +| 1;
                 port_usage.responses = port_usage.responses +| 1;
-                port_usage.response_bytes += response_bytes;
+                port_usage.response_bytes = port_usage.response_bytes +| response_bytes;
                 port_usage.value_image_bytes = port_usage.value_image_bytes +| value_image_bytes;
                 port_usage.cost_units = port_usage.cost_units +| cost_units;
             }

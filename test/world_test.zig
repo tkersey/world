@@ -2853,6 +2853,23 @@ test "actuation environment preflight and supervision ledger account host effect
         }),
         .budget = world.Budget.init(.{ .max_actuation_calls = 1 }),
     });
+    const saturating_permit = world.RunPermit.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = target_ref.target_certificate_fingerprint,
+        .environment_certificate_fingerprint = cert.certificate_fingerprint,
+        .binding_plan_fingerprint = cert.binding_plan_fingerprint,
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_actuation = true,
+            .allow_fresh_actuation = true,
+            .allow_pending_actuation = true,
+            .require_idempotency_keys = true,
+            .max_actuation_calls = null,
+            .max_pending_actuations = null,
+        }),
+    });
     const bindIntentToPermit = struct {
         fn bind(base: world.Actuation.Intent, run_permit: world.RunPermit) world.Actuation.Intent {
             return world.Actuation.Intent.init(.{
@@ -3081,6 +3098,36 @@ test "actuation environment preflight and supervision ledger account host effect
     try std.testing.expectEqual(@as(usize, 1), supervisor.ledger.total_fresh_actuations);
     try std.testing.expectEqual(@as(usize, 1), supervisor.ledger.total_idempotent_mutations);
     try std.testing.expectEqual(@as(usize, 16), supervisor.ledger.total_frame_response_bytes);
+    const max_usize = std.math.maxInt(usize);
+    var saturating_supervisor = try world.Supervision.Supervisor.init(std.testing.allocator, saturating_permit, 1);
+    defer saturating_supervisor.deinit();
+    saturating_supervisor.ledger.total_actuation_commits = max_usize;
+    saturating_supervisor.ledger.total_fresh_actuations = max_usize;
+    saturating_supervisor.ledger.total_idempotent_mutations = max_usize;
+    saturating_supervisor.ledger.total_actuation_bytes = max_usize;
+    saturating_supervisor.ledger.total_port_responses = max_usize;
+    saturating_supervisor.ledger.total_frame_response_bytes = max_usize;
+    saturating_supervisor.ledger.total_value_image_bytes = max_usize;
+    saturating_supervisor.ledger.per_port_usage[0].fresh_calls = max_usize;
+    saturating_supervisor.ledger.per_port_usage[0].responses = max_usize;
+    saturating_supervisor.ledger.per_port_usage[0].response_bytes = max_usize;
+    saturating_supervisor.ledger.per_port_usage[0].value_image_bytes = max_usize;
+    saturating_supervisor.ledger.refreshFingerprint();
+    try saturating_supervisor.afterActuationReceiptAccounting(bindReceiptToPermit(execution.receipt, saturating_permit), .{
+        .response_bytes = 16,
+        .value_image_bytes = 16,
+    });
+    try std.testing.expectEqual(max_usize, saturating_supervisor.ledger.total_actuation_commits);
+    try std.testing.expectEqual(max_usize, saturating_supervisor.ledger.total_fresh_actuations);
+    try std.testing.expectEqual(max_usize, saturating_supervisor.ledger.total_idempotent_mutations);
+    try std.testing.expectEqual(max_usize, saturating_supervisor.ledger.total_actuation_bytes);
+    try std.testing.expectEqual(max_usize, saturating_supervisor.ledger.total_port_responses);
+    try std.testing.expectEqual(max_usize, saturating_supervisor.ledger.total_frame_response_bytes);
+    try std.testing.expectEqual(max_usize, saturating_supervisor.ledger.total_value_image_bytes);
+    try std.testing.expectEqual(max_usize, saturating_supervisor.ledger.per_port_usage[0].fresh_calls);
+    try std.testing.expectEqual(max_usize, saturating_supervisor.ledger.per_port_usage[0].responses);
+    try std.testing.expectEqual(max_usize, saturating_supervisor.ledger.per_port_usage[0].response_bytes);
+    try std.testing.expectEqual(max_usize, saturating_supervisor.ledger.per_port_usage[0].value_image_bytes);
     const actuation_response_cap_rules = [_]world.PortRule{world.PortRule.init(.{
         .world_surface_fingerprint = target_ref.world_surface_fingerprint,
         .world_port_id = 0,
@@ -3584,6 +3631,28 @@ test "actuation environment preflight and supervision ledger account host effect
     try std.testing.expectEqual(@as(usize, 1), pending_window_supervisor.ledger.total_fresh_actuations);
     try std.testing.expectError(error.PendingDenied, pending_window_supervisor.afterActuationResolution(bindReceiptToPermit(execution.receipt, pending_window_permit), 16));
     try pending_window_supervisor.afterActuationReceipt(bindReceiptToPermit(pending_receipt, pending_window_permit), 16);
+    var saturating_resolution_supervisor = try world.Supervision.Supervisor.init(std.testing.allocator, saturating_permit, 1);
+    defer saturating_resolution_supervisor.deinit();
+    try saturating_resolution_supervisor.afterActuationReceipt(bindReceiptToPermit(pending_receipt, saturating_permit), 16);
+    saturating_resolution_supervisor.ledger.total_actuation_bytes = max_usize;
+    saturating_resolution_supervisor.ledger.total_port_responses = max_usize;
+    saturating_resolution_supervisor.ledger.total_frame_response_bytes = max_usize;
+    saturating_resolution_supervisor.ledger.total_value_image_bytes = max_usize;
+    saturating_resolution_supervisor.ledger.per_port_usage[0].responses = max_usize;
+    saturating_resolution_supervisor.ledger.per_port_usage[0].response_bytes = max_usize;
+    saturating_resolution_supervisor.ledger.per_port_usage[0].value_image_bytes = max_usize;
+    saturating_resolution_supervisor.ledger.refreshFingerprint();
+    try saturating_resolution_supervisor.afterActuationResolutionAccounting(bindReceiptToPermit(execution.receipt, saturating_permit), .{
+        .response_bytes = 16,
+        .value_image_bytes = 16,
+    });
+    try std.testing.expectEqual(max_usize, saturating_resolution_supervisor.ledger.total_actuation_bytes);
+    try std.testing.expectEqual(max_usize, saturating_resolution_supervisor.ledger.total_port_responses);
+    try std.testing.expectEqual(max_usize, saturating_resolution_supervisor.ledger.total_frame_response_bytes);
+    try std.testing.expectEqual(max_usize, saturating_resolution_supervisor.ledger.total_value_image_bytes);
+    try std.testing.expectEqual(max_usize, saturating_resolution_supervisor.ledger.per_port_usage[0].responses);
+    try std.testing.expectEqual(max_usize, saturating_resolution_supervisor.ledger.per_port_usage[0].response_bytes);
+    try std.testing.expectEqual(max_usize, saturating_resolution_supervisor.ledger.per_port_usage[0].value_image_bytes);
 
     const deferred_receipt = world.Actuation.Receipt.init(.{
         .intent_fingerprint = pending_receipt.intent_fingerprint,
