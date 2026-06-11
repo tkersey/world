@@ -4210,6 +4210,26 @@ pub const Supervision = struct {
         cost_units: u64 = 0,
     };
 
+    pub const PendingActuationRef = struct {
+        intent_fingerprint: u64,
+        idempotency_key_fingerprint: u64,
+        world_port_id: u32,
+
+        pub fn fromReceipt(receipt: Actuation.Receipt) @This() {
+            return .{
+                .intent_fingerprint = receipt.intent_fingerprint,
+                .idempotency_key_fingerprint = receipt.idempotency_key_fingerprint,
+                .world_port_id = receipt.world_port_id,
+            };
+        }
+
+        pub fn matchesReceipt(self: @This(), receipt: Actuation.Receipt) bool {
+            return self.intent_fingerprint == receipt.intent_fingerprint and
+                self.idempotency_key_fingerprint == receipt.idempotency_key_fingerprint and
+                self.world_port_id == receipt.world_port_id;
+        }
+    };
+
     pub const UsageLedger = struct {
         ledger_fingerprint: u64 = 0,
         run_permit_fingerprint: u64,
@@ -4250,6 +4270,7 @@ pub const Supervision = struct {
         total_actuation_bytes: usize = 0,
         total_cost_units: u64 = 0,
         per_port_usage: []PerPortUsage = &.{},
+        pending_actuations: []PendingActuationRef = &.{},
         exceeded_budget: ?BudgetExceededKind = null,
 
         pub fn init(allocator: std.mem.Allocator, permit: Supervision.RunPermit, port_count: usize) !@This() {
@@ -4268,11 +4289,15 @@ pub const Supervision = struct {
         pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
             allocator.free(self.per_port_usage);
             self.per_port_usage = &.{};
+            allocator.free(self.pending_actuations);
+            self.pending_actuations = &.{};
         }
 
         pub fn clone(self: @This(), allocator: std.mem.Allocator) !@This() {
             var result = self;
             result.per_port_usage = try allocator.dupe(PerPortUsage, self.per_port_usage);
+            errdefer allocator.free(result.per_port_usage);
+            result.pending_actuations = try allocator.dupe(PendingActuationRef, self.pending_actuations);
             return result;
         }
 
@@ -4285,7 +4310,8 @@ pub const Supervision = struct {
             return &self.per_port_usage[world_port_id];
         }
 
-        pub fn recordActuationReceipt(self: *@This(), receipt: Actuation.Receipt, response_bytes: usize, value_image_bytes: usize, cost_units: u64) void {
+        pub fn recordActuationReceipt(self: *@This(), allocator: std.mem.Allocator, receipt: Actuation.Receipt, response_bytes: usize, value_image_bytes: usize, cost_units: u64) !void {
+            if (receipt.pending or receipt.deferred) try self.appendPendingActuation(allocator, PendingActuationRef.fromReceipt(receipt));
             self.total_actuation_commits += 1;
             if (receipt.fresh_called) self.total_fresh_actuations += 1;
             if (receipt.replayed) self.total_replay_actuations += 1;
@@ -4324,11 +4350,12 @@ pub const Supervision = struct {
             self.refreshFingerprint();
         }
 
-        pub fn recordActuationResolution(self: *@This(), receipt: Actuation.Receipt, response_bytes: usize, value_image_bytes: usize, cost_units: u64) bool {
+        pub fn recordActuationResolution(self: *@This(), allocator: std.mem.Allocator, receipt: Actuation.Receipt, response_bytes: usize, value_image_bytes: usize, cost_units: u64) !bool {
             if (self.total_pending_actuations == 0) return false;
             if (receipt.world_port_id >= self.per_port_usage.len) return false;
             const port_usage = self.perPort(receipt.world_port_id);
             if (port_usage.pending_calls == 0) return false;
+            _ = (try self.removePendingActuation(allocator, receipt)) orelse return false;
             self.total_pending_actuations -= 1;
             port_usage.pending_calls -= 1;
             if (receipt.failed) self.total_failed_actuations += 1;
@@ -4351,6 +4378,31 @@ pub const Supervision = struct {
             }
             self.refreshFingerprint();
             return true;
+        }
+
+        fn appendPendingActuation(self: *@This(), allocator: std.mem.Allocator, pending: PendingActuationRef) !void {
+            const next = try allocator.alloc(PendingActuationRef, self.pending_actuations.len + 1);
+            @memcpy(next[0..self.pending_actuations.len], self.pending_actuations);
+            next[self.pending_actuations.len] = pending;
+            allocator.free(self.pending_actuations);
+            self.pending_actuations = next;
+        }
+
+        fn removePendingActuation(self: *@This(), allocator: std.mem.Allocator, receipt: Actuation.Receipt) !?void {
+            var remove_index: ?usize = null;
+            for (self.pending_actuations, 0..) |pending, index| {
+                if (pending.matchesReceipt(receipt)) {
+                    remove_index = index;
+                    break;
+                }
+            }
+            const index = remove_index orelse return null;
+            const next = try allocator.alloc(PendingActuationRef, self.pending_actuations.len - 1);
+            @memcpy(next[0..index], self.pending_actuations[0..index]);
+            @memcpy(next[index..], self.pending_actuations[index + 1 ..]);
+            allocator.free(self.pending_actuations);
+            self.pending_actuations = next;
+            return {};
         }
     };
 
@@ -4928,7 +4980,7 @@ pub const Supervision = struct {
             defer next.deinit(self.allocator);
             const cost_delta = try self.actuationResponseCostDelta(receipt_value.world_port_id, receipt_value.responseStatus(), accounting);
             try self.enforceActuationResponseRule(receipt_value.world_port_id, rule, accounting, cost_delta, next.per_port_usage[receipt_value.world_port_id].cost_units, "rule actuation response cap");
-            next.recordActuationReceipt(receipt_value, accounting.response_bytes, accounting.value_image_bytes, cost_delta);
+            try next.recordActuationReceipt(self.allocator, receipt_value, accounting.response_bytes, accounting.value_image_bytes, cost_delta);
             if (next.total_actuation_intents > 0) next.total_actuation_intents -= 1;
             try self.commitCheck(.after_actuation_response, receipt_value.world_port_id, &next, null, rule, "actuation receipt");
         }
@@ -4954,7 +5006,7 @@ pub const Supervision = struct {
             defer next.deinit(self.allocator);
             const cost_delta = try self.actuationResponseCostDelta(receipt_value.world_port_id, receipt_value.responseStatus(), accounting);
             try self.enforceActuationResponseRule(receipt_value.world_port_id, rule, accounting, cost_delta, next.per_port_usage[receipt_value.world_port_id].cost_units, "rule actuation resolution cap");
-            if (!next.recordActuationResolution(receipt_value, accounting.response_bytes, accounting.value_image_bytes, cost_delta)) {
+            if (!try next.recordActuationResolution(self.allocator, receipt_value, accounting.response_bytes, accounting.value_image_bytes, cost_delta)) {
                 return self.deny(.after_actuation_response, receipt_value.world_port_id, .pending_denied, null, "pending actuation required");
             }
             try self.commitCheck(.after_actuation_response, receipt_value.world_port_id, &next, null, rule, "actuation resolution");
@@ -5068,6 +5120,7 @@ pub const Supervision = struct {
             self.ledger.deinit(self.allocator);
             self.ledger = next;
             next.per_port_usage = &.{};
+            next.pending_actuations = &.{};
             self.ledger.refreshFingerprint();
             if (reservation == .audit_only_exceeded) {
                 self.last_check = Supervision.SupervisionCheck.init(.{
@@ -5177,6 +5230,7 @@ pub const Supervision = struct {
             self.ledger.deinit(self.allocator);
             self.ledger = candidate.*;
             candidate.per_port_usage = &.{};
+            candidate.pending_actuations = &.{};
             self.ledger.refreshFingerprint();
             if (reservation == .audit_only_exceeded) {
                 self.last_check = Supervision.SupervisionCheck.init(.{
@@ -5235,6 +5289,7 @@ pub const Supervision = struct {
             self.ledger.deinit(self.allocator);
             self.ledger = candidate.*;
             candidate.per_port_usage = &.{};
+            candidate.pending_actuations = &.{};
             self.last_check = Supervision.SupervisionCheck.init(.{
                 .run_permit_fingerprint = self.permit.permit_fingerprint,
                 .event_kind = kind,
@@ -32759,6 +32814,12 @@ fn fingerprintUsageLedger(ledger: UsageLedger) u64 {
         hashU64(&hasher, usage.response_bytes);
         hashU64(&hasher, usage.value_image_bytes);
         hashU64(&hasher, usage.cost_units);
+    }
+    hashU64(&hasher, ledger.pending_actuations.len);
+    for (ledger.pending_actuations) |pending| {
+        hashU64(&hasher, pending.intent_fingerprint);
+        hashU64(&hasher, pending.idempotency_key_fingerprint);
+        hashU64(&hasher, pending.world_port_id);
     }
     if (ledger.exceeded_budget) |exceeded| {
         hashBool(&hasher, true);

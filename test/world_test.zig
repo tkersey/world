@@ -3261,6 +3261,34 @@ test "actuation environment preflight and supervision ledger account host effect
     var pending_port_scoped_supervisor = try world.Supervision.Supervisor.init(std.testing.allocator, pending_window_permit, 2);
     defer pending_port_scoped_supervisor.deinit();
     try pending_port_scoped_supervisor.afterActuationReceipt(bindReceiptToPermit(pending_receipt, pending_window_permit), 16);
+    var wrong_intent_resolution = execution.receipt;
+    wrong_intent_resolution = world.Actuation.Receipt.init(.{
+        .intent_fingerprint = wrong_intent_resolution.intent_fingerprint +% 1,
+        .envelope_fingerprint = wrong_intent_resolution.envelope_fingerprint,
+        .decision_fingerprint = wrong_intent_resolution.decision_fingerprint,
+        .commit_fingerprint = wrong_intent_resolution.commit_fingerprint,
+        .response_fingerprint = wrong_intent_resolution.response_fingerprint,
+        .response_kind = wrong_intent_resolution.response_kind,
+        .frame_response_fingerprint = wrong_intent_resolution.frame_response_fingerprint,
+        .response_value_image_fingerprint = wrong_intent_resolution.response_value_image_fingerprint,
+        .actuator_ref_fingerprint = wrong_intent_resolution.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = wrong_intent_resolution.idempotency_key_fingerprint +% 1,
+        .target_ref_fingerprint = wrong_intent_resolution.target_ref_fingerprint,
+        .world_surface_fingerprint = wrong_intent_resolution.world_surface_fingerprint,
+        .world_port_id = wrong_intent_resolution.world_port_id,
+        .class = wrong_intent_resolution.class,
+        .mode = wrong_intent_resolution.mode,
+        .fresh_called = wrong_intent_resolution.fresh_called,
+        .attempt_number = wrong_intent_resolution.attempt_number,
+        .run_permit_fingerprint = pending_window_permit.permit_fingerprint,
+        .environment_certificate_fingerprint = pending_window_permit.environment_certificate_fingerprint,
+        .run_receipt_fingerprint = wrong_intent_resolution.run_receipt_fingerprint,
+        .capsule_fingerprint = wrong_intent_resolution.capsule_fingerprint,
+        .blockers = wrong_intent_resolution.blockers,
+        .warnings = wrong_intent_resolution.warnings,
+        .metadata = wrong_intent_resolution.metadata,
+    });
+    try std.testing.expectError(error.PendingDenied, pending_port_scoped_supervisor.afterActuationResolution(wrong_intent_resolution, 16));
     var wrong_port_resolution = execution.receipt;
     wrong_port_resolution = world.Actuation.Receipt.init(.{
         .intent_fingerprint = wrong_port_resolution.intent_fingerprint,
