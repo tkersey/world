@@ -224,6 +224,7 @@ pub const world_port_authority_fingerprint_version: u32 = 1;
 pub const world_environment_policy_fingerprint_version: u32 = 1;
 pub const world_binding_plan_fingerprint_version: u32 = 1;
 pub const world_acceptance_report_fingerprint_version: u32 = 3;
+pub const world_actuation_binding_evidence_fingerprint_version: u32 = 1;
 pub const world_environment_certificate_format_version: u32 = 1;
 pub const world_environment_certificate_fingerprint_version: u32 = 1;
 pub const world_adapter_descriptor_fingerprint_version: u32 = 1;
@@ -1050,6 +1051,7 @@ pub const AcceptanceReport = struct {
     native_port_count: usize = 0,
     byte_adapter_port_count: usize = 0,
     actuation_binding_count: usize = 0,
+    actuation_binding_evidence_fingerprint: ?u64 = null,
     missing_actuator_count: usize = 0,
     actuation_policy_blocker_count: usize = 0,
     actuation_value_policy_blocker_count: usize = 0,
@@ -1078,6 +1080,7 @@ pub const AcceptanceReport = struct {
         native_port_count: usize = 0,
         byte_adapter_port_count: usize = 0,
         actuation_binding_count: usize = 0,
+        actuation_binding_evidence_fingerprint: ?u64 = null,
         missing_actuator_count: usize = 0,
         actuation_policy_blocker_count: usize = 0,
         actuation_value_policy_blocker_count: usize = 0,
@@ -1107,6 +1110,7 @@ pub const AcceptanceReport = struct {
             .native_port_count = args.native_port_count,
             .byte_adapter_port_count = args.byte_adapter_port_count,
             .actuation_binding_count = args.actuation_binding_count,
+            .actuation_binding_evidence_fingerprint = args.actuation_binding_evidence_fingerprint,
             .missing_actuator_count = args.missing_actuator_count,
             .actuation_policy_blocker_count = args.actuation_policy_blocker_count,
             .actuation_value_policy_blocker_count = args.actuation_value_policy_blocker_count,
@@ -5590,6 +5594,7 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
             const covered_missing = actuationCoveredMissingPortCount(requested_mode);
             const covered_port_count = @min(Target.WorldPortTable.entries.len, native_bound_count + covered_missing);
             report.actuation_binding_count = actuation_count;
+            report.actuation_binding_evidence_fingerprint = actuationBindingEvidenceFingerprintForTarget(requested_mode);
             if (!report.accepted and !acceptanceReportHasOnlyMissingBinding(report) and !acceptanceReportHasOnlyTranscriptRequirement(report)) {
                 report.report_fingerprint = fingerprintAcceptanceReport(report);
                 return report;
@@ -5617,6 +5622,7 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
             if (actuationBindingBlocker(requested_mode)) |blocker| return rejectedReport(report, &.{blocker});
             var result = report;
             result.actuation_binding_count = actuation_count;
+            result.actuation_binding_evidence_fingerprint = actuationBindingEvidenceFingerprintForTarget(requested_mode);
             if (result.accepted) {
                 result.report_fingerprint = fingerprintAcceptanceReport(result);
                 return result;
@@ -5700,6 +5706,30 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
             return count;
         }
 
+        fn actuationBindingEvidenceFingerprintForTarget(requested_mode: Mode) ?u64 {
+            const count = actuationBindingCountForTarget(requested_mode);
+            if (count == 0) return null;
+            var hasher = std.hash.Wyhash.init(0);
+            hashBytes(&hasher, "world.actuation.binding_evidence.fingerprint");
+            hashU64(&hasher, world_actuation_binding_evidence_fingerprint_version);
+            hashU64(&hasher, target_ref.target_ref_fingerprint);
+            hashU64(&hasher, target_ref.world_surface_fingerprint);
+            hashU64(&hasher, target_ref.target_certificate_fingerprint);
+            hashU64(&hasher, @intFromEnum(requested_mode));
+            hashU64(&hasher, count);
+            inline for (0..Target.WorldPortTable.entries.len) |world_port_id| {
+                const port_id: u32 = @intCast(world_port_id);
+                if (actuationBindingRecordForPort(port_id, requested_mode)) |binding| {
+                    hashU64(&hasher, port_id);
+                    hashU64(&hasher, binding.binding_fingerprint);
+                    hashU64(&hasher, binding.descriptor_fingerprint);
+                    hashU64(&hasher, binding.actuator_ref_fingerprint);
+                    hashU64(&hasher, binding.import_requirement_fingerprint);
+                }
+            }
+            return hasher.final();
+        }
+
         fn actuationCoveredMissingPortCount(requested_mode: Mode) usize {
             var count: usize = 0;
             inline for (0..Target.WorldPortTable.entries.len) |world_port_id| {
@@ -5734,6 +5764,17 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
                                 .value_policy = BindingDecl.value_policy,
                             };
                         }
+                    }
+                }
+            }
+            return null;
+        }
+
+        fn actuationBindingRecordForPort(world_port_id: u32, requested_mode: Mode) ?Actuation.Binding {
+            inline for (actuation_bindings) |BindingDecl| {
+                if (comptime BindingDecl.TargetType == Target) {
+                    if (BindingDecl.world_port_id == world_port_id and BindingDecl.binding_mode_policy.allows(requested_mode)) {
+                        if (environmentAllowsActuationValuePolicy(BindingDecl.value_policy)) return BindingDecl.actuationBindingRecord();
                     }
                 }
             }
@@ -31945,6 +31986,10 @@ fn fingerprintAcceptanceReport(report: AcceptanceReport) u64 {
     hashU64(&hasher, report.native_port_count);
     hashU64(&hasher, report.byte_adapter_port_count);
     hashU64(&hasher, report.actuation_binding_count);
+    if (report.actuation_binding_evidence_fingerprint) |fingerprint| {
+        hashBytes(&hasher, "actuation_binding_evidence_fingerprint");
+        hashU64(&hasher, fingerprint);
+    }
     hashU64(&hasher, report.missing_actuator_count);
     hashU64(&hasher, report.actuation_policy_blocker_count);
     hashU64(&hasher, report.actuation_value_policy_blocker_count);

@@ -1988,6 +1988,28 @@ test "actuation environment preflight and supervision ledger account host effect
     const binding = ActuationEnv.bindActuator(ToolBinding);
     const preflight = ActuationEnv.preflightActuation(binding, world.Actuation.Policy.strict_fresh);
     try std.testing.expect(preflight.accepted);
+    try std.testing.expect(preflight.actuation_binding_evidence_fingerprint != null);
+    const AltToolActuator = world.actuator(.{
+        .kind = .tool_like,
+        .class = .idempotent_mutation,
+        .label = "tool.call.alt",
+        .supported_response_statuses = world.Actuation.ResponseStatusSet.all,
+        .value_policy = world.ValuePolicy.portable,
+    });
+    const AltToolBinding = world.bindActuator(PortsDecl, AltToolActuator);
+    const AltActuationEnv = world.Environment(fixtures.Ports.Target, .{
+        .actuation_bindings = .{AltToolBinding},
+        .policy = world.EnvironmentPolicy.fresh_and_replay,
+    });
+    const alt_binding = AltActuationEnv.bindActuator(AltToolBinding);
+    const alt_preflight = AltActuationEnv.preflightActuation(alt_binding, world.Actuation.Policy.strict_fresh);
+    try std.testing.expect(alt_preflight.accepted);
+    try std.testing.expectEqual(preflight.actuation_binding_count, alt_preflight.actuation_binding_count);
+    try std.testing.expect(preflight.actuation_binding_evidence_fingerprint.? != alt_preflight.actuation_binding_evidence_fingerprint.?);
+    try std.testing.expect(preflight.report_fingerprint != alt_preflight.report_fingerprint);
+    const actuation_cert = ActuationEnv.certificate(.fresh, false);
+    const alt_actuation_cert = AltActuationEnv.certificate(.fresh, false);
+    try std.testing.expect(actuation_cert.certificate_fingerprint != alt_actuation_cert.certificate_fingerprint);
     const AgentActuator = world.actuator(.{
         .kind = .tool_like,
         .class = .idempotent_mutation,
