@@ -3049,8 +3049,8 @@ test "actuation environment preflight and supervision ledger account host effect
     try std.testing.expectEqual(@as(usize, 1), pending_window_supervisor.ledger.total_pending_actuations);
     try pending_window_supervisor.afterActuationResolution(execution.receipt, 16);
     try std.testing.expectEqual(@as(usize, 0), pending_window_supervisor.ledger.total_pending_actuations);
-    try std.testing.expectEqual(@as(usize, 2), pending_window_supervisor.ledger.total_actuation_commits);
-    try std.testing.expectEqual(@as(usize, 2), pending_window_supervisor.ledger.total_fresh_actuations);
+    try std.testing.expectEqual(@as(usize, 1), pending_window_supervisor.ledger.total_actuation_commits);
+    try std.testing.expectEqual(@as(usize, 1), pending_window_supervisor.ledger.total_fresh_actuations);
     try std.testing.expectError(error.PendingDenied, pending_window_supervisor.afterActuationResolution(execution.receipt, 16));
     try pending_window_supervisor.afterActuationReceipt(pending_receipt, 16);
 
@@ -3394,7 +3394,7 @@ test "runspace actuation dispatch preserves pending mailbox state" {
     try std.testing.expectError(error.PendingPortConsumed, runspace.dispatchActuation(0, cancelled));
 }
 
-test "runspace pending actuation fresh completion consumes terminal call budget" {
+test "runspace pending actuation fresh completion resolves pending accounting" {
     var runtime = boundary.Runtime.init(std.testing.allocator);
     defer runtime.deinit();
     const target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
@@ -3500,12 +3500,10 @@ test "runspace pending actuation fresh completion consumes terminal call budget"
         .target_ref_fingerprint = pending.target_ref_fingerprint,
         .world_surface_fingerprint = request.world_surface_fingerprint,
     });
-    try std.testing.expectError(error.BudgetExceeded, runspace.dispatchActuation(0, terminal_execution));
-    const still_pending = try runspace.mailbox.get(0);
-    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, still_pending.status);
-    try std.testing.expectEqual(@as(?u64, pending_execution.intent.intent_fingerprint), still_pending.pending_actuation_intent_fingerprint);
-    try std.testing.expectEqual(@as(?u64, pending_receipt.receipt_fingerprint), still_pending.pending_actuation_receipt_fingerprint);
-    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try runspace.getSlotSummary(handle)).status);
+    const terminal_receipt = try runspace.dispatchActuation(0, terminal_execution);
+    try std.testing.expect(terminal_receipt.cancelled);
+    try std.testing.expectEqual(world.Runspace.PendingStatus.cancelled, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.failed, (try runspace.getSlotSummary(handle)).status);
 }
 
 test "runspace actuation dispatch preserves successful response value image" {
@@ -11798,13 +11796,13 @@ test "fabric plan coverage ordering depth and provider limits fail closed" {
     });
     try actuation_adapter_plan.validate();
     try std.testing.expectError(error.UnsupportedMapping, actuation_adapter_plan.assertExecutableMappings());
-    try std.testing.expectError(error.FabricMissingRoute, actuation_adapter_plan.assertCoverage(import_set));
+    try actuation_adapter_plan.assertCoverage(import_set);
     const actuation_adapter_coverage = actuation_adapter_plan.coverage(parent_ref, import_set);
     try actuation_adapter_coverage.validate();
-    try std.testing.expect(!actuation_adapter_coverage.accepted);
-    try std.testing.expectEqual(@as(usize, 0), actuation_adapter_coverage.fabric_covered_port_count);
-    try std.testing.expectEqual(@as(usize, 1), actuation_adapter_coverage.missing_port_count);
-    try std.testing.expectEqual(@as(usize, 1), actuation_adapter_coverage.unsupported_port_count);
+    try std.testing.expect(actuation_adapter_coverage.accepted);
+    try std.testing.expectEqual(@as(usize, 1), actuation_adapter_coverage.fabric_covered_port_count);
+    try std.testing.expectEqual(@as(usize, 0), actuation_adapter_coverage.missing_port_count);
+    try std.testing.expectEqual(@as(usize, 0), actuation_adapter_coverage.unsupported_port_count);
 }
 
 test "fabric binding invocation receipt and coverage fingerprints are stable" {

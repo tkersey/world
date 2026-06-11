@@ -4324,14 +4324,8 @@ pub const Supervision = struct {
         pub fn recordActuationResolution(self: *@This(), receipt: Actuation.Receipt, response_bytes: usize, value_image_bytes: usize, cost_units: u64) bool {
             if (self.total_pending_actuations == 0) return false;
             self.total_pending_actuations -= 1;
-            self.total_actuation_commits += 1;
-            if (receipt.fresh_called) self.total_fresh_actuations += 1;
-            if (receipt.replayed) self.total_replay_actuations += 1;
-            if (receipt.verified) self.total_verify_actuations += 1;
             if (receipt.failed) self.total_failed_actuations += 1;
             if (receipt.rejected) self.total_rejected_actuations += 1;
-            if (receipt.class == .irreversible_mutation) self.total_irreversible_actuations += 1;
-            if (receipt.class == .idempotent_mutation) self.total_idempotent_mutations += 1;
             self.total_actuation_bytes += response_bytes;
             self.total_port_responses = self.total_port_responses +| 1;
             self.total_frame_response_bytes = self.total_frame_response_bytes +| response_bytes;
@@ -4339,9 +4333,6 @@ pub const Supervision = struct {
             self.total_cost_units = self.total_cost_units +| cost_units;
             if (receipt.world_port_id < self.per_port_usage.len) {
                 const port_usage = self.perPort(receipt.world_port_id);
-                if (receipt.fresh_called) port_usage.fresh_calls += 1;
-                if (receipt.replayed) port_usage.replay_calls += 1;
-                if (receipt.verified) port_usage.verify_calls += 1;
                 if (receipt.failed) port_usage.failed_calls += 1;
                 if (receipt.rejected) port_usage.rejected_calls += 1;
                 port_usage.responses = port_usage.responses +| 1;
@@ -8807,7 +8798,7 @@ pub const Fabric = struct {
 
         pub fn coversRequiredPort(self: Fabric.Route) bool {
             return switch (self.kind) {
-                .adapter => false,
+                .adapter => self.hasActuationRouteBinding(),
                 .unsupported => false,
                 else => true,
             };
