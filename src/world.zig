@@ -17779,6 +17779,20 @@ pub const Actuation = struct {
             return true;
         }
 
+        pub fn responseValuePolicy(self: @This(), descriptor: ?Descriptor) ValuePolicy {
+            var result = if (descriptor) |actual| actual.value_policy else ValuePolicy.native_compatible;
+            if (self.require_portable_value_images) {
+                result.require_portable_values = true;
+                result.allow_native_only_values = false;
+                result.allow_diagnostic_type_labels = false;
+            }
+            if (self.reject_native_only_values) {
+                result.allow_native_only_values = false;
+                result.allow_diagnostic_type_labels = false;
+            }
+            return result;
+        }
+
         pub fn allowsResponseStatus(self: @This(), status: Actuation.ResponseStatus) bool {
             return switch (status) {
                 .responded => true,
@@ -18308,6 +18322,13 @@ pub const Actuation = struct {
             }
             if (self.response_image) |image| {
                 try validateValueImage(image);
+                const response_value_policy = policy.responseValuePolicy(descriptor);
+                if (image.diagnostic_type_label != null and !response_value_policy.allow_diagnostic_type_labels) {
+                    if (response_value_policy.require_portable_values) return error.PortableValueRequired;
+                    if (!response_value_policy.allow_native_only_values) return error.NativeValueRejected;
+                    return error.UnsupportedValueImage;
+                }
+                try validateValueImagePolicy(image, response_value_policy);
                 if (self.value_image_fingerprint == null or self.value_image_fingerprint.? != image.value_image_fingerprint) return error.InvalidFrameEncoding;
                 if (policy.max_actuation_response_bytes) |max| {
                     if (image.bytes.len > max or valueImageEncodedByteSize(image) > max) return error.PortRuleDenied;

@@ -1397,6 +1397,21 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
         .target_ref_fingerprint = 0x6102,
         .world_surface_fingerprint = 0x6101,
     }));
+    var native_response_image = try world.Frame.ValueImage.fromValue(std.testing.allocator, null, 0x6201, null, @as(i32, 7), .native_compatible);
+    defer native_response_image.deinit(std.testing.allocator);
+    try std.testing.expect(native_response_image.diagnostic_type_label != null);
+    try std.testing.expectError(error.PortableValueRequired, world.Actuation.Membrane.execute(.{
+        .policy = policy,
+        .intent = intent,
+        .envelope = envelope,
+        .descriptor = descriptor,
+        .actuator = .{ .fixture = .{
+            .frame_response_fingerprint = 0x6201,
+            .response_image = native_response_image,
+        } },
+        .target_ref_fingerprint = 0x6102,
+        .world_surface_fingerprint = 0x6101,
+    }));
     var capped_response_image = try world.Frame.ValueImage.fromValue(std.testing.allocator, null, 0x6201, null, @as(i32, 7), .portable);
     defer capped_response_image.deinit(std.testing.allocator);
     const capped_response_policy = world.Actuation.Policy.init(.{
