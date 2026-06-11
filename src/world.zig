@@ -31900,6 +31900,14 @@ fn preflightRouteForPendingWithSupervisor(comptime Target: type, comptime Env: t
     if (supervision_policy.require_portable_value_images and !view.value_policy.require_portable_values) return error.SupervisionDenied;
     if (supervision_policy.reject_native_only_values and view.value_policy.allow_native_only_values) return error.SupervisionDenied;
     const target_ref = TargetRef.fromTarget(Target);
+    const key = Actuation.IdempotencyKey.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+        .world_port_id = pending_frame.world_port_id,
+        .request_fingerprint = pending_frame.request_fingerprint,
+        .actuator_ref_fingerprint = route.actuator_ref_fingerprint.?,
+    });
+    try key.validate();
     const intent = Actuation.Intent.init(.{
         .actuator_ref_fingerprint = route.actuator_ref_fingerprint.?,
         .descriptor_fingerprint = route.actuation_descriptor_fingerprint.?,
@@ -31909,13 +31917,13 @@ fn preflightRouteForPendingWithSupervisor(comptime Target: type, comptime Env: t
         .world_port_id = pending_frame.world_port_id,
         .frame_request_fingerprint = pending_frame.request_fingerprint,
         .encoded_frame_request_fingerprint = pending_frame.frame_fingerprint,
-        .idempotency_key_fingerprint = route.actuation_binding_fingerprint.?,
+        .idempotency_key_fingerprint = key.key_fingerprint,
         .run_permit_fingerprint = supervisor.permit.permit_fingerprint,
         .environment_certificate_fingerprint = supervisor.permit.environment_certificate_fingerprint,
         .class = view.class,
         .requested_mode = requested_mode,
     });
-    try supervisor.beforeActuationCommit(intent, intent.idempotency_key_fingerprint != 0);
+    try supervisor.beforeActuationCommit(intent, true);
 }
 
 fn fabricReplayRouteForPort(admitted_fabric_plan: ?Fabric.Plan, world_port_id: u32) ?Fabric.Route {
