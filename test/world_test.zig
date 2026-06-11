@@ -2239,6 +2239,52 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
     });
     try std.testing.expectError(error.InvalidFrameEncoding, forged_verify_report.validate());
 
+    const matched_expected = world.Actuation.Receipt.init(.{
+        .intent_fingerprint = verify_intent.intent_fingerprint,
+        .envelope_fingerprint = 0x6411,
+        .decision_fingerprint = 0x6412,
+        .commit_fingerprint = 0x6413,
+        .response_fingerprint = 0x6414,
+        .frame_response_fingerprint = 0x6415,
+        .actuator_ref_fingerprint = ref.ref_fingerprint,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .target_ref_fingerprint = 0x6102,
+        .world_surface_fingerprint = 0x6101,
+        .world_port_id = 7,
+        .class = .deterministic_fixture,
+        .mode = .verify,
+        .verified = true,
+    });
+    const matched_fresh = world.Actuation.Receipt.init(.{
+        .intent_fingerprint = verify_intent.intent_fingerprint,
+        .envelope_fingerprint = 0x6421,
+        .decision_fingerprint = 0x6422,
+        .commit_fingerprint = 0x6423,
+        .response_fingerprint = 0x6424,
+        .frame_response_fingerprint = matched_expected.frame_response_fingerprint,
+        .actuator_ref_fingerprint = ref.ref_fingerprint,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .target_ref_fingerprint = 0x6102,
+        .world_surface_fingerprint = 0x6101,
+        .world_port_id = 7,
+        .class = .deterministic_fixture,
+        .mode = .verify,
+        .verified = true,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Actuation.Membrane.execute(.{
+        .policy = policy,
+        .intent = verify_intent,
+        .envelope = verify_envelope,
+        .descriptor = descriptor,
+        .actuator = .{ .verify = .{
+            .expected_receipt = matched_expected,
+            .fresh_receipt = matched_fresh,
+            .response_template = .{ .frame_response_fingerprint = matched_expected.frame_response_fingerprint.? +% 1 },
+        } },
+        .target_ref_fingerprint = 0x6102,
+        .world_surface_fingerprint = 0x6101,
+    }));
+
     const denied = try world.Actuation.Membrane.execute(.{
         .policy = world.Actuation.Policy.strict_replay,
         .intent = intent,

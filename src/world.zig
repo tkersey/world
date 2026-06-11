@@ -19850,6 +19850,7 @@ pub const Actuation = struct {
             if (verify.expected_receipt) |expected_receipt| try expected_receipt.validate();
             if (verify.fresh_receipt) |fresh_receipt| try fresh_receipt.validate();
             const report = VerifyReport.compare(args.intent, verify.expected_receipt, verify.fresh_receipt);
+            try validateVerifyReportReceiptBinding(report, receipt, verify.expected_receipt, verify.fresh_receipt);
             return .{
                 .policy = args.policy,
                 .intent = args.intent,
@@ -19868,6 +19869,21 @@ pub const Actuation = struct {
                 .fresh_called = false,
                 .parent_terminal = response.isTerminalForParent(),
             };
+        }
+
+        fn validateVerifyReportReceiptBinding(report: VerifyReport, emitted: Receipt, expected: ?Receipt, fresh: ?Receipt) !void {
+            if (!report.matched) return;
+            const expected_receipt = expected orelse return error.InvalidFrameEncoding;
+            const fresh_receipt = fresh orelse return error.InvalidFrameEncoding;
+            if (!verifyReceiptEvidenceMatches(emitted, expected_receipt)) return error.InvalidFrameEncoding;
+            if (!verifyReceiptEvidenceMatches(emitted, fresh_receipt)) return error.InvalidFrameEncoding;
+        }
+
+        fn verifyReceiptEvidenceMatches(lhs: Receipt, rhs: Receipt) bool {
+            return lhs.responseStatus() == rhs.responseStatus() and
+                lhs.response_kind == rhs.response_kind and
+                lhs.frame_response_fingerprint == rhs.frame_response_fingerprint and
+                lhs.response_value_image_fingerprint == rhs.response_value_image_fingerprint;
         }
 
         fn authorityKindForExecuteArgs(args: ExecuteArgs) ?PortAuthority.Kind {
