@@ -302,8 +302,9 @@ test "linker catalog carries explicit actuation adapter candidates" {
     defer std.testing.allocator.free(match.blockers);
     defer std.testing.allocator.free(match.warnings);
     try std.testing.expectEqual(world.Linker.MatchKind.adapter, match.kind);
-    try std.testing.expect(match.accepted());
-    try std.testing.expectEqual(@as(usize, 0), match.blockers.len);
+    try std.testing.expect(!match.accepted());
+    try std.testing.expectEqual(@as(usize, 1), match.blockers.len);
+    try std.testing.expectEqual(world.Linker.Blocker.UnsupportedRouteKind, match.blockers[0]);
 
     var wrong_requirement = requirement;
     wrong_requirement.requirement_fingerprint +%= 1;
@@ -2529,6 +2530,24 @@ test "actuation environment preflight and supervision ledger account host effect
     const custom_fresh_preflight = CustomReplayOnlyEnv.preflightActuationMode(custom_replay_only_binding, .fresh, world.Actuation.Policy.strict_fresh);
     try std.testing.expect(!custom_fresh_preflight.accepted);
     try std.testing.expectEqualSlices(world.AcceptanceBlocker, &.{.ActuationPolicyMismatch}, custom_fresh_preflight.blockers);
+    const OverbroadReplayOnlyActuator = world.actuator(.{
+        .kind = .replay_source,
+        .class = .observation,
+        .label = "tool.call.replay.overbroad",
+        .supported_modes = world.Actuation.ModeSet.replay_only,
+        .binding_mode_policy = world.Actuation.ModeSet.all,
+        .supported_response_statuses = world.Actuation.ResponseStatusSet.all,
+        .value_policy = world.ValuePolicy.portable,
+    });
+    const OverbroadReplayOnlyBinding = world.bindActuator(PortsDecl, OverbroadReplayOnlyActuator);
+    const OverbroadReplayOnlyEnv = world.Environment(fixtures.Ports.Target, .{
+        .actuation_bindings = .{OverbroadReplayOnlyBinding},
+        .policy = world.EnvironmentPolicy.fresh_and_replay,
+    });
+    const overbroad_replay_only_binding = OverbroadReplayOnlyEnv.bindActuator(OverbroadReplayOnlyBinding);
+    const overbroad_fresh_preflight = OverbroadReplayOnlyEnv.preflightActuationMode(overbroad_replay_only_binding, .fresh, world.Actuation.Policy.strict_fresh);
+    try std.testing.expect(!overbroad_fresh_preflight.accepted);
+    try std.testing.expectEqualSlices(world.AcceptanceBlocker, &.{.ActuationPolicyMismatch}, overbroad_fresh_preflight.blockers);
 
     const IrreversibleActuator = world.actuator(.{
         .kind = .tool_like,
@@ -11140,7 +11159,7 @@ test "link actuation catalog fingerprint distinguishes missing and zero port met
     try std.testing.expect(missing_port.entry_fingerprint != port_zero.entry_fingerprint);
 }
 
-test "link actuation adapter fallback synthesizes executable adapter route" {
+test "link actuation adapter fallback remains non-executable without adapter dispatcher" {
     const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
     const entries = [_]world.Linker.Catalog.Entry{
@@ -11165,12 +11184,10 @@ test "link actuation adapter fallback synthesizes executable adapter route" {
     });
     defer linked.deinit();
 
-    try std.testing.expect(linked.plan.accepted());
-    try std.testing.expectEqual(world.Linker.NormalForm.closed_fabric, linked.plan.normal_form);
-    try std.testing.expectEqual(@as(usize, 1), linked.plan.fabric_plans.len);
-    try std.testing.expectEqual(@as(usize, 1), linked.plan.fabric_plans[0].routes.len);
-    try std.testing.expectEqual(world.Fabric.RouteKind.adapter, linked.plan.fabric_plans[0].routes[0].kind);
-    try std.testing.expect(linked.plan.fabric_plans[0].routes[0].hasActuationRouteBinding());
+    try std.testing.expect(!linked.plan.accepted());
+    try std.testing.expectEqual(world.Linker.NormalForm.partial_with_blockers, linked.plan.normal_form);
+    try std.testing.expectEqual(@as(usize, 0), linked.plan.fabric_plans.len);
+    try std.testing.expect(linked.graph.hasBlocker(.UnsupportedRouteKind));
 }
 
 test "link unsupported descriptorless providers do not consume candidate cap" {
@@ -12171,7 +12188,7 @@ test "fabric plan coverage ordering depth and provider limits fail closed" {
         .routes = &.{actuation_adapter_route},
     });
     try actuation_adapter_plan.validate();
-    try actuation_adapter_plan.assertExecutableMappings();
+    try std.testing.expectError(error.UnsupportedMapping, actuation_adapter_plan.assertExecutableMappings());
     try actuation_adapter_plan.assertCoverage(import_set);
     const actuation_adapter_coverage = actuation_adapter_plan.coverage(parent_ref, import_set);
     try actuation_adapter_coverage.validate();

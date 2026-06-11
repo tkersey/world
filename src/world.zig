@@ -852,6 +852,7 @@ pub fn actuator(comptime args: anytype) type {
     const label: []const u8 = if (@hasField(Args, "label")) args.label else "";
     const supported_modes: Actuation.ModeSet = if (@hasField(Args, "supported_modes")) args.supported_modes else .all;
     const declared_binding_mode_policy: Actuation.ModeSet = if (@hasField(Args, "binding_mode_policy")) args.binding_mode_policy else supported_modes;
+    const effective_binding_mode_policy = declared_binding_mode_policy.intersect(supported_modes);
     const supported_response_statuses: Actuation.ResponseStatusSet = if (@hasField(Args, "supported_response_statuses")) args.supported_response_statuses else .terminal_with_errors;
     const value_policy: ValuePolicy = if (@hasField(Args, "value_policy")) args.value_policy else .portable;
     const authority_descriptor_fingerprint: ?u64 = if (@hasField(Args, "authority_descriptor_fingerprint")) args.authority_descriptor_fingerprint else null;
@@ -861,7 +862,7 @@ pub fn actuator(comptime args: anytype) type {
         pub const actuator_kind = kind;
         pub const actuator_class = class;
         pub const actuator_label = label;
-        pub const binding_mode_policy = declared_binding_mode_policy;
+        pub const binding_mode_policy = effective_binding_mode_policy;
         pub const value_policy_decl = value_policy;
         pub const actuator_ref = Actuation.Ref.init(.{
             .kind = kind,
@@ -898,7 +899,7 @@ pub fn bindActuator(comptime Decl: type, comptime ActuatorDecl: type) type {
         pub const response_deinit = BasePortDecl.response_deinit;
         pub const actuator_ref = ActuatorDecl.actuator_ref;
         pub const value_policy: ValuePolicy = if (@hasDecl(ActuatorDecl, "value_policy_decl")) ActuatorDecl.value_policy_decl else .portable;
-        pub const binding_mode_policy: Actuation.ModeSet = if (@hasDecl(ActuatorDecl, "binding_mode_policy")) ActuatorDecl.binding_mode_policy else ActuatorDecl.actuator_ref.supported_modes;
+        pub const binding_mode_policy: Actuation.ModeSet = (if (@hasDecl(ActuatorDecl, "binding_mode_policy")) ActuatorDecl.binding_mode_policy else ActuatorDecl.actuator_ref.supported_modes).intersect(ActuatorDecl.actuator_ref.supported_modes);
 
         pub fn actuationDescriptor() Actuation.Descriptor {
             const target_ref = TargetRef.fromTarget(TargetType);
@@ -9088,7 +9089,7 @@ pub const Fabric = struct {
                 }
                 switch (route.kind) {
                     .target_export, .admitted_run => if (response_mapping == null) return error.UnsupportedMapping,
-                    .adapter => if (!route.hasActuationRouteBinding()) return error.UnsupportedMapping,
+                    .adapter => return error.UnsupportedMapping,
                     .guest, .replay, .reject, .unsupported => {
                         if (request_mapping != null or response_mapping != null) return error.UnsupportedMapping;
                     },
@@ -17671,6 +17672,15 @@ pub const Actuation = struct {
                 .replay => self.replay,
                 .verify => self.verify,
                 .audit => self.audit,
+            };
+        }
+
+        pub fn intersect(self: @This(), other: @This()) @This() {
+            return .{
+                .fresh = self.fresh and other.fresh,
+                .replay = self.replay and other.replay,
+                .verify = self.verify and other.verify,
+                .audit = self.audit and other.audit,
             };
         }
     };
