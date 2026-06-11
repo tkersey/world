@@ -361,8 +361,8 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World admission parked handoff example.",
             .expected_stdout =
             \\package_fingerprint=91d0e487f35697a
-            \\admission_receipt_fingerprint=aa1f4f4fb68448ac
-            \\receiver_permit_fingerprint=8e830c897cd7ea79
+            \\admission_receipt_fingerprint=efb286a635fcb686
+            \\receiver_permit_fingerprint=d5358bdfe371839c
             \\final_result=7
             \\
             ,
@@ -388,7 +388,7 @@ pub fn build(b: *std.Build) void {
             \\module_ref_fingerprint=8980705f83427fa6
             \\model_port_id=0
             \\tool_port_id=1
-            \\admission_receipt=9c3592da61dfec4c
+            \\admission_receipt=d89ca482d6893a72
             \\final_result=final=actuate skeleton complete
             \\
             ,
@@ -449,9 +449,9 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-runspace-supervised",
             .desc = "Run the supervised World runspace example.",
             .expected_stdout =
-            \\run_permit=136b98955245240e
+            \\run_permit=124079ef39b289d5
             \\budget_exceeded=true
-            \\event_fingerprint=79180b6c5bf84ec0
+            \\event_fingerprint=4a245c153bbf9694
             \\
             ,
         },
@@ -665,7 +665,7 @@ pub fn build(b: *std.Build) void {
             .expected_stdout =
             \\capsule_fingerprint=be68ab26d9df6e24
             \\residual_external_import_count=1
-            \\receiver_permit_fingerprint=9e86dbf27379bdc9
+            \\receiver_permit_fingerprint=ee7d0e894968d76f
             \\restore_accepted=false
             \\final_result=parked-restore-denied
             \\
@@ -701,8 +701,8 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-capsule-supervised-restore",
             .desc = "Run the World Assembly Capsule supervised restore example.",
             .expected_stdout =
-            \\sender_permit_fingerprint=d58610f686bcbd98
-            \\receiver_permit_fingerprint=8e830c897cd7ea79
+            \\sender_permit_fingerprint=b3ba046818d0c934
+            \\receiver_permit_fingerprint=d5358bdfe371839c
             \\restore_allowed=false
             \\
             ,
@@ -823,9 +823,9 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-supervised-handoff",
             .desc = "Run the supervised handoff World example.",
             .expected_stdout =
-            \\received_run_image_fingerprint=c2e6570476c42491
-            \\receiver_permit_fingerprint=8e830c897cd7ea79
-            \\receiver_receipt_fingerprint=82875b67ee45cb5d
+            \\received_run_image_fingerprint=7b775535497b94a8
+            \\receiver_permit_fingerprint=d5358bdfe371839c
+            \\receiver_receipt_fingerprint=f9d8a0a2b8fad12f
             \\final_result=7
             \\
             ,
@@ -849,7 +849,7 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the supervised replay/verify World example.",
             .expected_stdout =
             \\fresh_receipt=ca5b4dcbb0f77e80
-            \\replay_receipt=163a65d0a7cf3e9d
+            \\replay_receipt=1bfd88d4e35884e7
             \\verify_divergence_detected=true
             \\
             ,

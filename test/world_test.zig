@@ -2262,6 +2262,8 @@ test "actuation environment preflight and supervision ledger account host effect
     var replay_actuation_supervisor = try world.Supervision.Supervisor.init(std.testing.allocator, replay_actuation_permit, 1);
     defer replay_actuation_supervisor.deinit();
     try replay_actuation_supervisor.beforeActuationCommit(replay_intent, true);
+    try std.testing.expect(world.SupervisionPolicy.strict_replay.allow_actuation);
+    try std.testing.expect(world.SupervisionPolicy.strict_replay.allow_replay_actuation);
     const verify_intent = world.Actuation.Intent.init(.{
         .actuator_ref_fingerprint = ToolActuator.actuator_ref.ref_fingerprint,
         .descriptor_fingerprint = descriptor.descriptor_fingerprint,
@@ -2306,6 +2308,11 @@ test "actuation environment preflight and supervision ledger account host effect
     var verify_actuation_supervisor = try world.Supervision.Supervisor.init(std.testing.allocator, verify_actuation_permit, 1);
     defer verify_actuation_supervisor.deinit();
     try verify_actuation_supervisor.beforeActuationCommit(verify_intent, true);
+    try std.testing.expect(world.SupervisionPolicy.verify_replay.allow_actuation);
+    try std.testing.expect(world.SupervisionPolicy.verify_replay.allow_verify_actuation);
+    try std.testing.expect(world.SupervisionPolicy.agent_fixture.allow_actuation);
+    try std.testing.expect(world.SupervisionPolicy.audit_only.allow_actuation);
+    try std.testing.expect(world.SupervisionPolicy.handoff_receiver.allow_actuation);
 
     const run_receipt = supervisor.receipt(.parked, 0x5150, null, null);
     try std.testing.expectEqual(@as(usize, 1), run_receipt.actuation_commit_count);
