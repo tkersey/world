@@ -3264,6 +3264,7 @@ test "actuation environment preflight and supervision ledger account host effect
         .world_surface_fingerprint = target_ref.world_surface_fingerprint,
         .world_port_id = 0,
         .frame_request_fingerprint = 0xfeed_1001,
+        .encoded_frame_request_fingerprint = 0xfeed_1000,
         .idempotency_key_fingerprint = key.key_fingerprint,
         .class = .idempotent_mutation,
         .requested_mode = .replay,
@@ -3302,6 +3303,59 @@ test "actuation environment preflight and supervision ledger account host effect
     defer replay_actuation_supervisor.deinit();
     try std.testing.expect(!world.Supervision.modeAllowedByPolicy(replay_actuation_permit.policy, .replay));
     try replay_actuation_supervisor.beforeActuationCommit(bindIntentToPermit(replay_intent, replay_actuation_permit), true);
+    const replay_authority_rules = [_]world.PortRule{world.PortRule.init(.{
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+        .world_port_id = 0,
+        .allowed_authority_kinds = world.Supervision.AllowedAuthorityKinds.replay,
+    })};
+    const replay_authority_permit = world.RunPermit.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = target_ref.target_certificate_fingerprint,
+        .environment_certificate_fingerprint = cert.certificate_fingerprint,
+        .binding_plan_fingerprint = cert.binding_plan_fingerprint,
+        .transcript_image_available = true,
+        .mode = .replay,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_actuation = true,
+            .allow_replay_actuation = true,
+        }),
+        .port_rules = &replay_authority_rules,
+    });
+    const permitted_replay_intent = bindIntentToPermit(replay_intent, replay_authority_permit);
+    const permitted_replay_envelope = world.Actuation.Envelope.init(.{
+        .intent_fingerprint = permitted_replay_intent.intent_fingerprint,
+        .encoded_frame_request_fingerprint = permitted_replay_intent.encoded_frame_request_fingerprint,
+        .idempotency_key = key,
+        .expected_response_value_ref = descriptor.response_value_ref,
+        .expected_response_value_table_id = descriptor.response_value_table_id,
+    });
+    const replay_source = world.Actuation.ReplaySource.init(.{
+        .receipts = &.{execution.receipt},
+        .response_images = &.{response_image},
+    });
+    const replay_idempotent_policy = world.Actuation.Policy.init(.{
+        .allow_replay_actuation = true,
+        .allow_idempotent_mutation = true,
+        .require_idempotency_key = false,
+        .max_actuation_calls = null,
+    });
+    const permitted_replay_execution = try world.Actuation.Membrane.execute(.{
+        .policy = replay_idempotent_policy,
+        .intent = permitted_replay_intent,
+        .envelope = permitted_replay_envelope,
+        .actuator = .{ .replay = .{ .source = replay_source } },
+        .descriptor = descriptor,
+        .binding = binding,
+        .run_permit = replay_authority_permit,
+        .explicit_mutation_approval = true,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+    });
+    try permitted_replay_execution.validate();
+    try std.testing.expect(permitted_replay_execution.receipt.replayed);
+    try std.testing.expect(!permitted_replay_execution.fresh_called);
+    try std.testing.expectEqual(world.PortAuthority.Kind.replay_source, permitted_replay_execution.authority_kind.?);
     try std.testing.expect(world.SupervisionPolicy.strict_replay.allow_actuation);
     try std.testing.expect(world.SupervisionPolicy.strict_replay.allow_replay_actuation);
     const verify_intent = world.Actuation.Intent.init(.{
@@ -4048,6 +4102,10 @@ test "runspace actuation dispatch preserves pending mailbox state" {
         .target_ref_fingerprint = pending.target_ref_fingerprint,
         .world_surface_fingerprint = request.world_surface_fingerprint,
     });
+    try other_cancelled.validate();
+    try std.testing.expect(!other_cancelled.fresh_called);
+    try std.testing.expect(!other_cancelled.commit_value.fresh_called);
+    try std.testing.expect(!other_cancelled.receipt.fresh_called);
     try std.testing.expectError(error.InvalidPendingPortTransition, runspace.dispatchActuation(0, other_cancelled));
     const cancelled = try world.Actuation.Membrane.execute(.{
         .policy = world.Actuation.Policy.fixture_test,
@@ -4063,8 +4121,13 @@ test "runspace actuation dispatch preserves pending mailbox state" {
         .target_ref_fingerprint = pending.target_ref_fingerprint,
         .world_surface_fingerprint = request.world_surface_fingerprint,
     });
+    try cancelled.validate();
+    try std.testing.expect(!cancelled.fresh_called);
+    try std.testing.expect(!cancelled.commit_value.fresh_called);
+    try std.testing.expect(!cancelled.receipt.fresh_called);
     const cancelled_receipt = try runspace.dispatchActuation(0, cancelled);
     try std.testing.expect(cancelled_receipt.cancelled);
+    try std.testing.expect(!cancelled_receipt.fresh_called);
     try std.testing.expectEqual(world.Runspace.PendingStatus.cancelled, (try runspace.mailbox.get(0)).status);
     try std.testing.expectEqual(world.Runspace.RunStatus.failed, (try runspace.getSlotSummary(handle)).status);
     try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);

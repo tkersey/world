@@ -11691,7 +11691,7 @@ pub const Runspace = struct {
             if (execution.intent.intent_fingerprint != pending_intent_fingerprint) return error.InvalidPendingPortTransition;
             if (execution.receipt.intent_fingerprint != pending_intent_fingerprint) return error.InvalidPendingPortTransition;
             if (pending.committed_actuation_receipt and execution.receipt.fresh_called) return error.InvalidPendingPortTransition;
-            if (!execution.receipt.fresh_called) {
+            if (execution.receipt.replayed or execution.receipt.verified) {
                 const pending_receipt_fingerprint = pending.pending_actuation_receipt_fingerprint orelse return error.InvalidPendingPortTransition;
                 if (execution.receipt.receipt_fingerprint != pending_receipt_fingerprint) return error.InvalidPendingPortTransition;
             }
@@ -18610,8 +18610,9 @@ pub const Actuation = struct {
             if (self.replayed != (self.status == .replayed)) return error.InvalidFrameEncoding;
             if (self.verified != (self.status == .verified)) return error.InvalidFrameEncoding;
             const status_requires_fresh = switch (self.status) {
-                .committed, .commit_pending, .commit_failed, .cancelled => true,
+                .committed, .commit_pending, .commit_failed => true,
                 .not_started, .replayed, .verified, .rejected => false,
+                .cancelled => false,
             };
             if (self.status != .rejected and self.fresh_called != status_requires_fresh) return error.InvalidFrameEncoding;
             if (self.commit_fingerprint != fingerprintCommit(self)) return error.InvalidFrameEncoding;
@@ -18893,7 +18894,7 @@ pub const Actuation = struct {
             if (self.mode == .replay and self.fresh_called) return error.InvalidFrameEncoding;
             if (self.replayed and self.verified) return error.InvalidFrameEncoding;
             switch (self.mode) {
-                .fresh => if (self.replayed or self.verified or (!self.fresh_called and !self.rejected)) return error.InvalidFrameEncoding,
+                .fresh => if (self.replayed or self.verified or (!self.fresh_called and !self.rejected and !self.cancelled)) return error.InvalidFrameEncoding,
                 .replay => if (self.verified or (!self.replayed and !self.rejected)) return error.InvalidFrameEncoding,
                 .verify => if (self.fresh_called or self.replayed or (!self.verified and !self.rejected)) return error.InvalidFrameEncoding,
                 .audit => if (self.fresh_called or self.replayed or self.verified) return error.InvalidFrameEncoding,
@@ -19349,7 +19350,7 @@ pub const Actuation = struct {
 
         pub fn commit(decision: Decision, envelope: Envelope, status: CommitStatus, attempt_number: u32) !Commit {
             if (!decision.approved) return error.SupervisionDenied;
-            const fresh_called = status != .not_started and status != .replayed and status != .verified;
+            const fresh_called = status != .not_started and status != .replayed and status != .verified and status != .cancelled;
             return Commit.init(.{
                 .intent_fingerprint = decision.intent_fingerprint,
                 .decision_fingerprint = decision.decision_fingerprint,
@@ -19898,6 +19899,7 @@ pub const Actuation = struct {
             if (std.meta.eql(rule.allowed_authority_kinds, Supervision.AllowedAuthorityKinds.all)) return;
             const descriptor = args.descriptor orelse return error.AuthorityDenied;
             const selected = concreteAuthorityKindForActuator(args.actuator) orelse return;
+            if (selected == .replay_source) return;
             if (selected != authorityKindForActuationKind(descriptor.kind)) return error.AuthorityDenied;
         }
 
