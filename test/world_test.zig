@@ -302,9 +302,8 @@ test "linker catalog carries explicit actuation adapter candidates" {
     defer std.testing.allocator.free(match.blockers);
     defer std.testing.allocator.free(match.warnings);
     try std.testing.expectEqual(world.Linker.MatchKind.adapter, match.kind);
-    try std.testing.expect(!match.accepted());
-    try std.testing.expectEqual(@as(usize, 1), match.blockers.len);
-    try std.testing.expectEqual(world.Linker.Blocker.UnsupportedRouteKind, match.blockers[0]);
+    try std.testing.expect(match.accepted());
+    try std.testing.expectEqual(@as(usize, 0), match.blockers.len);
 
     var wrong_requirement = requirement;
     wrong_requirement.requirement_fingerprint +%= 1;
@@ -2719,17 +2718,19 @@ test "actuation environment preflight and supervision ledger account host effect
         .world_surface_fingerprint = target_ref.world_surface_fingerprint,
         .world_port_id = 0,
         .frame_request_fingerprint = 0xfeed_1001,
+        .encoded_frame_request_fingerprint = 0xfeed_1000,
         .idempotency_key_fingerprint = key.key_fingerprint,
         .class = .idempotent_mutation,
         .requested_mode = .fresh,
     });
     const unwitnessed_envelope = world.Actuation.Envelope.init(.{
         .intent_fingerprint = unwitnessed_intent.intent_fingerprint,
+        .encoded_frame_request_fingerprint = 0xfeed_1000,
         .idempotency_key = key,
         .expected_response_value_ref = descriptor.response_value_ref,
         .expected_response_value_table_id = descriptor.response_value_table_id,
     });
-    try std.testing.expectError(error.PayloadRefMismatch, world.Actuation.Membrane.execute(.{
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Actuation.Membrane.execute(.{
         .policy = world.Actuation.Policy.strict_fresh,
         .intent = unwitnessed_intent,
         .envelope = unwitnessed_envelope,
@@ -2789,6 +2790,7 @@ test "actuation environment preflight and supervision ledger account host effect
             .response_image = response_image,
         } },
         .descriptor = descriptor,
+        .binding = binding,
         .explicit_mutation_approval = true,
         .attempt_number = 0,
         .target_ref_fingerprint = target_ref.target_ref_fingerprint,
@@ -2831,6 +2833,7 @@ test "actuation environment preflight and supervision ledger account host effect
             .response_image = response_image,
         } },
         .descriptor = descriptor,
+        .binding = binding,
         .explicit_mutation_approval = true,
         .attempt_number = 0,
         .target_ref_fingerprint = target_ref.target_ref_fingerprint,
@@ -3471,6 +3474,7 @@ test "actuation environment preflight and supervision ledger account host effect
             .reason = "failed budget witness",
         } },
         .descriptor = descriptor,
+        .binding = binding,
         .explicit_mutation_approval = true,
         .attempt_number = 0,
         .target_ref_fingerprint = target_ref.target_ref_fingerprint,
@@ -11485,7 +11489,7 @@ test "link actuation catalog fingerprint distinguishes missing and zero port met
     try std.testing.expect(missing_port.entry_fingerprint != port_zero.entry_fingerprint);
 }
 
-test "link actuation adapter fallback remains non-executable without adapter dispatcher" {
+test "link actuation adapter fallback synthesizes bound adapter route" {
     const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
     const entries = [_]world.Linker.Catalog.Entry{
@@ -11510,10 +11514,13 @@ test "link actuation adapter fallback remains non-executable without adapter dis
     });
     defer linked.deinit();
 
-    try std.testing.expect(!linked.plan.accepted());
-    try std.testing.expectEqual(world.Linker.NormalForm.partial_with_blockers, linked.plan.normal_form);
-    try std.testing.expectEqual(@as(usize, 0), linked.plan.fabric_plans.len);
-    try std.testing.expect(linked.graph.hasBlocker(.UnsupportedRouteKind));
+    try std.testing.expect(linked.plan.accepted());
+    try std.testing.expectEqual(world.Linker.NormalForm.closed_fabric, linked.plan.normal_form);
+    try std.testing.expectEqual(@as(usize, 1), linked.plan.fabric_plans.len);
+    try std.testing.expectEqual(world.Fabric.RouteKind.adapter, linked.plan.fabric_plans[0].routes[0].kind);
+    try std.testing.expectEqual(@as(?u64, 0xacc7_0101), linked.plan.fabric_plans[0].routes[0].actuator_ref_fingerprint);
+    try std.testing.expectEqual(@as(?u64, 0xacc7_0102), linked.plan.fabric_plans[0].routes[0].actuation_descriptor_fingerprint);
+    try std.testing.expectEqual(@as(?u64, 0xacc7_0103), linked.plan.fabric_plans[0].routes[0].actuation_binding_fingerprint);
 }
 
 test "link unsupported descriptorless providers do not consume candidate cap" {
@@ -12514,7 +12521,7 @@ test "fabric plan coverage ordering depth and provider limits fail closed" {
         .routes = &.{actuation_adapter_route},
     });
     try actuation_adapter_plan.validate();
-    try std.testing.expectError(error.UnsupportedMapping, actuation_adapter_plan.assertExecutableMappings());
+    try actuation_adapter_plan.assertExecutableMappings();
     try actuation_adapter_plan.assertCoverage(import_set);
     const actuation_adapter_coverage = actuation_adapter_plan.coverage(parent_ref, import_set);
     try actuation_adapter_coverage.validate();

@@ -9092,7 +9092,7 @@ pub const Fabric = struct {
                 }
                 switch (route.kind) {
                     .target_export, .admitted_run => if (response_mapping == null) return error.UnsupportedMapping,
-                    .adapter => return error.UnsupportedMapping,
+                    .adapter => if (!route.hasActuationRouteBinding()) return error.UnsupportedMapping,
                     .guest, .replay, .reject, .unsupported => {
                         if (request_mapping != null or response_mapping != null) return error.UnsupportedMapping;
                     },
@@ -19708,11 +19708,8 @@ pub const Actuation = struct {
         }
 
         fn validateActuationBindingWitness(binding_value: ?Actuation.Binding, descriptor: Descriptor, intent: Intent) !void {
-            if (intent.run_permit_fingerprint == null and intent.binding_fingerprint == null) return;
-            const binding = binding_value orelse {
-                if (intent.run_permit_fingerprint != null and intent.binding_fingerprint != null) return error.InvalidFrameEncoding;
-                return;
-            };
+            if (intent.binding_fingerprint == null) return;
+            const binding = binding_value orelse return error.InvalidFrameEncoding;
             try binding.validateForDescriptor(descriptor);
             if (intent.binding_fingerprint == null or intent.binding_fingerprint.? != binding.binding_fingerprint) return error.InvalidFrameEncoding;
             if (binding.target_ref_fingerprint != intent.target_ref_fingerprint) return error.WrongTarget;
