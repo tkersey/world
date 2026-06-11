@@ -27,7 +27,7 @@ pub fn main(init: std.process.Init) !void {
     });
     const pending = try common.execute(ctx, pending_policy, .{
         .pending = .{ .frame_response_fingerprint = 0xacc7_4002 },
-    }, 1);
+    }, 0);
     if (!pending.receipt.pending) return error.InvalidFrameEncoding;
 
     const intent_refs = [_]u64{ctx.intent.intent_fingerprint};

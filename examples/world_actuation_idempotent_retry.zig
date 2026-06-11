@@ -17,7 +17,7 @@ pub fn main(init: std.process.Init) !void {
     });
     const fresh = try common.execute(ctx, world.Actuation.Policy.strict_fresh, .{
         .fixture = .{ .frame_response_fingerprint = 0xacc7_7002 },
-    }, 1);
+    }, 0);
     var journal = world.Actuation.Journal.init();
     defer journal.deinit(allocator);
     try journal.appendCommit(allocator, fresh.commit_value);
@@ -35,7 +35,7 @@ pub fn main(init: std.process.Init) !void {
     const replay_source = world.Actuation.ReplaySource.init(.{ .receipts = &.{replay_seed} });
     const retry = try common.execute(replay_ctx, world.Actuation.Policy.fixture_test, .{
         .replay = .{ .source = replay_source },
-    }, 2);
+    }, 1);
     const recorded = journal.lookupByIdempotencyKey(ctx.key.key_fingerprint) != null;
 
     try stdout.print("idempotency_key={x}\n", .{ctx.key.key_fingerprint});

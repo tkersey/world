@@ -223,7 +223,7 @@ pub const world_binding_fingerprint_version: u32 = 1;
 pub const world_port_authority_fingerprint_version: u32 = 1;
 pub const world_environment_policy_fingerprint_version: u32 = 1;
 pub const world_binding_plan_fingerprint_version: u32 = 1;
-pub const world_acceptance_report_fingerprint_version: u32 = 3;
+pub const world_acceptance_report_fingerprint_version: u32 = 4;
 pub const world_actuation_binding_evidence_fingerprint_version: u32 = 1;
 pub const world_environment_certificate_format_version: u32 = 1;
 pub const world_environment_certificate_fingerprint_version: u32 = 1;
@@ -233,8 +233,8 @@ pub const world_run_image_format_version: u32 = 3;
 pub const world_run_image_fingerprint_version: u32 = 1;
 pub const world_run_permit_format_version: u32 = 1;
 pub const world_run_permit_fingerprint_version: u32 = 2;
-pub const world_supervision_policy_fingerprint_version: u32 = 2;
-pub const world_budget_fingerprint_version: u32 = 2;
+pub const world_supervision_policy_fingerprint_version: u32 = 3;
+pub const world_budget_fingerprint_version: u32 = 3;
 pub const world_cost_model_fingerprint_version: u32 = 2;
 pub const world_port_rule_fingerprint_version: u32 = 1;
 pub const world_usage_ledger_fingerprint_version: u32 = 2;
@@ -260,7 +260,7 @@ pub const world_admitted_run_fingerprint_version: u32 = 6;
 pub const world_run_handle_format_version: u32 = 1;
 pub const world_run_handle_fingerprint_version: u32 = 1;
 pub const world_pending_port_format_version: u32 = 1;
-pub const world_pending_port_fingerprint_version: u32 = 3;
+pub const world_pending_port_fingerprint_version: u32 = 4;
 pub const world_runspace_config_fingerprint_version: u32 = 1;
 pub const world_runspace_event_fingerprint_version: u32 = 2;
 pub const world_fabric_format_version: u32 = 1;
@@ -301,10 +301,10 @@ pub const world_assembly_fingerprint_version: u32 = 4;
 pub const world_capsule_manifest_format_version: u32 = 2;
 pub const world_capsule_manifest_fingerprint_version: u32 = 1;
 pub const world_capsule_quiescence_report_fingerprint_version: u32 = 1;
-pub const world_capsule_runspace_image_format_version: u32 = 2;
+pub const world_capsule_runspace_image_format_version: u32 = 3;
 pub const world_capsule_runspace_image_fingerprint_version: u32 = 1;
 pub const world_capsule_run_slot_image_fingerprint_version: u32 = 1;
-pub const world_capsule_pending_port_image_fingerprint_version: u32 = 2;
+pub const world_capsule_pending_port_image_fingerprint_version: u32 = 3;
 pub const world_capsule_mailbox_image_fingerprint_version: u32 = 1;
 pub const world_capsule_fabric_image_fingerprint_version: u32 = 1;
 pub const world_capsule_link_image_fingerprint_version: u32 = 1;
@@ -898,7 +898,7 @@ pub fn bindActuator(comptime Decl: type, comptime ActuatorDecl: type) type {
         pub const response_deinit = BasePortDecl.response_deinit;
         pub const actuator_ref = ActuatorDecl.actuator_ref;
         pub const value_policy: ValuePolicy = if (@hasDecl(ActuatorDecl, "value_policy_decl")) ActuatorDecl.value_policy_decl else .portable;
-        pub const binding_mode_policy: Actuation.ModeSet = if (@hasDecl(ActuatorDecl, "binding_mode_policy")) ActuatorDecl.binding_mode_policy else .all;
+        pub const binding_mode_policy: Actuation.ModeSet = if (@hasDecl(ActuatorDecl, "binding_mode_policy")) ActuatorDecl.binding_mode_policy else ActuatorDecl.actuator_ref.supported_modes;
 
         pub fn actuationDescriptor() Actuation.Descriptor {
             const target_ref = TargetRef.fromTarget(TargetType);
@@ -2510,7 +2510,22 @@ pub const Admission = struct {
     fn capsuleReplayOnlyActuationEvidenceBound(image: Capsule.Image, thaw_plan: ?Capsule.ThawPlan) bool {
         if (image.manifest.actuation_intent_fingerprints.len == 0 and
             image.manifest.actuation_receipt_fingerprints.len == 0 and
-            image.manifest.actuation_journal_fingerprints.len == 0) return true;
+            image.manifest.actuation_journal_fingerprints.len == 0)
+        {
+            if (image.runspace_image.actuation_intent_refs.len != 0 or
+                image.runspace_image.actuation_receipt_refs.len != 0 or
+                image.runspace_image.actuation_journal_refs.len != 0 or
+                image.actuation_intent_refs.len != 0 or
+                image.actuation_receipt_refs.len != 0 or
+                image.actuation_journal_refs.len != 0)
+            {
+                return false;
+            }
+            if (thaw_plan) |plan| {
+                if (plan.sender_actuation_receipt_refs.len != 0 or plan.receiver_actuation_binding_refs.len != 0) return false;
+            }
+            return true;
+        }
         if (image.manifest.actuation_receipt_fingerprints.len == 0) return false;
         const plan = thaw_plan orelse return false;
         if (plan.receiver_actuation_binding_refs.len != 0) return false;
@@ -4282,7 +4297,11 @@ pub const Supervision = struct {
             if (receipt.class == .irreversible_mutation) self.total_irreversible_actuations += 1;
             if (receipt.class == .idempotent_mutation) self.total_idempotent_mutations += 1;
             self.total_actuation_bytes += response_bytes;
-            self.total_port_responses = self.total_port_responses +| 1;
+            if (receipt.pending or receipt.deferred) {
+                self.total_pending_calls = self.total_pending_calls +| 1;
+            } else {
+                self.total_port_responses = self.total_port_responses +| 1;
+            }
             self.total_frame_response_bytes = self.total_frame_response_bytes +| response_bytes;
             self.total_value_image_bytes = self.total_value_image_bytes +| value_image_bytes;
             self.total_cost_units = self.total_cost_units +| cost_units;
@@ -4291,10 +4310,10 @@ pub const Supervision = struct {
                 if (receipt.fresh_called) port_usage.fresh_calls += 1;
                 if (receipt.replayed) port_usage.replay_calls += 1;
                 if (receipt.verified) port_usage.verify_calls += 1;
-                if (receipt.pending) port_usage.pending_calls += 1;
+                if (receipt.pending or receipt.deferred) port_usage.pending_calls += 1;
                 if (receipt.failed) port_usage.failed_calls += 1;
                 if (receipt.rejected) port_usage.rejected_calls += 1;
-                port_usage.responses = port_usage.responses +| 1;
+                if (!receipt.pending and !receipt.deferred) port_usage.responses = port_usage.responses +| 1;
                 port_usage.response_bytes += response_bytes;
                 port_usage.value_image_bytes = port_usage.value_image_bytes +| value_image_bytes;
                 port_usage.cost_units = port_usage.cost_units +| cost_units;
@@ -4302,8 +4321,9 @@ pub const Supervision = struct {
             self.refreshFingerprint();
         }
 
-        pub fn recordActuationResolution(self: *@This(), receipt: Actuation.Receipt, response_bytes: usize, value_image_bytes: usize, cost_units: u64) void {
-            if (self.total_pending_actuations > 0) self.total_pending_actuations -= 1;
+        pub fn recordActuationResolution(self: *@This(), receipt: Actuation.Receipt, response_bytes: usize, value_image_bytes: usize, cost_units: u64) bool {
+            if (self.total_pending_actuations == 0) return false;
+            self.total_pending_actuations -= 1;
             if (receipt.failed) self.total_failed_actuations += 1;
             if (receipt.rejected) self.total_rejected_actuations += 1;
             self.total_actuation_bytes += response_bytes;
@@ -4321,6 +4341,7 @@ pub const Supervision = struct {
                 port_usage.cost_units = port_usage.cost_units +| cost_units;
             }
             self.refreshFingerprint();
+            return true;
         }
     };
 
@@ -4846,6 +4867,7 @@ pub const Supervision = struct {
             const policy = self.permit.policy;
             if (!policy.allow_actuation) return self.deny(.before_actuation_commit, intent.world_port_id, .fresh_call_denied, null, "actuation denied");
             if (intent.requested_mode == .fresh and !policy.allow_fresh_actuation) return self.deny(.before_actuation_commit, intent.world_port_id, .fresh_call_denied, null, "fresh actuation denied");
+            if (intent.requested_mode == .audit and !policy.allow_audit_only) return self.deny(.before_actuation_commit, intent.world_port_id, .fresh_call_denied, null, "audit actuation denied");
             if (intent.requested_mode == .replay and !policy.allow_replay_actuation) return self.deny(.before_actuation_commit, intent.world_port_id, .replay_call_denied, null, "replay actuation denied");
             if (intent.requested_mode == .verify and !policy.allow_verify_actuation) return self.deny(.before_actuation_commit, intent.world_port_id, .verify_call_denied, null, "verify actuation denied");
             if (policy.require_idempotency_keys and intent.requested_mode == .fresh and intent.class.isMutation() and !key_present) return self.deny(.before_actuation_commit, intent.world_port_id, .fresh_call_denied, null, "actuation idempotency key required");
@@ -4911,7 +4933,9 @@ pub const Supervision = struct {
             defer next.deinit(self.allocator);
             const cost_delta = try self.actuationResponseCostDelta(receipt_value.world_port_id, receipt_value.responseStatus(), accounting);
             try self.enforceActuationResponseRule(receipt_value.world_port_id, rule, accounting, cost_delta, next.per_port_usage[receipt_value.world_port_id].cost_units, "rule actuation resolution cap");
-            next.recordActuationResolution(receipt_value, accounting.response_bytes, accounting.value_image_bytes, cost_delta);
+            if (!next.recordActuationResolution(receipt_value, accounting.response_bytes, accounting.value_image_bytes, cost_delta)) {
+                return self.deny(.after_actuation_response, receipt_value.world_port_id, .pending_denied, null, "pending actuation required");
+            }
             try self.commitCheck(.after_actuation_response, receipt_value.world_port_id, &next, null, rule, "actuation resolution");
         }
 
@@ -5632,6 +5656,10 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
         }
 
         pub fn preflightActuationMode(binding: Actuation.Binding, requested_mode: Mode, actuation_policy: Actuation.Policy) AcceptanceReport {
+            return preflightActuationModeEvidence(binding, requested_mode, false, actuation_policy);
+        }
+
+        pub fn preflightActuationModeEvidence(binding: Actuation.Binding, requested_mode: Mode, transcript_image_available: bool, actuation_policy: Actuation.Policy) AcceptanceReport {
             if (!actuation_policy.allowsMode(requested_mode)) return rejectedAcceptance(target_ref, requested_mode, &.{.ActuationPolicyMismatch});
             binding.validate() catch return rejectedAcceptance(target_ref, requested_mode, &.{.MissingActuator});
             if (!binding.binding_mode_policy.allows(requested_mode)) return rejectedAcceptance(target_ref, requested_mode, &.{.ActuationPolicyMismatch});
@@ -5644,7 +5672,9 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
             if (binding.world_port_id >= Target.WorldPortTable.entries.len) return rejectedAcceptance(target_ref, requested_mode, &.{.WrongPortId});
             const requirement_fingerprint = actuationRequirementFingerprintForPort(binding.world_port_id) orelse return rejectedAcceptance(target_ref, requested_mode, &.{.WrongPortId});
             if (binding.import_requirement_fingerprint != requirement_fingerprint) return rejectedAcceptance(target_ref, requested_mode, &.{.ActuationValuePolicyMismatch});
-            var report = acceptanceReport(requested_mode, false);
+            if (actuationBindingBlocker(requested_mode)) |blocker| return rejectedAcceptance(target_ref, requested_mode, &.{blocker});
+            if (actuationPolicyBlockerForCoveredBindings(requested_mode, actuation_policy)) |blocker| return rejectedAcceptance(target_ref, requested_mode, &.{blocker});
+            var report = acceptanceReport(requested_mode, transcript_image_available);
             const actuation_count = actuationBindingCountForTarget(requested_mode);
             const native_bound_count = @min(bindings.len, Target.WorldPortTable.entries.len);
             const covered_missing = actuationCoveredMissingPortCount(requested_mode);
@@ -5668,6 +5698,9 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
             report.missing_actuator_count = 0;
             report.blockers = &.{};
             report.summary = "accepted by actuation binding";
+            if (requested_mode == .fresh and !transcript_image_available and !policy.allow_fresh_without_transcript) return rejectedReport(report, &.{.TranscriptImageRequired});
+            if (requested_mode == .replay and !transcript_image_available and policy.require_frame_images_for_replay) return rejectedReport(report, &.{.TranscriptImageRequired});
+            if (requested_mode == .verify and !transcript_image_available and !policy.allow_verify_without_transcript) return rejectedReport(report, &.{.VerifyTranscriptMissing});
             report.report_fingerprint = fingerprintAcceptanceReport(report);
             return report;
         }
@@ -5683,7 +5716,10 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
                 result.report_fingerprint = fingerprintAcceptanceReport(result);
                 return result;
             }
-            if (!acceptanceReportHasOnlyMissingBinding(report)) return result;
+            if (!acceptanceReportHasOnlyMissingBinding(report)) {
+                result.report_fingerprint = fingerprintAcceptanceReport(result);
+                return result;
+            }
             const covered_missing = actuationCoveredMissingPortCount(requested_mode);
             const native_bound_count = @min(bindings.len, Target.WorldPortTable.entries.len);
             const covered_port_count = @min(Target.WorldPortTable.entries.len, native_bound_count + covered_missing);
@@ -5797,17 +5833,35 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
             return count;
         }
 
+        fn actuationPolicyBlockerForCoveredBindings(requested_mode: Mode, actuation_policy: Actuation.Policy) ?AcceptanceBlocker {
+            inline for (0..Target.WorldPortTable.entries.len) |world_port_id| {
+                const port_id: u32 = @intCast(world_port_id);
+                const environment_has_binding = comptime environmentHasBindingForPort(@This(), port_id);
+                if (environment_has_binding) continue;
+                if (actuationBindingForPort(port_id, requested_mode)) |binding| {
+                    if (!actuation_policy.allowsClass(binding.class)) return .ActuationPolicyMismatch;
+                    if (!actuation_policy.allowsValuePolicy(binding.value_policy)) return .ActuationValuePolicyMismatch;
+                }
+            }
+            return null;
+        }
+
         fn actuationHasBindingForPort(world_port_id: u32, requested_mode: Mode) bool {
             return actuationBindingForPort(world_port_id, requested_mode) != null;
         }
 
         fn actuationHasBindingDeclForPort(world_port_id: u32, requested_mode: Mode) bool {
+            return actuationBindingDeclCountForPort(world_port_id, requested_mode) != 0;
+        }
+
+        fn actuationBindingDeclCountForPort(world_port_id: u32, requested_mode: Mode) usize {
+            var count: usize = 0;
             inline for (actuation_bindings) |BindingDecl| {
                 if (comptime BindingDecl.TargetType == Target) {
-                    if (BindingDecl.world_port_id == world_port_id and BindingDecl.binding_mode_policy.allows(requested_mode)) return true;
+                    if (BindingDecl.world_port_id == world_port_id and BindingDecl.binding_mode_policy.allows(requested_mode)) count += 1;
                 }
             }
-            return false;
+            return count;
         }
 
         fn actuationBindingForPort(world_port_id: u32, requested_mode: Mode) ?ActuationBindingPolicyView {
@@ -5848,6 +5902,9 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
         }
 
         fn actuationBindingBlocker(requested_mode: Mode) ?AcceptanceBlocker {
+            inline for (0..Target.WorldPortTable.entries.len) |world_port_id| {
+                if (actuationBindingDeclCountForPort(@intCast(world_port_id), requested_mode) > 1) return .ExtraBinding;
+            }
             inline for (actuation_bindings) |BindingDecl| {
                 if (comptime BindingDecl.TargetType == Target) {
                     if (BindingDecl.binding_mode_policy.allows(requested_mode)) {
@@ -8685,6 +8742,9 @@ pub const Fabric = struct {
             if (self.world_port_id != self.parent_world_port_id) return error.WrongPortId;
             if (self.hasActuationMetadata()) {
                 if (self.kind != .adapter) return error.UnsupportedMapping;
+                if (!optionalFingerprintPresentNonZero(self.actuator_ref_fingerprint)) return error.InvalidFrameEncoding;
+                if (!optionalFingerprintPresentNonZero(self.actuation_descriptor_fingerprint)) return error.InvalidFrameEncoding;
+                if (!optionalFingerprintPresentNonZero(self.actuation_binding_fingerprint)) return error.InvalidFrameEncoding;
                 if (!self.hasActuationRouteBinding()) return error.MissingBinding;
             }
             switch (self.kind) {
@@ -8728,12 +8788,18 @@ pub const Fabric = struct {
         }
 
         pub fn hasActuationRouteBinding(self: Fabric.Route) bool {
-            return self.actuator_ref_fingerprint != null and self.actuation_binding_fingerprint != null;
+            return self.actuator_ref_fingerprint != null and
+                self.actuator_ref_fingerprint.? != 0 and
+                self.actuation_descriptor_fingerprint != null and
+                self.actuation_descriptor_fingerprint.? != 0 and
+                self.actuation_binding_fingerprint != null and
+                self.actuation_binding_fingerprint.? != 0;
         }
 
         pub fn coversRequiredPort(self: Fabric.Route) bool {
             return switch (self.kind) {
-                .adapter, .unsupported => false,
+                .adapter => false,
+                .unsupported => false,
                 else => true,
             };
         }
@@ -10191,6 +10257,7 @@ pub const Runspace = struct {
         run_permit_fingerprint: ?u64 = null,
         pending_actuation_intent_fingerprint: ?u64 = null,
         pending_actuation_receipt_fingerprint: ?u64 = null,
+        committed_actuation_receipt: bool = false,
         turn_index: usize,
         inserted_event_index: u64,
         status: Runspace.PendingStatus = .pending,
@@ -10207,6 +10274,7 @@ pub const Runspace = struct {
             run_permit_fingerprint: ?u64 = null,
             pending_actuation_intent_fingerprint: ?u64 = null,
             pending_actuation_receipt_fingerprint: ?u64 = null,
+            committed_actuation_receipt: bool = false,
             inserted_event_index: u64 = 0,
         }) @This() {
             var result = @This(){
@@ -10229,6 +10297,7 @@ pub const Runspace = struct {
                 .run_permit_fingerprint = args.run_permit_fingerprint,
                 .pending_actuation_intent_fingerprint = args.pending_actuation_intent_fingerprint,
                 .pending_actuation_receipt_fingerprint = args.pending_actuation_receipt_fingerprint,
+                .committed_actuation_receipt = args.committed_actuation_receipt,
                 .turn_index = args.request.turn_index,
                 .inserted_event_index = args.inserted_event_index,
             };
@@ -10296,6 +10365,7 @@ pub const Runspace = struct {
             if (self.fingerprint_version != world_pending_port_fingerprint_version) return error.InvalidFrameEncoding;
             try self.handle.validate();
             try validatePendingActuationMarker(self.pending_actuation_intent_fingerprint, self.pending_actuation_receipt_fingerprint);
+            if (self.committed_actuation_receipt and self.pending_actuation_receipt_fingerprint == null) return error.InvalidFrameEncoding;
             if (fingerprintPendingPort(self) != self.pending_port_fingerprint) return error.InvalidFrameEncoding;
         }
 
@@ -10335,6 +10405,7 @@ pub const Runspace = struct {
             run_permit_fingerprint: ?u64 = null,
             pending_actuation_intent_fingerprint: ?u64 = null,
             pending_actuation_receipt_fingerprint: ?u64 = null,
+            committed_actuation_receipt: bool = false,
             inserted_event_index: u64,
         }) !Runspace.PendingPort {
             if (self.max_pending_ports) |max| {
@@ -10355,6 +10426,7 @@ pub const Runspace = struct {
                 .run_permit_fingerprint = args.run_permit_fingerprint,
                 .pending_actuation_intent_fingerprint = args.pending_actuation_intent_fingerprint,
                 .pending_actuation_receipt_fingerprint = args.pending_actuation_receipt_fingerprint,
+                .committed_actuation_receipt = args.committed_actuation_receipt,
                 .inserted_event_index = args.inserted_event_index,
             });
             try self.pending.append(self.allocator, pending_port);
@@ -10415,6 +10487,7 @@ pub const Runspace = struct {
             var marked = current;
             marked.pending_actuation_intent_fingerprint = intent_fingerprint;
             marked.pending_actuation_receipt_fingerprint = receipt_fingerprint;
+            marked.committed_actuation_receipt = true;
             marked.pending_port_fingerprint = fingerprintPendingPort(marked);
             self.pending.items[index] = marked;
             return self.pending.items[index].borrowed();
@@ -11230,6 +11303,16 @@ pub const Runspace = struct {
         value_image_bytes: usize = 0,
     };
 
+    const ResponseSupervisionMode = enum {
+        normal,
+        precharged_actuation,
+    };
+
+    const RespondOptions = struct {
+        allow_active_fabric: bool = false,
+        supervision_mode: ResponseSupervisionMode = .normal,
+    };
+
     fn responseFrameAccounting(self: *@This(), response: Frame.Response) !ResponseFrameAccounting {
         const encoded_response = try response.encode(self.allocator);
         defer self.allocator.free(encoded_response);
@@ -11350,7 +11433,7 @@ pub const Runspace = struct {
     }
 
     pub fn respond(self: *@This(), mailbox_id: u64, response: Frame.Response) !Runspace.RunspaceEvent {
-        return self.respondWithFabricOwnership(mailbox_id, response, false);
+        return self.respondWithOptions(mailbox_id, response, .{});
     }
 
     pub fn dispatchActuation(self: *@This(), mailbox_id: u64, execution: Actuation.Membrane.Execution) !Actuation.Receipt {
@@ -11360,6 +11443,8 @@ pub const Runspace = struct {
         const index = try self.slotIndex(pending.handle);
         const slot = &self.slots.items[index];
         if (slot.pending_mailbox_id != mailbox_id or slot.status != .parked_on_port) return error.StaleRunHandle;
+        if (self.hasActiveFabricInvocationForMailbox(mailbox_id)) return error.ActiveFabricUnsupported;
+        if (self.pendingRequiresFabricRoute(slot.*, pending)) return error.ActiveFabricUnsupported;
         switch (execution.response.status) {
             .pending, .deferred => {
                 try self.superviseActuationDispatch(index, execution, .{});
@@ -11373,23 +11458,30 @@ pub const Runspace = struct {
         const accounting = try self.responseFrameAccounting(response);
         var supervisor_snapshot = try self.snapshotSlotSupervisor(index);
         defer supervisor_snapshot.deinit(self.allocator);
+        try pending.validateResponse(response);
+        const mailbox_index = try self.mailbox.indexOf(mailbox_id);
+        const mailbox_uncommitted_snapshot = self.mailbox.pending.items[mailbox_index];
+        _ = try self.mailbox.recordActuationReceipt(mailbox_id, execution.intent.intent_fingerprint, execution.receipt.receipt_fingerprint);
         const resolves_pending_actuation = pending.pending_actuation_intent_fingerprint == execution.intent.intent_fingerprint and
-            !execution.receipt.fresh_called;
+            pending.pending_actuation_receipt_fingerprint != null;
         if (resolves_pending_actuation) {
-            try self.superviseActuationResolution(index, execution, accounting);
+            self.superviseActuationResolution(index, execution, accounting) catch |err| {
+                self.mailbox.pending.items[mailbox_index] = mailbox_uncommitted_snapshot;
+                return err;
+            };
         } else {
-            try self.superviseActuationDispatch(index, execution, accounting);
+            self.superviseActuationDispatch(index, execution, accounting) catch |err| {
+                self.mailbox.pending.items[mailbox_index] = mailbox_uncommitted_snapshot;
+                return err;
+            };
         }
         const slot_status_snapshot = self.slots.items[index].status;
         const slot_current_state_snapshot = self.slots.items[index].current_state;
         const slot_pending_mailbox_id_snapshot = self.slots.items[index].pending_mailbox_id;
         const event_count_snapshot = self.events.items.len;
         const next_event_index_snapshot = self.next_event_index;
-        const mailbox_index = try self.mailbox.indexOf(mailbox_id);
-        const mailbox_snapshot = self.mailbox.pending.items[mailbox_index];
-        _ = try self.mailbox.recordActuationReceipt(mailbox_id, execution.intent.intent_fingerprint, execution.receipt.receipt_fingerprint);
-        _ = self.respond(mailbox_id, response) catch |err| {
-            self.mailbox.pending.items[mailbox_index] = mailbox_snapshot;
+        _ = self.respondWithOptions(mailbox_id, response, .{ .supervision_mode = .precharged_actuation }) catch |err| {
+            self.mailbox.pending.items[mailbox_index] = mailbox_uncommitted_snapshot;
             self.rollbackSlotResponseMutation(
                 index,
                 slot_status_snapshot,
@@ -11416,7 +11508,7 @@ pub const Runspace = struct {
         var supervisor_snapshot = try self.snapshotSlotSupervisor(slot_index);
         defer supervisor_snapshot.deinit(self.allocator);
         var slot = &self.slots.items[slot_index];
-        const key_present = execution.receipt.idempotency_key_fingerprint != 0;
+        const key_present = execution.key_present;
         if (slot.driver) |driver| {
             driver.beforeActuationCommit(execution.intent, key_present) catch |err| {
                 supervisor_snapshot.restore(self, slot_index);
@@ -11472,11 +11564,16 @@ pub const Runspace = struct {
         if (execution.intent.encoded_frame_request_fingerprint) |encoded| {
             if (encoded != pending.request_frame_fingerprint) return error.FrameRequestFingerprintMismatch;
         }
+        if (execution.intent.payload_value_image_fingerprint) |payload| {
+            const request = pending.request_frame orelse return error.InvalidPendingPortTransition;
+            if (request.payload_value_fingerprint == null or request.payload_value_fingerprint.? != payload) return error.PayloadRefMismatch;
+        }
         try validatePendingActuationMarker(pending.pending_actuation_intent_fingerprint, pending.pending_actuation_receipt_fingerprint);
         const matches_pending_actuation = if (pending.pending_actuation_intent_fingerprint) |pending_intent_fingerprint| matches: {
             if (execution.response.status == .pending or execution.response.status == .deferred) return error.PendingPortConsumed;
             if (execution.intent.intent_fingerprint != pending_intent_fingerprint) return error.InvalidPendingPortTransition;
             if (execution.receipt.intent_fingerprint != pending_intent_fingerprint) return error.InvalidPendingPortTransition;
+            if (pending.committed_actuation_receipt and execution.receipt.fresh_called) return error.InvalidPendingPortTransition;
             if (!execution.receipt.fresh_called) {
                 const pending_receipt_fingerprint = pending.pending_actuation_receipt_fingerprint orelse return error.InvalidPendingPortTransition;
                 if (execution.receipt.receipt_fingerprint != pending_receipt_fingerprint) return error.InvalidPendingPortTransition;
@@ -11544,22 +11641,22 @@ pub const Runspace = struct {
         return response;
     }
 
-    fn respondWithFabricOwnership(self: *@This(), mailbox_id: u64, response: Frame.Response, allow_active_fabric: bool) !Runspace.RunspaceEvent {
+    fn respondWithOptions(self: *@This(), mailbox_id: u64, response: Frame.Response, options: RespondOptions) !Runspace.RunspaceEvent {
         const pending = try self.mailbox.get(mailbox_id);
-        if (allow_active_fabric) {
+        if (options.allow_active_fabric) {
             try pending.validateFabricResponse(response);
         } else {
             try pending.validateResponse(response);
         }
         const index = try self.slotIndex(pending.handle);
         const slot = &self.slots.items[index];
-        const fabric_owned_supervision_park = allow_active_fabric and
+        const fabric_owned_supervision_park = options.allow_active_fabric and
             slot.status == .parked_on_supervision and
             self.hasActiveFabricInvocationForMailbox(mailbox_id);
         if (slot.pending_mailbox_id != mailbox_id or (slot.status != .parked_on_port and !fabric_owned_supervision_park)) return error.StaleRunHandle;
-        if (!allow_active_fabric and self.hasActiveFabricInvocationForMailbox(mailbox_id)) return error.ActiveFabricUnsupported;
-        if (!allow_active_fabric and self.pendingRequiresFabricRoute(slot.*, pending)) return error.ActiveFabricUnsupported;
-        const fabric_completes_driverless_parent = allow_active_fabric and slot.driver == null and slot.installed_run_image != null;
+        if (!options.allow_active_fabric and self.hasActiveFabricInvocationForMailbox(mailbox_id)) return error.ActiveFabricUnsupported;
+        if (!options.allow_active_fabric and self.pendingRequiresFabricRoute(slot.*, pending)) return error.ActiveFabricUnsupported;
+        const fabric_completes_driverless_parent = options.allow_active_fabric and slot.driver == null and slot.installed_run_image != null;
         var responded_summary: []u8 = "";
         var responded_summary_owned = false;
         defer if (responded_summary_owned) self.allocator.free(responded_summary);
@@ -11585,7 +11682,7 @@ pub const Runspace = struct {
                 failed_run_summary = try self.allocator.dupe(u8, "run failed after response");
                 failed_run_summary_owned = true;
                 const accounting = try self.responseFrameAccounting(response);
-                if (slot.driver) |driver| {
+                if (slot.driver) |driver| if (options.supervision_mode == .normal) {
                     driver.beforeResponse(pending.world_port_id, .responded, accounting.response_bytes, accounting.value_image_bytes) catch |err| {
                         if (err == error.HandlerPending and driver.supervisionInterrupted()) {
                             return self.parkPendingOnSupervision(index, pending, mailbox_id, "manual response parked on supervision");
@@ -11607,7 +11704,7 @@ pub const Runspace = struct {
                         }
                         return err;
                     };
-                }
+                };
             },
             .pending => {
                 const accounting = try self.responseFrameAccounting(response);
@@ -11671,11 +11768,11 @@ pub const Runspace = struct {
                 if (self.config.require_supervision) return error.SupervisionDenied;
                 return error.HandlerPending;
             },
-            .rejected => return self.finishTerminalResponse(index, mailbox_id, pending, slot, response, .rejected),
-            .failed => return self.finishTerminalResponse(index, mailbox_id, pending, slot, response, .failed),
+            .rejected => return self.finishTerminalResponse(index, mailbox_id, pending, slot, response, .rejected, options.supervision_mode),
+            .failed => return self.finishTerminalResponse(index, mailbox_id, pending, slot, response, .failed, options.supervision_mode),
         }
         const response_evidence = if (slot.driver) |driver|
-            (if (allow_active_fabric) driver.resumeFabricFrame(response) else driver.resumeFrame(response)) catch |err| {
+            (if (options.allow_active_fabric) driver.resumeFabricFrame(response) else driver.resumeFrame(response)) catch |err| {
                 if (err == error.HandlerPending) {
                     if (driver.supervisionInterrupted()) {
                         return self.parkPendingOnSupervision(index, pending, mailbox_id, "manual response parked on supervision");
@@ -11708,7 +11805,7 @@ pub const Runspace = struct {
                 }
                 return err;
             }
-        else if (allow_active_fabric) evidence: {
+        else if (options.allow_active_fabric) evidence: {
             if (slot.installed_run_image == null) return error.InvalidRunspaceTransition;
             if (slot.supervisor) |*supervisor| {
                 const accounting = try self.responseFrameAccounting(response);
@@ -12000,7 +12097,7 @@ pub const Runspace = struct {
         if (started.mapped_response_frame_fingerprint != response.frame_fingerprint) return error.InvalidFrameEncoding;
         var receipt_evidence = try self.prepareFabricReceiptEvidence(5);
         defer receipt_evidence.deinit(self.allocator);
-        const event = self.respondWithFabricOwnership(mailbox_id, response, true) catch |err| {
+        const event = self.respondWithOptions(mailbox_id, response, .{ .allow_active_fabric = true }) catch |err| {
             const parent_not_retryable = parent_slot.pending_mailbox_id != mailbox_id or
                 (parent_slot.status != .parked_on_port and parent_slot.status != .parked_on_supervision);
             const pending_after = self.mailbox.get(mailbox_id) catch null;
@@ -12199,7 +12296,7 @@ pub const Runspace = struct {
         errdefer if (!fabric_charge_committed and invocation_recorded) self.rollbackFabricInvocationRecord(invocation_count_before, event_count_before, next_event_index_before);
         try self.recordFabricInvocation(parent_slot.*, started, route, .fabric_invocation_started, "fabric replay invocation recorded");
         invocation_recorded = true;
-        const event = self.respondWithFabricOwnership(mailbox_id, response, true) catch |err| {
+        const event = self.respondWithOptions(mailbox_id, response, .{ .allow_active_fabric = true }) catch |err| {
             const parent_moved = parent_slot.status != .parked_on_port or parent_slot.pending_mailbox_id != mailbox_id;
             const pending_after = self.mailbox.get(mailbox_id) catch null;
             const pending_consumed = if (pending_after) |after| after.status != .pending else true;
@@ -12329,7 +12426,7 @@ pub const Runspace = struct {
         var response = try fabricMappedResponseForPending(pending, response_image, null);
         response_image_owned = false;
         defer response.deinit(self.allocator);
-        const event = self.respondWithFabricOwnership(invocation.parent_mailbox_id, response, true) catch |err| {
+        const event = self.respondWithOptions(invocation.parent_mailbox_id, response, .{ .allow_active_fabric = true }) catch |err| {
             const parent_moved = parent_slot.status != .parked_on_port or parent_slot.pending_mailbox_id != invocation.parent_mailbox_id;
             const pending_after = self.mailbox.get(invocation.parent_mailbox_id) catch null;
             const pending_consumed = if (pending_after) |after| after.status != .pending else true;
@@ -13268,7 +13365,7 @@ pub const Runspace = struct {
         );
     }
 
-    fn routeTerminalResponse(self: *@This(), index: usize, mailbox_id: u64, pending: Runspace.PendingPort, slot: *Runspace.RunSlot, response: Frame.Response, status: ResponseStatus) !TerminalRoute {
+    fn routeTerminalResponse(self: *@This(), index: usize, mailbox_id: u64, pending: Runspace.PendingPort, slot: *Runspace.RunSlot, response: Frame.Response, status: ResponseStatus, supervision_mode: ResponseSupervisionMode) !TerminalRoute {
         if (status != .rejected and status != .failed) return error.InvalidPendingPortTransition;
         if (response.status != status) return error.InvalidPendingPortTransition;
         try pending.validateResponse(response);
@@ -13276,41 +13373,43 @@ pub const Runspace = struct {
         if (slot.driver) |driver| {
             var supervisor_snapshot = try self.snapshotSlotSupervisor(index);
             defer supervisor_snapshot.deinit(self.allocator);
-            driver.beforeTerminalResponse(pending.world_port_id, status, accounting.response_bytes, accounting.value_image_bytes) catch |err| {
-                if (responseStatusDeniedError(status, err)) {
-                    _ = self.parkPendingOnSupervision(index, pending, mailbox_id, "terminal response denied by supervision") catch |park_err| {
-                        supervisor_snapshot.restore(self, index);
-                        return park_err;
-                    };
+            if (supervision_mode == .normal) {
+                driver.beforeTerminalResponse(pending.world_port_id, status, accounting.response_bytes, accounting.value_image_bytes) catch |err| {
+                    if (responseStatusDeniedError(status, err)) {
+                        _ = self.parkPendingOnSupervision(index, pending, mailbox_id, "terminal response denied by supervision") catch |park_err| {
+                            supervisor_snapshot.restore(self, index);
+                            return park_err;
+                        };
+                        return err;
+                    }
+                    if ((err == error.HandlerPending or err == error.BudgetExceeded) and driver.supervisionInterrupted()) {
+                        const event = self.parkPendingOnSupervision(index, pending, mailbox_id, "terminal response parked on supervision") catch |park_err| {
+                            supervisor_snapshot.restore(self, index);
+                            return park_err;
+                        };
+                        return .{ .parked = event };
+                    }
+                    if (err == error.BudgetExceeded) {
+                        var failed_event_pair = self.prepareTerminalFailureEventPair() catch |prepare_err| {
+                            supervisor_snapshot.restore(self, index);
+                            return prepare_err;
+                        };
+                        defer failed_event_pair.deinit(self.allocator);
+                        self.failPendingPortAndSlot(
+                            mailbox_id,
+                            slot,
+                            response,
+                            "terminal response supervision failed",
+                            failed_event_pair.takeFirst(),
+                            failed_event_pair.takeSecond(),
+                        ) catch |fail_err| {
+                            supervisor_snapshot.restore(self, index);
+                            return fail_err;
+                        };
+                    }
                     return err;
-                }
-                if ((err == error.HandlerPending or err == error.BudgetExceeded) and driver.supervisionInterrupted()) {
-                    const event = self.parkPendingOnSupervision(index, pending, mailbox_id, "terminal response parked on supervision") catch |park_err| {
-                        supervisor_snapshot.restore(self, index);
-                        return park_err;
-                    };
-                    return .{ .parked = event };
-                }
-                if (err == error.BudgetExceeded) {
-                    var failed_event_pair = self.prepareTerminalFailureEventPair() catch |prepare_err| {
-                        supervisor_snapshot.restore(self, index);
-                        return prepare_err;
-                    };
-                    defer failed_event_pair.deinit(self.allocator);
-                    self.failPendingPortAndSlot(
-                        mailbox_id,
-                        slot,
-                        response,
-                        "terminal response supervision failed",
-                        failed_event_pair.takeFirst(),
-                        failed_event_pair.takeSecond(),
-                    ) catch |fail_err| {
-                        supervisor_snapshot.restore(self, index);
-                        return fail_err;
-                    };
-                }
-                return err;
-            };
+                };
+            }
             var terminal_event_pair = self.prepareTerminalEventPair(status) catch |err| {
                 supervisor_snapshot.restore(self, index);
                 return err;
@@ -13346,28 +13445,30 @@ pub const Runspace = struct {
         } else if (slot.supervisor) |*supervisor| {
             var supervisor_snapshot = try self.snapshotSlotSupervisor(index);
             defer supervisor_snapshot.deinit(self.allocator);
-            supervisor.afterAdapterResponse(.{
-                .world_port_id = pending.world_port_id,
-                .status = status,
-                .response_bytes = accounting.response_bytes,
-                .value_image_bytes = accounting.value_image_bytes,
-            }) catch |err| {
-                if (responseStatusDeniedError(status, err)) {
-                    _ = self.parkPendingOnSupervision(index, pending, mailbox_id, "terminal response denied by supervision") catch |park_err| {
-                        supervisor_snapshot.restore(self, index);
-                        return park_err;
-                    };
+            if (supervision_mode == .normal) {
+                supervisor.afterAdapterResponse(.{
+                    .world_port_id = pending.world_port_id,
+                    .status = status,
+                    .response_bytes = accounting.response_bytes,
+                    .value_image_bytes = accounting.value_image_bytes,
+                }) catch |err| {
+                    if (responseStatusDeniedError(status, err)) {
+                        _ = self.parkPendingOnSupervision(index, pending, mailbox_id, "terminal response denied by supervision") catch |park_err| {
+                            supervisor_snapshot.restore(self, index);
+                            return park_err;
+                        };
+                        return err;
+                    }
+                    if ((err == error.HandlerPending or err == error.BudgetExceeded) and supervisor.interrupted) {
+                        const event = self.parkPendingOnSupervision(index, pending, mailbox_id, "terminal response parked on supervision") catch |park_err| {
+                            supervisor_snapshot.restore(self, index);
+                            return park_err;
+                        };
+                        return .{ .parked = event };
+                    }
                     return err;
-                }
-                if ((err == error.HandlerPending or err == error.BudgetExceeded) and supervisor.interrupted) {
-                    const event = self.parkPendingOnSupervision(index, pending, mailbox_id, "terminal response parked on supervision") catch |park_err| {
-                        supervisor_snapshot.restore(self, index);
-                        return park_err;
-                    };
-                    return .{ .parked = event };
-                }
-                return err;
-            };
+                };
+            }
             const terminal_event_pair = self.prepareTerminalEventPair(status) catch |err| {
                 supervisor_snapshot.restore(self, index);
                 return err;
@@ -13411,8 +13512,8 @@ pub const Runspace = struct {
         };
     }
 
-    fn finishTerminalResponse(self: *@This(), index: usize, mailbox_id: u64, pending: Runspace.PendingPort, slot: *Runspace.RunSlot, response: Frame.Response, status: ResponseStatus) !Runspace.RunspaceEvent {
-        const route = try self.routeTerminalResponse(index, mailbox_id, pending, slot, response, status);
+    fn finishTerminalResponse(self: *@This(), index: usize, mailbox_id: u64, pending: Runspace.PendingPort, slot: *Runspace.RunSlot, response: Frame.Response, status: ResponseStatus, supervision_mode: ResponseSupervisionMode) !Runspace.RunspaceEvent {
+        const route = try self.routeTerminalResponse(index, mailbox_id, pending, slot, response, status, supervision_mode);
         var event_pair = switch (route) {
             .parked => |event| return event,
             .event_pair => |pair| pair,
@@ -13475,7 +13576,7 @@ pub const Runspace = struct {
         if (self.pendingRequiresFabricRoute(slot.*, pending)) return error.ActiveFabricUnsupported;
         var response = try terminalResponseForPending(pending, .rejected, reason);
         defer response.deinit(self.allocator);
-        return self.finishTerminalResponse(index, mailbox_id, pending, slot, response, .rejected);
+        return self.finishTerminalResponse(index, mailbox_id, pending, slot, response, .rejected, .normal);
     }
 
     pub fn fail(self: *@This(), mailbox_id: u64, reason: []const u8) !Runspace.RunspaceEvent {
@@ -13488,7 +13589,7 @@ pub const Runspace = struct {
         if (self.pendingRequiresFabricRoute(slot.*, pending)) return error.ActiveFabricUnsupported;
         var response = try terminalResponseForPending(pending, .failed, reason);
         defer response.deinit(self.allocator);
-        return self.finishTerminalResponse(index, mailbox_id, pending, slot, response, .failed);
+        return self.finishTerminalResponse(index, mailbox_id, pending, slot, response, .failed, .normal);
     }
 
     fn pendingRequiresFabricRoute(self: *@This(), slot: Runspace.RunSlot, pending: Runspace.PendingPort) bool {
@@ -18463,6 +18564,7 @@ pub const Actuation = struct {
                     if (max_pending == 0) return error.PortRuleDenied;
                 }
             }
+            if (self.status != .responded and (self.response_image != null or self.value_image_fingerprint != null)) return error.InvalidFrameEncoding;
             if (descriptor) |actual| {
                 if (!actual.allowed_response_kinds.allows(self.status)) return error.PortRuleDenied;
                 if (actual.world_port_id != null and actual.world_port_id.? != self.world_port_id) return error.WrongPortId;
@@ -18483,6 +18585,8 @@ pub const Actuation = struct {
                 }
                 try validateValueImagePolicy(image, response_value_policy);
                 if (self.value_image_fingerprint == null or self.value_image_fingerprint.? != image.value_image_fingerprint) return error.InvalidFrameEncoding;
+                const boundary_value_fingerprint = image.boundary_value_fingerprint orelse return error.InvalidFrameEncoding;
+                if (self.frame_response_fingerprint == null or self.frame_response_fingerprint.? != boundary_value_fingerprint) return error.InvalidFrameEncoding;
                 if (policy.max_actuation_response_bytes) |max| {
                     if (image.bytes.len > max or valueImageEncodedByteSize(image) > max) return error.PortRuleDenied;
                 }
@@ -18668,6 +18772,7 @@ pub const Actuation = struct {
                 .audit => if (self.fresh_called or self.replayed or self.verified) return error.InvalidFrameEncoding,
             }
             if (receiptResponseStatusFlagCount(self) > 1) return error.InvalidFrameEncoding;
+            if (self.responseStatus() == .responded and self.frame_response_fingerprint == null) return error.InvalidFrameEncoding;
             try validateNoZeroU64(self.blockers);
             try validateNoZeroU64(self.warnings);
             if (self.metadata.len > world_max_decoded_byte_field_len) return error.InvalidFrameEncoding;
@@ -19093,9 +19198,9 @@ pub const Actuation = struct {
             if (!input.policy.allowsMode(input.intent.requested_mode)) return Decision.denied(input.intent, input.policy, "mode denied");
             if (!input.policy.allowsClass(input.intent.class)) return Decision.denied(input.intent, input.policy, "class denied");
             if (input.policy.max_actuation_calls) |max_calls| {
-                if (max_calls == 0 or input.attempt_number > max_calls) return Decision.denied(input.intent, input.policy, "actuation call limit reached");
+                if (input.attempt_number >= max_calls) return Decision.denied(input.intent, input.policy, "actuation call limit reached");
             }
-            if (input.attempt_number > 1 and !input.policy.allow_retry) return Decision.denied(input.intent, input.policy, "retry denied");
+            if (input.attempt_number > 0 and !input.policy.allow_retry) return Decision.denied(input.intent, input.policy, "retry denied");
             if (input.policy.requiresKeyForClass(input.intent.class, input.intent.requested_mode) and !input.key_present) return Decision.denied(input.intent, input.policy, "idempotency key required");
             if (input.intent.class.isMutation() and input.policy.require_approval_for_mutation and !input.explicit_mutation_approval) return Decision.denied(input.intent, input.policy, "mutation approval required");
             if (input.intent.class == .irreversible_mutation and input.policy.require_approval_for_irreversible and !input.explicit_irreversible_approval) return Decision.denied(input.intent, input.policy, "irreversible approval required");
@@ -19195,6 +19300,7 @@ pub const Actuation = struct {
         };
 
         pub const Execution = struct {
+            policy: Policy = Policy.strict_fresh,
             intent: Intent,
             envelope: Envelope,
             decision: Decision,
@@ -19202,16 +19308,20 @@ pub const Actuation = struct {
             response: Response,
             receipt: Receipt,
             verify_report: ?VerifyReport = null,
+            key_present: bool = true,
             fresh_called: bool = false,
             parent_terminal: bool = false,
 
             pub fn validate(self: @This()) !void {
+                try self.policy.validate();
                 try self.intent.validate();
-                try self.envelope.validate(.{});
+                try self.envelope.validate(self.policy);
                 try self.decision.validate();
                 try self.commit_value.validateAfterDecision(self.decision);
                 if (self.response.commit_fingerprint == null) return error.InvalidFrameEncoding;
-                if (self.response.response_fingerprint != Actuation.fingerprintResponse(self.response)) return error.InvalidFrameEncoding;
+                if (self.decision.approved) {
+                    try self.response.validate(self.policy, null);
+                } else if (self.response.response_fingerprint != Actuation.fingerprintResponse(self.response)) return error.InvalidFrameEncoding;
                 try self.receipt.validate();
                 if (self.decision.intent_fingerprint != self.intent.intent_fingerprint) return error.InvalidFrameEncoding;
                 if (self.envelope.intent_fingerprint != self.intent.intent_fingerprint) return error.InvalidFrameEncoding;
@@ -19240,6 +19350,7 @@ pub const Actuation = struct {
                 if (self.receipt.run_permit_fingerprint != self.intent.run_permit_fingerprint) return error.InvalidFrameEncoding;
                 if (self.receipt.environment_certificate_fingerprint != self.intent.environment_certificate_fingerprint) return error.InvalidFrameEncoding;
                 if (self.receipt.capsule_fingerprint != self.intent.capsule_fingerprint) return error.InvalidFrameEncoding;
+                if (self.key_present and self.intent.idempotency_key_fingerprint == 0) return error.InvalidFrameEncoding;
                 if (self.fresh_called != self.commit_value.fresh_called) return error.InvalidFrameEncoding;
                 if (self.receipt.fresh_called != self.commit_value.fresh_called) return error.InvalidFrameEncoding;
                 if (self.receipt.replayed != self.commit_value.replayed) return error.InvalidFrameEncoding;
@@ -19310,7 +19421,6 @@ pub const Actuation = struct {
             if (permit.world_surface_fingerprint != args.intent.world_surface_fingerprint) return error.SupervisionDenied;
             if (args.intent.environment_certificate_fingerprint == null or
                 permit.environment_certificate_fingerprint != args.intent.environment_certificate_fingerprint.?) return error.SupervisionDenied;
-            if (permit.mode != args.intent.requested_mode) return error.SupervisionDenied;
             const policy = permit.policy;
             if (!policy.allow_actuation) return error.SupervisionDenied;
             switch (args.intent.requested_mode) {
@@ -19347,6 +19457,7 @@ pub const Actuation = struct {
             const policy = permit.policy.withFingerprint();
             if (permit.policy.policy_fingerprint != policy.policy_fingerprint) return error.SupervisionDenied;
             if (permit.supervision_policy_fingerprint != policy.policy_fingerprint) return error.SupervisionDenied;
+            if (policy.require_environment_certificate and permit.environment_certificate_fingerprint == 0) return error.SupervisionDenied;
             const budget = permit.budget.withFingerprint();
             if (permit.budget.budget_fingerprint != budget.budget_fingerprint) return error.SupervisionDenied;
             if (permit.budget_fingerprint != budget.budget_fingerprint) return error.SupervisionDenied;
@@ -19378,12 +19489,8 @@ pub const Actuation = struct {
             if (args.capsule_fingerprint) |capsule_fingerprint| {
                 if (args.intent.capsule_fingerprint == null or args.intent.capsule_fingerprint.? != capsule_fingerprint) return error.InvalidFrameEncoding;
             }
-            if (args.envelope.encoded_frame_request_fingerprint) |encoded| {
-                if (args.intent.encoded_frame_request_fingerprint == null or args.intent.encoded_frame_request_fingerprint.? != encoded) return error.InvalidFrameEncoding;
-            }
-            if (args.envelope.payload_value_image_fingerprint) |payload| {
-                if (args.intent.payload_value_image_fingerprint == null or args.intent.payload_value_image_fingerprint.? != payload) return error.InvalidFrameEncoding;
-            }
+            if (args.envelope.encoded_frame_request_fingerprint != args.intent.encoded_frame_request_fingerprint) return error.InvalidFrameEncoding;
+            if (args.envelope.payload_value_image_fingerprint != args.intent.payload_value_image_fingerprint) return error.InvalidFrameEncoding;
             if (args.target_ref_fingerprint != args.intent.target_ref_fingerprint) return error.InvalidFrameEncoding;
             if (args.world_surface_fingerprint != args.intent.world_surface_fingerprint) return error.InvalidFrameEncoding;
             if (args.descriptor) |descriptor| {
@@ -19399,6 +19506,9 @@ pub const Actuation = struct {
                 if (descriptor.world_port_id) |descriptor_port_id| {
                     if (descriptor_port_id != args.intent.world_port_id) return error.WrongPortId;
                 }
+                if ((descriptor.payload_value_ref != null or descriptor.payload_value_table_id != null) and
+                    args.intent.encoded_frame_request_fingerprint == null and
+                    args.intent.payload_value_image_fingerprint == null) return error.PayloadRefMismatch;
                 if (descriptor.response_value_ref) |expected| {
                     if (args.envelope.expected_response_value_ref == null or args.envelope.expected_response_value_ref.? != expected) return error.ProviderResultMismatch;
                 }
@@ -19429,12 +19539,14 @@ pub const Actuation = struct {
             });
             const receipt = receiptFor(args, decision, commit_value, response);
             return .{
+                .policy = args.policy,
                 .intent = args.intent,
                 .envelope = args.envelope,
                 .decision = decision,
                 .commit_value = commit_value,
                 .response = response,
                 .receipt = receipt,
+                .key_present = args.key_present,
                 .fresh_called = false,
                 .parent_terminal = response.isTerminalForParent(),
             };
@@ -19449,12 +19561,14 @@ pub const Actuation = struct {
             const receipt = receiptFor(args, decision, commit_value, response);
             try receipt.validate();
             return .{
+                .policy = args.policy,
                 .intent = args.intent,
                 .envelope = args.envelope,
                 .decision = decision,
                 .commit_value = commit_value,
                 .response = response,
                 .receipt = receipt,
+                .key_present = args.key_present,
                 .fresh_called = commit_value.fresh_called,
                 .parent_terminal = response.isTerminalForParent(),
             };
@@ -19470,12 +19584,14 @@ pub const Actuation = struct {
             const receipt = receiptFor(args, decision, commit_value, response);
             try receipt.validate();
             return .{
+                .policy = args.policy,
                 .intent = args.intent,
                 .envelope = args.envelope,
                 .decision = decision,
                 .commit_value = commit_value,
                 .response = response,
                 .receipt = receipt,
+                .key_present = args.key_present,
                 .fresh_called = false,
                 .parent_terminal = response.isTerminalForParent(),
             };
@@ -19492,6 +19608,7 @@ pub const Actuation = struct {
             if (verify.fresh_receipt) |fresh_receipt| try fresh_receipt.validate();
             const report = VerifyReport.compare(args.intent, verify.expected_receipt, verify.fresh_receipt);
             return .{
+                .policy = args.policy,
                 .intent = args.intent,
                 .envelope = args.envelope,
                 .decision = decision,
@@ -19499,6 +19616,7 @@ pub const Actuation = struct {
                 .response = response,
                 .receipt = receipt,
                 .verify_report = report,
+                .key_present = args.key_present,
                 .fresh_called = false,
                 .parent_terminal = response.isTerminalForParent(),
             };
@@ -20520,6 +20638,7 @@ pub const Capsule = struct {
         run_permit_fingerprint: ?u64 = null,
         pending_actuation_intent_fingerprint: ?u64 = null,
         pending_actuation_receipt_fingerprint: ?u64 = null,
+        committed_actuation_receipt: bool = false,
         inserted_event_index: u64 = 0,
         status: Runspace.PendingStatus = .pending,
         owns_memory: bool = false,
@@ -20536,6 +20655,7 @@ pub const Capsule = struct {
             run_permit_fingerprint: ?u64 = null,
             pending_actuation_intent_fingerprint: ?u64 = null,
             pending_actuation_receipt_fingerprint: ?u64 = null,
+            committed_actuation_receipt: bool = false,
             inserted_event_index: u64 = 0,
             status: Runspace.PendingStatus = .pending,
         }) @This() {
@@ -20552,6 +20672,7 @@ pub const Capsule = struct {
                 .run_permit_fingerprint = args.run_permit_fingerprint,
                 .pending_actuation_intent_fingerprint = args.pending_actuation_intent_fingerprint,
                 .pending_actuation_receipt_fingerprint = args.pending_actuation_receipt_fingerprint,
+                .committed_actuation_receipt = args.committed_actuation_receipt,
                 .inserted_event_index = args.inserted_event_index,
                 .status = args.status,
             };
@@ -20575,6 +20696,7 @@ pub const Capsule = struct {
                 .run_permit_fingerprint = pending_port.run_permit_fingerprint,
                 .pending_actuation_intent_fingerprint = pending_port.pending_actuation_intent_fingerprint,
                 .pending_actuation_receipt_fingerprint = pending_port.pending_actuation_receipt_fingerprint,
+                .committed_actuation_receipt = pending_port.committed_actuation_receipt,
                 .inserted_event_index = pending_port.inserted_event_index,
                 .status = pending_port.status,
             });
@@ -20588,14 +20710,21 @@ pub const Capsule = struct {
 
         fn validateForRunspaceImageFormat(self: @This(), runspace_image_format_version: u32) !void {
             const legacy = runspace_image_format_version == 1;
-            const expected_fingerprint_version: u32 = if (legacy) 1 else world_capsule_pending_port_image_fingerprint_version;
+            const expected_fingerprint_version: u32 = if (legacy) 1 else if (runspace_image_format_version == 2) 2 else world_capsule_pending_port_image_fingerprint_version;
             if (self.fingerprint_version != expected_fingerprint_version) return error.InvalidFrameEncoding;
             if (self.status != .pending) return error.PendingPortConsumed;
             try validateRequestFrameImage(self.request_frame);
             try validateRequestFramePolicy(self.request_frame, .portable);
             try validatePendingActuationMarker(self.pending_actuation_intent_fingerprint, self.pending_actuation_receipt_fingerprint);
+            if (self.committed_actuation_receipt and self.pending_actuation_receipt_fingerprint == null) return error.InvalidFrameEncoding;
+            if (!capsuleRunspaceImageFormatSupportsCommittedActuationReceipts(runspace_image_format_version) and self.committed_actuation_receipt) return error.InvalidFrameEncoding;
             if (self.request_frame.expected_response_value_table_id != self.expected_response_value_table_id) return error.InvalidFrameEncoding;
-            const expected_pending_port_fingerprint = if (legacy) fingerprintPendingPortImageProjectionV1(self) else fingerprintPendingPortImageProjection(self);
+            const expected_pending_port_fingerprint = if (legacy)
+                fingerprintPendingPortImageProjectionV1(self)
+            else if (runspace_image_format_version == 2)
+                fingerprintPendingPortImageProjectionV2(self)
+            else
+                fingerprintPendingPortImageProjection(self);
             if (self.pending_port_fingerprint != expected_pending_port_fingerprint) return error.InvalidFrameEncoding;
             if (self.pending_port_image_fingerprint != fingerprint(self)) return error.InvalidFrameEncoding;
         }
@@ -20617,6 +20746,7 @@ pub const Capsule = struct {
             hashU64(&hasher, image.target_ref_fingerprint);
             hashOptionalU64(&hasher, image.environment_certificate_fingerprint);
             hashOptionalU64(&hasher, image.run_permit_fingerprint);
+            if (image.fingerprint_version >= 3) hashBool(&hasher, image.committed_actuation_receipt);
             hashU64(&hasher, image.inserted_event_index);
             hashU64(&hasher, @intFromEnum(image.status));
             return hasher.final();
@@ -21853,6 +21983,10 @@ pub const Capsule = struct {
     }
 
     pub fn mailboxImage(allocator: std.mem.Allocator, runspace: *const Runspace) !MailboxImage {
+        return mailboxImageWithReceiptPolicy(allocator, runspace, true);
+    }
+
+    fn mailboxImageWithReceiptPolicy(allocator: std.mem.Allocator, runspace: *const Runspace, include_receipts: bool) !MailboxImage {
         var pending_entries: std.ArrayList(PendingPortImage) = .empty;
         var pending_entries_owned: bool = true;
         errdefer {
@@ -21875,26 +22009,29 @@ pub const Capsule = struct {
         errdefer committed_actuation_receipt_refs.deinit(allocator);
 
         for (runspace.mailbox.pending.items) |pending_port| {
-            if (pending_port.pending_actuation_intent_fingerprint) |fingerprint| try appendUniqueU64(&pending_actuation_refs, allocator, fingerprint);
-            if (pending_port.pending_actuation_receipt_fingerprint) |fingerprint| try appendUniqueU64(&committed_actuation_receipt_refs, allocator, fingerprint);
+            const projected_pending = pendingPortForReceiptPolicy(pending_port.borrowed(), include_receipts);
+            if (projected_pending.pending_actuation_intent_fingerprint) |fingerprint| try appendUniqueU64(&pending_actuation_refs, allocator, fingerprint);
+            if (projected_pending.pending_actuation_receipt_fingerprint) |fingerprint| try appendUniqueU64(&committed_actuation_receipt_refs, allocator, fingerprint);
         }
 
         for (runspace.mailbox.pending.items) |pending_port| {
-            if (pending_port.status != .pending) continue;
-            var pending_entry = try PendingPortImage.fromPending(allocator, pending_port.borrowed());
+            const projected_pending = pendingPortForReceiptPolicy(pending_port.borrowed(), include_receipts);
+            if (projected_pending.status != .pending) continue;
+            var pending_entry = try PendingPortImage.fromPending(allocator, projected_pending);
             var pending_entry_owned = true;
             errdefer if (pending_entry_owned) pending_entry.deinit(allocator);
             try pending_entries.append(allocator, pending_entry);
             pending_entry_owned = false;
-            try pending_refs.append(allocator, pending_port.pending_port_fingerprint);
-            try single_use_refs.append(allocator, fingerprintPendingPortSingleUseStatus(pending_port));
-            try routing_refs.append(allocator, fingerprintPendingPortRoutingStatus(pending_port));
+            try pending_refs.append(allocator, projected_pending.pending_port_fingerprint);
+            try single_use_refs.append(allocator, fingerprintPendingPortSingleUseStatus(projected_pending));
+            try routing_refs.append(allocator, fingerprintPendingPortRoutingStatus(projected_pending));
         }
         for (runspace.mailbox.pending.items) |pending_port| {
-            if (pending_port.status == .pending) continue;
-            try consumed_refs.append(allocator, pending_port.pending_port_fingerprint);
-            try single_use_refs.append(allocator, fingerprintPendingPortSingleUseStatus(pending_port));
-            try routing_refs.append(allocator, fingerprintPendingPortRoutingStatus(pending_port));
+            const projected_pending = pendingPortForReceiptPolicy(pending_port.borrowed(), include_receipts);
+            if (projected_pending.status == .pending) continue;
+            try consumed_refs.append(allocator, projected_pending.pending_port_fingerprint);
+            try single_use_refs.append(allocator, fingerprintPendingPortSingleUseStatus(projected_pending));
+            try routing_refs.append(allocator, fingerprintPendingPortRoutingStatus(projected_pending));
         }
 
         const pending_entry_slice = try pending_entries.toOwnedSlice(allocator);
@@ -21928,6 +22065,16 @@ pub const Capsule = struct {
         });
         image.owns_memory = true;
         return image;
+    }
+
+    fn pendingPortForReceiptPolicy(pending_port: Runspace.PendingPort, include_receipts: bool) Runspace.PendingPort {
+        if (include_receipts) return pending_port;
+        var projected = pending_port;
+        projected.pending_actuation_intent_fingerprint = null;
+        projected.pending_actuation_receipt_fingerprint = null;
+        projected.committed_actuation_receipt = false;
+        projected.pending_port_fingerprint = fingerprintPendingPort(projected);
+        return projected;
     }
 
     pub fn runspaceImage(allocator: std.mem.Allocator, runspace: *const Runspace) !RunspaceImage {
@@ -22013,7 +22160,7 @@ pub const Capsule = struct {
             if (isActiveFabricStatus(invocation.status)) try active_fabric_refs.append(allocator, invocation.invocation_fingerprint);
         }
 
-        var mailbox = try mailboxImage(allocator, runspace);
+        var mailbox = try mailboxImageWithReceiptPolicy(allocator, runspace, include_receipts);
         errdefer mailbox.deinit(allocator);
         const run_handle_slice = try run_handle_refs.toOwnedSlice(allocator);
         errdefer allocator.free(run_handle_slice);
@@ -22668,7 +22815,7 @@ pub const Capsule = struct {
         }
         if (image.runspace_image.mailbox_image) |mailbox| {
             for (mailbox.pending_port_entries) |pending_entry| {
-                try pending_entry.validate();
+                try pending_entry.validateForRunspaceImageFormat(image.runspace_image.format_version);
                 const new_handle_fingerprint = try mappedHandleFingerprint(handle_mappings.items, pending_entry.original_run_handle_fingerprint);
                 const new_handle = try restoredRunHandleByFingerprint(runspace, new_handle_fingerprint);
                 const new_mailbox_id = runspace.next_mailbox_id;
@@ -22682,6 +22829,7 @@ pub const Capsule = struct {
                     .run_permit_fingerprint = permit_fingerprint orelse pending_entry.run_permit_fingerprint,
                     .pending_actuation_intent_fingerprint = pending_entry.pending_actuation_intent_fingerprint,
                     .pending_actuation_receipt_fingerprint = pending_entry.pending_actuation_receipt_fingerprint,
+                    .committed_actuation_receipt = pending_entry.committed_actuation_receipt,
                     .inserted_event_index = pending_entry.inserted_event_index,
                 });
                 runspace.next_mailbox_id += 1;
@@ -24018,11 +24166,15 @@ pub const Capsule = struct {
     }
 
     fn capsuleRunspaceImageFormatVersionSupported(format_version: u32) bool {
-        return format_version == 1 or format_version == world_capsule_runspace_image_format_version;
+        return format_version == 1 or format_version == 2 or format_version == world_capsule_runspace_image_format_version;
     }
 
     fn capsuleRunspaceImageFormatSupportsActuationRefs(format_version: u32) bool {
         return format_version >= 2;
+    }
+
+    fn capsuleRunspaceImageFormatSupportsCommittedActuationReceipts(format_version: u32) bool {
+        return format_version >= 3;
     }
 
     fn capsuleImageFormatVersionSupported(format_version: u32) bool {
@@ -24889,6 +25041,11 @@ pub const Capsule = struct {
         } else if (image.pending_actuation_intent_fingerprint != null or image.pending_actuation_receipt_fingerprint != null) {
             return error.InvalidFrameEncoding;
         }
+        if (capsuleRunspaceImageFormatSupportsCommittedActuationReceipts(runspace_image_format_version)) {
+            try writeBool(out, allocator, image.committed_actuation_receipt);
+        } else if (image.committed_actuation_receipt) {
+            return error.InvalidFrameEncoding;
+        }
         try writeU64(out, allocator, image.inserted_event_index);
         try writeU8(out, allocator, @intFromEnum(image.status));
     }
@@ -24917,6 +25074,10 @@ pub const Capsule = struct {
             try readOptionalU64(bytes, cursor)
         else
             null;
+        const committed_actuation_receipt = if (capsuleRunspaceImageFormatSupportsCommittedActuationReceipts(runspace_image_format_version))
+            try readBool(bytes, cursor)
+        else
+            false;
         var image = PendingPortImage{
             .fingerprint_version = fingerprint_version,
             .pending_port_image_fingerprint = pending_port_image_fingerprint,
@@ -24931,6 +25092,7 @@ pub const Capsule = struct {
             .run_permit_fingerprint = run_permit_fingerprint,
             .pending_actuation_intent_fingerprint = pending_actuation_intent_fingerprint,
             .pending_actuation_receipt_fingerprint = pending_actuation_receipt_fingerprint,
+            .committed_actuation_receipt = committed_actuation_receipt,
             .inserted_event_index = try readU64(bytes, cursor),
             .status = try enumFromByte(Runspace.PendingStatus, try readU8(bytes, cursor)),
             .owns_memory = true,
@@ -26854,10 +27016,7 @@ pub const Handoff = struct {
             if (pending_frame.turn_index != 0) return error.TranscriptImageRequired;
             try self.preflightRequestFrameWithSupervisor(supervisor, pending_frame);
             if (fabricPreflightRouteForPort(admitted_fabric_plan, pending_frame.world_port_id)) |route| {
-                try supervisor.beforeFabricInvocation(.{
-                    .world_port_id = pending_frame.world_port_id,
-                    .route_kind = route.kind,
-                });
+                try preflightRouteForPendingWithSupervisor(Target, Env, supervisor, pending_frame, route, .fresh);
                 return;
             }
             try supervisor.beforeAdapterCall(.{
@@ -26919,10 +27078,7 @@ pub const Handoff = struct {
         }
         try self.preflightRequestFrameWithSupervisor(supervisor, pending_frame);
         if (fabricPreflightRouteForPort(admitted_fabric_plan, pending_frame.world_port_id)) |route| {
-            try supervisor.beforeFabricInvocation(.{
-                .world_port_id = pending_frame.world_port_id,
-                .route_kind = route.kind,
-            });
+            try preflightRouteForPendingWithSupervisor(Target, Env, supervisor, pending_frame, route, .fresh);
             return;
         }
         try supervisor.beforeAdapterCall(.{
@@ -29512,6 +29668,10 @@ fn mergeOptionalFingerprint(existing: *?u64, incoming: ?u64) !void {
     }
 }
 
+fn optionalFingerprintPresentNonZero(value: ?u64) bool {
+    return value != null and value.? != 0;
+}
+
 fn validateOptionalFingerprintMerge(existing: ?u64, incoming: ?u64) !void {
     const value = incoming orelse return;
     if (existing) |current| {
@@ -31461,7 +31621,7 @@ fn fabricPlanCoversPort(admitted_fabric_plan: ?Fabric.Plan, world_port_id: u32) 
     const plan = admitted_fabric_plan orelse return false;
     const route = plan.findRouteForPort(world_port_id) orelse return false;
     return switch (route.kind) {
-        .adapter => false,
+        .adapter => route.hasActuationRouteBinding(),
         .target_export, .admitted_run, .guest, .replay, .reject, .unsupported => true,
     };
 }
@@ -31470,9 +31630,65 @@ fn fabricPreflightRouteForPort(admitted_fabric_plan: ?Fabric.Plan, world_port_id
     const plan = admitted_fabric_plan orelse return null;
     const route = plan.findRouteForPort(world_port_id) orelse return null;
     return switch (route.kind) {
-        .adapter => null,
+        .adapter => if (route.hasActuationRouteBinding()) route else null,
         .target_export, .admitted_run, .guest, .replay, .reject, .unsupported => route,
     };
+}
+
+const ActuationRoutePolicyView = struct {
+    class: Actuation.Class,
+    value_policy: ValuePolicy,
+};
+
+fn actuationRoutePolicyViewForEnvironment(comptime Env: type, route: Fabric.Route, requested_mode: Mode) ?ActuationRoutePolicyView {
+    if (!route.hasActuationRouteBinding()) return null;
+    inline for (Env.actuation_bindings_decl) |BindingDecl| {
+        if (comptime BindingDecl.TargetType == Env.TargetType) {
+            if (BindingDecl.binding_mode_policy.allows(requested_mode)) {
+                const binding = BindingDecl.actuationBindingRecord();
+                if (binding.binding_fingerprint == route.actuation_binding_fingerprint.? and
+                    binding.actuator_ref_fingerprint == route.actuator_ref_fingerprint.? and
+                    binding.descriptor_fingerprint == route.actuation_descriptor_fingerprint.?)
+                {
+                    return .{
+                        .class = BindingDecl.actuator_ref.class,
+                        .value_policy = BindingDecl.value_policy,
+                    };
+                }
+            }
+        }
+    }
+    return null;
+}
+
+fn preflightRouteForPendingWithSupervisor(comptime Target: type, comptime Env: type, supervisor: *Supervision.Supervisor, pending_frame: Frame.Request, route: Fabric.Route, requested_mode: Mode) !void {
+    if (route.kind != .adapter) {
+        return supervisor.beforeFabricInvocation(.{
+            .world_port_id = pending_frame.world_port_id,
+            .route_kind = route.kind,
+        });
+    }
+    const view = actuationRoutePolicyViewForEnvironment(Env, route, requested_mode) orelse return error.MissingBinding;
+    const supervision_policy = supervisor.permit.policy;
+    if (supervision_policy.require_portable_value_images and !view.value_policy.require_portable_values) return error.SupervisionDenied;
+    if (supervision_policy.reject_native_only_values and view.value_policy.allow_native_only_values) return error.SupervisionDenied;
+    const target_ref = TargetRef.fromTarget(Target);
+    const intent = Actuation.Intent.init(.{
+        .actuator_ref_fingerprint = route.actuator_ref_fingerprint.?,
+        .descriptor_fingerprint = route.actuation_descriptor_fingerprint.?,
+        .binding_fingerprint = route.actuation_binding_fingerprint,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+        .world_port_id = pending_frame.world_port_id,
+        .frame_request_fingerprint = pending_frame.request_fingerprint,
+        .encoded_frame_request_fingerprint = pending_frame.frame_fingerprint,
+        .idempotency_key_fingerprint = route.actuation_binding_fingerprint.?,
+        .run_permit_fingerprint = supervisor.permit.permit_fingerprint,
+        .environment_certificate_fingerprint = supervisor.permit.environment_certificate_fingerprint,
+        .class = view.class,
+        .requested_mode = requested_mode,
+    });
+    try supervisor.beforeActuationCommit(intent, intent.idempotency_key_fingerprint != 0);
 }
 
 fn fabricReplayRouteForPort(admitted_fabric_plan: ?Fabric.Plan, world_port_id: u32) ?Fabric.Route {
@@ -32565,6 +32781,7 @@ fn fingerprintPendingPort(pending_port: PendingPort) u64 {
         .run_permit_fingerprint = pending_port.run_permit_fingerprint,
         .pending_actuation_intent_fingerprint = pending_port.pending_actuation_intent_fingerprint,
         .pending_actuation_receipt_fingerprint = pending_port.pending_actuation_receipt_fingerprint,
+        .committed_actuation_receipt = pending_port.committed_actuation_receipt,
         .turn_index = pending_port.turn_index,
         .inserted_event_index = pending_port.inserted_event_index,
         .status = pending_port.status,
@@ -32573,6 +32790,31 @@ fn fingerprintPendingPort(pending_port: PendingPort) u64 {
 
 fn fingerprintPendingPortImageProjection(image: Capsule.PendingPortImage) u64 {
     return fingerprintPendingPortFields(.{
+        .handle_fingerprint = image.original_run_handle_fingerprint,
+        .mailbox_id = image.mailbox_id,
+        .world_surface_fingerprint = image.request_frame.world_surface_fingerprint,
+        .target_certificate_fingerprint = image.request_frame.target_certificate_fingerprint,
+        .world_port_id = image.request_frame.world_port_id,
+        .request_fingerprint = image.request_frame.request_fingerprint,
+        .request_frame_fingerprint = image.request_frame.frame_fingerprint,
+        .expected_response_kind = image.expected_response_kind,
+        .expected_response_value_table_id = image.expected_response_value_table_id,
+        .residual_site_index = image.request_frame.residual_site_index,
+        .residual_site_fingerprint = image.request_frame.residual_site_fingerprint,
+        .target_ref_fingerprint = image.target_ref_fingerprint,
+        .environment_certificate_fingerprint = image.environment_certificate_fingerprint,
+        .run_permit_fingerprint = image.run_permit_fingerprint,
+        .pending_actuation_intent_fingerprint = image.pending_actuation_intent_fingerprint,
+        .pending_actuation_receipt_fingerprint = image.pending_actuation_receipt_fingerprint,
+        .committed_actuation_receipt = image.committed_actuation_receipt,
+        .turn_index = image.request_frame.turn_index,
+        .inserted_event_index = image.inserted_event_index,
+        .status = image.status,
+    });
+}
+
+fn fingerprintPendingPortImageProjectionV2(image: Capsule.PendingPortImage) u64 {
+    return fingerprintPendingPortFieldsV2(.{
         .handle_fingerprint = image.original_run_handle_fingerprint,
         .mailbox_id = image.mailbox_id,
         .world_surface_fingerprint = image.request_frame.world_surface_fingerprint,
@@ -32634,6 +32876,7 @@ fn fingerprintPendingPortFields(args: struct {
     run_permit_fingerprint: ?u64,
     pending_actuation_intent_fingerprint: ?u64,
     pending_actuation_receipt_fingerprint: ?u64,
+    committed_actuation_receipt: bool,
     turn_index: usize,
     inserted_event_index: u64,
     status: Runspace.PendingStatus,
@@ -32641,6 +32884,53 @@ fn fingerprintPendingPortFields(args: struct {
     var hasher = std.hash.Wyhash.init(0);
     hashBytes(&hasher, "world.pending_port.fingerprint");
     hashU64(&hasher, world_pending_port_fingerprint_version);
+    hashU64(&hasher, args.handle_fingerprint);
+    hashU64(&hasher, args.mailbox_id);
+    hashU64(&hasher, args.world_surface_fingerprint);
+    hashU64(&hasher, args.target_certificate_fingerprint);
+    hashU64(&hasher, args.world_port_id);
+    hashU64(&hasher, args.request_fingerprint);
+    hashU64(&hasher, args.request_frame_fingerprint);
+    hashU64(&hasher, @intFromEnum(args.expected_response_kind));
+    hashOptionalU32(&hasher, args.expected_response_value_table_id);
+    hashU64(&hasher, args.residual_site_index);
+    hashU64(&hasher, args.residual_site_fingerprint);
+    hashU64(&hasher, args.target_ref_fingerprint);
+    hashOptionalU64(&hasher, args.environment_certificate_fingerprint);
+    hashOptionalU64(&hasher, args.run_permit_fingerprint);
+    hashOptionalU64(&hasher, args.pending_actuation_intent_fingerprint);
+    hashOptionalU64(&hasher, args.pending_actuation_receipt_fingerprint);
+    hashBool(&hasher, args.committed_actuation_receipt);
+    hashU64(&hasher, args.turn_index);
+    hashU64(&hasher, args.inserted_event_index);
+    hashU64(&hasher, @intFromEnum(args.status));
+    return hasher.final();
+}
+
+fn fingerprintPendingPortFieldsV2(args: struct {
+    handle_fingerprint: u64,
+    mailbox_id: u64,
+    world_surface_fingerprint: u64,
+    target_certificate_fingerprint: u64,
+    world_port_id: u32,
+    request_fingerprint: u64,
+    request_frame_fingerprint: u64,
+    expected_response_kind: ResponseKind,
+    expected_response_value_table_id: ?u32,
+    residual_site_index: usize,
+    residual_site_fingerprint: u64,
+    target_ref_fingerprint: u64,
+    environment_certificate_fingerprint: ?u64,
+    run_permit_fingerprint: ?u64,
+    pending_actuation_intent_fingerprint: ?u64,
+    pending_actuation_receipt_fingerprint: ?u64,
+    turn_index: usize,
+    inserted_event_index: u64,
+    status: Runspace.PendingStatus,
+}) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.pending_port.fingerprint");
+    hashU64(&hasher, 3);
     hashU64(&hasher, args.handle_fingerprint);
     hashU64(&hasher, args.mailbox_id);
     hashU64(&hasher, args.world_surface_fingerprint);

@@ -390,6 +390,12 @@ pub fn Linker(comptime W: type) type {
                         self.actuation_descriptor_fingerprint != null or
                         self.actuation_binding_fingerprint != null;
                 }
+
+                pub fn hasActuationMetadata(self: Entry) bool {
+                    return self.hasActuationCandidate() or
+                        self.actuation_import_requirement_fingerprint != null or
+                        self.actuation_world_port_id != null;
+                }
             };
 
             pub fn init(entries: []const Entry) Catalog {
@@ -2088,6 +2094,7 @@ pub fn Linker(comptime W: type) type {
         fn entryHasValidActuationAdapterMetadata(entry: Catalog.Entry) bool {
             if (entry.provider_kind != .environment_adapter or !entry.hasActuationCandidate()) return false;
             if (entry.actuator_ref_fingerprint == null or entry.actuator_ref_fingerprint.? == 0) return false;
+            if (entry.actuation_descriptor_fingerprint == null or entry.actuation_descriptor_fingerprint.? == 0) return false;
             if (entry.actuation_binding_fingerprint == null or entry.actuation_binding_fingerprint.? == 0) return false;
             return true;
         }
@@ -2385,7 +2392,7 @@ pub fn Linker(comptime W: type) type {
             hashOptionalU64(&hasher, entry.run_permit_fingerprint);
             hashOptionalU64(&hasher, entry.replay_transcript_image_fingerprint);
             hashOptionalU64(&hasher, entry.guest_conformance_report_fingerprint);
-            if (entry.hasActuationCandidate()) {
+            if (entry.hasActuationMetadata()) {
                 hashBytes(&hasher, "world.linker.catalog.entry.actuation");
                 hashOptionalU64(&hasher, entry.actuator_ref_fingerprint);
                 hashOptionalU64(&hasher, entry.actuation_descriptor_fingerprint);
