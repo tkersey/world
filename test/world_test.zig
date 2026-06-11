@@ -2657,6 +2657,67 @@ test "actuation environment preflight and supervision ledger account host effect
         }),
         .budget = world.Budget.init(.{ .max_actuation_calls = 1 }),
     });
+    const bindIntentToPermit = struct {
+        fn bind(base: world.Actuation.Intent, run_permit: world.RunPermit) world.Actuation.Intent {
+            return world.Actuation.Intent.init(.{
+                .actuator_ref_fingerprint = base.actuator_ref_fingerprint,
+                .descriptor_fingerprint = base.descriptor_fingerprint,
+                .binding_fingerprint = base.binding_fingerprint,
+                .target_ref_fingerprint = base.target_ref_fingerprint,
+                .world_surface_fingerprint = base.world_surface_fingerprint,
+                .world_port_id = base.world_port_id,
+                .pending_port_fingerprint = base.pending_port_fingerprint,
+                .frame_request_fingerprint = base.frame_request_fingerprint,
+                .encoded_frame_request_fingerprint = base.encoded_frame_request_fingerprint,
+                .payload_value_image_fingerprint = base.payload_value_image_fingerprint,
+                .idempotency_key_fingerprint = base.idempotency_key_fingerprint,
+                .run_permit_fingerprint = run_permit.permit_fingerprint,
+                .environment_certificate_fingerprint = run_permit.environment_certificate_fingerprint,
+                .fabric_invocation_fingerprint = base.fabric_invocation_fingerprint,
+                .capsule_fingerprint = base.capsule_fingerprint,
+                .class = base.class,
+                .requested_mode = base.requested_mode,
+                .metadata = base.metadata,
+            });
+        }
+    }.bind;
+    const bindReceiptToPermit = struct {
+        fn bind(base: world.Actuation.Receipt, run_permit: world.RunPermit) world.Actuation.Receipt {
+            return world.Actuation.Receipt.init(.{
+                .intent_fingerprint = base.intent_fingerprint,
+                .envelope_fingerprint = base.envelope_fingerprint,
+                .decision_fingerprint = base.decision_fingerprint,
+                .commit_fingerprint = base.commit_fingerprint,
+                .response_fingerprint = base.response_fingerprint,
+                .response_kind = base.response_kind,
+                .frame_response_fingerprint = base.frame_response_fingerprint,
+                .response_value_image_fingerprint = base.response_value_image_fingerprint,
+                .actuator_ref_fingerprint = base.actuator_ref_fingerprint,
+                .idempotency_key_fingerprint = base.idempotency_key_fingerprint,
+                .target_ref_fingerprint = base.target_ref_fingerprint,
+                .world_surface_fingerprint = base.world_surface_fingerprint,
+                .world_port_id = base.world_port_id,
+                .class = base.class,
+                .mode = base.mode,
+                .fresh_called = base.fresh_called,
+                .replayed = base.replayed,
+                .verified = base.verified,
+                .pending = base.pending,
+                .deferred = base.deferred,
+                .rejected = base.rejected,
+                .failed = base.failed,
+                .cancelled = base.cancelled,
+                .attempt_number = base.attempt_number,
+                .run_permit_fingerprint = run_permit.permit_fingerprint,
+                .environment_certificate_fingerprint = run_permit.environment_certificate_fingerprint,
+                .run_receipt_fingerprint = base.run_receipt_fingerprint,
+                .capsule_fingerprint = base.capsule_fingerprint,
+                .blockers = base.blockers,
+                .warnings = base.warnings,
+                .metadata = base.metadata,
+            });
+        }
+    }.bind;
     const permitted_intent = world.Actuation.Intent.init(.{
         .actuator_ref_fingerprint = ToolActuator.actuator_ref.ref_fingerprint,
         .descriptor_fingerprint = descriptor.descriptor_fingerprint,
@@ -2670,6 +2731,7 @@ test "actuation environment preflight and supervision ledger account host effect
         .class = .idempotent_mutation,
         .requested_mode = .fresh,
         .run_permit_fingerprint = permit.permit_fingerprint,
+        .environment_certificate_fingerprint = permit.environment_certificate_fingerprint,
     });
     const permitted_envelope = world.Actuation.Envelope.init(.{
         .intent_fingerprint = permitted_intent.intent_fingerprint,
@@ -2753,8 +2815,9 @@ test "actuation environment preflight and supervision ledger account host effect
     var forged_receipt = execution.receipt;
     forged_receipt.receipt_fingerprint +%= 1;
     try std.testing.expectError(error.InvalidFrameEncoding, supervisor.afterActuationReceipt(forged_receipt, 16));
-    try supervisor.beforeActuationCommit(intent, true);
-    try supervisor.afterActuationReceipt(execution.receipt, 16);
+    try std.testing.expectError(error.SupervisionDenied, supervisor.afterActuationReceipt(bindReceiptToPermit(execution.receipt, missing_certificate_permit), 16));
+    try supervisor.beforeActuationCommit(permitted_intent, true);
+    try supervisor.afterActuationReceipt(bindReceiptToPermit(execution.receipt, permit), 16);
     try std.testing.expectEqual(@as(usize, 0), supervisor.ledger.total_actuation_intents);
     try std.testing.expectEqual(@as(usize, 1), supervisor.ledger.total_actuation_commits);
     try std.testing.expectEqual(@as(?world.Supervision.BudgetExceededKind, null), supervisor.ledger.exceeded_budget);
@@ -2783,8 +2846,8 @@ test "actuation environment preflight and supervision ledger account host effect
     });
     var actuation_response_cap_supervisor = try world.Supervision.Supervisor.init(std.testing.allocator, actuation_response_cap_permit, 1);
     defer actuation_response_cap_supervisor.deinit();
-    try actuation_response_cap_supervisor.beforeActuationCommit(intent, true);
-    try std.testing.expectError(error.PortRuleDenied, actuation_response_cap_supervisor.afterActuationReceiptAccounting(execution.receipt, .{
+    try actuation_response_cap_supervisor.beforeActuationCommit(bindIntentToPermit(intent, actuation_response_cap_permit), true);
+    try std.testing.expectError(error.PortRuleDenied, actuation_response_cap_supervisor.afterActuationReceiptAccounting(bindReceiptToPermit(execution.receipt, actuation_response_cap_permit), .{
         .response_bytes = 8,
         .value_image_bytes = 2,
     }));
@@ -2806,8 +2869,8 @@ test "actuation environment preflight and supervision ledger account host effect
     });
     var actuation_value_budget_supervisor = try world.Supervision.Supervisor.init(std.testing.allocator, actuation_value_budget_permit, 1);
     defer actuation_value_budget_supervisor.deinit();
-    try actuation_value_budget_supervisor.beforeActuationCommit(intent, true);
-    try std.testing.expectError(error.BudgetExceeded, actuation_value_budget_supervisor.afterActuationReceiptAccounting(execution.receipt, .{
+    try actuation_value_budget_supervisor.beforeActuationCommit(bindIntentToPermit(intent, actuation_value_budget_permit), true);
+    try std.testing.expectError(error.BudgetExceeded, actuation_value_budget_supervisor.afterActuationReceiptAccounting(bindReceiptToPermit(execution.receipt, actuation_value_budget_permit), .{
         .response_bytes = 8,
         .value_image_bytes = 2,
     }));
@@ -2840,7 +2903,7 @@ test "actuation environment preflight and supervision ledger account host effect
     });
     var replay_calls_only_supervisor = try world.Supervision.Supervisor.init(std.testing.allocator, replay_calls_only_permit, 1);
     defer replay_calls_only_supervisor.deinit();
-    try std.testing.expectError(error.ReplayCallDenied, replay_calls_only_supervisor.beforeActuationCommit(replay_intent, true));
+    try std.testing.expectError(error.ReplayCallDenied, replay_calls_only_supervisor.beforeActuationCommit(bindIntentToPermit(replay_intent, replay_calls_only_permit), true));
     const replay_actuation_permit = world.RunPermit.init(.{
         .target_ref_fingerprint = target_ref.target_ref_fingerprint,
         .world_surface_fingerprint = target_ref.world_surface_fingerprint,
@@ -2858,7 +2921,7 @@ test "actuation environment preflight and supervision ledger account host effect
     var replay_actuation_supervisor = try world.Supervision.Supervisor.init(std.testing.allocator, replay_actuation_permit, 1);
     defer replay_actuation_supervisor.deinit();
     try std.testing.expect(!world.Supervision.modeAllowedByPolicy(replay_actuation_permit.policy, .replay));
-    try replay_actuation_supervisor.beforeActuationCommit(replay_intent, true);
+    try replay_actuation_supervisor.beforeActuationCommit(bindIntentToPermit(replay_intent, replay_actuation_permit), true);
     try std.testing.expect(world.SupervisionPolicy.strict_replay.allow_actuation);
     try std.testing.expect(world.SupervisionPolicy.strict_replay.allow_replay_actuation);
     const verify_intent = world.Actuation.Intent.init(.{
@@ -2888,7 +2951,7 @@ test "actuation environment preflight and supervision ledger account host effect
     });
     var verify_calls_only_supervisor = try world.Supervision.Supervisor.init(std.testing.allocator, verify_calls_only_permit, 1);
     defer verify_calls_only_supervisor.deinit();
-    try std.testing.expectError(error.SupervisionDenied, verify_calls_only_supervisor.beforeActuationCommit(verify_intent, true));
+    try std.testing.expectError(error.SupervisionDenied, verify_calls_only_supervisor.beforeActuationCommit(bindIntentToPermit(verify_intent, verify_calls_only_permit), true));
     const verify_actuation_permit = world.RunPermit.init(.{
         .target_ref_fingerprint = target_ref.target_ref_fingerprint,
         .world_surface_fingerprint = target_ref.world_surface_fingerprint,
@@ -2906,7 +2969,7 @@ test "actuation environment preflight and supervision ledger account host effect
     var verify_actuation_supervisor = try world.Supervision.Supervisor.init(std.testing.allocator, verify_actuation_permit, 1);
     defer verify_actuation_supervisor.deinit();
     try std.testing.expect(!world.Supervision.modeAllowedByPolicy(verify_actuation_permit.policy, .verify));
-    try verify_actuation_supervisor.beforeActuationCommit(verify_intent, true);
+    try verify_actuation_supervisor.beforeActuationCommit(bindIntentToPermit(verify_intent, verify_actuation_permit), true);
     const audit_intent = world.Actuation.Intent.init(.{
         .actuator_ref_fingerprint = ToolActuator.actuator_ref.ref_fingerprint,
         .descriptor_fingerprint = descriptor.descriptor_fingerprint,
@@ -2921,7 +2984,7 @@ test "actuation environment preflight and supervision ledger account host effect
     });
     var audit_denied_supervisor = try world.Supervision.Supervisor.init(std.testing.allocator, permit, 1);
     defer audit_denied_supervisor.deinit();
-    try std.testing.expectError(error.FreshCallDenied, audit_denied_supervisor.beforeActuationCommit(audit_intent, true));
+    try std.testing.expectError(error.FreshCallDenied, audit_denied_supervisor.beforeActuationCommit(bindIntentToPermit(audit_intent, permit), true));
     try std.testing.expectEqual(world.Supervision.Blocker.fresh_call_denied, audit_denied_supervisor.last_check.?.blocker.?);
     try std.testing.expect(world.SupervisionPolicy.verify_replay.allow_actuation);
     try std.testing.expect(world.SupervisionPolicy.verify_replay.allow_verify_actuation);
@@ -2950,7 +3013,7 @@ test "actuation environment preflight and supervision ledger account host effect
     });
     var actuation_rule_denied_supervisor = try world.Supervision.Supervisor.init(std.testing.allocator, actuation_rule_denied_permit, 1);
     defer actuation_rule_denied_supervisor.deinit();
-    try std.testing.expectError(error.PortRuleDenied, actuation_rule_denied_supervisor.beforeActuationCommit(intent, true));
+    try std.testing.expectError(error.PortRuleDenied, actuation_rule_denied_supervisor.beforeActuationCommit(bindIntentToPermit(intent, actuation_rule_denied_permit), true));
 
     const actuation_authority_denied_rules = [_]world.PortRule{world.PortRule.init(.{
         .world_surface_fingerprint = target_ref.world_surface_fingerprint,
@@ -2974,7 +3037,7 @@ test "actuation environment preflight and supervision ledger account host effect
     });
     var actuation_authority_denied_supervisor = try world.Supervision.Supervisor.init(std.testing.allocator, actuation_authority_denied_permit, 1);
     defer actuation_authority_denied_supervisor.deinit();
-    try std.testing.expectError(error.AuthorityDenied, actuation_authority_denied_supervisor.beforeActuationCommitWithAuthority(intent, true, .tool_like));
+    try std.testing.expectError(error.AuthorityDenied, actuation_authority_denied_supervisor.beforeActuationCommitWithAuthority(bindIntentToPermit(intent, actuation_authority_denied_permit), true, .tool_like));
 
     const run_receipt = supervisor.receipt(.parked, 0x5150, null, null);
     try std.testing.expectEqual(@as(usize, 1), run_receipt.actuation_commit_count);
@@ -2997,7 +3060,7 @@ test "actuation environment preflight and supervision ledger account host effect
     });
     var exhausted_supervisor = try world.Supervision.Supervisor.init(std.testing.allocator, exhausted_permit, 1);
     defer exhausted_supervisor.deinit();
-    try std.testing.expectError(error.BudgetExceeded, exhausted_supervisor.beforeActuationCommit(intent, true));
+    try std.testing.expectError(error.BudgetExceeded, exhausted_supervisor.beforeActuationCommit(bindIntentToPermit(intent, exhausted_permit), true));
     try std.testing.expectEqual(@as(usize, 1), exhausted_supervisor.ledger.total_actuation_intents);
     try std.testing.expectEqual(@as(usize, 0), exhausted_supervisor.ledger.total_actuation_commits);
     const exhausted_membrane_intent = world.Actuation.Intent.init(.{
@@ -3055,7 +3118,7 @@ test "actuation environment preflight and supervision ledger account host effect
     });
     var policy_exhausted_supervisor = try world.Supervision.Supervisor.init(std.testing.allocator, policy_exhausted_permit, 1);
     defer policy_exhausted_supervisor.deinit();
-    try std.testing.expectError(error.BudgetExceeded, policy_exhausted_supervisor.beforeActuationCommit(intent, true));
+    try std.testing.expectError(error.BudgetExceeded, policy_exhausted_supervisor.beforeActuationCommit(bindIntentToPermit(intent, policy_exhausted_permit), true));
     try std.testing.expectEqual(world.Supervision.BudgetExceededKind.actuation_calls, policy_exhausted_supervisor.ledger.exceeded_budget.?);
 
     const failed_actuation_budget_permit = world.RunPermit.init(.{
@@ -3091,8 +3154,8 @@ test "actuation environment preflight and supervision ledger account host effect
         .target_ref_fingerprint = target_ref.target_ref_fingerprint,
         .world_surface_fingerprint = target_ref.world_surface_fingerprint,
     });
-    try failed_actuation_budget_supervisor.beforeActuationCommit(intent, true);
-    try std.testing.expectError(error.BudgetExceeded, failed_actuation_budget_supervisor.afterActuationReceipt(failed_execution.receipt, 16));
+    try failed_actuation_budget_supervisor.beforeActuationCommit(bindIntentToPermit(intent, failed_actuation_budget_permit), true);
+    try std.testing.expectError(error.BudgetExceeded, failed_actuation_budget_supervisor.afterActuationReceipt(bindReceiptToPermit(failed_execution.receipt, failed_actuation_budget_permit), 16));
     try std.testing.expectEqual(world.Supervision.BudgetExceededKind.failed_calls, failed_actuation_budget_supervisor.ledger.exceeded_budget.?);
 
     const pending_limited_permit = world.RunPermit.init(.{
@@ -3167,8 +3230,8 @@ test "actuation environment preflight and supervision ledger account host effect
     });
     var pending_rule_denied_supervisor = try world.Supervision.Supervisor.init(std.testing.allocator, pending_rule_denied_permit, 1);
     defer pending_rule_denied_supervisor.deinit();
-    try std.testing.expectError(error.PortRuleDenied, pending_rule_denied_supervisor.afterActuationReceipt(pending_receipt, 16));
-    try std.testing.expectError(error.BudgetExceeded, pending_limited_supervisor.afterActuationReceipt(pending_receipt, 16));
+    try std.testing.expectError(error.PortRuleDenied, pending_rule_denied_supervisor.afterActuationReceipt(bindReceiptToPermit(pending_receipt, pending_rule_denied_permit), 16));
+    try std.testing.expectError(error.BudgetExceeded, pending_limited_supervisor.afterActuationReceipt(bindReceiptToPermit(pending_receipt, pending_limited_permit), 16));
     try std.testing.expectEqual(world.Supervision.BudgetExceededKind.pending_actuations, pending_limited_supervisor.ledger.exceeded_budget.?);
 
     const pending_window_permit = world.RunPermit.init(.{
@@ -3191,19 +3254,50 @@ test "actuation environment preflight and supervision ledger account host effect
     });
     var pending_window_supervisor = try world.Supervision.Supervisor.init(std.testing.allocator, pending_window_permit, 1);
     defer pending_window_supervisor.deinit();
-    try std.testing.expectError(error.PendingDenied, pending_window_supervisor.afterActuationResolution(execution.receipt, 16));
+    try std.testing.expectError(error.PendingDenied, pending_window_supervisor.afterActuationResolution(bindReceiptToPermit(execution.receipt, pending_window_permit), 16));
     try std.testing.expectEqual(@as(usize, 0), pending_window_supervisor.ledger.total_pending_actuations);
     try std.testing.expectEqual(@as(usize, 0), pending_window_supervisor.ledger.total_port_responses);
-    try pending_window_supervisor.afterActuationReceipt(pending_receipt, 16);
+    try pending_window_supervisor.afterActuationReceipt(bindReceiptToPermit(pending_receipt, pending_window_permit), 16);
+    var pending_port_scoped_supervisor = try world.Supervision.Supervisor.init(std.testing.allocator, pending_window_permit, 2);
+    defer pending_port_scoped_supervisor.deinit();
+    try pending_port_scoped_supervisor.afterActuationReceipt(bindReceiptToPermit(pending_receipt, pending_window_permit), 16);
+    var wrong_port_resolution = execution.receipt;
+    wrong_port_resolution = world.Actuation.Receipt.init(.{
+        .intent_fingerprint = wrong_port_resolution.intent_fingerprint,
+        .envelope_fingerprint = wrong_port_resolution.envelope_fingerprint,
+        .decision_fingerprint = wrong_port_resolution.decision_fingerprint,
+        .commit_fingerprint = wrong_port_resolution.commit_fingerprint,
+        .response_fingerprint = wrong_port_resolution.response_fingerprint,
+        .response_kind = wrong_port_resolution.response_kind,
+        .frame_response_fingerprint = wrong_port_resolution.frame_response_fingerprint,
+        .response_value_image_fingerprint = wrong_port_resolution.response_value_image_fingerprint,
+        .actuator_ref_fingerprint = wrong_port_resolution.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = wrong_port_resolution.idempotency_key_fingerprint,
+        .target_ref_fingerprint = wrong_port_resolution.target_ref_fingerprint,
+        .world_surface_fingerprint = wrong_port_resolution.world_surface_fingerprint,
+        .world_port_id = 1,
+        .class = wrong_port_resolution.class,
+        .mode = wrong_port_resolution.mode,
+        .fresh_called = wrong_port_resolution.fresh_called,
+        .attempt_number = wrong_port_resolution.attempt_number,
+        .run_permit_fingerprint = pending_window_permit.permit_fingerprint,
+        .environment_certificate_fingerprint = pending_window_permit.environment_certificate_fingerprint,
+        .run_receipt_fingerprint = wrong_port_resolution.run_receipt_fingerprint,
+        .capsule_fingerprint = wrong_port_resolution.capsule_fingerprint,
+        .blockers = wrong_port_resolution.blockers,
+        .warnings = wrong_port_resolution.warnings,
+        .metadata = wrong_port_resolution.metadata,
+    });
+    try std.testing.expectError(error.PendingDenied, pending_port_scoped_supervisor.afterActuationResolution(wrong_port_resolution, 16));
     try std.testing.expectEqual(@as(usize, 1), pending_window_supervisor.ledger.total_pending_actuations);
-    try std.testing.expectError(error.PendingDenied, pending_window_supervisor.afterActuationResolution(pending_receipt, 16));
+    try std.testing.expectError(error.PendingDenied, pending_window_supervisor.afterActuationResolution(bindReceiptToPermit(pending_receipt, pending_window_permit), 16));
     try std.testing.expectEqual(@as(usize, 1), pending_window_supervisor.ledger.total_pending_actuations);
-    try pending_window_supervisor.afterActuationResolution(execution.receipt, 16);
+    try pending_window_supervisor.afterActuationResolution(bindReceiptToPermit(execution.receipt, pending_window_permit), 16);
     try std.testing.expectEqual(@as(usize, 0), pending_window_supervisor.ledger.total_pending_actuations);
     try std.testing.expectEqual(@as(usize, 1), pending_window_supervisor.ledger.total_actuation_commits);
     try std.testing.expectEqual(@as(usize, 1), pending_window_supervisor.ledger.total_fresh_actuations);
-    try std.testing.expectError(error.PendingDenied, pending_window_supervisor.afterActuationResolution(execution.receipt, 16));
-    try pending_window_supervisor.afterActuationReceipt(pending_receipt, 16);
+    try std.testing.expectError(error.PendingDenied, pending_window_supervisor.afterActuationResolution(bindReceiptToPermit(execution.receipt, pending_window_permit), 16));
+    try pending_window_supervisor.afterActuationReceipt(bindReceiptToPermit(pending_receipt, pending_window_permit), 16);
 
     const deferred_receipt = world.Actuation.Receipt.init(.{
         .intent_fingerprint = pending_receipt.intent_fingerprint,
@@ -3234,10 +3328,10 @@ test "actuation environment preflight and supervision ledger account host effect
     });
     var deferred_limited_supervisor = try world.Supervision.Supervisor.init(std.testing.allocator, pending_window_permit, 1);
     defer deferred_limited_supervisor.deinit();
-    try deferred_limited_supervisor.afterActuationReceipt(deferred_receipt, 16);
+    try deferred_limited_supervisor.afterActuationReceipt(bindReceiptToPermit(deferred_receipt, pending_window_permit), 16);
     try std.testing.expectEqual(@as(usize, 1), deferred_limited_supervisor.ledger.total_pending_actuations);
     try std.testing.expectEqual(@as(usize, 1), deferred_limited_supervisor.ledger.total_deferred_actuations);
-    try std.testing.expectError(error.BudgetExceeded, deferred_limited_supervisor.afterActuationReceipt(deferred_receipt, 16));
+    try std.testing.expectError(error.BudgetExceeded, deferred_limited_supervisor.afterActuationReceipt(bindReceiptToPermit(deferred_receipt, pending_window_permit), 16));
     try std.testing.expectEqual(world.Supervision.BudgetExceededKind.pending_actuations, deferred_limited_supervisor.ledger.exceeded_budget.?);
 }
 

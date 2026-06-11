@@ -4326,7 +4326,11 @@ pub const Supervision = struct {
 
         pub fn recordActuationResolution(self: *@This(), receipt: Actuation.Receipt, response_bytes: usize, value_image_bytes: usize, cost_units: u64) bool {
             if (self.total_pending_actuations == 0) return false;
+            if (receipt.world_port_id >= self.per_port_usage.len) return false;
+            const port_usage = self.perPort(receipt.world_port_id);
+            if (port_usage.pending_calls == 0) return false;
             self.total_pending_actuations -= 1;
+            port_usage.pending_calls -= 1;
             if (receipt.failed) self.total_failed_actuations += 1;
             if (receipt.rejected) self.total_rejected_actuations += 1;
             if (receipt.failed) self.total_failed_calls += 1;
@@ -4337,7 +4341,6 @@ pub const Supervision = struct {
             self.total_value_image_bytes = self.total_value_image_bytes +| value_image_bytes;
             self.total_cost_units = self.total_cost_units +| cost_units;
             if (receipt.world_port_id < self.per_port_usage.len) {
-                const port_usage = self.perPort(receipt.world_port_id);
                 if (receipt.failed) port_usage.failed_calls += 1;
                 if (receipt.rejected) port_usage.rejected_calls += 1;
                 if (receipt.cancelled) port_usage.rejected_calls += 1;
@@ -4874,6 +4877,7 @@ pub const Supervision = struct {
 
         pub fn beforeActuationCommitWithAuthority(self: *@This(), intent: Actuation.Intent, key_present: bool, authority_kind: ?PortAuthority.Kind) !void {
             try self.validateWorldPortId(intent.world_port_id);
+            try self.validateActuationIntentPermitBinding(intent);
             const policy = self.permit.policy;
             if (!policy.allow_actuation) return self.deny(.before_actuation_commit, intent.world_port_id, .fresh_call_denied, null, "actuation denied");
             if (intent.requested_mode == .fresh and !policy.allow_fresh_actuation) return self.deny(.before_actuation_commit, intent.world_port_id, .fresh_call_denied, null, "fresh actuation denied");
@@ -4909,6 +4913,7 @@ pub const Supervision = struct {
         pub fn afterActuationReceiptAccounting(self: *@This(), receipt_value: Actuation.Receipt, accounting: ActuationResponseAccounting) !void {
             try receipt_value.validate();
             try self.validateWorldPortId(receipt_value.world_port_id);
+            try self.validateActuationReceiptPermitBinding(receipt_value);
             const policy = self.permit.policy;
             if (policy.require_actuation_receipts and receipt_value.receipt_fingerprint == 0) return self.deny(.after_actuation_response, receipt_value.world_port_id, .fresh_call_denied, null, "actuation receipt required");
             if (receipt_value.pending and !policy.allow_pending_actuation) return self.deny(.after_actuation_response, receipt_value.world_port_id, .pending_denied, null, "pending actuation denied");
@@ -4935,6 +4940,7 @@ pub const Supervision = struct {
         pub fn afterActuationResolutionAccounting(self: *@This(), receipt_value: Actuation.Receipt, accounting: ActuationResponseAccounting) !void {
             try receipt_value.validate();
             try self.validateWorldPortId(receipt_value.world_port_id);
+            try self.validateActuationReceiptPermitBinding(receipt_value);
             const policy = self.permit.policy;
             if (policy.require_actuation_receipts and receipt_value.receipt_fingerprint == 0) return self.deny(.after_actuation_response, receipt_value.world_port_id, .fresh_call_denied, null, "actuation receipt required");
             if (receipt_value.pending or receipt_value.deferred) return self.deny(.after_actuation_response, receipt_value.world_port_id, .pending_denied, null, "non-terminal actuation resolution denied");
@@ -4966,6 +4972,30 @@ pub const Supervision = struct {
                 .failed => self.permit.cost_model.failedCost(world_port_id),
             };
             return addSatU64Many(&.{ response_cost, response_byte_cost, value_image_cost, status_cost });
+        }
+
+        fn validateActuationIntentPermitBinding(self: *@This(), intent: Actuation.Intent) !void {
+            if (intent.target_ref_fingerprint != self.permit.target_ref_fingerprint) return error.SupervisionDenied;
+            if (intent.world_surface_fingerprint != self.permit.world_surface_fingerprint) return error.SupervisionDenied;
+            if (intent.run_permit_fingerprint == null or intent.run_permit_fingerprint.? != self.permit.permit_fingerprint) return error.SupervisionDenied;
+            try self.validateOptionalEnvironmentCertificate(intent.environment_certificate_fingerprint);
+        }
+
+        fn validateActuationReceiptPermitBinding(self: *@This(), receipt_value: Actuation.Receipt) !void {
+            if (receipt_value.target_ref_fingerprint != self.permit.target_ref_fingerprint) return error.SupervisionDenied;
+            if (receipt_value.world_surface_fingerprint != self.permit.world_surface_fingerprint) return error.SupervisionDenied;
+            if (receipt_value.run_permit_fingerprint == null or receipt_value.run_permit_fingerprint.? != self.permit.permit_fingerprint) return error.SupervisionDenied;
+            try self.validateOptionalEnvironmentCertificate(receipt_value.environment_certificate_fingerprint);
+        }
+
+        fn validateOptionalEnvironmentCertificate(self: *@This(), certificate_fingerprint: ?u64) !void {
+            if (self.permit.environment_certificate_fingerprint == 0) {
+                if (certificate_fingerprint) |fingerprint| {
+                    if (fingerprint != 0) return error.SupervisionDenied;
+                }
+                return;
+            }
+            if (certificate_fingerprint == null or certificate_fingerprint.? != self.permit.environment_certificate_fingerprint) return error.SupervisionDenied;
         }
 
         fn enforceActuationResponseRule(self: *@This(), world_port_id: u32, rule: ?Supervision.PortRule, accounting: ActuationResponseAccounting, cost_delta: u64, current_cost_units: u64, summary: []const u8) !void {

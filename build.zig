@@ -763,7 +763,7 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Actuation supervised denial example.",
             .expected_stdout =
             \\denied_before_call=true
-            \\run_receipt_fingerprint=8896e8e1626800e1
+            \\run_receipt_fingerprint=999a0087f7b45b90
             \\
             ,
         },
