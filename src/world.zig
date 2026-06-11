@@ -9605,6 +9605,7 @@ pub const Runspace = struct {
             validateFabricResponseValue: *const fn (*anyopaque, u32, Frame.ValueImage) anyerror!void,
             fabricPlanCoversWorldPort: *const fn (*anyopaque, u32) bool,
             fabricPlanCoversHandlerlessWorldPort: *const fn (*anyopaque, u32) bool,
+            actuationBindingCoversWorldPort: *const fn (*anyopaque, u32) bool,
             fabricPlanFingerprint: *const fn (*anyopaque) ?u64,
             resumeTerminalFrame: *const fn (*anyopaque, Frame.Response) anyerror!void,
             dispatch: *const fn (*anyopaque) anyerror!?ResponseEvidence,
@@ -9673,6 +9674,10 @@ pub const Runspace = struct {
 
         fn fabricPlanCoversHandlerlessWorldPort(self: @This(), world_port_id: u32) bool {
             return self.vtable.fabricPlanCoversHandlerlessWorldPort(self.ptr, world_port_id);
+        }
+
+        fn actuationBindingCoversWorldPort(self: @This(), world_port_id: u32) bool {
+            return self.vtable.actuationBindingCoversWorldPort(self.ptr, world_port_id);
         }
 
         fn fabricPlanFingerprint(self: @This()) ?u64 {
@@ -9886,6 +9891,14 @@ pub const Runspace = struct {
                     return false;
                 }
 
+                fn runActuationBindingCoversWorldPort(ptr: *anyopaque, world_port_id: u32) bool {
+                    const active: *RunType = @ptrCast(@alignCast(ptr));
+                    if (@hasDecl(RunType, "runspaceActuationBindingCoversWorldPort")) {
+                        return active.runspaceActuationBindingCoversWorldPort(world_port_id);
+                    }
+                    return false;
+                }
+
                 fn runFabricPlanFingerprint(ptr: *anyopaque) ?u64 {
                     const active: *RunType = @ptrCast(@alignCast(ptr));
                     if (@hasDecl(RunType, "runspaceFabricPlanFingerprint")) {
@@ -10013,6 +10026,7 @@ pub const Runspace = struct {
                     .validateFabricResponseValue = runValidateFabricResponseValue,
                     .fabricPlanCoversWorldPort = runFabricPlanCoversWorldPort,
                     .fabricPlanCoversHandlerlessWorldPort = runFabricPlanCoversHandlerlessWorldPort,
+                    .actuationBindingCoversWorldPort = runActuationBindingCoversWorldPort,
                     .fabricPlanFingerprint = runFabricPlanFingerprint,
                     .resumeTerminalFrame = runResumeTerminalFrame,
                     .dispatch = runDispatch,
@@ -11774,6 +11788,11 @@ pub const Runspace = struct {
         if (slot.pending_mailbox_id != mailbox_id or (slot.status != .parked_on_port and !fabric_owned_supervision_park)) return error.StaleRunHandle;
         if (!options.allow_active_fabric and self.hasActiveFabricInvocationForMailbox(mailbox_id)) return error.ActiveFabricUnsupported;
         if (!options.allow_active_fabric and self.pendingRequiresFabricRoute(slot.*, pending)) return error.ActiveFabricUnsupported;
+        if (options.supervision_mode == .normal) {
+            if (slot.driver) |driver| {
+                if (driver.actuationBindingCoversWorldPort(pending.world_port_id)) return error.InvalidPendingPortTransition;
+            }
+        }
         const fabric_completes_driverless_parent = options.allow_active_fabric and slot.driver == null and slot.installed_run_image != null;
         var responded_summary: []u8 = "";
         var responded_summary_owned = false;
@@ -28547,6 +28566,10 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     return self.fabricPlanCoversWorldPort(world_port_id);
                 }
 
+                pub fn runspaceActuationBindingCoversWorldPort(self: *Self, world_port_id: u32) bool {
+                    return self.actuationBindingCoversWorldPort(world_port_id);
+                }
+
                 pub fn runspaceFabricPlanFingerprint(self: *Self) ?u64 {
                     if (self.activeFabricPlan()) |plan| return plan.plan_fingerprint;
                     if (self.supervisor) |supervisor| return supervisor.permit.fabric_plan_fingerprint;
@@ -28761,6 +28784,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     if (response_frame.target_certificate_fingerprint != frame.target_certificate_fingerprint) return error.FrameTargetCertificateMismatch;
                     if (response_frame.world_port_id != world_port_id) return error.FramePortMismatch;
                     if (response_frame.request_fingerprint != frame.request_fingerprint) return error.FrameRequestFingerprintMismatch;
+                    if (account_supervisor and self.actuationBindingCoversWorldPort(world_port_id)) return error.InvalidPendingPortTransition;
                     if (response_frame.status == .pending) {
                         if (account_supervisor) {
                             if (self.supervisor) |*supervisor| {

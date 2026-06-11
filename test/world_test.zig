@@ -23051,6 +23051,119 @@ test "direct machine nextFrame exposes handlerless actuation request" {
     };
     defer request.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(u32, 0), request.world_port_id);
+
+    const rejected = world.Frame.Response.init(.{
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .target_certificate_fingerprint = request.target_certificate_fingerprint,
+        .world_port_id = request.world_port_id,
+        .request_fingerprint = request.request_fingerprint,
+        .response_kind = .@"resume",
+        .response_value_table_id = request.expected_response_value_table_id,
+        .response_fingerprint = 0x5150_0a11,
+        .replay_key = request.replay_key_seed.withResponse(0x5150_0a11).fingerprint(),
+        .status = .rejected,
+    });
+    try std.testing.expectError(error.InvalidPendingPortTransition, run.resumeFrame(rejected));
+}
+
+test "runspace generic response rejects handlerless actuation request" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+
+    _ = try runspace.installMachineRun(fixtures.Ports.Target, PortsActuationOnlyEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    _ = try runspace.tick();
+    const pending = try runspace.mailbox.get(0);
+    const request = pending.request_frame.?;
+    const rejected = world.Frame.Response.init(.{
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .target_certificate_fingerprint = request.target_certificate_fingerprint,
+        .world_port_id = request.world_port_id,
+        .request_fingerprint = request.request_fingerprint,
+        .response_kind = .@"resume",
+        .response_value_table_id = request.expected_response_value_table_id,
+        .response_fingerprint = 0x5150_0a12,
+        .replay_key = request.replay_key_seed.withResponse(0x5150_0a12).fingerprint(),
+        .status = .rejected,
+    });
+    try std.testing.expectError(error.InvalidPendingPortTransition, runspace.respond(0, rejected));
+}
+
+test "runspace dispatch completes handlerless actuation request" {
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+
+    const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsActuationOnlyEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    _ = try runspace.tick();
+    const pending = try runspace.mailbox.get(0);
+    const request = pending.request_frame.?;
+    const actuator_ref = PortsActuationOnlyActuator.actuator_ref;
+    const descriptor = world.Actuation.Descriptor.init(.{
+        .actuator_ref = actuator_ref,
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .target_ref_fingerprint = pending.target_ref_fingerprint,
+        .world_port_id = request.world_port_id,
+        .response_value_table_id = request.expected_response_value_table_id,
+        .allowed_response_kinds = world.Actuation.ResponseStatusSet.all,
+    });
+    const key = world.Actuation.IdempotencyKey.init(.{
+        .target_ref_fingerprint = pending.target_ref_fingerprint,
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .world_port_id = request.world_port_id,
+        .request_fingerprint = request.request_fingerprint,
+        .pending_port_fingerprint = pending.pending_port_fingerprint,
+        .actuator_ref_fingerprint = actuator_ref.ref_fingerprint,
+    });
+    const intent = world.Actuation.Intent.init(.{
+        .actuator_ref_fingerprint = actuator_ref.ref_fingerprint,
+        .descriptor_fingerprint = descriptor.descriptor_fingerprint,
+        .target_ref_fingerprint = pending.target_ref_fingerprint,
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .world_port_id = request.world_port_id,
+        .pending_port_fingerprint = pending.pending_port_fingerprint,
+        .frame_request_fingerprint = request.request_fingerprint,
+        .encoded_frame_request_fingerprint = request.frame_fingerprint,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .run_permit_fingerprint = pending.run_permit_fingerprint,
+        .environment_certificate_fingerprint = pending.environment_certificate_fingerprint,
+        .class = .idempotent_mutation,
+        .requested_mode = .fresh,
+    });
+    const envelope = world.Actuation.Envelope.init(.{
+        .intent_fingerprint = intent.intent_fingerprint,
+        .encoded_frame_request_fingerprint = request.frame_fingerprint,
+        .idempotency_key = key,
+        .expected_response_value_table_id = request.expected_response_value_table_id,
+    });
+    const execution = try world.Actuation.Membrane.execute(.{
+        .policy = world.Actuation.Policy.fixture_test,
+        .intent = intent,
+        .envelope = envelope,
+        .actuator = .{ .fixture = .{
+            .status = .rejected,
+            .frame_response_fingerprint = 0x5150_0a13,
+            .reason = "actuation-only rejected fixture",
+        } },
+        .descriptor = descriptor,
+        .attempt_number = 1,
+        .target_ref_fingerprint = pending.target_ref_fingerprint,
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+    });
+
+    const receipt = try runspace.dispatchActuation(0, execution);
+    try std.testing.expect(receipt.rejected);
+    try std.testing.expectEqual(world.Runspace.PendingStatus.cancelled, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.failed, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
 }
 
 test "direct machine fabric provider route charges provider run budget" {
