@@ -680,6 +680,62 @@ test "actuation commit response receipt journal and replay bind idempotency" {
     });
     try std.testing.expectError(error.InvalidFrameEncoding, fresh_without_call.validate());
 
+    const rebound_intent = world.Actuation.Intent.init(.{
+        .actuator_ref_fingerprint = ref.ref_fingerprint,
+        .descriptor_fingerprint = 0x4104,
+        .target_ref_fingerprint = 0x4101,
+        .world_surface_fingerprint = 0x4102,
+        .world_port_id = 0,
+        .frame_request_fingerprint = 0x4107,
+        .encoded_frame_request_fingerprint = 0x4107,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .class = .deterministic_fixture,
+        .requested_mode = .fresh,
+    });
+    const rebound_envelope = world.Actuation.Envelope.init(.{
+        .intent_fingerprint = rebound_intent.intent_fingerprint,
+        .encoded_frame_request_fingerprint = rebound_intent.frame_request_fingerprint,
+        .idempotency_key = key,
+    });
+    const rebound_decision = world.Actuation.Decision.denied(rebound_intent, policy, "denied");
+    const rebound_commit = world.Actuation.Commit.init(.{
+        .intent_fingerprint = rebound_intent.intent_fingerprint,
+        .decision_fingerprint = rebound_decision.decision_fingerprint,
+        .envelope_fingerprint = rebound_envelope.envelope_fingerprint,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .status = .rejected,
+    });
+    const rebound_response = world.Actuation.Response.init(.{
+        .intent_fingerprint = rebound_intent.intent_fingerprint,
+        .commit_fingerprint = rebound_commit.commit_fingerprint,
+        .actuator_ref_fingerprint = ref.ref_fingerprint,
+        .world_port_id = 0,
+        .request_fingerprint = rebound_intent.frame_request_fingerprint,
+        .status = .rejected,
+        .reason = "denied",
+    });
+    const rebound_receipt = world.Actuation.Receipt.fromResponse(.{
+        .intent = rebound_intent,
+        .envelope = rebound_envelope,
+        .decision = rebound_decision,
+        .commit = rebound_commit,
+        .response = rebound_response,
+        .target_ref_fingerprint = 0x4101,
+        .world_surface_fingerprint = 0x4102,
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+    });
+    const rebound_execution = world.Actuation.Membrane.Execution{
+        .policy = policy,
+        .intent = rebound_intent,
+        .envelope = rebound_envelope,
+        .decision = rebound_decision,
+        .commit_value = rebound_commit,
+        .response = rebound_response,
+        .receipt = rebound_receipt,
+    };
+    try std.testing.expectError(error.InvalidFrameEncoding, rebound_execution.validate());
+
     var journal = world.Actuation.Journal.init();
     defer journal.deinit(std.testing.allocator);
     try journal.appendIntent(std.testing.allocator, intent);
