@@ -3317,6 +3317,7 @@ test "actuation environment preflight and supervision ledger account host effect
         .transcript_image_available = true,
         .mode = .replay,
         .policy = world.SupervisionPolicy.init(.{
+            .allow_replay_calls = true,
             .allow_actuation = true,
             .allow_replay_actuation = true,
         }),
@@ -3340,6 +3341,29 @@ test "actuation environment preflight and supervision ledger account host effect
         .require_idempotency_key = false,
         .max_actuation_calls = null,
     });
+    const fresh_permit_replay_intent = bindIntentToPermit(replay_intent, replay_actuation_permit);
+    const fresh_permit_replay_envelope = world.Actuation.Envelope.init(.{
+        .intent_fingerprint = fresh_permit_replay_intent.intent_fingerprint,
+        .encoded_frame_request_fingerprint = fresh_permit_replay_intent.encoded_frame_request_fingerprint,
+        .idempotency_key = key,
+        .expected_response_value_ref = descriptor.response_value_ref,
+        .expected_response_value_table_id = descriptor.response_value_table_id,
+    });
+    const fresh_permit_replay_execution = try world.Actuation.Membrane.execute(.{
+        .policy = replay_idempotent_policy,
+        .intent = fresh_permit_replay_intent,
+        .envelope = fresh_permit_replay_envelope,
+        .actuator = .{ .replay = .{ .source = replay_source } },
+        .descriptor = descriptor,
+        .binding = binding,
+        .run_permit = replay_actuation_permit,
+        .explicit_mutation_approval = true,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+    });
+    try fresh_permit_replay_execution.validate();
+    try std.testing.expect(fresh_permit_replay_execution.receipt.replayed);
+    try std.testing.expect(!fresh_permit_replay_execution.fresh_called);
     const permitted_replay_execution = try world.Actuation.Membrane.execute(.{
         .policy = replay_idempotent_policy,
         .intent = permitted_replay_intent,

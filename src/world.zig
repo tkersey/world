@@ -19597,9 +19597,9 @@ pub const Actuation = struct {
             if (permit.permit_fingerprint != args.intent.run_permit_fingerprint.?) return error.SupervisionDenied;
             if (permit.target_ref_fingerprint != args.intent.target_ref_fingerprint) return error.SupervisionDenied;
             if (permit.world_surface_fingerprint != args.intent.world_surface_fingerprint) return error.SupervisionDenied;
-            if (permit.mode != args.intent.requested_mode) return error.SupervisionDenied;
             try validatePermitEnvironmentCertificateBinding(permit, args.intent.environment_certificate_fingerprint);
             const policy = permit.policy;
+            if (!Supervision.modeAllowedByPolicy(policy, permit.mode)) return error.SupervisionDenied;
             if (!policy.allow_actuation) return error.SupervisionDenied;
             switch (args.intent.requested_mode) {
                 .fresh => if (!policy.allow_fresh_actuation) return error.SupervisionDenied,
