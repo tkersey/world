@@ -302,9 +302,8 @@ test "linker catalog carries explicit actuation adapter candidates" {
     defer std.testing.allocator.free(match.blockers);
     defer std.testing.allocator.free(match.warnings);
     try std.testing.expectEqual(world.Linker.MatchKind.adapter, match.kind);
-    try std.testing.expect(!match.accepted());
-    try std.testing.expectEqual(@as(usize, 1), match.blockers.len);
-    try std.testing.expectEqual(world.Linker.Blocker.UnsupportedRouteKind, match.blockers[0]);
+    try std.testing.expect(match.accepted());
+    try std.testing.expectEqual(@as(usize, 0), match.blockers.len);
 
     var wrong_requirement = requirement;
     wrong_requirement.requirement_fingerprint +%= 1;
@@ -11141,7 +11140,7 @@ test "link actuation catalog fingerprint distinguishes missing and zero port met
     try std.testing.expect(missing_port.entry_fingerprint != port_zero.entry_fingerprint);
 }
 
-test "link actuation adapter fallback remains non-executable without adapter dispatcher" {
+test "link actuation adapter fallback synthesizes executable adapter route" {
     const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
     const entries = [_]world.Linker.Catalog.Entry{
@@ -11166,10 +11165,12 @@ test "link actuation adapter fallback remains non-executable without adapter dis
     });
     defer linked.deinit();
 
-    try std.testing.expect(!linked.plan.accepted());
-    try std.testing.expectEqual(world.Linker.NormalForm.partial_with_blockers, linked.plan.normal_form);
-    try std.testing.expectEqual(@as(usize, 0), linked.plan.fabric_plans.len);
-    try std.testing.expect(linked.graph.hasBlocker(.UnsupportedRouteKind));
+    try std.testing.expect(linked.plan.accepted());
+    try std.testing.expectEqual(world.Linker.NormalForm.closed_fabric, linked.plan.normal_form);
+    try std.testing.expectEqual(@as(usize, 1), linked.plan.fabric_plans.len);
+    try std.testing.expectEqual(@as(usize, 1), linked.plan.fabric_plans[0].routes.len);
+    try std.testing.expectEqual(world.Fabric.RouteKind.adapter, linked.plan.fabric_plans[0].routes[0].kind);
+    try std.testing.expect(linked.plan.fabric_plans[0].routes[0].hasActuationRouteBinding());
 }
 
 test "link unsupported descriptorless providers do not consume candidate cap" {
@@ -12170,7 +12171,7 @@ test "fabric plan coverage ordering depth and provider limits fail closed" {
         .routes = &.{actuation_adapter_route},
     });
     try actuation_adapter_plan.validate();
-    try std.testing.expectError(error.UnsupportedMapping, actuation_adapter_plan.assertExecutableMappings());
+    try actuation_adapter_plan.assertExecutableMappings();
     try actuation_adapter_plan.assertCoverage(import_set);
     const actuation_adapter_coverage = actuation_adapter_plan.coverage(parent_ref, import_set);
     try actuation_adapter_coverage.validate();

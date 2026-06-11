@@ -9088,7 +9088,7 @@ pub const Fabric = struct {
                 }
                 switch (route.kind) {
                     .target_export, .admitted_run => if (response_mapping == null) return error.UnsupportedMapping,
-                    .adapter => return error.UnsupportedMapping,
+                    .adapter => if (!route.hasActuationRouteBinding()) return error.UnsupportedMapping,
                     .guest, .replay, .reject, .unsupported => {
                         if (request_mapping != null or response_mapping != null) return error.UnsupportedMapping;
                     },

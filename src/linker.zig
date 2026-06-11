@@ -2080,7 +2080,7 @@ pub fn Linker(comptime W: type) type {
                 .replay_provider => policy.allow_replay_routes,
                 .reject_route => policy.allow_reject_routes,
                 .guest_provider => false,
-                .environment_adapter => false,
+                .environment_adapter => policy.allow_adapter_fallback and entryHasValidActuationAdapterMetadata(entry),
             };
         }
 
