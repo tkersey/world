@@ -9539,7 +9539,7 @@ pub const Runspace = struct {
             beforeResponse: *const fn (*anyopaque, u32, ResponseStatus, usize, usize) anyerror!void,
             beforeTerminalResponse: *const fn (*anyopaque, u32, ResponseStatus, usize, usize) anyerror!void,
             beforeFabricInvocation: *const fn (*anyopaque, u32, Fabric.RouteKind, usize, usize) anyerror!void,
-            beforeActuationCommit: *const fn (*anyopaque, Actuation.Intent, bool) anyerror!void,
+            beforeActuationCommit: *const fn (*anyopaque, Actuation.Intent, bool, ?PortAuthority.Kind) anyerror!void,
             afterActuationReceipt: *const fn (*anyopaque, Actuation.Receipt, usize, usize) anyerror!void,
             afterActuationResolution: *const fn (*anyopaque, Actuation.Receipt, usize, usize) anyerror!void,
             validateFabricResponseValue: *const fn (*anyopaque, u32, Frame.ValueImage) anyerror!void,
@@ -9588,7 +9588,11 @@ pub const Runspace = struct {
         }
 
         fn beforeActuationCommit(self: @This(), intent: Actuation.Intent, key_present: bool) !void {
-            return self.vtable.beforeActuationCommit(self.ptr, intent, key_present);
+            return self.beforeActuationCommitWithAuthority(intent, key_present, null);
+        }
+
+        fn beforeActuationCommitWithAuthority(self: @This(), intent: Actuation.Intent, key_present: bool, authority_kind: ?PortAuthority.Kind) !void {
+            return self.vtable.beforeActuationCommit(self.ptr, intent, key_present, authority_kind);
         }
 
         fn afterActuationReceipt(self: @This(), receipt: Actuation.Receipt, response_bytes: usize, value_image_bytes: usize) !void {
@@ -9777,11 +9781,12 @@ pub const Runspace = struct {
                     }
                 }
 
-                fn runBeforeActuationCommit(ptr: *anyopaque, intent: Actuation.Intent, key_present: bool) anyerror!void {
+                fn runBeforeActuationCommit(ptr: *anyopaque, intent: Actuation.Intent, key_present: bool, authority_kind: ?PortAuthority.Kind) anyerror!void {
                     const active: *RunType = @ptrCast(@alignCast(ptr));
+                    if (@hasDecl(RunType, "beforeRunspaceActuationCommitWithAuthority")) return active.beforeRunspaceActuationCommitWithAuthority(intent, key_present, authority_kind);
                     if (@hasDecl(RunType, "beforeRunspaceActuationCommit")) return active.beforeRunspaceActuationCommit(intent, key_present);
                     if (@hasField(RunType, "supervisor")) {
-                        if (active.supervisor) |*supervisor| return supervisor.beforeActuationCommit(intent, key_present);
+                        if (active.supervisor) |*supervisor| return supervisor.beforeActuationCommitWithAuthority(intent, key_present, authority_kind);
                     }
                 }
 
@@ -11145,7 +11150,7 @@ pub const Runspace = struct {
             .target_ref = target_ref,
             .current_state = state,
             .status = .admitted,
-            .environment_certificate_fingerprint = if (permit) |run_permit| run_permit.environment_certificate_fingerprint else null,
+            .environment_certificate_fingerprint = if (permit) |run_permit| optionalNonZeroFingerprint(run_permit.environment_certificate_fingerprint) else null,
             .run_permit_fingerprint = if (permit) |run_permit| run_permit.permit_fingerprint else null,
             .supervisor = supervisor,
         });
@@ -11235,7 +11240,7 @@ pub const Runspace = struct {
             .target_ref = target_ref,
             .current_state = state,
             .status = .runnable,
-            .environment_certificate_fingerprint = if (maybe_permit) |permit| permit.environment_certificate_fingerprint else null,
+            .environment_certificate_fingerprint = if (maybe_permit) |permit| optionalNonZeroFingerprint(permit.environment_certificate_fingerprint) else null,
             .run_permit_fingerprint = if (maybe_permit) |permit| permit.permit_fingerprint else null,
             .driver = driver,
             .driver_world_port_count = Target.WorldPortTable.entries.len,
@@ -11295,7 +11300,7 @@ pub const Runspace = struct {
             .target_ref = installed_target_ref,
             .current_state = installed_state,
             .status = statusFromRunState(installed_state),
-            .environment_certificate_fingerprint = if (permit) |run_permit| run_permit.environment_certificate_fingerprint else image.environment_certificate_fingerprint,
+            .environment_certificate_fingerprint = if (permit) |run_permit| optionalNonZeroFingerprint(run_permit.environment_certificate_fingerprint) else image.environment_certificate_fingerprint,
             .run_permit_fingerprint = image.prior_run_permit_fingerprint,
             .branch_id = if (installed_state.branch_id == 0) null else installed_state.branch_id,
             .checkpoint_fingerprint = installed_state.checkpoint_fingerprint,
@@ -11563,7 +11568,7 @@ pub const Runspace = struct {
         var slot = &self.slots.items[slot_index];
         const key_present = execution.key_present;
         if (slot.driver) |driver| {
-            driver.beforeActuationCommit(execution.intent, key_present) catch |err| {
+            driver.beforeActuationCommitWithAuthority(execution.intent, key_present, execution.authority_kind) catch |err| {
                 supervisor_snapshot.restore(self, slot_index);
                 return err;
             };
@@ -29804,6 +29809,10 @@ fn mergeOptionalFingerprint(existing: *?u64, incoming: ?u64) !void {
 
 fn optionalFingerprintPresentNonZero(value: ?u64) bool {
     return value != null and value.? != 0;
+}
+
+fn optionalNonZeroFingerprint(value: u64) ?u64 {
+    return if (value == 0) null else value;
 }
 
 fn validateOptionalFingerprintMerge(existing: ?u64, incoming: ?u64) !void {
