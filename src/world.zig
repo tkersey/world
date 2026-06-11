@@ -4324,8 +4324,14 @@ pub const Supervision = struct {
         pub fn recordActuationResolution(self: *@This(), receipt: Actuation.Receipt, response_bytes: usize, value_image_bytes: usize, cost_units: u64) bool {
             if (self.total_pending_actuations == 0) return false;
             self.total_pending_actuations -= 1;
+            self.total_actuation_commits += 1;
+            if (receipt.fresh_called) self.total_fresh_actuations += 1;
+            if (receipt.replayed) self.total_replay_actuations += 1;
+            if (receipt.verified) self.total_verify_actuations += 1;
             if (receipt.failed) self.total_failed_actuations += 1;
             if (receipt.rejected) self.total_rejected_actuations += 1;
+            if (receipt.class == .irreversible_mutation) self.total_irreversible_actuations += 1;
+            if (receipt.class == .idempotent_mutation) self.total_idempotent_mutations += 1;
             self.total_actuation_bytes += response_bytes;
             self.total_port_responses = self.total_port_responses +| 1;
             self.total_frame_response_bytes = self.total_frame_response_bytes +| response_bytes;
@@ -4333,6 +4339,9 @@ pub const Supervision = struct {
             self.total_cost_units = self.total_cost_units +| cost_units;
             if (receipt.world_port_id < self.per_port_usage.len) {
                 const port_usage = self.perPort(receipt.world_port_id);
+                if (receipt.fresh_called) port_usage.fresh_calls += 1;
+                if (receipt.replayed) port_usage.replay_calls += 1;
+                if (receipt.verified) port_usage.verify_calls += 1;
                 if (receipt.failed) port_usage.failed_calls += 1;
                 if (receipt.rejected) port_usage.rejected_calls += 1;
                 port_usage.responses = port_usage.responses +| 1;
@@ -19429,6 +19438,7 @@ pub const Actuation = struct {
                 .verify => if (!policy.allow_verify_actuation) return error.SupervisionDenied,
                 .audit => return error.SupervisionDenied,
             }
+            if (args.intent.requested_mode == .fresh and permitPrecommitActuationCallLimitExceeded(permit)) return error.BudgetExceeded;
             if (policy.require_idempotency_keys and args.intent.requested_mode == .fresh and args.intent.class.isMutation() and !args.key_present) return error.SupervisionDenied;
             if (args.intent.class == .irreversible_mutation and !policy.allow_irreversible_actuation) return error.SupervisionDenied;
             if (!permitAllowsActuationDescriptorValuePolicy(permit, args.intent.world_port_id, args.descriptor)) return error.SupervisionDenied;
@@ -19437,6 +19447,16 @@ pub const Actuation = struct {
                 if (rule.world_surface_fingerprint != args.intent.world_surface_fingerprint) return error.SupervisionDenied;
                 if (!rule.permitsMode(args.intent.requested_mode)) return error.SupervisionDenied;
             }
+        }
+
+        fn permitPrecommitActuationCallLimitExceeded(permit: RunPermit) bool {
+            if (permit.budget.max_actuation_calls) |max| {
+                if (max == 0) return true;
+            }
+            if (permit.policy.max_actuation_calls) |max| {
+                if (max == 0) return true;
+            }
+            return false;
         }
 
         fn permitAllowsActuationDescriptorValuePolicy(permit: RunPermit, world_port_id: u32, descriptor: ?Descriptor) bool {
