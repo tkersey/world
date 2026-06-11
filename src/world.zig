@@ -5589,6 +5589,10 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
             const covered_missing = actuationCoveredMissingPortCount(requested_mode);
             const covered_port_count = @min(Target.WorldPortTable.entries.len, native_bound_count + covered_missing);
             report.actuation_binding_count = actuation_count;
+            if (!report.accepted and !acceptanceReportHasOnlyMissingBinding(report) and !acceptanceReportHasOnlyTranscriptRequirement(report)) {
+                report.report_fingerprint = fingerprintAcceptanceReport(report);
+                return report;
+            }
             if (covered_port_count < Target.WorldPortTable.entries.len) {
                 report.bound_port_count = covered_port_count;
                 report.missing_port_count = Target.WorldPortTable.entries.len - covered_port_count;
@@ -29399,6 +29403,12 @@ fn acceptanceReportHasOnlyMissingBinding(report: AcceptanceReport) bool {
     if (report.accepted) return false;
     if (report.blockers.len != 1) return false;
     return report.blockers[0] == .MissingBinding;
+}
+
+fn acceptanceReportHasOnlyTranscriptRequirement(report: AcceptanceReport) bool {
+    if (report.accepted) return false;
+    if (report.blockers.len != 1) return false;
+    return report.blockers[0] == .TranscriptImageRequired;
 }
 
 fn fabricCoveredMissingEnvironmentPortCount(comptime Target: type, comptime bindings: anytype, coverage: Fabric.CoverageReport, plan: Fabric.Plan) ?usize {

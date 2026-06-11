@@ -2022,6 +2022,16 @@ test "actuation environment preflight and supervision ledger account host effect
     try std.testing.expectEqual(fixtures.Agent.Target.WorldPortTable.entries.len, mixed_agent_preflight.bound_port_count);
     try std.testing.expectEqual(@as(usize, 0), mixed_agent_preflight.missing_port_count);
     try std.testing.expectEqual(@as(usize, 0), mixed_agent_preflight.missing_actuator_count);
+    const PortableAuthorityActuationEnv = world.Environment(fixtures.Ports.Target, .{
+        .bindings = .{PortsPortableAuthorityBinding},
+        .actuation_bindings = .{ToolBinding},
+        .policy = world.EnvironmentPolicy.fresh_and_replay,
+    });
+    const portable_authority_binding = PortableAuthorityActuationEnv.bindActuator(ToolBinding);
+    const portable_authority_preflight = PortableAuthorityActuationEnv.preflightActuation(portable_authority_binding, world.Actuation.Policy.strict_fresh);
+    try std.testing.expect(!portable_authority_preflight.accepted);
+    try std.testing.expectEqual(@as(usize, 1), portable_authority_preflight.actuation_binding_count);
+    try std.testing.expectEqualSlices(world.AcceptanceBlocker, &.{.PortableValuesRequired}, portable_authority_preflight.blockers);
     const agent_full_cert = AgentFullActuationEnv.certificate(.fresh, false);
     const agent_tool_denied_rules = [_]world.PortRule{world.PortRule.init(.{
         .world_surface_fingerprint = agent_full_cert.world_surface_fingerprint,
