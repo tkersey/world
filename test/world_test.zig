@@ -1412,6 +1412,42 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
         .idempotency_key = key,
     });
 
+    const pending_key = world.Actuation.IdempotencyKey.init(.{
+        .target_ref_fingerprint = 0x6102,
+        .world_surface_fingerprint = 0x6101,
+        .world_port_id = 7,
+        .request_fingerprint = 0x6103,
+        .pending_port_fingerprint = 0x620b,
+        .actuator_ref_fingerprint = ref.ref_fingerprint,
+    });
+    const wrong_pending_intent = world.Actuation.Intent.init(.{
+        .actuator_ref_fingerprint = ref.ref_fingerprint,
+        .descriptor_fingerprint = descriptor.descriptor_fingerprint,
+        .target_ref_fingerprint = 0x6102,
+        .world_surface_fingerprint = 0x6101,
+        .world_port_id = 7,
+        .pending_port_fingerprint = 0x620c,
+        .frame_request_fingerprint = 0x6103,
+        .encoded_frame_request_fingerprint = 0x6103,
+        .idempotency_key_fingerprint = pending_key.key_fingerprint,
+        .class = .deterministic_fixture,
+        .requested_mode = .fresh,
+    });
+    const wrong_pending_envelope = world.Actuation.Envelope.init(.{
+        .intent_fingerprint = wrong_pending_intent.intent_fingerprint,
+        .encoded_frame_request_fingerprint = wrong_pending_intent.frame_request_fingerprint,
+        .idempotency_key = pending_key,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Actuation.Membrane.execute(.{
+        .policy = policy,
+        .intent = wrong_pending_intent,
+        .envelope = wrong_pending_envelope,
+        .descriptor = descriptor,
+        .actuator = .{ .fixture = .{ .frame_response_fingerprint = 0x6200 } },
+        .target_ref_fingerprint = 0x6102,
+        .world_surface_fingerprint = 0x6101,
+    }));
+
     try std.testing.expectError(error.InvalidFrameEncoding, world.Actuation.Membrane.execute(.{
         .policy = policy,
         .intent = intent,

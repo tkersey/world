@@ -19686,6 +19686,7 @@ pub const Actuation = struct {
             if (args.envelope.idempotency_key.world_port_id != args.intent.world_port_id) return error.InvalidFrameEncoding;
             if (args.envelope.idempotency_key.request_fingerprint != args.intent.frame_request_fingerprint) return error.InvalidFrameEncoding;
             if (args.envelope.idempotency_key.actuator_ref_fingerprint != args.intent.actuator_ref_fingerprint) return error.InvalidFrameEncoding;
+            if (args.envelope.idempotency_key.pending_port_fingerprint != args.intent.pending_port_fingerprint) return error.InvalidFrameEncoding;
             if (args.envelope.idempotency_key.capsule_fingerprint != args.intent.capsule_fingerprint) return error.InvalidFrameEncoding;
             if (args.capsule_fingerprint) |capsule_fingerprint| {
                 if (args.intent.capsule_fingerprint == null or args.intent.capsule_fingerprint.? != capsule_fingerprint) return error.InvalidFrameEncoding;
