@@ -13290,7 +13290,7 @@ test "link actuation catalog fingerprint distinguishes missing and zero port met
     try std.testing.expect(missing_port.entry_fingerprint != port_zero.entry_fingerprint);
 }
 
-test "link actuation adapter fallback remains an external environment requirement" {
+test "link actuation adapter fallback emits metadata route without fabric coverage" {
     const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
     const entries = [_]world.Linker.Catalog.Entry{
@@ -13304,7 +13304,7 @@ test "link actuation adapter fallback remains an external environment requiremen
             .label = "actuation-adapter",
         }),
     };
-    var policy = world.Linker.Policy.allow_external_ports;
+    var policy = world.Linker.Policy.strict_closed;
     policy.allow_adapter_fallback = true;
     var linked = try world.Linker.link(std.testing.allocator, .{
         .root_target_ref = root_ref,
@@ -13316,28 +13316,18 @@ test "link actuation adapter fallback remains an external environment requiremen
     defer linked.deinit();
 
     try std.testing.expect(linked.plan.accepted());
-    try std.testing.expectEqual(world.Linker.NormalForm.fabric_with_external_ports, linked.plan.normal_form);
-    try std.testing.expectEqual(@as(usize, 0), linked.plan.fabric_plans.len);
+    try std.testing.expectEqual(world.Linker.NormalForm.closed_fabric, linked.plan.normal_form);
+    try std.testing.expectEqual(@as(usize, 1), linked.plan.fabric_plans.len);
+    try std.testing.expectEqual(world.Fabric.RouteKind.adapter, linked.plan.fabric_plans[0].routes[0].kind);
+    try std.testing.expectEqual(@as(?u64, 0xacc7_0101), linked.plan.fabric_plans[0].routes[0].actuator_ref_fingerprint);
+    try std.testing.expectEqual(@as(?u64, 0xacc7_0102), linked.plan.fabric_plans[0].routes[0].actuation_descriptor_fingerprint);
+    try std.testing.expectEqual(@as(?u64, 0xacc7_0103), linked.plan.fabric_plans[0].routes[0].actuation_binding_fingerprint);
+    try linked.plan.fabric_plans[0].assertExecutableMappings();
+    try std.testing.expectError(error.FabricMissingRoute, linked.plan.fabric_plans[0].assertCoverage(world.ImportSet.fromTarget(fixtures.Ports.Target)));
     try std.testing.expectEqual(@as(usize, 1), linked.matches.len);
     try std.testing.expectEqual(world.Linker.MatchKind.adapter, linked.matches[0].kind);
-    try std.testing.expectEqual(@as(usize, 1), linked.plan.externalImportSet().required_count);
-    try std.testing.expectEqual(root_import.requirement_fingerprint, linked.plan.externalImportSet().requirements[0].requirement_fingerprint);
-    try std.testing.expect(graphHasNodeKind(linked.graph, .environment_external));
-
-    var closed_policy = world.Linker.Policy.strict_closed;
-    closed_policy.allow_adapter_fallback = true;
-    var closed_linked = try world.Linker.link(std.testing.allocator, .{
-        .root_target_ref = root_ref,
-        .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
-        .root_imports = &.{root_import},
-        .catalog = world.Linker.Catalog.init(&entries),
-        .policy = closed_policy,
-    });
-    defer closed_linked.deinit();
-
-    try std.testing.expect(!closed_linked.plan.accepted());
-    try std.testing.expectEqual(@as(usize, 0), closed_linked.plan.fabric_plans.len);
-    try std.testing.expect(closed_linked.graph.hasBlocker(.UnsupportedRouteKind));
+    try std.testing.expectEqual(@as(usize, 0), linked.plan.externalImportSet().required_count);
+    try std.testing.expect(graphHasNodeKind(linked.graph, .fabric_route));
 }
 
 test "link unsupported descriptorless providers do not consume candidate cap" {

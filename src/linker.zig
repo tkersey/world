@@ -1583,20 +1583,6 @@ pub fn Linker(comptime W: type) type {
                 };
                 if (chosen.confidence == .ambiguous) ambiguous_count += 1;
                 const route_kind = routeKindForEntry(entry);
-                if (route_kind == .adapter) {
-                    if (policy.allow_external_environment_ports and external.items.len < policy.max_unresolved_imports) {
-                        try external.append(allocator, requirement);
-                        const external_node = try appendGraphEvidenceNode(allocator, &nodes, .environment_external, input.root_target_ref.target_ref_fingerprint, requirement, "adapter");
-                        try edges.append(allocator, Graph.Edge.init(.environment_satisfies_import, external_node.fingerprint, import_node.fingerprint));
-                        try warnings.append(allocator, .ExternalEnvironmentRequired);
-                        resolved_count += 1;
-                    } else {
-                        try unresolved.append(allocator, requirement);
-                        _ = try appendGraphEvidenceNode(allocator, &nodes, .unresolved, input.root_target_ref.target_ref_fingerprint, requirement, "adapter");
-                        try blockers.append(allocator, .UnsupportedRouteKind);
-                    }
-                    continue;
-                }
                 const requires_provider_run = routeKindRequiresProviderRun(route_kind);
                 const maybe_provider_ref = providerTargetRef(entry);
                 if (requires_provider_run and maybe_provider_ref == null) {
