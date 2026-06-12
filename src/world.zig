@@ -4390,6 +4390,7 @@ pub const Supervision = struct {
             self.total_pending_actuations -= 1;
             if (self.total_pending_calls > 0) self.total_pending_calls -= 1;
             port_usage.pending_calls -= 1;
+            if (receipt.fresh_called) self.total_fresh_actuations = self.total_fresh_actuations +| 1;
             if (receipt.replayed) self.total_replay_actuations = self.total_replay_actuations +| 1;
             if (receipt.verified) self.total_verify_actuations = self.total_verify_actuations +| 1;
             if (receipt.failed) self.total_failed_actuations = self.total_failed_actuations +| 1;
@@ -4402,6 +4403,7 @@ pub const Supervision = struct {
             self.total_value_image_bytes = self.total_value_image_bytes +| value_image_bytes;
             self.total_cost_units = self.total_cost_units +| cost_units;
             if (receipt.world_port_id < self.per_port_usage.len) {
+                if (receipt.fresh_called) port_usage.fresh_calls = port_usage.fresh_calls +| 1;
                 if (receipt.replayed) port_usage.replay_calls = port_usage.replay_calls +| 1;
                 if (receipt.verified) port_usage.verify_calls = port_usage.verify_calls +| 1;
                 if (receipt.failed) port_usage.failed_calls = port_usage.failed_calls +| 1;

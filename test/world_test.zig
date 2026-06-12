@@ -5128,7 +5128,8 @@ test "actuation environment preflight and supervision ledger account host effect
     try pending_window_supervisor.afterActuationResolution(bindReceiptToPermit(execution.receipt, pending_window_permit), 16);
     try std.testing.expectEqual(@as(usize, 0), pending_window_supervisor.ledger.total_pending_actuations);
     try std.testing.expectEqual(@as(usize, 1), pending_window_supervisor.ledger.total_actuation_commits);
-    try std.testing.expectEqual(@as(usize, 1), pending_window_supervisor.ledger.total_fresh_actuations);
+    try std.testing.expectEqual(@as(usize, 2), pending_window_supervisor.ledger.total_fresh_actuations);
+    try std.testing.expectEqual(@as(usize, 2), pending_window_supervisor.ledger.per_port_usage[0].fresh_calls);
     try std.testing.expectError(error.PendingDenied, pending_window_supervisor.afterActuationResolution(bindReceiptToPermit(execution.receipt, pending_window_permit), 16));
     try pending_window_supervisor.afterActuationReceipt(bindReceiptToPermit(pending_receipt, pending_window_permit), 16);
     var saturating_resolution_supervisor = try world.Supervision.Supervisor.init(std.testing.allocator, saturating_permit, 1);
@@ -5638,8 +5639,8 @@ test "runspace pending actuation fresh completion resolves pending accounting" {
     try std.testing.expect(try ledger.recordActuationResolution(std.testing.allocator, terminal_receipt, 0, 0, 0));
     try std.testing.expectEqual(@as(usize, 0), ledger.total_pending_calls);
     try std.testing.expectEqual(@as(usize, 1), ledger.total_actuation_commits);
-    try std.testing.expectEqual(@as(usize, 1), ledger.total_fresh_actuations);
-    try std.testing.expectEqual(@as(usize, 1), ledger.per_port_usage[0].fresh_calls);
+    try std.testing.expectEqual(@as(usize, 2), ledger.total_fresh_actuations);
+    try std.testing.expectEqual(@as(usize, 2), ledger.per_port_usage[0].fresh_calls);
     try std.testing.expectEqual(@as(usize, 0), ledger.per_port_usage[0].pending_calls);
 
     var replay_resolution_ledger = try world.Supervision.UsageLedger.init(std.testing.allocator, permit, 1);
