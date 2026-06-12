@@ -20110,9 +20110,10 @@ pub const Actuation = struct {
             }
             const ledger = (ledger_ptr orelse return error.SupervisionDenied).*;
             try validatePrecommitUsageLedgerBinding(permit, ledger);
+            const mode_can_resolve_pending_receipt = intent.requested_mode == .replay or intent.requested_mode == .verify;
             const resolves_pending = ledger.hasPendingActuationForIntent(intent) or
-                if (pending_actuation_receipt_fingerprint) |fingerprint|
-                    ledger.hasPendingActuationReceipt(fingerprint, intent.world_port_id)
+                if (mode_can_resolve_pending_receipt and pending_actuation_receipt_fingerprint != null)
+                    ledger.hasPendingActuationReceipt(pending_actuation_receipt_fingerprint.?, intent.world_port_id)
                 else
                     false;
             if (budget_call_max) |max| {

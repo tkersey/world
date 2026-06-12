@@ -4543,6 +4543,46 @@ test "actuation environment preflight and supervision ledger account host effect
         .target_ref_fingerprint = target_ref.target_ref_fingerprint,
         .world_surface_fingerprint = target_ref.world_surface_fingerprint,
     }));
+    var unrelated_pending_supervisor = try world.Supervision.Supervisor.init(std.testing.allocator, positive_exhausted_permit, 1);
+    defer unrelated_pending_supervisor.deinit();
+    const unrelated_pending_receipt = world.Actuation.Receipt.init(.{
+        .intent_fingerprint = positive_exhausted_intent.intent_fingerprint +% 1,
+        .envelope_fingerprint = positive_exhausted_envelope.envelope_fingerprint,
+        .decision_fingerprint = 0xfeed_1a01,
+        .commit_fingerprint = 0xfeed_1a02,
+        .response_fingerprint = 0xfeed_1a03,
+        .frame_response_fingerprint = 0xfeed_1a04,
+        .actuator_ref_fingerprint = ToolActuator.actuator_ref.ref_fingerprint,
+        .idempotency_key_fingerprint = key.key_fingerprint +% 1,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+        .world_port_id = 0,
+        .class = .idempotent_mutation,
+        .mode = .fresh,
+        .fresh_called = true,
+        .pending = true,
+        .run_permit_fingerprint = positive_exhausted_permit.permit_fingerprint,
+        .environment_certificate_fingerprint = cert.certificate_fingerprint,
+    });
+    try unrelated_pending_supervisor.ledger.recordActuationReceipt(std.testing.allocator, unrelated_pending_receipt, 0, 0, 0);
+    try std.testing.expectError(error.BudgetExceeded, world.Actuation.Membrane.execute(.{
+        .policy = world.Actuation.Policy.strict_fresh,
+        .intent = positive_exhausted_intent,
+        .envelope = positive_exhausted_envelope,
+        .actuator = .{ .tool_like = .{
+            .frame_response_fingerprint = 0xfeed_2004,
+            .response_image = response_image,
+        } },
+        .descriptor = descriptor,
+        .binding = binding,
+        .run_permit = positive_exhausted_permit,
+        .precommit_ledger = &unrelated_pending_supervisor.ledger,
+        .pending_actuation_receipt_fingerprint = unrelated_pending_receipt.receipt_fingerprint,
+        .explicit_mutation_approval = true,
+        .attempt_number = 0,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+    }));
 
     const pending_cap_exhausted_permit = world.RunPermit.init(.{
         .target_ref_fingerprint = target_ref.target_ref_fingerprint,
