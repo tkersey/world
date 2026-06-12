@@ -2290,7 +2290,14 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
         .environment_certificate_fingerprint = valid_permit.environment_certificate_fingerprint,
         .binding_plan_fingerprint = valid_permit.binding_plan_fingerprint,
         .mode = .replay,
-        .policy = permit_policy,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_replay_calls = true,
+            .allow_actuation = true,
+            .allow_fresh_actuation = true,
+            .allow_replay_actuation = true,
+            .allow_native_adapters = true,
+        }),
     });
     const wrong_mode_intent = world.Actuation.Intent.init(.{
         .actuator_ref_fingerprint = ref.ref_fingerprint,
@@ -2389,6 +2396,16 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
         .verified = false,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, forged_verified_without_flag.validateAfterDecision(fixture_exec.decision));
+    const forged_cross_intent_commit = world.Actuation.Commit.init(.{
+        .intent_fingerprint = fixture_exec.commit_value.intent_fingerprint +% 1,
+        .decision_fingerprint = fixture_exec.commit_value.decision_fingerprint,
+        .envelope_fingerprint = fixture_exec.commit_value.envelope_fingerprint,
+        .idempotency_key_fingerprint = fixture_exec.commit_value.idempotency_key_fingerprint,
+        .attempt_number = fixture_exec.commit_value.attempt_number,
+        .status = fixture_exec.commit_value.status,
+        .fresh_called = fixture_exec.commit_value.fresh_called,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_cross_intent_commit.validateAfterDecision(fixture_exec.decision));
     const retry_denied = try world.Actuation.Membrane.execute(.{
         .policy = world.Actuation.Policy.strict_fresh,
         .intent = intent,
@@ -2550,6 +2567,38 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
         .attempt_number = fixture_exec.receipt.attempt_number,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, forged_response_actuator_exec.validate());
+    var forged_response_request_exec = fixture_exec;
+    forged_response_request_exec.response = world.Actuation.Response.init(.{
+        .intent_fingerprint = fixture_exec.response.intent_fingerprint,
+        .commit_fingerprint = fixture_exec.response.commit_fingerprint,
+        .actuator_ref_fingerprint = fixture_exec.response.actuator_ref_fingerprint,
+        .world_port_id = fixture_exec.response.world_port_id,
+        .request_fingerprint = fixture_exec.response.request_fingerprint +% 1,
+        .status = fixture_exec.response.status,
+        .response_kind = fixture_exec.response.response_kind,
+        .frame_response_fingerprint = fixture_exec.response.frame_response_fingerprint,
+        .value_image_fingerprint = fixture_exec.response.value_image_fingerprint,
+    });
+    forged_response_request_exec.receipt = world.Actuation.Receipt.init(.{
+        .intent_fingerprint = fixture_exec.receipt.intent_fingerprint,
+        .envelope_fingerprint = fixture_exec.receipt.envelope_fingerprint,
+        .decision_fingerprint = fixture_exec.receipt.decision_fingerprint,
+        .commit_fingerprint = fixture_exec.receipt.commit_fingerprint,
+        .response_fingerprint = forged_response_request_exec.response.response_fingerprint,
+        .response_kind = forged_response_request_exec.response.response_kind,
+        .frame_response_fingerprint = forged_response_request_exec.response.frame_response_fingerprint,
+        .response_value_image_fingerprint = forged_response_request_exec.response.value_image_fingerprint,
+        .actuator_ref_fingerprint = fixture_exec.receipt.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = fixture_exec.receipt.idempotency_key_fingerprint,
+        .target_ref_fingerprint = fixture_exec.receipt.target_ref_fingerprint,
+        .world_surface_fingerprint = fixture_exec.receipt.world_surface_fingerprint,
+        .world_port_id = fixture_exec.receipt.world_port_id,
+        .class = fixture_exec.receipt.class,
+        .mode = fixture_exec.receipt.mode,
+        .fresh_called = fixture_exec.receipt.fresh_called,
+        .attempt_number = fixture_exec.receipt.attempt_number,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_response_request_exec.validate());
     var forged_status_exec = fixture_exec;
     forged_status_exec.response = world.Actuation.Response.init(.{
         .intent_fingerprint = fixture_exec.response.intent_fingerprint,
@@ -3197,6 +3246,9 @@ test "actuation environment preflight and supervision ledger account host effect
     const mixed_class_preflight = AgentMixedClassActuationEnv.preflightActuation(mixed_class_binding, world.Actuation.Policy.strict_fresh);
     try std.testing.expect(!mixed_class_preflight.accepted);
     try std.testing.expectEqualSlices(world.AcceptanceBlocker, &.{.ActuationPolicyMismatch}, mixed_class_preflight.blockers);
+    try std.testing.expectEqual(@as(usize, 1), mixed_class_preflight.actuation_policy_blocker_count);
+    try std.testing.expectEqual(@as(usize, 0), mixed_class_preflight.actuation_value_policy_blocker_count);
+    try std.testing.expectEqual(@as(usize, 0), mixed_class_preflight.actuation_receipt_required_count);
     const PortableAuthorityActuationEnv = world.Environment(fixtures.Ports.Target, .{
         .bindings = .{PortsPortableAuthorityBinding},
         .actuation_bindings = .{ToolBinding},
@@ -3279,6 +3331,9 @@ test "actuation environment preflight and supervision ledger account host effect
     const native_value_preflight = NativeValueEnv.preflightActuation(native_value_binding, world.Actuation.Policy.strict_fresh);
     try std.testing.expect(!native_value_preflight.accepted);
     try std.testing.expectEqualSlices(world.AcceptanceBlocker, &.{.ActuationValuePolicyMismatch}, native_value_preflight.blockers);
+    try std.testing.expectEqual(@as(usize, 0), native_value_preflight.actuation_policy_blocker_count);
+    try std.testing.expectEqual(@as(usize, 1), native_value_preflight.actuation_value_policy_blocker_count);
+    try std.testing.expectEqual(@as(usize, 0), native_value_preflight.actuation_receipt_required_count);
     const native_descriptor = NativeValueBinding.actuationDescriptor();
     const native_target_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const native_key = world.Actuation.IdempotencyKey.init(.{
@@ -4078,7 +4133,8 @@ test "actuation environment preflight and supervision ledger account host effect
     var replay_actuation_supervisor = try world.Supervision.Supervisor.init(std.testing.allocator, replay_actuation_permit, 1);
     defer replay_actuation_supervisor.deinit();
     try std.testing.expect(!world.Supervision.modeAllowedByPolicy(replay_actuation_permit.policy, .replay));
-    try replay_actuation_supervisor.beforeActuationCommit(bindIntentToPermit(replay_intent, replay_actuation_permit), true);
+    try std.testing.expectError(error.ReplayCallDenied, replay_actuation_supervisor.beforeActuationCommit(bindIntentToPermit(replay_intent, replay_actuation_permit), true));
+    try std.testing.expectEqual(world.Supervision.Blocker.replay_call_denied, replay_actuation_supervisor.last_check.?.blocker.?);
     const replay_authority_rules = [_]world.PortRule{world.PortRule.init(.{
         .world_surface_fingerprint = target_ref.world_surface_fingerprint,
         .world_port_id = 0,
@@ -4125,7 +4181,7 @@ test "actuation environment preflight and supervision ledger account host effect
         .expected_response_value_ref = descriptor.response_value_ref,
         .expected_response_value_table_id = descriptor.response_value_table_id,
     });
-    const fresh_permit_replay_execution = try world.Actuation.Membrane.execute(.{
+    try std.testing.expectError(error.SupervisionDenied, world.Actuation.Membrane.execute(.{
         .policy = replay_idempotent_policy,
         .intent = fresh_permit_replay_intent,
         .envelope = fresh_permit_replay_envelope,
@@ -4136,11 +4192,7 @@ test "actuation environment preflight and supervision ledger account host effect
         .explicit_mutation_approval = true,
         .target_ref_fingerprint = target_ref.target_ref_fingerprint,
         .world_surface_fingerprint = target_ref.world_surface_fingerprint,
-    });
-    try fresh_permit_replay_execution.validate();
-    try std.testing.expect(fresh_permit_replay_execution.receipt.replayed);
-    try std.testing.expect(!fresh_permit_replay_execution.fresh_called);
-    try std.testing.expectError(error.ReplayCallDenied, replay_calls_only_supervisor.afterActuationReceipt(bindReceiptToPermit(fresh_permit_replay_execution.receipt, replay_calls_only_permit), 16));
+    }));
     const permitted_replay_execution = try world.Actuation.Membrane.execute(.{
         .policy = replay_idempotent_policy,
         .intent = permitted_replay_intent,
@@ -4157,6 +4209,7 @@ test "actuation environment preflight and supervision ledger account host effect
     try std.testing.expect(permitted_replay_execution.receipt.replayed);
     try std.testing.expect(!permitted_replay_execution.fresh_called);
     try std.testing.expectEqual(world.PortAuthority.Kind.replay_source, permitted_replay_execution.authority_kind.?);
+    try std.testing.expectError(error.ReplayCallDenied, replay_calls_only_supervisor.afterActuationReceipt(bindReceiptToPermit(permitted_replay_execution.receipt, replay_calls_only_permit), 16));
     const exhausted_replay_permit = world.RunPermit.init(.{
         .target_ref_fingerprint = target_ref.target_ref_fingerprint,
         .world_surface_fingerprint = target_ref.world_surface_fingerprint,
@@ -4240,7 +4293,8 @@ test "actuation environment preflight and supervision ledger account host effect
     var verify_actuation_supervisor = try world.Supervision.Supervisor.init(std.testing.allocator, verify_actuation_permit, 1);
     defer verify_actuation_supervisor.deinit();
     try std.testing.expect(!world.Supervision.modeAllowedByPolicy(verify_actuation_permit.policy, .verify));
-    try verify_actuation_supervisor.beforeActuationCommit(bindIntentToPermit(verify_intent, verify_actuation_permit), true);
+    try std.testing.expectError(error.SupervisionDenied, verify_actuation_supervisor.beforeActuationCommit(bindIntentToPermit(verify_intent, verify_actuation_permit), true));
+    try std.testing.expectEqual(world.Supervision.Blocker.verify_call_denied, verify_actuation_supervisor.last_check.?.blocker.?);
     const verify_actuation_policy = world.Actuation.Policy.init(.{
         .allow_verify_actuation = true,
         .allow_idempotent_mutation = true,
@@ -4254,9 +4308,9 @@ test "actuation environment preflight and supervision ledger account host effect
         .environment_certificate_fingerprint = cert.certificate_fingerprint,
         .binding_plan_fingerprint = cert.binding_plan_fingerprint,
         .transcript_image_available = true,
-        .mode = .fresh,
+        .mode = .verify,
         .policy = world.SupervisionPolicy.init(.{
-            .allow_fresh_calls = true,
+            .allow_verify_calls = true,
             .allow_actuation = true,
             .allow_verify_actuation = true,
         }),
@@ -4586,19 +4640,18 @@ test "actuation environment preflight and supervision ledger account host effect
         .target_ref_fingerprint = target_ref.target_ref_fingerprint,
         .world_surface_fingerprint = target_ref.world_surface_fingerprint,
     }));
-    const replay_verify_pending_cap_exhausted_permit = world.RunPermit.init(.{
+    const replay_pending_cap_exhausted_permit = world.RunPermit.init(.{
         .target_ref_fingerprint = target_ref.target_ref_fingerprint,
         .world_surface_fingerprint = target_ref.world_surface_fingerprint,
         .target_certificate_fingerprint = target_ref.target_certificate_fingerprint,
         .environment_certificate_fingerprint = cert.certificate_fingerprint,
         .binding_plan_fingerprint = cert.binding_plan_fingerprint,
         .transcript_image_available = true,
-        .mode = .fresh,
+        .mode = .replay,
         .policy = world.SupervisionPolicy.init(.{
-            .allow_fresh_calls = true,
+            .allow_replay_calls = true,
             .allow_actuation = true,
             .allow_replay_actuation = true,
-            .allow_verify_actuation = true,
             .allow_pending_actuation = true,
             .max_actuation_calls = null,
         }),
@@ -4607,9 +4660,9 @@ test "actuation environment preflight and supervision ledger account host effect
             .max_pending_actuations = 1,
         }),
     });
-    var replay_verify_pending_cap_supervisor = try world.Supervision.Supervisor.init(std.testing.allocator, replay_verify_pending_cap_exhausted_permit, 1);
-    defer replay_verify_pending_cap_supervisor.deinit();
-    try replay_verify_pending_cap_supervisor.ledger.recordActuationReceipt(std.testing.allocator, bindReceiptToPermit(existing_budget_pending_receipt, replay_verify_pending_cap_exhausted_permit), 0, 0, 0);
+    var replay_pending_cap_supervisor = try world.Supervision.Supervisor.init(std.testing.allocator, replay_pending_cap_exhausted_permit, 1);
+    defer replay_pending_cap_supervisor.deinit();
+    try replay_pending_cap_supervisor.ledger.recordActuationReceipt(std.testing.allocator, bindReceiptToPermit(existing_budget_pending_receipt, replay_pending_cap_exhausted_permit), 0, 0, 0);
 
     const replay_pending_intent = world.Actuation.Intent.init(.{
         .actuator_ref_fingerprint = ToolActuator.actuator_ref.ref_fingerprint,
@@ -4623,7 +4676,7 @@ test "actuation environment preflight and supervision ledger account host effect
         .idempotency_key_fingerprint = key.key_fingerprint,
         .class = .idempotent_mutation,
         .requested_mode = .replay,
-        .run_permit_fingerprint = replay_verify_pending_cap_exhausted_permit.permit_fingerprint,
+        .run_permit_fingerprint = replay_pending_cap_exhausted_permit.permit_fingerprint,
         .environment_certificate_fingerprint = cert.certificate_fingerprint,
     });
     const replay_pending_envelope = world.Actuation.Envelope.init(.{
@@ -4649,7 +4702,7 @@ test "actuation environment preflight and supervision ledger account host effect
         .mode = .replay,
         .replayed = true,
         .pending = true,
-        .run_permit_fingerprint = replay_verify_pending_cap_exhausted_permit.permit_fingerprint,
+        .run_permit_fingerprint = replay_pending_cap_exhausted_permit.permit_fingerprint,
         .environment_certificate_fingerprint = cert.certificate_fingerprint,
     });
     const replay_pending_source = world.Actuation.ReplaySource.init(.{ .receipts = &.{replay_pending_receipt} });
@@ -4663,13 +4716,37 @@ test "actuation environment preflight and supervision ledger account host effect
         } },
         .descriptor = descriptor,
         .binding = binding,
-        .run_permit = replay_verify_pending_cap_exhausted_permit,
-        .precommit_ledger = &replay_verify_pending_cap_supervisor.ledger,
+        .run_permit = replay_pending_cap_exhausted_permit,
+        .precommit_ledger = &replay_pending_cap_supervisor.ledger,
         .explicit_mutation_approval = true,
         .attempt_number = 0,
         .target_ref_fingerprint = target_ref.target_ref_fingerprint,
         .world_surface_fingerprint = target_ref.world_surface_fingerprint,
     }));
+
+    const verify_pending_cap_exhausted_permit = world.RunPermit.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = target_ref.target_certificate_fingerprint,
+        .environment_certificate_fingerprint = cert.certificate_fingerprint,
+        .binding_plan_fingerprint = cert.binding_plan_fingerprint,
+        .transcript_image_available = true,
+        .mode = .verify,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_verify_calls = true,
+            .allow_actuation = true,
+            .allow_verify_actuation = true,
+            .allow_pending_actuation = true,
+            .max_actuation_calls = null,
+        }),
+        .budget = world.Budget.init(.{
+            .max_actuation_calls = null,
+            .max_pending_actuations = 1,
+        }),
+    });
+    var verify_pending_cap_supervisor = try world.Supervision.Supervisor.init(std.testing.allocator, verify_pending_cap_exhausted_permit, 1);
+    defer verify_pending_cap_supervisor.deinit();
+    try verify_pending_cap_supervisor.ledger.recordActuationReceipt(std.testing.allocator, bindReceiptToPermit(existing_budget_pending_receipt, verify_pending_cap_exhausted_permit), 0, 0, 0);
 
     const verify_pending_intent = world.Actuation.Intent.init(.{
         .actuator_ref_fingerprint = ToolActuator.actuator_ref.ref_fingerprint,
@@ -4683,7 +4760,7 @@ test "actuation environment preflight and supervision ledger account host effect
         .idempotency_key_fingerprint = key.key_fingerprint,
         .class = .idempotent_mutation,
         .requested_mode = .verify,
-        .run_permit_fingerprint = replay_verify_pending_cap_exhausted_permit.permit_fingerprint,
+        .run_permit_fingerprint = verify_pending_cap_exhausted_permit.permit_fingerprint,
         .environment_certificate_fingerprint = cert.certificate_fingerprint,
     });
     const verify_pending_envelope = world.Actuation.Envelope.init(.{
@@ -4705,8 +4782,8 @@ test "actuation environment preflight and supervision ledger account host effect
         } },
         .descriptor = descriptor,
         .binding = binding,
-        .run_permit = replay_verify_pending_cap_exhausted_permit,
-        .precommit_ledger = &replay_verify_pending_cap_supervisor.ledger,
+        .run_permit = verify_pending_cap_exhausted_permit,
+        .precommit_ledger = &verify_pending_cap_supervisor.ledger,
         .explicit_mutation_approval = true,
         .attempt_number = 0,
         .target_ref_fingerprint = target_ref.target_ref_fingerprint,
@@ -13213,7 +13290,7 @@ test "link actuation catalog fingerprint distinguishes missing and zero port met
     try std.testing.expect(missing_port.entry_fingerprint != port_zero.entry_fingerprint);
 }
 
-test "link actuation adapter fallback synthesizes bound adapter route" {
+test "link actuation adapter fallback remains an external environment requirement" {
     const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
     const entries = [_]world.Linker.Catalog.Entry{
@@ -13227,7 +13304,7 @@ test "link actuation adapter fallback synthesizes bound adapter route" {
             .label = "actuation-adapter",
         }),
     };
-    var policy = world.Linker.Policy.strict_closed;
+    var policy = world.Linker.Policy.allow_external_ports;
     policy.allow_adapter_fallback = true;
     var linked = try world.Linker.link(std.testing.allocator, .{
         .root_target_ref = root_ref,
@@ -13239,12 +13316,28 @@ test "link actuation adapter fallback synthesizes bound adapter route" {
     defer linked.deinit();
 
     try std.testing.expect(linked.plan.accepted());
-    try std.testing.expectEqual(world.Linker.NormalForm.closed_fabric, linked.plan.normal_form);
-    try std.testing.expectEqual(@as(usize, 1), linked.plan.fabric_plans.len);
-    try std.testing.expectEqual(world.Fabric.RouteKind.adapter, linked.plan.fabric_plans[0].routes[0].kind);
-    try std.testing.expectEqual(@as(?u64, 0xacc7_0101), linked.plan.fabric_plans[0].routes[0].actuator_ref_fingerprint);
-    try std.testing.expectEqual(@as(?u64, 0xacc7_0102), linked.plan.fabric_plans[0].routes[0].actuation_descriptor_fingerprint);
-    try std.testing.expectEqual(@as(?u64, 0xacc7_0103), linked.plan.fabric_plans[0].routes[0].actuation_binding_fingerprint);
+    try std.testing.expectEqual(world.Linker.NormalForm.fabric_with_external_ports, linked.plan.normal_form);
+    try std.testing.expectEqual(@as(usize, 0), linked.plan.fabric_plans.len);
+    try std.testing.expectEqual(@as(usize, 1), linked.matches.len);
+    try std.testing.expectEqual(world.Linker.MatchKind.adapter, linked.matches[0].kind);
+    try std.testing.expectEqual(@as(usize, 1), linked.plan.externalImportSet().required_count);
+    try std.testing.expectEqual(root_import.requirement_fingerprint, linked.plan.externalImportSet().requirements[0].requirement_fingerprint);
+    try std.testing.expect(graphHasNodeKind(linked.graph, .environment_external));
+
+    var closed_policy = world.Linker.Policy.strict_closed;
+    closed_policy.allow_adapter_fallback = true;
+    var closed_linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
+        .root_imports = &.{root_import},
+        .catalog = world.Linker.Catalog.init(&entries),
+        .policy = closed_policy,
+    });
+    defer closed_linked.deinit();
+
+    try std.testing.expect(!closed_linked.plan.accepted());
+    try std.testing.expectEqual(@as(usize, 0), closed_linked.plan.fabric_plans.len);
+    try std.testing.expect(closed_linked.graph.hasBlocker(.UnsupportedRouteKind));
 }
 
 test "link unsupported descriptorless providers do not consume candidate cap" {
@@ -24883,42 +24976,14 @@ test "runspace dispatch completes handlerless actuation request" {
     var runspace = world.Runspace.init(std.testing.allocator, .{});
     defer runspace.deinit();
 
-    const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
-    const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
     const binding = PortsActuationOnlyBinding.actuationBindingRecord();
-    const entries = [_]world.Linker.Catalog.Entry{
-        world.Linker.Catalog.Entry.actuationAdapter(.{
-            .actuator_ref_fingerprint = binding.actuator_ref_fingerprint,
-            .actuation_descriptor_fingerprint = binding.descriptor_fingerprint,
-            .actuation_binding_fingerprint = binding.binding_fingerprint,
-            .actuation_import_requirement_fingerprint = root_import.requirement_fingerprint,
-            .actuation_world_port_id = root_import.world_port_id,
-            .environment_certificate_fingerprint = PortsActuationOnlyEnv.certificate(.fresh, false).certificate_fingerprint,
-            .label = "ports-actuation-linker-adapter",
-        }),
-    };
-    var policy = world.Linker.Policy.strict_closed;
-    policy.allow_adapter_fallback = true;
-    var linked = try world.Linker.link(std.testing.allocator, .{
-        .root_target_ref = root_ref,
-        .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
-        .root_imports = &.{root_import},
-        .catalog = world.Linker.Catalog.init(&entries),
-        .policy = policy,
-    });
-    defer linked.deinit();
-    try std.testing.expect(linked.plan.accepted());
-    try std.testing.expectEqual(@as(usize, 1), linked.plan.fabric_plans.len);
-    const linker_adapter_plan = linked.plan.fabric_plans[0];
 
     const handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsActuationOnlyEnv, &runtime, .{}, .{
         .allocator = std.testing.allocator,
         .mode = world.Mode.fresh,
-        .fabric_plan = linker_adapter_plan,
     });
     _ = try runspace.tick();
     const pending = try runspace.mailbox.get(0);
-    try std.testing.expectError(error.FabricMissingRoute, runspace.routePending(0, linker_adapter_plan));
     const request = pending.request_frame.?;
     const actuator_ref = PortsActuationOnlyActuator.actuator_ref;
     const descriptor = PortsActuationOnlyBinding.actuationDescriptor();

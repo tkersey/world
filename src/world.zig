@@ -4633,6 +4633,14 @@ pub const Supervision = struct {
             audit_only_exceeded,
         };
 
+        fn actuationModeBlocker(mode: Mode) Supervision.Blocker {
+            return switch (mode) {
+                .fresh, .audit => .fresh_call_denied,
+                .replay => .replay_call_denied,
+                .verify => .verify_call_denied,
+            };
+        }
+
         pub fn init(allocator: std.mem.Allocator, permit: Supervision.RunPermit, port_count: usize) !@This() {
             try validatePermitForRun(permit, port_count);
             const ledger = try Supervision.UsageLedger.init(allocator, permit, port_count);
@@ -4967,6 +4975,9 @@ pub const Supervision = struct {
             try intent.validate();
             try self.validateWorldPortId(intent.world_port_id);
             try self.validateActuationIntentPermitBinding(intent);
+            if (!permitModeAllowsActuationIntent(self.permit.mode, intent.requested_mode, null)) {
+                return self.deny(.before_actuation_commit, intent.world_port_id, actuationModeBlocker(intent.requested_mode), null, "actuation permit mode mismatch");
+            }
             const policy = self.permit.policy;
             if (!policy.allow_actuation) return self.deny(.before_actuation_commit, intent.world_port_id, .fresh_call_denied, null, "actuation denied");
             if (intent.requested_mode == .fresh and !policy.allow_fresh_actuation) return self.deny(.before_actuation_commit, intent.world_port_id, .fresh_call_denied, null, "fresh actuation denied");
@@ -11789,6 +11800,7 @@ pub const Runspace = struct {
         if (execution.receipt.environment_certificate_fingerprint != execution.intent.environment_certificate_fingerprint) return error.SupervisionDenied;
         const policy = permit.policy;
         if (!Supervision.modeAllowedByPolicy(policy, permit.mode)) return error.SupervisionDenied;
+        if (!permitModeAllowsActuationIntent(permit.mode, execution.intent.requested_mode, execution.receipt.pending_actuation_receipt_fingerprint)) return error.SupervisionDenied;
         if (!policy.allow_actuation) return error.SupervisionDenied;
         switch (execution.intent.requested_mode) {
             .fresh => if (!policy.allow_fresh_actuation) return error.SupervisionDenied,
@@ -18860,6 +18872,7 @@ pub const Actuation = struct {
         pub fn validateAfterDecision(self: @This(), decision: Decision) !void {
             try self.validate();
             if (self.decision_fingerprint != decision.decision_fingerprint) return error.InvalidFrameEncoding;
+            if (self.intent_fingerprint != decision.intent_fingerprint) return error.InvalidFrameEncoding;
             if (!decision.approved and self.status != .not_started and self.status != .rejected and self.status != .cancelled) return error.SupervisionDenied;
             if (self.fresh_called and !decision.approved) return error.SupervisionDenied;
             if (decision.approved and self.status == .rejected and !self.fresh_called) return error.InvalidFrameEncoding;
@@ -19900,6 +19913,8 @@ pub const Actuation = struct {
                 if (self.receipt.intent_fingerprint != self.intent.intent_fingerprint) return error.InvalidFrameEncoding;
                 if (self.response.commit_fingerprint.? != self.commit_value.commit_fingerprint) return error.InvalidFrameEncoding;
                 if (self.response.actuator_ref_fingerprint != self.intent.actuator_ref_fingerprint) return error.InvalidFrameEncoding;
+                if (self.response.world_port_id != self.intent.world_port_id) return error.InvalidFrameEncoding;
+                if (self.response.request_fingerprint != self.intent.frame_request_fingerprint) return error.InvalidFrameEncoding;
                 if (self.receipt.envelope_fingerprint != self.commit_value.envelope_fingerprint) return error.InvalidFrameEncoding;
                 if (self.receipt.decision_fingerprint != self.decision.decision_fingerprint) return error.InvalidFrameEncoding;
                 if (self.receipt.commit_fingerprint != self.commit_value.commit_fingerprint) return error.InvalidFrameEncoding;
@@ -20055,6 +20070,7 @@ pub const Actuation = struct {
             try validatePermitEnvironmentCertificateBinding(permit, args.intent.environment_certificate_fingerprint);
             const policy = permit.policy;
             if (!Supervision.modeAllowedByPolicy(policy, permit.mode)) return error.SupervisionDenied;
+            if (!permitModeAllowsActuationIntent(permit.mode, args.intent.requested_mode, args.pending_actuation_receipt_fingerprint)) return error.SupervisionDenied;
             if (!policy.allow_actuation) return error.SupervisionDenied;
             switch (args.intent.requested_mode) {
                 .fresh => if (!policy.allow_fresh_actuation) return error.SupervisionDenied,
@@ -30550,6 +30566,13 @@ fn authorityKindForActuationKind(kind: Actuation.Kind) PortAuthority.Kind {
     };
 }
 
+fn permitModeAllowsActuationIntent(permit_mode: Mode, requested_mode: Mode, pending_actuation_receipt_fingerprint: ?u64) bool {
+    if (permit_mode == requested_mode) return true;
+    if (permit_mode != .fresh) return false;
+    if (pending_actuation_receipt_fingerprint == null) return false;
+    return requested_mode == .replay or requested_mode == .verify;
+}
+
 fn portAuthorityModeMaskAllows(mask: PortAuthority.ModeMask, requested_mode: Mode) bool {
     return switch (mask) {
         .fresh => requested_mode == .fresh,
@@ -30788,6 +30811,7 @@ fn rejectedReport(base: AcceptanceReport, blockers: []const AcceptanceBlocker) A
     var report = base;
     report.accepted = false;
     report.blockers = blockers;
+    populateActuationBlockerCounters(&report, blockers);
     report.summary = "rejected";
     report.report_fingerprint = fingerprintAcceptanceReport(report);
     return report;
@@ -30804,8 +30828,23 @@ fn rejectedAcceptance(target_ref: TargetRef, mode: Mode, blockers: []const Accep
         .blockers = blockers,
         .summary = "rejected",
     };
+    populateActuationBlockerCounters(&report, blockers);
     report.report_fingerprint = fingerprintAcceptanceReport(report);
     return report;
+}
+
+fn populateActuationBlockerCounters(report: *AcceptanceReport, blockers: []const AcceptanceBlocker) void {
+    report.actuation_policy_blocker_count = 0;
+    report.actuation_value_policy_blocker_count = 0;
+    report.actuation_receipt_required_count = 0;
+    for (blockers) |blocker| {
+        switch (blocker) {
+            .ActuationPolicyMismatch => report.actuation_policy_blocker_count += 1,
+            .ActuationValuePolicyMismatch => report.actuation_value_policy_blocker_count += 1,
+            .ActuationReceiptRequired => report.actuation_receipt_required_count += 1,
+            else => {},
+        }
+    }
 }
 
 fn acceptanceError(report: AcceptanceReport) Error {
