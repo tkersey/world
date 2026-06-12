@@ -24835,8 +24835,7 @@ test "runspace generic response accepts native port with optional actuation bind
     });
     _ = try runspace.tick();
     const pending = try runspace.mailbox.get(0);
-    const binding = PortsActuationOnlyBinding.actuationBindingRecord();
-    try std.testing.expectEqual(@as(?u64, binding.binding_fingerprint), pending.actuation_binding_fingerprint);
+    try std.testing.expectEqual(@as(?u64, null), pending.actuation_binding_fingerprint);
 
     var transcript = world.Transcript.init(std.testing.allocator);
     defer transcript.deinit();

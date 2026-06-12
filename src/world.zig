@@ -13948,8 +13948,9 @@ pub const Runspace = struct {
 
     fn pendingRequiresActuationDispatch(self: *@This(), slot: Runspace.RunSlot, pending: Runspace.PendingPort) bool {
         _ = self;
+        if (pending.actuation_binding_fingerprint != null) return true;
         if (slot.driver) |driver| return driver.actuationBindingCoversHandlerlessWorldPort(pending.world_port_id);
-        return pending.actuation_binding_fingerprint != null;
+        return false;
     }
 
     fn pendingRequiresFabricRoute(self: *@This(), slot: Runspace.RunSlot, pending: Runspace.PendingPort) bool {
@@ -15035,7 +15036,7 @@ pub const Runspace = struct {
                     return self.failSteppedRunBeforePort(slot, err);
                 };
                 const mailbox_id = self.next_mailbox_id;
-                const actuation_binding = if (actuation_suppresses_auto_dispatch or !suppress_auto_dispatch)
+                const actuation_binding = if (actuation_suppresses_auto_dispatch)
                     driver.actuationBindingForWorldPort(owned_request.world_port_id)
                 else
                     null;
