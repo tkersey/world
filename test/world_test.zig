@@ -5712,6 +5712,13 @@ test "runspace pending actuation fresh completion resolves pending accounting" {
         .rejected = terminal_receipt.rejected,
         .attempt_number = terminal_receipt.attempt_number +% 1,
     });
+    var unbound_replay_resolution_receipt = replay_resolution_receipt;
+    unbound_replay_resolution_receipt.pending_actuation_receipt_fingerprint = null;
+    var unbound_replay_resolution_ledger = try world.Supervision.UsageLedger.init(std.testing.allocator, permit, 1);
+    defer unbound_replay_resolution_ledger.deinit(std.testing.allocator);
+    try unbound_replay_resolution_ledger.recordActuationReceipt(std.testing.allocator, pending_receipt, 0, 0, 0);
+    try std.testing.expect(!try unbound_replay_resolution_ledger.recordActuationResolution(std.testing.allocator, unbound_replay_resolution_receipt, 0, 0, 0));
+    try std.testing.expectEqual(@as(usize, 1), unbound_replay_resolution_ledger.total_pending_actuations);
     try std.testing.expect(try replay_resolution_ledger.recordActuationResolution(std.testing.allocator, replay_resolution_receipt, 0, 0, 0));
     try std.testing.expectEqual(@as(usize, 0), replay_resolution_ledger.total_pending_actuations);
     try std.testing.expectEqual(@as(usize, 1), replay_resolution_ledger.total_replay_actuations);

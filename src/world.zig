@@ -4236,6 +4236,7 @@ pub const Supervision = struct {
                 return self.receipt_fingerprint == pending_receipt and
                     self.world_port_id == receipt.world_port_id;
             }
+            if (receipt.replayed or receipt.verified) return false;
             return self.intent_fingerprint == receipt.intent_fingerprint and
                 self.idempotency_key_fingerprint == receipt.idempotency_key_fingerprint and
                 self.world_port_id == receipt.world_port_id;
