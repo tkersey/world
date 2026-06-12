@@ -3738,6 +3738,7 @@ pub const Supervision = struct {
             .allow_replay_calls = true,
             .allow_verify_calls = true,
             .allow_actuation = true,
+            .allow_fresh_actuation = true,
             .allow_replay_actuation = true,
             .allow_verify_actuation = true,
             .allow_native_adapters = true,
@@ -5891,6 +5892,8 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
             const native_bound_count = @min(bindings.len, Target.WorldPortTable.entries.len);
             const covered_port_count = @min(Target.WorldPortTable.entries.len, native_bound_count + covered_missing);
             if (covered_port_count < Target.WorldPortTable.entries.len) {
+                result.bound_port_count = covered_port_count;
+                result.missing_port_count = Target.WorldPortTable.entries.len - covered_port_count;
                 result.missing_actuator_count = Target.WorldPortTable.entries.len - covered_port_count;
                 result.report_fingerprint = fingerprintAcceptanceReport(result);
                 return result;
@@ -11706,8 +11709,8 @@ pub const Runspace = struct {
         try pending.validateResponse(response);
         const mailbox_index = try self.mailbox.indexOf(mailbox_id);
         const mailbox_uncommitted_snapshot = self.mailbox.pending.items[mailbox_index];
-        _ = try self.mailbox.recordActuationReceipt(mailbox_id, execution.intent.intent_fingerprint, execution.receipt.receipt_fingerprint);
         const resolves_pending_actuation = try executionMatchesPendingActuation(pending, execution);
+        _ = try self.mailbox.recordActuationReceipt(mailbox_id, execution.intent.intent_fingerprint, execution.receipt.receipt_fingerprint);
         if (resolves_pending_actuation) {
             const supervise = if (execution.receipt.fresh_called)
                 self.superviseFreshActuationResolution(index, execution, accounting)
@@ -19175,6 +19178,7 @@ pub const Actuation = struct {
             if (self.replay_key_fingerprint != null and self.replay_key_fingerprint.? == 0) return error.InvalidFrameEncoding;
             if (self.pending_actuation_receipt_fingerprint != null and self.pending_actuation_receipt_fingerprint.? == 0) return error.InvalidFrameEncoding;
             if (self.run_permit_fingerprint != null and self.run_permit_fingerprint.? == 0) return error.InvalidFrameEncoding;
+            if (self.environment_certificate_fingerprint != null and self.environment_certificate_fingerprint.? == 0) return error.InvalidFrameEncoding;
             if (self.run_receipt_fingerprint != null and self.run_receipt_fingerprint.? == 0) return error.InvalidFrameEncoding;
             if (self.capsule_fingerprint != null and self.capsule_fingerprint.? == 0) return error.InvalidFrameEncoding;
             if (self.mode == .replay and self.fresh_called) return error.InvalidFrameEncoding;
@@ -20019,9 +20023,23 @@ pub const Actuation = struct {
 
         fn actuatorCreatesPendingActuation(selected_actuator: Interface) bool {
             return switch (selected_actuator) {
+                .fixture,
+                .native_function,
+                .byte_protocol,
+                .guest_bridge,
+                .model_like,
+                .tool_like,
+                .file_like,
+                .human_like,
+                .custom,
+                => |template| responseStatusCreatesPendingActuation(template.status),
                 .pending, .deferred => true,
                 else => false,
             };
+        }
+
+        fn responseStatusCreatesPendingActuation(status: Actuation.ResponseStatus) bool {
+            return status == .pending or status == .deferred;
         }
 
         fn validatePrecommitActuationPermit(args: ExecuteArgs) !void {
@@ -27885,6 +27903,10 @@ pub const Handoff = struct {
                 try preflightRouteForPendingWithSupervisor(Target, Env, supervisor, pending_frame, route, .fresh);
                 return;
             }
+            if (directActuationPolicyViewForEnvironmentPort(Env, pending_frame.world_port_id, .fresh)) |view| {
+                try preflightActuationPendingWithSupervisor(Target, supervisor, pending_frame, view, .fresh);
+                return;
+            }
             try supervisor.beforeAdapterCall(.{
                 .world_port_id = pending_frame.world_port_id,
                 .mode = .fresh,
@@ -27945,6 +27967,10 @@ pub const Handoff = struct {
         try self.preflightRequestFrameWithSupervisor(supervisor, pending_frame);
         if (fabricPreflightRouteForEnvironmentPort(Env, admitted_fabric_plan, pending_frame.world_port_id, .fresh)) |route| {
             try preflightRouteForPendingWithSupervisor(Target, Env, supervisor, pending_frame, route, .fresh);
+            return;
+        }
+        if (directActuationPolicyViewForEnvironmentPort(Env, pending_frame.world_port_id, .fresh)) |view| {
+            try preflightActuationPendingWithSupervisor(Target, supervisor, pending_frame, view, .fresh);
             return;
         }
         try supervisor.beforeAdapterCall(.{
@@ -32704,6 +32730,9 @@ const ActuationRoutePolicyView = struct {
     class: Actuation.Class,
     value_policy: ValuePolicy,
     authority_kind: PortAuthority.Kind,
+    actuator_ref_fingerprint: u64,
+    descriptor_fingerprint: u64,
+    binding_fingerprint: u64,
 };
 
 fn supervisionPolicyAllowsActuationRoute(requested_mode: Mode, supervision_policy: SupervisionPolicy, view: ActuationRoutePolicyView) bool {
@@ -32744,6 +32773,9 @@ fn actuationRoutePolicyViewForEnvironment(comptime Env: type, route: Fabric.Rout
                         .class = BindingDecl.actuator_ref.class,
                         .value_policy = BindingDecl.value_policy,
                         .authority_kind = comptime authorityKindForActuationKind(BindingDecl.actuator_ref.kind),
+                        .actuator_ref_fingerprint = route.actuator_ref_fingerprint.?,
+                        .descriptor_fingerprint = route.actuation_descriptor_fingerprint.?,
+                        .binding_fingerprint = route.actuation_binding_fingerprint.?,
                     };
                 }
             }
@@ -32768,6 +32800,9 @@ fn directActuationPolicyViewForEnvironmentPort(comptime Env: type, world_port_id
                     .class = BindingDecl.actuator_ref.class,
                     .value_policy = BindingDecl.value_policy,
                     .authority_kind = comptime authorityKindForActuationKind(BindingDecl.actuator_ref.kind),
+                    .actuator_ref_fingerprint = binding.actuator_ref_fingerprint,
+                    .descriptor_fingerprint = binding.descriptor_fingerprint,
+                    .binding_fingerprint = binding.binding_fingerprint,
                 };
             }
         }
@@ -32783,6 +32818,10 @@ fn preflightRouteForPendingWithSupervisor(comptime Target: type, comptime Env: t
         });
     }
     const view = actuationRoutePolicyViewForEnvironment(Env, route, requested_mode) orelse return error.MissingBinding;
+    try preflightActuationPendingWithSupervisor(Target, supervisor, pending_frame, view, requested_mode);
+}
+
+fn preflightActuationPendingWithSupervisor(comptime Target: type, supervisor: *Supervision.Supervisor, pending_frame: Frame.Request, view: ActuationRoutePolicyView, requested_mode: Mode) !void {
     const supervision_policy = supervisor.permit.policy;
     if (supervision_policy.require_portable_value_images and !view.value_policy.require_portable_values) return error.SupervisionDenied;
     if (supervision_policy.reject_native_only_values and view.value_policy.allow_native_only_values) return error.SupervisionDenied;
@@ -32792,13 +32831,13 @@ fn preflightRouteForPendingWithSupervisor(comptime Target: type, comptime Env: t
         .world_surface_fingerprint = target_ref.world_surface_fingerprint,
         .world_port_id = pending_frame.world_port_id,
         .request_fingerprint = pending_frame.request_fingerprint,
-        .actuator_ref_fingerprint = route.actuator_ref_fingerprint.?,
+        .actuator_ref_fingerprint = view.actuator_ref_fingerprint,
     });
     try key.validate();
     const intent = Actuation.Intent.init(.{
-        .actuator_ref_fingerprint = route.actuator_ref_fingerprint.?,
-        .descriptor_fingerprint = route.actuation_descriptor_fingerprint.?,
-        .binding_fingerprint = route.actuation_binding_fingerprint,
+        .actuator_ref_fingerprint = view.actuator_ref_fingerprint,
+        .descriptor_fingerprint = view.descriptor_fingerprint,
+        .binding_fingerprint = view.binding_fingerprint,
         .target_ref_fingerprint = target_ref.target_ref_fingerprint,
         .world_surface_fingerprint = target_ref.world_surface_fingerprint,
         .world_port_id = pending_frame.world_port_id,

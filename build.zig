@@ -388,7 +388,7 @@ pub fn build(b: *std.Build) void {
             \\module_ref_fingerprint=8980705f83427fa6
             \\model_port_id=0
             \\tool_port_id=1
-            \\admission_receipt=84949642657fdd50
+            \\admission_receipt=987bcd491aff9d45
             \\final_result=final=actuate skeleton complete
             \\
             ,
@@ -449,9 +449,9 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-runspace-supervised",
             .desc = "Run the supervised World runspace example.",
             .expected_stdout =
-            \\run_permit=b0b13b39ab87a700
+            \\run_permit=db74c678137262cd
             \\budget_exceeded=true
-            \\event_fingerprint=e90c658a5c929be
+            \\event_fingerprint=24d33eb3409f28db
             \\
             ,
         },
@@ -701,7 +701,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-capsule-supervised-restore",
             .desc = "Run the World Assembly Capsule supervised restore example.",
             .expected_stdout =
-            \\sender_permit_fingerprint=d46febe8f24a5d0e
+            \\sender_permit_fingerprint=73a49bb41ad4fd0c
             \\receiver_permit_fingerprint=ecb3fc4d74abae17
             \\restore_allowed=false
             \\
@@ -823,7 +823,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-supervised-handoff",
             .desc = "Run the supervised handoff World example.",
             .expected_stdout =
-            \\received_run_image_fingerprint=97f0676baa23093a
+            \\received_run_image_fingerprint=3677af97367d74a7
             \\receiver_permit_fingerprint=ecb3fc4d74abae17
             \\receiver_receipt_fingerprint=51ef5d5ceb4ff589
             \\final_result=7
