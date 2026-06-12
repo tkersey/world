@@ -16,7 +16,7 @@ pub fn main(init: std.process.Init) !void {
         .request_fingerprint = 0xacc7_7001,
     });
     const fresh = try common.execute(ctx, world.Actuation.Policy.strict_fresh, .{
-        .fixture = .{ .frame_response_fingerprint = 0xacc7_7002 },
+        .tool_like = .{ .frame_response_fingerprint = 0xacc7_7002 },
     }, 0);
     var journal = world.Actuation.Journal.init();
     defer journal.deinit(allocator);

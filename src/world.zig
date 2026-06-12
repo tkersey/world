@@ -260,7 +260,7 @@ pub const world_admitted_run_fingerprint_version: u32 = 6;
 pub const world_run_handle_format_version: u32 = 1;
 pub const world_run_handle_fingerprint_version: u32 = 1;
 pub const world_pending_port_format_version: u32 = 1;
-pub const world_pending_port_fingerprint_version: u32 = 4;
+pub const world_pending_port_fingerprint_version: u32 = 5;
 pub const world_runspace_config_fingerprint_version: u32 = 1;
 pub const world_runspace_event_fingerprint_version: u32 = 2;
 pub const world_fabric_format_version: u32 = 1;
@@ -304,7 +304,7 @@ pub const world_capsule_quiescence_report_fingerprint_version: u32 = 1;
 pub const world_capsule_runspace_image_format_version: u32 = 3;
 pub const world_capsule_runspace_image_fingerprint_version: u32 = 1;
 pub const world_capsule_run_slot_image_fingerprint_version: u32 = 1;
-pub const world_capsule_pending_port_image_fingerprint_version: u32 = 3;
+pub const world_capsule_pending_port_image_fingerprint_version: u32 = 4;
 pub const world_capsule_mailbox_image_fingerprint_version: u32 = 1;
 pub const world_capsule_fabric_image_fingerprint_version: u32 = 1;
 pub const world_capsule_link_image_fingerprint_version: u32 = 1;
@@ -335,7 +335,7 @@ pub const world_actuation_commit_fingerprint_version: u32 = 1;
 pub const world_actuation_response_format_version: u32 = 1;
 pub const world_actuation_response_fingerprint_version: u32 = 1;
 pub const world_actuation_receipt_format_version: u32 = 1;
-pub const world_actuation_receipt_fingerprint_version: u32 = 1;
+pub const world_actuation_receipt_fingerprint_version: u32 = 2;
 pub const world_actuation_journal_fingerprint_version: u32 = 1;
 pub const world_actuation_verify_report_fingerprint_version: u32 = 1;
 pub const world_guest_abi_version: u32 = 1;
@@ -3290,7 +3290,7 @@ pub const Admission = struct {
             }
             if ((mode == .replay_only or mode == .verify_only) and package.run_image == null) {
                 var transcript_image = package.transcript_image.?;
-                validateTranscriptImageForHandoffEnvironment(Target, Env, &transcript_image, args.fabric_plan) catch {
+                validateTranscriptImageForHandoffEnvironment(Target, Env, &transcript_image, args.fabric_plan, admissionModeToRunMode(mode)) catch {
                     return rejectedResult(request, package, target_ref, module_ref, match, &.{.TranscriptImageInvalid}, "transcript image failed environment preflight");
                 };
                 transcript_image.validateReplayRun(target_ref.world_surface_fingerprint, target_ref.target_certificate_fingerprint) catch {
@@ -4217,17 +4217,23 @@ pub const Supervision = struct {
     pub const PendingActuationRef = struct {
         intent_fingerprint: u64,
         idempotency_key_fingerprint: u64,
+        receipt_fingerprint: u64,
         world_port_id: u32,
 
         pub fn fromReceipt(receipt: Actuation.Receipt) @This() {
             return .{
                 .intent_fingerprint = receipt.intent_fingerprint,
                 .idempotency_key_fingerprint = receipt.idempotency_key_fingerprint,
+                .receipt_fingerprint = receipt.receipt_fingerprint,
                 .world_port_id = receipt.world_port_id,
             };
         }
 
         pub fn matchesReceipt(self: @This(), receipt: Actuation.Receipt) bool {
+            if (receipt.pending_actuation_receipt_fingerprint) |pending_receipt| {
+                return self.receipt_fingerprint == pending_receipt and
+                    self.world_port_id == receipt.world_port_id;
+            }
             return self.intent_fingerprint == receipt.intent_fingerprint and
                 self.idempotency_key_fingerprint == receipt.idempotency_key_fingerprint and
                 self.world_port_id == receipt.world_port_id;
@@ -4354,6 +4360,25 @@ pub const Supervision = struct {
             self.refreshFingerprint();
         }
 
+        pub fn hasPendingActuationForIntent(self: @This(), intent: Actuation.Intent) bool {
+            for (self.pending_actuations) |pending| {
+                if (pending.intent_fingerprint == intent.intent_fingerprint and
+                    pending.idempotency_key_fingerprint == intent.idempotency_key_fingerprint and
+                    pending.world_port_id == intent.world_port_id)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        pub fn hasPendingActuationReceipt(self: @This(), receipt_fingerprint: u64, world_port_id: u32) bool {
+            for (self.pending_actuations) |pending| {
+                if (pending.receipt_fingerprint == receipt_fingerprint and pending.world_port_id == world_port_id) return true;
+            }
+            return false;
+        }
+
         pub fn recordActuationResolution(self: *@This(), allocator: std.mem.Allocator, receipt: Actuation.Receipt, response_bytes: usize, value_image_bytes: usize, cost_units: u64) !bool {
             if (self.total_pending_actuations == 0) return false;
             if (receipt.world_port_id >= self.per_port_usage.len) return false;
@@ -4361,7 +4386,10 @@ pub const Supervision = struct {
             if (port_usage.pending_calls == 0) return false;
             _ = (try self.removePendingActuation(allocator, receipt)) orelse return false;
             self.total_pending_actuations -= 1;
+            if (self.total_pending_calls > 0) self.total_pending_calls -= 1;
             port_usage.pending_calls -= 1;
+            if (receipt.replayed) self.total_replay_actuations = self.total_replay_actuations +| 1;
+            if (receipt.verified) self.total_verify_actuations = self.total_verify_actuations +| 1;
             if (receipt.failed) self.total_failed_actuations = self.total_failed_actuations +| 1;
             if (receipt.rejected) self.total_rejected_actuations = self.total_rejected_actuations +| 1;
             if (receipt.failed) self.total_failed_calls = self.total_failed_calls +| 1;
@@ -4372,6 +4400,8 @@ pub const Supervision = struct {
             self.total_value_image_bytes = self.total_value_image_bytes +| value_image_bytes;
             self.total_cost_units = self.total_cost_units +| cost_units;
             if (receipt.world_port_id < self.per_port_usage.len) {
+                if (receipt.replayed) port_usage.replay_calls = port_usage.replay_calls +| 1;
+                if (receipt.verified) port_usage.verify_calls = port_usage.verify_calls +| 1;
                 if (receipt.failed) port_usage.failed_calls = port_usage.failed_calls +| 1;
                 if (receipt.rejected) port_usage.rejected_calls = port_usage.rejected_calls +| 1;
                 if (receipt.cancelled) port_usage.rejected_calls = port_usage.rejected_calls +| 1;
@@ -4954,7 +4984,9 @@ pub const Supervision = struct {
             }
             var next = try self.ledger.clone(self.allocator);
             defer next.deinit(self.allocator);
-            next.total_actuation_intents = addSatUsize(next.total_actuation_intents, 1);
+            if (!next.hasPendingActuationForIntent(intent)) {
+                next.total_actuation_intents = addSatUsize(next.total_actuation_intents, 1);
+            }
             try self.commitCheck(.before_actuation_commit, intent.world_port_id, &next, null, rule, "actuation intent");
         }
 
@@ -4978,6 +5010,7 @@ pub const Supervision = struct {
             if ((receipt_value.rejected or receipt_value.cancelled) and !policy.allow_rejected_responses) return self.deny(.after_actuation_response, receipt_value.world_port_id, .rejected_denied, null, "rejected actuation denied");
             if (receipt_value.failed and !policy.allow_failed_responses) return self.deny(.after_actuation_response, receipt_value.world_port_id, .failed_denied, null, "failed actuation denied");
             const rule = self.permit.ruleFor(receipt_value.world_port_id);
+            try self.validateActuationReceiptPolicy(receipt_value, rule, "actuation receipt");
             if (rule) |port_rule| {
                 if (!portRuleAllowsActuationReceiptStatus(port_rule, receipt_value.responseStatus())) return self.deny(.after_actuation_response, receipt_value.world_port_id, .port_rule_denied, port_rule.rule_fingerprint, "rule actuation response denied");
             }
@@ -5004,6 +5037,7 @@ pub const Supervision = struct {
             if ((receipt_value.rejected or receipt_value.cancelled) and !policy.allow_rejected_responses) return self.deny(.after_actuation_response, receipt_value.world_port_id, .rejected_denied, null, "rejected actuation denied");
             if (receipt_value.failed and !policy.allow_failed_responses) return self.deny(.after_actuation_response, receipt_value.world_port_id, .failed_denied, null, "failed actuation denied");
             const rule = self.permit.ruleFor(receipt_value.world_port_id);
+            try self.validateActuationReceiptPolicy(receipt_value, rule, "actuation resolution");
             if (rule) |port_rule| {
                 if (!portRuleAllowsActuationReceiptStatus(port_rule, receipt_value.responseStatus())) return self.deny(.after_actuation_response, receipt_value.world_port_id, .port_rule_denied, port_rule.rule_fingerprint, "rule actuation resolution denied");
             }
@@ -5014,6 +5048,7 @@ pub const Supervision = struct {
             if (!try next.recordActuationResolution(self.allocator, receipt_value, accounting.response_bytes, accounting.value_image_bytes, cost_delta)) {
                 return self.deny(.after_actuation_response, receipt_value.world_port_id, .pending_denied, null, "pending actuation required");
             }
+            if (next.total_actuation_intents > 0) next.total_actuation_intents -= 1;
             try self.commitCheck(.after_actuation_response, receipt_value.world_port_id, &next, null, rule, "actuation resolution");
         }
 
@@ -5043,6 +5078,23 @@ pub const Supervision = struct {
             if (receipt_value.world_surface_fingerprint != self.permit.world_surface_fingerprint) return error.SupervisionDenied;
             if (receipt_value.run_permit_fingerprint == null or receipt_value.run_permit_fingerprint.? != self.permit.permit_fingerprint) return error.SupervisionDenied;
             try self.validateOptionalEnvironmentCertificate(receipt_value.environment_certificate_fingerprint);
+        }
+
+        fn validateActuationReceiptPolicy(self: *@This(), receipt_value: Actuation.Receipt, rule: ?Supervision.PortRule, summary: []const u8) !void {
+            const policy = self.permit.policy;
+            if (!policy.allow_actuation) return self.deny(.after_actuation_response, receipt_value.world_port_id, .fresh_call_denied, null, summary);
+            switch (receipt_value.mode) {
+                .fresh => if (!policy.allow_fresh_actuation) return self.deny(.after_actuation_response, receipt_value.world_port_id, .fresh_call_denied, null, summary),
+                .audit => if (!policy.allow_audit_only) return self.deny(.after_actuation_response, receipt_value.world_port_id, .fresh_call_denied, null, summary),
+                .replay => if (!policy.allow_replay_actuation) return self.deny(.after_actuation_response, receipt_value.world_port_id, .replay_call_denied, null, summary),
+                .verify => if (!policy.allow_verify_actuation) return self.deny(.after_actuation_response, receipt_value.world_port_id, .verify_call_denied, null, summary),
+            }
+            if (receipt_value.class == .irreversible_mutation and !policy.allow_irreversible_actuation) {
+                return self.deny(.after_actuation_response, receipt_value.world_port_id, .fresh_call_denied, null, summary);
+            }
+            if (rule) |port_rule| {
+                if (!port_rule.permitsMode(receipt_value.mode)) return self.deny(.after_actuation_response, receipt_value.world_port_id, .port_rule_denied, port_rule.rule_fingerprint, summary);
+            }
         }
 
         fn validateOptionalEnvironmentCertificate(self: *@This(), certificate_fingerprint: ?u64) !void {
@@ -5532,10 +5584,10 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
             }
             if (!acceptanceReportHasOnlyMissingBinding(report)) return report;
             const coverage = plan.coverage(target_ref, import_set);
-            const fabric_covered_missing = fabricCoveredMissingEnvironmentPortCount(Target, bindings, actuation_bindings, coverage, plan, requested_mode) orelse return report;
+            const covered_missing = fabricCoveredMissingEnvironmentPortCount(Target, bindings, actuation_bindings, policy, coverage, plan, requested_mode) orelse return report;
             var accepted = report;
             accepted.accepted = true;
-            accepted.bound_port_count = bindings.len + fabric_covered_missing;
+            accepted.bound_port_count = bindings.len + covered_missing;
             accepted.missing_port_count = 0;
             accepted.blockers = &.{};
             accepted.summary = "accepted by fabric";
@@ -5581,7 +5633,7 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
                 return rejectedReport(report, &.{.TranscriptImageRequired});
             }
             inline for (dense_binding_entries) |entry| {
-                const fabric_owns_binding = fabric_owns_bound_ports and fabricPlanCoversPort(fabric_plan, entry.world_port_id);
+                const fabric_owns_binding = fabric_owns_bound_ports and fabricPlanCoversEnvironmentPortWithSupervision(@This(), fabric_plan, entry.world_port_id, requested_mode, supervision_policy);
                 if (!fabric_owns_binding) {
                     if (!Supervision.adapterAllowedByPolicy(supervision_policy, entry.adapter_kind)) {
                         return rejectedReport(report, &.{.SupervisionPolicyMismatch});
@@ -5648,6 +5700,11 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
                 if (route.parent_world_surface_fingerprint != 0 and route.parent_world_surface_fingerprint != target_ref.world_surface_fingerprint) return rejectedReport(report, &.{.SupervisionPolicyMismatch});
                 if (route.parent_target_certificate_fingerprint != 0 and route.parent_target_certificate_fingerprint != target_ref.target_certificate_fingerprint) return rejectedReport(report, &.{.SupervisionPolicyMismatch});
                 if (fabricRouteSupervisionBlocker(permit.policy, route.kind) != null) return rejectedReport(report, &.{.SupervisionPolicyMismatch});
+                if (route.kind == .adapter) {
+                    const view = actuationRoutePolicyViewForEnvironment(@This(), route, requested_mode) orelse return rejectedReport(report, &.{.SupervisionPolicyMismatch});
+                    if (!supervisionPolicyAllowsActuationRoute(requested_mode, permit.policy, view)) return rejectedReport(report, &.{.SupervisionPolicyMismatch});
+                    if (!permitRuleAllowsActuationRoute(permit, route.parent_world_port_id, requested_mode, view)) return rejectedReport(report, &.{.SupervisionPortRuleDenied});
+                }
                 if (permit.ruleFor(route.parent_world_port_id)) |rule| {
                     if (!rule.permitsMode(requested_mode)) return rejectedReport(report, &.{.SupervisionPortRuleDenied});
                     if (fabricRouteTerminalResponseStatus(route.kind)) |status| {
@@ -5689,11 +5746,11 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
                 return report;
             }
             if (!acceptanceReportHasOnlyMissingBinding(report)) return report;
-            const fabric_covered_missing = assemblyFabricCoveredMissingEnvironmentPortCount(Target, bindings, actuation_bindings, assembly, requested_mode) catch {
+            const covered_missing = assemblyFabricCoveredMissingEnvironmentPortCount(Target, bindings, actuation_bindings, policy, assembly, requested_mode) catch {
                 return rejectedReport(report, &.{.SupervisionPolicyMismatch});
             } orelse return base_report;
             report.accepted = true;
-            report.bound_port_count = bindings.len + fabric_covered_missing;
+            report.bound_port_count = bindings.len + covered_missing;
             report.missing_port_count = 0;
             report.blockers = &.{};
             report.summary = "accepted by fabric assembly";
@@ -6035,9 +6092,7 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
         }
 
         fn environmentAllowsActuationValuePolicy(value_policy: ValuePolicy) bool {
-            if (policy.require_portable_values and !value_policy.require_portable_values) return false;
-            if (!policy.allow_native_only_values and value_policy.allow_native_only_values) return false;
-            return true;
+            return environmentPolicyAllowsActuationValuePolicy(policy, value_policy);
         }
 
         fn acceptanceReportWithPermitFromReport(base_report: AcceptanceReport, requested_mode: Mode, transcript_image_available: bool, permit: RunPermit, fabric_plan: ?Fabric.Plan, comptime fabric_owns_bound_ports: bool, comptime allow_linker_scoped_fabric_plan: bool) AcceptanceReport {
@@ -6079,7 +6134,7 @@ pub fn Environment(comptime Target: type, comptime Config: anytype) type {
             inline for (bindings) |BindingDecl| {
                 if (BindingDecl.TargetType != Target) continue;
                 if (BindingDecl.world_port_id >= Target.WorldPortTable.entries.len) continue;
-                const fabric_owns_binding = fabric_owns_bound_ports and fabricPlanCoversPort(fabric_plan, BindingDecl.world_port_id);
+                const fabric_owns_binding = fabric_owns_bound_ports and fabricPlanCoversEnvironmentPortWithPermit(@This(), fabric_plan, BindingDecl.world_port_id, requested_mode, permit);
                 if (!fabric_owns_binding) {
                     if (permit.ruleFor(BindingDecl.world_port_id)) |rule| {
                         if (!rule.permitsMode(requested_mode)) return rejectedReport(report, &.{.SupervisionPortRuleDenied});
@@ -8890,7 +8945,12 @@ pub const Fabric = struct {
                     if (self.provider_world_port_id != null or self.provider_admission_receipt_fingerprint != null) return error.ProviderRunDenied;
                     if (self.provider_run_image_fingerprint != null or self.provider_transcript_image_fingerprint != null) return error.ProviderRunDenied;
                 },
-                .adapter => {},
+                .adapter => {
+                    if (self.provider_target_ref_fingerprint != null or self.provider_module_fingerprint != null) return error.ProviderRunDenied;
+                    if (self.provider_world_surface_fingerprint != null or self.provider_target_certificate_fingerprint != null) return error.ProviderRunDenied;
+                    if (self.provider_world_port_id != null or self.provider_admission_receipt_fingerprint != null) return error.ProviderRunDenied;
+                    if (self.provider_run_image_fingerprint != null or self.provider_transcript_image_fingerprint != null) return error.ProviderRunDenied;
+                },
             }
         }
 
@@ -8911,8 +8971,7 @@ pub const Fabric = struct {
 
         pub fn coversRequiredPort(self: Fabric.Route) bool {
             return switch (self.kind) {
-                .adapter => self.hasActuationRouteBinding(),
-                .unsupported => false,
+                .adapter, .unsupported => false,
                 else => true,
             };
         }
@@ -9606,6 +9665,8 @@ pub const Runspace = struct {
             fabricPlanCoversWorldPort: *const fn (*anyopaque, u32) bool,
             fabricPlanCoversHandlerlessWorldPort: *const fn (*anyopaque, u32) bool,
             actuationBindingCoversWorldPort: *const fn (*anyopaque, u32) bool,
+            actuationBindingCoversHandlerlessWorldPort: *const fn (*anyopaque, u32) bool,
+            actuationBindingForWorldPort: *const fn (*anyopaque, u32) ?Actuation.Binding,
             fabricPlanFingerprint: *const fn (*anyopaque) ?u64,
             resumeTerminalFrame: *const fn (*anyopaque, Frame.Response) anyerror!void,
             dispatch: *const fn (*anyopaque) anyerror!?ResponseEvidence,
@@ -9678,6 +9739,14 @@ pub const Runspace = struct {
 
         fn actuationBindingCoversWorldPort(self: @This(), world_port_id: u32) bool {
             return self.vtable.actuationBindingCoversWorldPort(self.ptr, world_port_id);
+        }
+
+        fn actuationBindingCoversHandlerlessWorldPort(self: @This(), world_port_id: u32) bool {
+            return self.vtable.actuationBindingCoversHandlerlessWorldPort(self.ptr, world_port_id);
+        }
+
+        fn actuationBindingForWorldPort(self: @This(), world_port_id: u32) ?Actuation.Binding {
+            return self.vtable.actuationBindingForWorldPort(self.ptr, world_port_id);
         }
 
         fn fabricPlanFingerprint(self: @This()) ?u64 {
@@ -9899,6 +9968,22 @@ pub const Runspace = struct {
                     return false;
                 }
 
+                fn runActuationBindingCoversHandlerlessWorldPort(ptr: *anyopaque, world_port_id: u32) bool {
+                    const active: *RunType = @ptrCast(@alignCast(ptr));
+                    if (@hasDecl(RunType, "runspaceActuationBindingCoversHandlerlessWorldPort")) {
+                        return active.runspaceActuationBindingCoversHandlerlessWorldPort(world_port_id);
+                    }
+                    return false;
+                }
+
+                fn runActuationBindingForWorldPort(ptr: *anyopaque, world_port_id: u32) ?Actuation.Binding {
+                    const active: *RunType = @ptrCast(@alignCast(ptr));
+                    if (@hasDecl(RunType, "runspaceActuationBindingForWorldPort")) {
+                        return active.runspaceActuationBindingForWorldPort(world_port_id);
+                    }
+                    return null;
+                }
+
                 fn runFabricPlanFingerprint(ptr: *anyopaque) ?u64 {
                     const active: *RunType = @ptrCast(@alignCast(ptr));
                     if (@hasDecl(RunType, "runspaceFabricPlanFingerprint")) {
@@ -10027,6 +10112,8 @@ pub const Runspace = struct {
                     .fabricPlanCoversWorldPort = runFabricPlanCoversWorldPort,
                     .fabricPlanCoversHandlerlessWorldPort = runFabricPlanCoversHandlerlessWorldPort,
                     .actuationBindingCoversWorldPort = runActuationBindingCoversWorldPort,
+                    .actuationBindingCoversHandlerlessWorldPort = runActuationBindingCoversHandlerlessWorldPort,
+                    .actuationBindingForWorldPort = runActuationBindingForWorldPort,
                     .fabricPlanFingerprint = runFabricPlanFingerprint,
                     .resumeTerminalFrame = runResumeTerminalFrame,
                     .dispatch = runDispatch,
@@ -10387,6 +10474,9 @@ pub const Runspace = struct {
         target_ref_fingerprint: u64,
         environment_certificate_fingerprint: ?u64 = null,
         run_permit_fingerprint: ?u64 = null,
+        actuation_binding_fingerprint: ?u64 = null,
+        actuation_descriptor_fingerprint: ?u64 = null,
+        actuator_ref_fingerprint: ?u64 = null,
         pending_actuation_intent_fingerprint: ?u64 = null,
         pending_actuation_receipt_fingerprint: ?u64 = null,
         committed_actuation_receipt: bool = false,
@@ -10404,6 +10494,9 @@ pub const Runspace = struct {
             expected_response_kind: ResponseKind = .@"resume",
             environment_certificate_fingerprint: ?u64 = null,
             run_permit_fingerprint: ?u64 = null,
+            actuation_binding_fingerprint: ?u64 = null,
+            actuation_descriptor_fingerprint: ?u64 = null,
+            actuator_ref_fingerprint: ?u64 = null,
             pending_actuation_intent_fingerprint: ?u64 = null,
             pending_actuation_receipt_fingerprint: ?u64 = null,
             committed_actuation_receipt: bool = false,
@@ -10427,6 +10520,9 @@ pub const Runspace = struct {
                 .target_ref_fingerprint = if (args.target_ref_fingerprint != 0) args.target_ref_fingerprint else args.handle.target_ref_fingerprint,
                 .environment_certificate_fingerprint = args.environment_certificate_fingerprint,
                 .run_permit_fingerprint = args.run_permit_fingerprint,
+                .actuation_binding_fingerprint = args.actuation_binding_fingerprint,
+                .actuation_descriptor_fingerprint = args.actuation_descriptor_fingerprint,
+                .actuator_ref_fingerprint = args.actuator_ref_fingerprint,
                 .pending_actuation_intent_fingerprint = args.pending_actuation_intent_fingerprint,
                 .pending_actuation_receipt_fingerprint = args.pending_actuation_receipt_fingerprint,
                 .committed_actuation_receipt = args.committed_actuation_receipt,
@@ -10498,6 +10594,7 @@ pub const Runspace = struct {
             try self.handle.validate();
             try validatePendingActuationMarker(self.pending_actuation_intent_fingerprint, self.pending_actuation_receipt_fingerprint);
             if (self.committed_actuation_receipt and self.pending_actuation_receipt_fingerprint == null) return error.InvalidFrameEncoding;
+            try validatePendingActuationBindingMarker(self.actuation_binding_fingerprint, self.actuation_descriptor_fingerprint, self.actuator_ref_fingerprint);
             if (fingerprintPendingPort(self) != self.pending_port_fingerprint) return error.InvalidFrameEncoding;
         }
 
@@ -10535,6 +10632,10 @@ pub const Runspace = struct {
             expected_response_kind: ResponseKind = .@"resume",
             environment_certificate_fingerprint: ?u64 = null,
             run_permit_fingerprint: ?u64 = null,
+            actuation_binding: ?Actuation.Binding = null,
+            actuation_binding_fingerprint: ?u64 = null,
+            actuation_descriptor_fingerprint: ?u64 = null,
+            actuator_ref_fingerprint: ?u64 = null,
             pending_actuation_intent_fingerprint: ?u64 = null,
             pending_actuation_receipt_fingerprint: ?u64 = null,
             committed_actuation_receipt: bool = false,
@@ -10548,6 +10649,9 @@ pub const Runspace = struct {
             var request = try cloneRequestFrame(self.allocator, args.request);
             var request_owned = true;
             errdefer if (request_owned) request.deinit(self.allocator);
+            const actuation_binding_fingerprint = if (args.actuation_binding) |binding| binding.binding_fingerprint else args.actuation_binding_fingerprint;
+            const actuation_descriptor_fingerprint = if (args.actuation_binding) |binding| binding.descriptor_fingerprint else args.actuation_descriptor_fingerprint;
+            const actuator_ref_fingerprint = if (args.actuation_binding) |binding| binding.actuator_ref_fingerprint else args.actuator_ref_fingerprint;
             const pending_port = Runspace.PendingPort.init(.{
                 .handle = args.run_handle,
                 .mailbox_id = args.mailbox_id,
@@ -10556,6 +10660,9 @@ pub const Runspace = struct {
                 .expected_response_kind = args.expected_response_kind,
                 .environment_certificate_fingerprint = args.environment_certificate_fingerprint,
                 .run_permit_fingerprint = args.run_permit_fingerprint,
+                .actuation_binding_fingerprint = actuation_binding_fingerprint,
+                .actuation_descriptor_fingerprint = actuation_descriptor_fingerprint,
+                .actuator_ref_fingerprint = actuator_ref_fingerprint,
                 .pending_actuation_intent_fingerprint = args.pending_actuation_intent_fingerprint,
                 .pending_actuation_receipt_fingerprint = args.pending_actuation_receipt_fingerprint,
                 .committed_actuation_receipt = args.committed_actuation_receipt,
@@ -10613,9 +10720,6 @@ pub const Runspace = struct {
             const index = try self.indexOf(mailbox_id);
             const current = self.pending.items[index];
             if (current.status != .pending) return error.PendingPortConsumed;
-            if (current.pending_actuation_intent_fingerprint != null or current.pending_actuation_receipt_fingerprint != null) {
-                if (current.pending_actuation_intent_fingerprint != intent_fingerprint) return error.PendingPortConsumed;
-            }
             var marked = current;
             marked.pending_actuation_intent_fingerprint = intent_fingerprint;
             marked.pending_actuation_receipt_fingerprint = receipt_fingerprint;
@@ -11418,6 +11522,13 @@ pub const Runspace = struct {
         return self.slots.items[try self.slotIndex(handle)].summary();
     }
 
+    pub fn cloneSlotSupervisor(self: *const @This(), allocator: std.mem.Allocator, handle: RunHandle) !?Supervision.Supervisor {
+        const slot = self.slots.items[try self.slotIndex(handle)];
+        if (slot.driver) |driver| return driver.cloneSupervisor(allocator);
+        if (slot.supervisor) |supervisor| return try supervisor.clone(allocator);
+        return null;
+    }
+
     pub fn listRunSummaries(self: *const @This(), allocator: std.mem.Allocator) ![]Runspace.RunSlotSummary {
         const summaries = try allocator.alloc(Runspace.RunSlotSummary, self.slots.items.len);
         for (self.slots.items, 0..) |slot, index| {
@@ -11594,10 +11705,13 @@ pub const Runspace = struct {
         const mailbox_index = try self.mailbox.indexOf(mailbox_id);
         const mailbox_uncommitted_snapshot = self.mailbox.pending.items[mailbox_index];
         _ = try self.mailbox.recordActuationReceipt(mailbox_id, execution.intent.intent_fingerprint, execution.receipt.receipt_fingerprint);
-        const resolves_pending_actuation = pending.pending_actuation_intent_fingerprint == execution.intent.intent_fingerprint and
-            pending.pending_actuation_receipt_fingerprint != null;
+        const resolves_pending_actuation = try executionMatchesPendingActuation(pending, execution);
         if (resolves_pending_actuation) {
-            self.superviseActuationResolution(index, execution, accounting) catch |err| {
+            const supervise = if (execution.receipt.fresh_called)
+                self.superviseFreshActuationResolution(index, execution, accounting)
+            else
+                self.superviseActuationResolution(index, execution, accounting);
+            supervise catch |err| {
                 self.mailbox.pending.items[mailbox_index] = mailbox_uncommitted_snapshot;
                 return err;
             };
@@ -11630,10 +11744,6 @@ pub const Runspace = struct {
 
     pub fn dispatchPendingWithActuator(self: *@This(), mailbox_id: u64, execution: Actuation.Membrane.Execution) !Actuation.Receipt {
         return self.dispatchActuation(mailbox_id, execution);
-    }
-
-    pub fn dispatchAllActuations(self: *@This()) !Runspace.RunspaceReport {
-        return self.report();
     }
 
     fn superviseActuationDispatch(self: *@This(), slot_index: usize, execution: Actuation.Membrane.Execution, accounting: ResponseFrameAccounting) !void {
@@ -11687,6 +11797,55 @@ pub const Runspace = struct {
         if (self.config.require_supervision) return error.SupervisionDenied;
     }
 
+    fn superviseFreshActuationResolution(self: *@This(), slot_index: usize, execution: Actuation.Membrane.Execution, accounting: ResponseFrameAccounting) !void {
+        var supervisor_snapshot = try self.snapshotSlotSupervisor(slot_index);
+        defer supervisor_snapshot.deinit(self.allocator);
+        var slot = &self.slots.items[slot_index];
+        const key_present = execution.key_present;
+        if (slot.driver) |driver| {
+            driver.beforeActuationCommitWithAuthority(execution.intent, key_present, execution.authority_kind) catch |err| {
+                supervisor_snapshot.restore(self, slot_index);
+                return err;
+            };
+            driver.afterActuationResolution(execution.receipt, accounting.response_bytes, accounting.value_image_bytes) catch |err| {
+                supervisor_snapshot.restore(self, slot_index);
+                return err;
+            };
+            return;
+        }
+        if (slot.supervisor) |*supervisor| {
+            supervisor.beforeActuationCommitWithAuthority(execution.intent, key_present, execution.authority_kind) catch |err| {
+                supervisor_snapshot.restore(self, slot_index);
+                return err;
+            };
+            supervisor.afterActuationResolutionAccounting(execution.receipt, .{ .response_bytes = accounting.response_bytes, .value_image_bytes = accounting.value_image_bytes }) catch |err| {
+                supervisor_snapshot.restore(self, slot_index);
+                return err;
+            };
+            return;
+        }
+        if (self.config.require_supervision) return error.SupervisionDenied;
+    }
+
+    fn executionMatchesPendingActuation(pending: Runspace.PendingPort, execution: Actuation.Membrane.Execution) !bool {
+        const pending_intent_fingerprint = pending.pending_actuation_intent_fingerprint orelse return false;
+        if (execution.response.status == .pending or execution.response.status == .deferred) return error.PendingPortConsumed;
+        if (execution.receipt.replayed or execution.receipt.verified) {
+            const pending_receipt_fingerprint = pending.pending_actuation_receipt_fingerprint orelse return error.InvalidPendingPortTransition;
+            if (execution.receipt.pending_actuation_receipt_fingerprint == null or
+                execution.receipt.pending_actuation_receipt_fingerprint.? != pending_receipt_fingerprint)
+            {
+                return error.InvalidPendingPortTransition;
+            }
+            if (execution.receipt.intent_fingerprint != execution.intent.intent_fingerprint) return error.InvalidPendingPortTransition;
+            return true;
+        }
+        if (execution.intent.intent_fingerprint != pending_intent_fingerprint) return error.InvalidPendingPortTransition;
+        if (execution.receipt.intent_fingerprint != pending_intent_fingerprint) return error.InvalidPendingPortTransition;
+        if (pending.committed_actuation_receipt and execution.receipt.fresh_called) return error.InvalidPendingPortTransition;
+        return true;
+    }
+
     fn validateActuationDispatchForPending(pending: Runspace.PendingPort, execution: Actuation.Membrane.Execution) !void {
         if (pending.status != .pending) return error.PendingPortConsumed;
         if (execution.intent.world_surface_fingerprint != pending.world_surface_fingerprint) return error.FrameSurfaceMismatch;
@@ -11701,17 +11860,16 @@ pub const Runspace = struct {
             if (request.payload_value_fingerprint == null or request.payload_value_fingerprint.? != payload) return error.PayloadRefMismatch;
         }
         try validatePendingActuationMarker(pending.pending_actuation_intent_fingerprint, pending.pending_actuation_receipt_fingerprint);
-        const matches_pending_actuation = if (pending.pending_actuation_intent_fingerprint) |pending_intent_fingerprint| matches: {
-            if (execution.response.status == .pending or execution.response.status == .deferred) return error.PendingPortConsumed;
-            if (execution.intent.intent_fingerprint != pending_intent_fingerprint) return error.InvalidPendingPortTransition;
-            if (execution.receipt.intent_fingerprint != pending_intent_fingerprint) return error.InvalidPendingPortTransition;
-            if (pending.committed_actuation_receipt and execution.receipt.fresh_called) return error.InvalidPendingPortTransition;
-            if (execution.receipt.replayed or execution.receipt.verified) {
-                const pending_receipt_fingerprint = pending.pending_actuation_receipt_fingerprint orelse return error.InvalidPendingPortTransition;
-                if (execution.receipt.receipt_fingerprint != pending_receipt_fingerprint) return error.InvalidPendingPortTransition;
-            }
-            break :matches true;
-        } else false;
+        try validatePendingActuationBindingMarker(pending.actuation_binding_fingerprint, pending.actuation_descriptor_fingerprint, pending.actuator_ref_fingerprint);
+        if (pending.actuation_binding_fingerprint) |binding_fingerprint| {
+            if (execution.intent.binding_fingerprint == null or execution.intent.binding_fingerprint.? != binding_fingerprint) return error.InvalidPendingPortTransition;
+            if (pending.actuation_descriptor_fingerprint == null or execution.intent.descriptor_fingerprint != pending.actuation_descriptor_fingerprint.?) return error.InvalidPendingPortTransition;
+            if (pending.actuator_ref_fingerprint == null or execution.intent.actuator_ref_fingerprint != pending.actuator_ref_fingerprint.?) return error.InvalidPendingPortTransition;
+            if (execution.envelope.idempotency_key.actuator_ref_fingerprint != pending.actuator_ref_fingerprint.?) return error.InvalidPendingPortTransition;
+            if (execution.response.actuator_ref_fingerprint != pending.actuator_ref_fingerprint.?) return error.InvalidPendingPortTransition;
+            if (execution.receipt.actuator_ref_fingerprint != pending.actuator_ref_fingerprint.?) return error.InvalidPendingPortTransition;
+        }
+        const matches_pending_actuation = try executionMatchesPendingActuation(pending, execution);
         if (execution.intent.pending_port_fingerprint == null) return error.InvalidPendingPortTransition;
         if (execution.intent.pending_port_fingerprint.? != pending.pending_port_fingerprint and !matches_pending_actuation) return error.InvalidPendingPortTransition;
         if (execution.intent.run_permit_fingerprint != pending.run_permit_fingerprint) return error.InvalidRunspaceTransition;
@@ -11756,6 +11914,7 @@ pub const Runspace = struct {
             .rejected, .failed => actuation_response.response_fingerprint,
             .pending => unreachable,
         };
+        const deferred_response_fingerprint = status == .responded and response_fingerprint == 0;
         const response = Frame.Response.init(.{
             .world_surface_fingerprint = pending.world_surface_fingerprint,
             .target_certificate_fingerprint = pending.target_certificate_fingerprint,
@@ -11765,9 +11924,10 @@ pub const Runspace = struct {
             .response_value_table_id = if (status == .responded) pending.expected_response_value_table_id else null,
             .response_fingerprint = response_fingerprint,
             .response_image = response_image,
-            .replay_key = request.replay_key_seed.withResponse(response_fingerprint).fingerprint(),
+            .replay_key = if (deferred_response_fingerprint) 0 else request.replay_key_seed.withResponse(response_fingerprint).fingerprint(),
             .status = status,
             .reason = if (actuation_response.reason.len == 0) null else actuation_response.reason,
+            .flags = if (deferred_response_fingerprint) frame_response_deferred_fingerprint_flag else 0,
         });
         response_image = null;
         return response;
@@ -11790,7 +11950,7 @@ pub const Runspace = struct {
         if (!options.allow_active_fabric and self.pendingRequiresFabricRoute(slot.*, pending)) return error.ActiveFabricUnsupported;
         if (options.supervision_mode == .normal) {
             if (slot.driver) |driver| {
-                if (driver.actuationBindingCoversWorldPort(pending.world_port_id)) return error.InvalidPendingPortTransition;
+                if (driver.actuationBindingCoversHandlerlessWorldPort(pending.world_port_id)) return error.InvalidPendingPortTransition;
             }
         }
         const fabric_completes_driverless_parent = options.allow_active_fabric and slot.driver == null and slot.installed_run_image != null;
@@ -14790,7 +14950,9 @@ pub const Runspace = struct {
             .port_request => |request| {
                 var owned_request = request;
                 defer owned_request.deinit(self.allocator);
-                const suppress_auto_dispatch = self.config.auto_dispatch and driver.fabricPlanCoversWorldPort(owned_request.world_port_id);
+                const fabric_suppresses_auto_dispatch = driver.fabricPlanCoversWorldPort(owned_request.world_port_id);
+                const actuation_suppresses_auto_dispatch = !fabric_suppresses_auto_dispatch and driver.actuationBindingCoversHandlerlessWorldPort(owned_request.world_port_id);
+                const suppress_auto_dispatch = self.config.auto_dispatch and (fabric_suppresses_auto_dispatch or actuation_suppresses_auto_dispatch);
                 var event_pair = self.prepareEventPair(
                     2,
                     "port enqueued",
@@ -14810,6 +14972,10 @@ pub const Runspace = struct {
                     return self.failSteppedRunBeforePort(slot, err);
                 };
                 const mailbox_id = self.next_mailbox_id;
+                const actuation_binding = if (actuation_suppresses_auto_dispatch or !suppress_auto_dispatch)
+                    driver.actuationBindingForWorldPort(owned_request.world_port_id)
+                else
+                    null;
                 const pending = self.mailbox.push(.{
                     .run_handle = slot.handle,
                     .mailbox_id = mailbox_id,
@@ -14817,6 +14983,7 @@ pub const Runspace = struct {
                     .target_ref_fingerprint = slot.target_ref.target_ref_fingerprint,
                     .environment_certificate_fingerprint = slot.environment_certificate_fingerprint,
                     .run_permit_fingerprint = slot.run_permit_fingerprint,
+                    .actuation_binding = actuation_binding,
                     .inserted_event_index = self.next_event_index,
                 }) catch |err| {
                     return self.failSteppedRunBeforePort(slot, err);
@@ -17739,6 +17906,17 @@ pub const Actuation = struct {
                 .cancelled => self.cancelled,
             };
         }
+
+        pub fn intersect(self: @This(), other: @This()) @This() {
+            return .{
+                .responded = self.responded and other.responded,
+                .rejected = self.rejected and other.rejected,
+                .failed = self.failed and other.failed,
+                .pending = self.pending and other.pending,
+                .deferred = self.deferred and other.deferred,
+                .cancelled = self.cancelled and other.cancelled,
+            };
+        }
     };
 
     pub const DecisionStatus = enum(u8) {
@@ -17893,6 +18071,7 @@ pub const Actuation = struct {
         payload_value_table_id: ?u32 = null,
         response_value_ref: ?u32 = null,
         response_value_table_id: ?u32 = null,
+        supported_modes: ModeSet = .all,
         allowed_response_kinds: ResponseStatusSet = .terminal_with_errors,
         kind: Kind,
         class: Class,
@@ -17911,6 +18090,7 @@ pub const Actuation = struct {
             payload_value_table_id: ?u32 = null,
             response_value_ref: ?u32 = null,
             response_value_table_id: ?u32 = null,
+            supported_modes: ModeSet = .all,
             allowed_response_kinds: ResponseStatusSet = .terminal_with_errors,
             value_policy: ValuePolicy = .portable,
             label: []const u8 = "",
@@ -17928,7 +18108,8 @@ pub const Actuation = struct {
                 .payload_value_table_id = args.payload_value_table_id,
                 .response_value_ref = args.response_value_ref,
                 .response_value_table_id = args.response_value_table_id,
-                .allowed_response_kinds = args.allowed_response_kinds,
+                .supported_modes = args.supported_modes.intersect(args.actuator_ref.supported_modes),
+                .allowed_response_kinds = args.allowed_response_kinds.intersect(args.actuator_ref.supported_response_statuses),
                 .kind = args.actuator_ref.kind,
                 .class = args.actuator_ref.class,
                 .value_policy = args.value_policy,
@@ -18705,7 +18886,10 @@ pub const Actuation = struct {
             if (self.fingerprint_version != world_actuation_response_fingerprint_version) return error.InvalidFrameEncoding;
             if (self.intent_fingerprint == 0 or self.actuator_ref_fingerprint == 0 or self.request_fingerprint == 0) return error.InvalidFrameEncoding;
             if (!policy.allowsResponseStatus(self.status)) return error.PortRuleDenied;
-            if (self.status == .responded and self.frame_response_fingerprint == null) return error.MissingValueImage;
+            if (self.status == .responded) {
+                const frame_response_fingerprint = self.frame_response_fingerprint orelse return error.MissingValueImage;
+                if (frame_response_fingerprint == 0 and self.response_image == null) return error.MissingValueImage;
+            }
             if (self.status == .pending or self.status == .deferred) {
                 if (self.response_image != null or self.value_image_fingerprint != null) return error.InvalidFrameEncoding;
                 if (policy.max_pending_actuations) |max_pending| {
@@ -18733,8 +18917,11 @@ pub const Actuation = struct {
                 }
                 try validateValueImagePolicy(image, response_value_policy);
                 if (self.value_image_fingerprint == null or self.value_image_fingerprint.? != image.value_image_fingerprint) return error.InvalidFrameEncoding;
-                const boundary_value_fingerprint = image.boundary_value_fingerprint orelse return error.InvalidFrameEncoding;
-                if (self.frame_response_fingerprint == null or self.frame_response_fingerprint.? != boundary_value_fingerprint) return error.InvalidFrameEncoding;
+                const frame_response_fingerprint = self.frame_response_fingerprint orelse return error.InvalidFrameEncoding;
+                if (frame_response_fingerprint != 0) {
+                    const boundary_value_fingerprint = image.boundary_value_fingerprint orelse return error.InvalidFrameEncoding;
+                    if (frame_response_fingerprint != boundary_value_fingerprint) return error.InvalidFrameEncoding;
+                }
                 if (policy.max_actuation_response_bytes) |max| {
                     if (image.bytes.len > max or valueImageEncodedByteSize(image) > max) return error.PortRuleDenied;
                 }
@@ -18767,6 +18954,9 @@ pub const Actuation = struct {
         response_value_image_fingerprint: ?u64 = null,
         actuator_ref_fingerprint: u64,
         idempotency_key_fingerprint: u64,
+        request_fingerprint: ?u64 = null,
+        replay_key_fingerprint: ?u64 = null,
+        pending_actuation_receipt_fingerprint: ?u64 = null,
         target_ref_fingerprint: u64,
         world_surface_fingerprint: u64,
         world_port_id: u32,
@@ -18800,6 +18990,9 @@ pub const Actuation = struct {
             response_value_image_fingerprint: ?u64 = null,
             actuator_ref_fingerprint: u64,
             idempotency_key_fingerprint: u64,
+            request_fingerprint: ?u64 = null,
+            replay_key_fingerprint: ?u64 = null,
+            pending_actuation_receipt_fingerprint: ?u64 = null,
             target_ref_fingerprint: u64,
             world_surface_fingerprint: u64,
             world_port_id: u32,
@@ -18834,6 +19027,9 @@ pub const Actuation = struct {
                 .response_value_image_fingerprint = args.response_value_image_fingerprint,
                 .actuator_ref_fingerprint = args.actuator_ref_fingerprint,
                 .idempotency_key_fingerprint = args.idempotency_key_fingerprint,
+                .request_fingerprint = args.request_fingerprint,
+                .replay_key_fingerprint = args.replay_key_fingerprint,
+                .pending_actuation_receipt_fingerprint = args.pending_actuation_receipt_fingerprint,
                 .target_ref_fingerprint = args.target_ref_fingerprint,
                 .world_surface_fingerprint = args.world_surface_fingerprint,
                 .world_port_id = args.world_port_id,
@@ -18872,6 +19068,7 @@ pub const Actuation = struct {
             mode: Mode,
             run_receipt_fingerprint: ?u64 = null,
             capsule_fingerprint: ?u64 = null,
+            pending_actuation_receipt_fingerprint: ?u64 = null,
         }) @This() {
             return init(.{
                 .intent_fingerprint = args.intent.intent_fingerprint,
@@ -18884,6 +19081,9 @@ pub const Actuation = struct {
                 .response_value_image_fingerprint = args.response.value_image_fingerprint,
                 .actuator_ref_fingerprint = args.response.actuator_ref_fingerprint,
                 .idempotency_key_fingerprint = args.envelope.idempotency_key.key_fingerprint,
+                .request_fingerprint = args.envelope.idempotency_key.request_fingerprint,
+                .replay_key_fingerprint = args.envelope.idempotency_key.replay_key_fingerprint,
+                .pending_actuation_receipt_fingerprint = args.pending_actuation_receipt_fingerprint,
                 .target_ref_fingerprint = args.target_ref_fingerprint,
                 .world_surface_fingerprint = args.world_surface_fingerprint,
                 .world_port_id = args.response.world_port_id,
@@ -18911,6 +19111,9 @@ pub const Actuation = struct {
             if (self.intent_fingerprint == 0 or self.envelope_fingerprint == 0 or self.decision_fingerprint == 0) return error.InvalidFrameEncoding;
             if (self.commit_fingerprint == 0 or self.response_fingerprint == 0 or self.actuator_ref_fingerprint == 0) return error.InvalidFrameEncoding;
             if (self.idempotency_key_fingerprint == 0 or self.target_ref_fingerprint == 0 or self.world_surface_fingerprint == 0) return error.InvalidFrameEncoding;
+            if (self.request_fingerprint != null and self.request_fingerprint.? == 0) return error.InvalidFrameEncoding;
+            if (self.replay_key_fingerprint != null and self.replay_key_fingerprint.? == 0) return error.InvalidFrameEncoding;
+            if (self.pending_actuation_receipt_fingerprint != null and self.pending_actuation_receipt_fingerprint.? == 0) return error.InvalidFrameEncoding;
             if (self.mode == .replay and self.fresh_called) return error.InvalidFrameEncoding;
             if (self.replayed and self.verified) return error.InvalidFrameEncoding;
             switch (self.mode) {
@@ -18920,7 +19123,11 @@ pub const Actuation = struct {
                 .audit => if (self.fresh_called or self.replayed or self.verified) return error.InvalidFrameEncoding,
             }
             if (receiptResponseStatusFlagCount(self) > 1) return error.InvalidFrameEncoding;
-            if (self.responseStatus() == .responded and self.frame_response_fingerprint == null) return error.InvalidFrameEncoding;
+            if (self.responseStatus() == .responded) {
+                const frame_response_fingerprint = self.frame_response_fingerprint orelse return error.InvalidFrameEncoding;
+                if (frame_response_fingerprint == 0 and self.response_value_image_fingerprint == null) return error.InvalidFrameEncoding;
+            }
+            if (self.responseStatus() != .responded and self.response_value_image_fingerprint != null) return error.InvalidFrameEncoding;
             try validateNoZeroU64(self.blockers);
             try validateNoZeroU64(self.warnings);
             if (self.metadata.len > world_max_decoded_byte_field_len) return error.InvalidFrameEncoding;
@@ -19068,6 +19275,7 @@ pub const Actuation = struct {
                 .response_kind = receipt.response_kind,
                 .frame_response_fingerprint = receipt.frame_response_fingerprint,
                 .response_value_image_fingerprint = receipt.response_value_image_fingerprint,
+                .request_fingerprint = receipt.request_fingerprint,
                 .receipt_fingerprint = receipt.receipt_fingerprint,
                 .idempotency_key_fingerprint = receipt.idempotency_key_fingerprint,
                 .fresh_called = receipt.fresh_called,
@@ -19180,12 +19388,45 @@ pub const Actuation = struct {
             return result;
         }
 
-        pub fn lookupByIdempotencyKey(self: @This(), key_fingerprint: u64) !Receipt {
+        fn receiptCanReplayIntent(receipt: Receipt, intent: Intent) bool {
+            const same_intent = receipt.intent_fingerprint == intent.intent_fingerprint and receipt.mode == intent.requested_mode;
+            const replaying_prior_receipt = intent.requested_mode == .replay and (receipt.mode == .fresh or receipt.mode == .replay);
+            return same_intent or replaying_prior_receipt;
+        }
+
+        fn receiptRequestMatchesIntent(receipt: Receipt, intent: Intent) bool {
+            const request_fingerprint = receipt.request_fingerprint orelse return true;
+            return request_fingerprint == intent.frame_request_fingerprint;
+        }
+
+        pub fn lookupByIdempotencyKey(self: @This(), key_fingerprint: u64, intent: Intent) !Receipt {
             var index = self.receipts.len;
             while (index > 0) {
                 index -= 1;
                 const receipt = self.receipts[index];
-                if (receipt.idempotency_key_fingerprint == key_fingerprint) return receipt;
+                if (receipt.idempotency_key_fingerprint == key_fingerprint and
+                    receiptRequestMatchesIntent(receipt, intent) and
+                    receiptCanReplayIntent(receipt, intent))
+                {
+                    return receipt;
+                }
+            }
+            return error.ReplayMissing;
+        }
+
+        fn lookupByReplayKey(self: @This(), replay_key_fingerprint: u64, request_fingerprint: u64, intent: Intent) !Receipt {
+            if (self.replay_key_fingerprint == null or self.replay_key_fingerprint.? != replay_key_fingerprint) return error.ReplayMissing;
+            var index = self.receipts.len;
+            while (index > 0) {
+                index -= 1;
+                const receipt = self.receipts[index];
+                if (receipt.replay_key_fingerprint == replay_key_fingerprint and
+                    receipt.request_fingerprint != null and
+                    receipt.request_fingerprint.? == request_fingerprint and
+                    receiptCanReplayIntent(receipt, intent))
+                {
+                    return receipt;
+                }
             }
             return error.ReplayMissing;
         }
@@ -19203,15 +19444,28 @@ pub const Actuation = struct {
             return error.MissingValueImage;
         }
 
-        pub fn responseForIntent(self: @This(), intent: Intent, expected_status: Actuation.ResponseStatus, expected_kind: ResponseKind) !Response {
-            const receipt = try self.lookupByIdempotencyKey(intent.idempotency_key_fingerprint);
+        pub fn responseForIntent(self: @This(), intent: Intent, idempotency_key: IdempotencyKey, expected_status: Actuation.ResponseStatus, expected_kind: ResponseKind) !Response {
+            try idempotency_key.validate();
+            if (idempotency_key.key_fingerprint != intent.idempotency_key_fingerprint) return error.ReplayRequestFingerprintMismatch;
+            const SelectedReceipt = struct {
+                receipt: Receipt,
+                replay_key_matched: bool,
+            };
+            const selected = selected: {
+                if (self.lookupByIdempotencyKey(idempotency_key.key_fingerprint, intent)) |receipt| {
+                    break :selected SelectedReceipt{ .receipt = receipt, .replay_key_matched = false };
+                } else |_| {}
+                const replay_key_fingerprint = idempotency_key.replay_key_fingerprint orelse return error.ReplayMissing;
+                break :selected SelectedReceipt{ .receipt = try self.lookupByReplayKey(replay_key_fingerprint, idempotency_key.request_fingerprint, intent), .replay_key_matched = true };
+            };
+            const receipt = selected.receipt;
             try receipt.validate();
             if (receipt.actuator_ref_fingerprint != intent.actuator_ref_fingerprint) return error.ReplayRequestFingerprintMismatch;
             if (receipt.target_ref_fingerprint != intent.target_ref_fingerprint) return error.ReplayRequestFingerprintMismatch;
             if (receipt.world_surface_fingerprint != intent.world_surface_fingerprint) return error.ReplayRequestFingerprintMismatch;
             if (receipt.world_port_id != intent.world_port_id) return error.ReplayPortMismatch;
             if (receipt.class != intent.class) return error.ReplayRequestFingerprintMismatch;
-            if (receipt.idempotency_key_fingerprint != intent.idempotency_key_fingerprint) return error.ReplayRequestFingerprintMismatch;
+            if (!selected.replay_key_matched and receipt.idempotency_key_fingerprint != intent.idempotency_key_fingerprint) return error.ReplayRequestFingerprintMismatch;
             const same_intent = receipt.intent_fingerprint == intent.intent_fingerprint;
             const replaying_prior_receipt = intent.requested_mode == .replay and (receipt.mode == .fresh or receipt.mode == .replay);
             if (!same_intent and !replaying_prior_receipt) return error.ReplayRequestFingerprintMismatch;
@@ -19298,7 +19552,8 @@ pub const Actuation = struct {
                 expected_status == fresh_status and
                 expected.?.response_kind == fresh.?.response_kind and
                 expected.?.frame_response_fingerprint == fresh.?.frame_response_fingerprint and
-                expected.?.response_value_image_fingerprint == fresh.?.response_value_image_fingerprint;
+                expected.?.response_value_image_fingerprint == fresh.?.response_value_image_fingerprint and
+                receiptAuxiliaryEvidenceMatches(expected.?, fresh.?);
             const divergence_kind: ?DivergenceKind = if (matched)
                 null
             else if (!identity_matched)
@@ -19320,13 +19575,37 @@ pub const Actuation = struct {
             });
         }
 
+        fn receiptAuxiliaryEvidenceMatches(expected: Receipt, fresh: Receipt) bool {
+            return std.mem.eql(u64, expected.blockers, fresh.blockers) and
+                std.mem.eql(u64, expected.warnings, fresh.warnings);
+        }
+
         pub fn validate(self: @This()) !void {
             if (self.fingerprint_version != world_actuation_verify_report_fingerprint_version) return error.InvalidFrameEncoding;
             if (self.intent_fingerprint == 0) return error.InvalidFrameEncoding;
+            if (self.matched) {
+                if (self.divergence_kind != null) return error.InvalidFrameEncoding;
+                if (self.expected_receipt_fingerprint == null or self.fresh_receipt_fingerprint == null) return error.InvalidFrameEncoding;
+            } else {
+                const divergence = self.divergence_kind orelse return error.InvalidFrameEncoding;
+                switch (divergence) {
+                    .expected_missing => if (self.expected_receipt_fingerprint != null) return error.InvalidFrameEncoding,
+                    .fresh_failed => {
+                        if (self.expected_receipt_fingerprint == null) return error.InvalidFrameEncoding;
+                        if (self.fresh_receipt_fingerprint != null) return error.InvalidFrameEncoding;
+                    },
+                    .response_fingerprint_mismatch, .response_kind_mismatch, .status_mismatch, .value_image_mismatch => {
+                        if (self.expected_receipt_fingerprint == null or self.fresh_receipt_fingerprint == null) return error.InvalidFrameEncoding;
+                    },
+                }
+            }
             if (self.report_fingerprint != fingerprintVerifyReport(self)) return error.InvalidFrameEncoding;
         }
 
         fn receiptBindsRequest(receipt: Receipt, intent: Intent) bool {
+            if (receipt.request_fingerprint) |request_fingerprint| {
+                if (request_fingerprint != intent.frame_request_fingerprint) return false;
+            }
             return receipt.idempotency_key_fingerprint == intent.idempotency_key_fingerprint and
                 receipt.actuator_ref_fingerprint == intent.actuator_ref_fingerprint and
                 receipt.target_ref_fingerprint == intent.target_ref_fingerprint and
@@ -19416,6 +19695,12 @@ pub const Actuation = struct {
         pub const FixtureActuator = ResponseTemplate;
         pub const NativeFunctionActuator = ResponseTemplate;
         pub const ByteProtocolActuator = ResponseTemplate;
+        pub const GuestBridgeActuator = ResponseTemplate;
+        pub const ModelLikeActuator = ResponseTemplate;
+        pub const ToolLikeActuator = ResponseTemplate;
+        pub const FileLikeActuator = ResponseTemplate;
+        pub const HumanLikeActuator = ResponseTemplate;
+        pub const CustomActuator = ResponseTemplate;
         pub const RejectActuator = ResponseTemplate;
         pub const PendingActuator = ResponseTemplate;
         pub const DeferredActuator = ResponseTemplate;
@@ -19436,6 +19721,12 @@ pub const Actuation = struct {
             fixture: Membrane.FixtureActuator,
             native_function: Membrane.NativeFunctionActuator,
             byte_protocol: Membrane.ByteProtocolActuator,
+            guest_bridge: Membrane.GuestBridgeActuator,
+            model_like: Membrane.ModelLikeActuator,
+            tool_like: Membrane.ToolLikeActuator,
+            file_like: Membrane.FileLikeActuator,
+            human_like: Membrane.HumanLikeActuator,
+            custom: Membrane.CustomActuator,
             reject: Membrane.RejectActuator,
             pending: Membrane.PendingActuator,
             deferred: Membrane.DeferredActuator,
@@ -19451,6 +19742,7 @@ pub const Actuation = struct {
             descriptor: ?Descriptor = null,
             binding: ?Actuation.Binding = null,
             run_permit: ?RunPermit = null,
+            precommit_ledger: ?*const Supervision.UsageLedger = null,
             key_present: bool = true,
             explicit_mutation_approval: bool = false,
             explicit_irreversible_approval: bool = false,
@@ -19459,6 +19751,7 @@ pub const Actuation = struct {
             world_surface_fingerprint: u64,
             run_receipt_fingerprint: ?u64 = null,
             capsule_fingerprint: ?u64 = null,
+            pending_actuation_receipt_fingerprint: ?u64 = null,
         };
 
         pub const Execution = struct {
@@ -19581,23 +19874,29 @@ pub const Actuation = struct {
             switch (args.actuator) {
                 .replay => |replay| return replayExecution(args, decision, replay),
                 .verify => |verify| return verifyExecution(args, decision, verify),
-                .fixture => |template| return freshExecution(args, decision, template),
-                .native_function => |template| return freshExecution(args, decision, template),
-                .byte_protocol => |template| return freshExecution(args, decision, template),
+                .fixture => |template| return freshOrAuditExecution(args, decision, template),
+                .native_function => |template| return freshOrAuditExecution(args, decision, template),
+                .byte_protocol => |template| return freshOrAuditExecution(args, decision, template),
+                .guest_bridge => |template| return freshOrAuditExecution(args, decision, template),
+                .model_like => |template| return freshOrAuditExecution(args, decision, template),
+                .tool_like => |template| return freshOrAuditExecution(args, decision, template),
+                .file_like => |template| return freshOrAuditExecution(args, decision, template),
+                .human_like => |template| return freshOrAuditExecution(args, decision, template),
+                .custom => |template| return freshOrAuditExecution(args, decision, template),
                 .reject => |template| {
                     var actual = template;
                     actual.status = .rejected;
-                    return freshExecution(args, decision, actual);
+                    return freshOrAuditExecution(args, decision, actual);
                 },
                 .pending => |template| {
                     var actual = template;
                     actual.status = .pending;
-                    return freshExecution(args, decision, actual);
+                    return freshOrAuditExecution(args, decision, actual);
                 },
                 .deferred => |template| {
                     var actual = template;
                     actual.status = .deferred;
-                    return freshExecution(args, decision, actual);
+                    return freshOrAuditExecution(args, decision, actual);
                 },
             }
         }
@@ -19606,7 +19905,19 @@ pub const Actuation = struct {
             return switch (selected_actuator) {
                 .replay => requested_mode == .replay,
                 .verify => requested_mode == .verify,
-                .fixture, .native_function, .byte_protocol, .reject, .pending, .deferred => requested_mode == .fresh,
+                .fixture,
+                .native_function,
+                .byte_protocol,
+                .guest_bridge,
+                .model_like,
+                .tool_like,
+                .file_like,
+                .human_like,
+                .custom,
+                .reject,
+                .pending,
+                .deferred,
+                => requested_mode == .fresh or requested_mode == .audit,
             };
         }
 
@@ -19625,9 +19936,9 @@ pub const Actuation = struct {
                 .fresh => if (!policy.allow_fresh_actuation) return error.SupervisionDenied,
                 .replay => if (!policy.allow_replay_actuation) return error.SupervisionDenied,
                 .verify => if (!policy.allow_verify_actuation) return error.SupervisionDenied,
-                .audit => return error.SupervisionDenied,
+                .audit => if (!policy.allow_audit_only) return error.SupervisionDenied,
             }
-            if (args.intent.requested_mode == .fresh and permitPrecommitActuationCallLimitExceeded(permit)) return error.BudgetExceeded;
+            try validatePermitPrecommitActuationCallBudget(permit, args.intent, args.precommit_ledger, args.pending_actuation_receipt_fingerprint);
             if (policy.require_idempotency_keys and args.intent.requested_mode == .fresh and args.intent.class.isMutation() and !args.key_present) return error.SupervisionDenied;
             if (args.intent.class == .irreversible_mutation and !policy.allow_irreversible_actuation) return error.SupervisionDenied;
             if (!permitAllowsActuationDescriptorValuePolicy(permit, args.intent.world_port_id, args.descriptor)) return error.SupervisionDenied;
@@ -19644,14 +19955,37 @@ pub const Actuation = struct {
             }
         }
 
-        fn permitPrecommitActuationCallLimitExceeded(permit: RunPermit) bool {
-            if (permit.budget.max_actuation_calls) |max| {
-                if (max == 0) return true;
+        fn validatePermitPrecommitActuationCallBudget(permit: RunPermit, intent: Intent, ledger_ptr: ?*const Supervision.UsageLedger, pending_actuation_receipt_fingerprint: ?u64) !void {
+            const budget_max = permit.budget.max_actuation_calls;
+            const policy_max = permit.policy.max_actuation_calls;
+            if (budget_max == null and policy_max == null) return;
+            if (budget_max != null and budget_max.? == 0) return error.BudgetExceeded;
+            if (policy_max != null and policy_max.? == 0) return error.BudgetExceeded;
+            const ledger = (ledger_ptr orelse return error.SupervisionDenied).*;
+            try validatePrecommitUsageLedgerBinding(permit, ledger);
+            const resolves_pending = ledger.hasPendingActuationForIntent(intent) or
+                if (pending_actuation_receipt_fingerprint) |fingerprint|
+                    ledger.hasPendingActuationReceipt(fingerprint, intent.world_port_id)
+                else
+                    false;
+            if (budget_max) |max| {
+                if (precommitActuationCallLimitExceeded(max, ledger, resolves_pending)) return error.BudgetExceeded;
             }
-            if (permit.policy.max_actuation_calls) |max| {
-                if (max == 0) return true;
+            if (policy_max) |max| {
+                if (precommitActuationCallLimitExceeded(max, ledger, resolves_pending)) return error.BudgetExceeded;
             }
-            return false;
+        }
+
+        fn validatePrecommitUsageLedgerBinding(permit: RunPermit, ledger: Supervision.UsageLedger) !void {
+            if (ledger.run_permit_fingerprint != permit.permit_fingerprint) return error.SupervisionDenied;
+            if (ledger.target_ref_fingerprint != permit.target_ref_fingerprint) return error.SupervisionDenied;
+            if (ledger.environment_certificate_fingerprint != permit.environment_certificate_fingerprint) return error.SupervisionDenied;
+            if (ledger.ledger_fingerprint != fingerprintUsageLedger(ledger)) return error.SupervisionDenied;
+        }
+
+        fn precommitActuationCallLimitExceeded(max: usize, ledger: Supervision.UsageLedger, resolves_pending: bool) bool {
+            const new_call_delta: usize = if (resolves_pending) 0 else 1;
+            return ledger.total_actuation_commits +| ledger.total_actuation_intents +| new_call_delta > max;
         }
 
         fn validatePermitEnvironmentCertificateBinding(permit: RunPermit, certificate_fingerprint: ?u64) !void {
@@ -19713,6 +20047,7 @@ pub const Actuation = struct {
                 try validateDescriptorValuePolicy(args.policy, descriptor.value_policy);
                 try validateDescriptorBindingForIntent(descriptor, args.intent, args.envelope);
                 try validateActuationBindingWitness(args.binding, descriptor, args.intent);
+                try validateSelectedActuatorMatchesDescriptor(args.actuator, descriptor);
             } else if (args.intent.run_permit_fingerprint != null and args.intent.binding_fingerprint != null) {
                 return error.InvalidFrameEncoding;
             }
@@ -19751,6 +20086,7 @@ pub const Actuation = struct {
             if (descriptor.descriptor_fingerprint != intent.descriptor_fingerprint) return error.InvalidFrameEncoding;
             if (descriptor.actuator_ref_fingerprint != intent.actuator_ref_fingerprint) return error.InvalidFrameEncoding;
             if (descriptor.class != intent.class) return error.InvalidFrameEncoding;
+            if (!descriptor.supported_modes.allows(intent.requested_mode)) return error.InvalidMode;
             if (descriptor.target_ref_fingerprint) |target| {
                 if (target != intent.target_ref_fingerprint) return error.InvalidFrameEncoding;
             }
@@ -19835,10 +20171,41 @@ pub const Actuation = struct {
             };
         }
 
+        fn freshOrAuditExecution(args: ExecuteArgs, decision: Decision, template: ResponseTemplate) !Execution {
+            if (args.intent.requested_mode == .audit) return auditExecution(args, decision, template);
+            return freshExecution(args, decision, template);
+        }
+
+        fn auditExecution(args: ExecuteArgs, decision: Decision, template: ResponseTemplate) !Execution {
+            const commit_value = try commit(decision, args.envelope, .not_started, args.attempt_number);
+            try commit_value.validateAfterDecision(decision);
+            const response = template.responseFor(args.intent, commit_value);
+            try response.validate(args.policy, args.descriptor);
+            const receipt = receiptFor(args, decision, commit_value, response);
+            try receipt.validate();
+            return .{
+                .policy = args.policy,
+                .intent = args.intent,
+                .envelope = args.envelope,
+                .descriptor = args.descriptor,
+                .binding = args.binding,
+                .decision = decision,
+                .commit_value = commit_value,
+                .response = response,
+                .receipt = receipt,
+                .key_present = args.key_present,
+                .explicit_mutation_approval = args.explicit_mutation_approval,
+                .explicit_irreversible_approval = args.explicit_irreversible_approval,
+                .authority_kind = authorityKindForExecuteArgs(args),
+                .fresh_called = false,
+                .parent_terminal = response.isTerminalForParent(),
+            };
+        }
+
         fn replayExecution(args: ExecuteArgs, decision: Decision, replay: Membrane.ReplayActuator) !Execution {
             const commit_value = try commit(decision, args.envelope, .replayed, args.attempt_number);
             try commit_value.validateAfterDecision(decision);
-            var response = try replay.source.responseForIntent(args.intent, replay.expected_status, replay.expected_response_kind);
+            var response = try replay.source.responseForIntent(args.intent, args.envelope.idempotency_key, replay.expected_status, replay.expected_response_kind);
             response.commit_fingerprint = commit_value.commit_fingerprint;
             response.response_fingerprint = Actuation.fingerprintResponse(response);
             try response.validate(args.policy, args.descriptor);
@@ -19918,7 +20285,11 @@ pub const Actuation = struct {
         fn validateSelectedActuatorAuthority(args: ExecuteArgs, rule: Supervision.PortRule) !void {
             if (std.meta.eql(rule.allowed_authority_kinds, Supervision.AllowedAuthorityKinds.all)) return;
             const descriptor = args.descriptor orelse return error.AuthorityDenied;
-            const selected = concreteAuthorityKindForActuator(args.actuator) orelse return;
+            try validateSelectedActuatorMatchesDescriptor(args.actuator, descriptor);
+        }
+
+        fn validateSelectedActuatorMatchesDescriptor(selected_actuator: Interface, descriptor: Descriptor) !void {
+            const selected = concreteAuthorityKindForActuator(selected_actuator) orelse return;
             if (selected == .replay_source) return;
             if (selected != authorityKindForActuationKind(descriptor.kind)) return error.AuthorityDenied;
         }
@@ -19928,6 +20299,12 @@ pub const Actuation = struct {
                 .fixture => .fixture,
                 .native_function => .native_function,
                 .byte_protocol => .byte_adapter,
+                .guest_bridge => .byte_adapter,
+                .model_like => .model_like,
+                .tool_like => .tool_like,
+                .file_like => .file_like,
+                .human_like => .human_like,
+                .custom => .custom,
                 .replay => .replay_source,
                 .verify, .reject, .pending, .deferred => null,
             };
@@ -19946,6 +20323,7 @@ pub const Actuation = struct {
                 .mode = args.intent.requested_mode,
                 .run_receipt_fingerprint = args.run_receipt_fingerprint,
                 .capsule_fingerprint = args.intent.capsule_fingerprint,
+                .pending_actuation_receipt_fingerprint = args.pending_actuation_receipt_fingerprint,
             });
         }
 
@@ -19995,6 +20373,7 @@ pub const Actuation = struct {
         if (receipt.environment_certificate_fingerprint) |fingerprint| try appendDependency(out, &index, .environment_certificate, fingerprint);
         if (receipt.run_receipt_fingerprint) |fingerprint| try appendDependency(out, &index, .run_receipt, fingerprint);
         if (receipt.capsule_fingerprint) |fingerprint| try appendDependency(out, &index, .capsule, fingerprint);
+        if (receipt.pending_actuation_receipt_fingerprint) |fingerprint| try appendDependency(out, &index, .receipt, fingerprint);
         return out[0..index];
     }
 
@@ -20035,6 +20414,7 @@ pub const Actuation = struct {
         hashOptionalU32(&hasher, descriptor.payload_value_table_id);
         hashOptionalU32(&hasher, descriptor.response_value_ref);
         hashOptionalU32(&hasher, descriptor.response_value_table_id);
+        hashModeSet(&hasher, descriptor.supported_modes);
         hashResponseStatusSet(&hasher, descriptor.allowed_response_kinds);
         hashU64(&hasher, @intFromEnum(descriptor.kind));
         hashU64(&hasher, @intFromEnum(descriptor.class));
@@ -20218,6 +20598,9 @@ pub const Actuation = struct {
         hashOptionalU64(&hasher, receipt.response_value_image_fingerprint);
         hashU64(&hasher, receipt.actuator_ref_fingerprint);
         hashU64(&hasher, receipt.idempotency_key_fingerprint);
+        hashOptionalU64(&hasher, receipt.request_fingerprint);
+        hashOptionalU64(&hasher, receipt.replay_key_fingerprint);
+        hashOptionalU64(&hasher, receipt.pending_actuation_receipt_fingerprint);
         hashU64(&hasher, receipt.target_ref_fingerprint);
         hashU64(&hasher, receipt.world_surface_fingerprint);
         hashU64(&hasher, receipt.world_port_id);
@@ -20947,6 +21330,9 @@ pub const Capsule = struct {
         target_ref_fingerprint: u64,
         environment_certificate_fingerprint: ?u64 = null,
         run_permit_fingerprint: ?u64 = null,
+        actuation_binding_fingerprint: ?u64 = null,
+        actuation_descriptor_fingerprint: ?u64 = null,
+        actuator_ref_fingerprint: ?u64 = null,
         pending_actuation_intent_fingerprint: ?u64 = null,
         pending_actuation_receipt_fingerprint: ?u64 = null,
         committed_actuation_receipt: bool = false,
@@ -20964,6 +21350,9 @@ pub const Capsule = struct {
             target_ref_fingerprint: u64,
             environment_certificate_fingerprint: ?u64 = null,
             run_permit_fingerprint: ?u64 = null,
+            actuation_binding_fingerprint: ?u64 = null,
+            actuation_descriptor_fingerprint: ?u64 = null,
+            actuator_ref_fingerprint: ?u64 = null,
             pending_actuation_intent_fingerprint: ?u64 = null,
             pending_actuation_receipt_fingerprint: ?u64 = null,
             committed_actuation_receipt: bool = false,
@@ -20981,6 +21370,9 @@ pub const Capsule = struct {
                 .target_ref_fingerprint = args.target_ref_fingerprint,
                 .environment_certificate_fingerprint = args.environment_certificate_fingerprint,
                 .run_permit_fingerprint = args.run_permit_fingerprint,
+                .actuation_binding_fingerprint = args.actuation_binding_fingerprint,
+                .actuation_descriptor_fingerprint = args.actuation_descriptor_fingerprint,
+                .actuator_ref_fingerprint = args.actuator_ref_fingerprint,
                 .pending_actuation_intent_fingerprint = args.pending_actuation_intent_fingerprint,
                 .pending_actuation_receipt_fingerprint = args.pending_actuation_receipt_fingerprint,
                 .committed_actuation_receipt = args.committed_actuation_receipt,
@@ -21005,6 +21397,9 @@ pub const Capsule = struct {
                 .target_ref_fingerprint = pending_port.target_ref_fingerprint,
                 .environment_certificate_fingerprint = pending_port.environment_certificate_fingerprint,
                 .run_permit_fingerprint = pending_port.run_permit_fingerprint,
+                .actuation_binding_fingerprint = pending_port.actuation_binding_fingerprint,
+                .actuation_descriptor_fingerprint = pending_port.actuation_descriptor_fingerprint,
+                .actuator_ref_fingerprint = pending_port.actuator_ref_fingerprint,
                 .pending_actuation_intent_fingerprint = pending_port.pending_actuation_intent_fingerprint,
                 .pending_actuation_receipt_fingerprint = pending_port.pending_actuation_receipt_fingerprint,
                 .committed_actuation_receipt = pending_port.committed_actuation_receipt,
@@ -21027,6 +21422,7 @@ pub const Capsule = struct {
             try validateRequestFrameImage(self.request_frame);
             try validateRequestFramePolicy(self.request_frame, .portable);
             try validatePendingActuationMarker(self.pending_actuation_intent_fingerprint, self.pending_actuation_receipt_fingerprint);
+            if (!legacy and runspace_image_format_version != 2) try validatePendingActuationBindingMarker(self.actuation_binding_fingerprint, self.actuation_descriptor_fingerprint, self.actuator_ref_fingerprint);
             if (self.committed_actuation_receipt and self.pending_actuation_receipt_fingerprint == null) return error.InvalidFrameEncoding;
             if (!capsuleRunspaceImageFormatSupportsCommittedActuationReceipts(runspace_image_format_version) and self.committed_actuation_receipt) return error.InvalidFrameEncoding;
             if (self.request_frame.expected_response_value_table_id != self.expected_response_value_table_id) return error.InvalidFrameEncoding;
@@ -21057,6 +21453,11 @@ pub const Capsule = struct {
             hashU64(&hasher, image.target_ref_fingerprint);
             hashOptionalU64(&hasher, image.environment_certificate_fingerprint);
             hashOptionalU64(&hasher, image.run_permit_fingerprint);
+            if (image.fingerprint_version >= 4) {
+                hashOptionalU64(&hasher, image.actuation_binding_fingerprint);
+                hashOptionalU64(&hasher, image.actuation_descriptor_fingerprint);
+                hashOptionalU64(&hasher, image.actuator_ref_fingerprint);
+            }
             if (image.fingerprint_version >= 3) hashBool(&hasher, image.committed_actuation_receipt);
             hashU64(&hasher, image.inserted_event_index);
             hashU64(&hasher, @intFromEnum(image.status));
@@ -23138,6 +23539,9 @@ pub const Capsule = struct {
                     .expected_response_kind = pending_entry.expected_response_kind,
                     .environment_certificate_fingerprint = pending_entry.environment_certificate_fingerprint,
                     .run_permit_fingerprint = permit_fingerprint orelse pending_entry.run_permit_fingerprint,
+                    .actuation_binding_fingerprint = pending_entry.actuation_binding_fingerprint,
+                    .actuation_descriptor_fingerprint = pending_entry.actuation_descriptor_fingerprint,
+                    .actuator_ref_fingerprint = pending_entry.actuator_ref_fingerprint,
                     .pending_actuation_intent_fingerprint = pending_entry.pending_actuation_intent_fingerprint,
                     .pending_actuation_receipt_fingerprint = pending_entry.pending_actuation_receipt_fingerprint,
                     .committed_actuation_receipt = pending_entry.committed_actuation_receipt,
@@ -25346,6 +25750,13 @@ pub const Capsule = struct {
         try writeU64(out, allocator, image.target_ref_fingerprint);
         try writeOptionalU64(out, allocator, image.environment_certificate_fingerprint);
         try writeOptionalU64(out, allocator, image.run_permit_fingerprint);
+        if (image.fingerprint_version >= 4) {
+            try writeOptionalU64(out, allocator, image.actuation_binding_fingerprint);
+            try writeOptionalU64(out, allocator, image.actuation_descriptor_fingerprint);
+            try writeOptionalU64(out, allocator, image.actuator_ref_fingerprint);
+        } else if (image.actuation_binding_fingerprint != null or image.actuation_descriptor_fingerprint != null or image.actuator_ref_fingerprint != null) {
+            return error.InvalidFrameEncoding;
+        }
         if (capsuleRunspaceImageFormatSupportsActuationRefs(runspace_image_format_version)) {
             try writeOptionalU64(out, allocator, image.pending_actuation_intent_fingerprint);
             try writeOptionalU64(out, allocator, image.pending_actuation_receipt_fingerprint);
@@ -25377,6 +25788,18 @@ pub const Capsule = struct {
         const target_ref_fingerprint = try readU64(bytes, cursor);
         const environment_certificate_fingerprint = try readOptionalU64(bytes, cursor);
         const run_permit_fingerprint = try readOptionalU64(bytes, cursor);
+        const actuation_binding_fingerprint = if (fingerprint_version >= 4)
+            try readOptionalU64(bytes, cursor)
+        else
+            null;
+        const actuation_descriptor_fingerprint = if (fingerprint_version >= 4)
+            try readOptionalU64(bytes, cursor)
+        else
+            null;
+        const actuator_ref_fingerprint = if (fingerprint_version >= 4)
+            try readOptionalU64(bytes, cursor)
+        else
+            null;
         const pending_actuation_intent_fingerprint = if (capsuleRunspaceImageFormatSupportsActuationRefs(runspace_image_format_version))
             try readOptionalU64(bytes, cursor)
         else
@@ -25401,6 +25824,9 @@ pub const Capsule = struct {
             .target_ref_fingerprint = target_ref_fingerprint,
             .environment_certificate_fingerprint = environment_certificate_fingerprint,
             .run_permit_fingerprint = run_permit_fingerprint,
+            .actuation_binding_fingerprint = actuation_binding_fingerprint,
+            .actuation_descriptor_fingerprint = actuation_descriptor_fingerprint,
+            .actuator_ref_fingerprint = actuator_ref_fingerprint,
             .pending_actuation_intent_fingerprint = pending_actuation_intent_fingerprint,
             .pending_actuation_receipt_fingerprint = pending_actuation_receipt_fingerprint,
             .committed_actuation_receipt = committed_actuation_receipt,
@@ -27159,7 +27585,7 @@ pub const Handoff = struct {
                 image
             else
                 return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.TranscriptImageRequired});
-            validateTranscriptImageForHandoffEnvironment(Target, Env, image, admitted_fabric_plan) catch |err| {
+            validateTranscriptImageForHandoffEnvironment(Target, Env, image, admitted_fabric_plan, modeToRunMode(mode)) catch |err| {
                 return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{environmentValidationBlocker(err)});
             };
             image.prepareReplayPrefixForInterruptedRun(
@@ -27179,14 +27605,14 @@ pub const Handoff = struct {
         }
         if (mode == .accept_fresh and !interrupted_export) {
             const pending_frame = self.run_image.pending_request_frame.?;
-            const pending_policy = valuePolicyForHandoffRequestFrame(Target, Env, pending_frame.world_port_id, admitted_fabric_plan) catch |err| {
+            const pending_policy = valuePolicyForHandoffRequestFrame(Target, Env, pending_frame.world_port_id, admitted_fabric_plan, modeToRunMode(mode)) catch |err| {
                 return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{environmentValidationBlocker(err)});
             };
             validateTransferredRequestFramePolicy(pending_frame, pending_policy) catch |err| {
                 return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{environmentValidationBlocker(err)});
             };
             if (self.run_image.transcript_image) |*image| {
-                validateTranscriptImageForHandoffEnvironment(Target, Env, image, admitted_fabric_plan) catch |err| {
+                validateTranscriptImageForHandoffEnvironment(Target, Env, image, admitted_fabric_plan, modeToRunMode(mode)) catch |err| {
                     return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{environmentValidationBlocker(err)});
                 };
                 image.prepareReplayPrefixForPendingRequest(
@@ -27207,7 +27633,7 @@ pub const Handoff = struct {
                 image
             else
                 return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{.TranscriptImageRequired});
-            validateTranscriptImageForHandoffEnvironment(Target, Env, image, admitted_fabric_plan) catch |err| {
+            validateTranscriptImageForHandoffEnvironment(Target, Env, image, admitted_fabric_plan, modeToRunMode(mode)) catch |err| {
                 return rejectedAcceptance(TargetRef.fromTarget(Target), modeToRunMode(mode), &.{environmentValidationBlocker(err)});
             };
             image.resetReplay();
@@ -27326,7 +27752,7 @@ pub const Handoff = struct {
         const image = if (self.run_image.transcript_image) |*image| image else {
             if (pending_frame.turn_index != 0) return error.TranscriptImageRequired;
             try self.preflightRequestFrameWithSupervisor(supervisor, pending_frame);
-            if (fabricPreflightRouteForPort(admitted_fabric_plan, pending_frame.world_port_id)) |route| {
+            if (fabricPreflightRouteForEnvironmentPort(Env, admitted_fabric_plan, pending_frame.world_port_id, .fresh)) |route| {
                 try preflightRouteForPendingWithSupervisor(Target, Env, supervisor, pending_frame, route, .fresh);
                 return;
             }
@@ -27388,7 +27814,7 @@ pub const Handoff = struct {
             }
         }
         try self.preflightRequestFrameWithSupervisor(supervisor, pending_frame);
-        if (fabricPreflightRouteForPort(admitted_fabric_plan, pending_frame.world_port_id)) |route| {
+        if (fabricPreflightRouteForEnvironmentPort(Env, admitted_fabric_plan, pending_frame.world_port_id, .fresh)) |route| {
             try preflightRouteForPendingWithSupervisor(Target, Env, supervisor, pending_frame, route, .fresh);
             return;
         }
@@ -27608,7 +28034,7 @@ pub const Handoff = struct {
                                         run.audit.replay_mismatch_count += 1;
                                         return replay_err;
                                     };
-                                    if (fabricPlanCoversPort(admitted_fabric_plan, request.world_port_id)) {
+                                    if (fabricPlanCoversEnvironmentPort(Env, admitted_fabric_plan, request.world_port_id, modeToRunMode(mode))) {
                                         try run.accountPendingFabricInvocation(request.world_port_id);
                                     } else {
                                         try run.accountPendingAdapterCall(request.world_port_id);
@@ -27671,7 +28097,7 @@ pub const Handoff = struct {
                             };
                         }
                         try self.validatePendingFrame(request);
-                        if (fabricPlanCoversPort(admitted_fabric_plan, request.world_port_id)) {
+                        if (fabricPlanCoversEnvironmentPort(Env, admitted_fabric_plan, request.world_port_id, modeToRunMode(mode))) {
                             try run.accountPendingFabricInvocation(request.world_port_id);
                         } else {
                             try run.accountPendingAdapterCall(request.world_port_id);
@@ -28184,10 +28610,10 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         if (!report.accepted) return acceptanceError(report);
                         if (modeConsumesTranscript(effective)) {
                             if (comptime @hasField(Options, "transcript_image")) {
-                                try validateTranscriptImageForHandoffEnvironment(Target, Config.environment, @field(options, "transcript_image"), maybe_fabric_plan);
+                                try validateTranscriptImageForHandoffEnvironment(Target, Config.environment, @field(options, "transcript_image"), maybe_fabric_plan, effective);
                             }
                             if (admitted_transcript_image) |image| {
-                                try validateTranscriptImageForHandoffEnvironment(Target, Config.environment, image, maybe_fabric_plan);
+                                try validateTranscriptImageForHandoffEnvironment(Target, Config.environment, image, maybe_fabric_plan, effective);
                             }
                             if (comptime @hasField(Options, "transcript")) {
                                 try validateTranscriptForEnvironment(Config.environment, @field(options, "transcript"));
@@ -28483,7 +28909,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                                     // Runspace owns the invocation record after it receives the frame.
                                 } else if (self.fabricPlanCoversHandlerlessWorldPort(frame.world_port_id)) {
                                     try self.accountPendingFabricInvocation(frame.world_port_id);
-                                } else if (self.actuationBindingCoversWorldPort(frame.world_port_id)) {
+                                } else if (self.actuationBindingCoversHandlerlessWorldPort(frame.world_port_id)) {
                                     // dispatchActuation owns actuation supervision accounting.
                                 } else {
                                     try self.accountPendingAdapterCall(frame.world_port_id);
@@ -28570,6 +28996,14 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     return self.actuationBindingCoversWorldPort(world_port_id);
                 }
 
+                pub fn runspaceActuationBindingCoversHandlerlessWorldPort(self: *Self, world_port_id: u32) bool {
+                    return self.actuationBindingCoversHandlerlessWorldPort(world_port_id);
+                }
+
+                pub fn runspaceActuationBindingForWorldPort(self: *Self, world_port_id: u32) ?Actuation.Binding {
+                    return self.actuationBindingForWorldPort(world_port_id);
+                }
+
                 pub fn runspaceFabricPlanFingerprint(self: *Self) ?u64 {
                     if (self.activeFabricPlan()) |plan| return plan.plan_fingerprint;
                     if (self.supervisor) |supervisor| return supervisor.permit.fabric_plan_fingerprint;
@@ -28620,6 +29054,24 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                         return Config.environment.actuationHasBindingForPort(world_port_id, self.effective_mode);
                     }
                     return false;
+                }
+
+                fn actuationBindingForWorldPort(self: *Self, world_port_id: u32) ?Actuation.Binding {
+                    if (comptime @hasField(@TypeOf(Config), "environment")) {
+                        return Config.environment.actuationBindingRecordForPort(world_port_id, self.effective_mode);
+                    }
+                    return null;
+                }
+
+                fn actuationBindingCoversHandlerlessWorldPort(self: *Self, world_port_id: u32) bool {
+                    if (Target.WorldPortTable.entries.len == 0) return false;
+                    switch (world_port_id) {
+                        inline 0...Target.WorldPortTable.entries.len - 1 => |id| {
+                            if (comptime handlerForWorldPortId(Target, Config, @intCast(id)) != null) return false;
+                            return self.actuationBindingCoversWorldPort(world_port_id);
+                        },
+                        else => return false,
+                    }
                 }
 
                 fn actuationBindingsCoverHandlerlessTargetPorts(mode: Mode) bool {
@@ -28784,7 +29236,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     if (response_frame.target_certificate_fingerprint != frame.target_certificate_fingerprint) return error.FrameTargetCertificateMismatch;
                     if (response_frame.world_port_id != world_port_id) return error.FramePortMismatch;
                     if (response_frame.request_fingerprint != frame.request_fingerprint) return error.FrameRequestFingerprintMismatch;
-                    if (account_supervisor and self.actuationBindingCoversWorldPort(world_port_id)) return error.InvalidPendingPortTransition;
+                    if (account_supervisor and self.actuationBindingCoversHandlerlessWorldPort(world_port_id)) return error.InvalidPendingPortTransition;
                     if (response_frame.status == .pending) {
                         if (account_supervisor) {
                             if (self.supervisor) |*supervisor| {
@@ -28850,6 +29302,13 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                                 return effective_frame_fingerprint;
                             }
                             if (self.fabricPlanCoversWorldPort(world_port_id)) {
+                                const effective_frame_fingerprint = try self.resumeFabricTargetPortFrame(@intCast(id), request, frame, response_frame, replayed);
+                                self.pending_request = null;
+                                self.pending_port_id = null;
+                                self.pending_adapter_call_accounted = false;
+                                return effective_frame_fingerprint;
+                            }
+                            if (self.actuationBindingCoversWorldPort(world_port_id)) {
                                 const effective_frame_fingerprint = try self.resumeFabricTargetPortFrame(@intCast(id), request, frame, response_frame, replayed);
                                 self.pending_request = null;
                                 self.pending_port_id = null;
@@ -29181,7 +29640,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     switch (world_port_id) {
                         inline 0...Target.WorldPortTable.entries.len - 1 => |id| {
                             if (self.runspace_fabric_route_frame_request and self.fabricPlanCoversWorldPort(world_port_id)) return;
-                            if (self.actuationBindingCoversWorldPort(world_port_id)) return;
+                            if (self.actuationBindingCoversHandlerlessWorldPort(world_port_id)) return;
                             const Handler = comptime handlerForWorldPortId(Target, Config, @intCast(id));
                             if (Handler) |Decl| {
                                 try self.accountPendingAdapterCallDecl(Decl);
@@ -30050,12 +30509,13 @@ fn acceptanceReportHasOnlyTranscriptRequirement(report: AcceptanceReport) bool {
     return report.blockers[0] == .TranscriptImageRequired;
 }
 
-fn fabricCoveredMissingEnvironmentPortCount(comptime Target: type, comptime bindings: anytype, comptime actuation_bindings: anytype, coverage: Fabric.CoverageReport, plan: Fabric.Plan, requested_mode: Mode) ?usize {
+fn fabricCoveredMissingEnvironmentPortCount(comptime Target: type, comptime bindings: anytype, comptime actuation_bindings: anytype, policy: EnvironmentPolicy, coverage: Fabric.CoverageReport, plan: Fabric.Plan, requested_mode: Mode) ?usize {
     const target_ref = TargetRef.fromTarget(Target);
     if (coverage.target_ref_fingerprint != target_ref.target_ref_fingerprint) return null;
     if (coverage.world_surface_fingerprint != target_ref.world_surface_fingerprint) return null;
     if (coverage.target_certificate_fingerprint != target_ref.target_certificate_fingerprint) return null;
     if (coverage.duplicate_route_count != 0) return null;
+    var actuation_covered_missing: usize = 0;
     var fabric_covered_missing: usize = 0;
     inline for (0..Target.WorldPortTable.entries.len) |world_port_id| {
         comptime var host_bound = false;
@@ -30063,51 +30523,77 @@ fn fabricCoveredMissingEnvironmentPortCount(comptime Target: type, comptime bind
             if (BindingDecl.TargetType == Target and BindingDecl.world_port_id == world_port_id) host_bound = true;
         }
         if (!host_bound) {
-            const route = plan.findRouteForPort(@intCast(world_port_id)) orelse return null;
-            if (!fabricRouteCoversMissingEnvironmentPort(Target, actuation_bindings, route, @intCast(world_port_id), requested_mode)) return null;
-            fabric_covered_missing += 1;
-        }
-    }
-    if (bindings.len + fabric_covered_missing < Target.WorldPortTable.entries.len) return null;
-    return fabric_covered_missing;
-}
-
-fn assemblyFabricCoveredMissingEnvironmentPortCount(comptime Target: type, comptime bindings: anytype, comptime actuation_bindings: anytype, assembly: Assembly, requested_mode: Mode) !?usize {
-    const target_ref = TargetRef.fromTarget(Target);
-    var fabric_covered_missing: usize = 0;
-    inline for (0..Target.WorldPortTable.entries.len) |world_port_id| {
-        comptime var host_bound = false;
-        inline for (bindings) |BindingDecl| {
-            if (BindingDecl.TargetType == Target and BindingDecl.world_port_id == world_port_id) host_bound = true;
-        }
-        if (!host_bound) {
-            var covered = false;
-            for (assembly.fabric_plans) |plan| {
-                if (plan.target_ref_fingerprint != target_ref.target_ref_fingerprint or
-                    plan.world_surface_fingerprint != target_ref.world_surface_fingerprint or
-                    plan.target_certificate_fingerprint != target_ref.target_certificate_fingerprint)
-                {
-                    continue;
-                }
-                const route = plan.findRouteForPort(@intCast(world_port_id)) orelse continue;
-                if (!fabricRouteCoversMissingEnvironmentPort(Target, actuation_bindings, route, @intCast(world_port_id), requested_mode)) return error.InvalidFrameEncoding;
-                if (covered) return error.InvalidFrameEncoding;
-                covered = true;
+            const port_id: u32 = @intCast(world_port_id);
+            if (actuationCoversMissingEnvironmentPort(Target, actuation_bindings, policy, port_id, requested_mode)) {
+                actuation_covered_missing += 1;
+            } else {
+                const route = plan.findRouteForPort(port_id) orelse return null;
+                if (!fabricRouteCoversMissingEnvironmentPort(Target, actuation_bindings, policy, route, port_id, requested_mode)) return null;
+                fabric_covered_missing += 1;
             }
-            if (!covered) return null;
-            fabric_covered_missing += 1;
         }
     }
-    if (bindings.len + fabric_covered_missing < Target.WorldPortTable.entries.len) return null;
-    return fabric_covered_missing;
+    if (bindings.len + actuation_covered_missing + fabric_covered_missing < Target.WorldPortTable.entries.len) return null;
+    return actuation_covered_missing + fabric_covered_missing;
 }
 
-fn fabricRouteCoversMissingEnvironmentPort(comptime Target: type, comptime actuation_bindings: anytype, route: Fabric.Route, world_port_id: u32, requested_mode: Mode) bool {
-    if (!route.coversRequiredPort()) return false;
-    if (route.kind != .adapter) return true;
+fn assemblyFabricCoveredMissingEnvironmentPortCount(comptime Target: type, comptime bindings: anytype, comptime actuation_bindings: anytype, policy: EnvironmentPolicy, assembly: Assembly, requested_mode: Mode) !?usize {
+    const target_ref = TargetRef.fromTarget(Target);
+    var actuation_covered_missing: usize = 0;
+    var fabric_covered_missing: usize = 0;
+    inline for (0..Target.WorldPortTable.entries.len) |world_port_id| {
+        comptime var host_bound = false;
+        inline for (bindings) |BindingDecl| {
+            if (BindingDecl.TargetType == Target and BindingDecl.world_port_id == world_port_id) host_bound = true;
+        }
+        if (!host_bound) {
+            const port_id: u32 = @intCast(world_port_id);
+            if (actuationCoversMissingEnvironmentPort(Target, actuation_bindings, policy, port_id, requested_mode)) {
+                actuation_covered_missing += 1;
+            } else {
+                var covered = false;
+                for (assembly.fabric_plans) |plan| {
+                    if (plan.target_ref_fingerprint != target_ref.target_ref_fingerprint or
+                        plan.world_surface_fingerprint != target_ref.world_surface_fingerprint or
+                        plan.target_certificate_fingerprint != target_ref.target_certificate_fingerprint)
+                    {
+                        continue;
+                    }
+                    const route = plan.findRouteForPort(port_id) orelse continue;
+                    if (!fabricRouteCoversMissingEnvironmentPort(Target, actuation_bindings, policy, route, port_id, requested_mode)) return error.InvalidFrameEncoding;
+                    if (covered) return error.InvalidFrameEncoding;
+                    covered = true;
+                }
+                if (!covered) return null;
+                fabric_covered_missing += 1;
+            }
+        }
+    }
+    if (bindings.len + actuation_covered_missing + fabric_covered_missing < Target.WorldPortTable.entries.len) return null;
+    return actuation_covered_missing + fabric_covered_missing;
+}
+
+fn actuationCoversMissingEnvironmentPort(comptime Target: type, comptime actuation_bindings: anytype, policy: EnvironmentPolicy, comptime world_port_id: u32, requested_mode: Mode) bool {
+    inline for (actuation_bindings) |BindingDecl| {
+        if (BindingDecl.TargetType == Target and BindingDecl.world_port_id == world_port_id and BindingDecl.binding_mode_policy.allows(requested_mode)) {
+            if (!environmentPolicyAllowsActuationValuePolicy(policy, BindingDecl.value_policy)) return false;
+            const binding = BindingDecl.actuationBindingRecord();
+            binding.validate() catch return false;
+            const target_ref = TargetRef.fromTarget(Target);
+            if (binding.target_ref_fingerprint != target_ref.target_ref_fingerprint) return false;
+            if (binding.world_surface_fingerprint != target_ref.world_surface_fingerprint) return false;
+            if (binding.import_requirement_fingerprint != ImportRequirement.fromTargetPort(Target, world_port_id).requirement_fingerprint) return false;
+            return true;
+        }
+    }
+    return false;
+}
+
+fn fabricRouteCoversMissingEnvironmentPort(comptime Target: type, comptime actuation_bindings: anytype, policy: EnvironmentPolicy, route: Fabric.Route, world_port_id: u32, requested_mode: Mode) bool {
+    if (route.kind != .adapter) return route.coversRequiredPort();
     if (!route.hasActuationRouteBinding()) return false;
     inline for (actuation_bindings) |BindingDecl| {
-        if (BindingDecl.TargetType == Target and BindingDecl.binding_mode_policy.allows(requested_mode)) {
+        if (BindingDecl.TargetType == Target and BindingDecl.binding_mode_policy.allows(requested_mode) and environmentPolicyAllowsActuationValuePolicy(policy, BindingDecl.value_policy)) {
             const binding = BindingDecl.actuationBindingRecord();
             if (binding.world_port_id == world_port_id and
                 binding.binding_fingerprint == route.actuation_binding_fingerprint.? and
@@ -30119,6 +30605,12 @@ fn fabricRouteCoversMissingEnvironmentPort(comptime Target: type, comptime actua
         }
     }
     return false;
+}
+
+fn environmentPolicyAllowsActuationValuePolicy(policy: EnvironmentPolicy, value_policy: ValuePolicy) bool {
+    if (policy.require_portable_values and !value_policy.require_portable_values) return false;
+    if (!policy.allow_native_only_values and value_policy.allow_native_only_values) return false;
+    return true;
 }
 
 fn fabricPlanHasReplayRoute(plan: Fabric.Plan) bool {
@@ -30555,6 +31047,21 @@ fn validatePendingActuationMarker(intent_fingerprint: ?u64, receipt_fingerprint:
         if (fingerprint == 0) return error.InvalidFrameEncoding;
     }
     if (receipt_fingerprint) |fingerprint| {
+        if (fingerprint == 0) return error.InvalidFrameEncoding;
+    }
+}
+
+fn validatePendingActuationBindingMarker(binding_fingerprint: ?u64, descriptor_fingerprint: ?u64, actuator_ref_fingerprint: ?u64) !void {
+    const binding_present = binding_fingerprint != null;
+    if ((descriptor_fingerprint != null) != binding_present) return error.InvalidFrameEncoding;
+    if ((actuator_ref_fingerprint != null) != binding_present) return error.InvalidFrameEncoding;
+    if (binding_fingerprint) |fingerprint| {
+        if (fingerprint == 0) return error.InvalidFrameEncoding;
+    }
+    if (descriptor_fingerprint) |fingerprint| {
+        if (fingerprint == 0) return error.InvalidFrameEncoding;
+    }
+    if (actuator_ref_fingerprint) |fingerprint| {
         if (fingerprint == 0) return error.InvalidFrameEncoding;
     }
 }
@@ -31939,13 +32446,13 @@ fn validateTranscriptImageForEnvironment(comptime Env: type, image: *const Trans
     }
 }
 
-fn validateTranscriptImageForHandoffEnvironment(comptime Target: type, comptime Env: type, image: *const TranscriptImage, admitted_fabric_plan: ?Fabric.Plan) !void {
+fn validateTranscriptImageForHandoffEnvironment(comptime Target: type, comptime Env: type, image: *const TranscriptImage, admitted_fabric_plan: ?Fabric.Plan, requested_mode: Mode) !void {
     for (image.events) |event| {
         if (event.request_frame) |frame| {
-            try validateRequestFramePolicy(frame, try valuePolicyForHandoffRequestFrame(Target, Env, frame.world_port_id, admitted_fabric_plan));
+            try validateRequestFramePolicy(frame, try valuePolicyForHandoffRequestFrame(Target, Env, frame.world_port_id, admitted_fabric_plan, requested_mode));
         }
         if (event.response_frame) |frame| {
-            try validateResponseFramePolicy(frame, try replayImageValuePolicyForHandoffResponseFrame(Target, Env, frame.world_port_id, admitted_fabric_plan));
+            try validateResponseFramePolicy(frame, try replayImageValuePolicyForHandoffResponseFrame(Target, Env, frame.world_port_id, admitted_fabric_plan, requested_mode));
         }
     }
 }
@@ -31964,35 +32471,41 @@ fn fabricReplayResponseValuePolicy() ValuePolicy {
     return policy;
 }
 
-fn valuePolicyForHandoffRequestFrame(comptime Target: type, comptime Env: type, world_port_id: u32, admitted_fabric_plan: ?Fabric.Plan) !ValuePolicy {
+fn valuePolicyForHandoffRequestFrame(comptime Target: type, comptime Env: type, world_port_id: u32, admitted_fabric_plan: ?Fabric.Plan, requested_mode: Mode) !ValuePolicy {
     if (Target != Env.TargetType) return error.HandoffTargetMismatch;
     if (environmentHasBindingForPort(Env, world_port_id)) {
         return valuePolicyForEnvironmentPort(Env, world_port_id, .request);
     }
+    if (directActuationPolicyViewForEnvironmentPort(Env, world_port_id, requested_mode)) |view| return view.value_policy;
     if (world_port_id >= Target.WorldPortTable.entries.len) return error.WrongPortId;
     const plan = admitted_fabric_plan orelse return error.MissingBinding;
     const route = plan.findRouteForPort(world_port_id) orelse return error.MissingBinding;
     return switch (route.kind) {
         .target_export, .admitted_run, .guest, .replay, .reject => ValuePolicy.portable,
-        .adapter => if (actuationRoutePolicyViewForEnvironment(Env, route, .fresh)) |view| view.value_policy else error.MissingBinding,
+        .adapter => if (actuationRoutePolicyViewForEnvironment(Env, route, requested_mode)) |view| view.value_policy else error.MissingBinding,
         .unsupported => error.MissingBinding,
     };
 }
 
-fn replayImageValuePolicyForHandoffResponseFrame(comptime Target: type, comptime Env: type, world_port_id: u32, admitted_fabric_plan: ?Fabric.Plan) !ValuePolicy {
+fn replayImageValuePolicyForHandoffResponseFrame(comptime Target: type, comptime Env: type, world_port_id: u32, admitted_fabric_plan: ?Fabric.Plan, requested_mode: Mode) !ValuePolicy {
     if (Target != Env.TargetType) return error.HandoffTargetMismatch;
     if (world_port_id >= Target.WorldPortTable.entries.len) return error.WrongPortId;
     if (admitted_fabric_plan) |plan| {
         if (plan.findRouteForPort(world_port_id)) |route| {
             return switch (route.kind) {
                 .target_export, .admitted_run, .guest, .replay, .reject => fabricReplayResponseValuePolicy(),
-                .adapter => if (actuationRoutePolicyViewForEnvironment(Env, route, .replay)) |view| view.value_policy else error.MissingBinding,
+                .adapter => if (actuationRoutePolicyViewForEnvironment(Env, route, requested_mode)) |view| view.value_policy else error.MissingBinding,
                 .unsupported => error.MissingBinding,
             };
         }
     }
     if (environmentHasBindingForPort(Env, world_port_id)) {
         return replayImageValuePolicyForEnvironmentPort(Env, world_port_id);
+    }
+    if (directActuationPolicyViewForEnvironmentPort(Env, world_port_id, requested_mode)) |view| {
+        var policy = view.value_policy;
+        policy.require_response_images_for_replay = true;
+        return policy;
     }
     return error.MissingBinding;
 }
@@ -32001,7 +32514,41 @@ fn fabricPlanCoversPort(admitted_fabric_plan: ?Fabric.Plan, world_port_id: u32) 
     const plan = admitted_fabric_plan orelse return false;
     const route = plan.findRouteForPort(world_port_id) orelse return false;
     return switch (route.kind) {
-        .adapter => route.hasActuationRouteBinding(),
+        .adapter => false,
+        .target_export, .admitted_run, .guest, .replay, .reject, .unsupported => true,
+    };
+}
+
+fn fabricPlanCoversEnvironmentPort(comptime Env: type, admitted_fabric_plan: ?Fabric.Plan, world_port_id: u32, requested_mode: Mode) bool {
+    const plan = admitted_fabric_plan orelse return false;
+    const route = plan.findRouteForPort(world_port_id) orelse return false;
+    return switch (route.kind) {
+        .adapter => actuationRoutePolicyViewForEnvironment(Env, route, requested_mode) != null,
+        .target_export, .admitted_run, .guest, .replay, .reject, .unsupported => true,
+    };
+}
+
+fn fabricPlanCoversEnvironmentPortWithSupervision(comptime Env: type, admitted_fabric_plan: ?Fabric.Plan, world_port_id: u32, requested_mode: Mode, supervision_policy: SupervisionPolicy) bool {
+    const plan = admitted_fabric_plan orelse return false;
+    const route = plan.findRouteForPort(world_port_id) orelse return false;
+    return switch (route.kind) {
+        .adapter => if (actuationRoutePolicyViewForEnvironment(Env, route, requested_mode)) |view|
+            supervisionPolicyAllowsActuationRoute(requested_mode, supervision_policy, view)
+        else
+            false,
+        .target_export, .admitted_run, .guest, .replay, .reject, .unsupported => true,
+    };
+}
+
+fn fabricPlanCoversEnvironmentPortWithPermit(comptime Env: type, admitted_fabric_plan: ?Fabric.Plan, world_port_id: u32, requested_mode: Mode, permit: RunPermit) bool {
+    const plan = admitted_fabric_plan orelse return false;
+    const route = plan.findRouteForPort(world_port_id) orelse return false;
+    return switch (route.kind) {
+        .adapter => if (actuationRoutePolicyViewForEnvironment(Env, route, requested_mode)) |view|
+            supervisionPolicyAllowsActuationRoute(requested_mode, permit.policy, view) and
+                permitRuleAllowsActuationRoute(permit, world_port_id, requested_mode, view)
+        else
+            false,
         .target_export, .admitted_run, .guest, .replay, .reject, .unsupported => true,
     };
 }
@@ -32010,7 +32557,16 @@ fn fabricPreflightRouteForPort(admitted_fabric_plan: ?Fabric.Plan, world_port_id
     const plan = admitted_fabric_plan orelse return null;
     const route = plan.findRouteForPort(world_port_id) orelse return null;
     return switch (route.kind) {
-        .adapter => if (route.hasActuationRouteBinding()) route else null,
+        .adapter => null,
+        .target_export, .admitted_run, .guest, .replay, .reject, .unsupported => route,
+    };
+}
+
+fn fabricPreflightRouteForEnvironmentPort(comptime Env: type, admitted_fabric_plan: ?Fabric.Plan, world_port_id: u32, requested_mode: Mode) ?Fabric.Route {
+    const plan = admitted_fabric_plan orelse return null;
+    const route = plan.findRouteForPort(world_port_id) orelse return null;
+    return switch (route.kind) {
+        .adapter => if (actuationRoutePolicyViewForEnvironment(Env, route, requested_mode) != null) route else null,
         .target_export, .admitted_run, .guest, .replay, .reject, .unsupported => route,
     };
 }
@@ -32021,22 +32577,69 @@ const ActuationRoutePolicyView = struct {
     authority_kind: PortAuthority.Kind,
 };
 
+fn supervisionPolicyAllowsActuationRoute(requested_mode: Mode, supervision_policy: SupervisionPolicy, view: ActuationRoutePolicyView) bool {
+    if (!supervision_policy.allow_actuation) return false;
+    switch (requested_mode) {
+        .fresh => if (!supervision_policy.allow_fresh_actuation) return false,
+        .replay => if (!supervision_policy.allow_replay_actuation) return false,
+        .verify => if (!supervision_policy.allow_verify_actuation) return false,
+        .audit => if (!supervision_policy.allow_audit_only) return false,
+    }
+    if (view.class == .irreversible_mutation and !supervision_policy.allow_irreversible_actuation) return false;
+    if (supervision_policy.require_portable_value_images and !view.value_policy.require_portable_values) return false;
+    if (supervision_policy.reject_native_only_values and view.value_policy.allow_native_only_values) return false;
+    return true;
+}
+
+fn permitRuleAllowsActuationRoute(permit: RunPermit, world_port_id: u32, requested_mode: Mode, view: ActuationRoutePolicyView) bool {
+    const rule = permit.ruleFor(world_port_id) orelse return true;
+    if (!rule.permitsMode(requested_mode)) return false;
+    if (!rule.allowed_authority_kinds.allows(view.authority_kind)) return false;
+    if (rule.require_portable_values and !view.value_policy.require_portable_values) return false;
+    return true;
+}
+
 fn actuationRoutePolicyViewForEnvironment(comptime Env: type, route: Fabric.Route, requested_mode: Mode) ?ActuationRoutePolicyView {
     if (!route.hasActuationRouteBinding()) return null;
     inline for (Env.actuation_bindings_decl) |BindingDecl| {
         if (comptime BindingDecl.TargetType == Env.TargetType) {
             if (BindingDecl.binding_mode_policy.allows(requested_mode)) {
                 const binding = BindingDecl.actuationBindingRecord();
-                if (binding.binding_fingerprint == route.actuation_binding_fingerprint.? and
+                if (binding.world_port_id == route.parent_world_port_id and
+                    binding.binding_fingerprint == route.actuation_binding_fingerprint.? and
                     binding.actuator_ref_fingerprint == route.actuator_ref_fingerprint.? and
                     binding.descriptor_fingerprint == route.actuation_descriptor_fingerprint.?)
                 {
+                    if (!environmentPolicyAllowsActuationValuePolicy(Env.policy_decl, BindingDecl.value_policy)) return null;
                     return .{
                         .class = BindingDecl.actuator_ref.class,
                         .value_policy = BindingDecl.value_policy,
                         .authority_kind = comptime authorityKindForActuationKind(BindingDecl.actuator_ref.kind),
                     };
                 }
+            }
+        }
+    }
+    return null;
+}
+
+fn directActuationPolicyViewForEnvironmentPort(comptime Env: type, world_port_id: u32, requested_mode: Mode) ?ActuationRoutePolicyView {
+    if (world_port_id >= Env.TargetType.WorldPortTable.entries.len) return null;
+    inline for (Env.actuation_bindings_decl) |BindingDecl| {
+        if (comptime BindingDecl.TargetType == Env.TargetType) {
+            if (BindingDecl.world_port_id == world_port_id and BindingDecl.binding_mode_policy.allows(requested_mode)) {
+                if (!environmentPolicyAllowsActuationValuePolicy(Env.policy_decl, BindingDecl.value_policy)) return null;
+                const binding = BindingDecl.actuationBindingRecord();
+                binding.validate() catch return null;
+                const target_ref = TargetRef.fromTarget(Env.TargetType);
+                if (binding.target_ref_fingerprint != target_ref.target_ref_fingerprint) return null;
+                if (binding.world_surface_fingerprint != target_ref.world_surface_fingerprint) return null;
+                if (binding.import_requirement_fingerprint != ImportRequirement.fromTargetPort(Env.TargetType, BindingDecl.world_port_id).requirement_fingerprint) return null;
+                return .{
+                    .class = BindingDecl.actuator_ref.class,
+                    .value_policy = BindingDecl.value_policy,
+                    .authority_kind = comptime authorityKindForActuationKind(BindingDecl.actuator_ref.kind),
+                };
             }
         }
     }
@@ -33011,6 +33614,7 @@ fn fingerprintUsageLedger(ledger: UsageLedger) u64 {
     for (ledger.pending_actuations) |pending| {
         hashU64(&hasher, pending.intent_fingerprint);
         hashU64(&hasher, pending.idempotency_key_fingerprint);
+        hashU64(&hasher, pending.receipt_fingerprint);
         hashU64(&hasher, pending.world_port_id);
     }
     if (ledger.exceeded_budget) |exceeded| {
@@ -33175,6 +33779,9 @@ fn fingerprintPendingPort(pending_port: PendingPort) u64 {
         .target_ref_fingerprint = pending_port.target_ref_fingerprint,
         .environment_certificate_fingerprint = pending_port.environment_certificate_fingerprint,
         .run_permit_fingerprint = pending_port.run_permit_fingerprint,
+        .actuation_binding_fingerprint = pending_port.actuation_binding_fingerprint,
+        .actuation_descriptor_fingerprint = pending_port.actuation_descriptor_fingerprint,
+        .actuator_ref_fingerprint = pending_port.actuator_ref_fingerprint,
         .pending_actuation_intent_fingerprint = pending_port.pending_actuation_intent_fingerprint,
         .pending_actuation_receipt_fingerprint = pending_port.pending_actuation_receipt_fingerprint,
         .committed_actuation_receipt = pending_port.committed_actuation_receipt,
@@ -33200,6 +33807,9 @@ fn fingerprintPendingPortImageProjection(image: Capsule.PendingPortImage) u64 {
         .target_ref_fingerprint = image.target_ref_fingerprint,
         .environment_certificate_fingerprint = image.environment_certificate_fingerprint,
         .run_permit_fingerprint = image.run_permit_fingerprint,
+        .actuation_binding_fingerprint = image.actuation_binding_fingerprint,
+        .actuation_descriptor_fingerprint = image.actuation_descriptor_fingerprint,
+        .actuator_ref_fingerprint = image.actuator_ref_fingerprint,
         .pending_actuation_intent_fingerprint = image.pending_actuation_intent_fingerprint,
         .pending_actuation_receipt_fingerprint = image.pending_actuation_receipt_fingerprint,
         .committed_actuation_receipt = image.committed_actuation_receipt,
@@ -33270,6 +33880,9 @@ fn fingerprintPendingPortFields(args: struct {
     target_ref_fingerprint: u64,
     environment_certificate_fingerprint: ?u64,
     run_permit_fingerprint: ?u64,
+    actuation_binding_fingerprint: ?u64,
+    actuation_descriptor_fingerprint: ?u64,
+    actuator_ref_fingerprint: ?u64,
     pending_actuation_intent_fingerprint: ?u64,
     pending_actuation_receipt_fingerprint: ?u64,
     committed_actuation_receipt: bool,
@@ -33294,6 +33907,9 @@ fn fingerprintPendingPortFields(args: struct {
     hashU64(&hasher, args.target_ref_fingerprint);
     hashOptionalU64(&hasher, args.environment_certificate_fingerprint);
     hashOptionalU64(&hasher, args.run_permit_fingerprint);
+    hashOptionalU64(&hasher, args.actuation_binding_fingerprint);
+    hashOptionalU64(&hasher, args.actuation_descriptor_fingerprint);
+    hashOptionalU64(&hasher, args.actuator_ref_fingerprint);
     hashOptionalU64(&hasher, args.pending_actuation_intent_fingerprint);
     hashOptionalU64(&hasher, args.pending_actuation_receipt_fingerprint);
     hashBool(&hasher, args.committed_actuation_receipt);

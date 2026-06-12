@@ -18,7 +18,7 @@ pub fn main(init: std.process.Init) !void {
     var response_image = try world.Frame.ValueImage.fromValue(allocator, 1, 0xacc7_1002, null, @as(i32, 7), .portable);
     defer response_image.deinit(allocator);
     const execution = try common.execute(ctx, world.Actuation.Policy.fixture_test, .{
-        .fixture = .{
+        .tool_like = .{
             .frame_response_fingerprint = 0xacc7_1002,
             .response_image = response_image,
         },

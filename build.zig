@@ -500,7 +500,7 @@ pub fn build(b: *std.Build) void {
             .expected_stdout =
             \\parent_run_handle=367cb72b9a8188ae
             \\provider_run_handle=a53ebdcc0976217b
-            \\fabric_receipt_fingerprint=ba575d70158a85cc
+            \\fabric_receipt_fingerprint=679117b4393682a8
             \\final_result=7
             \\native_handler_calls=0
             \\
@@ -540,7 +540,7 @@ pub fn build(b: *std.Build) void {
             .expected_stdout =
             \\fabric_invocation_count=1
             \\budget_exceeded=true
-            \\run_receipt_fingerprint=7bb1e9ebfa77c22c
+            \\run_receipt_fingerprint=9a06590f8d75d5eb
             \\
             ,
         },
@@ -649,9 +649,9 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-capsule-active-fabric",
             .desc = "Run the World Assembly Capsule active Fabric restore example.",
             .expected_stdout =
-            \\active_fabric_invocation_fingerprint=4a78c15421501a20
-            \\pending_provider_port_fingerprint=d7108e535a9274f9
-            \\restore_report_fingerprint=7bb330277fb83f79
+            \\active_fabric_invocation_fingerprint=51b5319bf0be3ea6
+            \\pending_provider_port_fingerprint=a8766f0625c8f4a5
+            \\restore_report_fingerprint=dbfd2227fdfe5827
             \\restore_accepted=false
             \\final_result=active-fabric-restore-denied
             \\
@@ -663,7 +663,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-capsule-agent-transfer",
             .desc = "Run the World Assembly Capsule agent transfer example.",
             .expected_stdout =
-            \\capsule_fingerprint=b7cd3d6b17bffefd
+            \\capsule_fingerprint=3b837dd00aa47a7f
             \\residual_external_import_count=1
             \\receiver_permit_fingerprint=345c1f6beb778a77
             \\restore_accepted=false
@@ -714,7 +714,7 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Actuation fixture tool example.",
             .expected_stdout =
             \\actuator_ref=10721e5b053f1ab3
-            \\actuation_receipt_fingerprint=875195cc9505734c
+            \\actuation_receipt_fingerprint=131650d4aba885dd
             \\final_result=fixture-tool-ok
             \\
             ,
@@ -749,9 +749,9 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-actuation-pending-capsule",
             .desc = "Run the World Actuation pending Capsule example.",
             .expected_stdout =
-            \\pending_actuation_intent_fingerprint=a59bf43266789296
-            \\capsule_fingerprint=882828ce0c7dd229
-            \\restore_report_fingerprint=14aaeea2799aa4dd
+            \\pending_actuation_intent_fingerprint=b0f6e22106da6b81
+            \\capsule_fingerprint=94b842a7e37f26f5
+            \\restore_report_fingerprint=5efe8e85ff0bec2a
             \\final_result=true
             \\
             ,
@@ -774,7 +774,7 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Actuation guest bridge example.",
             .expected_stdout =
             \\guest_request_fingerprint=acc76001
-            \\actuation_receipt_fingerprint=1ceb8f35b78761ad
+            \\actuation_receipt_fingerprint=d213224567822d0
             \\conformance=true
             \\
             ,

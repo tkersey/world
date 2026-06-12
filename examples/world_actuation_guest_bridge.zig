@@ -14,7 +14,7 @@ pub fn main(init: std.process.Init) !void {
         .request_fingerprint = 0xacc7_6001,
     });
     const execution = try common.execute(ctx, world.Actuation.Policy.fixture_test, .{
-        .fixture = .{ .frame_response_fingerprint = 0xacc7_6002 },
+        .guest_bridge = .{ .frame_response_fingerprint = 0xacc7_6002 },
     }, 1);
     const receipt_refs = [_]u64{execution.receipt.receipt_fingerprint};
     const vector = world.Guest.ConformanceVector.init(.{

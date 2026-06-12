@@ -22,10 +22,10 @@ pub fn main(init: std.process.Init) !void {
     });
 
     const model_exec = try common.execute(model, world.Actuation.Policy.fixture_test, .{
-        .fixture = .{ .frame_response_fingerprint = 0xacc7_2101 },
+        .model_like = .{ .frame_response_fingerprint = 0xacc7_2101 },
     }, 1);
     const tool_exec = try common.execute(tool, world.Actuation.Policy.fixture_test, .{
-        .fixture = .{ .frame_response_fingerprint = 0xacc7_2102 },
+        .tool_like = .{ .frame_response_fingerprint = 0xacc7_2102 },
     }, 1);
 
     var journal = world.Actuation.Journal.init();
