@@ -10563,6 +10563,7 @@ pub const Runspace = struct {
             var result = self;
             result.pending_actuation_intent_fingerprint = intent_fingerprint;
             result.pending_actuation_receipt_fingerprint = receipt_fingerprint;
+            result.committed_actuation_receipt = true;
             result.pending_port_fingerprint = fingerprintPendingPort(result);
             return result;
         }

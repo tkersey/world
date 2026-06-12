@@ -5351,6 +5351,7 @@ test "runspace actuation dispatch preserves pending mailbox state" {
     try std.testing.expectEqual(world.Runspace.PendingStatus.pending, marked_pending.status);
     try std.testing.expectEqual(@as(?u64, intent.intent_fingerprint), marked_pending.pending_actuation_intent_fingerprint);
     try std.testing.expectEqual(@as(?u64, receipt.receipt_fingerprint), marked_pending.pending_actuation_receipt_fingerprint);
+    try std.testing.expect(marked_pending.committed_actuation_receipt);
     try std.testing.expectError(error.PendingPortConsumed, runspace.dispatchActuation(0, execution));
     try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try runspace.getSlotSummary(handle)).status);
 
@@ -5482,7 +5483,7 @@ test "runspace actuation dispatch preserves pending mailbox state" {
     try std.testing.expectEqual(world.Runspace.PendingStatus.pending, still_marked_pending.status);
     try std.testing.expectEqual(@as(?u64, intent.intent_fingerprint), still_marked_pending.pending_actuation_intent_fingerprint);
     try std.testing.expectEqual(@as(?u64, receipt.receipt_fingerprint), still_marked_pending.pending_actuation_receipt_fingerprint);
-    try std.testing.expect(!still_marked_pending.committed_actuation_receipt);
+    try std.testing.expect(still_marked_pending.committed_actuation_receipt);
     const cancelled = try world.Actuation.Membrane.execute(.{
         .policy = world.Actuation.Policy.fixture_test,
         .intent = intent,
@@ -5625,11 +5626,12 @@ test "runspace pending actuation fresh completion resolves pending accounting" {
         .world_surface_fingerprint = request.world_surface_fingerprint,
     });
     try std.testing.expect(fresh_terminal_execution.receipt.fresh_called);
-    const terminal_receipt = try runspace.dispatchActuation(0, fresh_terminal_execution);
+    try std.testing.expectError(error.InvalidPendingPortTransition, runspace.dispatchActuation(0, fresh_terminal_execution));
+    const terminal_receipt = fresh_terminal_execution.receipt;
     try std.testing.expect(terminal_receipt.rejected);
     try std.testing.expect(terminal_receipt.fresh_called);
-    try std.testing.expectEqual(world.Runspace.PendingStatus.cancelled, (try runspace.mailbox.get(0)).status);
-    try std.testing.expectEqual(world.Runspace.RunStatus.failed, (try runspace.getSlotSummary(handle)).status);
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try runspace.getSlotSummary(handle)).status);
     var ledger = try world.Supervision.UsageLedger.init(std.testing.allocator, permit, 1);
     defer ledger.deinit(std.testing.allocator);
     try ledger.recordActuationReceipt(std.testing.allocator, pending_receipt, 0, 0, 0);
@@ -5685,6 +5687,11 @@ test "runspace pending actuation fresh completion resolves pending accounting" {
         .world_surface_fingerprint = request.world_surface_fingerprint,
     });
     try std.testing.expectEqual(@as(?u64, pending_receipt.receipt_fingerprint), replay_precommit_resolution.receipt.pending_actuation_receipt_fingerprint);
+    const replay_dispatched_receipt = try runspace.dispatchActuation(0, replay_precommit_resolution);
+    try std.testing.expect(replay_dispatched_receipt.replayed);
+    try std.testing.expect(replay_dispatched_receipt.rejected);
+    try std.testing.expectEqual(world.Runspace.PendingStatus.cancelled, (try runspace.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.failed, (try runspace.getSlotSummary(handle)).status);
     const replay_resolution_receipt = world.Actuation.Receipt.init(.{
         .intent_fingerprint = terminal_receipt.intent_fingerprint +% 1,
         .envelope_fingerprint = terminal_receipt.envelope_fingerprint,
