@@ -20023,6 +20023,8 @@ pub const Actuation = struct {
 
         fn actuatorCreatesPendingActuation(selected_actuator: Interface) bool {
             return switch (selected_actuator) {
+                .replay => |replay| responseStatusCreatesPendingActuation(replay.expected_status),
+                .verify => |verify| responseStatusCreatesPendingActuation(verify.response_template.status),
                 .fixture,
                 .native_function,
                 .byte_protocol,

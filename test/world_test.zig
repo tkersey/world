@@ -4586,6 +4586,132 @@ test "actuation environment preflight and supervision ledger account host effect
         .target_ref_fingerprint = target_ref.target_ref_fingerprint,
         .world_surface_fingerprint = target_ref.world_surface_fingerprint,
     }));
+    const replay_verify_pending_cap_exhausted_permit = world.RunPermit.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = target_ref.target_certificate_fingerprint,
+        .environment_certificate_fingerprint = cert.certificate_fingerprint,
+        .binding_plan_fingerprint = cert.binding_plan_fingerprint,
+        .transcript_image_available = true,
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_actuation = true,
+            .allow_replay_actuation = true,
+            .allow_verify_actuation = true,
+            .allow_pending_actuation = true,
+            .max_actuation_calls = null,
+        }),
+        .budget = world.Budget.init(.{
+            .max_actuation_calls = null,
+            .max_pending_actuations = 1,
+        }),
+    });
+    var replay_verify_pending_cap_supervisor = try world.Supervision.Supervisor.init(std.testing.allocator, replay_verify_pending_cap_exhausted_permit, 1);
+    defer replay_verify_pending_cap_supervisor.deinit();
+    try replay_verify_pending_cap_supervisor.ledger.recordActuationReceipt(std.testing.allocator, bindReceiptToPermit(existing_budget_pending_receipt, replay_verify_pending_cap_exhausted_permit), 0, 0, 0);
+
+    const replay_pending_intent = world.Actuation.Intent.init(.{
+        .actuator_ref_fingerprint = ToolActuator.actuator_ref.ref_fingerprint,
+        .descriptor_fingerprint = descriptor.descriptor_fingerprint,
+        .binding_fingerprint = binding.binding_fingerprint,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+        .world_port_id = 0,
+        .frame_request_fingerprint = 0xfeed_1001,
+        .encoded_frame_request_fingerprint = 0xfeed_1000,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .class = .idempotent_mutation,
+        .requested_mode = .replay,
+        .run_permit_fingerprint = replay_verify_pending_cap_exhausted_permit.permit_fingerprint,
+        .environment_certificate_fingerprint = cert.certificate_fingerprint,
+    });
+    const replay_pending_envelope = world.Actuation.Envelope.init(.{
+        .intent_fingerprint = replay_pending_intent.intent_fingerprint,
+        .encoded_frame_request_fingerprint = replay_pending_intent.encoded_frame_request_fingerprint,
+        .idempotency_key = key,
+        .expected_response_value_ref = descriptor.response_value_ref,
+        .expected_response_value_table_id = descriptor.response_value_table_id,
+    });
+    const replay_pending_receipt = world.Actuation.Receipt.init(.{
+        .intent_fingerprint = replay_pending_intent.intent_fingerprint,
+        .envelope_fingerprint = replay_pending_envelope.envelope_fingerprint,
+        .decision_fingerprint = 0xfeed_2101,
+        .commit_fingerprint = 0xfeed_2102,
+        .response_fingerprint = 0xfeed_2103,
+        .actuator_ref_fingerprint = ToolActuator.actuator_ref.ref_fingerprint,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .request_fingerprint = replay_pending_intent.frame_request_fingerprint,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+        .world_port_id = 0,
+        .class = .idempotent_mutation,
+        .mode = .replay,
+        .replayed = true,
+        .pending = true,
+        .run_permit_fingerprint = replay_verify_pending_cap_exhausted_permit.permit_fingerprint,
+        .environment_certificate_fingerprint = cert.certificate_fingerprint,
+    });
+    const replay_pending_source = world.Actuation.ReplaySource.init(.{ .receipts = &.{replay_pending_receipt} });
+    try std.testing.expectError(error.BudgetExceeded, world.Actuation.Membrane.execute(.{
+        .policy = world.Actuation.Policy.fixture_test,
+        .intent = replay_pending_intent,
+        .envelope = replay_pending_envelope,
+        .actuator = .{ .replay = .{
+            .source = replay_pending_source,
+            .expected_status = .pending,
+        } },
+        .descriptor = descriptor,
+        .binding = binding,
+        .run_permit = replay_verify_pending_cap_exhausted_permit,
+        .precommit_ledger = &replay_verify_pending_cap_supervisor.ledger,
+        .explicit_mutation_approval = true,
+        .attempt_number = 0,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+    }));
+
+    const verify_pending_intent = world.Actuation.Intent.init(.{
+        .actuator_ref_fingerprint = ToolActuator.actuator_ref.ref_fingerprint,
+        .descriptor_fingerprint = descriptor.descriptor_fingerprint,
+        .binding_fingerprint = binding.binding_fingerprint,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+        .world_port_id = 0,
+        .frame_request_fingerprint = 0xfeed_1001,
+        .encoded_frame_request_fingerprint = 0xfeed_1000,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .class = .idempotent_mutation,
+        .requested_mode = .verify,
+        .run_permit_fingerprint = replay_verify_pending_cap_exhausted_permit.permit_fingerprint,
+        .environment_certificate_fingerprint = cert.certificate_fingerprint,
+    });
+    const verify_pending_envelope = world.Actuation.Envelope.init(.{
+        .intent_fingerprint = verify_pending_intent.intent_fingerprint,
+        .encoded_frame_request_fingerprint = verify_pending_intent.encoded_frame_request_fingerprint,
+        .idempotency_key = key,
+        .expected_response_value_ref = descriptor.response_value_ref,
+        .expected_response_value_table_id = descriptor.response_value_table_id,
+    });
+    try std.testing.expectError(error.BudgetExceeded, world.Actuation.Membrane.execute(.{
+        .policy = world.Actuation.Policy.fixture_test,
+        .intent = verify_pending_intent,
+        .envelope = verify_pending_envelope,
+        .actuator = .{ .verify = .{
+            .response_template = .{
+                .status = .pending,
+                .frame_response_fingerprint = 0xfeed_2104,
+            },
+        } },
+        .descriptor = descriptor,
+        .binding = binding,
+        .run_permit = replay_verify_pending_cap_exhausted_permit,
+        .precommit_ledger = &replay_verify_pending_cap_supervisor.ledger,
+        .explicit_mutation_approval = true,
+        .attempt_number = 0,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+    }));
 
     const policy_pending_cap_exhausted_permit = world.RunPermit.init(.{
         .target_ref_fingerprint = target_ref.target_ref_fingerprint,
