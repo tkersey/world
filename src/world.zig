@@ -915,6 +915,7 @@ pub fn bindActuator(comptime Decl: type, comptime ActuatorDecl: type) type {
                 .payload_value_table_id = requirement.payload_value_table_id,
                 .response_value_ref = requirement.response_value_table_id,
                 .response_value_table_id = requirement.response_value_table_id,
+                .supported_modes = binding_mode_policy,
                 .allowed_response_kinds = actuator_ref.supported_response_statuses,
                 .value_policy = value_policy,
                 .label = suggested_name,
@@ -11686,6 +11687,7 @@ pub const Runspace = struct {
         const index = try self.slotIndex(pending.handle);
         const slot = &self.slots.items[index];
         if (slot.pending_mailbox_id != mailbox_id or slot.status != .parked_on_port) return error.StaleRunHandle;
+        try self.validateActuationExecutionAgainstSlotPermit(index, execution);
         if (self.hasActiveFabricInvocationForMailbox(mailbox_id)) return error.ActiveFabricUnsupported;
         if (self.pendingRequiresFabricRoute(slot.*, pending)) return error.ActiveFabricUnsupported;
         switch (execution.response.status) {
@@ -11727,19 +11729,73 @@ pub const Runspace = struct {
         const event_count_snapshot = self.events.items.len;
         const next_event_index_snapshot = self.next_event_index;
         _ = self.respondWithOptions(mailbox_id, response, .{ .supervision_mode = .precharged_actuation }) catch |err| {
-            self.mailbox.pending.items[mailbox_index] = mailbox_uncommitted_snapshot;
-            self.rollbackSlotResponseMutation(
-                index,
-                slot_status_snapshot,
-                slot_current_state_snapshot,
-                slot_pending_mailbox_id_snapshot,
-                event_count_snapshot,
-                next_event_index_snapshot,
-            );
-            supervisor_snapshot.restore(self, index);
+            if (self.canRetryActuationDispatchAfterResponseError(index, mailbox_id)) {
+                self.mailbox.pending.items[mailbox_index] = mailbox_uncommitted_snapshot;
+                self.rollbackSlotResponseMutation(
+                    index,
+                    slot_status_snapshot,
+                    slot_current_state_snapshot,
+                    slot_pending_mailbox_id_snapshot,
+                    event_count_snapshot,
+                    next_event_index_snapshot,
+                );
+                supervisor_snapshot.restore(self, index);
+            }
             return err;
         };
         return execution.receipt;
+    }
+
+    fn canRetryActuationDispatchAfterResponseError(self: *@This(), slot_index: usize, mailbox_id: u64) bool {
+        const slot = self.slots.items[slot_index];
+        if (slot.pending_mailbox_id != mailbox_id) return false;
+        switch (slot.status) {
+            .parked_on_port, .parked_on_supervision => {},
+            else => return false,
+        }
+        const pending_after = self.mailbox.get(mailbox_id) catch return false;
+        return pending_after.status == .pending;
+    }
+
+    fn validateActuationExecutionAgainstSlotPermit(self: *@This(), slot_index: usize, execution: Actuation.Membrane.Execution) !void {
+        const intent_permit_fingerprint = execution.intent.run_permit_fingerprint orelse return;
+        const slot = self.slots.items[slot_index];
+        if (slot.run_permit_fingerprint == null or slot.run_permit_fingerprint.? != intent_permit_fingerprint) return error.SupervisionDenied;
+        var cloned_supervisor: ?Supervision.Supervisor = null;
+        defer if (cloned_supervisor) |*supervisor| supervisor.deinit();
+        const permit = if (slot.supervisor) |supervisor|
+            supervisor.permit
+        else if (slot.driver) |driver| permit: {
+            cloned_supervisor = try driver.cloneSupervisor(self.allocator);
+            const supervisor = cloned_supervisor orelse return error.SupervisionDenied;
+            break :permit supervisor.permit;
+        } else return error.SupervisionDenied;
+        try validateActuationExecutionAgainstPermit(permit, execution);
+    }
+
+    fn validateActuationExecutionAgainstPermit(permit: RunPermit, execution: Actuation.Membrane.Execution) !void {
+        try Actuation.Membrane.validateActuationRunPermitIntegrity(permit);
+        const intent_permit_fingerprint = execution.intent.run_permit_fingerprint orelse return error.SupervisionDenied;
+        if (permit.permit_fingerprint != intent_permit_fingerprint) return error.SupervisionDenied;
+        if (execution.receipt.run_permit_fingerprint == null or execution.receipt.run_permit_fingerprint.? != permit.permit_fingerprint) return error.SupervisionDenied;
+        if (permit.target_ref_fingerprint != execution.intent.target_ref_fingerprint) return error.SupervisionDenied;
+        if (permit.world_surface_fingerprint != execution.intent.world_surface_fingerprint) return error.SupervisionDenied;
+        if (execution.receipt.target_ref_fingerprint != permit.target_ref_fingerprint) return error.SupervisionDenied;
+        if (execution.receipt.world_surface_fingerprint != permit.world_surface_fingerprint) return error.SupervisionDenied;
+        try Actuation.Membrane.validatePermitEnvironmentCertificateBinding(permit, execution.intent.environment_certificate_fingerprint);
+        if (execution.receipt.environment_certificate_fingerprint != execution.intent.environment_certificate_fingerprint) return error.SupervisionDenied;
+        const policy = permit.policy;
+        if (!Supervision.modeAllowedByPolicy(policy, permit.mode)) return error.SupervisionDenied;
+        if (!policy.allow_actuation) return error.SupervisionDenied;
+        switch (execution.intent.requested_mode) {
+            .fresh => if (!policy.allow_fresh_actuation) return error.SupervisionDenied,
+            .replay => if (!policy.allow_replay_actuation) return error.SupervisionDenied,
+            .verify => if (!policy.allow_verify_actuation) return error.SupervisionDenied,
+            .audit => if (!policy.allow_audit_only) return error.SupervisionDenied,
+        }
+        if (policy.require_idempotency_keys and execution.intent.requested_mode == .fresh and execution.intent.class.isMutation() and !execution.key_present) return error.SupervisionDenied;
+        if (execution.intent.class == .irreversible_mutation and !policy.allow_irreversible_actuation) return error.SupervisionDenied;
+        if (!Actuation.Membrane.permitAllowsDescriptorValuePolicy(permit, execution.intent.world_port_id, execution.descriptor)) return error.SupervisionDenied;
     }
 
     pub fn dispatchPendingWithActuator(self: *@This(), mailbox_id: u64, execution: Actuation.Membrane.Execution) !Actuation.Receipt {
@@ -11948,11 +12004,7 @@ pub const Runspace = struct {
         if (slot.pending_mailbox_id != mailbox_id or (slot.status != .parked_on_port and !fabric_owned_supervision_park)) return error.StaleRunHandle;
         if (!options.allow_active_fabric and self.hasActiveFabricInvocationForMailbox(mailbox_id)) return error.ActiveFabricUnsupported;
         if (!options.allow_active_fabric and self.pendingRequiresFabricRoute(slot.*, pending)) return error.ActiveFabricUnsupported;
-        if (options.supervision_mode == .normal) {
-            if (slot.driver) |driver| {
-                if (driver.actuationBindingCoversHandlerlessWorldPort(pending.world_port_id)) return error.InvalidPendingPortTransition;
-            }
-        }
+        if (options.supervision_mode == .normal and self.pendingRequiresActuationDispatch(slot.*, pending)) return error.InvalidPendingPortTransition;
         const fabric_completes_driverless_parent = options.allow_active_fabric and slot.driver == null and slot.installed_run_image != null;
         var responded_summary: []u8 = "";
         var responded_summary_owned = false;
@@ -13871,6 +13923,7 @@ pub const Runspace = struct {
         if (slot.pending_mailbox_id != mailbox_id or slot.status != .parked_on_port) return error.StaleRunHandle;
         if (self.hasActiveFabricInvocationForMailbox(mailbox_id)) return error.ActiveFabricUnsupported;
         if (self.pendingRequiresFabricRoute(slot.*, pending)) return error.ActiveFabricUnsupported;
+        if (self.pendingRequiresActuationDispatch(slot.*, pending)) return error.InvalidPendingPortTransition;
         var response = try terminalResponseForPending(pending, .rejected, reason);
         defer response.deinit(self.allocator);
         return self.finishTerminalResponse(index, mailbox_id, pending, slot, response, .rejected, .normal);
@@ -13884,9 +13937,16 @@ pub const Runspace = struct {
         if (slot.pending_mailbox_id != mailbox_id or slot.status != .parked_on_port) return error.StaleRunHandle;
         if (self.hasActiveFabricInvocationForMailbox(mailbox_id)) return error.ActiveFabricUnsupported;
         if (self.pendingRequiresFabricRoute(slot.*, pending)) return error.ActiveFabricUnsupported;
+        if (self.pendingRequiresActuationDispatch(slot.*, pending)) return error.InvalidPendingPortTransition;
         var response = try terminalResponseForPending(pending, .failed, reason);
         defer response.deinit(self.allocator);
         return self.finishTerminalResponse(index, mailbox_id, pending, slot, response, .failed, .normal);
+    }
+
+    fn pendingRequiresActuationDispatch(self: *@This(), slot: Runspace.RunSlot, pending: Runspace.PendingPort) bool {
+        _ = self;
+        if (slot.driver) |driver| return driver.actuationBindingCoversHandlerlessWorldPort(pending.world_port_id);
+        return pending.actuation_binding_fingerprint != null;
     }
 
     fn pendingRequiresFabricRoute(self: *@This(), slot: Runspace.RunSlot, pending: Runspace.PendingPort) bool {
@@ -19114,6 +19174,9 @@ pub const Actuation = struct {
             if (self.request_fingerprint != null and self.request_fingerprint.? == 0) return error.InvalidFrameEncoding;
             if (self.replay_key_fingerprint != null and self.replay_key_fingerprint.? == 0) return error.InvalidFrameEncoding;
             if (self.pending_actuation_receipt_fingerprint != null and self.pending_actuation_receipt_fingerprint.? == 0) return error.InvalidFrameEncoding;
+            if (self.run_permit_fingerprint != null and self.run_permit_fingerprint.? == 0) return error.InvalidFrameEncoding;
+            if (self.run_receipt_fingerprint != null and self.run_receipt_fingerprint.? == 0) return error.InvalidFrameEncoding;
+            if (self.capsule_fingerprint != null and self.capsule_fingerprint.? == 0) return error.InvalidFrameEncoding;
             if (self.mode == .replay and self.fresh_called) return error.InvalidFrameEncoding;
             if (self.replayed and self.verified) return error.InvalidFrameEncoding;
             switch (self.mode) {
@@ -19414,8 +19477,27 @@ pub const Actuation = struct {
             return error.ReplayMissing;
         }
 
-        fn lookupByReplayKey(self: @This(), replay_key_fingerprint: u64, request_fingerprint: u64, intent: Intent) !Receipt {
+        fn lookupByIdempotencyKeyForResponse(self: @This(), key_fingerprint: u64, intent: Intent, expected_status: Actuation.ResponseStatus, expected_kind: ResponseKind) !Receipt {
+            var found_response_mismatch = false;
+            var index = self.receipts.len;
+            while (index > 0) {
+                index -= 1;
+                const receipt = self.receipts[index];
+                if (receipt.idempotency_key_fingerprint == key_fingerprint and
+                    receiptRequestMatchesIntent(receipt, intent) and
+                    receiptCanReplayIntent(receipt, intent))
+                {
+                    if (receiptMatchesExpectedResponse(receipt, expected_status, expected_kind)) return receipt;
+                    found_response_mismatch = true;
+                }
+            }
+            if (found_response_mismatch) return error.ReplayResponseKindMismatch;
+            return error.ReplayMissing;
+        }
+
+        fn lookupByReplayKey(self: @This(), replay_key_fingerprint: u64, request_fingerprint: u64, intent: Intent, expected_status: Actuation.ResponseStatus, expected_kind: ResponseKind) !Receipt {
             if (self.replay_key_fingerprint == null or self.replay_key_fingerprint.? != replay_key_fingerprint) return error.ReplayMissing;
+            var found_response_mismatch = false;
             var index = self.receipts.len;
             while (index > 0) {
                 index -= 1;
@@ -19425,10 +19507,16 @@ pub const Actuation = struct {
                     receipt.request_fingerprint.? == request_fingerprint and
                     receiptCanReplayIntent(receipt, intent))
                 {
-                    return receipt;
+                    if (receiptMatchesExpectedResponse(receipt, expected_status, expected_kind)) return receipt;
+                    found_response_mismatch = true;
                 }
             }
+            if (found_response_mismatch) return error.ReplayResponseKindMismatch;
             return error.ReplayMissing;
+        }
+
+        fn receiptMatchesExpectedResponse(receipt: Receipt, expected_status: Actuation.ResponseStatus, expected_kind: ResponseKind) bool {
+            return receipt.responseStatus() == expected_status and receipt.response_kind == expected_kind;
         }
 
         fn responseImageForFingerprint(self: @This(), value_image_fingerprint: u64) !Frame.ValueImage {
@@ -19452,11 +19540,18 @@ pub const Actuation = struct {
                 replay_key_matched: bool,
             };
             const selected = selected: {
-                if (self.lookupByIdempotencyKey(idempotency_key.key_fingerprint, intent)) |receipt| {
+                var idempotency_response_mismatch = false;
+                if (self.lookupByIdempotencyKeyForResponse(idempotency_key.key_fingerprint, intent, expected_status, expected_kind)) |receipt| {
                     break :selected SelectedReceipt{ .receipt = receipt, .replay_key_matched = false };
-                } else |_| {}
-                const replay_key_fingerprint = idempotency_key.replay_key_fingerprint orelse return error.ReplayMissing;
-                break :selected SelectedReceipt{ .receipt = try self.lookupByReplayKey(replay_key_fingerprint, idempotency_key.request_fingerprint, intent), .replay_key_matched = true };
+                } else |err| switch (err) {
+                    error.ReplayMissing => {},
+                    error.ReplayResponseKindMismatch => idempotency_response_mismatch = true,
+                }
+                const replay_key_fingerprint = idempotency_key.replay_key_fingerprint orelse {
+                    if (idempotency_response_mismatch) return error.ReplayResponseKindMismatch;
+                    return error.ReplayMissing;
+                };
+                break :selected SelectedReceipt{ .receipt = try self.lookupByReplayKey(replay_key_fingerprint, idempotency_key.request_fingerprint, intent, expected_status, expected_kind), .replay_key_matched = true };
             };
             const receipt = selected.receipt;
             try receipt.validate();
@@ -19826,6 +19921,7 @@ pub const Actuation = struct {
                 if (self.receipt.verified != self.commit_value.verified) return error.InvalidFrameEncoding;
                 if (self.receipt.attempt_number != self.commit_value.attempt_number) return error.InvalidFrameEncoding;
                 if (self.parent_terminal != self.response.isTerminalForParent()) return error.InvalidFrameEncoding;
+                if (self.authority_kind != authorityKindForExecution(self)) return error.InvalidFrameEncoding;
                 if (!self.decision.approved and self.fresh_called) return error.SupervisionDenied;
                 if (self.receipt.mode == .replay and self.fresh_called) return error.InvalidFrameEncoding;
                 if (self.commit_value.verified) {
@@ -19921,6 +20017,13 @@ pub const Actuation = struct {
             };
         }
 
+        fn actuatorCreatesPendingActuation(selected_actuator: Interface) bool {
+            return switch (selected_actuator) {
+                .pending, .deferred => true,
+                else => false,
+            };
+        }
+
         fn validatePrecommitActuationPermit(args: ExecuteArgs) !void {
             if (args.intent.run_permit_fingerprint == null) return;
             const permit = args.run_permit orelse return error.SupervisionDenied;
@@ -19938,10 +20041,10 @@ pub const Actuation = struct {
                 .verify => if (!policy.allow_verify_actuation) return error.SupervisionDenied,
                 .audit => if (!policy.allow_audit_only) return error.SupervisionDenied,
             }
-            try validatePermitPrecommitActuationCallBudget(permit, args.intent, args.precommit_ledger, args.pending_actuation_receipt_fingerprint);
+            try validatePermitPrecommitActuationBudget(permit, args.intent, args.precommit_ledger, args.pending_actuation_receipt_fingerprint, actuatorCreatesPendingActuation(args.actuator));
             if (policy.require_idempotency_keys and args.intent.requested_mode == .fresh and args.intent.class.isMutation() and !args.key_present) return error.SupervisionDenied;
             if (args.intent.class == .irreversible_mutation and !policy.allow_irreversible_actuation) return error.SupervisionDenied;
-            if (!permitAllowsActuationDescriptorValuePolicy(permit, args.intent.world_port_id, args.descriptor)) return error.SupervisionDenied;
+            if (!permitAllowsDescriptorValuePolicy(permit, args.intent.world_port_id, args.descriptor)) return error.SupervisionDenied;
             if (permit.ruleFor(args.intent.world_port_id)) |rule| {
                 if (rule.rule_fingerprint != fingerprintPortRule(rule)) return error.SupervisionDenied;
                 if (rule.world_surface_fingerprint != args.intent.world_surface_fingerprint) return error.SupervisionDenied;
@@ -19955,12 +20058,19 @@ pub const Actuation = struct {
             }
         }
 
-        fn validatePermitPrecommitActuationCallBudget(permit: RunPermit, intent: Intent, ledger_ptr: ?*const Supervision.UsageLedger, pending_actuation_receipt_fingerprint: ?u64) !void {
-            const budget_max = permit.budget.max_actuation_calls;
-            const policy_max = permit.policy.max_actuation_calls;
-            if (budget_max == null and policy_max == null) return;
-            if (budget_max != null and budget_max.? == 0) return error.BudgetExceeded;
-            if (policy_max != null and policy_max.? == 0) return error.BudgetExceeded;
+        fn validatePermitPrecommitActuationBudget(permit: RunPermit, intent: Intent, ledger_ptr: ?*const Supervision.UsageLedger, pending_actuation_receipt_fingerprint: ?u64, creates_pending_actuation: bool) !void {
+            const budget_call_max = permit.budget.max_actuation_calls;
+            const policy_call_max = permit.policy.max_actuation_calls;
+            const budget_pending_max = permit.budget.max_pending_actuations;
+            const policy_pending_max = permit.policy.max_pending_actuations;
+            const has_pending_limit = budget_pending_max != null or policy_pending_max != null;
+            if (budget_call_max == null and policy_call_max == null and (!has_pending_limit or !creates_pending_actuation)) return;
+            if (budget_call_max != null and budget_call_max.? == 0) return error.BudgetExceeded;
+            if (policy_call_max != null and policy_call_max.? == 0) return error.BudgetExceeded;
+            if (creates_pending_actuation) {
+                if (budget_pending_max != null and budget_pending_max.? == 0) return error.BudgetExceeded;
+                if (policy_pending_max != null and policy_pending_max.? == 0) return error.BudgetExceeded;
+            }
             const ledger = (ledger_ptr orelse return error.SupervisionDenied).*;
             try validatePrecommitUsageLedgerBinding(permit, ledger);
             const resolves_pending = ledger.hasPendingActuationForIntent(intent) or
@@ -19968,11 +20078,19 @@ pub const Actuation = struct {
                     ledger.hasPendingActuationReceipt(fingerprint, intent.world_port_id)
                 else
                     false;
-            if (budget_max) |max| {
+            if (budget_call_max) |max| {
                 if (precommitActuationCallLimitExceeded(max, ledger, resolves_pending)) return error.BudgetExceeded;
             }
-            if (policy_max) |max| {
+            if (policy_call_max) |max| {
                 if (precommitActuationCallLimitExceeded(max, ledger, resolves_pending)) return error.BudgetExceeded;
+            }
+            if (creates_pending_actuation) {
+                if (budget_pending_max) |max| {
+                    if (precommitPendingActuationLimitExceeded(max, ledger)) return error.BudgetExceeded;
+                }
+                if (policy_pending_max) |max| {
+                    if (precommitPendingActuationLimitExceeded(max, ledger)) return error.BudgetExceeded;
+                }
             }
         }
 
@@ -19988,6 +20106,10 @@ pub const Actuation = struct {
             return ledger.total_actuation_commits +| ledger.total_actuation_intents +| new_call_delta > max;
         }
 
+        fn precommitPendingActuationLimitExceeded(max: usize, ledger: Supervision.UsageLedger) bool {
+            return ledger.total_pending_actuations +| 1 > max;
+        }
+
         fn validatePermitEnvironmentCertificateBinding(permit: RunPermit, certificate_fingerprint: ?u64) !void {
             if (permit.environment_certificate_fingerprint == 0) {
                 if (certificate_fingerprint) |fingerprint| {
@@ -19998,7 +20120,7 @@ pub const Actuation = struct {
             if (certificate_fingerprint == null or certificate_fingerprint.? != permit.environment_certificate_fingerprint) return error.SupervisionDenied;
         }
 
-        fn permitAllowsActuationDescriptorValuePolicy(permit: RunPermit, world_port_id: u32, descriptor: ?Descriptor) bool {
+        pub fn permitAllowsDescriptorValuePolicy(permit: RunPermit, world_port_id: u32, descriptor: ?Descriptor) bool {
             const needs_descriptor_policy = permit.policy.require_portable_value_images or
                 permit.policy.reject_native_only_values or
                 (if (permit.ruleFor(world_port_id)) |rule| rule.require_portable_values else false);
@@ -20279,6 +20401,13 @@ pub const Actuation = struct {
         fn authorityKindForExecuteArgs(args: ExecuteArgs) ?PortAuthority.Kind {
             const descriptor = args.descriptor orelse return null;
             if (concreteAuthorityKindForActuator(args.actuator)) |kind| return kind;
+            return authorityKindForActuationKind(descriptor.kind);
+        }
+
+        fn authorityKindForExecution(execution: Execution) ?PortAuthority.Kind {
+            if (!execution.decision.approved) return execution.authority_kind;
+            if (execution.receipt.replayed) return .replay_source;
+            const descriptor = execution.descriptor orelse return null;
             return authorityKindForActuationKind(descriptor.kind);
         }
 
