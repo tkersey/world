@@ -20105,7 +20105,10 @@ pub const Actuation = struct {
             const budget_pending_max = permit.budget.max_pending_actuations;
             const policy_pending_max = permit.policy.max_pending_actuations;
             const has_pending_limit = budget_pending_max != null or policy_pending_max != null;
-            if (budget_call_max == null and policy_call_max == null and (!has_pending_limit or !creates_pending_actuation)) return;
+            const cross_mode_pending_resolution = permit.mode == .fresh and
+                (intent.requested_mode == .replay or intent.requested_mode == .verify) and
+                pending_actuation_receipt_fingerprint != null;
+            if (budget_call_max == null and policy_call_max == null and (!has_pending_limit or !creates_pending_actuation) and !cross_mode_pending_resolution) return;
             if (budget_call_max != null and budget_call_max.? == 0) return error.BudgetExceeded;
             if (policy_call_max != null and policy_call_max.? == 0) return error.BudgetExceeded;
             if (creates_pending_actuation) {
@@ -20120,6 +20123,7 @@ pub const Actuation = struct {
                     ledger.hasPendingActuationReceipt(pending_actuation_receipt_fingerprint.?, intent.world_port_id)
                 else
                     false;
+            if (cross_mode_pending_resolution and !resolves_pending) return error.SupervisionDenied;
             if (budget_call_max) |max| {
                 if (precommitActuationCallLimitExceeded(max, ledger, resolves_pending)) return error.BudgetExceeded;
             }

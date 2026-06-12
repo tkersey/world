@@ -4648,6 +4648,111 @@ test "actuation environment preflight and supervision ledger account host effect
         .environment_certificate_fingerprint = cert.certificate_fingerprint,
     });
     try pending_cap_exhausted_supervisor.ledger.recordActuationReceipt(std.testing.allocator, existing_budget_pending_receipt, 0, 0, 0);
+    const fresh_replay_resolution_permit = world.RunPermit.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = target_ref.target_certificate_fingerprint,
+        .environment_certificate_fingerprint = cert.certificate_fingerprint,
+        .binding_plan_fingerprint = cert.binding_plan_fingerprint,
+        .transcript_image_available = true,
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_replay_calls = true,
+            .allow_actuation = true,
+            .allow_fresh_actuation = true,
+            .allow_replay_actuation = true,
+            .allow_pending_actuation = true,
+            .max_actuation_calls = null,
+            .max_pending_actuations = null,
+        }),
+        .budget = world.Budget.init(.{
+            .max_actuation_calls = null,
+            .max_pending_actuations = null,
+        }),
+    });
+    const fresh_replay_pending_receipt = bindReceiptToPermit(existing_budget_pending_receipt, fresh_replay_resolution_permit);
+    const fresh_replay_resolution_intent = world.Actuation.Intent.init(.{
+        .actuator_ref_fingerprint = ToolActuator.actuator_ref.ref_fingerprint,
+        .descriptor_fingerprint = descriptor.descriptor_fingerprint,
+        .binding_fingerprint = binding.binding_fingerprint,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+        .world_port_id = 0,
+        .frame_request_fingerprint = 0xfeed_1001,
+        .encoded_frame_request_fingerprint = 0xfeed_1000,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .class = .idempotent_mutation,
+        .requested_mode = .replay,
+        .run_permit_fingerprint = fresh_replay_resolution_permit.permit_fingerprint,
+        .environment_certificate_fingerprint = cert.certificate_fingerprint,
+    });
+    const fresh_replay_resolution_envelope = world.Actuation.Envelope.init(.{
+        .intent_fingerprint = fresh_replay_resolution_intent.intent_fingerprint,
+        .encoded_frame_request_fingerprint = fresh_replay_resolution_intent.encoded_frame_request_fingerprint,
+        .idempotency_key = key,
+        .expected_response_value_ref = descriptor.response_value_ref,
+        .expected_response_value_table_id = descriptor.response_value_table_id,
+    });
+    const fresh_replay_resolution_source = world.Actuation.ReplaySource.init(.{ .receipts = &.{fresh_replay_pending_receipt} });
+    try std.testing.expectError(error.SupervisionDenied, world.Actuation.Membrane.execute(.{
+        .policy = world.Actuation.Policy.fixture_test,
+        .intent = fresh_replay_resolution_intent,
+        .envelope = fresh_replay_resolution_envelope,
+        .actuator = .{ .replay = .{
+            .source = fresh_replay_resolution_source,
+            .expected_status = .pending,
+        } },
+        .descriptor = descriptor,
+        .binding = binding,
+        .run_permit = fresh_replay_resolution_permit,
+        .pending_actuation_receipt_fingerprint = fresh_replay_pending_receipt.receipt_fingerprint,
+        .explicit_mutation_approval = true,
+        .attempt_number = 0,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+    }));
+    var fresh_replay_empty_supervisor = try world.Supervision.Supervisor.init(std.testing.allocator, fresh_replay_resolution_permit, 1);
+    defer fresh_replay_empty_supervisor.deinit();
+    try std.testing.expectError(error.SupervisionDenied, world.Actuation.Membrane.execute(.{
+        .policy = world.Actuation.Policy.fixture_test,
+        .intent = fresh_replay_resolution_intent,
+        .envelope = fresh_replay_resolution_envelope,
+        .actuator = .{ .replay = .{
+            .source = fresh_replay_resolution_source,
+            .expected_status = .pending,
+        } },
+        .descriptor = descriptor,
+        .binding = binding,
+        .run_permit = fresh_replay_resolution_permit,
+        .precommit_ledger = &fresh_replay_empty_supervisor.ledger,
+        .pending_actuation_receipt_fingerprint = fresh_replay_pending_receipt.receipt_fingerprint,
+        .explicit_mutation_approval = true,
+        .attempt_number = 0,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+    }));
+    var fresh_replay_resolution_supervisor = try world.Supervision.Supervisor.init(std.testing.allocator, fresh_replay_resolution_permit, 1);
+    defer fresh_replay_resolution_supervisor.deinit();
+    try fresh_replay_resolution_supervisor.ledger.recordActuationReceipt(std.testing.allocator, fresh_replay_pending_receipt, 0, 0, 0);
+    _ = try world.Actuation.Membrane.execute(.{
+        .policy = world.Actuation.Policy.fixture_test,
+        .intent = fresh_replay_resolution_intent,
+        .envelope = fresh_replay_resolution_envelope,
+        .actuator = .{ .replay = .{
+            .source = fresh_replay_resolution_source,
+            .expected_status = .pending,
+        } },
+        .descriptor = descriptor,
+        .binding = binding,
+        .run_permit = fresh_replay_resolution_permit,
+        .precommit_ledger = &fresh_replay_resolution_supervisor.ledger,
+        .pending_actuation_receipt_fingerprint = fresh_replay_pending_receipt.receipt_fingerprint,
+        .explicit_mutation_approval = true,
+        .attempt_number = 0,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+    });
     try std.testing.expectError(error.BudgetExceeded, world.Actuation.Membrane.execute(.{
         .policy = world.Actuation.Policy.fixture_test,
         .intent = pending_cap_exhausted_intent,
