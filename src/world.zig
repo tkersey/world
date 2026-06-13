@@ -4391,7 +4391,8 @@ pub const Supervision = struct {
             self.total_pending_actuations -= 1;
             if (self.total_pending_calls > 0) self.total_pending_calls -= 1;
             port_usage.pending_calls -= 1;
-            self.total_actuation_commits = self.total_actuation_commits +| 1;
+            const charges_new_call = receipt.pending_actuation_receipt_fingerprint == null;
+            if (charges_new_call) self.total_actuation_commits = self.total_actuation_commits +| 1;
             if (receipt.fresh_called) self.total_fresh_actuations = self.total_fresh_actuations +| 1;
             if (receipt.replayed) self.total_replay_actuations = self.total_replay_actuations +| 1;
             if (receipt.verified) self.total_verify_actuations = self.total_verify_actuations +| 1;
