@@ -5439,7 +5439,7 @@ test "actuation environment preflight and supervision ledger account host effect
         .frame_response_fingerprint = execution.receipt.frame_response_fingerprint,
         .response_value_image_fingerprint = execution.receipt.response_value_image_fingerprint,
         .actuator_ref_fingerprint = execution.receipt.actuator_ref_fingerprint,
-        .idempotency_key_fingerprint = execution.receipt.idempotency_key_fingerprint +% 1,
+        .idempotency_key_fingerprint = execution.receipt.idempotency_key_fingerprint,
         .pending_actuation_receipt_fingerprint = bounded_pending_receipt.receipt_fingerprint,
         .target_ref_fingerprint = execution.receipt.target_ref_fingerprint,
         .world_surface_fingerprint = execution.receipt.world_surface_fingerprint,
@@ -5450,6 +5450,28 @@ test "actuation environment preflight and supervision ledger account host effect
         .run_permit_fingerprint = bounded_pending_resolution_permit.permit_fingerprint,
         .environment_certificate_fingerprint = bounded_pending_resolution_permit.environment_certificate_fingerprint,
     });
+    const fresh_pending_link_receipt = world.Actuation.Receipt.init(.{
+        .intent_fingerprint = execution.receipt.intent_fingerprint +% 2,
+        .envelope_fingerprint = execution.receipt.envelope_fingerprint,
+        .decision_fingerprint = execution.receipt.decision_fingerprint,
+        .commit_fingerprint = execution.receipt.commit_fingerprint,
+        .response_fingerprint = execution.receipt.response_fingerprint,
+        .response_kind = execution.receipt.response_kind,
+        .frame_response_fingerprint = execution.receipt.frame_response_fingerprint,
+        .response_value_image_fingerprint = execution.receipt.response_value_image_fingerprint,
+        .actuator_ref_fingerprint = execution.receipt.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = execution.receipt.idempotency_key_fingerprint,
+        .pending_actuation_receipt_fingerprint = bounded_pending_receipt.receipt_fingerprint,
+        .target_ref_fingerprint = execution.receipt.target_ref_fingerprint,
+        .world_surface_fingerprint = execution.receipt.world_surface_fingerprint,
+        .world_port_id = execution.receipt.world_port_id,
+        .class = execution.receipt.class,
+        .mode = .fresh,
+        .fresh_called = true,
+        .run_permit_fingerprint = bounded_pending_resolution_permit.permit_fingerprint,
+        .environment_certificate_fingerprint = bounded_pending_resolution_permit.environment_certificate_fingerprint,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, fresh_pending_link_receipt.validate());
     try bounded_pending_resolution_supervisor.afterActuationResolution(bounded_replay_resolution, 16);
     try std.testing.expectEqual(@as(usize, 0), bounded_pending_resolution_supervisor.ledger.total_pending_actuations);
     try std.testing.expectEqual(@as(usize, 1), bounded_pending_resolution_supervisor.ledger.total_actuation_commits);
@@ -6135,7 +6157,7 @@ test "runspace pending actuation fresh completion resolves pending accounting" {
         .response_kind = terminal_receipt.response_kind,
         .frame_response_fingerprint = terminal_receipt.frame_response_fingerprint,
         .actuator_ref_fingerprint = terminal_receipt.actuator_ref_fingerprint,
-        .idempotency_key_fingerprint = terminal_receipt.idempotency_key_fingerprint +% 1,
+        .idempotency_key_fingerprint = terminal_receipt.idempotency_key_fingerprint,
         .pending_actuation_receipt_fingerprint = pending_receipt.receipt_fingerprint,
         .target_ref_fingerprint = terminal_receipt.target_ref_fingerprint,
         .world_surface_fingerprint = terminal_receipt.world_surface_fingerprint,
@@ -6153,6 +6175,13 @@ test "runspace pending actuation fresh completion resolves pending accounting" {
     try unbound_replay_resolution_ledger.recordActuationReceipt(std.testing.allocator, pending_receipt, 0, 0, 0);
     try std.testing.expect(!try unbound_replay_resolution_ledger.recordActuationResolution(std.testing.allocator, unbound_replay_resolution_receipt, 0, 0, 0));
     try std.testing.expectEqual(@as(usize, 1), unbound_replay_resolution_ledger.total_pending_actuations);
+    var wrong_key_replay_resolution_receipt = replay_resolution_receipt;
+    wrong_key_replay_resolution_receipt.idempotency_key_fingerprint +%= 1;
+    var wrong_key_replay_resolution_ledger = try world.Supervision.UsageLedger.init(std.testing.allocator, permit, 1);
+    defer wrong_key_replay_resolution_ledger.deinit(std.testing.allocator);
+    try wrong_key_replay_resolution_ledger.recordActuationReceipt(std.testing.allocator, pending_receipt, 0, 0, 0);
+    try std.testing.expect(!try wrong_key_replay_resolution_ledger.recordActuationResolution(std.testing.allocator, wrong_key_replay_resolution_receipt, 0, 0, 0));
+    try std.testing.expectEqual(@as(usize, 1), wrong_key_replay_resolution_ledger.total_pending_actuations);
     try std.testing.expect(try replay_resolution_ledger.recordActuationResolution(std.testing.allocator, replay_resolution_receipt, 0, 0, 0));
     try std.testing.expectEqual(@as(usize, 0), replay_resolution_ledger.total_pending_actuations);
     try std.testing.expectEqual(@as(usize, 1), replay_resolution_ledger.total_actuation_commits);
@@ -6176,7 +6205,7 @@ test "runspace pending actuation fresh completion resolves pending accounting" {
         .response_kind = terminal_receipt.response_kind,
         .frame_response_fingerprint = terminal_receipt.frame_response_fingerprint,
         .actuator_ref_fingerprint = terminal_receipt.actuator_ref_fingerprint,
-        .idempotency_key_fingerprint = terminal_receipt.idempotency_key_fingerprint +% 2,
+        .idempotency_key_fingerprint = terminal_receipt.idempotency_key_fingerprint,
         .pending_actuation_receipt_fingerprint = pending_receipt.receipt_fingerprint,
         .target_ref_fingerprint = terminal_receipt.target_ref_fingerprint,
         .world_surface_fingerprint = terminal_receipt.world_surface_fingerprint,

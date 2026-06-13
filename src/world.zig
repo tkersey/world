@@ -4234,6 +4234,7 @@ pub const Supervision = struct {
         pub fn matchesReceipt(self: @This(), receipt: Actuation.Receipt) bool {
             if (receipt.pending_actuation_receipt_fingerprint) |pending_receipt| {
                 return self.receipt_fingerprint == pending_receipt and
+                    self.idempotency_key_fingerprint == receipt.idempotency_key_fingerprint and
                     self.world_port_id == receipt.world_port_id;
             }
             if (receipt.replayed or receipt.verified) return false;
@@ -19246,6 +19247,7 @@ pub const Actuation = struct {
             if (self.request_fingerprint != null and self.request_fingerprint.? == 0) return error.InvalidFrameEncoding;
             if (self.replay_key_fingerprint != null and self.replay_key_fingerprint.? == 0) return error.InvalidFrameEncoding;
             if (self.pending_actuation_receipt_fingerprint != null and self.pending_actuation_receipt_fingerprint.? == 0) return error.InvalidFrameEncoding;
+            if (self.pending_actuation_receipt_fingerprint != null and self.mode != .replay and self.mode != .verify) return error.InvalidFrameEncoding;
             if (self.run_permit_fingerprint != null and self.run_permit_fingerprint.? == 0) return error.InvalidFrameEncoding;
             if (self.environment_certificate_fingerprint != null and self.environment_certificate_fingerprint.? == 0) return error.InvalidFrameEncoding;
             if (self.run_receipt_fingerprint != null and self.run_receipt_fingerprint.? == 0) return error.InvalidFrameEncoding;
