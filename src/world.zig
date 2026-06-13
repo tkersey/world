@@ -18857,6 +18857,25 @@ pub const Actuation = struct {
         }
     };
 
+    fn idempotencyKeyMatchesIntent(key: IdempotencyKey, intent: Intent) bool {
+        if (key.key_fingerprint != intent.idempotency_key_fingerprint) return false;
+        if (key.intent_fingerprint) |key_intent| {
+            if (key_intent != intent.intent_fingerprint) return false;
+        }
+        if (key.target_ref_fingerprint != intent.target_ref_fingerprint) return false;
+        if (key.world_surface_fingerprint != intent.world_surface_fingerprint) return false;
+        if (key.world_port_id != intent.world_port_id) return false;
+        if (key.request_fingerprint != intent.frame_request_fingerprint) return false;
+        if (key.actuator_ref_fingerprint != intent.actuator_ref_fingerprint) return false;
+        if (key.pending_port_fingerprint != intent.pending_port_fingerprint) return false;
+        if (key.capsule_fingerprint != intent.capsule_fingerprint) return false;
+        return true;
+    }
+
+    fn validateIdempotencyKeyForIntent(key: IdempotencyKey, intent: Intent) !void {
+        if (!idempotencyKeyMatchesIntent(key, intent)) return error.InvalidFrameEncoding;
+    }
+
     pub const Envelope = struct {
         format_version: u32 = world_actuation_envelope_format_version,
         fingerprint_version: u32 = world_actuation_envelope_fingerprint_version,
@@ -19714,7 +19733,7 @@ pub const Actuation = struct {
 
         pub fn responseForIntent(self: @This(), intent: Intent, idempotency_key: IdempotencyKey, expected_status: Actuation.ResponseStatus, expected_kind: ResponseKind) !Response {
             try idempotency_key.validate();
-            if (idempotency_key.key_fingerprint != intent.idempotency_key_fingerprint) return error.ReplayRequestFingerprintMismatch;
+            if (!idempotencyKeyMatchesIntent(idempotency_key, intent)) return error.ReplayRequestFingerprintMismatch;
             const SelectedReceipt = struct {
                 receipt: Receipt,
                 replay_key_matched: bool,
@@ -20459,17 +20478,7 @@ pub const Actuation = struct {
         }
 
         fn validateEnvelopeKeyForIntent(envelope: Envelope, intent: Intent) !void {
-            if (envelope.idempotency_key.key_fingerprint != intent.idempotency_key_fingerprint) return error.InvalidFrameEncoding;
-            if (envelope.idempotency_key.intent_fingerprint) |key_intent| {
-                if (key_intent != intent.intent_fingerprint) return error.InvalidFrameEncoding;
-            }
-            if (envelope.idempotency_key.target_ref_fingerprint != intent.target_ref_fingerprint) return error.InvalidFrameEncoding;
-            if (envelope.idempotency_key.world_surface_fingerprint != intent.world_surface_fingerprint) return error.InvalidFrameEncoding;
-            if (envelope.idempotency_key.world_port_id != intent.world_port_id) return error.InvalidFrameEncoding;
-            if (envelope.idempotency_key.request_fingerprint != intent.frame_request_fingerprint) return error.InvalidFrameEncoding;
-            if (envelope.idempotency_key.actuator_ref_fingerprint != intent.actuator_ref_fingerprint) return error.InvalidFrameEncoding;
-            if (envelope.idempotency_key.pending_port_fingerprint != intent.pending_port_fingerprint) return error.InvalidFrameEncoding;
-            if (envelope.idempotency_key.capsule_fingerprint != intent.capsule_fingerprint) return error.InvalidFrameEncoding;
+            try validateIdempotencyKeyForIntent(envelope.idempotency_key, intent);
         }
 
         fn validateActuationBindingWitness(binding_value: ?Actuation.Binding, descriptor: Descriptor, intent: Intent) !void {

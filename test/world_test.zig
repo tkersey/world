@@ -1210,6 +1210,19 @@ test "actuation commit response receipt journal and replay bind idempotency" {
     const replay_key_response = try replay_key_source.responseForIntent(receiver_replay_intent, receiver_key, .responded, .@"resume");
     try std.testing.expectEqual(receiver_replay_intent.intent_fingerprint, replay_key_response.intent_fingerprint);
     try std.testing.expectEqual(@as(?u64, 0x4106), replay_key_response.frame_response_fingerprint);
+    const copied_key_fingerprint_intent = world.Actuation.Intent.init(.{
+        .actuator_ref_fingerprint = ref.ref_fingerprint,
+        .descriptor_fingerprint = 0x4104,
+        .target_ref_fingerprint = 0x4101,
+        .world_surface_fingerprint = 0x4102,
+        .world_port_id = 0,
+        .frame_request_fingerprint = 0x4107,
+        .encoded_frame_request_fingerprint = 0x4107,
+        .idempotency_key_fingerprint = receiver_key.key_fingerprint,
+        .class = .deterministic_fixture,
+        .requested_mode = .replay,
+    });
+    try std.testing.expectError(error.ReplayRequestFingerprintMismatch, replay_key_source.responseForIntent(copied_key_fingerprint_intent, receiver_key, .responded, .@"resume"));
     const forged_receiver_key = world.Actuation.IdempotencyKey.init(.{
         .target_ref_fingerprint = 0x4101,
         .world_surface_fingerprint = 0x4102,
