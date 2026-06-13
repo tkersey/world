@@ -20551,11 +20551,12 @@ pub const Actuation = struct {
         }
 
         fn validateVerifyReportReceiptBinding(report: VerifyReport, emitted: Receipt, expected: ?Receipt, fresh: ?Receipt) !void {
+            if (fresh) |fresh_receipt| {
+                if (!verifyReceiptEvidenceMatches(emitted, fresh_receipt)) return error.InvalidFrameEncoding;
+            }
             if (!report.matched) return;
             const expected_receipt = expected orelse return error.InvalidFrameEncoding;
-            const fresh_receipt = fresh orelse return error.InvalidFrameEncoding;
             if (!verifyReceiptEvidenceMatches(emitted, expected_receipt)) return error.InvalidFrameEncoding;
-            if (!verifyReceiptEvidenceMatches(emitted, fresh_receipt)) return error.InvalidFrameEncoding;
         }
 
         fn verifyReceiptEvidenceMatches(lhs: Receipt, rhs: Receipt) bool {

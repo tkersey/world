@@ -1887,6 +1887,19 @@ test "actuation verify report records matches and divergences" {
         .target_ref_fingerprint = 0x7101,
         .world_surface_fingerprint = 0x7102,
     }));
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Actuation.Membrane.execute(.{
+        .policy = world.Actuation.Policy.verify_replay,
+        .intent = verify_intent,
+        .envelope = verify_envelope,
+        .actuator = .{ .verify = .{
+            .expected_receipt = wrong_request_verify_receipt,
+            .fresh_receipt = valid_verify_receipt,
+            .response_template = .{ .frame_response_fingerprint = 0x7110 },
+        } },
+        .attempt_number = 0,
+        .target_ref_fingerprint = 0x7101,
+        .world_surface_fingerprint = 0x7102,
+    }));
 
     const contradictory_status = world.Actuation.Receipt.init(.{
         .intent_fingerprint = intent.intent_fingerprint,
@@ -3023,7 +3036,7 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
         .actuator = .{ .verify = .{
             .expected_receipt = replay_seed,
             .fresh_receipt = changed_fresh,
-            .response_template = .{ .frame_response_fingerprint = 0x6401 },
+            .response_template = .{ .frame_response_fingerprint = 0x9998 },
         } },
         .target_ref_fingerprint = 0x6102,
         .world_surface_fingerprint = 0x6101,
