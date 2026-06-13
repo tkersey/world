@@ -21889,7 +21889,6 @@ pub const Capsule = struct {
             if (!legacy and runspace_image_format_version != 2) try validatePendingActuationBindingMarker(self.actuation_binding_fingerprint, self.actuation_descriptor_fingerprint, self.actuator_ref_fingerprint);
             if (self.committed_actuation_receipt and self.pending_actuation_receipt_fingerprint == null) return error.InvalidFrameEncoding;
             if (self.pending_actuation_receipt_fingerprint != null and !self.committed_actuation_receipt) return error.InvalidFrameEncoding;
-            if (!capsuleRunspaceImageFormatSupportsCommittedActuationReceipts(runspace_image_format_version) and self.committed_actuation_receipt) return error.InvalidFrameEncoding;
             if (self.request_frame.expected_response_value_table_id != self.expected_response_value_table_id) return error.InvalidFrameEncoding;
             const expected_pending_port_fingerprint = if (legacy)
                 fingerprintPendingPortImageProjectionV1(self)
@@ -26244,7 +26243,7 @@ pub const Capsule = struct {
         }
         if (capsuleRunspaceImageFormatSupportsCommittedActuationReceipts(runspace_image_format_version)) {
             try writeBool(out, allocator, image.committed_actuation_receipt);
-        } else if (image.committed_actuation_receipt) {
+        } else if (image.committed_actuation_receipt and image.pending_actuation_receipt_fingerprint == null) {
             return error.InvalidFrameEncoding;
         }
         try writeU64(out, allocator, image.inserted_event_index);
@@ -26290,7 +26289,7 @@ pub const Capsule = struct {
         const committed_actuation_receipt = if (capsuleRunspaceImageFormatSupportsCommittedActuationReceipts(runspace_image_format_version))
             try readBool(bytes, cursor)
         else
-            false;
+            pending_actuation_receipt_fingerprint != null;
         var image = PendingPortImage{
             .fingerprint_version = fingerprint_version,
             .pending_port_image_fingerprint = pending_port_image_fingerprint,
@@ -26724,6 +26723,57 @@ pub const Capsule = struct {
         try std.testing.expectEqual(encoded_legacy.items.len, legacy_cursor);
         try std.testing.expectEqual(@as(u32, 1), decoded_legacy.format_version);
         try std.testing.expectEqual(@as(usize, 0), decoded_legacy.actuation_intent_refs.len);
+
+        const v2_intent_refs = [_]u64{0x5150_ac01};
+        const v2_receipt_refs = [_]u64{0x5150_ac02};
+        var v2_pending_entry = PendingPortImage.init(.{
+            .pending_port_fingerprint = 0,
+            .original_run_handle_fingerprint = 0x5150_ac03,
+            .mailbox_id = 0,
+            .request_frame = legacy_request,
+            .target_ref_fingerprint = 0x5150_ab06,
+            .pending_actuation_intent_fingerprint = v2_intent_refs[0],
+            .pending_actuation_receipt_fingerprint = v2_receipt_refs[0],
+            .committed_actuation_receipt = true,
+        });
+        v2_pending_entry.fingerprint_version = 2;
+        v2_pending_entry.pending_port_fingerprint = fingerprintPendingPortImageProjectionV2(v2_pending_entry);
+        v2_pending_entry.pending_port_image_fingerprint = PendingPortImage.fingerprint(v2_pending_entry);
+        const v2_pending_entries = [_]PendingPortImage{v2_pending_entry};
+        const v2_pending_fingerprints = [_]u64{v2_pending_entry.pending_port_fingerprint};
+        const v2_single_use_statuses = [_]u64{fingerprintPendingPortImageSingleUseStatus(v2_pending_entry)};
+        const v2_routing_statuses = [_]u64{fingerprintPendingPortImageRoutingStatus(v2_pending_entry)};
+        const v2_mailbox = MailboxImage.init(.{
+            .pending_port_entries = &v2_pending_entries,
+            .pending_port_fingerprints = &v2_pending_fingerprints,
+            .next_mailbox_id = 8,
+            .single_use_status_fingerprints = &v2_single_use_statuses,
+            .response_routing_status_fingerprints = &v2_routing_statuses,
+            .pending_actuation_intent_fingerprints = &v2_intent_refs,
+            .committed_actuation_receipt_fingerprints = &v2_receipt_refs,
+        });
+        var v2_with_committed_receipt = RunspaceImage{
+            .format_version = 2,
+            .fingerprint_version = world_capsule_runspace_image_fingerprint_version,
+            .image_fingerprint = 0,
+            .runspace_fingerprint = 0x5150_ac04,
+            .runspace_report_fingerprint = 0x5150_ac05,
+            .mailbox_image = v2_mailbox,
+            .actuation_intent_refs = &v2_intent_refs,
+            .actuation_receipt_refs = &v2_receipt_refs,
+            .metadata = "v2-runspace-committed-actuation",
+        };
+        v2_with_committed_receipt.image_fingerprint = fingerprintRunspaceImage(v2_with_committed_receipt);
+        var encoded_v2: std.ArrayList(u8) = .empty;
+        defer encoded_v2.deinit(allocator);
+        try encodeRunspaceImage(&encoded_v2, allocator, v2_with_committed_receipt);
+        var v2_cursor: usize = 0;
+        var decoded_v2 = try decodeRunspaceImage(allocator, encoded_v2.items, &v2_cursor, .{});
+        defer decoded_v2.deinit(allocator);
+        try std.testing.expectEqual(encoded_v2.items.len, v2_cursor);
+        const decoded_v2_pending = decoded_v2.mailbox_image.?.pending_port_entries[0];
+        try std.testing.expect(decoded_v2_pending.committed_actuation_receipt);
+        try std.testing.expectEqual(@as(?u64, v2_receipt_refs[0]), decoded_v2_pending.pending_actuation_receipt_fingerprint);
 
         const actuation_refs = [_]u64{0x5150_aa06};
         var legacy_with_actuation_refs = legacy_with_mailbox;
