@@ -2453,6 +2453,24 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
         .target_ref_fingerprint = 0x6102,
         .world_surface_fingerprint = 0x6101,
     }));
+    const unsupervised_pending_cap_policy = world.Actuation.Policy.init(.{
+        .allow_fresh_actuation = true,
+        .allow_pending_actuation = true,
+        .allow_deterministic_fixture = true,
+        .require_idempotency_key = false,
+        .require_approval_for_mutation = false,
+        .max_actuation_calls = null,
+        .max_pending_actuations = 1,
+    });
+    try std.testing.expectError(error.SupervisionDenied, world.Actuation.Membrane.execute(.{
+        .policy = unsupervised_pending_cap_policy,
+        .intent = intent,
+        .envelope = envelope,
+        .descriptor = descriptor,
+        .actuator = .{ .pending = .{ .frame_response_fingerprint = 0x6203 } },
+        .target_ref_fingerprint = 0x6102,
+        .world_surface_fingerprint = 0x6101,
+    }));
     var stale_policy = policy;
     stale_policy.allow_deterministic_fixture = false;
     try std.testing.expectError(error.InvalidFrameEncoding, world.Actuation.Membrane.execute(.{

@@ -11884,7 +11884,7 @@ pub const Runspace = struct {
             };
             return;
         }
-        if (self.config.require_supervision) return error.SupervisionDenied;
+        return error.SupervisionDenied;
     }
 
     fn superviseFreshActuationResolution(self: *@This(), slot_index: usize, execution: Actuation.Membrane.Execution, accounting: ResponseFrameAccounting) !void {
@@ -11914,7 +11914,7 @@ pub const Runspace = struct {
             };
             return;
         }
-        if (self.config.require_supervision) return error.SupervisionDenied;
+        return error.SupervisionDenied;
     }
 
     fn executionMatchesPendingActuation(pending: Runspace.PendingPort, execution: Actuation.Membrane.Execution) !bool {
@@ -20218,6 +20218,9 @@ pub const Actuation = struct {
             if (args.run_permit != null or args.precommit_ledger != null or args.intent.run_permit_fingerprint != null) return;
             if (args.policy.max_actuation_calls) |max_calls| {
                 if (max_calls > 0) return error.SupervisionDenied;
+            }
+            if (args.policy.max_pending_actuations) |max_pending| {
+                if (max_pending > 0 and actuatorCreatesPendingActuation(args.actuator)) return error.SupervisionDenied;
             }
         }
 
