@@ -493,6 +493,29 @@ test "actuation namespace exposes v1 core model and stable descriptor fingerprin
         .label = "approval",
     });
     try descriptor.validate();
+    const zero_target_ref_descriptor = world.Actuation.Descriptor.init(.{
+        .actuator_ref = ref,
+        .world_surface_fingerprint = 0x1002,
+        .target_ref_fingerprint = 0,
+        .world_port_id = 3,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, zero_target_ref_descriptor.validate());
+    const zero_port_ref_descriptor = world.Actuation.Descriptor.init(.{
+        .actuator_ref = ref,
+        .world_surface_fingerprint = 0x1002,
+        .target_ref_fingerprint = 0x1001,
+        .world_port_id = 3,
+        .world_port_ref_fingerprint = 0,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, zero_port_ref_descriptor.validate());
+    const zero_source_ref_descriptor = world.Actuation.Descriptor.init(.{
+        .actuator_ref = ref,
+        .world_surface_fingerprint = 0x1002,
+        .target_ref_fingerprint = 0x1001,
+        .world_port_id = 3,
+        .source_effect_shape_ref_fingerprint = 0,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, zero_source_ref_descriptor.validate());
     try descriptor.validatePayloadResponseRefs(0, 1);
     try std.testing.expectError(error.PayloadRefMismatch, descriptor.validatePayloadResponseRefs(9, 1));
     try std.testing.expectEqual(descriptor.descriptor_fingerprint, again.descriptor_fingerprint);
