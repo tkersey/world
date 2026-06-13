@@ -4317,6 +4317,7 @@ test "actuation environment preflight and supervision ledger account host effect
     try std.testing.expect(permitted_replay_execution.receipt.replayed);
     try std.testing.expect(!permitted_replay_execution.fresh_called);
     try std.testing.expectEqual(world.PortAuthority.Kind.replay_source, permitted_replay_execution.authority_kind.?);
+    try std.testing.expectError(error.ReplayCallDenied, replay_actuation_supervisor.afterActuationReceipt(bindReceiptToPermit(permitted_replay_execution.receipt, replay_actuation_permit), 16));
     try std.testing.expectError(error.ReplayCallDenied, replay_calls_only_supervisor.afterActuationReceipt(bindReceiptToPermit(permitted_replay_execution.receipt, replay_calls_only_permit), 16));
     const exhausted_replay_permit = world.RunPermit.init(.{
         .target_ref_fingerprint = target_ref.target_ref_fingerprint,

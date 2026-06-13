@@ -5098,6 +5098,9 @@ pub const Supervision = struct {
         fn validateActuationReceiptPolicy(self: *@This(), receipt_value: Actuation.Receipt, rule: ?Supervision.PortRule, summary: []const u8) !void {
             const policy = self.permit.policy;
             if (!policy.allow_actuation) return self.deny(.after_actuation_response, receipt_value.world_port_id, .fresh_call_denied, null, summary);
+            if (!permitModeAllowsActuationIntent(self.permit.mode, receipt_value.mode, receipt_value.pending_actuation_receipt_fingerprint)) {
+                return self.deny(.after_actuation_response, receipt_value.world_port_id, actuationModeBlocker(receipt_value.mode), null, summary);
+            }
             switch (receipt_value.mode) {
                 .fresh => if (!policy.allow_fresh_actuation) return self.deny(.after_actuation_response, receipt_value.world_port_id, .fresh_call_denied, null, summary),
                 .audit => if (!policy.allow_audit_only) return self.deny(.after_actuation_response, receipt_value.world_port_id, .fresh_call_denied, null, summary),
