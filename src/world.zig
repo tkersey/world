@@ -911,9 +911,9 @@ pub fn bindActuator(comptime Decl: type, comptime ActuatorDecl: type) type {
                 .world_port_id = world_port_id,
                 .world_port_ref_fingerprint = requirement.world_port_ref_fingerprint,
                 .source_effect_shape_ref_fingerprint = requirement.source_effect_shape_ref_fingerprint,
-                .payload_value_ref = requirement.payload_value_table_id,
+                .payload_value_ref = if (BasePortDecl.payload_ref.schema_index) |index| @as(u32, @intCast(index)) else null,
                 .payload_value_table_id = requirement.payload_value_table_id,
-                .response_value_ref = requirement.response_value_table_id,
+                .response_value_ref = if (BasePortDecl.response_ref.schema_index) |index| @as(u32, @intCast(index)) else null,
                 .response_value_table_id = requirement.response_value_table_id,
                 .supported_modes = binding_mode_policy,
                 .allowed_response_kinds = actuator_ref.supported_response_statuses,
@@ -5000,9 +5000,7 @@ pub const Supervision = struct {
             }
             var next = try self.ledger.clone(self.allocator);
             defer next.deinit(self.allocator);
-            if (!next.hasPendingActuationForIntent(intent)) {
-                next.total_actuation_intents = addSatUsize(next.total_actuation_intents, 1);
-            }
+            next.total_actuation_intents = addSatUsize(next.total_actuation_intents, 1);
             try self.commitCheck(.before_actuation_commit, intent.world_port_id, &next, null, rule, "actuation intent");
         }
 
@@ -11700,6 +11698,7 @@ pub const Runspace = struct {
 
     pub fn dispatchActuation(self: *@This(), mailbox_id: u64, execution: Actuation.Membrane.Execution) !Actuation.Receipt {
         try execution.validate();
+        if (execution.intent.requested_mode == .audit) return error.InvalidMode;
         const pending = try self.mailbox.get(mailbox_id);
         try validateActuationDispatchForPending(pending, execution);
         const index = try self.slotIndex(pending.handle);
@@ -11923,6 +11922,7 @@ pub const Runspace = struct {
                 return error.InvalidPendingPortTransition;
             }
             if (execution.receipt.intent_fingerprint != execution.intent.intent_fingerprint) return error.InvalidPendingPortTransition;
+            if (pending.actuation_binding_fingerprint == null) return error.InvalidPendingPortTransition;
             return true;
         }
         if (execution.intent.intent_fingerprint != pending_intent_fingerprint) return error.InvalidPendingPortTransition;
@@ -20199,11 +20199,10 @@ pub const Actuation = struct {
             const ledger = (ledger_ptr orelse return error.SupervisionDenied).*;
             try validatePrecommitUsageLedgerBinding(permit, ledger);
             const mode_can_resolve_pending_receipt = intent.requested_mode == .replay or intent.requested_mode == .verify;
-            const resolves_pending = ledger.hasPendingActuationForIntent(intent) or
-                if (mode_can_resolve_pending_receipt and pending_actuation_receipt_fingerprint != null)
-                    ledger.hasPendingActuationReceipt(pending_actuation_receipt_fingerprint.?, intent.world_port_id)
-                else
-                    false;
+            const resolves_pending = if (mode_can_resolve_pending_receipt and pending_actuation_receipt_fingerprint != null)
+                ledger.hasPendingActuationReceipt(pending_actuation_receipt_fingerprint.?, intent.world_port_id)
+            else
+                false;
             if (cross_mode_pending_resolution and !resolves_pending) return error.SupervisionDenied;
             if (budget_call_max) |max| {
                 if (precommitActuationCallLimitExceeded(max, ledger, resolves_pending)) return error.BudgetExceeded;

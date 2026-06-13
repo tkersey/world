@@ -360,7 +360,7 @@ pub fn Linker(comptime W: type) type {
 
                 pub fn actuationAdapter(args: struct {
                     actuator_ref_fingerprint: u64,
-                    actuation_descriptor_fingerprint: ?u64 = null,
+                    actuation_descriptor_fingerprint: u64,
                     actuation_binding_fingerprint: u64,
                     actuation_import_requirement_fingerprint: u64,
                     actuation_world_port_id: u32,
