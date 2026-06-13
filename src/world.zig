@@ -256,7 +256,7 @@ pub const world_admission_request_fingerprint_version: u32 = 2;
 pub const world_admission_report_fingerprint_version: u32 = 1;
 pub const world_admission_receipt_format_version: u32 = 1;
 pub const world_admission_receipt_fingerprint_version: u32 = 3;
-pub const world_admitted_run_fingerprint_version: u32 = 6;
+pub const world_admitted_run_fingerprint_version: u32 = 7;
 pub const world_run_handle_format_version: u32 = 1;
 pub const world_run_handle_fingerprint_version: u32 = 1;
 pub const world_pending_port_format_version: u32 = 1;
@@ -2832,6 +2832,9 @@ pub const Admission = struct {
         linker_certificate_fingerprint: ?u64 = null,
         assembly_fingerprint: ?u64 = null,
         fabric_plan: ?Fabric.Plan = null,
+        direct_actuation_binding_fingerprint: ?u64 = null,
+        direct_actuation_descriptor_fingerprint: ?u64 = null,
+        direct_actuator_ref_fingerprint: ?u64 = null,
         run_image: ?RunImage = null,
         owns_run_image: bool = false,
         transcript_image: ?TranscriptImage = null,
@@ -2853,6 +2856,9 @@ pub const Admission = struct {
             linker_certificate_fingerprint: ?u64 = null,
             assembly_fingerprint: ?u64 = null,
             fabric_plan: ?Fabric.Plan = null,
+            direct_actuation_binding_fingerprint: ?u64 = null,
+            direct_actuation_descriptor_fingerprint: ?u64 = null,
+            direct_actuator_ref_fingerprint: ?u64 = null,
             run_image: ?RunImage = null,
             owns_run_image: bool = false,
             transcript_image: ?TranscriptImage = null,
@@ -2875,6 +2881,9 @@ pub const Admission = struct {
                 .linker_certificate_fingerprint = args.linker_certificate_fingerprint,
                 .assembly_fingerprint = args.assembly_fingerprint,
                 .fabric_plan = args.fabric_plan,
+                .direct_actuation_binding_fingerprint = args.direct_actuation_binding_fingerprint,
+                .direct_actuation_descriptor_fingerprint = args.direct_actuation_descriptor_fingerprint,
+                .direct_actuator_ref_fingerprint = args.direct_actuator_ref_fingerprint,
                 .run_image = args.run_image,
                 .owns_run_image = args.owns_run_image,
                 .transcript_image = args.transcript_image,
@@ -3335,6 +3344,19 @@ pub const Admission = struct {
                     return rejectedResult(request, package, target_ref, module_ref, match, &.{.RunImageInvalid}, "run image is required for handoff admission");
                 }
             }
+            const direct_actuation_view = if (args.fabric_plan == null)
+                if (package.run_image) |run_image|
+                    if (run_image.current_state.status == .parked_on_port)
+                        if (run_image.pending_request_frame) |pending_frame|
+                            directActuationPolicyViewForEnvironmentPort(Env, pending_frame.world_port_id, admissionModeToRunMode(mode))
+                        else
+                            null
+                    else
+                        null
+                else
+                    null
+            else
+                null;
             const report = Admission.AdmissionReport.accept(.{
                 .request = request,
                 .package_fingerprint = package.package_fingerprint,
@@ -3407,6 +3429,9 @@ pub const Admission = struct {
                 .linker_certificate_fingerprint = args.linker_certificate_fingerprint,
                 .assembly_fingerprint = args.assembly_fingerprint,
                 .fabric_plan = args.fabric_plan,
+                .direct_actuation_binding_fingerprint = if (direct_actuation_view) |view| view.binding_fingerprint else null,
+                .direct_actuation_descriptor_fingerprint = if (direct_actuation_view) |view| view.descriptor_fingerprint else null,
+                .direct_actuator_ref_fingerprint = if (direct_actuation_view) |view| view.actuator_ref_fingerprint else null,
                 .run_image = admitted_run_image,
                 .owns_run_image = admitted_owns_run_image,
                 .transcript_image = admitted_transcript_image,
@@ -11053,6 +11078,11 @@ pub const Runspace = struct {
         if (admitted_run.admitted_run_fingerprint != fingerprintAdmittedRun(admitted_run)) return error.InvalidFrameEncoding;
         if (self.config.require_admission and admitted_run.admission_receipt == null) return error.InvalidFrameEncoding;
         try validateAdmittedRunReceipt(admitted_run);
+        try validatePendingActuationBindingMarker(
+            admitted_run.direct_actuation_binding_fingerprint,
+            admitted_run.direct_actuation_descriptor_fingerprint,
+            admitted_run.direct_actuator_ref_fingerprint,
+        );
         if (self.config.require_supervision and admitted_run.run_permit == null) return error.SupervisionDenied;
         const target_ref = admitted_run.target_ref;
         try validateTargetRef(target_ref);
@@ -11250,7 +11280,7 @@ pub const Runspace = struct {
         supervisor_owned = false;
         try self.installPreparedSlot(slot, .run_admitted, "admitted run installed");
         if (pending_frame) |frame| {
-            try self.enqueueInstalledPending(self.slots.items.len - 1, frame);
+            try self.enqueueInstalledPending(self.slots.items.len - 1, frame, directActuationBindingForAdmittedRun(admitted_run));
         }
         installed = true;
         return handle;
@@ -11313,7 +11343,7 @@ pub const Runspace = struct {
         installed_image_owned = false;
         try self.installPreparedSlot(slot, .run_installed, "run image installed");
         if (pending_frame) |frame| {
-            try self.enqueueInstalledPending(self.slots.items.len - 1, frame);
+            try self.enqueueInstalledPending(self.slots.items.len - 1, frame, null);
         }
         installed = true;
         return handle;
@@ -14923,9 +14953,10 @@ pub const Runspace = struct {
         };
     }
 
-    fn enqueueInstalledPending(self: *@This(), index: usize, request: Frame.Request) !void {
+    fn enqueueInstalledPending(self: *@This(), index: usize, request: Frame.Request, direct_actuation_binding: ?FabricActuationBinding) !void {
         var slot = &self.slots.items[index];
         const fabric_actuation_binding = self.installedFabricActuationBindingForSlotRequest(slot.*, request);
+        const actuation_binding = fabric_actuation_binding orelse direct_actuation_binding;
         var event_pair = try self.prepareEventPair(
             2,
             "installed port enqueued",
@@ -14940,9 +14971,9 @@ pub const Runspace = struct {
             .target_ref_fingerprint = slot.target_ref.target_ref_fingerprint,
             .environment_certificate_fingerprint = slot.environment_certificate_fingerprint,
             .run_permit_fingerprint = slot.run_permit_fingerprint,
-            .actuation_binding_fingerprint = if (fabric_actuation_binding) |binding| binding.binding_fingerprint else null,
-            .actuation_descriptor_fingerprint = if (fabric_actuation_binding) |binding| binding.descriptor_fingerprint else null,
-            .actuator_ref_fingerprint = if (fabric_actuation_binding) |binding| binding.actuator_ref_fingerprint else null,
+            .actuation_binding_fingerprint = if (actuation_binding) |binding| binding.binding_fingerprint else null,
+            .actuation_descriptor_fingerprint = if (actuation_binding) |binding| binding.descriptor_fingerprint else null,
+            .actuator_ref_fingerprint = if (actuation_binding) |binding| binding.actuator_ref_fingerprint else null,
             .inserted_event_index = self.next_event_index,
         });
         self.next_mailbox_id += 1;
@@ -15149,6 +15180,15 @@ pub const Runspace = struct {
         descriptor_fingerprint: u64,
         actuator_ref_fingerprint: u64,
     };
+
+    fn directActuationBindingForAdmittedRun(admitted_run: Admission.AdmittedRun) ?FabricActuationBinding {
+        const binding_fingerprint = admitted_run.direct_actuation_binding_fingerprint orelse return null;
+        return .{
+            .binding_fingerprint = binding_fingerprint,
+            .descriptor_fingerprint = admitted_run.direct_actuation_descriptor_fingerprint.?,
+            .actuator_ref_fingerprint = admitted_run.direct_actuator_ref_fingerprint.?,
+        };
+    }
 
     fn fabricActuationBindingForSlotPort(self: *const @This(), slot: Runspace.RunSlot, world_port_id: u32, environment_actuation_binding: ?Actuation.Binding) ?FabricActuationBinding {
         const binding = environment_actuation_binding orelse return null;
@@ -33052,6 +33092,7 @@ fn actuationRoutePolicyViewForEnvironment(comptime Env: type, route: Fabric.Rout
 
 fn directActuationPolicyViewForEnvironmentPort(comptime Env: type, world_port_id: u32, requested_mode: Mode) ?ActuationRoutePolicyView {
     if (world_port_id >= Env.TargetType.WorldPortTable.entries.len) return null;
+    if (environmentHasBindingForPort(Env, world_port_id)) return null;
     inline for (Env.actuation_bindings_decl) |BindingDecl| {
         if (comptime BindingDecl.TargetType == Env.TargetType) {
             if (BindingDecl.world_port_id == world_port_id and BindingDecl.binding_mode_policy.allows(requested_mode)) {
@@ -34989,6 +35030,9 @@ fn fingerprintAdmittedRun(run: Admission.AdmittedRun) u64 {
     hashOptionalU64(&hasher, if (run.run_permit) |permit| permit.permit_fingerprint else null);
     hashLinkerMetadataIfPresent(&hasher, run.link_plan_fingerprint, run.linker_certificate_fingerprint, run.assembly_fingerprint);
     hashOptionalU64(&hasher, if (run.fabric_plan) |plan| plan.plan_fingerprint else null);
+    hashOptionalU64(&hasher, run.direct_actuation_binding_fingerprint);
+    hashOptionalU64(&hasher, run.direct_actuation_descriptor_fingerprint);
+    hashOptionalU64(&hasher, run.direct_actuator_ref_fingerprint);
     hashOptionalU64(&hasher, if (run.run_image) |image| image.run_image_fingerprint else null);
     hashOptionalU64(&hasher, if (run.transcript_image) |image| image.transcript_image_fingerprint else null);
     hashOptionalU64(&hasher, run.selected_branch_id);

@@ -41058,6 +41058,56 @@ test "fabric-covered replay admission requires transcript evidence" {
     var direct_actuation_install = world.Runspace.init(std.testing.allocator, .{ .require_supervision = true });
     defer direct_actuation_install.deinit();
     _ = try direct_actuation_install.installAdmitted(direct_actuation_result.admitted_run.?);
+    const direct_actuation_binding = PortsActuationOnlyBinding.actuationBindingRecord();
+    const direct_pending = try direct_actuation_install.mailbox.get(0);
+    try std.testing.expectEqual(@as(?u64, direct_actuation_binding.binding_fingerprint), direct_pending.actuation_binding_fingerprint);
+    try std.testing.expectEqual(@as(?u64, direct_actuation_binding.descriptor_fingerprint), direct_pending.actuation_descriptor_fingerprint);
+    try std.testing.expectEqual(@as(?u64, direct_actuation_binding.actuator_ref_fingerprint), direct_pending.actuator_ref_fingerprint);
+    try std.testing.expectError(error.InvalidPendingPortTransition, direct_actuation_install.reject(0, "admitted direct reject bypass"));
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try direct_actuation_install.mailbox.get(0)).status);
+    try std.testing.expectError(error.InvalidPendingPortTransition, direct_actuation_install.fail(0, "admitted direct fail bypass"));
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try direct_actuation_install.mailbox.get(0)).status);
+
+    const native_actuation_image = world.RunImage.init(.{
+        .kind = .parked_run,
+        .target_ref = parent_ref,
+        .import_set_fingerprint = PortsNativeAndActuationEnv.import_set.import_set_fingerprint,
+        .current_state = direct_actuation_state,
+        .pending_request_frame = direct_actuation_request,
+        .environment_certificate_fingerprint = PortsNativeAndActuationEnv.certificate(.fresh, false).certificate_fingerprint,
+        .acceptance_report_fingerprint = PortsNativeAndActuationEnv.acceptanceReport(.fresh, false).report_fingerprint,
+    });
+    const native_actuation_package = world.Admission.TransferPackage.init(.{
+        .kind = .parked_run,
+        .target_ref = parent_ref,
+        .run_image = native_actuation_image,
+        .requested_mode = .resume_parked,
+    });
+    const native_actuation_permit = world.Supervision.issue(fixtures.Ports.Target, PortsNativeAndActuationEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_native_adapters = true,
+            .allow_handoff_accept = true,
+            .allow_actuation = true,
+            .allow_fresh_actuation = true,
+        }),
+    });
+    var native_actuation_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, PortsNativeAndActuationEnv, native_actuation_package, .{
+        .permit = native_actuation_permit,
+    });
+    defer native_actuation_result.deinit(std.testing.allocator);
+    try std.testing.expect(native_actuation_result.report.accepted);
+    var native_actuation_install = world.Runspace.init(std.testing.allocator, .{ .require_supervision = true });
+    defer native_actuation_install.deinit();
+    _ = try native_actuation_install.installAdmitted(native_actuation_result.admitted_run.?);
+    const native_pending = try native_actuation_install.mailbox.get(0);
+    try std.testing.expectEqual(@as(?u64, null), native_pending.actuation_binding_fingerprint);
+    try std.testing.expectEqual(@as(?u64, null), native_pending.actuation_descriptor_fingerprint);
+    try std.testing.expectEqual(@as(?u64, null), native_pending.actuator_ref_fingerprint);
 
     const admitted_adapter_binding = PortsActuationOnlyBinding.actuationBindingRecord();
     const admitted_adapter_route = world.Fabric.Route.init(.{
