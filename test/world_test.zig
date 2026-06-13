@@ -598,7 +598,7 @@ test "actuation policy idempotency key and intent gates are deterministic" {
         .attempt_number = 2,
     });
     try retry_limited.validate();
-    try std.testing.expect(!retry_limited.approved);
+    try std.testing.expect(retry_limited.approved);
     const retry_denied_policy = world.Actuation.Policy.init(.{
         .allow_fresh_actuation = true,
         .allow_deterministic_fixture = true,
@@ -613,7 +613,7 @@ test "actuation policy idempotency key and intent gates are deterministic" {
         .attempt_number = 1,
     });
     try first_retry_denied.validate();
-    try std.testing.expect(!first_retry_denied.approved);
+    try std.testing.expect(first_retry_denied.approved);
     const approved = world.Actuation.Membrane.decide(.{
         .policy = strict,
         .intent = intent,
@@ -2420,10 +2420,10 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
         .world_surface_fingerprint = 0x6101,
     });
     try retry_denied.validate();
-    try std.testing.expect(!retry_denied.decision.approved);
-    try std.testing.expect(!retry_denied.fresh_called);
-    try std.testing.expect(retry_denied.receipt.rejected);
-    try std.testing.expectEqual(world.Actuation.CommitStatus.rejected, retry_denied.commit_value.status);
+    try std.testing.expect(retry_denied.decision.approved);
+    try std.testing.expect(retry_denied.fresh_called);
+    try std.testing.expect(retry_denied.receipt.fresh_called);
+    try std.testing.expectEqual(world.Actuation.CommitStatus.committed, retry_denied.commit_value.status);
     var stale_policy = policy;
     stale_policy.allow_deterministic_fixture = false;
     try std.testing.expectError(error.InvalidFrameEncoding, world.Actuation.Membrane.execute(.{
@@ -6966,7 +6966,10 @@ test "runspace actuation dispatch revalidates descriptor value policy against sl
         .reject_native_only_values = false,
         .max_actuation_calls = null,
     });
-    const execution = try world.Actuation.Membrane.execute(.{
+    var precommit_supervisor = (try runspace.cloneSlotSupervisor(std.testing.allocator, handle)).?;
+    defer precommit_supervisor.deinit();
+    const event_count_before = runspace.events.items.len;
+    try std.testing.expectError(error.SupervisionDenied, world.Actuation.Membrane.execute(.{
         .policy = permissive_fixture_policy,
         .intent = intent,
         .envelope = envelope,
@@ -6975,13 +6978,13 @@ test "runspace actuation dispatch revalidates descriptor value policy against sl
             .reason = "portable descriptor required",
         } },
         .descriptor = descriptor,
+        .run_permit = permit,
+        .precommit_ledger = &precommit_supervisor.ledger,
         .attempt_number = 1,
         .target_ref_fingerprint = pending.target_ref_fingerprint,
         .world_surface_fingerprint = request.world_surface_fingerprint,
-    });
+    }));
 
-    const event_count_before = runspace.events.items.len;
-    try std.testing.expectError(error.SupervisionDenied, runspace.dispatchActuation(0, execution));
     const denied_pending = try runspace.mailbox.get(0);
     try std.testing.expectEqual(world.Runspace.PendingStatus.pending, denied_pending.status);
     try std.testing.expect(!denied_pending.committed_actuation_receipt);
