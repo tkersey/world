@@ -5677,6 +5677,21 @@ test "runspace actuation dispatch preserves pending mailbox state" {
     try std.testing.expectEqual(@as(?u64, receipt.receipt_fingerprint), marked_pending.pending_actuation_receipt_fingerprint);
     try std.testing.expect(marked_pending.committed_actuation_receipt);
     try std.testing.expectError(error.PendingPortConsumed, runspace.dispatchActuation(0, execution));
+    const direct_response = world.Frame.Response.init(.{
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .target_certificate_fingerprint = request.target_certificate_fingerprint,
+        .world_port_id = request.world_port_id,
+        .request_fingerprint = request.request_fingerprint,
+        .response_kind = .@"resume",
+        .response_value_table_id = request.expected_response_value_table_id,
+        .response_fingerprint = 0x5150_aaae,
+        .replay_key = request.replay_key_seed.withResponse(0x5150_aaae).fingerprint(),
+        .status = .responded,
+    });
+    try std.testing.expectError(error.InvalidPendingPortTransition, runspace.respond(0, direct_response));
+    try std.testing.expectError(error.InvalidPendingPortTransition, runspace.reject(0, "direct reject after pending actuation"));
+    try std.testing.expectError(error.InvalidPendingPortTransition, runspace.fail(0, "direct fail after pending actuation"));
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
     try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try runspace.getSlotSummary(handle)).status);
 
     var image = try world.Capsule.freezeRunspace(&runspace, .{});

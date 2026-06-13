@@ -13980,6 +13980,7 @@ pub const Runspace = struct {
     fn pendingRequiresActuationDispatch(self: *@This(), slot: Runspace.RunSlot, pending: Runspace.PendingPort) bool {
         _ = self;
         if (pending.actuation_binding_fingerprint != null) return true;
+        if (pending.pending_actuation_intent_fingerprint != null or pending.pending_actuation_receipt_fingerprint != null) return true;
         if (slot.driver) |driver| return driver.actuationBindingCoversHandlerlessWorldPort(pending.world_port_id);
         return false;
     }
