@@ -11815,6 +11815,16 @@ pub const Runspace = struct {
         if (policy.require_idempotency_keys and execution.intent.requested_mode == .fresh and execution.intent.class.isMutation() and !execution.key_present) return error.SupervisionDenied;
         if (execution.intent.class == .irreversible_mutation and !policy.allow_irreversible_actuation) return error.SupervisionDenied;
         if (!Actuation.Membrane.permitAllowsDescriptorValuePolicy(permit, execution.intent.world_port_id, execution.descriptor)) return error.SupervisionDenied;
+        if (permit.ruleFor(execution.intent.world_port_id)) |rule| {
+            if (rule.rule_fingerprint != fingerprintPortRule(rule)) return error.SupervisionDenied;
+            if (rule.world_surface_fingerprint != execution.intent.world_surface_fingerprint) return error.SupervisionDenied;
+            if (!rule.permitsMode(execution.intent.requested_mode)) return error.SupervisionDenied;
+            if (execution.authority_kind) |kind| {
+                if (!rule.allowed_authority_kinds.allows(kind)) return error.AuthorityDenied;
+            } else if (!std.meta.eql(rule.allowed_authority_kinds, Supervision.AllowedAuthorityKinds.all)) {
+                return error.AuthorityDenied;
+            }
+        }
     }
 
     pub fn dispatchPendingWithActuator(self: *@This(), mailbox_id: u64, execution: Actuation.Membrane.Execution) !Actuation.Receipt {
@@ -15030,8 +15040,11 @@ pub const Runspace = struct {
             .port_request => |request| {
                 var owned_request = request;
                 defer owned_request.deinit(self.allocator);
+                const environment_actuation_binding = driver.actuationBindingForWorldPort(owned_request.world_port_id);
+                const fabric_actuation_binding = self.fabricActuationBindingForSlotPort(slot.*, owned_request.world_port_id, environment_actuation_binding);
                 const fabric_suppresses_auto_dispatch = driver.fabricPlanCoversWorldPort(owned_request.world_port_id);
-                const actuation_suppresses_auto_dispatch = !fabric_suppresses_auto_dispatch and driver.actuationBindingCoversHandlerlessWorldPort(owned_request.world_port_id);
+                const actuation_suppresses_auto_dispatch = fabric_actuation_binding != null or
+                    (!fabric_suppresses_auto_dispatch and driver.actuationBindingCoversHandlerlessWorldPort(owned_request.world_port_id));
                 const suppress_auto_dispatch = self.config.auto_dispatch and (fabric_suppresses_auto_dispatch or actuation_suppresses_auto_dispatch);
                 var event_pair = self.prepareEventPair(
                     2,
@@ -15052,8 +15065,8 @@ pub const Runspace = struct {
                     return self.failSteppedRunBeforePort(slot, err);
                 };
                 const mailbox_id = self.next_mailbox_id;
-                const actuation_binding = if (actuation_suppresses_auto_dispatch)
-                    driver.actuationBindingForWorldPort(owned_request.world_port_id)
+                const actuation_binding = if (actuation_suppresses_auto_dispatch and fabric_actuation_binding == null)
+                    environment_actuation_binding
                 else
                     null;
                 const pending = self.mailbox.push(.{
@@ -15064,6 +15077,9 @@ pub const Runspace = struct {
                     .environment_certificate_fingerprint = slot.environment_certificate_fingerprint,
                     .run_permit_fingerprint = slot.run_permit_fingerprint,
                     .actuation_binding = actuation_binding,
+                    .actuation_binding_fingerprint = if (fabric_actuation_binding) |binding| binding.binding_fingerprint else null,
+                    .actuation_descriptor_fingerprint = if (fabric_actuation_binding) |binding| binding.descriptor_fingerprint else null,
+                    .actuator_ref_fingerprint = if (fabric_actuation_binding) |binding| binding.actuator_ref_fingerprint else null,
                     .inserted_event_index = self.next_event_index,
                 }) catch |err| {
                     return self.failSteppedRunBeforePort(slot, err);
@@ -15094,6 +15110,35 @@ pub const Runspace = struct {
                 return parked_event;
             },
         }
+    }
+
+    const FabricActuationBinding = struct {
+        binding_fingerprint: u64,
+        descriptor_fingerprint: u64,
+        actuator_ref_fingerprint: u64,
+    };
+
+    fn fabricActuationBindingForSlotPort(self: *const @This(), slot: Runspace.RunSlot, world_port_id: u32, environment_actuation_binding: ?Actuation.Binding) ?FabricActuationBinding {
+        const binding = environment_actuation_binding orelse return null;
+        const plan_fingerprint = fabricPlanFingerprintForSlot(slot) orelse return null;
+        for (self.fabric_routes.items, self.fabric_route_plan_fingerprints.items) |route, route_plan_fingerprint| {
+            if (route_plan_fingerprint != plan_fingerprint) continue;
+            if (route.kind != .adapter) continue;
+            if (route.parent_world_port_id != world_port_id and route.world_port_id != world_port_id) continue;
+            if (!route.hasActuationRouteBinding()) continue;
+            if (binding.binding_fingerprint != route.actuation_binding_fingerprint.? or
+                binding.descriptor_fingerprint != route.actuation_descriptor_fingerprint.? or
+                binding.actuator_ref_fingerprint != route.actuator_ref_fingerprint.?)
+            {
+                continue;
+            }
+            return .{
+                .binding_fingerprint = binding.binding_fingerprint,
+                .descriptor_fingerprint = binding.descriptor_fingerprint,
+                .actuator_ref_fingerprint = binding.actuator_ref_fingerprint,
+            };
+        }
+        return null;
     }
 
     fn failSteppedRunBeforePort(self: *@This(), slot: *Runspace.RunSlot, err: anyerror) !Runspace.RunspaceEvent {
@@ -19930,6 +19975,8 @@ pub const Actuation = struct {
                 if (self.receipt.actuator_ref_fingerprint != self.intent.actuator_ref_fingerprint) return error.InvalidFrameEncoding;
                 if (self.receipt.actuator_ref_fingerprint != self.response.actuator_ref_fingerprint) return error.InvalidFrameEncoding;
                 if (self.receipt.idempotency_key_fingerprint != self.intent.idempotency_key_fingerprint) return error.InvalidFrameEncoding;
+                if (self.receipt.request_fingerprint == null or self.receipt.request_fingerprint.? != self.envelope.idempotency_key.request_fingerprint) return error.InvalidFrameEncoding;
+                if (self.receipt.replay_key_fingerprint != self.envelope.idempotency_key.replay_key_fingerprint) return error.InvalidFrameEncoding;
                 if (self.receipt.target_ref_fingerprint != self.intent.target_ref_fingerprint) return error.InvalidFrameEncoding;
                 if (self.receipt.world_surface_fingerprint != self.intent.world_surface_fingerprint) return error.InvalidFrameEncoding;
                 if (self.receipt.world_port_id != self.intent.world_port_id) return error.InvalidFrameEncoding;
@@ -20060,6 +20107,39 @@ pub const Actuation = struct {
             };
         }
 
+        fn ruleAllowsSelectedActuatorStatus(rule: Supervision.PortRule, selected_actuator: Interface) bool {
+            return portRuleAllowsSelectedActuatorStatus(rule, selectedActuatorResponseStatus(selected_actuator));
+        }
+
+        fn selectedActuatorResponseStatus(selected_actuator: Interface) Actuation.ResponseStatus {
+            return switch (selected_actuator) {
+                .replay => |replay| replay.expected_status,
+                .verify => |verify| verify.response_template.status,
+                .fixture,
+                .native_function,
+                .byte_protocol,
+                .guest_bridge,
+                .model_like,
+                .tool_like,
+                .file_like,
+                .human_like,
+                .custom,
+                => |template| template.status,
+                .reject => .rejected,
+                .pending => .pending,
+                .deferred => .deferred,
+            };
+        }
+
+        fn portRuleAllowsSelectedActuatorStatus(rule: Supervision.PortRule, status: Actuation.ResponseStatus) bool {
+            return switch (status) {
+                .responded => true,
+                .pending, .deferred => rule.allow_pending,
+                .rejected, .cancelled => rule.allow_reject,
+                .failed => rule.allow_fail,
+            };
+        }
+
         fn responseStatusCreatesPendingActuation(status: Actuation.ResponseStatus) bool {
             return status == .pending or status == .deferred;
         }
@@ -20090,6 +20170,7 @@ pub const Actuation = struct {
                 if (rule.rule_fingerprint != fingerprintPortRule(rule)) return error.SupervisionDenied;
                 if (rule.world_surface_fingerprint != args.intent.world_surface_fingerprint) return error.SupervisionDenied;
                 if (!rule.permitsMode(args.intent.requested_mode)) return error.SupervisionDenied;
+                if (!ruleAllowsSelectedActuatorStatus(rule, args.actuator)) return error.PortRuleDenied;
                 try validateSelectedActuatorAuthority(args, rule);
                 if (authorityKindForExecuteArgs(args)) |kind| {
                     if (!rule.allowed_authority_kinds.allows(kind)) return error.AuthorityDenied;
@@ -30862,6 +30943,7 @@ fn populateActuationBlockerCounters(report: *AcceptanceReport, blockers: []const
     report.actuation_receipt_required_count = 0;
     for (blockers) |blocker| {
         switch (blocker) {
+            .MissingActuator => report.missing_actuator_count += 1,
             .ActuationPolicyMismatch => report.actuation_policy_blocker_count += 1,
             .ActuationValuePolicyMismatch => report.actuation_value_policy_blocker_count += 1,
             .ActuationReceiptRequired => report.actuation_receipt_required_count += 1,
