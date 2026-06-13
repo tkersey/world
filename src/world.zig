@@ -19804,8 +19804,9 @@ pub const Actuation = struct {
             if (!input.policy.allowsMode(input.intent.requested_mode)) return Decision.denied(input.intent, input.policy, "mode denied");
             if (!input.policy.allowsClass(input.intent.class)) return Decision.denied(input.intent, input.policy, "class denied");
             if (input.policy.max_actuation_calls) |max_calls| {
-                if (max_calls == 0) return Decision.denied(input.intent, input.policy, "actuation call limit reached");
+                if (input.attempt_number >= max_calls) return Decision.denied(input.intent, input.policy, "actuation call limit reached");
             }
+            if (input.attempt_number > 0 and !input.policy.allow_retry) return Decision.denied(input.intent, input.policy, "retry denied");
             if (input.policy.requiresKeyForClass(input.intent.class, input.intent.requested_mode) and !input.key_present) return Decision.denied(input.intent, input.policy, "idempotency key required");
             if (input.intent.class.isMutation() and input.policy.require_approval_for_mutation and !input.explicit_mutation_approval) return Decision.denied(input.intent, input.policy, "mutation approval required");
             if (input.intent.class == .irreversible_mutation and input.policy.require_approval_for_irreversible and !input.explicit_irreversible_approval) return Decision.denied(input.intent, input.policy, "irreversible approval required");
@@ -20028,6 +20029,7 @@ pub const Actuation = struct {
             try args.envelope.validate(args.policy);
             try validateExecutionBindings(args);
             try validatePendingActuationReceiptLink(args.intent.requested_mode, args.pending_actuation_receipt_fingerprint);
+            try validateUnsupervisedStatefulPolicy(args);
             const decision = decide(.{
                 .policy = args.policy,
                 .intent = args.intent,
@@ -20205,6 +20207,13 @@ pub const Actuation = struct {
             switch (requested_mode) {
                 .replay, .verify => {},
                 .fresh, .audit => return error.InvalidFrameEncoding,
+            }
+        }
+
+        fn validateUnsupervisedStatefulPolicy(args: ExecuteArgs) !void {
+            if (args.run_permit != null or args.precommit_ledger != null or args.intent.run_permit_fingerprint != null) return;
+            if (args.policy.max_actuation_calls) |max_calls| {
+                if (max_calls > 0) return error.SupervisionDenied;
             }
         }
 
