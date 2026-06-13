@@ -20416,13 +20416,13 @@ pub const Actuation = struct {
             if (has_cost_limit) {
                 const cost_delta = precommitActuationResponseCostDelta(permit.cost_model, intent.world_port_id, response_status);
                 if (permit.budget.max_total_cost_units) |max| {
-                    if (ledger.total_cost_units >= max or ledger.total_cost_units +| cost_delta > max) return error.BudgetExceeded;
+                    if (ledger.total_cost_units +| cost_delta > max) return error.BudgetExceeded;
                 }
                 if (permit.budget.perPort(intent.world_port_id)) |budget| {
                     if (budget.max_cost_units) |max| {
                         if (intent.world_port_id >= ledger.per_port_usage.len) return error.SupervisionDenied;
                         const usage = ledger.per_port_usage[intent.world_port_id];
-                        if (usage.cost_units >= max or usage.cost_units +| cost_delta > max) return error.BudgetExceeded;
+                        if (usage.cost_units +| cost_delta > max) return error.BudgetExceeded;
                     }
                 }
             }

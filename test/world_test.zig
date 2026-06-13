@@ -5048,6 +5048,53 @@ test "actuation environment preflight and supervision ledger account host effect
         .target_ref_fingerprint = target_ref.target_ref_fingerprint,
         .world_surface_fingerprint = target_ref.world_surface_fingerprint,
     }));
+    const zero_cost_permit = world.RunPermit.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = target_ref.target_certificate_fingerprint,
+        .environment_certificate_fingerprint = cert.certificate_fingerprint,
+        .binding_plan_fingerprint = cert.binding_plan_fingerprint,
+        .mode = .fresh,
+        .policy = cost_exhausted_permit.policy,
+        .budget = cost_exhausted_permit.budget,
+        .cost_model = world.Supervision.CostModel.init(.{
+            .port_response_base_cost = 0,
+            .pending_call_cost = 0,
+            .rejected_call_cost = 0,
+            .failed_call_cost = 0,
+        }),
+    });
+    const zero_cost_intent = bindIntentToPermit(positive_exhausted_intent, zero_cost_permit);
+    const zero_cost_envelope = world.Actuation.Envelope.init(.{
+        .intent_fingerprint = zero_cost_intent.intent_fingerprint,
+        .encoded_frame_request_fingerprint = zero_cost_intent.encoded_frame_request_fingerprint,
+        .idempotency_key = key,
+        .expected_response_value_ref = descriptor.response_value_ref,
+        .expected_response_value_table_id = descriptor.response_value_table_id,
+    });
+    var zero_cost_supervisor = try world.Supervision.Supervisor.init(std.testing.allocator, zero_cost_permit, 1);
+    defer zero_cost_supervisor.deinit();
+    zero_cost_supervisor.ledger.total_cost_units = 1;
+    zero_cost_supervisor.ledger.per_port_usage[0].cost_units = 1;
+    zero_cost_supervisor.ledger.refreshFingerprint();
+    const zero_cost_execution = try world.Actuation.Membrane.execute(.{
+        .policy = world.Actuation.Policy.strict_fresh,
+        .intent = zero_cost_intent,
+        .envelope = zero_cost_envelope,
+        .actuator = .{ .tool_like = .{
+            .frame_response_fingerprint = 0xfeed_2002,
+            .response_image = response_image,
+        } },
+        .descriptor = descriptor,
+        .binding = binding,
+        .run_permit = zero_cost_permit,
+        .precommit_ledger = &zero_cost_supervisor.ledger,
+        .explicit_mutation_approval = true,
+        .attempt_number = 0,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+    });
+    try zero_cost_execution.validate();
     var same_intent_pending_supervisor = try world.Supervision.Supervisor.init(std.testing.allocator, positive_exhausted_permit, 1);
     defer same_intent_pending_supervisor.deinit();
     const same_intent_pending_receipt = world.Actuation.Receipt.init(.{
