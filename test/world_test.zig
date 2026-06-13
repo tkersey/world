@@ -5472,6 +5472,87 @@ test "runspace actuation dispatch preserves pending mailbox state" {
     try std.testing.expectEqual(receipt.receipt_fingerprint, image.actuation_receipt_refs[0]);
     try std.testing.expectEqual(intent.intent_fingerprint, image.runspace_image.mailbox_image.?.pending_actuation_intent_fingerprints[0]);
     try std.testing.expectEqual(receipt.receipt_fingerprint, image.runspace_image.mailbox_image.?.committed_actuation_receipt_fingerprints[0]);
+    const full_handle_mappings = [_]u64{image.runspace_image.run_slots[0].original_run_handle_fingerprint};
+    const full_runspace_image = world.Capsule.RunspaceImage.init(.{
+        .runspace_fingerprint = image.runspace_image.runspace_fingerprint,
+        .runspace_report_fingerprint = image.runspace_image.runspace_report_fingerprint,
+        .run_handle_mappings = &full_handle_mappings,
+        .run_slots = image.runspace_image.run_slots,
+        .mailbox_image = image.runspace_image.mailbox_image,
+        .runspace_event_fingerprints = image.runspace_image.runspace_event_fingerprints,
+        .root_run_handle_fingerprints = image.runspace_image.root_run_handle_fingerprints,
+        .provider_run_handle_fingerprints = image.runspace_image.provider_run_handle_fingerprints,
+        .branch_refs = image.runspace_image.branch_refs,
+        .checkpoint_refs = image.runspace_image.checkpoint_refs,
+        .transcript_image_refs = image.runspace_image.transcript_image_refs,
+        .run_image_refs = image.runspace_image.run_image_refs,
+        .run_receipt_refs = image.runspace_image.run_receipt_refs,
+        .admission_receipt_refs = image.runspace_image.admission_receipt_refs,
+        .permit_refs = image.runspace_image.permit_refs,
+        .active_fabric_invocation_refs = image.runspace_image.active_fabric_invocation_refs,
+        .actuation_intent_refs = image.runspace_image.actuation_intent_refs,
+        .actuation_receipt_refs = image.runspace_image.actuation_receipt_refs,
+        .actuation_journal_refs = image.runspace_image.actuation_journal_refs,
+        .metadata = image.runspace_image.metadata,
+    });
+    const full_manifest = world.Capsule.Manifest.init(.{
+        .kind = .full_assembly,
+        .root_target_ref_fingerprint = image.manifest.root_target_ref_fingerprint,
+        .root_module_ref_fingerprint = image.manifest.root_module_ref_fingerprint,
+        .link_plan_fingerprint = image.manifest.link_plan_fingerprint,
+        .link_certificate_fingerprint = image.manifest.link_certificate_fingerprint,
+        .assembly_fingerprint = image.manifest.assembly_fingerprint,
+        .admission_receipt_fingerprints = image.manifest.admission_receipt_fingerprints,
+        .environment_certificate_fingerprints = image.manifest.environment_certificate_fingerprints,
+        .run_permit_fingerprints = image.manifest.run_permit_fingerprints,
+        .run_receipt_fingerprints = image.manifest.run_receipt_fingerprints,
+        .run_image_fingerprints = image.manifest.run_image_fingerprints,
+        .transcript_image_fingerprints = image.manifest.transcript_image_fingerprints,
+        .fabric_plan_fingerprints = image.manifest.fabric_plan_fingerprints,
+        .fabric_invocation_fingerprints = image.manifest.fabric_invocation_fingerprints,
+        .fabric_receipt_fingerprints = image.manifest.fabric_receipt_fingerprints,
+        .guest_conformance_report_fingerprints = image.manifest.guest_conformance_report_fingerprints,
+        .actuation_intent_fingerprints = image.manifest.actuation_intent_fingerprints,
+        .actuation_receipt_fingerprints = image.manifest.actuation_receipt_fingerprints,
+        .actuation_journal_fingerprints = image.manifest.actuation_journal_fingerprints,
+        .pending_port_count = image.manifest.pending_port_count,
+        .run_slot_count = image.manifest.run_slot_count,
+        .active_fabric_invocation_count = image.manifest.active_fabric_invocation_count,
+        .normal_form = image.manifest.normal_form,
+        .metadata = image.manifest.metadata,
+    });
+    const full_image = world.Capsule.Image.init(.{
+        .manifest = full_manifest,
+        .runspace_image = full_runspace_image,
+        .link_image = image.link_image,
+        .fabric_image = image.fabric_image,
+        .admission_refs = image.admission_refs,
+        .environment_refs = image.environment_refs,
+        .supervision_refs = image.supervision_refs,
+        .guest_conformance_refs = image.guest_conformance_refs,
+        .transcript_image_refs = image.transcript_image_refs,
+        .run_image_refs = image.run_image_refs,
+        .value_image_refs = image.value_image_refs,
+        .actuation_intent_refs = image.actuation_intent_refs,
+        .actuation_receipt_refs = image.actuation_receipt_refs,
+        .actuation_journal_refs = image.actuation_journal_refs,
+        .transcript_images = image.transcript_images,
+        .run_images = image.run_images,
+        .value_images = image.value_images,
+        .metadata = image.metadata,
+    });
+    try full_image.validate(.{});
+    var permit_bound_restore = world.Runspace.init(std.testing.allocator, .{});
+    defer permit_bound_restore.deinit();
+    var permit_bound_denied = try world.Capsule.thawIntoRunspace(full_image, &permit_bound_restore, pending.target_ref_fingerprint, 0, 0x5150_aaad, .{
+        .mode = .relink_and_restore,
+        .require_link_match = false,
+    });
+    defer permit_bound_denied.deinit(std.testing.allocator);
+    try std.testing.expect(!permit_bound_denied.accepted);
+    try std.testing.expectEqual(world.Capsule.Blocker.permit_denied, permit_bound_denied.blockers[0]);
+    try std.testing.expectEqual(@as(usize, 0), permit_bound_restore.slots.items.len);
+    try std.testing.expectEqual(@as(usize, 0), permit_bound_restore.mailbox.pendingCount());
     var stripped_image = try world.Capsule.freezeRunspace(&runspace, .{ .include_receipts = false });
     defer stripped_image.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 0), stripped_image.manifest.actuation_intent_fingerprints.len);

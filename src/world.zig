@@ -23863,6 +23863,15 @@ pub const Capsule = struct {
         };
     }
 
+    fn imageRestoresPermitBoundPendingActuations(image: Image, permit_fingerprint: ?u64) bool {
+        const mailbox = image.runspace_image.mailbox_image orelse return false;
+        for (mailbox.pending_port_entries) |pending| {
+            if (pending.pending_actuation_intent_fingerprint == null and pending.pending_actuation_receipt_fingerprint == null) continue;
+            if ((permit_fingerprint orelse pending.run_permit_fingerprint) != null) return true;
+        }
+        return false;
+    }
+
     fn restoredSlotHandle(runspace: *Runspace, slot_image: RunSlotImage, permit_fingerprint: ?u64) RunHandle {
         const handle = RunHandle.init(.{
             .runspace_fingerprint = runspace.runspace_fingerprint,
@@ -23933,6 +23942,11 @@ pub const Capsule = struct {
     }
 
     fn thawBlocker(image: Image, local_root_target_ref_fingerprint: u64, environment_fingerprint: u64, permit_fingerprint: ?u64, options: ThawOptions) ?Blocker {
+        if (options.mode != .inspect_only and options.mode != .replay_only and
+            imageRestoresPermitBoundPendingActuations(image, permit_fingerprint))
+        {
+            return .permit_denied;
+        }
         if (!restoreModeAllowedForImage(image, options.mode)) return .malformed_image;
         if (restoreModeRequiresRunHandleMappings(options.mode) and !runspaceImageHandleMappingsMatchSlots(image.runspace_image)) return .malformed_image;
         if (options.mode == .verify_and_restore) return .verification_witness_missing;
