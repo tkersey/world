@@ -5380,7 +5380,7 @@ test "actuation environment preflight and supervision ledger account host effect
     try std.testing.expectEqual(@as(usize, 1), pending_window_supervisor.ledger.total_pending_actuations);
     try pending_window_supervisor.afterActuationResolution(bindReceiptToPermit(execution.receipt, pending_window_permit), 16);
     try std.testing.expectEqual(@as(usize, 0), pending_window_supervisor.ledger.total_pending_actuations);
-    try std.testing.expectEqual(@as(usize, 1), pending_window_supervisor.ledger.total_actuation_commits);
+    try std.testing.expectEqual(@as(usize, 2), pending_window_supervisor.ledger.total_actuation_commits);
     try std.testing.expectEqual(@as(usize, 2), pending_window_supervisor.ledger.total_fresh_actuations);
     try std.testing.expectEqual(@as(usize, 2), pending_window_supervisor.ledger.per_port_usage[0].fresh_calls);
     try std.testing.expectError(error.PendingDenied, pending_window_supervisor.afterActuationResolution(bindReceiptToPermit(execution.receipt, pending_window_permit), 16));
@@ -5974,10 +5974,26 @@ test "runspace pending actuation fresh completion resolves pending accounting" {
     try std.testing.expectEqual(@as(usize, 1), ledger.total_fresh_actuations);
     try std.testing.expect(try ledger.recordActuationResolution(std.testing.allocator, terminal_receipt, 0, 0, 0));
     try std.testing.expectEqual(@as(usize, 0), ledger.total_pending_calls);
-    try std.testing.expectEqual(@as(usize, 1), ledger.total_actuation_commits);
+    try std.testing.expectEqual(@as(usize, 2), ledger.total_actuation_commits);
     try std.testing.expectEqual(@as(usize, 2), ledger.total_fresh_actuations);
     try std.testing.expectEqual(@as(usize, 2), ledger.per_port_usage[0].fresh_calls);
     try std.testing.expectEqual(@as(usize, 0), ledger.per_port_usage[0].pending_calls);
+    try std.testing.expectError(error.BudgetExceeded, world.Actuation.Membrane.execute(.{
+        .policy = world.Actuation.Policy.fixture_test,
+        .intent = intent,
+        .envelope = envelope,
+        .actuator = .{ .fixture = .{
+            .status = .responded,
+            .frame_response_fingerprint = 0x5150_ba04,
+            .reason = "fresh call over resolved pending budget",
+        } },
+        .descriptor = descriptor,
+        .run_permit = permit,
+        .precommit_ledger = &ledger,
+        .attempt_number = 3,
+        .target_ref_fingerprint = pending.target_ref_fingerprint,
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+    }));
 
     var replay_resolution_ledger = try world.Supervision.UsageLedger.init(std.testing.allocator, permit, 1);
     defer replay_resolution_ledger.deinit(std.testing.allocator);
