@@ -2592,6 +2592,63 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
     try std.testing.expect(!retry_denied.fresh_called);
     try std.testing.expect(retry_denied.receipt.rejected);
     try std.testing.expectEqual(world.Actuation.CommitStatus.rejected, retry_denied.commit_value.status);
+    const audit_intent = world.Actuation.Intent.init(.{
+        .actuator_ref_fingerprint = ref.ref_fingerprint,
+        .descriptor_fingerprint = descriptor.descriptor_fingerprint,
+        .target_ref_fingerprint = 0x6102,
+        .world_surface_fingerprint = 0x6101,
+        .world_port_id = 7,
+        .frame_request_fingerprint = 0x6103,
+        .encoded_frame_request_fingerprint = 0x6103,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .class = .deterministic_fixture,
+        .requested_mode = .audit,
+    });
+    const audit_envelope = world.Actuation.Envelope.init(.{
+        .intent_fingerprint = audit_intent.intent_fingerprint,
+        .encoded_frame_request_fingerprint = audit_intent.frame_request_fingerprint,
+        .idempotency_key = key,
+    });
+    const audit_denied = try world.Actuation.Membrane.execute(.{
+        .policy = world.Actuation.Policy.strict_fresh,
+        .intent = audit_intent,
+        .envelope = audit_envelope,
+        .descriptor = descriptor,
+        .actuator = .{ .fixture = .{ .frame_response_fingerprint = 0x620b } },
+        .target_ref_fingerprint = 0x6102,
+        .world_surface_fingerprint = 0x6101,
+    });
+    try std.testing.expect(!audit_denied.decision.approved);
+    var forged_denied_success = audit_denied;
+    forged_denied_success.response = world.Actuation.Response.init(.{
+        .intent_fingerprint = audit_denied.response.intent_fingerprint,
+        .commit_fingerprint = audit_denied.commit_value.commit_fingerprint,
+        .actuator_ref_fingerprint = audit_denied.response.actuator_ref_fingerprint,
+        .world_port_id = audit_denied.response.world_port_id,
+        .request_fingerprint = audit_denied.response.request_fingerprint,
+        .status = .responded,
+        .response_kind = audit_denied.response.response_kind,
+        .frame_response_fingerprint = 0x620b,
+    });
+    forged_denied_success.receipt = world.Actuation.Receipt.init(.{
+        .intent_fingerprint = audit_denied.receipt.intent_fingerprint,
+        .envelope_fingerprint = audit_denied.receipt.envelope_fingerprint,
+        .decision_fingerprint = audit_denied.receipt.decision_fingerprint,
+        .commit_fingerprint = audit_denied.receipt.commit_fingerprint,
+        .response_fingerprint = forged_denied_success.response.response_fingerprint,
+        .response_kind = forged_denied_success.response.response_kind,
+        .frame_response_fingerprint = forged_denied_success.response.frame_response_fingerprint,
+        .actuator_ref_fingerprint = audit_denied.receipt.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = audit_denied.receipt.idempotency_key_fingerprint,
+        .request_fingerprint = audit_denied.receipt.request_fingerprint,
+        .target_ref_fingerprint = audit_denied.receipt.target_ref_fingerprint,
+        .world_surface_fingerprint = audit_denied.receipt.world_surface_fingerprint,
+        .world_port_id = audit_denied.receipt.world_port_id,
+        .class = audit_denied.receipt.class,
+        .mode = audit_denied.receipt.mode,
+        .attempt_number = audit_denied.receipt.attempt_number,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_denied_success.validate());
     const unsupervised_finite_cap_policy = world.Actuation.Policy.init(.{
         .allow_fresh_actuation = true,
         .allow_deterministic_fixture = true,

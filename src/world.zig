@@ -20027,7 +20027,13 @@ pub const Actuation = struct {
                 if (self.decision.approved) {
                     const descriptor = self.descriptor orelse return error.InvalidFrameEncoding;
                     try self.response.validate(self.policy, descriptor);
-                } else if (self.response.response_fingerprint != Actuation.fingerprintResponse(self.response)) return error.InvalidFrameEncoding;
+                } else {
+                    switch (self.response.status) {
+                        .rejected, .cancelled => {},
+                        else => return error.InvalidFrameEncoding,
+                    }
+                    if (self.response.response_fingerprint != Actuation.fingerprintResponse(self.response)) return error.InvalidFrameEncoding;
+                }
                 try self.receipt.validate();
                 if (self.decision.intent_fingerprint != self.intent.intent_fingerprint) return error.InvalidFrameEncoding;
                 if (self.envelope.intent_fingerprint != self.intent.intent_fingerprint) return error.InvalidFrameEncoding;
