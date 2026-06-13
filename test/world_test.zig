@@ -220,6 +220,23 @@ test "fabric adapter route records actuation receipt metadata" {
         .descriptor = descriptor,
         .world_port_id = 0,
     });
+    try binding.validate();
+    const zero_authority_binding = world.Actuation.Binding.fromDescriptor(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .import_requirement_fingerprint = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0).requirement_fingerprint,
+        .descriptor = descriptor,
+        .world_port_id = 0,
+        .port_authority_fingerprint = 0,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, zero_authority_binding.validate());
+    const zero_environment_binding = world.Actuation.Binding.fromDescriptor(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .import_requirement_fingerprint = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0).requirement_fingerprint,
+        .descriptor = descriptor,
+        .world_port_id = 0,
+        .environment_certificate_fingerprint = 0,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, zero_environment_binding.validate());
 
     const route = world.Fabric.Route.init(.{
         .route_id = 0xacc7_1001,
