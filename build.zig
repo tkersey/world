@@ -763,7 +763,7 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Actuation supervised denial example.",
             .expected_stdout =
             \\denied_before_call=true
-            \\run_receipt_fingerprint=f24c9fcaa0bbd143
+            \\run_receipt_fingerprint=e793c867b110b09a
             \\
             ,
         },
@@ -798,7 +798,7 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the supervised budget World example.",
             .expected_stdout =
             \\permit_fingerprint=c11a8a7cc7e075e3
-            \\receipt_fingerprint=d76e887954a4c0e
+            \\receipt_fingerprint=4ee32606a3a26370
             \\budget_exceeded=false
             \\denied_budget_exceeded=true
             \\
@@ -823,9 +823,9 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-supervised-handoff",
             .desc = "Run the supervised handoff World example.",
             .expected_stdout =
-            \\received_run_image_fingerprint=3677af97367d74a7
+            \\received_run_image_fingerprint=8df1c085adc3793c
             \\receiver_permit_fingerprint=ecb3fc4d74abae17
-            \\receiver_receipt_fingerprint=51ef5d5ceb4ff589
+            \\receiver_receipt_fingerprint=3c533ec8543aadff
             \\final_result=7
             \\
             ,
@@ -848,8 +848,8 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-supervised-replay-verify",
             .desc = "Run the supervised replay/verify World example.",
             .expected_stdout =
-            \\fresh_receipt=4fcb0e11f0c27735
-            \\replay_receipt=ed4b58eabf6457a9
+            \\fresh_receipt=3b6c735821d53445
+            \\replay_receipt=a8342ecb285cd279
             \\verify_divergence_detected=true
             \\
             ,
