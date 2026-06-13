@@ -11893,7 +11893,7 @@ pub const Runspace = struct {
             };
             return;
         }
-        return error.SupervisionDenied;
+        if (self.config.require_supervision) return error.SupervisionDenied;
     }
 
     fn superviseFreshActuationResolution(self: *@This(), slot_index: usize, execution: Actuation.Membrane.Execution, accounting: ResponseFrameAccounting) !void {
@@ -11923,7 +11923,7 @@ pub const Runspace = struct {
             };
             return;
         }
-        return error.SupervisionDenied;
+        if (self.config.require_supervision) return error.SupervisionDenied;
     }
 
     fn executionMatchesPendingActuation(pending: Runspace.PendingPort, execution: Actuation.Membrane.Execution) !bool {

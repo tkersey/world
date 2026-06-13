@@ -26153,6 +26153,144 @@ test "runspace dispatch completes handlerless actuation request" {
     try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try driverless_restored.mailbox.get(0)).status);
     try std.testing.expectError(error.InvalidPendingPortTransition, driverless_restored.fail(0, "restored direct fail bypass"));
     try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try driverless_restored.mailbox.get(0)).status);
+    const restored_pending = try driverless_restored.mailbox.get(0);
+    const restored_request = restored_pending.request_frame.?;
+    const restored_key = world.Actuation.IdempotencyKey.init(.{
+        .target_ref_fingerprint = restored_pending.target_ref_fingerprint,
+        .world_surface_fingerprint = restored_request.world_surface_fingerprint,
+        .world_port_id = restored_request.world_port_id,
+        .request_fingerprint = restored_request.request_fingerprint,
+        .pending_port_fingerprint = restored_pending.pending_port_fingerprint,
+        .actuator_ref_fingerprint = actuator_ref.ref_fingerprint,
+    });
+    const restored_intent = world.Actuation.Intent.init(.{
+        .actuator_ref_fingerprint = actuator_ref.ref_fingerprint,
+        .descriptor_fingerprint = descriptor.descriptor_fingerprint,
+        .binding_fingerprint = binding.binding_fingerprint,
+        .target_ref_fingerprint = restored_pending.target_ref_fingerprint,
+        .world_surface_fingerprint = restored_request.world_surface_fingerprint,
+        .world_port_id = restored_request.world_port_id,
+        .pending_port_fingerprint = restored_pending.pending_port_fingerprint,
+        .frame_request_fingerprint = restored_request.request_fingerprint,
+        .encoded_frame_request_fingerprint = restored_request.frame_fingerprint,
+        .idempotency_key_fingerprint = restored_key.key_fingerprint,
+        .run_permit_fingerprint = restored_pending.run_permit_fingerprint,
+        .environment_certificate_fingerprint = restored_pending.environment_certificate_fingerprint,
+        .class = .idempotent_mutation,
+        .requested_mode = .fresh,
+    });
+    const restored_envelope = world.Actuation.Envelope.init(.{
+        .intent_fingerprint = restored_intent.intent_fingerprint,
+        .encoded_frame_request_fingerprint = restored_request.frame_fingerprint,
+        .idempotency_key = restored_key,
+        .expected_response_value_ref = descriptor.response_value_ref,
+        .expected_response_value_table_id = restored_request.expected_response_value_table_id,
+    });
+    const restored_pending_execution = try world.Actuation.Membrane.execute(.{
+        .policy = world.Actuation.Policy.fixture_test,
+        .intent = restored_intent,
+        .envelope = restored_envelope,
+        .actuator = .{ .pending = .{ .frame_response_fingerprint = 0x5150_0a15 } },
+        .descriptor = descriptor,
+        .binding = binding,
+        .attempt_number = 1,
+        .target_ref_fingerprint = restored_pending.target_ref_fingerprint,
+        .world_surface_fingerprint = restored_request.world_surface_fingerprint,
+    });
+    const restored_pending_receipt = try driverless_restored.dispatchActuation(0, restored_pending_execution);
+    try std.testing.expect(restored_pending_receipt.pending);
+    const restored_continued_pending = try driverless_restored.mailbox.get(0);
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, restored_continued_pending.status);
+    const restored_resolution_key = world.Actuation.IdempotencyKey.init(.{
+        .target_ref_fingerprint = restored_continued_pending.target_ref_fingerprint,
+        .world_surface_fingerprint = restored_request.world_surface_fingerprint,
+        .world_port_id = restored_request.world_port_id,
+        .request_fingerprint = restored_request.request_fingerprint,
+        .pending_port_fingerprint = restored_continued_pending.pending_port_fingerprint,
+        .actuator_ref_fingerprint = actuator_ref.ref_fingerprint,
+    });
+    const restored_resolution_intent = world.Actuation.Intent.init(.{
+        .actuator_ref_fingerprint = actuator_ref.ref_fingerprint,
+        .descriptor_fingerprint = descriptor.descriptor_fingerprint,
+        .binding_fingerprint = binding.binding_fingerprint,
+        .target_ref_fingerprint = restored_continued_pending.target_ref_fingerprint,
+        .world_surface_fingerprint = restored_request.world_surface_fingerprint,
+        .world_port_id = restored_request.world_port_id,
+        .pending_port_fingerprint = restored_continued_pending.pending_port_fingerprint,
+        .frame_request_fingerprint = restored_request.request_fingerprint,
+        .encoded_frame_request_fingerprint = restored_request.frame_fingerprint,
+        .idempotency_key_fingerprint = restored_resolution_key.key_fingerprint,
+        .run_permit_fingerprint = restored_continued_pending.run_permit_fingerprint,
+        .environment_certificate_fingerprint = restored_continued_pending.environment_certificate_fingerprint,
+        .class = .idempotent_mutation,
+        .requested_mode = .fresh,
+    });
+    const restored_resolution_envelope = world.Actuation.Envelope.init(.{
+        .intent_fingerprint = restored_resolution_intent.intent_fingerprint,
+        .encoded_frame_request_fingerprint = restored_request.frame_fingerprint,
+        .idempotency_key = restored_resolution_key,
+        .expected_response_value_ref = descriptor.response_value_ref,
+        .expected_response_value_table_id = restored_request.expected_response_value_table_id,
+    });
+    const restored_terminal_seed_execution = try world.Actuation.Membrane.execute(.{
+        .policy = world.Actuation.Policy.fixture_test,
+        .intent = restored_resolution_intent,
+        .envelope = restored_resolution_envelope,
+        .actuator = .{ .tool_like = .{
+            .status = .rejected,
+            .frame_response_fingerprint = 0x5150_0a16,
+            .reason = "driverless pending resolution",
+        } },
+        .descriptor = descriptor,
+        .binding = binding,
+        .attempt_number = 2,
+        .target_ref_fingerprint = restored_continued_pending.target_ref_fingerprint,
+        .world_surface_fingerprint = restored_request.world_surface_fingerprint,
+    });
+    const restored_replay_intent = world.Actuation.Intent.init(.{
+        .actuator_ref_fingerprint = actuator_ref.ref_fingerprint,
+        .descriptor_fingerprint = descriptor.descriptor_fingerprint,
+        .binding_fingerprint = binding.binding_fingerprint,
+        .target_ref_fingerprint = restored_continued_pending.target_ref_fingerprint,
+        .world_surface_fingerprint = restored_request.world_surface_fingerprint,
+        .world_port_id = restored_request.world_port_id,
+        .pending_port_fingerprint = restored_continued_pending.pending_port_fingerprint,
+        .frame_request_fingerprint = restored_request.request_fingerprint,
+        .encoded_frame_request_fingerprint = restored_request.frame_fingerprint,
+        .idempotency_key_fingerprint = restored_resolution_key.key_fingerprint,
+        .run_permit_fingerprint = restored_continued_pending.run_permit_fingerprint,
+        .environment_certificate_fingerprint = restored_continued_pending.environment_certificate_fingerprint,
+        .class = .idempotent_mutation,
+        .requested_mode = .replay,
+    });
+    const restored_replay_envelope = world.Actuation.Envelope.init(.{
+        .intent_fingerprint = restored_replay_intent.intent_fingerprint,
+        .encoded_frame_request_fingerprint = restored_request.frame_fingerprint,
+        .idempotency_key = restored_resolution_key,
+        .expected_response_value_ref = descriptor.response_value_ref,
+        .expected_response_value_table_id = restored_request.expected_response_value_table_id,
+    });
+    const restored_replay_execution = try world.Actuation.Membrane.execute(.{
+        .policy = world.Actuation.Policy.fixture_test,
+        .intent = restored_replay_intent,
+        .envelope = restored_replay_envelope,
+        .actuator = .{ .replay = .{
+            .source = world.Actuation.ReplaySource.init(.{ .receipts = &.{restored_terminal_seed_execution.receipt} }),
+            .expected_status = .rejected,
+        } },
+        .descriptor = descriptor,
+        .binding = binding,
+        .pending_actuation_receipt_fingerprint = restored_pending_receipt.receipt_fingerprint,
+        .attempt_number = 2,
+        .target_ref_fingerprint = restored_continued_pending.target_ref_fingerprint,
+        .world_surface_fingerprint = restored_request.world_surface_fingerprint,
+    });
+    const restored_terminal_receipt = try driverless_restored.dispatchActuation(0, restored_replay_execution);
+    try std.testing.expect(restored_terminal_receipt.replayed);
+    try std.testing.expect(restored_terminal_receipt.rejected);
+    try std.testing.expectEqual(world.Runspace.PendingStatus.cancelled, (try driverless_restored.mailbox.get(0)).status);
+    try std.testing.expectEqual(world.Runspace.RunStatus.failed, (try driverless_restored.getSlotSummary(restored_handle)).status);
+    try std.testing.expectEqual(@as(usize, 0), driverless_restored.report().pending_port_count);
     const key = world.Actuation.IdempotencyKey.init(.{
         .target_ref_fingerprint = pending.target_ref_fingerprint,
         .world_surface_fingerprint = request.world_surface_fingerprint,
