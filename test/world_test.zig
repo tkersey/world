@@ -696,6 +696,15 @@ test "actuation policy idempotency key and intent gates are deterministic" {
         .response_image = terminal_response_image,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, failed_image_response.validate(world.Actuation.Policy.fixture_test, null));
+    const zero_value_fingerprint_response = world.Actuation.Response.init(.{
+        .intent_fingerprint = intent.intent_fingerprint,
+        .actuator_ref_fingerprint = ref.ref_fingerprint,
+        .world_port_id = 1,
+        .request_fingerprint = 0x3103,
+        .frame_response_fingerprint = 0x3105,
+        .value_image_fingerprint = 0,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, zero_value_fingerprint_response.validate(world.Actuation.Policy.fixture_test, null));
     const deferred_fingerprint_without_image = world.Actuation.Response.init(.{
         .intent_fingerprint = intent.intent_fingerprint,
         .actuator_ref_fingerprint = ref.ref_fingerprint,

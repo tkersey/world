@@ -19147,6 +19147,7 @@ pub const Actuation = struct {
             if (self.format_version != world_actuation_response_format_version) return error.InvalidFrameEncoding;
             if (self.fingerprint_version != world_actuation_response_fingerprint_version) return error.InvalidFrameEncoding;
             if (self.intent_fingerprint == 0 or self.actuator_ref_fingerprint == 0 or self.request_fingerprint == 0) return error.InvalidFrameEncoding;
+            try validateOptionalFingerprint(self.value_image_fingerprint);
             if (!policy.allowsResponseStatus(self.status)) return error.PortRuleDenied;
             if (self.status == .responded) {
                 const frame_response_fingerprint = self.frame_response_fingerprint orelse return error.MissingValueImage;
