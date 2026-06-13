@@ -20024,6 +20024,7 @@ pub const Actuation = struct {
             try args.policy.validate();
             try args.envelope.validate(args.policy);
             try validateExecutionBindings(args);
+            try validatePendingActuationReceiptLink(args.intent.requested_mode, args.pending_actuation_receipt_fingerprint);
             const decision = decide(.{
                 .policy = args.policy,
                 .intent = args.intent,
@@ -20192,6 +20193,15 @@ pub const Actuation = struct {
                 } else if (!std.meta.eql(rule.allowed_authority_kinds, Supervision.AllowedAuthorityKinds.all)) {
                     return error.AuthorityDenied;
                 }
+            }
+        }
+
+        fn validatePendingActuationReceiptLink(requested_mode: Mode, pending_actuation_receipt_fingerprint: ?u64) !void {
+            const fingerprint = pending_actuation_receipt_fingerprint orelse return;
+            if (fingerprint == 0) return error.InvalidFrameEncoding;
+            switch (requested_mode) {
+                .replay, .verify => {},
+                .fresh, .audit => return error.InvalidFrameEncoding,
             }
         }
 

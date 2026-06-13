@@ -4008,6 +4008,23 @@ test "actuation environment preflight and supervision ledger account host effect
         .target_ref_fingerprint = target_ref.target_ref_fingerprint,
         .world_surface_fingerprint = target_ref.world_surface_fingerprint,
     }));
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Actuation.Membrane.execute(.{
+        .policy = world.Actuation.Policy.strict_fresh,
+        .intent = permitted_intent,
+        .envelope = permitted_envelope,
+        .actuator = .{ .tool_like = .{
+            .frame_response_fingerprint = 0xfeed_2bad,
+            .response_image = response_image,
+        } },
+        .descriptor = descriptor,
+        .binding = binding,
+        .run_permit = permit,
+        .pending_actuation_receipt_fingerprint = 0xfeed_bad0,
+        .explicit_mutation_approval = true,
+        .attempt_number = 0,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+    }));
     const missing_certificate_permit = world.RunPermit.init(.{
         .target_ref_fingerprint = target_ref.target_ref_fingerprint,
         .world_surface_fingerprint = target_ref.world_surface_fingerprint,
@@ -4670,7 +4687,6 @@ test "actuation environment preflight and supervision ledger account host effect
         .binding = binding,
         .run_permit = positive_exhausted_permit,
         .precommit_ledger = &same_intent_pending_supervisor.ledger,
-        .pending_actuation_receipt_fingerprint = same_intent_pending_receipt.receipt_fingerprint,
         .explicit_mutation_approval = true,
         .attempt_number = 0,
         .target_ref_fingerprint = target_ref.target_ref_fingerprint,
@@ -4710,7 +4726,6 @@ test "actuation environment preflight and supervision ledger account host effect
         .binding = binding,
         .run_permit = positive_exhausted_permit,
         .precommit_ledger = &unrelated_pending_supervisor.ledger,
-        .pending_actuation_receipt_fingerprint = unrelated_pending_receipt.receipt_fingerprint,
         .explicit_mutation_approval = true,
         .attempt_number = 0,
         .target_ref_fingerprint = target_ref.target_ref_fingerprint,
