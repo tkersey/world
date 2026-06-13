@@ -450,6 +450,18 @@ test "actuation namespace exposes v1 core model and stable descriptor fingerprin
     });
     try ref.validate();
     try std.testing.expectEqual(ref.ref_fingerprint, same_ref.ref_fingerprint);
+    const zero_authority_ref = world.Actuation.Ref.init(.{
+        .kind = .fixture,
+        .class = .deterministic_fixture,
+        .authority_descriptor_fingerprint = 0,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, zero_authority_ref.validate());
+    const zero_protocol_ref = world.Actuation.Ref.init(.{
+        .kind = .fixture,
+        .class = .deterministic_fixture,
+        .protocol_descriptor_fingerprint = 0,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, zero_protocol_ref.validate());
     try std.testing.expectEqual(ref.ref_fingerprint, world.ActuatorRef.init(.{
         .kind = .fixture,
         .class = .deterministic_fixture,

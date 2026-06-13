@@ -18268,6 +18268,8 @@ pub const Actuation = struct {
             if (self.fingerprint_version != world_actuator_ref_fingerprint_version) return error.InvalidFrameEncoding;
             if (self.label.len > world_max_decoded_byte_field_len) return error.InvalidFrameEncoding;
             if (self.metadata.len > world_max_decoded_byte_field_len) return error.InvalidFrameEncoding;
+            try validateOptionalFingerprint(self.authority_descriptor_fingerprint);
+            try validateOptionalFingerprint(self.protocol_descriptor_fingerprint);
             if (self.ref_fingerprint != fingerprintRef(self)) return error.InvalidFrameEncoding;
         }
 
