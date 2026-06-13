@@ -19807,6 +19807,8 @@ pub const Actuation = struct {
         pub fn validate(self: @This()) !void {
             if (self.fingerprint_version != world_actuation_verify_report_fingerprint_version) return error.InvalidFrameEncoding;
             if (self.intent_fingerprint == 0) return error.InvalidFrameEncoding;
+            try validateOptionalFingerprint(self.expected_receipt_fingerprint);
+            try validateOptionalFingerprint(self.fresh_receipt_fingerprint);
             if (self.matched) {
                 if (self.divergence_kind != null) return error.InvalidFrameEncoding;
                 if (self.expected_receipt_fingerprint == null or self.fresh_receipt_fingerprint == null) return error.InvalidFrameEncoding;

@@ -1826,6 +1826,20 @@ test "actuation verify report records matches and divergences" {
     try std.testing.expect(prior_replay_intent.intent_fingerprint != intent.intent_fingerprint);
     try std.testing.expect(report.matched);
     try std.testing.expectEqual(report.report_fingerprint, same.report_fingerprint);
+    const zero_expected_report = world.Actuation.VerifyReport.init(.{
+        .intent_fingerprint = intent.intent_fingerprint,
+        .expected_receipt_fingerprint = 0,
+        .fresh_receipt_fingerprint = fresh.receipt_fingerprint,
+        .matched = true,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, zero_expected_report.validate());
+    const zero_fresh_report = world.Actuation.VerifyReport.init(.{
+        .intent_fingerprint = intent.intent_fingerprint,
+        .expected_receipt_fingerprint = expected.receipt_fingerprint,
+        .fresh_receipt_fingerprint = 0,
+        .matched = true,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, zero_fresh_report.validate());
     const changed_responded_response = world.Actuation.Receipt.init(.{
         .intent_fingerprint = intent.intent_fingerprint,
         .envelope_fingerprint = 0x5201,
