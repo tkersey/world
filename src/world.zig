@@ -20319,7 +20319,14 @@ pub const Actuation = struct {
                 .audit => if (!policy.allow_audit_only) return error.SupervisionDenied,
             }
             if (!permitPolicyAllowsSelectedActuatorStatus(policy, args.actuator)) return error.SupervisionDenied;
-            try validatePermitPrecommitActuationBudget(permit, args.intent, args.precommit_ledger, args.pending_actuation_receipt_fingerprint, actuatorCreatesPendingActuation(args.actuator));
+            try validatePermitPrecommitActuationBudget(
+                permit,
+                args.intent,
+                args.precommit_ledger,
+                args.pending_actuation_receipt_fingerprint,
+                actuatorCreatesPendingActuation(args.actuator),
+                selectedActuatorResponseStatus(args.actuator),
+            );
             if (policy.require_idempotency_keys and args.intent.requested_mode == .fresh and args.intent.class.isMutation() and !args.key_present) return error.SupervisionDenied;
             if (args.intent.class == .irreversible_mutation and !policy.allow_irreversible_actuation) return error.SupervisionDenied;
             if (!permitAllowsDescriptorValuePolicy(permit, args.intent.world_port_id, args.descriptor)) return error.SupervisionDenied;
@@ -20356,16 +20363,22 @@ pub const Actuation = struct {
             }
         }
 
-        fn validatePermitPrecommitActuationBudget(permit: RunPermit, intent: Intent, ledger_ptr: ?*const Supervision.UsageLedger, pending_actuation_receipt_fingerprint: ?u64, creates_pending_actuation: bool) !void {
+        fn validatePermitPrecommitActuationBudget(permit: RunPermit, intent: Intent, ledger_ptr: ?*const Supervision.UsageLedger, pending_actuation_receipt_fingerprint: ?u64, creates_pending_actuation: bool, response_status: Actuation.ResponseStatus) !void {
             const budget_call_max = permit.budget.max_actuation_calls;
             const policy_call_max = permit.policy.max_actuation_calls;
             const budget_pending_max = permit.budget.max_pending_actuations;
             const policy_pending_max = permit.policy.max_pending_actuations;
             const has_pending_limit = budget_pending_max != null or policy_pending_max != null;
+            const has_total_cost_limit = permit.budget.max_total_cost_units != null;
+            const has_port_cost_limit = if (permit.budget.perPort(intent.world_port_id)) |budget|
+                budget.max_cost_units != null
+            else
+                false;
+            const has_cost_limit = has_total_cost_limit or has_port_cost_limit;
             const cross_mode_pending_resolution = permit.mode == .fresh and
                 (intent.requested_mode == .replay or intent.requested_mode == .verify) and
                 pending_actuation_receipt_fingerprint != null;
-            if (budget_call_max == null and policy_call_max == null and (!has_pending_limit or !creates_pending_actuation) and !cross_mode_pending_resolution) return;
+            if (budget_call_max == null and policy_call_max == null and (!has_pending_limit or !creates_pending_actuation) and !has_cost_limit and !cross_mode_pending_resolution) return;
             if (budget_call_max != null and budget_call_max.? == 0) return error.BudgetExceeded;
             if (policy_call_max != null and policy_call_max.? == 0) return error.BudgetExceeded;
             if (creates_pending_actuation) {
@@ -20394,6 +20407,19 @@ pub const Actuation = struct {
                     if (precommitPendingActuationLimitExceeded(max, ledger)) return error.BudgetExceeded;
                 }
             }
+            if (has_cost_limit) {
+                const cost_delta = precommitActuationResponseCostDelta(permit.cost_model, intent.world_port_id, response_status);
+                if (permit.budget.max_total_cost_units) |max| {
+                    if (ledger.total_cost_units >= max or ledger.total_cost_units +| cost_delta > max) return error.BudgetExceeded;
+                }
+                if (permit.budget.perPort(intent.world_port_id)) |budget| {
+                    if (budget.max_cost_units) |max| {
+                        if (intent.world_port_id >= ledger.per_port_usage.len) return error.SupervisionDenied;
+                        const usage = ledger.per_port_usage[intent.world_port_id];
+                        if (usage.cost_units >= max or usage.cost_units +| cost_delta > max) return error.BudgetExceeded;
+                    }
+                }
+            }
         }
 
         fn validatePrecommitUsageLedgerBinding(permit: RunPermit, ledger: Supervision.UsageLedger) !void {
@@ -20410,6 +20436,16 @@ pub const Actuation = struct {
 
         fn precommitPendingActuationLimitExceeded(max: usize, ledger: Supervision.UsageLedger) bool {
             return ledger.total_pending_actuations +| 1 > max;
+        }
+
+        fn precommitActuationResponseCostDelta(cost_model: Supervision.CostModel, world_port_id: u32, status: Actuation.ResponseStatus) u64 {
+            const status_cost = switch (status) {
+                .responded => @as(u64, 0),
+                .pending, .deferred => cost_model.pendingCost(world_port_id),
+                .rejected, .cancelled => cost_model.rejectedCost(world_port_id),
+                .failed => cost_model.failedCost(world_port_id),
+            };
+            return cost_model.responseCost(world_port_id) +| status_cost;
         }
 
         fn validatePermitEnvironmentCertificateBinding(permit: RunPermit, certificate_fingerprint: ?u64) !void {

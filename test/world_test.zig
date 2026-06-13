@@ -4935,6 +4935,75 @@ test "actuation environment preflight and supervision ledger account host effect
         .target_ref_fingerprint = target_ref.target_ref_fingerprint,
         .world_surface_fingerprint = target_ref.world_surface_fingerprint,
     }));
+
+    const cost_budget_per_port = [_]world.Supervision.PerPortBudget{.{
+        .world_port_id = 0,
+        .max_cost_units = 1,
+    }};
+    const cost_exhausted_permit = world.RunPermit.init(.{
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = target_ref.target_certificate_fingerprint,
+        .environment_certificate_fingerprint = cert.certificate_fingerprint,
+        .binding_plan_fingerprint = cert.binding_plan_fingerprint,
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_actuation = true,
+            .allow_fresh_actuation = true,
+            .require_idempotency_keys = true,
+        }),
+        .budget = world.Budget.init(.{
+            .max_total_cost_units = 1,
+            .per_port_budgets = &cost_budget_per_port,
+        }),
+    });
+    const cost_exhausted_intent = bindIntentToPermit(positive_exhausted_intent, cost_exhausted_permit);
+    const cost_exhausted_envelope = world.Actuation.Envelope.init(.{
+        .intent_fingerprint = cost_exhausted_intent.intent_fingerprint,
+        .encoded_frame_request_fingerprint = cost_exhausted_intent.encoded_frame_request_fingerprint,
+        .idempotency_key = key,
+        .expected_response_value_ref = descriptor.response_value_ref,
+        .expected_response_value_table_id = descriptor.response_value_table_id,
+    });
+    try std.testing.expectError(error.SupervisionDenied, world.Actuation.Membrane.execute(.{
+        .policy = world.Actuation.Policy.strict_fresh,
+        .intent = cost_exhausted_intent,
+        .envelope = cost_exhausted_envelope,
+        .actuator = .{ .tool_like = .{
+            .frame_response_fingerprint = 0xfeed_2010,
+            .response_image = response_image,
+        } },
+        .descriptor = descriptor,
+        .binding = binding,
+        .run_permit = cost_exhausted_permit,
+        .explicit_mutation_approval = true,
+        .attempt_number = 0,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+    }));
+    var cost_exhausted_supervisor = try world.Supervision.Supervisor.init(std.testing.allocator, cost_exhausted_permit, 1);
+    defer cost_exhausted_supervisor.deinit();
+    cost_exhausted_supervisor.ledger.total_cost_units = 1;
+    cost_exhausted_supervisor.ledger.per_port_usage[0].cost_units = 1;
+    cost_exhausted_supervisor.ledger.refreshFingerprint();
+    try std.testing.expectError(error.BudgetExceeded, world.Actuation.Membrane.execute(.{
+        .policy = world.Actuation.Policy.strict_fresh,
+        .intent = cost_exhausted_intent,
+        .envelope = cost_exhausted_envelope,
+        .actuator = .{ .tool_like = .{
+            .frame_response_fingerprint = 0xfeed_2011,
+            .response_image = response_image,
+        } },
+        .descriptor = descriptor,
+        .binding = binding,
+        .run_permit = cost_exhausted_permit,
+        .precommit_ledger = &cost_exhausted_supervisor.ledger,
+        .explicit_mutation_approval = true,
+        .attempt_number = 0,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+    }));
     var same_intent_pending_supervisor = try world.Supervision.Supervisor.init(std.testing.allocator, positive_exhausted_permit, 1);
     defer same_intent_pending_supervisor.deinit();
     const same_intent_pending_receipt = world.Actuation.Receipt.init(.{
