@@ -102,6 +102,17 @@ pub fn build(b: *std.Build) void {
         }),
         .filters = test_args.filters,
     });
+    const world_module_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/world.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "boundary", .module = boundary },
+            },
+        }),
+        .filters = test_args.filters,
+    });
     const wasm_guest_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("examples/world_wasm_guest_one_port.zig"),
@@ -114,10 +125,13 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&addRunArtifactWithArgs(b, wasm_guest_tests, test_args.passthrough).step);
     if (target.query.isNative()) {
         test_step.dependOn(&addRunArtifactWithArgs(b, tests, test_args.passthrough).step);
+        test_step.dependOn(&addRunArtifactWithArgs(b, world_module_tests, test_args.passthrough).step);
         b.default_step.dependOn(test_step);
     } else {
         test_step.dependOn(&tests.step);
+        test_step.dependOn(&world_module_tests.step);
         b.default_step.dependOn(&tests.step);
+        b.default_step.dependOn(&world_module_tests.step);
     }
 
     const forged_descriptor_test = b.addTest(.{
@@ -788,6 +802,70 @@ pub fn build(b: *std.Build) void {
             \\idempotency_key=7afeff8877b52537
             \\fresh_call_count=1
             \\retry_replayed=true
+            \\
+            ,
+        },
+        .{
+            .name = "world-continuity-capsule-basic",
+            .path = "examples/world_continuity_capsule_basic.zig",
+            .step = "run-world-continuity-capsule-basic",
+            .desc = "Run the World Continuity capsule basic example.",
+            .expected_stdout =
+            \\stored_object_count=1
+            \\capsule_ref=ef5d71c6d3e04d8e
+            \\capsule_certificate_ref=0
+            \\graph_restorable=true
+            \\graph_replayable=false
+            \\
+            ,
+        },
+        .{
+            .name = "world-continuity-actuation",
+            .path = "examples/world_continuity_actuation.zig",
+            .step = "run-world-continuity-actuation",
+            .desc = "Run the World Continuity actuation example.",
+            .expected_stdout =
+            \\actuation_receipt_ref=2587388892e96ecf
+            \\idempotency_key_ref=99a8c7e8fafb160c
+            \\lookup_matches=true
+            \\replay_fresh_called=false
+            \\
+            ,
+        },
+        .{
+            .name = "world-continuity-bundle-roundtrip",
+            .path = "examples/world_continuity_bundle_roundtrip.zig",
+            .step = "run-world-continuity-bundle-roundtrip",
+            .desc = "Run the World Continuity bundle roundtrip example.",
+            .expected_stdout =
+            \\bundle_fingerprint=d18bd1d9b2b73ee
+            \\imported_object_count=2
+            \\capsule_restored_to_inspectable_state=true
+            \\
+            ,
+        },
+        .{
+            .name = "world-continuity-pending-actuation",
+            .path = "examples/world_continuity_pending_actuation.zig",
+            .step = "run-world-continuity-pending-actuation",
+            .desc = "Run the World Continuity pending actuation example.",
+            .expected_stdout =
+            \\capsule_ref=a6c793a9bec2741a
+            \\pending_actuation_count=1
+            \\local_fresh_actuation_required=true
+            \\
+            ,
+        },
+        .{
+            .name = "world-continuity-agent-evidence",
+            .path = "examples/world_continuity_agent_evidence.zig",
+            .step = "run-world-continuity-agent-evidence",
+            .desc = "Run the World Continuity agent evidence example.",
+            .expected_stdout =
+            \\capsule_ref=ef5d71c6d3e04d8e
+            \\model_receipt_count=1
+            \\tool_receipt_count=1
+            \\final_result=continuity-agent-evidence-ok
             \\
             ,
         },

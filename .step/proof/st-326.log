@@ -1,0 +1,2 @@
+zig fmt src/world.zig --check: pass
+zig build test --summary none -- --test-filter "continuity object": pass

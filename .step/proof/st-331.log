@@ -1,0 +1,10 @@
+st-331 helper_apis proof
+
+Commands:
+- zig fmt src/world.zig --check
+- zig build test --summary none -- --test-filter "vault capsule"
+- zig build test --summary none -- --test-filter "vault actuation"
+- zig build test --summary none -- --test-filter "continuity"
+
+Result:
+- all commands exited 0

@@ -53,6 +53,8 @@ The public root is intentionally small:
 - `world.Capsule`
 - `world.AssemblyCapsule`
 - `world.Actuation`
+- `world.Continuity`
+- `world.MemoryVault`
 - `world.ActuatorRef`
 - `world.ConduitPlan`
 - `world.ConduitRoute`
@@ -208,6 +210,28 @@ Environment says what the host can provide. Actuation says how the host is allow
 `world.Actuation.Journal` is an in-memory run-local sequence of intents, decisions, commits, responses, receipts, and idempotency keys. `Actuation.ReplaySource` satisfies intents from receipts or a journal without a fresh host call. `Actuation.VerifyReport` compares expected and fresh receipt behavior. Pending and deferred responses do not resume the parent run; Capsules can freeze pending intents and completed receipts when policy allows, then thaw under receiver-local policy.
 
 Actuation comes before the future Continuity Vault because future storage should persist stable intent, envelope, commit, response, receipt, and journal objects without knowing any real model, tool, file, browser, network, or human integration.
+
+## World Continuity
+
+Capsules define the portable execution unit. Actuation receipts define host-effect evidence. Continuity remembers both as local causal facts.
+
+`world.Continuity` is the local causal memory model for capsule images and actuation evidence. It is capsule-and-actuation-native, not a universal object dump: v1 covers capsule images/manifests/certificates/runspace/fabric/link images, actuation refs/descriptors/bindings/policies/intents/envelopes/decisions/commits/responses/receipts/journals/verify reports, and selected core evidence such as frames, transcripts, run images, permits, admissions, assemblies, fabric receipts, guest reports, and bundles.
+
+`Continuity.ObjectKind` names those stored evidence classes. `Continuity.ObjectRef` is a deterministic content-addressed local reference with format/fingerprint versions, object kind, object format version, object fingerprint, byte length, and optional diagnostic metadata. It is not cryptographic security and excludes native pointers, runtime identity, credentials, URLs, request tokens, handlers, and host handles.
+
+`Continuity.ObjectEnvelope` wraps canonical payload bytes with the object kind/version, content fingerprint, byte length, explicit dependency refs, optional summary bytes, and labels. The envelope fingerprint binds the stored payload metadata and dependency list so stores and bundles can validate malformed, mismatched, missing, oversized, cyclic, or unsupported objects fail-closed.
+
+`world.MemoryVault` is the v1 in-memory content-addressed vault. It deduplicates identical envelopes, stores and loads capsule images, actuation receipts, and actuation journals, lists objects by kind, validates refs, returns explicit dependencies, and looks up committed actuation receipts by idempotency key. It is append-oriented and has no delete, file backend, xitdb adapter, production database semantics, network fetch, signing, or encryption.
+
+`Continuity.ObjectGraph` builds bounded dependency closures from stored roots. `Continuity.CapsuleGraph` specializes that view for restore/replay/actuation readiness and reports missing deps, relink requirements, replay feasibility, and local fresh actuation requirements. `Continuity.ActuationGraph` specializes the view for receipts and journals, including pending, committed, replayable, duplicate idempotency, and fresh-commit summaries.
+
+`Continuity.Bundle` and `Continuity.BundleManifest` export and import portable collections of object envelopes. Bundle validation checks envelope and payload fingerprints, dependency closure, unknown object kinds, size/count limits, duplicate identical/conflicting objects, and strict duplicate fresh actuation commits.
+
+`Continuity.Ledger` is a small deterministic in-memory event log for vault operations such as capsule/receipt/journal store, bundle import/export, and recovery preflight. `Continuity.CapsuleIndex` and `Continuity.ActuationIndex` are linear-scan query surfaces for common local questions: capsules by target/module/status/relink/actuation state, and receipts by actuator/target/port/capsule/idempotency/pending/fresh/replay state.
+
+`Continuity.Recovery` performs preflight only. It can inspect capsule graphs, preflight replay/thaw/pending actuation, replay an actuation response from stored receipt evidence, and preflight bundle imports. It does not mutate Runspace, bypass Capsule thaw APIs, bypass Admission/Supervision/Actuation invariants, fetch network dependencies, or call fresh host actuators.
+
+`Capsule.store`, `Capsule.load`, `Capsule.exportBundle`, `Actuation.storeReceipt`, `Actuation.storeJournal`, `Actuation.loadReceipt`, `Actuation.loadJournal`, and `Actuation.replayFromVault` are explicit helper APIs. Future vault hooks, file stores, xitdb adapters, UIs, transfer mechanisms, and distributed runners can build on the same object model without changing World into xitdb, a production database, a transport, a scheduler, an async runtime, a package manager, an artifact registry, an agent framework, or a cryptographic security layer.
 
 ## World Admission
 
