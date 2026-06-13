@@ -30937,6 +30937,7 @@ fn rejectedAcceptance(target_ref: TargetRef, mode: Mode, blockers: []const Accep
 }
 
 fn populateActuationBlockerCounters(report: *AcceptanceReport, blockers: []const AcceptanceBlocker) void {
+    report.missing_actuator_count = 0;
     report.actuation_policy_blocker_count = 0;
     report.actuation_value_policy_blocker_count = 0;
     report.actuation_receipt_required_count = 0;

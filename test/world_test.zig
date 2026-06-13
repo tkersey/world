@@ -3264,6 +3264,23 @@ test "actuation environment preflight and supervision ledger account host effect
     try std.testing.expectEqual(@as(usize, 1), partial_agent_report.bound_port_count);
     try std.testing.expectEqual(@as(usize, 1), partial_agent_report.missing_port_count);
     try std.testing.expectEqual(@as(usize, 1), partial_agent_report.missing_actuator_count);
+    const invalid_partial_agent_plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = partial_agent_report.target_ref_fingerprint +% 1,
+        .world_surface_fingerprint = partial_agent_report.world_surface_fingerprint,
+        .target_certificate_fingerprint = partial_agent_report.target_certificate_fingerprint,
+        .routes = &.{world.Fabric.Route.init(.{
+            .route_id = 0x51ace_0bad,
+            .kind = .reject,
+            .parent_world_surface_fingerprint = partial_agent_report.world_surface_fingerprint,
+            .parent_target_certificate_fingerprint = partial_agent_report.target_certificate_fingerprint,
+            .parent_world_port_id = AgentToolDecl.world_port_id,
+            .response_status = .rejected,
+        })},
+    });
+    const invalid_partial_agent_plan_report = AgentPartialActuationEnv.acceptanceReportWithFabricPlan(.fresh, false, invalid_partial_agent_plan);
+    try std.testing.expect(!invalid_partial_agent_plan_report.accepted);
+    try std.testing.expectEqualSlices(world.AcceptanceBlocker, &.{.SupervisionPolicyMismatch}, invalid_partial_agent_plan_report.blockers);
+    try std.testing.expectEqual(@as(usize, 0), invalid_partial_agent_plan_report.missing_actuator_count);
     const duplicate_agent_binding = AgentDuplicateActuationEnv.bindActuator(AgentActuationBinding);
     const duplicate_agent_preflight = AgentDuplicateActuationEnv.preflightActuation(duplicate_agent_binding, world.Actuation.Policy.strict_fresh);
     try std.testing.expect(!duplicate_agent_preflight.accepted);
