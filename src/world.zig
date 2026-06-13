@@ -20111,6 +20111,10 @@ pub const Actuation = struct {
             return portRuleAllowsSelectedActuatorStatus(rule, selectedActuatorResponseStatus(selected_actuator));
         }
 
+        fn permitPolicyAllowsSelectedActuatorStatus(policy: Supervision.SupervisionPolicy, selected_actuator: Interface) bool {
+            return permitPolicyAllowsActuationResponseStatus(policy, selectedActuatorResponseStatus(selected_actuator));
+        }
+
         fn selectedActuatorResponseStatus(selected_actuator: Interface) Actuation.ResponseStatus {
             return switch (selected_actuator) {
                 .replay => |replay| replay.expected_status,
@@ -20140,6 +20144,16 @@ pub const Actuation = struct {
             };
         }
 
+        fn permitPolicyAllowsActuationResponseStatus(policy: Supervision.SupervisionPolicy, status: Actuation.ResponseStatus) bool {
+            return switch (status) {
+                .responded => true,
+                .pending => policy.allow_pending_actuation,
+                .deferred => policy.allow_deferred_actuation,
+                .rejected, .cancelled => policy.allow_rejected_responses,
+                .failed => policy.allow_failed_responses,
+            };
+        }
+
         fn responseStatusCreatesPendingActuation(status: Actuation.ResponseStatus) bool {
             return status == .pending or status == .deferred;
         }
@@ -20162,6 +20176,7 @@ pub const Actuation = struct {
                 .verify => if (!policy.allow_verify_actuation) return error.SupervisionDenied,
                 .audit => if (!policy.allow_audit_only) return error.SupervisionDenied,
             }
+            if (!permitPolicyAllowsSelectedActuatorStatus(policy, args.actuator)) return error.SupervisionDenied;
             try validatePermitPrecommitActuationBudget(permit, args.intent, args.precommit_ledger, args.pending_actuation_receipt_fingerprint, actuatorCreatesPendingActuation(args.actuator));
             if (policy.require_idempotency_keys and args.intent.requested_mode == .fresh and args.intent.class.isMutation() and !args.key_present) return error.SupervisionDenied;
             if (args.intent.class == .irreversible_mutation and !policy.allow_irreversible_actuation) return error.SupervisionDenied;
