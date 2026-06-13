@@ -1623,6 +1623,45 @@ test "actuation membrane rejects mismatched envelope and descriptor bindings" {
         .target_ref_fingerprint = 0x4201,
         .world_surface_fingerprint = 0x4202,
     }));
+
+    const human_ref = world.Actuation.Ref.init(.{ .kind = .human_like, .class = .deterministic_fixture, .label = "binding-check-human" });
+    const human_descriptor = world.Actuation.Descriptor.init(.{
+        .actuator_ref = human_ref,
+        .world_surface_fingerprint = 0x4202,
+        .target_ref_fingerprint = 0x4201,
+        .world_port_id = 0,
+    });
+    const human_key = world.Actuation.IdempotencyKey.init(.{
+        .target_ref_fingerprint = 0x4201,
+        .world_surface_fingerprint = 0x4202,
+        .world_port_id = 0,
+        .request_fingerprint = 0x4203,
+        .actuator_ref_fingerprint = human_ref.ref_fingerprint,
+    });
+    const human_intent = world.Actuation.Intent.init(.{
+        .actuator_ref_fingerprint = human_ref.ref_fingerprint,
+        .descriptor_fingerprint = human_descriptor.descriptor_fingerprint,
+        .target_ref_fingerprint = 0x4201,
+        .world_surface_fingerprint = 0x4202,
+        .world_port_id = 0,
+        .frame_request_fingerprint = 0x4203,
+        .idempotency_key_fingerprint = human_key.key_fingerprint,
+        .class = .deterministic_fixture,
+        .requested_mode = .fresh,
+    });
+    const human_envelope = world.Actuation.Envelope.init(.{
+        .intent_fingerprint = human_intent.intent_fingerprint,
+        .idempotency_key = human_key,
+    });
+    try std.testing.expectError(error.AuthorityDenied, world.Actuation.Membrane.execute(.{
+        .policy = policy,
+        .intent = human_intent,
+        .envelope = human_envelope,
+        .descriptor = human_descriptor,
+        .actuator = .{ .fixture = .{ .frame_response_fingerprint = 0x4209 } },
+        .target_ref_fingerprint = 0x4201,
+        .world_surface_fingerprint = 0x4202,
+    }));
 }
 
 test "actuation verify report records matches and divergences" {
@@ -2450,6 +2489,18 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
         .envelope = envelope,
         .descriptor = descriptor,
         .actuator = .{ .fixture = .{ .frame_response_fingerprint = 0x6202 } },
+        .target_ref_fingerprint = 0x6102,
+        .world_surface_fingerprint = 0x6101,
+    }));
+    var unbound_precommit_ledger = try world.Supervision.UsageLedger.init(std.testing.allocator, valid_permit, 8);
+    defer unbound_precommit_ledger.deinit(std.testing.allocator);
+    try std.testing.expectError(error.SupervisionDenied, world.Actuation.Membrane.execute(.{
+        .policy = unsupervised_finite_cap_policy,
+        .intent = intent,
+        .envelope = envelope,
+        .descriptor = descriptor,
+        .actuator = .{ .fixture = .{ .frame_response_fingerprint = 0x6202 } },
+        .precommit_ledger = &unbound_precommit_ledger,
         .target_ref_fingerprint = 0x6102,
         .world_surface_fingerprint = 0x6101,
     }));

@@ -20224,7 +20224,7 @@ pub const Actuation = struct {
         }
 
         fn validateUnsupervisedStatefulPolicy(args: ExecuteArgs) !void {
-            if (args.run_permit != null or args.precommit_ledger != null or args.intent.run_permit_fingerprint != null) return;
+            if (args.intent.run_permit_fingerprint != null) return;
             if (args.policy.max_actuation_calls) |max_calls| {
                 if (max_calls > 0) return error.SupervisionDenied;
             }
