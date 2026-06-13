@@ -5865,6 +5865,27 @@ test "runspace actuation dispatch preserves pending mailbox state" {
         .response_routing_status_fingerprints = original_mailbox_image.response_routing_status_fingerprints,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, hidden_entry_actuation_mailbox.validate(.{}));
+    const original_pending_image = original_mailbox_image.pending_port_entries[0];
+    const uncommitted_receipt_pending_image = world.Capsule.PendingPortImage.init(.{
+        .pending_port_fingerprint = original_pending_image.pending_port_fingerprint,
+        .original_run_handle_fingerprint = original_pending_image.original_run_handle_fingerprint,
+        .mailbox_id = original_pending_image.mailbox_id,
+        .request_frame = original_pending_image.request_frame,
+        .expected_response_kind = original_pending_image.expected_response_kind,
+        .expected_response_value_table_id = original_pending_image.expected_response_value_table_id,
+        .target_ref_fingerprint = original_pending_image.target_ref_fingerprint,
+        .environment_certificate_fingerprint = original_pending_image.environment_certificate_fingerprint,
+        .run_permit_fingerprint = original_pending_image.run_permit_fingerprint,
+        .actuation_binding_fingerprint = original_pending_image.actuation_binding_fingerprint,
+        .actuation_descriptor_fingerprint = original_pending_image.actuation_descriptor_fingerprint,
+        .actuator_ref_fingerprint = original_pending_image.actuator_ref_fingerprint,
+        .pending_actuation_intent_fingerprint = original_pending_image.pending_actuation_intent_fingerprint,
+        .pending_actuation_receipt_fingerprint = original_pending_image.pending_actuation_receipt_fingerprint,
+        .committed_actuation_receipt = false,
+        .inserted_event_index = original_pending_image.inserted_event_index,
+        .status = original_pending_image.status,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, uncommitted_receipt_pending_image.validate());
     const thaw = try world.Capsule.planThaw(image, pending.target_ref_fingerprint, 0, null, .{
         .mode = .replay_only,
         .require_local_permit = false,

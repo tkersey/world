@@ -10617,6 +10617,7 @@ pub const Runspace = struct {
             try self.handle.validate();
             try validatePendingActuationMarker(self.pending_actuation_intent_fingerprint, self.pending_actuation_receipt_fingerprint);
             if (self.committed_actuation_receipt and self.pending_actuation_receipt_fingerprint == null) return error.InvalidFrameEncoding;
+            if (self.pending_actuation_receipt_fingerprint != null and !self.committed_actuation_receipt) return error.InvalidFrameEncoding;
             try validatePendingActuationBindingMarker(self.actuation_binding_fingerprint, self.actuation_descriptor_fingerprint, self.actuator_ref_fingerprint);
             if (fingerprintPendingPort(self) != self.pending_port_fingerprint) return error.InvalidFrameEncoding;
         }
@@ -21724,6 +21725,7 @@ pub const Capsule = struct {
             try validatePendingActuationMarker(self.pending_actuation_intent_fingerprint, self.pending_actuation_receipt_fingerprint);
             if (!legacy and runspace_image_format_version != 2) try validatePendingActuationBindingMarker(self.actuation_binding_fingerprint, self.actuation_descriptor_fingerprint, self.actuator_ref_fingerprint);
             if (self.committed_actuation_receipt and self.pending_actuation_receipt_fingerprint == null) return error.InvalidFrameEncoding;
+            if (self.pending_actuation_receipt_fingerprint != null and !self.committed_actuation_receipt) return error.InvalidFrameEncoding;
             if (!capsuleRunspaceImageFormatSupportsCommittedActuationReceipts(runspace_image_format_version) and self.committed_actuation_receipt) return error.InvalidFrameEncoding;
             if (self.request_frame.expected_response_value_table_id != self.expected_response_value_table_id) return error.InvalidFrameEncoding;
             const expected_pending_port_fingerprint = if (legacy)
