@@ -11818,6 +11818,13 @@ pub const Runspace = struct {
             .verify => if (!policy.allow_verify_actuation) return error.SupervisionDenied,
             .audit => if (!policy.allow_audit_only) return error.SupervisionDenied,
         }
+        switch (execution.receipt.responseStatus()) {
+            .responded => {},
+            .pending => if (!policy.allow_pending_actuation) return error.SupervisionDenied,
+            .deferred => if (!policy.allow_deferred_actuation) return error.SupervisionDenied,
+            .rejected, .cancelled => if (!policy.allow_rejected_responses) return error.SupervisionDenied,
+            .failed => if (!policy.allow_failed_responses) return error.SupervisionDenied,
+        }
         if (policy.require_idempotency_keys and execution.intent.requested_mode == .fresh and execution.intent.class.isMutation() and !execution.key_present) return error.SupervisionDenied;
         if (execution.intent.class == .irreversible_mutation and !policy.allow_irreversible_actuation) return error.SupervisionDenied;
         if (!Actuation.Membrane.permitAllowsDescriptorValuePolicy(permit, execution.intent.world_port_id, execution.descriptor)) return error.SupervisionDenied;
@@ -11825,6 +11832,7 @@ pub const Runspace = struct {
             if (rule.rule_fingerprint != fingerprintPortRule(rule)) return error.SupervisionDenied;
             if (rule.world_surface_fingerprint != execution.intent.world_surface_fingerprint) return error.SupervisionDenied;
             if (!rule.permitsMode(execution.intent.requested_mode)) return error.SupervisionDenied;
+            if (!portRuleAllowsActuationReceiptStatus(rule, execution.receipt.responseStatus())) return error.PortRuleDenied;
             if (execution.authority_kind) |kind| {
                 if (!rule.allowed_authority_kinds.allows(kind)) return error.AuthorityDenied;
             } else if (!std.meta.eql(rule.allowed_authority_kinds, Supervision.AllowedAuthorityKinds.all)) {
