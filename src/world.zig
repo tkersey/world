@@ -11970,8 +11970,9 @@ pub const Runspace = struct {
             if (execution.receipt.actuator_ref_fingerprint != pending.actuator_ref_fingerprint.?) return error.InvalidPendingPortTransition;
         }
         const matches_pending_actuation = try executionMatchesPendingActuation(pending, execution);
+        const fresh_pending_completion = matches_pending_actuation and !execution.receipt.replayed and !execution.receipt.verified;
         if (execution.intent.pending_port_fingerprint == null) return error.InvalidPendingPortTransition;
-        if (execution.intent.pending_port_fingerprint.? != pending.pending_port_fingerprint and !matches_pending_actuation) return error.InvalidPendingPortTransition;
+        if (execution.intent.pending_port_fingerprint.? != pending.pending_port_fingerprint and !fresh_pending_completion) return error.InvalidPendingPortTransition;
         if (execution.intent.run_permit_fingerprint != pending.run_permit_fingerprint) return error.InvalidRunspaceTransition;
         if (execution.intent.environment_certificate_fingerprint != pending.environment_certificate_fingerprint) return error.InvalidRunspaceTransition;
         const key = execution.envelope.idempotency_key;
@@ -11980,7 +11981,7 @@ pub const Runspace = struct {
         if (key.world_port_id != pending.world_port_id) return error.FramePortMismatch;
         if (key.request_fingerprint != pending.request_fingerprint) return error.FrameRequestFingerprintMismatch;
         if (key.pending_port_fingerprint == null) return error.InvalidPendingPortTransition;
-        if (key.pending_port_fingerprint.? != pending.pending_port_fingerprint and !matches_pending_actuation) return error.InvalidPendingPortTransition;
+        if (key.pending_port_fingerprint.? != pending.pending_port_fingerprint and !fresh_pending_completion) return error.InvalidPendingPortTransition;
         if (execution.response.world_port_id != pending.world_port_id) return error.FramePortMismatch;
         if (execution.response.request_fingerprint != pending.request_fingerprint) return error.FrameRequestFingerprintMismatch;
         if (execution.receipt.target_ref_fingerprint != pending.target_ref_fingerprint) return error.WrongTarget;
@@ -14913,6 +14914,7 @@ pub const Runspace = struct {
 
     fn enqueueInstalledPending(self: *@This(), index: usize, request: Frame.Request) !void {
         var slot = &self.slots.items[index];
+        const fabric_actuation_binding = self.installedFabricActuationBindingForSlotRequest(slot.*, request);
         var event_pair = try self.prepareEventPair(
             2,
             "installed port enqueued",
@@ -14927,6 +14929,9 @@ pub const Runspace = struct {
             .target_ref_fingerprint = slot.target_ref.target_ref_fingerprint,
             .environment_certificate_fingerprint = slot.environment_certificate_fingerprint,
             .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .actuation_binding_fingerprint = if (fabric_actuation_binding) |binding| binding.binding_fingerprint else null,
+            .actuation_descriptor_fingerprint = if (fabric_actuation_binding) |binding| binding.descriptor_fingerprint else null,
+            .actuator_ref_fingerprint = if (fabric_actuation_binding) |binding| binding.actuator_ref_fingerprint else null,
             .inserted_event_index = self.next_event_index,
         });
         self.next_mailbox_id += 1;
@@ -15152,6 +15157,24 @@ pub const Runspace = struct {
                 .binding_fingerprint = binding.binding_fingerprint,
                 .descriptor_fingerprint = binding.descriptor_fingerprint,
                 .actuator_ref_fingerprint = binding.actuator_ref_fingerprint,
+            };
+        }
+        return null;
+    }
+
+    fn installedFabricActuationBindingForSlotRequest(self: *const @This(), slot: Runspace.RunSlot, request: Frame.Request) ?FabricActuationBinding {
+        const plan_fingerprint = fabricPlanFingerprintForSlot(slot) orelse return null;
+        for (self.fabric_routes.items, self.fabric_route_plan_fingerprints.items) |route, route_plan_fingerprint| {
+            if (route_plan_fingerprint != plan_fingerprint) continue;
+            if (route.kind != .adapter) continue;
+            if (!route.hasActuationRouteBinding()) continue;
+            if (route.parent_world_surface_fingerprint != 0 and route.parent_world_surface_fingerprint != request.world_surface_fingerprint) continue;
+            if (route.parent_target_certificate_fingerprint != 0 and route.parent_target_certificate_fingerprint != request.target_certificate_fingerprint) continue;
+            if (route.parent_world_port_id != request.world_port_id) continue;
+            return .{
+                .binding_fingerprint = route.actuation_binding_fingerprint.?,
+                .descriptor_fingerprint = route.actuation_descriptor_fingerprint.?,
+                .actuator_ref_fingerprint = route.actuator_ref_fingerprint.?,
             };
         }
         return null;

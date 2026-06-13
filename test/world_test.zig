@@ -6526,6 +6526,8 @@ test "runspace pending actuation replay resolution enforces authority rules" {
     });
     const pending_receipt = try runspace.dispatchActuation(0, pending_execution);
     try std.testing.expect(pending_receipt.pending);
+    const continued_pending = try runspace.mailbox.get(0);
+    try std.testing.expectEqual(@as(?u64, pending_receipt.receipt_fingerprint), continued_pending.pending_actuation_receipt_fingerprint);
 
     var terminal_precommit_supervisor = (try runspace.cloneSlotSupervisor(std.testing.allocator, handle)).?;
     defer terminal_precommit_supervisor.deinit();
@@ -6547,18 +6549,26 @@ test "runspace pending actuation replay resolution enforces authority rules" {
         .world_surface_fingerprint = request.world_surface_fingerprint,
     });
     const terminal_receipt = terminal_execution.receipt;
+    const replay_key = world.Actuation.IdempotencyKey.init(.{
+        .target_ref_fingerprint = continued_pending.target_ref_fingerprint,
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .world_port_id = request.world_port_id,
+        .request_fingerprint = request.request_fingerprint,
+        .pending_port_fingerprint = continued_pending.pending_port_fingerprint,
+        .actuator_ref_fingerprint = actuator_ref.ref_fingerprint,
+    });
     const replay_intent = world.Actuation.Intent.init(.{
         .actuator_ref_fingerprint = actuator_ref.ref_fingerprint,
         .descriptor_fingerprint = descriptor.descriptor_fingerprint,
         .binding_fingerprint = binding.binding_fingerprint,
-        .target_ref_fingerprint = pending.target_ref_fingerprint,
+        .target_ref_fingerprint = continued_pending.target_ref_fingerprint,
         .world_surface_fingerprint = request.world_surface_fingerprint,
         .world_port_id = request.world_port_id,
-        .pending_port_fingerprint = pending.pending_port_fingerprint,
+        .pending_port_fingerprint = continued_pending.pending_port_fingerprint,
         .frame_request_fingerprint = request.request_fingerprint,
         .encoded_frame_request_fingerprint = request.frame_fingerprint,
-        .idempotency_key_fingerprint = key.key_fingerprint,
-        .run_permit_fingerprint = pending.run_permit_fingerprint,
+        .idempotency_key_fingerprint = replay_key.key_fingerprint,
+        .run_permit_fingerprint = continued_pending.run_permit_fingerprint,
         .environment_certificate_fingerprint = permit.environment_certificate_fingerprint,
         .class = .idempotent_mutation,
         .requested_mode = .replay,
@@ -6566,7 +6576,7 @@ test "runspace pending actuation replay resolution enforces authority rules" {
     const replay_envelope = world.Actuation.Envelope.init(.{
         .intent_fingerprint = replay_intent.intent_fingerprint,
         .encoded_frame_request_fingerprint = request.frame_fingerprint,
-        .idempotency_key = key,
+        .idempotency_key = replay_key,
         .expected_response_value_ref = descriptor.response_value_ref,
         .expected_response_value_table_id = request.expected_response_value_table_id,
     });
@@ -6622,6 +6632,83 @@ test "runspace pending actuation replay resolution enforces authority rules" {
         .parent_terminal = replay_response.isTerminalForParent(),
     };
     try replay_execution.validate();
+
+    const forged_replay_key = world.Actuation.IdempotencyKey.init(.{
+        .target_ref_fingerprint = continued_pending.target_ref_fingerprint,
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .world_port_id = request.world_port_id,
+        .request_fingerprint = request.request_fingerprint,
+        .pending_port_fingerprint = continued_pending.pending_port_fingerprint +% 1,
+        .actuator_ref_fingerprint = actuator_ref.ref_fingerprint,
+    });
+    const forged_replay_intent = world.Actuation.Intent.init(.{
+        .actuator_ref_fingerprint = actuator_ref.ref_fingerprint,
+        .descriptor_fingerprint = descriptor.descriptor_fingerprint,
+        .binding_fingerprint = binding.binding_fingerprint,
+        .target_ref_fingerprint = continued_pending.target_ref_fingerprint,
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .world_port_id = request.world_port_id,
+        .pending_port_fingerprint = continued_pending.pending_port_fingerprint +% 1,
+        .frame_request_fingerprint = request.request_fingerprint,
+        .encoded_frame_request_fingerprint = request.frame_fingerprint,
+        .idempotency_key_fingerprint = forged_replay_key.key_fingerprint,
+        .run_permit_fingerprint = continued_pending.run_permit_fingerprint,
+        .environment_certificate_fingerprint = permit.environment_certificate_fingerprint,
+        .class = .idempotent_mutation,
+        .requested_mode = .replay,
+    });
+    const forged_replay_envelope = world.Actuation.Envelope.init(.{
+        .intent_fingerprint = forged_replay_intent.intent_fingerprint,
+        .encoded_frame_request_fingerprint = request.frame_fingerprint,
+        .idempotency_key = forged_replay_key,
+        .expected_response_value_ref = descriptor.response_value_ref,
+        .expected_response_value_table_id = request.expected_response_value_table_id,
+    });
+    const forged_replay_decision = world.Actuation.Membrane.decide(.{
+        .policy = replay_policy,
+        .intent = forged_replay_intent,
+        .attempt_number = 4,
+    });
+    const forged_replay_commit = try world.Actuation.Membrane.commit(forged_replay_decision, forged_replay_envelope, .replayed, 4);
+    const forged_replay_response = world.Actuation.Response.init(.{
+        .intent_fingerprint = forged_replay_intent.intent_fingerprint,
+        .commit_fingerprint = forged_replay_commit.commit_fingerprint,
+        .actuator_ref_fingerprint = forged_replay_intent.actuator_ref_fingerprint,
+        .world_port_id = forged_replay_intent.world_port_id,
+        .request_fingerprint = forged_replay_intent.frame_request_fingerprint,
+        .status = .rejected,
+        .response_kind = terminal_receipt.response_kind,
+        .frame_response_fingerprint = terminal_receipt.frame_response_fingerprint,
+        .metadata = "forged pending port replay resolution",
+    });
+    const forged_replay_receipt = world.Actuation.Receipt.fromResponse(.{
+        .intent = forged_replay_intent,
+        .envelope = forged_replay_envelope,
+        .decision = forged_replay_decision,
+        .commit = forged_replay_commit,
+        .response = forged_replay_response,
+        .target_ref_fingerprint = forged_replay_intent.target_ref_fingerprint,
+        .world_surface_fingerprint = forged_replay_intent.world_surface_fingerprint,
+        .class = forged_replay_intent.class,
+        .mode = forged_replay_intent.requested_mode,
+        .pending_actuation_receipt_fingerprint = pending_receipt.receipt_fingerprint,
+    });
+    const forged_replay_execution = world.Actuation.Membrane.Execution{
+        .policy = replay_policy,
+        .intent = forged_replay_intent,
+        .envelope = forged_replay_envelope,
+        .descriptor = descriptor,
+        .binding = binding,
+        .decision = forged_replay_decision,
+        .commit_value = forged_replay_commit,
+        .response = forged_replay_response,
+        .receipt = forged_replay_receipt,
+        .authority_kind = .replay_source,
+        .parent_terminal = forged_replay_response.isTerminalForParent(),
+    };
+    try forged_replay_execution.validate();
+    try std.testing.expectError(error.InvalidPendingPortTransition, runspace.dispatchActuation(0, forged_replay_execution));
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try runspace.mailbox.get(0)).status);
 
     const event_count_before = runspace.events.items.len;
     try std.testing.expectError(error.AuthorityDenied, runspace.dispatchActuation(0, replay_execution));
@@ -40576,6 +40663,70 @@ test "fabric-covered replay admission requires transcript evidence" {
     var direct_actuation_install = world.Runspace.init(std.testing.allocator, .{ .require_supervision = true });
     defer direct_actuation_install.deinit();
     _ = try direct_actuation_install.installAdmitted(direct_actuation_result.admitted_run.?);
+
+    const admitted_adapter_binding = PortsActuationOnlyBinding.actuationBindingRecord();
+    const admitted_adapter_route = world.Fabric.Route.init(.{
+        .route_id = 0x5150_ad10,
+        .kind = .adapter,
+        .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .parent_world_port_id = 0,
+        .actuator_ref_fingerprint = admitted_adapter_binding.actuator_ref_fingerprint,
+        .actuation_descriptor_fingerprint = admitted_adapter_binding.descriptor_fingerprint,
+        .actuation_binding_fingerprint = admitted_adapter_binding.binding_fingerprint,
+    });
+    const admitted_adapter_plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .routes = &.{admitted_adapter_route},
+    });
+    const adapter_actuation_image = world.RunImage.init(.{
+        .kind = .parked_run,
+        .target_ref = parent_ref,
+        .import_set_fingerprint = PortsNativeAndActuationEnv.import_set.import_set_fingerprint,
+        .current_state = direct_actuation_state,
+        .pending_request_frame = direct_actuation_request,
+        .environment_certificate_fingerprint = PortsNativeAndActuationEnv.certificate(.fresh, false).certificate_fingerprint,
+        .acceptance_report_fingerprint = PortsNativeAndActuationEnv.acceptanceReportWithFabricPlan(.fresh, false, admitted_adapter_plan).report_fingerprint,
+    });
+    const adapter_actuation_package = world.Admission.TransferPackage.init(.{
+        .kind = .parked_run,
+        .target_ref = parent_ref,
+        .run_image = adapter_actuation_image,
+        .requested_mode = .resume_parked,
+    });
+    const adapter_actuation_permit = world.Supervision.issue(fixtures.Ports.Target, PortsNativeAndActuationEnv, .{
+        .mode = .fresh,
+        .fabric_plan_fingerprint = admitted_adapter_plan.plan_fingerprint,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_handoff_accept = true,
+            .allow_fabric_routes = true,
+            .allow_actuation = true,
+            .allow_fresh_actuation = true,
+        }),
+    });
+    var adapter_actuation_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, PortsNativeAndActuationEnv, adapter_actuation_package, .{
+        .fabric_plan = admitted_adapter_plan,
+        .permit = adapter_actuation_permit,
+    });
+    defer adapter_actuation_result.deinit(std.testing.allocator);
+    try std.testing.expect(adapter_actuation_result.report.accepted);
+    var adapter_actuation_install = world.Runspace.init(std.testing.allocator, .{ .require_supervision = true });
+    defer adapter_actuation_install.deinit();
+    _ = try adapter_actuation_install.installAdmitted(adapter_actuation_result.admitted_run.?);
+    const adapter_pending = try adapter_actuation_install.mailbox.get(0);
+    try std.testing.expectEqual(@as(?u64, admitted_adapter_binding.binding_fingerprint), adapter_pending.actuation_binding_fingerprint);
+    try std.testing.expectEqual(@as(?u64, admitted_adapter_binding.descriptor_fingerprint), adapter_pending.actuation_descriptor_fingerprint);
+    try std.testing.expectEqual(@as(?u64, admitted_adapter_binding.actuator_ref_fingerprint), adapter_pending.actuator_ref_fingerprint);
+    try std.testing.expectError(error.InvalidPendingPortTransition, adapter_actuation_install.reject(0, "admitted adapter direct reject bypass"));
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try adapter_actuation_install.mailbox.get(0)).status);
+    try std.testing.expectError(error.InvalidPendingPortTransition, adapter_actuation_install.fail(0, "admitted adapter direct fail bypass"));
+    try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try adapter_actuation_install.mailbox.get(0)).status);
 
     const direct_actuation_budget_permit = world.Supervision.issue(fixtures.Ports.Target, PortsActuationOnlyEnv, .{
         .mode = .fresh,
