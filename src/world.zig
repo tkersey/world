@@ -11959,6 +11959,7 @@ pub const Runspace = struct {
             const request = pending.request_frame orelse return error.InvalidPendingPortTransition;
             if (request.payload_value_fingerprint == null or request.payload_value_fingerprint.? != payload) return error.PayloadRefMismatch;
         }
+        try validateActuationDescriptorPayloadContractForPending(pending, execution.descriptor);
         try validatePendingActuationMarker(pending.pending_actuation_intent_fingerprint, pending.pending_actuation_receipt_fingerprint);
         try validatePendingActuationBindingMarker(pending.actuation_binding_fingerprint, pending.actuation_descriptor_fingerprint, pending.actuator_ref_fingerprint);
         if (pending.actuation_binding_fingerprint) |binding_fingerprint| {
@@ -11989,6 +11990,16 @@ pub const Runspace = struct {
         if (execution.receipt.world_port_id != pending.world_port_id) return error.FramePortMismatch;
         if (execution.receipt.run_permit_fingerprint != pending.run_permit_fingerprint) return error.InvalidRunspaceTransition;
         if (execution.receipt.environment_certificate_fingerprint != pending.environment_certificate_fingerprint) return error.InvalidRunspaceTransition;
+    }
+
+    fn validateActuationDescriptorPayloadContractForPending(pending: Runspace.PendingPort, descriptor_value: ?Actuation.Descriptor) !void {
+        const descriptor = descriptor_value orelse return;
+        if (descriptor.payload_value_table_id) |expected| {
+            const request = pending.request_frame orelse return error.PayloadRefMismatch;
+            if (request.payload_value_table_id == null or request.payload_value_table_id.? != expected) return error.PayloadRefMismatch;
+        }
+        if (descriptor.payload_value_ref != null and pending.actuation_binding_fingerprint == null) return error.PayloadRefMismatch;
+        if (descriptor.payload_value_ref != null and pending.request_frame == null) return error.PayloadRefMismatch;
     }
 
     fn frameResponseFromActuation(self: *@This(), pending: Runspace.PendingPort, actuation_response: Actuation.Response) !Frame.Response {

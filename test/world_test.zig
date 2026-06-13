@@ -5878,6 +5878,91 @@ test "runspace actuation dispatch preserves pending mailbox state" {
     });
     try std.testing.expectError(error.InvalidPendingPortTransition, runspace.dispatchActuation(0, stale_execution));
 
+    const mismatched_payload_descriptor = world.Actuation.Descriptor.init(.{
+        .actuator_ref = ref,
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .target_ref_fingerprint = pending.target_ref_fingerprint,
+        .world_port_id = request.world_port_id,
+        .payload_value_table_id = (request.payload_value_table_id orelse 0) +% 1,
+        .response_value_table_id = request.expected_response_value_table_id,
+        .allowed_response_kinds = world.Actuation.ResponseStatusSet.all,
+    });
+    const mismatched_payload_intent = world.Actuation.Intent.init(.{
+        .actuator_ref_fingerprint = ref.ref_fingerprint,
+        .descriptor_fingerprint = mismatched_payload_descriptor.descriptor_fingerprint,
+        .target_ref_fingerprint = pending.target_ref_fingerprint,
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .world_port_id = request.world_port_id,
+        .pending_port_fingerprint = pending.pending_port_fingerprint,
+        .frame_request_fingerprint = request.request_fingerprint,
+        .encoded_frame_request_fingerprint = request.frame_fingerprint,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .run_permit_fingerprint = pending.run_permit_fingerprint,
+        .environment_certificate_fingerprint = pending.environment_certificate_fingerprint,
+        .class = .deterministic_fixture,
+        .requested_mode = .fresh,
+    });
+    const mismatched_payload_envelope = world.Actuation.Envelope.init(.{
+        .intent_fingerprint = mismatched_payload_intent.intent_fingerprint,
+        .encoded_frame_request_fingerprint = request.frame_fingerprint,
+        .idempotency_key = key,
+        .expected_response_value_table_id = request.expected_response_value_table_id,
+    });
+    const mismatched_payload_execution = try world.Actuation.Membrane.execute(.{
+        .policy = world.Actuation.Policy.fixture_test,
+        .intent = mismatched_payload_intent,
+        .envelope = mismatched_payload_envelope,
+        .actuator = .{ .pending = .{ .frame_response_fingerprint = 0x5150_aaab } },
+        .descriptor = mismatched_payload_descriptor,
+        .attempt_number = 1,
+        .target_ref_fingerprint = pending.target_ref_fingerprint,
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+    });
+    try std.testing.expectError(error.PayloadRefMismatch, runspace.dispatchActuation(0, mismatched_payload_execution));
+
+    const unbound_payload_ref_descriptor = world.Actuation.Descriptor.init(.{
+        .actuator_ref = ref,
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .target_ref_fingerprint = pending.target_ref_fingerprint,
+        .world_port_id = request.world_port_id,
+        .payload_value_ref = 1,
+        .payload_value_table_id = request.payload_value_table_id,
+        .response_value_table_id = request.expected_response_value_table_id,
+        .allowed_response_kinds = world.Actuation.ResponseStatusSet.all,
+    });
+    const unbound_payload_ref_intent = world.Actuation.Intent.init(.{
+        .actuator_ref_fingerprint = ref.ref_fingerprint,
+        .descriptor_fingerprint = unbound_payload_ref_descriptor.descriptor_fingerprint,
+        .target_ref_fingerprint = pending.target_ref_fingerprint,
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .world_port_id = request.world_port_id,
+        .pending_port_fingerprint = pending.pending_port_fingerprint,
+        .frame_request_fingerprint = request.request_fingerprint,
+        .encoded_frame_request_fingerprint = request.frame_fingerprint,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .run_permit_fingerprint = pending.run_permit_fingerprint,
+        .environment_certificate_fingerprint = pending.environment_certificate_fingerprint,
+        .class = .deterministic_fixture,
+        .requested_mode = .fresh,
+    });
+    const unbound_payload_ref_envelope = world.Actuation.Envelope.init(.{
+        .intent_fingerprint = unbound_payload_ref_intent.intent_fingerprint,
+        .encoded_frame_request_fingerprint = request.frame_fingerprint,
+        .idempotency_key = key,
+        .expected_response_value_table_id = request.expected_response_value_table_id,
+    });
+    const unbound_payload_ref_execution = try world.Actuation.Membrane.execute(.{
+        .policy = world.Actuation.Policy.fixture_test,
+        .intent = unbound_payload_ref_intent,
+        .envelope = unbound_payload_ref_envelope,
+        .actuator = .{ .pending = .{ .frame_response_fingerprint = 0x5150_aaac } },
+        .descriptor = unbound_payload_ref_descriptor,
+        .attempt_number = 1,
+        .target_ref_fingerprint = pending.target_ref_fingerprint,
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+    });
+    try std.testing.expectError(error.PayloadRefMismatch, runspace.dispatchActuation(0, unbound_payload_ref_execution));
+
     const execution = try world.Actuation.Membrane.execute(.{
         .policy = world.Actuation.Policy.fixture_test,
         .intent = intent,
