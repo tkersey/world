@@ -18167,6 +18167,10 @@ pub const Actuation = struct {
         fingerprint: u64,
     };
 
+    fn validateOptionalFingerprint(value: ?u64) !void {
+        if (value != null and value.? == 0) return error.InvalidFrameEncoding;
+    }
+
     pub const Ref = struct {
         format_version: u32 = world_actuator_ref_format_version,
         fingerprint_version: u32 = world_actuator_ref_fingerprint_version,
@@ -18695,6 +18699,11 @@ pub const Actuation = struct {
             if (self.fingerprint_version != world_actuation_idempotency_key_fingerprint_version) return error.InvalidFrameEncoding;
             if (self.target_ref_fingerprint == 0 or self.world_surface_fingerprint == 0) return error.InvalidFrameEncoding;
             if (self.request_fingerprint == 0 or self.actuator_ref_fingerprint == 0) return error.InvalidFrameEncoding;
+            try validateOptionalFingerprint(self.replay_key_fingerprint);
+            try validateOptionalFingerprint(self.run_handle_fingerprint);
+            try validateOptionalFingerprint(self.pending_port_fingerprint);
+            try validateOptionalFingerprint(self.capsule_fingerprint);
+            try validateOptionalFingerprint(self.intent_fingerprint);
             if (self.metadata.len > world_max_decoded_byte_field_len) return error.InvalidFrameEncoding;
             if (self.key_fingerprint != fingerprintIdempotencyKey(self)) return error.InvalidFrameEncoding;
         }
@@ -18778,6 +18787,14 @@ pub const Actuation = struct {
             if (self.actuator_ref_fingerprint == 0 or self.descriptor_fingerprint == 0) return error.InvalidFrameEncoding;
             if (self.target_ref_fingerprint == 0 or self.world_surface_fingerprint == 0) return error.InvalidFrameEncoding;
             if (self.frame_request_fingerprint == 0 or self.idempotency_key_fingerprint == 0) return error.InvalidFrameEncoding;
+            try validateOptionalFingerprint(self.binding_fingerprint);
+            try validateOptionalFingerprint(self.pending_port_fingerprint);
+            try validateOptionalFingerprint(self.encoded_frame_request_fingerprint);
+            try validateOptionalFingerprint(self.payload_value_image_fingerprint);
+            try validateOptionalFingerprint(self.run_permit_fingerprint);
+            try validateOptionalFingerprint(self.environment_certificate_fingerprint);
+            try validateOptionalFingerprint(self.fabric_invocation_fingerprint);
+            try validateOptionalFingerprint(self.capsule_fingerprint);
             if (self.metadata.len > world_max_decoded_byte_field_len) return error.InvalidFrameEncoding;
             if (self.intent_fingerprint != fingerprintIntent(self)) return error.InvalidFrameEncoding;
         }
@@ -18829,6 +18846,9 @@ pub const Actuation = struct {
             if (self.format_version != world_actuation_envelope_format_version) return error.InvalidFrameEncoding;
             if (self.fingerprint_version != world_actuation_envelope_fingerprint_version) return error.InvalidFrameEncoding;
             if (self.intent_fingerprint == 0) return error.InvalidFrameEncoding;
+            try validateOptionalFingerprint(self.encoded_frame_request_fingerprint);
+            try validateOptionalFingerprint(self.payload_value_image_fingerprint);
+            try validateNoZeroU64(self.supervision_ref_fingerprints);
             try self.idempotency_key.validate();
             if (self.metadata.len > (policy.max_actuation_metadata_bytes orelse world_max_decoded_byte_field_len)) return error.InvalidFrameEncoding;
             if (self.envelope_fingerprint != fingerprintEnvelope(self)) return error.InvalidFrameEncoding;

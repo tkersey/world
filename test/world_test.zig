@@ -504,6 +504,51 @@ test "actuation policy idempotency key and intent gates are deterministic" {
         .attempt_scope = .per_run,
     });
     try key.validate();
+    const zero_replay_key = world.Actuation.IdempotencyKey.init(.{
+        .target_ref_fingerprint = 0x3101,
+        .world_surface_fingerprint = 0x3102,
+        .world_port_id = 1,
+        .request_fingerprint = 0x3103,
+        .replay_key_fingerprint = 0,
+        .actuator_ref_fingerprint = ref.ref_fingerprint,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, zero_replay_key.validate());
+    const zero_run_handle_key = world.Actuation.IdempotencyKey.init(.{
+        .target_ref_fingerprint = 0x3101,
+        .world_surface_fingerprint = 0x3102,
+        .world_port_id = 1,
+        .request_fingerprint = 0x3103,
+        .run_handle_fingerprint = 0,
+        .actuator_ref_fingerprint = ref.ref_fingerprint,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, zero_run_handle_key.validate());
+    const zero_pending_key = world.Actuation.IdempotencyKey.init(.{
+        .target_ref_fingerprint = 0x3101,
+        .world_surface_fingerprint = 0x3102,
+        .world_port_id = 1,
+        .request_fingerprint = 0x3103,
+        .pending_port_fingerprint = 0,
+        .actuator_ref_fingerprint = ref.ref_fingerprint,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, zero_pending_key.validate());
+    const zero_capsule_key = world.Actuation.IdempotencyKey.init(.{
+        .target_ref_fingerprint = 0x3101,
+        .world_surface_fingerprint = 0x3102,
+        .world_port_id = 1,
+        .request_fingerprint = 0x3103,
+        .capsule_fingerprint = 0,
+        .actuator_ref_fingerprint = ref.ref_fingerprint,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, zero_capsule_key.validate());
+    const zero_intent_key = world.Actuation.IdempotencyKey.init(.{
+        .target_ref_fingerprint = 0x3101,
+        .world_surface_fingerprint = 0x3102,
+        .world_port_id = 1,
+        .request_fingerprint = 0x3103,
+        .actuator_ref_fingerprint = ref.ref_fingerprint,
+        .intent_fingerprint = 0,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, zero_intent_key.validate());
     const changed = world.Actuation.IdempotencyKey.init(.{
         .target_ref_fingerprint = 0x3101,
         .world_surface_fingerprint = 0x3102,
@@ -532,6 +577,46 @@ test "actuation policy idempotency key and intent gates are deterministic" {
         .requested_mode = .fresh,
     });
     try intent.validate();
+    const zero_optional_intent = world.Actuation.Intent.init(.{
+        .actuator_ref_fingerprint = ref.ref_fingerprint,
+        .descriptor_fingerprint = descriptor.descriptor_fingerprint,
+        .binding_fingerprint = 0,
+        .target_ref_fingerprint = 0x3101,
+        .world_surface_fingerprint = 0x3102,
+        .world_port_id = 1,
+        .pending_port_fingerprint = 0x3106,
+        .frame_request_fingerprint = 0x3103,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .class = .idempotent_mutation,
+        .requested_mode = .fresh,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, zero_optional_intent.validate());
+    const zero_payload_intent = world.Actuation.Intent.init(.{
+        .actuator_ref_fingerprint = ref.ref_fingerprint,
+        .descriptor_fingerprint = descriptor.descriptor_fingerprint,
+        .target_ref_fingerprint = 0x3101,
+        .world_surface_fingerprint = 0x3102,
+        .world_port_id = 1,
+        .frame_request_fingerprint = 0x3103,
+        .payload_value_image_fingerprint = 0,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .class = .idempotent_mutation,
+        .requested_mode = .fresh,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, zero_payload_intent.validate());
+
+    const envelope = world.Actuation.Envelope.init(.{
+        .intent_fingerprint = intent.intent_fingerprint,
+        .encoded_frame_request_fingerprint = 0,
+        .idempotency_key = key,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, envelope.validate(world.Actuation.Policy.fixture_test));
+    const supervision_ref_envelope = world.Actuation.Envelope.init(.{
+        .intent_fingerprint = intent.intent_fingerprint,
+        .idempotency_key = key,
+        .supervision_ref_fingerprints = &.{0},
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, supervision_ref_envelope.validate(world.Actuation.Policy.fixture_test));
 
     const strict = world.Actuation.Policy.strict_fresh;
     try std.testing.expect(strict.requiresKeyForClass(.idempotent_mutation, .fresh));
@@ -4152,7 +4237,6 @@ test "actuation environment preflight and supervision ledger account host effect
         .class = .idempotent_mutation,
         .requested_mode = .fresh,
         .run_permit_fingerprint = missing_certificate_permit.permit_fingerprint,
-        .environment_certificate_fingerprint = 0,
     });
     const missing_certificate_envelope = world.Actuation.Envelope.init(.{
         .intent_fingerprint = missing_certificate_intent.intent_fingerprint,
