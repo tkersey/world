@@ -29740,6 +29740,12 @@ pub const Continuity = struct {
         hashU64(&hasher, envelope.object_byte_len);
         hashU64(&hasher, envelope.dependency_refs.len);
         for (envelope.dependency_refs) |dep| hashU64(&hasher, dep.ref_fingerprint);
+        hashU64(&hasher, envelope.summary_metadata_bytes.len);
+        hashBytes(&hasher, envelope.summary_metadata_bytes);
+        hashU64(&hasher, envelope.label.len);
+        hashBytes(&hasher, envelope.label);
+        hashU64(&hasher, envelope.metadata.len);
+        hashBytes(&hasher, envelope.metadata);
         return hasher.final();
     }
 
@@ -30668,6 +30674,7 @@ pub const Continuity = struct {
 
     fn receiptMatchesIdempotencyKey(receipt: Actuation.Receipt, key: Actuation.IdempotencyKey) bool {
         const request_fingerprint = receipt.request_fingerprint orelse return false;
+        if (receipt.idempotency_key_fingerprint != key.key_fingerprint) return false;
         if (receipt.target_ref_fingerprint != key.target_ref_fingerprint) return false;
         if (receipt.world_surface_fingerprint != key.world_surface_fingerprint) return false;
         if (receipt.world_port_id != key.world_port_id) return false;
@@ -30823,7 +30830,7 @@ test "continuity object envelope encode decode preserves dependencies" {
         .label = "different label",
         .metadata = "different metadata",
     });
-    try std.testing.expectEqual(envelope.envelope_fingerprint, same_identity_different_diagnostics.envelope_fingerprint);
+    try std.testing.expect(envelope.envelope_fingerprint != same_identity_different_diagnostics.envelope_fingerprint);
 }
 
 test "continuity object envelope rejects bad payload and envelope fingerprints" {
@@ -30934,8 +30941,7 @@ test "memory vault put get has list and deduplicates envelopes" {
         .label = "diagnostic label changed",
         .metadata = "diagnostic metadata changed",
     });
-    const relabeled_duplicate = try vault.put(relabeled);
-    try std.testing.expect(ref.eql(relabeled_duplicate));
+    try std.testing.expectError(error.InvalidFrameEncoding, vault.put(relabeled));
     try std.testing.expect(vault.has(ref));
     try std.testing.expectEqual(@as(usize, 1), vault.objectCount());
 
@@ -31191,6 +31197,30 @@ test "bundle export enforces object count and byte limits" {
         &.{first},
         .{ .max_bundle_bytes = 1 },
     ));
+}
+
+test "object envelope fingerprint binds metadata fields" {
+    const envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .capsule_manifest,
+        .object_format_version = world_capsule_manifest_format_version,
+        .payload_bytes = "manifest",
+        .summary_metadata_bytes = "summary",
+        .label = "label",
+        .metadata = "metadata",
+    });
+    try envelope.validate();
+
+    var changed_summary = envelope;
+    changed_summary.summary_metadata_bytes = "changed";
+    try std.testing.expectError(error.InvalidFrameEncoding, changed_summary.validate());
+
+    var changed_label = envelope;
+    changed_label.label = "changed";
+    try std.testing.expectError(error.InvalidFrameEncoding, changed_label.validate());
+
+    var changed_metadata = envelope;
+    changed_metadata.metadata = "changed";
+    try std.testing.expectError(error.InvalidFrameEncoding, changed_metadata.validate());
 }
 
 test "bundle validation rejects manifest roots absent from envelopes" {
@@ -33314,6 +33344,28 @@ test "actuation index finds receipts by actuator target port capsule state and i
     _ = try forged_vault.putActuationReceipt(forged);
     const forged_index = Continuity.ActuationIndex.init(&forged_vault);
     try std.testing.expect((try forged_index.byIdempotencyKey(key)) == null);
+
+    var wrong_fingerprint_vault = Continuity.MemoryVault.init(allocator);
+    defer wrong_fingerprint_vault.deinit();
+    const wrong_key_fingerprint = Actuation.Receipt.init(.{
+        .intent_fingerprint = 0x3301_0051,
+        .envelope_fingerprint = 0x3301_0052,
+        .decision_fingerprint = 0x3301_0053,
+        .commit_fingerprint = 0x3301_0054,
+        .response_fingerprint = 0x3301_0055,
+        .actuator_ref_fingerprint = key.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = key.key_fingerprint ^ 1,
+        .request_fingerprint = key.request_fingerprint,
+        .target_ref_fingerprint = key.target_ref_fingerprint,
+        .world_surface_fingerprint = key.world_surface_fingerprint,
+        .world_port_id = key.world_port_id,
+        .class = .deterministic_fixture,
+        .mode = .audit,
+        .pending = true,
+    });
+    _ = try wrong_fingerprint_vault.putActuationReceipt(wrong_key_fingerprint);
+    const wrong_fingerprint_index = Continuity.ActuationIndex.init(&wrong_fingerprint_vault);
+    try std.testing.expect((try wrong_fingerprint_index.byIdempotencyKey(key)) == null);
 }
 
 test "actuation idempotency lookup rejects conflicting terminal receipts" {
