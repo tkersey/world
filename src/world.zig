@@ -28130,6 +28130,7 @@ pub const Continuity = struct {
 
         pub fn putActuationReceipt(self: *@This(), receipt: Actuation.Receipt) !ObjectRef {
             try receipt.validate();
+            try self.rejectDuplicateFreshCommitReceipt(receipt);
             const payload = try receipt.encode(self.allocator);
             defer self.allocator.free(payload);
             const deps = try actuationReceiptStoredDependencyRefs(self, receipt);
@@ -28144,6 +28145,18 @@ pub const Continuity = struct {
             const ref = try self.put(envelope);
             try self.ledger.record(.actuation_receipt_stored, ref);
             return ref;
+        }
+
+        fn rejectDuplicateFreshCommitReceipt(self: @This(), receipt: Actuation.Receipt) !void {
+            if (!receiptIsTerminalFreshCommit(receipt)) return;
+            for (self.objects.items) |envelope| {
+                if (envelope.kind != .actuation_receipt) continue;
+                var existing = try Actuation.Receipt.decode(self.allocator, envelope.payload_bytes);
+                defer existing.deinit(self.allocator);
+                if (!receiptIsTerminalFreshCommit(existing)) continue;
+                if (existing.idempotency_key_fingerprint != receipt.idempotency_key_fingerprint) continue;
+                if (!bundleFreshCommitRecordSameBinding(existing.receipt_fingerprint, existing.commit_fingerprint, receipt.receipt_fingerprint, receipt.commit_fingerprint)) return error.DuplicateBinding;
+            }
         }
 
         pub fn getActuationReceipt(self: @This(), ref: ObjectRef) !Actuation.Receipt {
@@ -31486,6 +31499,9 @@ test "portable slice decode bounds length before allocation" {
 
     var cursor: usize = 0;
     try std.testing.expectError(error.InvalidFrameEncoding, decodePortableValue([]const u64, allocator, bytes.items, &cursor));
+
+    const values = [_]u64{ 1, 2 };
+    try std.testing.expectError(error.UnsupportedValueImage, Frame.ValueImage.fromValue(allocator, null, null, null, values[0..], .{ .max_value_image_bytes = 16 }));
 }
 
 test "bundle validation rejects conflicting duplicate envelopes" {
@@ -32020,7 +32036,14 @@ test "actuation graph builds from receipt journal and detects duplicate fresh co
         .mode = .fresh,
         .fresh_called = true,
     });
-    _ = try vault.putActuationReceipt(duplicate);
+    try std.testing.expectError(error.DuplicateBinding, vault.putActuationReceipt(duplicate));
+    const duplicate_payload = try duplicate.encode(allocator);
+    defer allocator.free(duplicate_payload);
+    _ = try vault.put(Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_receipt,
+        .object_format_version = duplicate.format_version,
+        .payload_bytes = duplicate_payload,
+    }));
     var journal = Actuation.Journal.init();
     defer journal.deinit(allocator);
     try journal.appendReceipt(allocator, receipt);
@@ -32627,15 +32650,34 @@ test "bundle validation rejects missing dependency and duplicate fresh commit" {
         .mode = .fresh,
         .fresh_called = true,
     });
-    const first_ref = try vault.putActuationReceipt(first);
-    const second_ref = try vault.putActuationReceipt(second);
+    _ = try vault.putActuationReceipt(first);
+    try std.testing.expectError(error.DuplicateBinding, vault.putActuationReceipt(second));
     var same_commit_journal = Actuation.Journal.init();
     defer same_commit_journal.deinit(allocator);
     try same_commit_journal.appendReceipt(allocator, first);
     try same_commit_journal.appendReceipt(allocator, second);
     try std.testing.expectError(error.DuplicateBinding, same_commit_journal.assertNoDuplicateFreshCommit());
-    var duplicate_bundle = try Continuity.Bundle.exportFromVault(&vault, &.{ first_ref, second_ref }, .{ .include_dependencies = false });
-    defer duplicate_bundle.deinit();
+    const first_payload = try first.encode(allocator);
+    defer allocator.free(first_payload);
+    const second_payload = try second.encode(allocator);
+    defer allocator.free(second_payload);
+    const first_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_receipt,
+        .object_format_version = first.format_version,
+        .payload_bytes = first_payload,
+    });
+    const second_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_receipt,
+        .object_format_version = second.format_version,
+        .payload_bytes = second_payload,
+    });
+    var duplicate_envelopes = [_]Continuity.ObjectEnvelope{ first_envelope, second_envelope };
+    var duplicate_roots = [_]Continuity.ObjectRef{ first_envelope.objectRef(), second_envelope.objectRef() };
+    var duplicate_bundle = Continuity.Bundle{
+        .allocator = allocator,
+        .manifest = Continuity.BundleManifest.init(.{ .roots = &duplicate_roots, .object_count = duplicate_envelopes.len }),
+        .envelopes = &duplicate_envelopes,
+    };
     const duplicate_bytes = try duplicate_bundle.toBytes(allocator);
     defer allocator.free(duplicate_bytes);
     try std.testing.expectError(error.DuplicateBinding, Continuity.Bundle.validate(allocator, duplicate_bytes, .{ .allow_external_dependencies = true }));
@@ -32707,10 +32749,29 @@ test "bundle validation rejects duplicate terminal receipts with same commit" {
         .mode = .fresh,
         .fresh_called = true,
     });
-    const first_ref = try vault.putActuationReceipt(first);
-    const second_ref = try vault.putActuationReceipt(second);
-    var duplicate_bundle = try Continuity.Bundle.exportFromVault(&vault, &.{ first_ref, second_ref }, .{ .include_dependencies = false });
-    defer duplicate_bundle.deinit();
+    _ = try vault.putActuationReceipt(first);
+    try std.testing.expectError(error.DuplicateBinding, vault.putActuationReceipt(second));
+    const first_payload = try first.encode(allocator);
+    defer allocator.free(first_payload);
+    const second_payload = try second.encode(allocator);
+    defer allocator.free(second_payload);
+    const first_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_receipt,
+        .object_format_version = first.format_version,
+        .payload_bytes = first_payload,
+    });
+    const second_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_receipt,
+        .object_format_version = second.format_version,
+        .payload_bytes = second_payload,
+    });
+    var duplicate_envelopes = [_]Continuity.ObjectEnvelope{ first_envelope, second_envelope };
+    var duplicate_roots = [_]Continuity.ObjectRef{ first_envelope.objectRef(), second_envelope.objectRef() };
+    var duplicate_bundle = Continuity.Bundle{
+        .allocator = allocator,
+        .manifest = Continuity.BundleManifest.init(.{ .roots = &duplicate_roots, .object_count = duplicate_envelopes.len }),
+        .envelopes = &duplicate_envelopes,
+    };
     const duplicate_bytes = try duplicate_bundle.toBytes(allocator);
     defer allocator.free(duplicate_bytes);
 
@@ -33158,10 +33219,11 @@ test "actuation idempotency lookup rejects conflicting terminal receipts" {
         .fresh_called = true,
     });
     _ = try vault.putActuationReceipt(first);
-    _ = try vault.putActuationReceipt(second);
+    try std.testing.expectError(error.DuplicateBinding, vault.putActuationReceipt(second));
 
-    try std.testing.expectError(error.DuplicateBinding, vault.lookupActuationByIdempotencyKey(key));
-    try std.testing.expectError(error.DuplicateBinding, Continuity.Recovery.replayActuation(&vault, key));
+    const lookup = try vault.lookupActuationByIdempotencyKey(key);
+    try std.testing.expect(lookup != null);
+    _ = try Continuity.Recovery.replayActuation(&vault, key);
 }
 
 test "recovery preflight inspects capsules replays receipt evidence and rejects missing dependencies" {
@@ -42158,6 +42220,16 @@ fn portableValueDynamicByteLowerBound(comptime Value: type, value: Value) usize 
             if (comptime isStringList(Value)) {
                 var total: usize = 0;
                 for (value) |item| total += item.len;
+                break :blk total;
+            }
+            if (comptime pointer.size == .slice) {
+                const child_min = portableValueStaticMinEncodedSize(pointer.child) orelse break :blk 0;
+                if (child_min == 0) break :blk 0;
+                var total: usize = 8;
+                for (value) |item| {
+                    total = addSatEncodedSize(total, child_min);
+                    total = addSatEncodedSize(total, portableValueDynamicByteLowerBound(pointer.child, item));
+                }
                 break :blk total;
             }
             break :blk 0;
