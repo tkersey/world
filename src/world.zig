@@ -28582,6 +28582,24 @@ pub const Continuity = struct {
                         .blockers = &.{.DecodeFailed},
                     });
                 }
+                if (!(try bundleEnvelopeDeclaresRequiredDependencies(self.allocator, self.envelopes, envelope))) {
+                    return ObjectValidationReport.init(.{
+                        .object_ref = ObjectRef.init(.{
+                            .kind = envelope.kind,
+                            .object_format_version = envelope.object_format_version,
+                            .object_fingerprint = envelope.object_fingerprint,
+                            .byte_len = envelope.object_byte_len,
+                        }),
+                        .valid = false,
+                        .object_kind = envelope.kind,
+                        .object_format_version = envelope.object_format_version,
+                        .payload_fingerprint_valid = true,
+                        .envelope_fingerprint_valid = true,
+                        .dependency_count = envelope.dependency_refs.len,
+                        .missing_dependency_count = 1,
+                        .blockers = &.{.MissingDependency},
+                    });
+                }
                 for (envelope.dependency_refs) |dep| {
                     if (!(try bundleContainsRef(self.allocator, self.envelopes, dep))) missing_count += 1;
                 }
@@ -29106,8 +29124,7 @@ pub const Continuity = struct {
     };
 
     fn isReplayableReceipt(receipt: Actuation.Receipt) bool {
-        if (receipt.pending or receipt.deferred or receipt.failed or receipt.rejected or receipt.cancelled) return false;
-        return receipt.fresh_called or receipt.replayed or (!receipt.fresh_called and receipt.responseStatus() == .responded);
+        return !receipt.pending and !receipt.deferred;
     }
 
     fn receiptIsTerminalFreshCommit(receipt: Actuation.Receipt) bool {
@@ -29120,8 +29137,7 @@ pub const Continuity = struct {
     }
 
     fn isReplayableJournalEntry(entry: Actuation.Journal.Entry) bool {
-        if (entry.pending or entry.deferred or entry.failed or entry.rejected or entry.cancelled) return false;
-        return entry.fresh_called or entry.replayed or (!entry.fresh_called and entry.response_fingerprint != null);
+        return !entry.pending and !entry.deferred and entry.response_fingerprint != null;
     }
 
     fn journalEntryIsTerminalFreshCommit(entry: Actuation.Journal.Entry) bool {
@@ -30436,6 +30452,101 @@ pub const Continuity = struct {
         };
     }
 
+    fn bundleEnvelopeDeclaresRequiredDependencies(allocator: std.mem.Allocator, envelopes: []const ObjectEnvelope, envelope: ObjectEnvelope) !bool {
+        const required_refs = try bundleEnvelopeRequiredDependencyRefs(allocator, envelope);
+        defer freeRefSlice(allocator, required_refs);
+        for (required_refs) |required_ref| {
+            if (!(try bundleDeclaredDependenciesContain(allocator, envelopes, envelope.dependency_refs, required_ref))) return false;
+        }
+        return true;
+    }
+
+    fn bundleEnvelopeRequiredDependencyRefs(allocator: std.mem.Allocator, envelope: ObjectEnvelope) ![]ObjectRef {
+        return switch (envelope.kind) {
+            .actuation_receipt => blk: {
+                var receipt = try Actuation.Receipt.decode(allocator, envelope.payload_bytes);
+                defer receipt.deinit(allocator);
+                break :blk try bundleActuationReceiptRequiredDependencyRefs(allocator, receipt);
+            },
+            .actuation_journal => blk: {
+                var journal = try Actuation.Journal.decode(allocator, envelope.payload_bytes);
+                defer journal.deinit(allocator);
+                break :blk try bundleActuationJournalRequiredDependencyRefs(allocator, journal);
+            },
+            .capsule_image => blk: {
+                var image = try Capsule.Image.decode(allocator, envelope.payload_bytes);
+                defer image.deinit(allocator);
+                break :blk try bundleCapsuleRequiredDependencyRefs(allocator, image);
+            },
+            else => try allocator.alloc(ObjectRef, 0),
+        };
+    }
+
+    fn bundleCapsuleRequiredDependencyRefs(allocator: std.mem.Allocator, image: Capsule.Image) ![]ObjectRef {
+        const capsule_refs = try Capsule.dependencies(image, allocator);
+        defer allocator.free(capsule_refs);
+
+        var refs: std.ArrayList(ObjectRef) = .empty;
+        errdefer deinitRefList(allocator, &refs);
+        for (capsule_refs) |capsule_ref| {
+            const kind = continuityKindForCapsuleDependencySection(capsule_ref.section) orelse continue;
+            if (capsuleDependencyEmbedded(image, kind, capsule_ref.fingerprint)) continue;
+            try appendUniqueSemanticRef(allocator, &refs, kind, capsule_ref.fingerprint);
+        }
+        return refs.toOwnedSlice(allocator);
+    }
+
+    fn bundleActuationReceiptRequiredDependencyRefs(allocator: std.mem.Allocator, receipt: Actuation.Receipt) ![]ObjectRef {
+        var refs: std.ArrayList(ObjectRef) = .empty;
+        errdefer deinitRefList(allocator, &refs);
+        var dependency_buffer: [16]Actuation.DependencyRef = undefined;
+        const receipt_dependencies = try Actuation.dependenciesForReceipt(receipt, dependency_buffer[0..]);
+        for (receipt_dependencies) |dep| {
+            const kind = continuityKindForActuationDependency(dep.kind) orelse continue;
+            try appendUniqueSemanticRef(allocator, &refs, kind, dep.fingerprint);
+        }
+        if (requiredResponseValueImageFingerprint(receipt.frame_response_fingerprint, receipt.response_value_image_fingerprint)) |fingerprint| {
+            try appendUniqueSemanticRef(allocator, &refs, .value_image, fingerprint);
+        }
+        return refs.toOwnedSlice(allocator);
+    }
+
+    fn bundleActuationJournalRequiredDependencyRefs(allocator: std.mem.Allocator, journal: Actuation.Journal) ![]ObjectRef {
+        var refs: std.ArrayList(ObjectRef) = .empty;
+        errdefer deinitRefList(allocator, &refs);
+        for (journal.entries.items) |entry| {
+            if (entry.intent_fingerprint) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .actuation_intent, fingerprint);
+            if (entry.envelope_fingerprint) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .actuation_envelope, fingerprint);
+            if (entry.decision_fingerprint) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .actuation_decision, fingerprint);
+            if (entry.commit_fingerprint) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .actuation_commit, fingerprint);
+            if (entry.response_fingerprint) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .actuation_response, fingerprint);
+            if (entry.receipt_fingerprint) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .actuation_receipt, fingerprint);
+            if (entry.idempotency_key_fingerprint) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .actuation_idempotency_key, fingerprint);
+            if (requiredResponseValueImageFingerprint(entry.frame_response_fingerprint, entry.response_value_image_fingerprint)) |fingerprint| {
+                try appendUniqueSemanticRef(allocator, &refs, .value_image, fingerprint);
+            }
+        }
+        return refs.toOwnedSlice(allocator);
+    }
+
+    fn appendUniqueSemanticRef(allocator: std.mem.Allocator, refs: *std.ArrayList(ObjectRef), kind: ObjectKind, fingerprint: u64) !void {
+        const ref = semanticObjectRef(kind, fingerprint);
+        if (containsRef(refs.items, ref)) return;
+        try refs.append(allocator, ref);
+    }
+
+    fn bundleDeclaredDependenciesContain(allocator: std.mem.Allocator, envelopes: []const ObjectEnvelope, declared_refs: []const ObjectRef, required_ref: ObjectRef) !bool {
+        for (declared_refs) |declared_ref| {
+            if (declared_ref.eql(required_ref)) return true;
+            if (required_ref.byte_len != 0 or declared_ref.kind != required_ref.kind) continue;
+            if (declared_ref.byte_len == 0 and declared_ref.object_fingerprint == required_ref.object_fingerprint) return true;
+            if (try bundleEnvelopeForRef(allocator, envelopes, declared_ref)) |declared_envelope| {
+                if (try bundleEnvelopeSemanticFingerprintMatches(allocator, declared_envelope, required_ref.object_fingerprint)) return true;
+            }
+        }
+        return false;
+    }
+
     fn opaqueContinuityPayloadKind(kind: ObjectKind) bool {
         return switch (kind) {
             .capsule_manifest,
@@ -30657,6 +30768,7 @@ pub const Continuity = struct {
     }
 
     fn rejectDuplicateFreshCommitsAgainstVault(vault: *Continuity.MemoryVault, bundle: Bundle) !void {
+        try rejectDuplicateFreshCommitsInBundle(bundle);
         var incoming_keys: std.ArrayList(u64) = .empty;
         defer incoming_keys.deinit(bundle.allocator);
         var incoming_receipts: std.ArrayList(?u64) = .empty;
@@ -31042,12 +31154,13 @@ pub const Continuity = struct {
     }
 
     fn receiptMatchesIdempotencyKey(receipt: Actuation.Receipt, key: Actuation.IdempotencyKey) bool {
-        const request_fingerprint = receipt.request_fingerprint orelse return false;
         if (receipt.idempotency_key_fingerprint != key.key_fingerprint) return false;
         if (receipt.target_ref_fingerprint != key.target_ref_fingerprint) return false;
         if (receipt.world_surface_fingerprint != key.world_surface_fingerprint) return false;
         if (receipt.world_port_id != key.world_port_id) return false;
-        if (request_fingerprint != key.request_fingerprint) return false;
+        if (receipt.request_fingerprint) |request_fingerprint| {
+            if (request_fingerprint != key.request_fingerprint) return false;
+        }
         if (receipt.actuator_ref_fingerprint != key.actuator_ref_fingerprint) return false;
         if (key.intent_fingerprint) |intent_fingerprint| {
             if (receipt.intent_fingerprint != intent_fingerprint) return false;
@@ -32540,18 +32653,25 @@ test "actuation graph builds from receipt journal and detects duplicate fresh co
     defer by_key.deinit();
     try std.testing.expectEqual(@as(usize, 1), by_key.receipt_refs.len);
 
+    const cancelled_key = Actuation.IdempotencyKey.init(.{
+        .target_ref_fingerprint = key.target_ref_fingerprint,
+        .world_surface_fingerprint = key.world_surface_fingerprint,
+        .world_port_id = key.world_port_id,
+        .request_fingerprint = 0x3280_0040,
+        .actuator_ref_fingerprint = key.actuator_ref_fingerprint,
+    });
     const cancelled_receipt = Actuation.Receipt.init(.{
         .intent_fingerprint = receipt.intent_fingerprint,
         .envelope_fingerprint = receipt.envelope_fingerprint,
         .decision_fingerprint = receipt.decision_fingerprint,
         .commit_fingerprint = 0x3280_0043,
         .response_fingerprint = 0x3280_0044,
-        .actuator_ref_fingerprint = key.actuator_ref_fingerprint,
-        .idempotency_key_fingerprint = 0x3280_0045,
-        .request_fingerprint = key.request_fingerprint,
-        .target_ref_fingerprint = key.target_ref_fingerprint,
-        .world_surface_fingerprint = key.world_surface_fingerprint,
-        .world_port_id = key.world_port_id,
+        .actuator_ref_fingerprint = cancelled_key.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = cancelled_key.key_fingerprint,
+        .request_fingerprint = cancelled_key.request_fingerprint,
+        .target_ref_fingerprint = cancelled_key.target_ref_fingerprint,
+        .world_surface_fingerprint = cancelled_key.world_surface_fingerprint,
+        .world_port_id = cancelled_key.world_port_id,
         .class = .deterministic_fixture,
         .mode = .fresh,
         .cancelled = true,
@@ -32561,8 +32681,10 @@ test "actuation graph builds from receipt journal and detects duplicate fresh co
     defer cancelled_receipt_graph.deinit();
     const cancelled_receipt_summary = cancelled_receipt_graph.summary();
     try std.testing.expectEqual(@as(usize, 0), cancelled_receipt_summary.committed_count);
-    try std.testing.expectEqual(@as(usize, 0), cancelled_receipt_summary.replayable_count);
+    try std.testing.expectEqual(@as(usize, 1), cancelled_receipt_summary.replayable_count);
     try std.testing.expectEqual(@as(usize, 0), cancelled_receipt_summary.fresh_commit_count);
+    const replayed_cancelled = try Continuity.Recovery.replayActuation(&vault, cancelled_key);
+    try std.testing.expectEqual(Actuation.ResponseStatus.cancelled, replayed_cancelled.status);
     var cancelled_journal = Actuation.Journal.init();
     defer cancelled_journal.deinit(allocator);
     try cancelled_journal.appendReceipt(allocator, cancelled_receipt);
@@ -32572,7 +32694,7 @@ test "actuation graph builds from receipt journal and detects duplicate fresh co
     const cancelled_summary = cancelled_graph.summary();
     try std.testing.expectEqual(@as(usize, 1), cancelled_summary.receipt_count);
     try std.testing.expectEqual(@as(usize, 0), cancelled_summary.committed_count);
-    try std.testing.expectEqual(@as(usize, 0), cancelled_summary.replayable_count);
+    try std.testing.expectEqual(@as(usize, 1), cancelled_summary.replayable_count);
     try std.testing.expectEqual(@as(usize, 0), cancelled_summary.fresh_commit_count);
 
     const in_progress_intent = Actuation.Intent.init(.{
@@ -33088,8 +33210,11 @@ test "bundle import rejects duplicate fresh receipts already in destination" {
     try incoming_journal.appendReceipt(allocator, incoming);
     const incoming_journal_payload = try incoming_journal.encode(allocator);
     defer allocator.free(incoming_journal_payload);
+    const incoming_journal_deps = try Continuity.bundleActuationJournalRequiredDependencyRefs(allocator, incoming_journal);
+    defer Continuity.freeRefSlice(allocator, incoming_journal_deps);
     const incoming_journal_envelope = Continuity.ObjectEnvelope.init(.{
         .kind = .actuation_journal,
+        .dependency_refs = incoming_journal_deps,
         .payload_bytes = incoming_journal_payload,
     });
     var incoming_journal_envelopes = [_]Continuity.ObjectEnvelope{incoming_journal_envelope};
@@ -33118,8 +33243,11 @@ test "bundle import rejects duplicate fresh receipts already in destination" {
     try incoming_commit_journal.appendCommit(allocator, incoming_commit_only);
     const incoming_commit_journal_payload = try incoming_commit_journal.encode(allocator);
     defer allocator.free(incoming_commit_journal_payload);
+    const incoming_commit_journal_deps = try Continuity.bundleActuationJournalRequiredDependencyRefs(allocator, incoming_commit_journal);
+    defer Continuity.freeRefSlice(allocator, incoming_commit_journal_deps);
     const incoming_commit_journal_envelope = Continuity.ObjectEnvelope.init(.{
         .kind = .actuation_journal,
+        .dependency_refs = incoming_commit_journal_deps,
         .payload_bytes = incoming_commit_journal_payload,
     });
     var incoming_commit_journal_envelopes = [_]Continuity.ObjectEnvelope{incoming_commit_journal_envelope};
@@ -33310,14 +33438,20 @@ test "bundle validation rejects missing dependency and duplicate fresh commit" {
     defer allocator.free(first_payload);
     const second_payload = try second.encode(allocator);
     defer allocator.free(second_payload);
+    const first_deps = try Continuity.bundleActuationReceiptRequiredDependencyRefs(allocator, first);
+    defer Continuity.freeRefSlice(allocator, first_deps);
+    const second_deps = try Continuity.bundleActuationReceiptRequiredDependencyRefs(allocator, second);
+    defer Continuity.freeRefSlice(allocator, second_deps);
     const first_envelope = Continuity.ObjectEnvelope.init(.{
         .kind = .actuation_receipt,
         .object_format_version = first.format_version,
+        .dependency_refs = first_deps,
         .payload_bytes = first_payload,
     });
     const second_envelope = Continuity.ObjectEnvelope.init(.{
         .kind = .actuation_receipt,
         .object_format_version = second.format_version,
+        .dependency_refs = second_deps,
         .payload_bytes = second_payload,
     });
     var generic_vault = Continuity.MemoryVault.init(allocator);
@@ -33334,6 +33468,53 @@ test "bundle validation rejects missing dependency and duplicate fresh commit" {
     const duplicate_bytes = try duplicate_bundle.toBytes(allocator);
     defer allocator.free(duplicate_bytes);
     try std.testing.expectError(error.DuplicateBinding, Continuity.Bundle.validate(allocator, duplicate_bytes, .{ .allow_external_dependencies = true }));
+    var empty_destination = Continuity.MemoryVault.init(allocator);
+    defer empty_destination.deinit();
+    const relaxed_options = Continuity.BundleOptions{ .allow_external_dependencies = true, .reject_duplicate_fresh_actuation = false };
+    try std.testing.expectError(error.DuplicateBinding, Continuity.Recovery.preflightBundleImport(&empty_destination, duplicate_bytes, relaxed_options));
+    try std.testing.expectError(error.DuplicateBinding, Continuity.Bundle.importIntoVault(&empty_destination, duplicate_bytes, relaxed_options));
+    try std.testing.expectEqual(@as(usize, 0), empty_destination.objectCount());
+
+    var value_image = try Frame.ValueImage.fromValue(allocator, null, null, null, 19, ValuePolicy.native_compatible);
+    defer value_image.deinit(allocator);
+    const incomplete_receipt = Actuation.Receipt.init(.{
+        .intent_fingerprint = 0x3291_0030,
+        .envelope_fingerprint = 0x3291_0031,
+        .decision_fingerprint = 0x3291_0032,
+        .commit_fingerprint = 0x3291_0033,
+        .response_fingerprint = 0x3291_0034,
+        .frame_response_fingerprint = 0,
+        .response_value_image_fingerprint = value_image.value_image_fingerprint,
+        .actuator_ref_fingerprint = key.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .request_fingerprint = key.request_fingerprint,
+        .target_ref_fingerprint = key.target_ref_fingerprint,
+        .world_surface_fingerprint = key.world_surface_fingerprint,
+        .world_port_id = key.world_port_id,
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+        .fresh_called = true,
+    });
+    const incomplete_payload = try incomplete_receipt.encode(allocator);
+    defer allocator.free(incomplete_payload);
+    const incomplete_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_receipt,
+        .object_format_version = incomplete_receipt.format_version,
+        .payload_bytes = incomplete_payload,
+    });
+    var incomplete_envelopes = [_]Continuity.ObjectEnvelope{incomplete_envelope};
+    var incomplete_roots = [_]Continuity.ObjectRef{incomplete_envelope.objectRef()};
+    var incomplete_bundle = Continuity.Bundle{
+        .allocator = allocator,
+        .manifest = Continuity.BundleManifest.init(.{ .roots = &incomplete_roots, .object_count = incomplete_envelopes.len }),
+        .envelopes = &incomplete_envelopes,
+    };
+    const incomplete_bytes = try incomplete_bundle.toBytes(allocator);
+    defer allocator.free(incomplete_bytes);
+    const incomplete_report = try Continuity.Bundle.validate(allocator, incomplete_bytes, .{ .allow_external_dependencies = true });
+    try std.testing.expect(!incomplete_report.valid);
+    try std.testing.expectEqual(Continuity.ObjectValidationReport.Blocker.MissingDependency, incomplete_report.blockers[0]);
+    try std.testing.expectError(error.InvalidFrameEncoding, Continuity.Bundle.importIntoVault(&empty_destination, incomplete_bytes, .{}));
 
     var duplicate_journal = Actuation.Journal.init();
     defer duplicate_journal.deinit(allocator);
@@ -33341,8 +33522,11 @@ test "bundle validation rejects missing dependency and duplicate fresh commit" {
     try duplicate_journal.appendReceipt(allocator, second);
     const duplicate_journal_payload = try duplicate_journal.encode(allocator);
     defer allocator.free(duplicate_journal_payload);
+    const duplicate_journal_deps = try Continuity.bundleActuationJournalRequiredDependencyRefs(allocator, duplicate_journal);
+    defer Continuity.freeRefSlice(allocator, duplicate_journal_deps);
     const duplicate_journal_envelope = Continuity.ObjectEnvelope.init(.{
         .kind = .actuation_journal,
+        .dependency_refs = duplicate_journal_deps,
         .payload_bytes = duplicate_journal_payload,
     });
     var duplicate_journal_envelopes = [_]Continuity.ObjectEnvelope{duplicate_journal_envelope};
@@ -33408,14 +33592,20 @@ test "bundle validation rejects duplicate terminal receipts with same commit" {
     defer allocator.free(first_payload);
     const second_payload = try second.encode(allocator);
     defer allocator.free(second_payload);
+    const first_deps = try Continuity.bundleActuationReceiptRequiredDependencyRefs(allocator, first);
+    defer Continuity.freeRefSlice(allocator, first_deps);
+    const second_deps = try Continuity.bundleActuationReceiptRequiredDependencyRefs(allocator, second);
+    defer Continuity.freeRefSlice(allocator, second_deps);
     const first_envelope = Continuity.ObjectEnvelope.init(.{
         .kind = .actuation_receipt,
         .object_format_version = first.format_version,
+        .dependency_refs = first_deps,
         .payload_bytes = first_payload,
     });
     const second_envelope = Continuity.ObjectEnvelope.init(.{
         .kind = .actuation_receipt,
         .object_format_version = second.format_version,
+        .dependency_refs = second_deps,
         .payload_bytes = second_payload,
     });
     var duplicate_envelopes = [_]Continuity.ObjectEnvelope{ first_envelope, second_envelope };
@@ -33481,6 +33671,29 @@ test "capsule storage preserves unresolved dependency edges" {
         .runspace_image = runspace_image,
         .actuation_receipt_refs = &.{receipt.receipt_fingerprint},
     });
+    const image_payload = try image.encode(allocator);
+    defer allocator.free(image_payload);
+    const incomplete_capsule_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .capsule_image,
+        .object_format_version = image.format_version,
+        .payload_bytes = image_payload,
+    });
+    var incomplete_capsule_envelopes = [_]Continuity.ObjectEnvelope{incomplete_capsule_envelope};
+    var incomplete_capsule_roots = [_]Continuity.ObjectRef{incomplete_capsule_envelope.objectRef()};
+    var incomplete_capsule_bundle = Continuity.Bundle{
+        .allocator = allocator,
+        .manifest = Continuity.BundleManifest.init(.{ .roots = &incomplete_capsule_roots, .object_count = incomplete_capsule_envelopes.len }),
+        .envelopes = &incomplete_capsule_envelopes,
+    };
+    const incomplete_capsule_bytes = try incomplete_capsule_bundle.toBytes(allocator);
+    defer allocator.free(incomplete_capsule_bytes);
+    const incomplete_capsule_report = try Continuity.Bundle.validate(allocator, incomplete_capsule_bytes, .{ .allow_external_dependencies = true });
+    try std.testing.expect(!incomplete_capsule_report.valid);
+    try std.testing.expectEqual(Continuity.ObjectValidationReport.Blocker.MissingDependency, incomplete_capsule_report.blockers[0]);
+    var incomplete_destination = Continuity.MemoryVault.init(allocator);
+    defer incomplete_destination.deinit();
+    try std.testing.expectError(error.InvalidFrameEncoding, Continuity.Bundle.importIntoVault(&incomplete_destination, incomplete_capsule_bytes, .{}));
+
     const capsule_ref = try vault.putCapsule(image);
     const deps = try vault.dependencies(capsule_ref);
     defer {
@@ -35021,6 +35234,63 @@ test "vault replay preserves stored fingerprint for terminal receipt" {
     defer frame_response.deinit(allocator);
     try std.testing.expectEqual(receipt.response_fingerprint, frame_response.response_fingerprint);
     try std.testing.expectEqual(request.replay_key_seed.withResponse(receipt.response_fingerprint).fingerprint(), frame_response.replay_key);
+}
+
+test "vault replay accepts terminal receipt without optional request fingerprint" {
+    const allocator = std.testing.allocator;
+    var vault = Continuity.MemoryVault.init(allocator);
+    defer vault.deinit();
+
+    const key = Actuation.IdempotencyKey.init(.{
+        .target_ref_fingerprint = 0x3316_0001,
+        .world_surface_fingerprint = 0x3316_0002,
+        .world_port_id = 8,
+        .request_fingerprint = 0x3316_0003,
+        .actuator_ref_fingerprint = 0x3316_0004,
+    });
+    const response = Actuation.Response.init(.{
+        .intent_fingerprint = 0x3316_0010,
+        .commit_fingerprint = 0x3316_0013,
+        .actuator_ref_fingerprint = key.actuator_ref_fingerprint,
+        .request_fingerprint = key.request_fingerprint,
+        .world_port_id = key.world_port_id,
+        .status = .rejected,
+        .reason = "stored terminal reason",
+    });
+    const receipt = Actuation.Receipt.init(.{
+        .intent_fingerprint = response.intent_fingerprint,
+        .envelope_fingerprint = 0x3316_0011,
+        .decision_fingerprint = 0x3316_0012,
+        .commit_fingerprint = response.commit_fingerprint.?,
+        .response_fingerprint = response.response_fingerprint,
+        .response_kind = response.response_kind,
+        .actuator_ref_fingerprint = response.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .request_fingerprint = null,
+        .target_ref_fingerprint = key.target_ref_fingerprint,
+        .world_surface_fingerprint = key.world_surface_fingerprint,
+        .world_port_id = response.world_port_id,
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+        .rejected = true,
+    });
+    const receipt_ref = try Actuation.storeReceipt(&vault, receipt);
+
+    const lookup = try vault.lookupActuationByIdempotencyKey(key);
+    try std.testing.expectEqual(receipt_ref.object_fingerprint, lookup.?.object_fingerprint);
+    const wrong_request_key = Actuation.IdempotencyKey.init(.{
+        .target_ref_fingerprint = key.target_ref_fingerprint,
+        .world_surface_fingerprint = key.world_surface_fingerprint,
+        .world_port_id = key.world_port_id,
+        .request_fingerprint = key.request_fingerprint +% 1,
+        .actuator_ref_fingerprint = key.actuator_ref_fingerprint,
+    });
+    try std.testing.expectError(error.ObjectMissing, Actuation.replayFromVault(&vault, wrong_request_key));
+
+    const replayed = try Actuation.replayFromVault(&vault, key);
+    try std.testing.expectEqual(Actuation.ResponseStatus.rejected, replayed.status);
+    try std.testing.expectEqual(key.request_fingerprint, replayed.request_fingerprint);
+    try std.testing.expectEqual(receipt.response_fingerprint, replayed.recorded_response_fingerprint.?);
 }
 
 test "actuation response deinit does not free borrowed response image" {
