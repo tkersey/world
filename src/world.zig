@@ -28385,13 +28385,8 @@ pub const Continuity = struct {
                 defer graph.deinit();
                 if (graph.missing_deps.len != 0 and !options.allow_external_dependencies) return error.ObjectMissing;
                 if (graph.dependency_cycle) return error.InvalidFrameEncoding;
-                var filtered: std.ArrayList(ObjectRef) = .empty;
-                errdefer deinitRefList(vault.allocator, &filtered);
-                for (graph.objects) |ref| {
-                    if (bundleShouldExportRef(ref, manifest_roots, options)) try filtered.append(vault.allocator, try ref.clone(vault.allocator));
-                }
-                if (filtered.items.len != graph.objects.len and !options.allow_external_dependencies) return error.ObjectMissing;
-                refs = try filtered.toOwnedSlice(vault.allocator);
+                refs = try bundleExportRefsFromGraph(vault, graph.objects, manifest_roots, options);
+                if (refs.len != graph.objects.len and !options.allow_external_dependencies) return error.ObjectMissing;
             } else {
                 if (manifest_roots.len > options.max_object_count) return error.InvalidFrameEncoding;
                 refs = try cloneRefSlice(vault.allocator, manifest_roots);
@@ -30256,6 +30251,39 @@ pub const Continuity = struct {
         if (!options.include_capsule_dependencies and isCapsuleDependencyKind(ref.kind)) return false;
         if (!options.include_actuation_dependencies and isActuationDependencyKind(ref.kind)) return false;
         return true;
+    }
+
+    fn bundleExportRefsFromGraph(vault: *Continuity.MemoryVault, graph_objects: []const ObjectRef, roots: []const ObjectRef, options: BundleOptions) ![]ObjectRef {
+        var excluded: std.ArrayList(ObjectRef) = .empty;
+        defer deinitRefList(vault.allocator, &excluded);
+        for (graph_objects) |ref| {
+            if (!bundleShouldExportRef(ref, roots, options)) try excluded.append(vault.allocator, try ref.clone(vault.allocator));
+        }
+
+        var pruned: std.ArrayList(ObjectRef) = .empty;
+        defer deinitRefList(vault.allocator, &pruned);
+        if (excluded.items.len != 0) {
+            var excluded_graph = try ObjectGraph.buildFromRoots(vault, excluded.items, .{
+                .max_object_count = options.max_object_count,
+                .max_dependency_count = options.max_dependency_count,
+                .allow_missing_dependencies = true,
+            });
+            defer excluded_graph.deinit();
+            for (excluded_graph.objects) |ref| {
+                if (!containsRef(roots, ref)) try pruned.append(vault.allocator, try ref.clone(vault.allocator));
+            }
+            for (excluded_graph.missing_deps) |ref| {
+                if (!containsRef(roots, ref)) try pruned.append(vault.allocator, try ref.clone(vault.allocator));
+            }
+        }
+
+        var filtered: std.ArrayList(ObjectRef) = .empty;
+        errdefer deinitRefList(vault.allocator, &filtered);
+        for (graph_objects) |ref| {
+            if (containsRef(pruned.items, ref)) continue;
+            if (bundleShouldExportRef(ref, roots, options)) try filtered.append(vault.allocator, try ref.clone(vault.allocator));
+        }
+        return filtered.toOwnedSlice(vault.allocator);
     }
 
     fn isCapsuleDependencyKind(kind: ObjectKind) bool {
@@ -33903,13 +33931,26 @@ test "vault capsule helpers store load and export bundle" {
     try std.testing.expectEqual(@as(usize, 1), bundle.manifest.roots.len);
     try std.testing.expect(bundle.manifest.roots[0].eql(capsule_ref));
 
+    var raw_value_image = try Frame.ValueImage.fromValue(allocator, null, null, null, 93, ValuePolicy.native_compatible);
+    defer raw_value_image.deinit(allocator);
+    var response_value_image = try raw_value_image.cloneWithBoundaryValueFingerprint(allocator, 0x3303_000f);
+    defer response_value_image.deinit(allocator);
+    const response_value_payload = try response_value_image.encode(allocator);
+    defer allocator.free(response_value_payload);
+    _ = try vault.put(Continuity.ObjectEnvelope.init(.{
+        .kind = .value_image,
+        .object_format_version = world_frame_value_image_format_version,
+        .payload_bytes = response_value_payload,
+    }));
+
     const receipt = Actuation.Receipt.init(.{
         .intent_fingerprint = 0x3303_0010,
         .envelope_fingerprint = 0x3303_0011,
         .decision_fingerprint = 0x3303_0012,
         .commit_fingerprint = 0x3303_0013,
         .response_fingerprint = 0x3303_0014,
-        .frame_response_fingerprint = 0x3303_0015,
+        .frame_response_fingerprint = 0,
+        .response_value_image_fingerprint = response_value_image.value_image_fingerprint,
         .actuator_ref_fingerprint = 0x3303_0016,
         .idempotency_key_fingerprint = 0x3303_0017,
         .request_fingerprint = 0x3303_0018,
@@ -33948,12 +33989,15 @@ test "vault capsule helpers store load and export bundle" {
 
     var committed_bundle = try Capsule.exportBundle(&vault, committed_capsule_ref, .{ .allow_external_dependencies = true });
     defer committed_bundle.deinit();
-    try std.testing.expectEqual(@as(usize, 2), committed_bundle.manifest.object_count);
+    try std.testing.expectEqual(@as(usize, 3), committed_bundle.manifest.object_count);
 
     try std.testing.expectError(error.ObjectMissing, Capsule.exportBundle(&vault, committed_capsule_ref, .{ .include_actuation_dependencies = false }));
     var without_actuation = try Capsule.exportBundle(&vault, committed_capsule_ref, .{ .include_actuation_dependencies = false, .allow_external_dependencies = true });
     defer without_actuation.deinit();
     try std.testing.expectEqual(@as(usize, 1), without_actuation.manifest.object_count);
+    for (without_actuation.envelopes) |envelope| {
+        try std.testing.expect(envelope.kind != .value_image);
+    }
 }
 
 test "vault actuation helpers store load journal and replay receipt" {
