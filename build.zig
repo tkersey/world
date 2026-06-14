@@ -838,7 +838,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-continuity-bundle-roundtrip",
             .desc = "Run the World Continuity bundle roundtrip example.",
             .expected_stdout =
-            \\bundle_fingerprint=edbaedc52de5293b
+            \\bundle_fingerprint=d0a73f7ce42fde39
             \\imported_object_count=2
             \\capsule_restored_to_inspectable_state=true
             \\

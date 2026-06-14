@@ -30788,7 +30788,12 @@ pub const Continuity = struct {
     }
 
     fn appendActuationEvidenceRef(vault: *Continuity.MemoryVault, refs: *std.ArrayList(ObjectRef), kind: ObjectKind, fingerprint: u64) !void {
-        const ref = try refFromStoredOrFingerprint(vault, kind, fingerprint);
+        const ref = if (try vault.refByKindFingerprint(kind, fingerprint)) |stored|
+            stored
+        else if (kindHasSemanticRefLookup(kind))
+            semanticObjectRef(kind, fingerprint)
+        else
+            return;
         if (containsRef(refs.items, ref)) return;
         try refs.append(vault.allocator, ref);
     }
@@ -34497,6 +34502,77 @@ test "vault actuation receipt dependencies resolve stored opaque evidence" {
     try std.testing.expect(has_stored_commit_dep);
 }
 
+test "vault actuation receipt dependencies omit unclosable component evidence" {
+    const allocator = std.testing.allocator;
+    var vault = Continuity.MemoryVault.init(allocator);
+    defer vault.deinit();
+
+    const key = Actuation.IdempotencyKey.init(.{
+        .target_ref_fingerprint = 0x3306_0101,
+        .world_surface_fingerprint = 0x3306_0102,
+        .world_port_id = 8,
+        .request_fingerprint = 0x3306_0103,
+        .actuator_ref_fingerprint = 0x3306_0104,
+    });
+    const intent = Actuation.Intent.init(.{
+        .actuator_ref_fingerprint = key.actuator_ref_fingerprint,
+        .descriptor_fingerprint = 0x3306_0110,
+        .target_ref_fingerprint = key.target_ref_fingerprint,
+        .world_surface_fingerprint = key.world_surface_fingerprint,
+        .world_port_id = key.world_port_id,
+        .frame_request_fingerprint = key.request_fingerprint,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .class = .deterministic_fixture,
+    });
+    _ = try vault.putActuationIntent(intent);
+    const commit = Actuation.Commit.init(.{
+        .intent_fingerprint = intent.intent_fingerprint,
+        .decision_fingerprint = 0x3306_0111,
+        .envelope_fingerprint = 0x3306_0112,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .status = .committed,
+        .fresh_called = true,
+    });
+    const response = Actuation.Response.init(.{
+        .intent_fingerprint = intent.intent_fingerprint,
+        .commit_fingerprint = commit.commit_fingerprint,
+        .actuator_ref_fingerprint = key.actuator_ref_fingerprint,
+        .world_port_id = key.world_port_id,
+        .request_fingerprint = key.request_fingerprint,
+        .frame_response_fingerprint = 0x3306_0113,
+    });
+    const receipt = Actuation.Receipt.init(.{
+        .intent_fingerprint = intent.intent_fingerprint,
+        .envelope_fingerprint = commit.envelope_fingerprint,
+        .decision_fingerprint = commit.decision_fingerprint,
+        .commit_fingerprint = commit.commit_fingerprint,
+        .response_fingerprint = response.response_fingerprint,
+        .frame_response_fingerprint = response.frame_response_fingerprint,
+        .actuator_ref_fingerprint = key.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .request_fingerprint = key.request_fingerprint,
+        .target_ref_fingerprint = key.target_ref_fingerprint,
+        .world_surface_fingerprint = key.world_surface_fingerprint,
+        .world_port_id = key.world_port_id,
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+        .fresh_called = true,
+    });
+
+    const receipt_ref = try vault.putActuationReceipt(receipt);
+    const receipt_deps = try vault.dependencies(receipt_ref);
+    defer {
+        for (receipt_deps) |*ref| ref.deinit(allocator);
+        allocator.free(receipt_deps);
+    }
+    try std.testing.expectEqual(@as(usize, 1), receipt_deps.len);
+    try std.testing.expectEqual(Continuity.ObjectKind.actuation_intent, receipt_deps[0].kind);
+    try std.testing.expect(vault.has(receipt_deps[0]));
+    const report = try vault.validate(receipt_ref);
+    try std.testing.expect(report.valid);
+    try std.testing.expectEqual(@as(usize, 0), report.missing_dependency_count);
+}
+
 test "vault actuation helpers store load journal and replay receipt" {
     const allocator = std.testing.allocator;
     var vault = Continuity.MemoryVault.init(allocator);
@@ -34579,7 +34655,7 @@ test "vault actuation helpers store load journal and replay receipt" {
     var journal_has_receipt_dep = false;
     var journal_has_value_image_dep = false;
     for (journal_deps) |dep| {
-        if (dep.kind == .actuation_receipt and dep.object_fingerprint == receipt.receipt_fingerprint and dep.byte_len == 0) journal_has_receipt_dep = true;
+        if (dep.kind == .actuation_receipt and vault.has(dep)) journal_has_receipt_dep = true;
         if (dep.kind == .value_image and dep.object_fingerprint == value_image.value_image_fingerprint and dep.byte_len == 0) journal_has_value_image_dep = true;
     }
     try std.testing.expect(journal_has_receipt_dep);
