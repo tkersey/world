@@ -28354,7 +28354,6 @@ pub const Continuity = struct {
         include_capsule_dependencies: bool = true,
         include_actuation_dependencies: bool = true,
         allow_external_dependencies: bool = false,
-        reject_unknown_object_kinds: bool = true,
         reject_duplicate_fresh_actuation: bool = true,
         max_bundle_bytes: usize = world_max_decoded_byte_field_len,
         max_object_count: usize = 8192,
@@ -29555,6 +29554,28 @@ pub const Continuity = struct {
             };
         }
 
+        fn thawTargetRefFingerprintFromArg(registry: anytype, root_target_ref_fingerprint: u64) ?u64 {
+            if (targetRefFingerprintFromArg(registry)) |fingerprint| return fingerprint;
+            const Registry = @TypeOf(registry);
+            return switch (@typeInfo(Registry)) {
+                .@"struct" => registryEntryTargetRefFingerprint(registry, root_target_ref_fingerprint),
+                .pointer => |pointer| blk: {
+                    if (@typeInfo(pointer.child) != .@"struct") break :blk null;
+                    break :blk registryEntryTargetRefFingerprint(registry.*, root_target_ref_fingerprint);
+                },
+                else => null,
+            };
+        }
+
+        fn registryEntryTargetRefFingerprint(registry: anytype, root_target_ref_fingerprint: u64) ?u64 {
+            const Registry = @TypeOf(registry);
+            if (!@hasField(Registry, "entries")) return null;
+            for (registry.entries) |entry| {
+                if (entry.target_ref.target_ref_fingerprint == root_target_ref_fingerprint) return entry.target_ref.target_ref_fingerprint;
+            }
+            return null;
+        }
+
         pub fn preflightThawCapsule(vault: *Continuity.MemoryVault, capsule_ref: ObjectRef, registry: anytype, env: anytype, permit: anytype, options: Options) !CapsuleGraph {
             var image = try vault.getCapsule(capsule_ref);
             defer image.deinit(vault.allocator);
@@ -29568,7 +29589,7 @@ pub const Continuity = struct {
                 try vault.ledger.record(.recovery_rejected, capsule_ref);
                 return error.InvalidFrameEncoding;
             }
-            const local_target_ref_fingerprint = targetRefFingerprintFromArg(registry) orelse 0;
+            const local_target_ref_fingerprint = thawTargetRefFingerprintFromArg(registry, image.manifest.root_target_ref_fingerprint) orelse 0;
             const environment_fingerprint = environmentFingerprintFromArg(env) orelse 0;
             const permit_fingerprint = permitFingerprintFromArg(permit);
             var thaw_plan = try Capsule.planThaw(image, local_target_ref_fingerprint, environment_fingerprint, permit_fingerprint, options.thaw_options);
@@ -33729,6 +33750,50 @@ test "recovery preflight inspects capsules replays receipt evidence and rejects 
     var thaw = try Continuity.Recovery.preflightThawCapsule(&vault, capsule_ref, {}, {}, {}, .{ .thaw_options = .{ .mode = .inspect_only } });
     defer thaw.deinit();
     try std.testing.expect(thaw.validateRestoreClosure());
+
+    var registry_source = Runspace.init(allocator, .{});
+    defer registry_source.deinit();
+    var registry_target_ref = TargetRef{
+        .target_ref_fingerprint = 0,
+        .world_surface_fingerprint = 0x3302_0201,
+        .target_certificate_fingerprint = 0x3302_0202,
+    };
+    registry_target_ref.target_ref_fingerprint = fingerprintTargetRef(registry_target_ref);
+    const registry_handle = RunHandle.init(.{
+        .runspace_fingerprint = registry_source.runspace_fingerprint,
+        .local_run_id = 0,
+        .target_ref_fingerprint = registry_target_ref.target_ref_fingerprint,
+    });
+    try registry_source.slots.append(allocator, Runspace.RunSlot.fromState(.{
+        .handle = registry_handle,
+        .target_ref = registry_target_ref,
+        .current_state = RunState.init(.{
+            .target_ref_fingerprint = registry_target_ref.target_ref_fingerprint,
+            .status = .completed,
+        }),
+        .status = .completed,
+    }));
+    var registry_image = try Capsule.freezeRunspace(&registry_source, .{});
+    defer registry_image.deinit(allocator);
+    const registry_capsule_ref = try vault.putCapsule(registry_image);
+    var registry_entry = Admission.TargetRegistry.Entry{
+        .entry_fingerprint = 0,
+        .target_ref = registry_target_ref,
+        .world_surface_fingerprint = registry_target_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = registry_target_ref.target_certificate_fingerprint,
+        .program_plan_hash = registry_target_ref.residual_program_plan_hash,
+        .import_set_fingerprint = 0x3302_0203,
+        .world_port_table_fingerprint = registry_target_ref.world_port_table_fingerprint,
+        .world_value_table_fingerprint = registry_target_ref.world_value_table_fingerprint,
+        .world_dispatch_table_fingerprint = registry_target_ref.world_dispatch_table_fingerprint,
+        .normal_form_kind = registry_target_ref.normal_form_kind,
+    };
+    registry_entry.entry_fingerprint = fingerprintTargetRegistryEntry(registry_entry);
+    const registry_entries = [_]Admission.TargetRegistry.Entry{registry_entry};
+    const registry = try Admission.TargetRegistry.initChecked(&registry_entries);
+    var registry_thaw = try Continuity.Recovery.preflightThawCapsule(&vault, registry_capsule_ref, registry, {}, .{ .permit_fingerprint = 0x3302_0204 }, .{});
+    defer registry_thaw.deinit();
+    try std.testing.expect(registry_thaw.validateRestoreClosure());
 
     try std.testing.expectError(error.InvalidFrameEncoding, Continuity.Recovery.preflightReplayCapsule(&vault, capsule_ref, {}, .{}));
 
