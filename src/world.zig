@@ -29638,6 +29638,7 @@ pub const Continuity = struct {
                 .value_image_fingerprint = receipt.response_value_image_fingerprint,
                 .response_image = response_image,
                 .owns_response_image = response_image != null,
+                .response_fingerprint = receipt.response_fingerprint,
                 .recorded_response_fingerprint = receipt.response_fingerprint,
             });
         }
@@ -34070,6 +34071,8 @@ test "vault actuation helpers store load journal and replay receipt" {
         .world_port_id = key.world_port_id,
         .frame_response_fingerprint = 0,
         .response_image = value_image,
+        .code = 201,
+        .reason = "recorded response",
     });
     const receipt = Actuation.Receipt.init(.{
         .intent_fingerprint = response.intent_fingerprint,
@@ -34141,6 +34144,7 @@ test "vault actuation helpers store load journal and replay receipt" {
     defer imported_replay.deinit(allocator);
     try std.testing.expect(imported_replay.response_image != null);
     try std.testing.expectEqual(value_image.value_image_fingerprint, imported_replay.response_image.?.value_image_fingerprint);
+    try std.testing.expectEqual(receipt.response_fingerprint, imported_replay.response_fingerprint);
     try std.testing.expectEqual(receipt.response_fingerprint, imported_replay.recorded_response_fingerprint.?);
 
     var replayed = try Actuation.replayFromVault(&vault, key);
@@ -34149,6 +34153,7 @@ test "vault actuation helpers store load journal and replay receipt" {
     try std.testing.expectEqual(key.world_port_id, replayed.world_port_id);
     try std.testing.expect(replayed.response_image != null);
     try std.testing.expectEqual(value_image.value_image_fingerprint, replayed.response_image.?.value_image_fingerprint);
+    try std.testing.expectEqual(receipt.response_fingerprint, replayed.response_fingerprint);
     try std.testing.expectEqual(receipt.response_fingerprint, replayed.recorded_response_fingerprint.?);
 }
 
