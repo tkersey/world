@@ -30057,6 +30057,16 @@ pub const Continuity = struct {
                 defer image.deinit(allocator);
                 break :blk true;
             },
+            .environment_certificate,
+            .run_permit,
+            .run_receipt,
+            .admission_receipt,
+            .fabric_receipt,
+            .guest_conformance_report,
+            => blk: {
+                const semantic_fingerprint = try evidenceEnvelopeSemanticFingerprint(allocator, envelope);
+                break :blk semantic_fingerprint != null;
+            },
             else => true,
         };
     }
@@ -31173,6 +31183,27 @@ test "bundle validation rejects malformed typed payloads" {
     var vault = Continuity.MemoryVault.init(allocator);
     defer vault.deinit();
     try std.testing.expectError(error.InvalidFrameEncoding, Continuity.Bundle.importIntoVault(&vault, bytes, .{}));
+
+    const evidence_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .run_receipt,
+        .object_format_version = world_run_receipt_format_version,
+        .payload_bytes = "not a run receipt",
+    });
+    var evidence_bundle = Continuity.Bundle{
+        .allocator = allocator,
+        .manifest = Continuity.BundleManifest.init(.{
+            .roots = &.{evidence_envelope.objectRef()},
+            .object_count = 1,
+        }),
+        .envelopes = @constCast(&[_]Continuity.ObjectEnvelope{evidence_envelope}),
+    };
+    const evidence_bytes = try evidence_bundle.toBytes(allocator);
+    defer allocator.free(evidence_bytes);
+
+    const evidence_report = try Continuity.Bundle.validate(allocator, evidence_bytes, .{});
+    try std.testing.expect(!evidence_report.valid);
+    try std.testing.expectEqual(Continuity.ObjectValidationReport.Blocker.DecodeFailed, evidence_report.blockers[0]);
+    try std.testing.expectError(error.InvalidFrameEncoding, Continuity.Bundle.importIntoVault(&vault, evidence_bytes, .{}));
 }
 
 test "bundle validation propagates typed payload decode allocation failure" {
