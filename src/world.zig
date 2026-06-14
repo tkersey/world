@@ -30677,7 +30677,7 @@ pub const Continuity = struct {
                 return error.InvalidFrameEncoding;
             },
             .int, .comptime_int => {
-                const fingerprint: u64 = @intCast(actuator_ref);
+                const fingerprint = std.math.cast(u64, actuator_ref) orelse return error.InvalidFrameEncoding;
                 if (fingerprint == 0) return error.InvalidFrameEncoding;
                 return fingerprint;
             },
@@ -31528,7 +31528,13 @@ test "portable slice decode bounds length before allocation" {
     try std.testing.expectError(error.InvalidFrameEncoding, decodePortableValue([]const u64, allocator, bytes.items, &cursor));
 
     const values = [_]u64{ 1, 2 };
-    try std.testing.expectError(error.UnsupportedValueImage, Frame.ValueImage.fromValue(allocator, null, null, null, values[0..], .{ .max_value_image_bytes = 16 }));
+    const value_slice: []const u64 = values[0..];
+    var stored_values = try StoredValue.init(allocator, value_slice);
+    defer stored_values.deinit(allocator);
+    const cloned_values = try stored_values.as(allocator, []const u64);
+    defer allocator.free(@constCast(cloned_values));
+    try std.testing.expectEqualSlices(u64, value_slice, cloned_values);
+    try std.testing.expectError(error.UnsupportedValueImage, Frame.ValueImage.fromValue(allocator, null, null, null, value_slice, .{ .max_value_image_bytes = 16 }));
 
     const NestedSlice = struct {
         values: []const u16,
@@ -33541,6 +33547,7 @@ test "recovery preflight inspects capsules replays receipt evidence and rejects 
     var pending_graph = try Continuity.Recovery.preflightPendingActuation(&vault, pending_ref, pending_key, actuator_ref);
     defer pending_graph.deinit();
     try std.testing.expect(pending_graph.local_fresh_actuation_required);
+    try std.testing.expectError(error.InvalidFrameEncoding, Continuity.Recovery.preflightPendingActuation(&vault, pending_ref, pending_key, @as(i64, -1)));
     const wrong_key = Actuation.IdempotencyKey.init(.{
         .target_ref_fingerprint = key.target_ref_fingerprint ^ 1,
         .world_surface_fingerprint = key.world_surface_fingerprint,
@@ -38331,7 +38338,18 @@ fn cloneOwnedValue(allocator: std.mem.Allocator, value: anytype) !@TypeOf(value)
             if (comptime isStringList(Value)) {
                 break :blk try cloneOwnedStringList(allocator, value);
             }
-            @compileError("World transcript/result storage only supports owned cloning for byte slices and string lists");
+            if (comptime pointer.size == .slice) {
+                const result = try allocator.alloc(pointer.child, value.len);
+                errdefer allocator.free(result);
+                var initialized: usize = 0;
+                errdefer for (result[0..initialized]) |item| deinitOwnedValue(allocator, item);
+                for (value, 0..) |item, index| {
+                    result[index] = try cloneOwnedValue(allocator, item);
+                    initialized += 1;
+                }
+                break :blk result;
+            }
+            @compileError("World transcript/result storage only supports owned cloning for slices");
         },
         .optional => |optional| if (value) |payload|
             try cloneOwnedValue(allocator, @as(optional.child, payload))
