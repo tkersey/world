@@ -19751,6 +19751,7 @@ pub const Actuation = struct {
             try validateJournalEntryFingerprint(entry.request_fingerprint, &evidence_count);
             if (evidence_count == 0) return error.InvalidFrameEncoding;
             if (journalEntryResponseStatusFlagCount(entry) > 1) return error.InvalidFrameEncoding;
+            if (isTerminalFreshCommitEntry(entry) and entry.idempotency_key_fingerprint == null) return error.InvalidFrameEncoding;
         }
 
         fn journalEntryResponseStatusFlagCount(entry: Entry) usize {
@@ -28268,6 +28269,9 @@ pub const Continuity = struct {
                     },
                     else => {},
                 }
+                if (try evidenceEnvelopeSemanticFingerprint(self.allocator, envelope)) |semantic_fingerprint| {
+                    if (semantic_fingerprint == fingerprint) return envelope.objectRef();
+                }
             }
             return null;
         }
@@ -29868,8 +29872,131 @@ pub const Continuity = struct {
                 defer image.deinit(allocator);
                 break :blk image.run_image_fingerprint == fingerprint;
             },
-            else => false,
+            else => blk: {
+                const semantic_fingerprint = try evidenceEnvelopeSemanticFingerprint(allocator, envelope);
+                break :blk semantic_fingerprint != null and semantic_fingerprint.? == fingerprint;
+            },
         };
+    }
+
+    fn evidenceEnvelopeSemanticFingerprint(allocator: std.mem.Allocator, envelope: ObjectEnvelope) anyerror!?u64 {
+        return switch (envelope.kind) {
+            .environment_certificate => blk: {
+                const cert = decodePortableEvidence(EnvironmentCertificate, allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => break :blk null,
+                };
+                defer deinitOwnedValue(allocator, cert);
+                if (!validEnvironmentCertificatePayload(cert)) break :blk null;
+                break :blk cert.certificate_fingerprint;
+            },
+            .run_permit => blk: {
+                const permit = decodePortableEvidence(RunPermit, allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => break :blk null,
+                };
+                defer deinitOwnedValue(allocator, permit);
+                if (!validRunPermitPayload(permit)) break :blk null;
+                break :blk permit.permit_fingerprint;
+            },
+            .run_receipt => blk: {
+                const receipt = decodePortableEvidence(RunReceipt, allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => break :blk null,
+                };
+                defer deinitOwnedValue(allocator, receipt);
+                if (!validRunReceiptPayload(receipt)) break :blk null;
+                break :blk receipt.receipt_fingerprint;
+            },
+            .admission_receipt => blk: {
+                const receipt = decodePortableEvidence(Admission.AdmissionReceipt, allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => break :blk null,
+                };
+                defer deinitOwnedValue(allocator, receipt);
+                if (!validAdmissionReceiptPayload(receipt)) break :blk null;
+                break :blk receipt.receipt_fingerprint;
+            },
+            .fabric_receipt => blk: {
+                const receipt = decodePortableEvidence(Fabric.Receipt, allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => break :blk null,
+                };
+                defer deinitOwnedValue(allocator, receipt);
+                if (!validFabricReceiptPayload(receipt)) break :blk null;
+                break :blk receipt.receipt_fingerprint;
+            },
+            .guest_conformance_report => blk: {
+                const report = decodePortableEvidence(Guest.ConformanceReport, allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => break :blk null,
+                };
+                defer deinitOwnedValue(allocator, report);
+                if (!validGuestConformanceReportPayload(report)) break :blk null;
+                break :blk report.report_fingerprint;
+            },
+            else => null,
+        };
+    }
+
+    fn decodePortableEvidence(comptime Value: type, allocator: std.mem.Allocator, bytes: []const u8) anyerror!Value {
+        @setEvalBranchQuota(10_000);
+        var cursor: usize = 0;
+        const value = try decodePortableValue(Value, allocator, bytes, &cursor);
+        errdefer deinitOwnedValue(allocator, value);
+        if (cursor != bytes.len) return error.InvalidFrameEncoding;
+        return value;
+    }
+
+    fn validEnvironmentCertificatePayload(cert: EnvironmentCertificate) bool {
+        return cert.format_version == world_environment_certificate_format_version and
+            cert.fingerprint_version == world_environment_certificate_fingerprint_version and
+            cert.certificate_fingerprint != 0 and
+            cert.certificate_fingerprint == fingerprintEnvironmentCertificate(cert);
+    }
+
+    fn validRunPermitPayload(permit: RunPermit) bool {
+        const policy = permit.policy.withFingerprint();
+        const budget = permit.budget.withFingerprint();
+        const cost_model = permit.cost_model.withFingerprint();
+        if (permit.format_version != world_run_permit_format_version) return false;
+        if (permit.fingerprint_version != world_run_permit_fingerprint_version) return false;
+        if (permit.permit_fingerprint == 0 or permit.permit_fingerprint != fingerprintRunPermit(permit)) return false;
+        if (permit.policy.policy_fingerprint != policy.policy_fingerprint or permit.supervision_policy_fingerprint != policy.policy_fingerprint) return false;
+        if (permit.budget.budget_fingerprint != budget.budget_fingerprint or permit.budget_fingerprint != budget.budget_fingerprint) return false;
+        if (permit.cost_model.cost_model_fingerprint != cost_model.cost_model_fingerprint or permit.cost_model_fingerprint != cost_model.cost_model_fingerprint) return false;
+        for (permit.port_rules, 0..) |rule, index| {
+            if (rule.rule_fingerprint != fingerprintPortRule(rule)) return false;
+            for (permit.port_rules[0..index]) |previous| {
+                if (previous.world_port_id == rule.world_port_id) return false;
+            }
+        }
+        return true;
+    }
+
+    fn validRunReceiptPayload(receipt: RunReceipt) bool {
+        return receipt.format_version == world_run_receipt_format_version and
+            receipt.fingerprint_version == world_run_receipt_fingerprint_version and
+            receipt.receipt_fingerprint != 0 and
+            receipt.receipt_fingerprint == fingerprintRunReceipt(receipt);
+    }
+
+    fn validAdmissionReceiptPayload(receipt: Admission.AdmissionReceipt) bool {
+        return receipt.format_version == world_admission_receipt_format_version and
+            receipt.fingerprint_version == world_admission_receipt_fingerprint_version and
+            receipt.receipt_fingerprint != 0 and
+            receipt.receipt_fingerprint == fingerprintAdmissionReceipt(receipt);
+    }
+
+    fn validFabricReceiptPayload(receipt: Fabric.Receipt) bool {
+        receipt.validate() catch return false;
+        return receipt.receipt_fingerprint != 0;
+    }
+
+    fn validGuestConformanceReportPayload(report: Guest.ConformanceReport) bool {
+        return report.fingerprint_version == world_guest_conformance_report_fingerprint_version and
+            report.report_fingerprint != 0 and
+            report.report_fingerprint == Guest.fingerprintReport(report);
     }
 
     fn bundleEnvelopeTypedPayloadValid(allocator: std.mem.Allocator, envelope: ObjectEnvelope) !bool {
@@ -31127,6 +31254,145 @@ test "vault semantic fingerprint lookup propagates allocation failure" {
     try std.testing.expect(failing_allocator.has_induced_failure);
 }
 
+test "vault resolves portable evidence envelopes by semantic fingerprint" {
+    const allocator = std.testing.allocator;
+    var vault = Continuity.MemoryVault.init(allocator);
+    defer vault.deinit();
+
+    var cert = EnvironmentCertificate{
+        .certificate_fingerprint = 0,
+        .target_ref_fingerprint = 0x3110_0001,
+        .world_surface_fingerprint = 0x3110_0002,
+        .target_certificate_fingerprint = 0x3110_0003,
+        .import_set_fingerprint = 0x3110_0004,
+        .binding_plan_fingerprint = 0x3110_0005,
+        .acceptance_report_fingerprint = 0x3110_0006,
+        .policy_fingerprint = 0x3110_0007,
+        .authority_descriptor_fingerprint = 0x3110_0008,
+        .adapter_descriptor_fingerprint = 0x3110_0009,
+    };
+    cert.certificate_fingerprint = fingerprintEnvironmentCertificate(cert);
+    var cert_payload: std.ArrayList(u8) = .empty;
+    defer cert_payload.deinit(allocator);
+    try encodePortableValue(EnvironmentCertificate, allocator, &cert_payload, cert);
+    _ = try vault.put(Continuity.ObjectEnvelope.init(.{
+        .kind = .environment_certificate,
+        .payload_bytes = cert_payload.items,
+    }));
+    const cert_ref = (try vault.refByKindFingerprint(.environment_certificate, cert.certificate_fingerprint)) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(Continuity.ObjectKind.environment_certificate, cert_ref.kind);
+
+    const port_rules = [_]PortRule{PortRule.init(.{
+        .world_surface_fingerprint = cert.world_surface_fingerprint,
+        .world_port_id = 0,
+        .allow_pending = true,
+    })};
+    const permit = RunPermit.init(.{
+        .target_ref_fingerprint = cert.target_ref_fingerprint,
+        .world_surface_fingerprint = cert.world_surface_fingerprint,
+        .target_certificate_fingerprint = cert.target_certificate_fingerprint,
+        .environment_certificate_fingerprint = cert.certificate_fingerprint,
+        .binding_plan_fingerprint = cert.binding_plan_fingerprint,
+        .mode = .fresh,
+        .port_rules = &port_rules,
+    });
+    var permit_payload: std.ArrayList(u8) = .empty;
+    defer permit_payload.deinit(allocator);
+    try encodePortableValue(RunPermit, allocator, &permit_payload, permit);
+    _ = try vault.put(Continuity.ObjectEnvelope.init(.{
+        .kind = .run_permit,
+        .payload_bytes = permit_payload.items,
+    }));
+    const permit_ref = (try vault.refByKindFingerprint(.run_permit, permit.permit_fingerprint)) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(Continuity.ObjectKind.run_permit, permit_ref.kind);
+
+    const run_receipt = RunReceipt.init(.{
+        .run_permit_fingerprint = permit.permit_fingerprint,
+        .environment_certificate_fingerprint = cert.certificate_fingerprint,
+        .target_ref_fingerprint = cert.target_ref_fingerprint,
+        .usage_ledger_fingerprint = 0x3110_0010,
+        .final_run_state_fingerprint = 0x3110_0011,
+        .final_status = .completed,
+    });
+    var run_receipt_payload: std.ArrayList(u8) = .empty;
+    defer run_receipt_payload.deinit(allocator);
+    try encodePortableValue(RunReceipt, allocator, &run_receipt_payload, run_receipt);
+    _ = try vault.put(Continuity.ObjectEnvelope.init(.{
+        .kind = .run_receipt,
+        .payload_bytes = run_receipt_payload.items,
+    }));
+    const run_receipt_ref = (try vault.refByKindFingerprint(.run_receipt, run_receipt.receipt_fingerprint)) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(Continuity.ObjectKind.run_receipt, run_receipt_ref.kind);
+
+    var admission_receipt = Admission.AdmissionReceipt{
+        .receipt_fingerprint = 0,
+        .admission_request_fingerprint = 0x3110_0020,
+        .admission_report_fingerprint = 0x3110_0021,
+        .package_fingerprint = 0x3110_0022,
+        .target_ref_fingerprint = cert.target_ref_fingerprint,
+        .environment_certificate_fingerprint = cert.certificate_fingerprint,
+        .run_permit_fingerprint = permit.permit_fingerprint,
+        .accepted_mode = .continue_fresh,
+        .metadata = "portable-admission",
+    };
+    admission_receipt.receipt_fingerprint = fingerprintAdmissionReceipt(admission_receipt);
+    var admission_payload: std.ArrayList(u8) = .empty;
+    defer admission_payload.deinit(allocator);
+    try encodePortableValue(Admission.AdmissionReceipt, allocator, &admission_payload, admission_receipt);
+    _ = try vault.put(Continuity.ObjectEnvelope.init(.{
+        .kind = .admission_receipt,
+        .payload_bytes = admission_payload.items,
+    }));
+    const admission_ref = (try vault.refByKindFingerprint(.admission_receipt, admission_receipt.receipt_fingerprint)) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(Continuity.ObjectKind.admission_receipt, admission_ref.kind);
+
+    const fabric_receipt = Fabric.Receipt.init(.{
+        .invocation_fingerprint = 0x3110_0030,
+        .route_fingerprint = 0x3110_0031,
+        .parent_pending_port_fingerprint = 0x3110_0032,
+        .parent_response_frame_fingerprint = 0x3110_0033,
+        .provider_run_receipt_fingerprint = run_receipt.receipt_fingerprint,
+        .status = .completed,
+    });
+    var fabric_payload: std.ArrayList(u8) = .empty;
+    defer fabric_payload.deinit(allocator);
+    try encodePortableValue(Fabric.Receipt, allocator, &fabric_payload, fabric_receipt);
+    _ = try vault.put(Continuity.ObjectEnvelope.init(.{
+        .kind = .fabric_receipt,
+        .payload_bytes = fabric_payload.items,
+    }));
+    const fabric_ref = (try vault.refByKindFingerprint(.fabric_receipt, fabric_receipt.receipt_fingerprint)) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(Continuity.ObjectKind.fabric_receipt, fabric_ref.kind);
+
+    const summary = Guest.RunResultSummary{
+        .status = .done,
+        .result_fingerprint = 0x3110_0040,
+        .pending_frame_fingerprints = &.{0x3110_0041},
+        .actuation_receipt_fingerprints = &.{0x3110_0042},
+    };
+    const report = Guest.ConformanceReport.init(.{
+        .vector_fingerprint = 0x3110_0043,
+        .native_run_result = summary,
+        .native_abi_result = summary,
+        .wasm_inspection_passed = true,
+        .status_sequence_match = true,
+        .pending_frame_match = true,
+        .final_result_match = true,
+        .transcript_match = true,
+        .receipt_match = true,
+        .warnings = &.{"portable-warning"},
+    });
+    var report_payload: std.ArrayList(u8) = .empty;
+    defer report_payload.deinit(allocator);
+    try encodePortableValue(Guest.ConformanceReport, allocator, &report_payload, report);
+    _ = try vault.put(Continuity.ObjectEnvelope.init(.{
+        .kind = .guest_conformance_report,
+        .payload_bytes = report_payload.items,
+    }));
+    const report_ref = (try vault.refByKindFingerprint(.guest_conformance_report, report.report_fingerprint)) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(Continuity.ObjectKind.guest_conformance_report, report_ref.kind);
+}
+
 test "bundle validation rejects conflicting duplicate envelopes" {
     const allocator = std.testing.allocator;
     const payload = "same-payload";
@@ -31773,6 +32039,17 @@ test "actuation graph builds from receipt journal and detects duplicate fresh co
     zero_fingerprint_journal.next_order = 1;
     zero_fingerprint_journal.refreshFingerprint();
     try std.testing.expectError(error.InvalidFrameEncoding, vault.putActuationJournal(zero_fingerprint_journal));
+
+    var keyless_fresh_commit_journal = Actuation.Journal.init();
+    defer keyless_fresh_commit_journal.deinit(allocator);
+    try keyless_fresh_commit_journal.entries.append(allocator, .{
+        .order = 0,
+        .commit_fingerprint = receipt.commit_fingerprint,
+        .fresh_called = true,
+    });
+    keyless_fresh_commit_journal.next_order = 1;
+    keyless_fresh_commit_journal.refreshFingerprint();
+    try std.testing.expectError(error.InvalidFrameEncoding, vault.putActuationJournal(keyless_fresh_commit_journal));
 
     var conflicting_status_journal = Actuation.Journal.init();
     defer conflicting_status_journal.deinit(allocator);
@@ -37869,6 +38146,11 @@ fn deinitOwnedValue(allocator: std.mem.Allocator, value: anytype) void {
                 allocator.free(@constCast(value));
                 return;
             }
+            if (comptime pointer.size == .slice) {
+                for (value) |item| deinitOwnedValue(allocator, item);
+                allocator.free(@constCast(value));
+                return;
+            }
         },
         .optional => if (value) |payload| deinitOwnedValue(allocator, payload),
         .@"struct" => |info| inline for (info.fields) |field| {
@@ -41819,9 +42101,9 @@ fn encodePortableValue(comptime Value: type, allocator: std.mem.Allocator, out: 
             const info = @typeInfo(Value).int;
             if (info.bits > 64) return error.UnsupportedValueImage;
             if (info.signedness == .signed) {
-                try writeI64(out, allocator, @intCast(value));
+                try writeI64(out, allocator, @as(i64, @intCast(value)));
             } else {
-                try writeU64(out, allocator, @intCast(value));
+                try writeU64(out, allocator, @as(u64, @intCast(value)));
             }
         },
         .comptime_int => {
@@ -41857,6 +42139,11 @@ fn encodePortableValue(comptime Value: type, allocator: std.mem.Allocator, out: 
             if (comptime isStringList(Value)) {
                 try writeU64(out, allocator, value.len);
                 for (value) |item| try writeBytes(out, allocator, item);
+                return;
+            }
+            if (comptime pointer.size == .slice) {
+                try writeU64(out, allocator, value.len);
+                for (value) |item| try encodePortableValue(pointer.child, allocator, out, item);
                 return;
             }
             return error.UnsupportedValueImage;
@@ -41944,6 +42231,19 @@ fn decodePortableValue(comptime Value: type, allocator: std.mem.Allocator, bytes
                 errdefer for (result[0..initialized]) |item| allocator.free(@constCast(item));
                 for (result) |*item| {
                     item.* = try readBytesOwned(allocator, bytes, cursor);
+                    initialized += 1;
+                }
+                break :blk result;
+            }
+            if (comptime pointer.size == .slice) {
+                const len = try readU64AsUsize(bytes, cursor);
+                if (len > bytes.len - cursor.*) return error.InvalidFrameEncoding;
+                const result = try allocator.alloc(pointer.child, len);
+                errdefer allocator.free(result);
+                var initialized: usize = 0;
+                errdefer for (result[0..initialized]) |item| deinitOwnedValue(allocator, item);
+                for (result) |*item| {
+                    item.* = try decodePortableValue(pointer.child, allocator, bytes, cursor);
                     initialized += 1;
                 }
                 break :blk result;
