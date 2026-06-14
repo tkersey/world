@@ -19745,7 +19745,7 @@ pub const Actuation = struct {
             try validateJournalEntryFingerprint(entry.decision_fingerprint, &evidence_count);
             try validateJournalEntryFingerprint(entry.commit_fingerprint, &evidence_count);
             try validateJournalEntryFingerprint(entry.response_fingerprint, &evidence_count);
-            try validateJournalEntryFingerprintAllowZero(entry.frame_response_fingerprint, &evidence_count);
+            try validateJournalEntryFrameResponseFingerprint(entry.frame_response_fingerprint, entry.response_value_image_fingerprint, &evidence_count);
             try validateJournalEntryFingerprint(entry.response_value_image_fingerprint, &evidence_count);
             try validateJournalEntryFingerprint(entry.receipt_fingerprint, &evidence_count);
             try validateJournalEntryFingerprint(entry.idempotency_key_fingerprint, &evidence_count);
@@ -19770,8 +19770,14 @@ pub const Actuation = struct {
             }
         }
 
-        fn validateJournalEntryFingerprintAllowZero(value: ?u64, evidence_count: *usize) !void {
-            if (value != null) evidence_count.* += 1;
+        fn validateJournalEntryFrameResponseFingerprint(value: ?u64, response_value_image_fingerprint: ?u64, evidence_count: *usize) !void {
+            if (value) |fingerprint| {
+                if (fingerprint == 0) {
+                    if (response_value_image_fingerprint == null) return error.InvalidFrameEncoding;
+                } else {
+                    evidence_count.* += 1;
+                }
+            }
         }
 
         pub fn encode(self: @This(), allocator: std.mem.Allocator) ![]const u8 {
@@ -32281,6 +32287,13 @@ test "actuation graph builds from receipt journal and detects duplicate fresh co
     empty_entry_journal.next_order = 1;
     empty_entry_journal.refreshFingerprint();
     try std.testing.expectError(error.InvalidFrameEncoding, vault.putActuationJournal(empty_entry_journal));
+
+    var zero_frame_only_journal = Actuation.Journal.init();
+    defer zero_frame_only_journal.deinit(allocator);
+    try zero_frame_only_journal.entries.append(allocator, .{ .order = 0, .frame_response_fingerprint = 0 });
+    zero_frame_only_journal.next_order = 1;
+    zero_frame_only_journal.refreshFingerprint();
+    try std.testing.expectError(error.InvalidFrameEncoding, vault.putActuationJournal(zero_frame_only_journal));
 
     var zero_fingerprint_journal = Actuation.Journal.init();
     defer zero_fingerprint_journal.deinit(allocator);
