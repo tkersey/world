@@ -27963,7 +27963,10 @@ pub const Continuity = struct {
         }
 
         fn rejectDuplicateFreshCommitsForEnvelope(self: *@This(), envelope: ObjectEnvelope) !void {
-            if (envelope.kind != .actuation_receipt) return;
+            switch (envelope.kind) {
+                .actuation_receipt, .actuation_journal => {},
+                else => return,
+            }
             var envelopes = [_]ObjectEnvelope{envelope};
             var roots = [_]ObjectRef{envelope.objectRef()};
             const bundle = Bundle{
@@ -32092,11 +32095,8 @@ test "actuation graph builds from receipt journal and detects duplicate fresh co
     defer journal.deinit(allocator);
     try journal.appendReceipt(allocator, receipt);
     try journal.appendReceipt(allocator, duplicate);
-    const journal_ref = try vault.putActuationJournal(journal);
-    var graph = try Continuity.ActuationGraph.fromJournal(&vault, journal_ref);
-    defer graph.deinit();
-    try std.testing.expectEqual(@as(usize, 1), graph.summary().replayable_count);
-    try std.testing.expectError(error.DuplicateBinding, graph.assertNoDuplicateFreshCommit());
+    try std.testing.expectError(error.DuplicateBinding, journal.assertNoDuplicateFreshCommit());
+    try std.testing.expectError(error.DuplicateBinding, vault.putActuationJournal(journal));
 
     var orphan_vault = Continuity.MemoryVault.init(allocator);
     defer orphan_vault.deinit();
@@ -32139,10 +32139,8 @@ test "actuation graph builds from receipt journal and detects duplicate fresh co
     defer same_commit_journal.deinit(allocator);
     try same_commit_journal.appendReceipt(allocator, receipt);
     try same_commit_journal.appendReceipt(allocator, same_commit_duplicate);
-    const same_commit_journal_ref = try vault.putActuationJournal(same_commit_journal);
-    var same_commit_graph = try Continuity.ActuationGraph.fromJournal(&vault, same_commit_journal_ref);
-    defer same_commit_graph.deinit();
-    try std.testing.expectError(error.DuplicateBinding, same_commit_graph.assertNoDuplicateFreshCommit());
+    try std.testing.expectError(error.DuplicateBinding, same_commit_journal.assertNoDuplicateFreshCommit());
+    try std.testing.expectError(error.DuplicateBinding, vault.putActuationJournal(same_commit_journal));
 
     const first_commit_only = Actuation.Commit.init(.{
         .intent_fingerprint = receipt.intent_fingerprint,
@@ -32166,12 +32164,8 @@ test "actuation graph builds from receipt journal and detects duplicate fresh co
     defer commit_only_journal.deinit(allocator);
     try commit_only_journal.appendCommit(allocator, first_commit_only);
     try commit_only_journal.appendCommit(allocator, second_commit_only);
-    const commit_only_journal_ref = try vault.putActuationJournal(commit_only_journal);
-    var commit_only_graph = try Continuity.ActuationGraph.fromJournal(&vault, commit_only_journal_ref);
-    defer commit_only_graph.deinit();
-    try std.testing.expectEqual(@as(usize, 2), commit_only_graph.summary().fresh_commit_count);
-    try std.testing.expectEqual(@as(usize, 0), commit_only_graph.summary().committed_count);
-    try std.testing.expectError(error.DuplicateBinding, commit_only_graph.assertNoDuplicateFreshCommit());
+    try std.testing.expectError(error.DuplicateBinding, commit_only_journal.assertNoDuplicateFreshCommit());
+    try std.testing.expectError(error.DuplicateBinding, vault.putActuationJournal(commit_only_journal));
 
     var corrupt_journal = Actuation.Journal.init();
     defer corrupt_journal.deinit(allocator);
