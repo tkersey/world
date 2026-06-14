@@ -32206,6 +32206,10 @@ test "portable slice decode bounds length before allocation" {
     defer allocator.free(@constCast(cloned_values));
     try std.testing.expectEqualSlices(u64, value_slice, cloned_values);
     try std.testing.expectError(error.UnsupportedValueImage, Frame.ValueImage.fromValue(allocator, null, null, null, value_slice, .{ .max_value_image_bytes = 16 }));
+    const Empty = struct {};
+    const empty_values = [_]Empty{ .{}, .{} };
+    const empty_slice: []const Empty = empty_values[0..];
+    try std.testing.expectError(error.UnsupportedValueImage, Frame.ValueImage.fromValue(allocator, null, null, null, empty_slice, ValuePolicy.native_compatible));
 
     const NestedSlice = struct {
         values: []const u16,
@@ -44037,6 +44041,8 @@ fn encodePortableValue(comptime Value: type, allocator: std.mem.Allocator, out: 
                 return;
             }
             if (comptime pointer.size == .slice) {
+                const child_min = portableValueStaticMinEncodedSize(pointer.child) orelse return error.UnsupportedValueImage;
+                if (child_min == 0) return error.UnsupportedValueImage;
                 try writeU64(out, allocator, value.len);
                 for (value) |item| try encodePortableValue(pointer.child, allocator, out, item);
                 return;
