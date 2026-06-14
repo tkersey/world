@@ -28918,6 +28918,19 @@ pub const Continuity = struct {
                 if (entry.response_fingerprint) |fingerprint| try appendUniqueRefForFingerprint(vault, &response_refs, .actuation_response, fingerprint);
                 if (requiredResponseValueImageFingerprint(entry.frame_response_fingerprint, entry.response_value_image_fingerprint)) |fingerprint| try appendUniqueRefForFingerprint(vault, &response_value_image_refs, .value_image, fingerprint);
                 if (entry.idempotency_key_fingerprint) |fingerprint| try appendUniqueRefForFingerprint(vault, &idempotency_key_refs, .actuation_idempotency_key, fingerprint);
+                const terminal_fresh_commit = journalEntryIsTerminalFreshCommit(entry);
+                if (terminal_fresh_commit) {
+                    graph.fresh_commit_count += 1;
+                    if (entry.idempotency_key_fingerprint) |key| {
+                        for (journal.entries.items) |prior| {
+                            if (prior.order >= entry.order) break;
+                            if (!journalEntryIsTerminalFreshCommit(prior)) continue;
+                            if (prior.idempotency_key_fingerprint == key and !journalEntriesSameFreshBinding(prior, entry) and !containsU64Local(duplicate_keys.items, key)) {
+                                try duplicate_keys.append(vault.allocator, key);
+                            }
+                        }
+                    }
+                }
                 if (entry.receipt_fingerprint) |fingerprint| {
                     const ref = (try vault.refByKindFingerprint(.actuation_receipt, fingerprint)) orelse ObjectRef.init(.{
                         .kind = .actuation_receipt,
@@ -28927,18 +28940,8 @@ pub const Continuity = struct {
                     });
                     try receipt_refs.append(vault.allocator, ref);
                     if (entry.pending or entry.deferred) try pending_refs.append(vault.allocator, ref);
-                    if (entry.fresh_called and !entry.pending and !entry.deferred and !entry.failed and !entry.rejected and !entry.cancelled) {
-                        graph.fresh_commit_count += 1;
+                    if (terminal_fresh_commit) {
                         try committed_refs.append(vault.allocator, ref);
-                        if (entry.idempotency_key_fingerprint) |key| {
-                            for (journal.entries.items) |prior| {
-                                if (prior.order >= entry.order) break;
-                                if (!prior.fresh_called or prior.pending or prior.deferred or prior.failed or prior.rejected or prior.cancelled) continue;
-                                if (prior.idempotency_key_fingerprint == key and (prior.commit_fingerprint != entry.commit_fingerprint or prior.receipt_fingerprint != entry.receipt_fingerprint) and !containsU64Local(duplicate_keys.items, key)) {
-                                    try duplicate_keys.append(vault.allocator, key);
-                                }
-                            }
-                        }
                     }
                     if (isReplayableJournalEntry(entry) and vault.has(ref) and try journalEntryReplayEvidenceAvailable(vault, entry)) try replayable_refs.append(vault.allocator, ref);
                 }
@@ -29033,6 +29036,24 @@ pub const Continuity = struct {
     fn isReplayableJournalEntry(entry: Actuation.Journal.Entry) bool {
         if (entry.pending or entry.deferred or entry.failed or entry.rejected or entry.cancelled) return false;
         return entry.fresh_called or entry.replayed or (!entry.fresh_called and entry.response_fingerprint != null);
+    }
+
+    fn journalEntryIsTerminalFreshCommit(entry: Actuation.Journal.Entry) bool {
+        return entry.fresh_called and
+            entry.commit_fingerprint != null and
+            !entry.pending and
+            !entry.deferred and
+            !entry.failed and
+            !entry.rejected and
+            !entry.cancelled;
+    }
+
+    fn journalEntriesSameFreshBinding(a: Actuation.Journal.Entry, b: Actuation.Journal.Entry) bool {
+        if (a.commit_fingerprint != b.commit_fingerprint) return false;
+        if (a.receipt_fingerprint) |a_receipt| {
+            if (b.receipt_fingerprint) |b_receipt| return a_receipt == b_receipt;
+        }
+        return true;
     }
 
     fn responseValueImageRefsForReceipt(vault: *Continuity.MemoryVault, receipt: Actuation.Receipt) ![]ObjectRef {
@@ -31687,6 +31708,35 @@ test "actuation graph builds from receipt journal and detects duplicate fresh co
     var same_commit_graph = try Continuity.ActuationGraph.fromJournal(&vault, same_commit_journal_ref);
     defer same_commit_graph.deinit();
     try std.testing.expectError(error.DuplicateBinding, same_commit_graph.assertNoDuplicateFreshCommit());
+
+    const first_commit_only = Actuation.Commit.init(.{
+        .intent_fingerprint = receipt.intent_fingerprint,
+        .decision_fingerprint = receipt.decision_fingerprint,
+        .envelope_fingerprint = receipt.envelope_fingerprint,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .attempt_number = 1,
+        .status = .committed,
+        .fresh_called = true,
+    });
+    const second_commit_only = Actuation.Commit.init(.{
+        .intent_fingerprint = receipt.intent_fingerprint +% 1,
+        .decision_fingerprint = receipt.decision_fingerprint +% 1,
+        .envelope_fingerprint = receipt.envelope_fingerprint +% 1,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .attempt_number = 2,
+        .status = .committed,
+        .fresh_called = true,
+    });
+    var commit_only_journal = Actuation.Journal.init();
+    defer commit_only_journal.deinit(allocator);
+    try commit_only_journal.appendCommit(allocator, first_commit_only);
+    try commit_only_journal.appendCommit(allocator, second_commit_only);
+    const commit_only_journal_ref = try vault.putActuationJournal(commit_only_journal);
+    var commit_only_graph = try Continuity.ActuationGraph.fromJournal(&vault, commit_only_journal_ref);
+    defer commit_only_graph.deinit();
+    try std.testing.expectEqual(@as(usize, 2), commit_only_graph.summary().fresh_commit_count);
+    try std.testing.expectEqual(@as(usize, 0), commit_only_graph.summary().committed_count);
+    try std.testing.expectError(error.DuplicateBinding, commit_only_graph.assertNoDuplicateFreshCommit());
 
     var corrupt_journal = Actuation.Journal.init();
     defer corrupt_journal.deinit(allocator);
