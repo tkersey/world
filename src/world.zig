@@ -28738,14 +28738,14 @@ pub const Continuity = struct {
             graph.transcript_refs = try capsuleExternalImageRefs(vault, image, .transcript_image, image.transcript_image_refs);
             graph.run_image_refs = try capsuleExternalImageRefs(vault, image, .run_image, image.run_image_refs);
             graph.value_image_refs = try capsuleExternalImageRefs(vault, image, .value_image, image.value_image_refs);
-            graph.environment_refs = try storedRefsFromFingerprints(vault, .environment_certificate, image.environment_refs);
-            graph.permit_refs = try storedRefsFromFingerprints(vault, .run_permit, image.supervision_refs);
-            graph.receipt_refs = try storedRefsFromFingerprints(vault, .run_receipt, image.manifest.run_receipt_fingerprints);
-            graph.admission_refs = try storedRefsFromFingerprints(vault, .admission_receipt, image.admission_refs);
+            graph.environment_refs = try refsFromFingerprints(vault, .environment_certificate, image.environment_refs);
+            graph.permit_refs = try refsFromFingerprints(vault, .run_permit, image.supervision_refs);
+            graph.receipt_refs = try refsFromFingerprints(vault, .run_receipt, image.manifest.run_receipt_fingerprints);
+            graph.admission_refs = try refsFromFingerprints(vault, .admission_receipt, image.admission_refs);
             graph.actuation_intent_refs = try refsFromFingerprints(vault, .actuation_intent, image.actuation_intent_refs);
             graph.actuation_receipt_refs = try refsFromFingerprints(vault, .actuation_receipt, image.actuation_receipt_refs);
             graph.actuation_journal_refs = try refsFromFingerprints(vault, .actuation_journal, image.actuation_journal_refs);
-            graph.guest_conformance_refs = try storedRefsFromFingerprints(vault, .guest_conformance_report, image.guest_conformance_refs);
+            graph.guest_conformance_refs = try refsFromFingerprints(vault, .guest_conformance_report, image.guest_conformance_refs);
             graph.missing_deps = try graphMissingRefs(vault, &.{
                 graph.transcript_refs,
                 graph.run_image_refs,
@@ -30032,7 +30032,7 @@ pub const Continuity = struct {
     fn rejectDuplicateFreshCommitsInBundle(bundle: Bundle) !void {
         var keys: std.ArrayList(u64) = .empty;
         defer keys.deinit(bundle.allocator);
-        var receipts: std.ArrayList(u64) = .empty;
+        var receipts: std.ArrayList(?u64) = .empty;
         defer receipts.deinit(bundle.allocator);
         var commits: std.ArrayList(u64) = .empty;
         defer commits.deinit(bundle.allocator);
@@ -30054,24 +30054,32 @@ pub const Continuity = struct {
     fn recordBundleFreshCommit(
         allocator: std.mem.Allocator,
         keys: *std.ArrayList(u64),
-        receipts: *std.ArrayList(u64),
+        receipts: *std.ArrayList(?u64),
         commits: *std.ArrayList(u64),
         key_fingerprint: u64,
-        receipt_fingerprint: u64,
+        receipt_fingerprint: ?u64,
         commit_fingerprint: u64,
     ) !void {
         for (keys.items, 0..) |key, index| {
-            if (key == key_fingerprint and (receipts.items[index] != receipt_fingerprint or commits.items[index] != commit_fingerprint)) return error.DuplicateBinding;
+            if (key == key_fingerprint and !bundleFreshCommitRecordSameBinding(receipts.items[index], commits.items[index], receipt_fingerprint, commit_fingerprint)) return error.DuplicateBinding;
         }
         try keys.append(allocator, key_fingerprint);
         try receipts.append(allocator, receipt_fingerprint);
         try commits.append(allocator, commit_fingerprint);
     }
 
+    fn bundleFreshCommitRecordSameBinding(a_receipt: ?u64, a_commit: u64, b_receipt: ?u64, b_commit: u64) bool {
+        if (a_commit != b_commit) return false;
+        if (a_receipt) |a| {
+            if (b_receipt) |b| return a == b;
+        }
+        return true;
+    }
+
     fn rejectDuplicateFreshCommitsAgainstVault(vault: *Continuity.MemoryVault, bundle: Bundle) !void {
         var incoming_keys: std.ArrayList(u64) = .empty;
         defer incoming_keys.deinit(bundle.allocator);
-        var incoming_receipts: std.ArrayList(u64) = .empty;
+        var incoming_receipts: std.ArrayList(?u64) = .empty;
         defer incoming_receipts.deinit(bundle.allocator);
         var incoming_commits: std.ArrayList(u64) = .empty;
         defer incoming_commits.deinit(bundle.allocator);
@@ -30080,7 +30088,7 @@ pub const Continuity = struct {
         }
         var existing_keys: std.ArrayList(u64) = .empty;
         defer existing_keys.deinit(vault.allocator);
-        var existing_receipts: std.ArrayList(u64) = .empty;
+        var existing_receipts: std.ArrayList(?u64) = .empty;
         defer existing_receipts.deinit(vault.allocator);
         var existing_commits: std.ArrayList(u64) = .empty;
         defer existing_commits.deinit(vault.allocator);
@@ -30090,7 +30098,7 @@ pub const Continuity = struct {
         for (incoming_keys.items, 0..) |incoming_key, incoming_index| {
             for (existing_keys.items, 0..) |existing_key, existing_index| {
                 if (incoming_key != existing_key) continue;
-                if (incoming_receipts.items[incoming_index] != existing_receipts.items[existing_index] or incoming_commits.items[incoming_index] != existing_commits.items[existing_index]) return error.DuplicateBinding;
+                if (!bundleFreshCommitRecordSameBinding(incoming_receipts.items[incoming_index], incoming_commits.items[incoming_index], existing_receipts.items[existing_index], existing_commits.items[existing_index])) return error.DuplicateBinding;
             }
         }
     }
@@ -30099,7 +30107,7 @@ pub const Continuity = struct {
         list_allocator: std.mem.Allocator,
         decode_allocator: std.mem.Allocator,
         keys: *std.ArrayList(u64),
-        receipts: *std.ArrayList(u64),
+        receipts: *std.ArrayList(?u64),
         commits: *std.ArrayList(u64),
         envelope: ObjectEnvelope,
     ) !void {
@@ -30117,9 +30125,8 @@ pub const Continuity = struct {
                 for (journal.entries.items) |entry| {
                     if (!bundleJournalEntryIsTerminalFreshCommit(entry)) continue;
                     const key = entry.idempotency_key_fingerprint orelse continue;
-                    const receipt_fingerprint = entry.receipt_fingerprint orelse continue;
                     const commit_fingerprint = entry.commit_fingerprint orelse continue;
-                    try recordBundleFreshCommit(list_allocator, keys, receipts, commits, key, receipt_fingerprint, commit_fingerprint);
+                    try recordBundleFreshCommit(list_allocator, keys, receipts, commits, key, entry.receipt_fingerprint, commit_fingerprint);
                 }
             },
             else => return,
@@ -32052,6 +32059,36 @@ test "bundle import rejects duplicate fresh receipts already in destination" {
     try std.testing.expectError(error.DuplicateBinding, Continuity.Recovery.preflightBundleImport(&destination, incoming_journal_bytes, .{ .allow_external_dependencies = true }));
     try std.testing.expectError(error.DuplicateBinding, Continuity.Bundle.importIntoVault(&destination, incoming_journal_bytes, .{ .allow_external_dependencies = true }));
     try std.testing.expect(!destination.has(incoming_journal_envelope.objectRef()));
+
+    const incoming_commit_only = Actuation.Commit.init(.{
+        .intent_fingerprint = existing.intent_fingerprint +% 1,
+        .decision_fingerprint = existing.decision_fingerprint +% 1,
+        .envelope_fingerprint = existing.envelope_fingerprint +% 1,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .attempt_number = 2,
+        .status = .committed,
+        .fresh_called = true,
+    });
+    var incoming_commit_journal = Actuation.Journal.init();
+    defer incoming_commit_journal.deinit(allocator);
+    try incoming_commit_journal.appendCommit(allocator, incoming_commit_only);
+    const incoming_commit_journal_payload = try incoming_commit_journal.encode(allocator);
+    defer allocator.free(incoming_commit_journal_payload);
+    const incoming_commit_journal_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_journal,
+        .payload_bytes = incoming_commit_journal_payload,
+    });
+    var incoming_commit_journal_envelopes = [_]Continuity.ObjectEnvelope{incoming_commit_journal_envelope};
+    var incoming_commit_journal_bundle = Continuity.Bundle{
+        .allocator = allocator,
+        .manifest = Continuity.BundleManifest.init(.{ .roots = &.{incoming_commit_journal_envelope.objectRef()}, .object_count = 1 }),
+        .envelopes = &incoming_commit_journal_envelopes,
+    };
+    const incoming_commit_journal_bytes = try incoming_commit_journal_bundle.toBytes(allocator);
+    defer allocator.free(incoming_commit_journal_bytes);
+    try std.testing.expectError(error.DuplicateBinding, Continuity.Recovery.preflightBundleImport(&destination, incoming_commit_journal_bytes, .{ .allow_external_dependencies = true }));
+    try std.testing.expectError(error.DuplicateBinding, Continuity.Bundle.importIntoVault(&destination, incoming_commit_journal_bytes, .{ .allow_external_dependencies = true }));
+    try std.testing.expect(!destination.has(incoming_commit_journal_envelope.objectRef()));
 }
 
 test "bundle import permits failed fresh receipt before successful retry" {
