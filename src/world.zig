@@ -29656,6 +29656,10 @@ pub const Continuity = struct {
             if (!(try capsuleHasPendingIntentForKey(vault, image, idempotency_key))) return error.InvalidFrameEncoding;
             var graph = try CapsuleGraph.fromCapsule(vault, capsule_ref);
             errdefer graph.deinit();
+            if (graph.missing_deps.len != 0) {
+                try vault.ledger.record(.recovery_rejected, capsule_ref);
+                return error.ObjectMissing;
+            }
             if (!graph.local_fresh_actuation_required) {
                 try vault.ledger.record(.recovery_rejected, capsule_ref);
                 return error.InvalidFrameEncoding;
@@ -33412,7 +33416,10 @@ test "capsule index finds target completed pending committed and relink capsules
     const completed = try index.completedCapsules();
     defer allocator.free(completed);
     try std.testing.expect(completed.len >= 3);
-    try std.testing.expect(base_ref.eql(base_ref));
+    const completed_has_base = for (completed) |ref| {
+        if (ref.eql(base_ref)) break true;
+    } else false;
+    try std.testing.expect(completed_has_base);
 
     const pending = try index.pendingActuationCapsules();
     defer allocator.free(pending);
@@ -34115,6 +34122,45 @@ test "recovery preflight inspects capsules replays receipt evidence and rejects 
     var pending_graph = try Continuity.Recovery.preflightPendingActuation(&vault, pending_ref, pending_key, actuator_ref);
     defer pending_graph.deinit();
     try std.testing.expect(pending_graph.local_fresh_actuation_required);
+
+    const incomplete_key = Actuation.IdempotencyKey.init(.{
+        .target_ref_fingerprint = pending_key.target_ref_fingerprint,
+        .world_surface_fingerprint = pending_key.world_surface_fingerprint,
+        .world_port_id = pending_key.world_port_id,
+        .request_fingerprint = pending_key.request_fingerprint ^ 0x3302_0a0a,
+        .actuator_ref_fingerprint = pending_key.actuator_ref_fingerprint,
+    });
+    const incomplete_intent = Actuation.Intent.init(.{
+        .actuator_ref_fingerprint = incomplete_key.actuator_ref_fingerprint,
+        .descriptor_fingerprint = 0x3302_0050,
+        .target_ref_fingerprint = incomplete_key.target_ref_fingerprint,
+        .world_surface_fingerprint = incomplete_key.world_surface_fingerprint,
+        .world_port_id = incomplete_key.world_port_id,
+        .frame_request_fingerprint = incomplete_key.request_fingerprint,
+        .idempotency_key_fingerprint = incomplete_key.key_fingerprint,
+        .class = .deterministic_fixture,
+    });
+    _ = try vault.putActuationIntent(incomplete_intent);
+    const incomplete_manifest = Capsule.Manifest.init(.{
+        .kind = image.manifest.kind,
+        .root_target_ref_fingerprint = recovery_target_ref_fingerprint,
+        .actuation_intent_fingerprints = &.{incomplete_intent.intent_fingerprint},
+        .normal_form = image.manifest.normal_form,
+    });
+    const incomplete_runspace = Capsule.RunspaceImage.init(.{
+        .runspace_fingerprint = 0x3302_0051,
+        .runspace_report_fingerprint = 0x3302_0052,
+        .actuation_intent_refs = &.{incomplete_intent.intent_fingerprint},
+    });
+    const incomplete_image = Capsule.Image.init(.{
+        .manifest = incomplete_manifest,
+        .runspace_image = incomplete_runspace,
+        .value_image_refs = &.{0x3302_0053},
+        .actuation_intent_refs = &.{incomplete_intent.intent_fingerprint},
+    });
+    const incomplete_ref = try vault.putCapsule(incomplete_image);
+    try std.testing.expectError(error.ObjectMissing, Continuity.Recovery.preflightPendingActuation(&vault, incomplete_ref, incomplete_key, actuator_ref));
+
     const pending_committed_receipt = Actuation.Receipt.init(.{
         .intent_fingerprint = pending_intent.intent_fingerprint,
         .envelope_fingerprint = 0x3302_0040,
