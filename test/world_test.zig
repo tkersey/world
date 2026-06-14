@@ -8408,18 +8408,7 @@ test "actuation capsule refs thaw replay evidence and admission summaries" {
         .runspace_image = hidden_runspace_image,
         .actuation_intent_refs = &intent_refs,
     });
-    try hidden_refs_image.validate(.{});
-    const hidden_refs_admission = world.Admission.capsuleAdmissionReport(.{
-        .mode = .replay_only,
-        .image = hidden_refs_image,
-        .thaw_plan = world.Capsule.ThawPlan.init(.{
-            .capsule_image_fingerprint = hidden_refs_image.image_fingerprint,
-            .requested_mode = .replay_only,
-        }),
-    });
-    try std.testing.expect(!hidden_refs_admission.accepted);
-    try std.testing.expect(!hidden_refs_admission.replay_only_actuation_feasible);
-    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, hidden_refs_admission.blockers[0]);
+    try std.testing.expectError(error.InvalidFrameEncoding, hidden_refs_image.validate(.{}));
 }
 
 test "capsule image encode decode roundtrips dependency and object refs" {

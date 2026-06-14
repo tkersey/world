@@ -48,7 +48,7 @@ pub fn main(init: std.process.Init) !void {
 
     var target = world.Continuity.MemoryVault.init(allocator);
     defer target.deinit();
-    var manifest = try world.Continuity.Bundle.importIntoVault(&target, bytes, .{});
+    var manifest = try world.Continuity.Bundle.importIntoVault(&target, bytes, .{ .allow_external_dependencies = true });
     defer manifest.deinit(allocator);
     var capsule_graph = try world.Continuity.CapsuleGraph.fromCapsule(&target, capsule_ref);
     defer capsule_graph.deinit();

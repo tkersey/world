@@ -850,7 +850,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-continuity-pending-actuation",
             .desc = "Run the World Continuity pending actuation example.",
             .expected_stdout =
-            \\capsule_ref=a6c793a9bec2741a
+            \\capsule_ref=7c26dc1b42b94192
             \\pending_actuation_count=1
             \\local_fresh_actuation_required=true
             \\
