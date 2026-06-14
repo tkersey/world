@@ -29208,8 +29208,8 @@ pub const Continuity = struct {
             for (self.vault.objects.items) |envelope| {
                 if (envelope.kind != .capsule_image) continue;
                 var image = try Capsule.Image.decode(self.vault.allocator, envelope.payload_bytes);
+                defer image.deinit(self.vault.allocator);
                 const has_unresolved_intent = try capsuleHasUnresolvedActuationIntent(self.vault, image);
-                image.deinit(self.vault.allocator);
                 if (has_unresolved_intent) try refs.append(self.vault.allocator, envelope.objectRef());
             }
             return refs.toOwnedSlice(self.vault.allocator);
@@ -30100,6 +30100,22 @@ pub const Continuity = struct {
                 defer image.deinit(allocator);
                 break :blk true;
             },
+            .frame_request => blk: {
+                var frame = Frame.Request.decode(allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return err,
+                    else => break :blk false,
+                };
+                defer frame.deinit(allocator);
+                break :blk true;
+            },
+            .frame_response => blk: {
+                var frame = Frame.Response.decode(allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return err,
+                    else => break :blk false,
+                };
+                defer frame.deinit(allocator);
+                break :blk true;
+            },
             .environment_certificate,
             .run_permit,
             .run_receipt,
@@ -30136,8 +30152,6 @@ pub const Continuity = struct {
             .actuation_commit,
             .actuation_response,
             .actuation_verify_report,
-            .frame_request,
-            .frame_response,
             .linker_certificate,
             .assembly,
             .bundle,
@@ -31279,6 +31293,27 @@ test "bundle validation rejects malformed typed payloads" {
     try std.testing.expect(!evidence_report.valid);
     try std.testing.expectEqual(Continuity.ObjectValidationReport.Blocker.DecodeFailed, evidence_report.blockers[0]);
     try std.testing.expectError(error.InvalidFrameEncoding, Continuity.Bundle.importIntoVault(&vault, evidence_bytes, .{}));
+
+    const frame_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .frame_request,
+        .object_format_version = world_frame_request_format_version,
+        .payload_bytes = "not a frame request",
+    });
+    var frame_bundle = Continuity.Bundle{
+        .allocator = allocator,
+        .manifest = Continuity.BundleManifest.init(.{
+            .roots = &.{frame_envelope.objectRef()},
+            .object_count = 1,
+        }),
+        .envelopes = @constCast(&[_]Continuity.ObjectEnvelope{frame_envelope}),
+    };
+    const frame_bytes = try frame_bundle.toBytes(allocator);
+    defer allocator.free(frame_bytes);
+
+    const frame_report = try Continuity.Bundle.validate(allocator, frame_bytes, .{});
+    try std.testing.expect(!frame_report.valid);
+    try std.testing.expectEqual(Continuity.ObjectValidationReport.Blocker.DecodeFailed, frame_report.blockers[0]);
+    try std.testing.expectError(error.InvalidFrameEncoding, Continuity.Bundle.importIntoVault(&vault, frame_bytes, .{}));
 
     const opaque_envelope = Continuity.ObjectEnvelope.init(.{
         .kind = .actuation_commit,
