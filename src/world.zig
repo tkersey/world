@@ -28000,7 +28000,7 @@ pub const Continuity = struct {
 
         fn rejectDuplicateFreshCommitsForEnvelope(self: *@This(), envelope: ObjectEnvelope) !void {
             switch (envelope.kind) {
-                .actuation_receipt, .actuation_journal => {},
+                .actuation_commit, .actuation_receipt, .actuation_journal => {},
                 else => return,
             }
             var envelopes = [_]ObjectEnvelope{envelope};
@@ -28079,11 +28079,16 @@ pub const Continuity = struct {
                     envelope.object_byte_len == envelope.payload_bytes.len;
                 const envelope_ok = envelope.envelope_fingerprint == fingerprintObjectEnvelope(envelope);
                 const decode_ok = try bundleEnvelopeTypedPayloadValid(self.allocator, envelope);
+                const declares_required_deps = if (decode_ok)
+                    try bundleEnvelopeDeclaresRequiredDependencies(self.allocator, self.objects.items, envelope)
+                else
+                    false;
                 var missing_count: usize = 0;
                 for (envelope.dependency_refs) |dep| {
                     if (!self.has(dep)) missing_count += 1;
                 }
-                const valid = payload_ok and envelope_ok and decode_ok and missing_count == 0;
+                if (decode_ok and !declares_required_deps) missing_count += 1;
+                const valid = payload_ok and envelope_ok and decode_ok and declares_required_deps and missing_count == 0;
                 const blockers: []const ObjectValidationReport.Blocker = if (valid)
                     &.{}
                 else if (!payload_ok)
@@ -30804,6 +30809,16 @@ pub const Continuity = struct {
         envelope: ObjectEnvelope,
     ) !void {
         switch (envelope.kind) {
+            .actuation_commit => {
+                const commit = decodePortableEvidence(Actuation.Commit, decode_allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => return,
+                };
+                defer deinitOwnedValue(decode_allocator, commit);
+                if (!validActuationCommitPayload(commit)) return;
+                if (!commitIsTerminalFreshCommit(commit)) return;
+                try recordBundleFreshCommit(list_allocator, keys, receipts, commits, commit.idempotency_key_fingerprint, null, commit.commit_fingerprint);
+            },
             .actuation_receipt => {
                 var receipt = try Actuation.Receipt.decode(decode_allocator, envelope.payload_bytes);
                 defer receipt.deinit(decode_allocator);
@@ -30823,6 +30838,10 @@ pub const Continuity = struct {
             },
             else => return,
         }
+    }
+
+    fn commitIsTerminalFreshCommit(commit: Actuation.Commit) bool {
+        return commit.fresh_called and commit.status == .committed;
     }
 
     fn resolveBundleRoots(vault: *Continuity.MemoryVault, roots: []const ObjectRef) ![]ObjectRef {
@@ -33458,6 +33477,61 @@ test "bundle validation rejects missing dependency and duplicate fresh commit" {
     defer generic_vault.deinit();
     _ = try generic_vault.put(first_envelope);
     try std.testing.expectError(error.DuplicateBinding, generic_vault.put(second_envelope));
+
+    const commit_key = Actuation.IdempotencyKey.init(.{
+        .target_ref_fingerprint = 0x3291_0101,
+        .world_surface_fingerprint = 0x3291_0102,
+        .world_port_id = 3,
+        .request_fingerprint = 0x3291_0103,
+        .actuator_ref_fingerprint = 0x3291_0104,
+    });
+    const first_commit_only = Actuation.Commit.init(.{
+        .intent_fingerprint = 0x3291_0110,
+        .decision_fingerprint = 0x3291_0111,
+        .envelope_fingerprint = 0x3291_0112,
+        .idempotency_key_fingerprint = commit_key.key_fingerprint,
+        .attempt_number = 1,
+        .status = .committed,
+        .fresh_called = true,
+    });
+    const second_commit_only = Actuation.Commit.init(.{
+        .intent_fingerprint = 0x3291_0120,
+        .decision_fingerprint = 0x3291_0121,
+        .envelope_fingerprint = 0x3291_0122,
+        .idempotency_key_fingerprint = commit_key.key_fingerprint,
+        .attempt_number = 2,
+        .status = .committed,
+        .fresh_called = true,
+    });
+    const first_commit_payload = try Continuity.encodePortableEvidence(Actuation.Commit, allocator, first_commit_only);
+    defer allocator.free(first_commit_payload);
+    const second_commit_payload = try Continuity.encodePortableEvidence(Actuation.Commit, allocator, second_commit_only);
+    defer allocator.free(second_commit_payload);
+    const first_commit_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_commit,
+        .object_format_version = first_commit_only.format_version,
+        .payload_bytes = first_commit_payload,
+    });
+    const second_commit_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_commit,
+        .object_format_version = second_commit_only.format_version,
+        .payload_bytes = second_commit_payload,
+    });
+    var commit_vault = Continuity.MemoryVault.init(allocator);
+    defer commit_vault.deinit();
+    _ = try commit_vault.put(first_commit_envelope);
+    try std.testing.expectError(error.DuplicateBinding, commit_vault.put(second_commit_envelope));
+    var duplicate_commit_envelopes = [_]Continuity.ObjectEnvelope{ first_commit_envelope, second_commit_envelope };
+    var duplicate_commit_roots = [_]Continuity.ObjectRef{ first_commit_envelope.objectRef(), second_commit_envelope.objectRef() };
+    var duplicate_commit_bundle = Continuity.Bundle{
+        .allocator = allocator,
+        .manifest = Continuity.BundleManifest.init(.{ .roots = &duplicate_commit_roots, .object_count = duplicate_commit_envelopes.len }),
+        .envelopes = &duplicate_commit_envelopes,
+    };
+    const duplicate_commit_bytes = try duplicate_commit_bundle.toBytes(allocator);
+    defer allocator.free(duplicate_commit_bytes);
+    try std.testing.expectError(error.DuplicateBinding, Continuity.Bundle.validate(allocator, duplicate_commit_bytes, .{ .allow_external_dependencies = true }));
+
     var duplicate_envelopes = [_]Continuity.ObjectEnvelope{ first_envelope, second_envelope };
     var duplicate_roots = [_]Continuity.ObjectRef{ first_envelope.objectRef(), second_envelope.objectRef() };
     var duplicate_bundle = Continuity.Bundle{
@@ -33514,6 +33588,12 @@ test "bundle validation rejects missing dependency and duplicate fresh commit" {
     const incomplete_report = try Continuity.Bundle.validate(allocator, incomplete_bytes, .{ .allow_external_dependencies = true });
     try std.testing.expect(!incomplete_report.valid);
     try std.testing.expectEqual(Continuity.ObjectValidationReport.Blocker.MissingDependency, incomplete_report.blockers[0]);
+    var incomplete_vault = Continuity.MemoryVault.init(allocator);
+    defer incomplete_vault.deinit();
+    const incomplete_ref = try incomplete_vault.put(incomplete_envelope);
+    const incomplete_vault_report = try incomplete_vault.validate(incomplete_ref);
+    try std.testing.expect(!incomplete_vault_report.valid);
+    try std.testing.expectEqual(Continuity.ObjectValidationReport.Blocker.MissingDependency, incomplete_vault_report.blockers[0]);
     try std.testing.expectError(error.InvalidFrameEncoding, Continuity.Bundle.importIntoVault(&empty_destination, incomplete_bytes, .{}));
 
     var duplicate_journal = Actuation.Journal.init();
