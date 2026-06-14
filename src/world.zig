@@ -27607,6 +27607,17 @@ pub const Continuity = struct {
                 else => 1,
             };
         }
+
+        pub fn supportsFormatVersion(self: @This(), format_version: u32) bool {
+            return switch (self) {
+                .capsule_image => format_version == 1 or format_version == world_capsule_image_format_version,
+                .capsule_manifest => format_version == 1 or format_version == world_capsule_manifest_format_version,
+                .capsule_runspace_image => format_version == 1 or format_version == 2 or format_version == world_capsule_runspace_image_format_version,
+                .run_image => format_version == 1 or format_version == 2 or format_version == world_run_image_format_version,
+                .transcript_image => format_version == 2 or format_version == world_transcript_image_format_version,
+                else => format_version == self.defaultFormatVersion(),
+            };
+        }
     };
 
     pub const ObjectRef = struct {
@@ -27656,7 +27667,7 @@ pub const Continuity = struct {
             if (self.ref_format_version != world_continuity_object_ref_format_version) return error.InvalidFrameEncoding;
             if (self.ref_fingerprint_version != world_continuity_object_ref_fingerprint_version) return error.InvalidFrameEncoding;
             if (self.object_format_version == 0 or self.object_fingerprint == 0) return error.InvalidFrameEncoding;
-            if (self.object_format_version != self.kind.defaultFormatVersion()) return error.InvalidFrameEncoding;
+            if (!self.kind.supportsFormatVersion(self.object_format_version)) return error.InvalidFrameEncoding;
             if (self.label.len > world_max_decoded_byte_field_len or self.metadata.len > world_max_decoded_byte_field_len) return error.InvalidFrameEncoding;
             if (self.ref_fingerprint != fingerprintObjectRef(self)) return error.InvalidFrameEncoding;
         }
@@ -27744,7 +27755,7 @@ pub const Continuity = struct {
             if (self.envelope_format_version != world_continuity_object_envelope_format_version) return error.InvalidFrameEncoding;
             if (self.envelope_fingerprint_version != world_continuity_object_envelope_fingerprint_version) return error.InvalidFrameEncoding;
             if (self.object_format_version == 0 or self.object_fingerprint == 0) return error.InvalidFrameEncoding;
-            if (self.object_format_version != self.kind.defaultFormatVersion()) return error.InvalidFrameEncoding;
+            if (!self.kind.supportsFormatVersion(self.object_format_version)) return error.InvalidFrameEncoding;
             if (self.object_byte_len != self.payload_bytes.len) return error.InvalidFrameEncoding;
             if (self.payload_bytes.len > world_max_decoded_byte_field_len) return error.InvalidFrameEncoding;
             if (self.object_fingerprint != fingerprintObjectPayload(self.kind, self.object_format_version, self.payload_bytes)) return error.InvalidFrameEncoding;
@@ -31198,6 +31209,9 @@ test "continuity refs and envelopes reject unsupported object format versions" {
     const unsupported_ref = Continuity.ObjectRef.fromPayload(.capsule_manifest, world_capsule_manifest_format_version + 1, "manifest", "future");
     try std.testing.expectError(error.InvalidFrameEncoding, unsupported_ref.validate());
 
+    const legacy_ref = Continuity.ObjectRef.fromPayload(.capsule_manifest, 1, "manifest", "legacy");
+    try legacy_ref.validate();
+
     const unsupported_envelope = Continuity.ObjectEnvelope.init(.{
         .kind = .capsule_manifest,
         .object_format_version = world_capsule_manifest_format_version + 1,
@@ -31205,6 +31219,13 @@ test "continuity refs and envelopes reject unsupported object format versions" {
     });
     try std.testing.expectError(error.InvalidFrameEncoding, unsupported_envelope.validate());
     try std.testing.expectError(error.InvalidFrameEncoding, vault.put(unsupported_envelope));
+
+    const legacy_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .capsule_manifest,
+        .object_format_version = 1,
+        .payload_bytes = "manifest",
+    });
+    try legacy_envelope.validate();
 }
 
 test "vault dependencies returns owned refs with stable labels" {
