@@ -18019,6 +18019,9 @@ pub const RunspaceEvent = Runspace.RunspaceEvent;
 pub const RunspaceReport = Runspace.RunspaceReport;
 
 pub const Actuation = struct {
+    const max_receipt_evidence_refs: usize = 8192;
+    const max_journal_entries: usize = 8192;
+
     pub const Kind = enum(u8) {
         fixture = 0,
         replay_source = 1,
@@ -19501,6 +19504,8 @@ pub const Actuation = struct {
                 if (frame_response_fingerprint == 0 and self.response_value_image_fingerprint == null) return error.InvalidFrameEncoding;
             }
             if (self.responseStatus() != .responded and self.response_value_image_fingerprint != null) return error.InvalidFrameEncoding;
+            if (self.blockers.len > max_receipt_evidence_refs) return error.InvalidFrameEncoding;
+            if (self.warnings.len > max_receipt_evidence_refs) return error.InvalidFrameEncoding;
             try validateNoZeroU64(self.blockers);
             try validateNoZeroU64(self.warnings);
             if (self.metadata.len > world_max_decoded_byte_field_len) return error.InvalidFrameEncoding;
@@ -19616,9 +19621,9 @@ pub const Actuation = struct {
             const environment_certificate_fingerprint = try readOptionalU64(bytes, &cursor);
             const run_receipt_fingerprint = try readOptionalU64(bytes, &cursor);
             const capsule_fingerprint = try readOptionalU64(bytes, &cursor);
-            const blockers = try readU64SliceOwned(allocator, bytes, &cursor, 8192);
+            const blockers = try readU64SliceOwned(allocator, bytes, &cursor, max_receipt_evidence_refs);
             errdefer allocator.free(blockers);
-            const warnings = try readU64SliceOwned(allocator, bytes, &cursor, 8192);
+            const warnings = try readU64SliceOwned(allocator, bytes, &cursor, max_receipt_evidence_refs);
             errdefer allocator.free(warnings);
             const metadata = try readBytesOwned(allocator, bytes, &cursor);
             errdefer allocator.free(metadata);
@@ -19727,6 +19732,7 @@ pub const Actuation = struct {
         pub fn validate(self: @This()) !void {
             if (self.fingerprint_version != world_actuation_journal_fingerprint_version) return error.InvalidFrameEncoding;
             if (self.journal_fingerprint != fingerprintJournal(self)) return error.InvalidFrameEncoding;
+            if (self.entries.items.len > max_journal_entries) return error.InvalidFrameEncoding;
             var previous_order: ?u64 = null;
             for (self.entries.items) |entry| {
                 if (entry.order >= self.next_order) return error.InvalidFrameEncoding;
@@ -19830,7 +19836,7 @@ pub const Actuation = struct {
             const journal_fingerprint = try readU64(bytes, &cursor);
             const next_order = try readU64(bytes, &cursor);
             const count = try readU64AsUsize(bytes, &cursor);
-            if (count > 8192) return error.InvalidFrameEncoding;
+            if (count > max_journal_entries) return error.InvalidFrameEncoding;
             var journal = @This(){
                 .fingerprint_version = fingerprint_version,
                 .journal_fingerprint = journal_fingerprint,
@@ -31473,6 +31479,42 @@ test "continuity actuation receipt and journal codecs roundtrip" {
     try std.testing.expectEqual(@as(usize, 2), decoded_journal.entries.items.len);
     try std.testing.expect(decoded_journal.entries.items[1].cancelled);
     try std.testing.expectEqual(@as(usize, 1), decoded_journal.summary().cancelled_count);
+
+    const oversized_blockers = try allocator.alloc(u64, Actuation.max_receipt_evidence_refs + 1);
+    defer allocator.free(oversized_blockers);
+    @memset(oversized_blockers, 0x3270_0100);
+    const oversized_receipt = Actuation.Receipt.init(.{
+        .intent_fingerprint = 0x3270_0110,
+        .envelope_fingerprint = 0x3270_0111,
+        .decision_fingerprint = 0x3270_0112,
+        .commit_fingerprint = 0x3270_0113,
+        .response_fingerprint = 0x3270_0114,
+        .frame_response_fingerprint = 0x3270_0115,
+        .actuator_ref_fingerprint = 0x3270_0004,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .request_fingerprint = key.request_fingerprint,
+        .target_ref_fingerprint = key.target_ref_fingerprint,
+        .world_surface_fingerprint = key.world_surface_fingerprint,
+        .world_port_id = key.world_port_id,
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+        .fresh_called = true,
+        .blockers = oversized_blockers,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, oversized_receipt.validate());
+
+    var oversized_journal = Actuation.Journal.init();
+    defer oversized_journal.deinit(allocator);
+    try oversized_journal.entries.ensureTotalCapacity(allocator, Actuation.max_journal_entries + 1);
+    for (0..Actuation.max_journal_entries + 1) |index| {
+        oversized_journal.entries.appendAssumeCapacity(.{
+            .order = @intCast(index),
+            .intent_fingerprint = 0x3270_0200 +% @as(u64, @intCast(index)),
+        });
+    }
+    oversized_journal.next_order = Actuation.max_journal_entries + 1;
+    oversized_journal.refreshFingerprint();
+    try std.testing.expectError(error.InvalidFrameEncoding, oversized_journal.validate());
 }
 
 test "memory vault put get has list and deduplicates envelopes" {
