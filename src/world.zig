@@ -30083,6 +30083,20 @@ pub const Continuity = struct {
             .capsule_mailbox_image,
             .capsule_fabric_image,
             .capsule_link_image,
+            .actuator_ref,
+            .actuation_descriptor,
+            .actuation_binding,
+            .actuation_policy,
+            .actuation_idempotency_key,
+            .actuation_envelope,
+            .actuation_decision,
+            .actuation_commit,
+            .actuation_response,
+            .actuation_verify_report,
+            .frame_request,
+            .frame_response,
+            .linker_certificate,
+            .assembly,
             .bundle,
             => true,
             else => false,
@@ -31223,26 +31237,26 @@ test "bundle validation rejects malformed typed payloads" {
     try std.testing.expectEqual(Continuity.ObjectValidationReport.Blocker.DecodeFailed, evidence_report.blockers[0]);
     try std.testing.expectError(error.InvalidFrameEncoding, Continuity.Bundle.importIntoVault(&vault, evidence_bytes, .{}));
 
-    const unsupported_envelope = Continuity.ObjectEnvelope.init(.{
+    const opaque_envelope = Continuity.ObjectEnvelope.init(.{
         .kind = .actuation_commit,
         .object_format_version = world_actuation_commit_format_version,
         .payload_bytes = "not an actuation commit",
     });
-    var unsupported_bundle = Continuity.Bundle{
+    var opaque_bundle = Continuity.Bundle{
         .allocator = allocator,
         .manifest = Continuity.BundleManifest.init(.{
-            .roots = &.{unsupported_envelope.objectRef()},
+            .roots = &.{opaque_envelope.objectRef()},
             .object_count = 1,
         }),
-        .envelopes = @constCast(&[_]Continuity.ObjectEnvelope{unsupported_envelope}),
+        .envelopes = @constCast(&[_]Continuity.ObjectEnvelope{opaque_envelope}),
     };
-    const unsupported_bytes = try unsupported_bundle.toBytes(allocator);
-    defer allocator.free(unsupported_bytes);
+    const opaque_bytes = try opaque_bundle.toBytes(allocator);
+    defer allocator.free(opaque_bytes);
 
-    const unsupported_report = try Continuity.Bundle.validate(allocator, unsupported_bytes, .{});
-    try std.testing.expect(!unsupported_report.valid);
-    try std.testing.expectEqual(Continuity.ObjectValidationReport.Blocker.DecodeFailed, unsupported_report.blockers[0]);
-    try std.testing.expectError(error.InvalidFrameEncoding, Continuity.Bundle.importIntoVault(&vault, unsupported_bytes, .{}));
+    const opaque_report = try Continuity.Bundle.validate(allocator, opaque_bytes, .{});
+    try std.testing.expect(opaque_report.valid);
+    var opaque_manifest = try Continuity.Bundle.importIntoVault(&vault, opaque_bytes, .{});
+    defer opaque_manifest.deinit(allocator);
 }
 
 test "bundle validation propagates typed payload decode allocation failure" {
