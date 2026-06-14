@@ -28406,9 +28406,20 @@ pub const Continuity = struct {
             if (!report.valid) return error.InvalidFrameEncoding;
             if (options.reject_duplicate_fresh_actuation) try rejectDuplicateFreshCommitsAgainstVault(vault, bundle);
             for (bundle.envelopes) |envelope| try vault.assertCanPutEnvelope(envelope);
+            var imported_manifest = try bundle.manifest.clone(vault.allocator);
+            errdefer imported_manifest.deinit(vault.allocator);
+            const object_count_before = vault.objects.items.len;
+            const ledger_count_before = vault.ledger.events.items.len;
+            const ledger_next_order_before = vault.ledger.next_order;
+            errdefer {
+                for (vault.objects.items[object_count_before..]) |*object| object.deinit(vault.allocator);
+                vault.objects.shrinkRetainingCapacity(object_count_before);
+                vault.ledger.events.shrinkRetainingCapacity(ledger_count_before);
+                vault.ledger.next_order = ledger_next_order_before;
+            }
             for (bundle.envelopes) |envelope| _ = try vault.put(envelope);
             try vault.ledger.record(.bundle_imported, null);
-            return try bundle.manifest.clone(vault.allocator);
+            return imported_manifest;
         }
 
         pub fn validate(allocator: std.mem.Allocator, bytes: []const u8, options: BundleOptions) !ObjectValidationReport {
@@ -32373,6 +32384,51 @@ test "bundle import preflights destination conflicts atomically" {
 
     try std.testing.expectError(error.InvalidFrameEncoding, Continuity.Bundle.importIntoVault(&destination, bytes, .{}));
     try std.testing.expect(!destination.has(first_ref));
+}
+
+test "bundle import rolls back objects on allocation failure" {
+    const allocator = std.testing.allocator;
+    const first = Continuity.ObjectEnvelope.init(.{
+        .kind = .capsule_manifest,
+        .object_format_version = world_capsule_manifest_format_version,
+        .payload_bytes = "rollback-first",
+    });
+    const second = Continuity.ObjectEnvelope.init(.{
+        .kind = .capsule_manifest,
+        .object_format_version = world_capsule_manifest_format_version,
+        .payload_bytes = "rollback-second",
+    });
+    var envelopes = [_]Continuity.ObjectEnvelope{ first, second };
+    var roots = [_]Continuity.ObjectRef{ first.objectRef(), second.objectRef() };
+    var bundle = Continuity.Bundle{
+        .allocator = allocator,
+        .manifest = Continuity.BundleManifest.init(.{
+            .roots = &roots,
+            .object_count = envelopes.len,
+        }),
+        .envelopes = &envelopes,
+    };
+    const bytes = try bundle.toBytes(allocator);
+    defer allocator.free(bytes);
+
+    var saw_allocation_failure = false;
+    for (0..80) |fail_index| {
+        var failing_allocator = std.testing.FailingAllocator.init(allocator, .{
+            .fail_index = fail_index,
+        });
+        var vault = Continuity.MemoryVault.init(failing_allocator.allocator());
+        defer vault.deinit();
+
+        var imported_manifest = Continuity.Bundle.importIntoVault(&vault, bytes, .{}) catch |err| {
+            if (err != error.OutOfMemory) return err;
+            saw_allocation_failure = true;
+            try std.testing.expectEqual(@as(usize, 0), vault.objectCount());
+            continue;
+        };
+        imported_manifest.deinit(failing_allocator.allocator());
+        try std.testing.expectEqual(@as(usize, 2), vault.objectCount());
+    }
+    try std.testing.expect(saw_allocation_failure);
 }
 
 test "bundle import rejects duplicate fresh receipts already in destination" {
