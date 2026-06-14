@@ -19752,6 +19752,7 @@ pub const Actuation = struct {
             try validateJournalEntryFingerprint(entry.request_fingerprint, &evidence_count);
             if (evidence_count == 0) return error.InvalidFrameEncoding;
             if (journalEntryResponseStatusFlagCount(entry) > 1) return error.InvalidFrameEncoding;
+            if (journalEntryExecutionFlagCount(entry) > 1) return error.InvalidFrameEncoding;
             if (isTerminalFreshCommitEntry(entry) and entry.idempotency_key_fingerprint == null) return error.InvalidFrameEncoding;
         }
 
@@ -19761,6 +19762,12 @@ pub const Actuation = struct {
                 @as(usize, @intFromBool(entry.failed)) +
                 @as(usize, @intFromBool(entry.rejected)) +
                 @as(usize, @intFromBool(entry.cancelled));
+        }
+
+        fn journalEntryExecutionFlagCount(entry: Entry) usize {
+            return @as(usize, @intFromBool(entry.fresh_called)) +
+                @as(usize, @intFromBool(entry.replayed)) +
+                @as(usize, @intFromBool(entry.verified));
         }
 
         fn validateJournalEntryFingerprint(value: ?u64, evidence_count: *usize) !void {
@@ -27936,6 +27943,15 @@ pub const Continuity = struct {
             try self.events.append(self.allocator, Event.init(self.next_order, kind, object_ref));
             self.next_order += 1;
         }
+
+        pub fn reserveRecord(self: *@This()) !void {
+            try self.events.ensureUnusedCapacity(self.allocator, 1);
+        }
+
+        pub fn recordAssumeCapacity(self: *@This(), kind: Ledger.EventKind, object_ref: ?ObjectRef) void {
+            self.events.appendAssumeCapacity(Event.init(self.next_order, kind, object_ref));
+            self.next_order += 1;
+        }
     };
 
     pub const MemoryVault = struct {
@@ -28120,8 +28136,9 @@ pub const Continuity = struct {
                 .payload_bytes = payload,
                 .label = "capsule.image",
             });
+            try self.ledger.reserveRecord();
             const ref = try self.put(envelope);
-            try self.ledger.record(.capsule_stored, ref);
+            self.ledger.recordAssumeCapacity(.capsule_stored, ref);
             return ref;
         }
 
@@ -28155,8 +28172,9 @@ pub const Continuity = struct {
                 .payload_bytes = payload,
                 .label = "actuation.intent",
             });
+            try self.ledger.reserveRecord();
             const ref = try self.put(envelope);
-            try self.ledger.record(.actuation_intent_stored, ref);
+            self.ledger.recordAssumeCapacity(.actuation_intent_stored, ref);
             return ref;
         }
 
@@ -28181,8 +28199,9 @@ pub const Continuity = struct {
                 .payload_bytes = payload,
                 .label = "actuation.receipt",
             });
+            try self.ledger.reserveRecord();
             const ref = try self.put(envelope);
-            try self.ledger.record(.actuation_receipt_stored, ref);
+            self.ledger.recordAssumeCapacity(.actuation_receipt_stored, ref);
             return ref;
         }
 
@@ -28218,8 +28237,9 @@ pub const Continuity = struct {
                 .payload_bytes = payload,
                 .label = "actuation.journal",
             });
+            try self.ledger.reserveRecord();
             const ref = try self.put(envelope);
-            try self.ledger.record(.actuation_journal_stored, ref);
+            self.ledger.recordAssumeCapacity(.actuation_journal_stored, ref);
             return ref;
         }
 
@@ -32465,6 +32485,18 @@ test "actuation graph builds from receipt journal and detects duplicate fresh co
     conflicting_status_journal.next_order = 1;
     conflicting_status_journal.refreshFingerprint();
     try std.testing.expectError(error.InvalidFrameEncoding, vault.putActuationJournal(conflicting_status_journal));
+
+    var conflicting_execution_journal = Actuation.Journal.init();
+    defer conflicting_execution_journal.deinit(allocator);
+    try conflicting_execution_journal.entries.append(allocator, .{
+        .order = 0,
+        .receipt_fingerprint = receipt.receipt_fingerprint,
+        .fresh_called = true,
+        .replayed = true,
+    });
+    conflicting_execution_journal.next_order = 1;
+    conflicting_execution_journal.refreshFingerprint();
+    try std.testing.expectError(error.InvalidFrameEncoding, vault.putActuationJournal(conflicting_execution_journal));
 }
 
 test "actuation graph gates replayable receipts on external response value images" {
