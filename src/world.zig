@@ -19249,6 +19249,7 @@ pub const Actuation = struct {
             if (self.fingerprint_version != world_actuation_response_fingerprint_version) return error.InvalidFrameEncoding;
             if (self.intent_fingerprint == 0 or self.actuator_ref_fingerprint == 0 or self.request_fingerprint == 0) return error.InvalidFrameEncoding;
             try validateOptionalFingerprint(self.value_image_fingerprint);
+            try validateOptionalFingerprint(self.recorded_response_fingerprint);
             if (!policy.allowsResponseStatus(self.status)) return error.PortRuleDenied;
             if (self.status == .responded) {
                 const frame_response_fingerprint = self.frame_response_fingerprint orelse return error.MissingValueImage;
@@ -35564,6 +35565,19 @@ test "actuation response deinit does not free borrowed response image" {
         .recorded_response_fingerprint = 0x3311_fffe,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, mismatched.validate(.strict_fresh, null));
+}
+
+test "actuation response rejects zero recorded response fingerprint" {
+    const zero_recorded = Actuation.Response.init(.{
+        .intent_fingerprint = 0x3311_0030,
+        .commit_fingerprint = 0x3311_0031,
+        .actuator_ref_fingerprint = 0x3311_0032,
+        .world_port_id = 5,
+        .request_fingerprint = 0x3311_0033,
+        .status = .failed,
+        .recorded_response_fingerprint = 0,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, zero_recorded.validate(.fixture_test, null));
 }
 
 test "vault replay preserves stored response value image for recorded frame response" {
