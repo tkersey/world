@@ -12058,7 +12058,7 @@ pub const Runspace = struct {
         errdefer if (response_image) |*image| image.deinit(self.allocator);
         const response_fingerprint = actuation_response.frame_response_fingerprint orelse switch (status) {
             .responded => return error.MissingValueImage,
-            .rejected, .failed => actuation_response.response_fingerprint,
+            .rejected, .failed => actuation_response.recorded_response_fingerprint orelse actuation_response.response_fingerprint,
             .pending => unreachable,
         };
         const deferred_response_fingerprint = status == .responded and response_fingerprint == 0;
@@ -28457,7 +28457,7 @@ pub const Continuity = struct {
             defer bundle.deinit();
             const report = try bundle.validationReport(options);
             if (!report.valid) return error.InvalidFrameEncoding;
-            if (options.reject_duplicate_fresh_actuation) try rejectDuplicateFreshCommitsAgainstVault(vault, bundle);
+            try rejectDuplicateFreshCommitsAgainstVault(vault, bundle);
             for (bundle.envelopes) |envelope| try vault.assertCanPutEnvelope(envelope);
             var imported_manifest = try bundle.manifest.clone(vault.allocator);
             errdefer imported_manifest.deinit(vault.allocator);
@@ -29377,7 +29377,12 @@ pub const Continuity = struct {
         }
 
         pub fn byIdempotencyKey(self: @This(), key: Actuation.IdempotencyKey) !?ObjectRef {
-            if (try self.vault.lookupActuationByIdempotencyKey(key)) |ref| return ref;
+            if (try self.vault.lookupActuationByIdempotencyKey(key)) |ref| {
+                var receipt = try self.vault.getActuationReceipt(ref);
+                defer receipt.deinit(self.vault.allocator);
+                if (receiptIsTerminalFreshCommit(receipt)) return ref;
+                return (try self.receiptByIdempotencyKeyFromJournals(key)) orelse ref;
+            }
             return self.receiptByIdempotencyKeyFromJournals(key);
         }
 
@@ -29711,7 +29716,7 @@ pub const Continuity = struct {
             defer bundle.deinit();
             const report = try bundle.validationReport(options);
             if (report.valid) {
-                if (options.reject_duplicate_fresh_actuation) try rejectDuplicateFreshCommitsAgainstVault(vault, bundle);
+                try rejectDuplicateFreshCommitsAgainstVault(vault, bundle);
                 for (bundle.envelopes) |envelope| try vault.assertCanPutEnvelope(envelope);
             }
             return report;
@@ -29992,7 +29997,7 @@ pub const Continuity = struct {
     fn bundleRefMatches(allocator: std.mem.Allocator, envelope: ObjectEnvelope, ref: ObjectRef) !bool {
         const envelope_ref = envelope.objectRef();
         if (envelope_ref.eql(ref)) return true;
-        if (ref.byte_len != 0 or envelope_ref.kind != ref.kind or envelope_ref.object_format_version != ref.object_format_version) return false;
+        if (ref.byte_len != 0 or envelope_ref.kind != ref.kind) return false;
         if (envelope_ref.object_fingerprint == ref.object_fingerprint) return true;
         return try bundleEnvelopeSemanticFingerprintMatches(allocator, envelope, ref.object_fingerprint);
     }
@@ -30314,30 +30319,55 @@ pub const Continuity = struct {
             if (!bundleShouldExportRef(ref, roots, options)) try excluded.append(vault.allocator, try ref.clone(vault.allocator));
         }
 
-        var pruned: std.ArrayList(ObjectRef) = .empty;
-        defer deinitRefList(vault.allocator, &pruned);
-        if (excluded.items.len != 0) {
-            var excluded_graph = try ObjectGraph.buildFromRoots(vault, excluded.items, .{
-                .max_object_count = options.max_object_count,
-                .max_dependency_count = options.max_dependency_count,
-                .allow_missing_dependencies = true,
-            });
-            defer excluded_graph.deinit();
-            for (excluded_graph.objects) |ref| {
-                if (!containsRef(roots, ref)) try pruned.append(vault.allocator, try ref.clone(vault.allocator));
-            }
-            for (excluded_graph.missing_deps) |ref| {
-                if (!containsRef(roots, ref)) try pruned.append(vault.allocator, try ref.clone(vault.allocator));
-            }
-        }
+        const retained = try bundleRetainedRefs(vault, roots, excluded.items, options);
+        defer freeRefSlice(vault.allocator, retained);
 
         var filtered: std.ArrayList(ObjectRef) = .empty;
         errdefer deinitRefList(vault.allocator, &filtered);
         for (graph_objects) |ref| {
-            if (containsRef(pruned.items, ref)) continue;
-            if (bundleShouldExportRef(ref, roots, options)) try filtered.append(vault.allocator, try ref.clone(vault.allocator));
+            if (bundleShouldExportRef(ref, roots, options) and containsRef(retained, ref)) try filtered.append(vault.allocator, try ref.clone(vault.allocator));
         }
         return filtered.toOwnedSlice(vault.allocator);
+    }
+
+    fn bundleRetainedRefs(vault: *Continuity.MemoryVault, roots: []const ObjectRef, excluded: []const ObjectRef, options: BundleOptions) ![]ObjectRef {
+        var retained: std.ArrayList(ObjectRef) = .empty;
+        errdefer deinitRefList(vault.allocator, &retained);
+        var active: std.ArrayList(ObjectRef) = .empty;
+        defer deinitRefList(vault.allocator, &active);
+        for (roots) |root| try visitBundleRetainedRef(vault, root, roots, excluded, options, &retained, &active);
+        return retained.toOwnedSlice(vault.allocator);
+    }
+
+    fn visitBundleRetainedRef(
+        vault: *Continuity.MemoryVault,
+        current: ObjectRef,
+        roots: []const ObjectRef,
+        excluded: []const ObjectRef,
+        options: BundleOptions,
+        retained: *std.ArrayList(ObjectRef),
+        active: *std.ArrayList(ObjectRef),
+    ) !void {
+        const resolved_current = (try vault.resolveRef(current)) orelse current;
+        if (containsRef(retained.items, resolved_current) or containsRef(active.items, resolved_current)) return;
+        if (!containsRef(roots, resolved_current) and containsRef(excluded, resolved_current)) return;
+        if (retained.items.len >= options.max_object_count) return error.InvalidFrameEncoding;
+
+        var envelope = vault.get(resolved_current) catch |err| switch (err) {
+            error.ObjectMissing => return,
+            else => return err,
+        };
+        defer envelope.deinit(vault.allocator);
+
+        try active.append(vault.allocator, try resolved_current.clone(vault.allocator));
+        defer {
+            var owned = active.pop().?;
+            owned.deinit(vault.allocator);
+        }
+
+        if (envelope.dependency_refs.len > options.max_dependency_count) return error.InvalidFrameEncoding;
+        for (envelope.dependency_refs) |dep| try visitBundleRetainedRef(vault, dep, roots, excluded, options, retained, active);
+        try retained.append(vault.allocator, try resolved_current.clone(vault.allocator));
     }
 
     fn isCapsuleDependencyKind(kind: ObjectKind) bool {
@@ -30623,7 +30653,7 @@ pub const Continuity = struct {
         defer vault.allocator.free(capsule_refs);
 
         var refs: std.ArrayList(ObjectRef) = .empty;
-        errdefer refs.deinit(vault.allocator);
+        errdefer deinitRefList(vault.allocator, &refs);
         for (capsule_refs) |capsule_ref| {
             const kind = continuityKindForCapsuleDependencySection(capsule_ref.section) orelse continue;
             if (capsuleDependencyEmbedded(image, kind, capsule_ref.fingerprint)) continue;
@@ -30834,7 +30864,28 @@ pub const Continuity = struct {
             const intent_ref = (try vault.refByKindFingerprint(.actuation_intent, intent_fingerprint)) orelse continue;
             var intent = try vault.getActuationIntent(intent_ref);
             defer intent.deinit(vault.allocator);
-            if (Actuation.idempotencyKeyMatchesIntent(key, intent)) return true;
+            if (Actuation.idempotencyKeyMatchesIntent(key, intent)) {
+                if (try vaultHasTerminalFreshCommitForKey(vault, key)) return false;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    fn vaultHasTerminalFreshCommitForKey(vault: *Continuity.MemoryVault, key: Actuation.IdempotencyKey) !bool {
+        if (try vault.lookupActuationByIdempotencyKey(key)) |ref| {
+            var receipt = try vault.getActuationReceipt(ref);
+            defer receipt.deinit(vault.allocator);
+            if (receiptIsTerminalFreshCommit(receipt)) return true;
+        }
+        for (vault.objects.items) |envelope| {
+            if (envelope.kind != .actuation_journal) continue;
+            var journal = try Actuation.Journal.decode(vault.allocator, envelope.payload_bytes);
+            defer journal.deinit(vault.allocator);
+            for (journal.entries.items) |entry| {
+                if (entry.idempotency_key_fingerprint != key.key_fingerprint) continue;
+                if (journalEntryIsTerminalFreshCommit(entry)) return true;
+            }
         }
         return false;
     }
@@ -30876,8 +30927,28 @@ pub const Continuity = struct {
         };
     }
 
-    fn refFromStoredOrFingerprint(vault: *Continuity.MemoryVault, kind: ObjectKind, fingerprint: u64) !ObjectRef {
-        return (try vault.refByKindFingerprint(kind, fingerprint)) orelse ObjectRef.init(.{
+    fn kindHasSemanticRefLookup(kind: ObjectKind) bool {
+        return switch (kind) {
+            .capsule_image,
+            .actuation_intent,
+            .actuation_receipt,
+            .actuation_journal,
+            .value_image,
+            .transcript_image,
+            .run_image,
+            .environment_certificate,
+            .run_permit,
+            .run_receipt,
+            .admission_receipt,
+            .fabric_receipt,
+            .guest_conformance_report,
+            => true,
+            else => false,
+        };
+    }
+
+    fn semanticObjectRef(kind: ObjectKind, fingerprint: u64) ObjectRef {
+        return ObjectRef.init(.{
             .kind = kind,
             .object_format_version = kind.defaultFormatVersion(),
             .object_fingerprint = fingerprint,
@@ -30885,17 +30956,19 @@ pub const Continuity = struct {
         });
     }
 
+    fn refFromStoredOrFingerprint(vault: *Continuity.MemoryVault, kind: ObjectKind, fingerprint: u64) !ObjectRef {
+        if (!kindHasSemanticRefLookup(kind)) {
+            if (try vault.refByKindFingerprint(kind, fingerprint)) |ref| return ref;
+        }
+        return semanticObjectRef(kind, fingerprint);
+    }
+
     fn refsFromFingerprints(vault: *Continuity.MemoryVault, kind: ObjectKind, fingerprints: []const u64) ![]ObjectRef {
         const refs = try vault.allocator.alloc(ObjectRef, fingerprints.len);
         var initialized: usize = 0;
         errdefer allocatorFreeRefSlice(vault.allocator, refs, initialized);
         for (fingerprints, 0..) |fingerprint, index| {
-            refs[index] = (try vault.refByKindFingerprint(kind, fingerprint)) orelse ObjectRef.init(.{
-                .kind = kind,
-                .object_format_version = kind.defaultFormatVersion(),
-                .object_fingerprint = fingerprint,
-                .byte_len = 0,
-            });
+            refs[index] = try refFromStoredOrFingerprint(vault, kind, fingerprint);
             initialized += 1;
         }
         return refs;
@@ -32016,6 +32089,8 @@ test "bundle validation matches semantic value transcript and run dependency ref
         }),
     });
     defer run_image.deinit(allocator);
+    run_image.format_version = 1;
+    run_image.run_image_fingerprint = fingerprintRunImageV1(run_image);
     const run_image_payload = try run_image.encode(allocator);
     defer allocator.free(run_image_payload);
 
@@ -32056,7 +32131,7 @@ test "bundle validation matches semantic value transcript and run dependency ref
     });
     const run_envelope = Continuity.ObjectEnvelope.init(.{
         .kind = .run_image,
-        .object_format_version = world_run_image_format_version,
+        .object_format_version = 1,
         .payload_bytes = run_image_payload,
     });
     var roots = [_]Continuity.ObjectRef{root_envelope.objectRef()};
@@ -32822,6 +32897,8 @@ test "bundle import rejects duplicate fresh receipts already in destination" {
 
     try std.testing.expectError(error.DuplicateBinding, Continuity.Recovery.preflightBundleImport(&destination, bytes, .{ .allow_external_dependencies = true }));
     try std.testing.expectError(error.DuplicateBinding, Continuity.Bundle.importIntoVault(&destination, bytes, .{ .allow_external_dependencies = true }));
+    try std.testing.expectError(error.DuplicateBinding, Continuity.Recovery.preflightBundleImport(&destination, bytes, .{ .allow_external_dependencies = true, .reject_duplicate_fresh_actuation = false }));
+    try std.testing.expectError(error.DuplicateBinding, Continuity.Bundle.importIntoVault(&destination, bytes, .{ .allow_external_dependencies = true, .reject_duplicate_fresh_actuation = false }));
     try std.testing.expect(!destination.has(incoming_ref));
 
     var incoming_journal = Actuation.Journal.init();
@@ -33589,6 +33666,35 @@ test "actuation index finds receipts by actuator target port capsule state and i
     try std.testing.expect(journal_by_key != null);
     try std.testing.expect(journal_by_key.?.eql(expected_journal_receipt_ref));
 
+    var mixed_vault = Continuity.MemoryVault.init(allocator);
+    defer mixed_vault.deinit();
+    const stored_pending_for_key = Actuation.Receipt.init(.{
+        .intent_fingerprint = 0x3301_0081,
+        .envelope_fingerprint = 0x3301_0082,
+        .decision_fingerprint = 0x3301_0083,
+        .commit_fingerprint = 0x3301_0084,
+        .response_fingerprint = 0x3301_0085,
+        .actuator_ref_fingerprint = key.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .request_fingerprint = key.request_fingerprint,
+        .target_ref_fingerprint = key.target_ref_fingerprint,
+        .world_surface_fingerprint = key.world_surface_fingerprint,
+        .world_port_id = key.world_port_id,
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+        .fresh_called = true,
+        .pending = true,
+    });
+    _ = try mixed_vault.putActuationReceipt(stored_pending_for_key);
+    var mixed_journal = Actuation.Journal.init();
+    defer mixed_journal.deinit(allocator);
+    try mixed_journal.appendReceipt(allocator, receipt);
+    _ = try mixed_vault.putActuationJournal(mixed_journal);
+    const mixed_index = Continuity.ActuationIndex.init(&mixed_vault);
+    const mixed_by_key = try mixed_index.byIdempotencyKey(key);
+    try std.testing.expect(mixed_by_key != null);
+    try std.testing.expect(mixed_by_key.?.eql(expected_journal_receipt_ref));
+
     var forged_vault = Continuity.MemoryVault.init(allocator);
     defer forged_vault.deinit();
     const forged = Actuation.Receipt.init(.{
@@ -33975,7 +34081,7 @@ test "recovery preflight inspects capsules replays receipt evidence and rejects 
         .target_ref_fingerprint = key.target_ref_fingerprint,
         .world_surface_fingerprint = key.world_surface_fingerprint,
         .world_port_id = key.world_port_id,
-        .request_fingerprint = key.request_fingerprint,
+        .request_fingerprint = key.request_fingerprint ^ 0x3302_0f0f,
         .actuator_ref_fingerprint = key.actuator_ref_fingerprint,
     });
     const pending_intent = Actuation.Intent.init(.{
@@ -34009,31 +34115,50 @@ test "recovery preflight inspects capsules replays receipt evidence and rejects 
     var pending_graph = try Continuity.Recovery.preflightPendingActuation(&vault, pending_ref, pending_key, actuator_ref);
     defer pending_graph.deinit();
     try std.testing.expect(pending_graph.local_fresh_actuation_required);
+    const pending_committed_receipt = Actuation.Receipt.init(.{
+        .intent_fingerprint = pending_intent.intent_fingerprint,
+        .envelope_fingerprint = 0x3302_0040,
+        .decision_fingerprint = 0x3302_0041,
+        .commit_fingerprint = 0x3302_0042,
+        .response_fingerprint = 0x3302_0043,
+        .frame_response_fingerprint = 0x3302_0044,
+        .actuator_ref_fingerprint = pending_key.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = pending_key.key_fingerprint,
+        .request_fingerprint = pending_key.request_fingerprint,
+        .target_ref_fingerprint = pending_key.target_ref_fingerprint,
+        .world_surface_fingerprint = pending_key.world_surface_fingerprint,
+        .world_port_id = pending_key.world_port_id,
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+        .fresh_called = true,
+    });
+    _ = try vault.putActuationReceipt(pending_committed_receipt);
+    try std.testing.expectError(error.InvalidFrameEncoding, Continuity.Recovery.preflightPendingActuation(&vault, pending_ref, pending_key, actuator_ref));
     try std.testing.expectError(error.InvalidFrameEncoding, Continuity.Recovery.preflightPendingActuation(&vault, pending_ref, pending_key, @as(i64, -1)));
     const wrong_key = Actuation.IdempotencyKey.init(.{
-        .target_ref_fingerprint = key.target_ref_fingerprint ^ 1,
-        .world_surface_fingerprint = key.world_surface_fingerprint,
-        .world_port_id = key.world_port_id,
-        .request_fingerprint = key.request_fingerprint,
-        .actuator_ref_fingerprint = key.actuator_ref_fingerprint,
+        .target_ref_fingerprint = pending_key.target_ref_fingerprint ^ 1,
+        .world_surface_fingerprint = pending_key.world_surface_fingerprint,
+        .world_port_id = pending_key.world_port_id,
+        .request_fingerprint = pending_key.request_fingerprint,
+        .actuator_ref_fingerprint = pending_key.actuator_ref_fingerprint,
         .intent_fingerprint = pending_intent.intent_fingerprint,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, Continuity.Recovery.preflightPendingActuation(&vault, pending_ref, wrong_key, actuator_ref));
     const wrong_port_key = Actuation.IdempotencyKey.init(.{
-        .target_ref_fingerprint = key.target_ref_fingerprint,
-        .world_surface_fingerprint = key.world_surface_fingerprint,
-        .world_port_id = key.world_port_id + 1,
-        .request_fingerprint = key.request_fingerprint,
-        .actuator_ref_fingerprint = key.actuator_ref_fingerprint,
+        .target_ref_fingerprint = pending_key.target_ref_fingerprint,
+        .world_surface_fingerprint = pending_key.world_surface_fingerprint,
+        .world_port_id = pending_key.world_port_id + 1,
+        .request_fingerprint = pending_key.request_fingerprint,
+        .actuator_ref_fingerprint = pending_key.actuator_ref_fingerprint,
         .intent_fingerprint = pending_intent.intent_fingerprint,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, Continuity.Recovery.preflightPendingActuation(&vault, pending_ref, wrong_port_key, actuator_ref));
     const wrong_intent_key = Actuation.IdempotencyKey.init(.{
-        .target_ref_fingerprint = key.target_ref_fingerprint,
-        .world_surface_fingerprint = key.world_surface_fingerprint,
-        .world_port_id = key.world_port_id,
-        .request_fingerprint = key.request_fingerprint,
-        .actuator_ref_fingerprint = key.actuator_ref_fingerprint,
+        .target_ref_fingerprint = pending_key.target_ref_fingerprint,
+        .world_surface_fingerprint = pending_key.world_surface_fingerprint,
+        .world_port_id = pending_key.world_port_id,
+        .request_fingerprint = pending_key.request_fingerprint,
+        .actuator_ref_fingerprint = pending_key.actuator_ref_fingerprint,
         .intent_fingerprint = pending_intent.intent_fingerprint ^ 1,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, Continuity.Recovery.preflightPendingActuation(&vault, pending_ref, wrong_intent_key, actuator_ref));
@@ -34104,7 +34229,7 @@ test "vault capsule helpers store load and export bundle" {
         .mode = .fresh,
         .fresh_called = true,
     });
-    const receipt_ref = try vault.putActuationReceipt(receipt);
+    _ = try vault.putActuationReceipt(receipt);
     const committed_manifest = Capsule.Manifest.init(.{
         .kind = image.manifest.kind,
         .root_target_ref_fingerprint = image.manifest.root_target_ref_fingerprint,
@@ -34128,7 +34253,9 @@ test "vault capsule helpers store load and export bundle" {
         allocator.free(deps);
     }
     try std.testing.expectEqual(@as(usize, 1), deps.len);
-    try std.testing.expect(deps[0].eql(receipt_ref));
+    try std.testing.expectEqual(Continuity.ObjectKind.actuation_receipt, deps[0].kind);
+    try std.testing.expectEqual(receipt.receipt_fingerprint, deps[0].object_fingerprint);
+    try std.testing.expectEqual(@as(usize, 0), deps[0].byte_len);
 
     var committed_bundle = try Capsule.exportBundle(&vault, committed_capsule_ref, .{ .allow_external_dependencies = true });
     defer committed_bundle.deinit();
@@ -34141,6 +34268,187 @@ test "vault capsule helpers store load and export bundle" {
     for (without_actuation.envelopes) |envelope| {
         try std.testing.expect(envelope.kind != .value_image);
     }
+}
+
+test "capsule export preserves shared dependencies when omitting actuation dependencies" {
+    const allocator = std.testing.allocator;
+    var vault = Continuity.MemoryVault.init(allocator);
+    defer vault.deinit();
+
+    var value_image = try Frame.ValueImage.fromValue(allocator, null, null, null, 73, ValuePolicy.native_compatible);
+    defer value_image.deinit(allocator);
+    const value_payload = try value_image.encode(allocator);
+    defer allocator.free(value_payload);
+    const value_ref = try vault.put(Continuity.ObjectEnvelope.init(.{
+        .kind = .value_image,
+        .object_format_version = world_frame_value_image_format_version,
+        .payload_bytes = value_payload,
+    }));
+
+    const key = Actuation.IdempotencyKey.init(.{
+        .target_ref_fingerprint = 0x3304_0001,
+        .world_surface_fingerprint = 0x3304_0002,
+        .world_port_id = 7,
+        .request_fingerprint = 0x3304_0003,
+        .actuator_ref_fingerprint = 0x3304_0004,
+    });
+    const response = Actuation.Response.init(.{
+        .intent_fingerprint = 0x3304_0010,
+        .commit_fingerprint = 0x3304_0013,
+        .actuator_ref_fingerprint = key.actuator_ref_fingerprint,
+        .request_fingerprint = key.request_fingerprint,
+        .world_port_id = key.world_port_id,
+        .frame_response_fingerprint = 0,
+        .response_image = value_image,
+    });
+    const receipt = Actuation.Receipt.init(.{
+        .intent_fingerprint = response.intent_fingerprint,
+        .envelope_fingerprint = 0x3304_0011,
+        .decision_fingerprint = 0x3304_0012,
+        .commit_fingerprint = response.commit_fingerprint.?,
+        .response_fingerprint = response.response_fingerprint,
+        .frame_response_fingerprint = response.frame_response_fingerprint,
+        .response_value_image_fingerprint = response.value_image_fingerprint,
+        .actuator_ref_fingerprint = response.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .request_fingerprint = response.request_fingerprint,
+        .target_ref_fingerprint = key.target_ref_fingerprint,
+        .world_surface_fingerprint = key.world_surface_fingerprint,
+        .world_port_id = response.world_port_id,
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+        .fresh_called = true,
+    });
+    const receipt_ref = try vault.putActuationReceipt(receipt);
+    const capsule = Capsule.Image.init(.{
+        .manifest = Capsule.Manifest.init(.{
+            .kind = .completed_assembly,
+            .root_target_ref_fingerprint = key.target_ref_fingerprint,
+            .normal_form = .quiescent_completed,
+            .actuation_receipt_fingerprints = &.{receipt.receipt_fingerprint},
+        }),
+        .runspace_image = Capsule.RunspaceImage.init(.{
+            .runspace_fingerprint = 0x3304_0020,
+            .runspace_report_fingerprint = 0x3304_0021,
+            .actuation_receipt_refs = &.{receipt.receipt_fingerprint},
+        }),
+        .value_image_refs = &.{value_image.value_image_fingerprint},
+        .actuation_receipt_refs = &.{receipt.receipt_fingerprint},
+    });
+    const capsule_ref = try vault.putCapsule(capsule);
+
+    var bundle = try Capsule.exportBundle(&vault, capsule_ref, .{ .include_actuation_dependencies = false, .allow_external_dependencies = true });
+    defer bundle.deinit();
+    var has_value_image = false;
+    var has_receipt = false;
+    for (bundle.envelopes) |envelope| {
+        if (envelope.kind == .value_image and envelope.object_fingerprint == value_ref.object_fingerprint) has_value_image = true;
+        if (envelope.kind == .actuation_receipt and envelope.object_fingerprint == receipt_ref.object_fingerprint) has_receipt = true;
+    }
+    try std.testing.expect(has_value_image);
+    try std.testing.expect(!has_receipt);
+}
+
+test "vault actuation receipt storage is independent of dependency store order" {
+    const allocator = std.testing.allocator;
+    var vault = Continuity.MemoryVault.init(allocator);
+    defer vault.deinit();
+
+    var value_image = try Frame.ValueImage.fromValue(allocator, null, null, null, 84, ValuePolicy.native_compatible);
+    defer value_image.deinit(allocator);
+    const key = Actuation.IdempotencyKey.init(.{
+        .target_ref_fingerprint = 0x3305_0001,
+        .world_surface_fingerprint = 0x3305_0002,
+        .world_port_id = 8,
+        .request_fingerprint = 0x3305_0003,
+        .actuator_ref_fingerprint = 0x3305_0004,
+    });
+    const response = Actuation.Response.init(.{
+        .intent_fingerprint = 0x3305_0010,
+        .commit_fingerprint = 0x3305_0013,
+        .actuator_ref_fingerprint = key.actuator_ref_fingerprint,
+        .request_fingerprint = key.request_fingerprint,
+        .world_port_id = key.world_port_id,
+        .frame_response_fingerprint = 0,
+        .response_image = value_image,
+    });
+    const receipt = Actuation.Receipt.init(.{
+        .intent_fingerprint = response.intent_fingerprint,
+        .envelope_fingerprint = 0x3305_0011,
+        .decision_fingerprint = 0x3305_0012,
+        .commit_fingerprint = response.commit_fingerprint.?,
+        .response_fingerprint = response.response_fingerprint,
+        .frame_response_fingerprint = response.frame_response_fingerprint,
+        .response_value_image_fingerprint = response.value_image_fingerprint,
+        .actuator_ref_fingerprint = response.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .request_fingerprint = response.request_fingerprint,
+        .target_ref_fingerprint = key.target_ref_fingerprint,
+        .world_surface_fingerprint = key.world_surface_fingerprint,
+        .world_port_id = response.world_port_id,
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+        .fresh_called = true,
+    });
+
+    const first_ref = try vault.putActuationReceipt(receipt);
+    const value_payload = try value_image.encode(allocator);
+    defer allocator.free(value_payload);
+    _ = try vault.put(Continuity.ObjectEnvelope.init(.{
+        .kind = .value_image,
+        .object_format_version = world_frame_value_image_format_version,
+        .payload_bytes = value_payload,
+    }));
+    const second_ref = try vault.putActuationReceipt(receipt);
+    try std.testing.expect(second_ref.eql(first_ref));
+}
+
+test "vault actuation receipt dependencies resolve stored opaque evidence" {
+    const allocator = std.testing.allocator;
+    var vault = Continuity.MemoryVault.init(allocator);
+    defer vault.deinit();
+
+    const commit_ref = try vault.put(Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_commit,
+        .object_format_version = world_actuation_commit_format_version,
+        .payload_bytes = "stored opaque commit evidence",
+    }));
+    const key = Actuation.IdempotencyKey.init(.{
+        .target_ref_fingerprint = 0x3306_0001,
+        .world_surface_fingerprint = 0x3306_0002,
+        .world_port_id = 8,
+        .request_fingerprint = 0x3306_0003,
+        .actuator_ref_fingerprint = 0x3306_0004,
+    });
+    const receipt = Actuation.Receipt.init(.{
+        .intent_fingerprint = 0x3306_0010,
+        .envelope_fingerprint = 0x3306_0011,
+        .decision_fingerprint = 0x3306_0012,
+        .commit_fingerprint = commit_ref.object_fingerprint,
+        .response_fingerprint = 0x3306_0014,
+        .frame_response_fingerprint = 0x3306_0015,
+        .actuator_ref_fingerprint = key.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .request_fingerprint = key.request_fingerprint,
+        .target_ref_fingerprint = key.target_ref_fingerprint,
+        .world_surface_fingerprint = key.world_surface_fingerprint,
+        .world_port_id = key.world_port_id,
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+        .fresh_called = true,
+    });
+
+    const receipt_ref = try vault.putActuationReceipt(receipt);
+    const receipt_deps = try vault.dependencies(receipt_ref);
+    defer {
+        for (receipt_deps) |*ref| ref.deinit(allocator);
+        allocator.free(receipt_deps);
+    }
+    var has_stored_commit_dep = false;
+    for (receipt_deps) |dep| {
+        if (dep.eql(commit_ref) and vault.has(dep)) has_stored_commit_dep = true;
+    }
+    try std.testing.expect(has_stored_commit_dep);
 }
 
 test "vault actuation helpers store load journal and replay receipt" {
@@ -34164,7 +34472,7 @@ test "vault actuation helpers store load journal and replay receipt" {
         .object_format_version = world_frame_value_image_format_version,
         .payload_bytes = value_image_payload,
     });
-    const value_image_ref = try vault.put(value_image_envelope);
+    _ = try vault.put(value_image_envelope);
     const response = Actuation.Response.init(.{
         .intent_fingerprint = 0x3310_0010,
         .commit_fingerprint = 0x3310_0013,
@@ -34202,7 +34510,7 @@ test "vault actuation helpers store load journal and replay receipt" {
     }
     var receipt_has_value_image_dep = false;
     for (receipt_deps) |dep| {
-        if (dep.eql(value_image_ref)) receipt_has_value_image_dep = true;
+        if (dep.kind == .value_image and dep.object_fingerprint == value_image.value_image_fingerprint and dep.byte_len == 0) receipt_has_value_image_dep = true;
     }
     try std.testing.expect(receipt_has_value_image_dep);
     var loaded_receipt = try Actuation.loadReceipt(&vault, receipt_ref);
@@ -34225,8 +34533,8 @@ test "vault actuation helpers store load journal and replay receipt" {
     var journal_has_receipt_dep = false;
     var journal_has_value_image_dep = false;
     for (journal_deps) |dep| {
-        if (dep.eql(receipt_ref)) journal_has_receipt_dep = true;
-        if (dep.eql(value_image_ref)) journal_has_value_image_dep = true;
+        if (dep.kind == .actuation_receipt and dep.object_fingerprint == receipt.receipt_fingerprint and dep.byte_len == 0) journal_has_receipt_dep = true;
+        if (dep.kind == .value_image and dep.object_fingerprint == value_image.value_image_fingerprint and dep.byte_len == 0) journal_has_value_image_dep = true;
     }
     try std.testing.expect(journal_has_receipt_dep);
     try std.testing.expect(journal_has_value_image_dep);
@@ -34257,6 +34565,90 @@ test "vault actuation helpers store load journal and replay receipt" {
     try std.testing.expectEqual(receipt.response_fingerprint, replayed.recorded_response_fingerprint.?);
 }
 
+test "vault replay preserves stored fingerprint for terminal receipt" {
+    const allocator = std.testing.allocator;
+    var vault = Continuity.MemoryVault.init(allocator);
+    defer vault.deinit();
+
+    const key = Actuation.IdempotencyKey.init(.{
+        .target_ref_fingerprint = 0x3315_0001,
+        .world_surface_fingerprint = 0x3315_0002,
+        .world_port_id = 8,
+        .request_fingerprint = 0x3315_0003,
+        .actuator_ref_fingerprint = 0x3315_0004,
+    });
+    const response = Actuation.Response.init(.{
+        .intent_fingerprint = 0x3315_0010,
+        .commit_fingerprint = 0x3315_0013,
+        .actuator_ref_fingerprint = key.actuator_ref_fingerprint,
+        .request_fingerprint = key.request_fingerprint,
+        .world_port_id = key.world_port_id,
+        .status = .rejected,
+        .reason = "stored terminal reason",
+        .metadata = "stored terminal metadata",
+    });
+    const recomputed_without_terminal_fields = Actuation.Response.init(.{
+        .intent_fingerprint = response.intent_fingerprint,
+        .commit_fingerprint = response.commit_fingerprint,
+        .actuator_ref_fingerprint = response.actuator_ref_fingerprint,
+        .request_fingerprint = response.request_fingerprint,
+        .world_port_id = response.world_port_id,
+        .status = response.status,
+    });
+    try std.testing.expect(response.response_fingerprint != recomputed_without_terminal_fields.response_fingerprint);
+    const receipt = Actuation.Receipt.init(.{
+        .intent_fingerprint = response.intent_fingerprint,
+        .envelope_fingerprint = 0x3315_0011,
+        .decision_fingerprint = 0x3315_0012,
+        .commit_fingerprint = response.commit_fingerprint.?,
+        .response_fingerprint = response.response_fingerprint,
+        .response_kind = response.response_kind,
+        .actuator_ref_fingerprint = response.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .request_fingerprint = response.request_fingerprint,
+        .target_ref_fingerprint = key.target_ref_fingerprint,
+        .world_surface_fingerprint = key.world_surface_fingerprint,
+        .world_port_id = response.world_port_id,
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+        .rejected = true,
+    });
+    _ = try Actuation.storeReceipt(&vault, receipt);
+
+    const replayed = try Actuation.replayFromVault(&vault, key);
+    try std.testing.expectEqual(Actuation.ResponseStatus.rejected, replayed.status);
+    try replayed.validate(.fixture_test, null);
+    try std.testing.expect(response.response_fingerprint != replayed.response_fingerprint);
+    try std.testing.expectEqual(receipt.response_fingerprint, replayed.recorded_response_fingerprint.?);
+
+    var runspace = Runspace.init(allocator, .{});
+    defer runspace.deinit();
+    const request = Frame.Request.init(.{
+        .world_surface_fingerprint = key.world_surface_fingerprint,
+        .target_certificate_fingerprint = 0x3315_0005,
+        .world_port_id = key.world_port_id,
+        .residual_site_index = 0,
+        .residual_site_fingerprint = 0x3315_0006,
+        .request_fingerprint = key.request_fingerprint,
+        .turn_index = 0,
+    });
+    var pending = Runspace.PendingPort.init(.{
+        .handle = RunHandle.init(.{
+            .runspace_fingerprint = runspace.runspace_fingerprint,
+            .local_run_id = 0,
+            .target_ref_fingerprint = key.target_ref_fingerprint,
+        }),
+        .mailbox_id = 1,
+        .request = request,
+        .target_ref_fingerprint = key.target_ref_fingerprint,
+    });
+    defer pending.deinit(allocator);
+    var frame_response = try runspace.frameResponseFromActuation(pending.borrowed(), replayed);
+    defer frame_response.deinit(allocator);
+    try std.testing.expectEqual(receipt.response_fingerprint, frame_response.response_fingerprint);
+    try std.testing.expectEqual(request.replay_key_seed.withResponse(receipt.response_fingerprint).fingerprint(), frame_response.replay_key);
+}
+
 test "actuation response deinit does not free borrowed response image" {
     const allocator = std.testing.allocator;
     var value_image = try Frame.ValueImage.fromValue(allocator, null, null, null, 37, ValuePolicy.native_compatible);
@@ -34281,7 +34673,7 @@ test "actuation response deinit does not free borrowed response image" {
         .request_fingerprint = 0x3311_0023,
         .frame_response_fingerprint = 0x3311_0024,
         .response_fingerprint = 0x3311_ffff,
-        .recorded_response_fingerprint = 0x3311_ffff,
+        .recorded_response_fingerprint = 0x3311_fffe,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, mismatched.validate(.strict_fresh, null));
 }
@@ -34308,7 +34700,7 @@ test "vault replay preserves stored response value image for recorded frame resp
     }));
     const value_image_payload = try value_image.encode(allocator);
     defer allocator.free(value_image_payload);
-    const value_image_ref = try vault.put(Continuity.ObjectEnvelope.init(.{
+    _ = try vault.put(Continuity.ObjectEnvelope.init(.{
         .kind = .value_image,
         .object_format_version = world_frame_value_image_format_version,
         .payload_bytes = value_image_payload,
@@ -34348,7 +34740,7 @@ test "vault replay preserves stored response value image for recorded frame resp
     }
     var receipt_has_value_image_dep = false;
     for (receipt_deps) |dep| {
-        if (dep.eql(value_image_ref)) receipt_has_value_image_dep = true;
+        if (dep.kind == .value_image and dep.object_fingerprint == value_image.value_image_fingerprint and dep.byte_len == 0) receipt_has_value_image_dep = true;
     }
     try std.testing.expect(receipt_has_value_image_dep);
 
