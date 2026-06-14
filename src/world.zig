@@ -28022,7 +28022,7 @@ pub const Continuity = struct {
                 const payload_ok = envelope.object_fingerprint == fingerprintObjectPayload(envelope.kind, envelope.object_format_version, envelope.payload_bytes) and
                     envelope.object_byte_len == envelope.payload_bytes.len;
                 const envelope_ok = envelope.envelope_fingerprint == fingerprintObjectEnvelope(envelope);
-                const decode_ok = bundleEnvelopeTypedPayloadValid(self.allocator, envelope);
+                const decode_ok = try bundleEnvelopeTypedPayloadValid(self.allocator, envelope);
                 var missing_count: usize = 0;
                 for (envelope.dependency_refs) |dep| {
                     if (!self.has(dep)) missing_count += 1;
@@ -28189,7 +28189,7 @@ pub const Continuity = struct {
                 defer receipt.deinit(self.allocator);
                 if (receipt.idempotency_key_fingerprint != key.key_fingerprint) continue;
                 const ref = envelope.objectRef();
-                if (!receipt.pending and !receipt.deferred) {
+                if (receiptIsTerminalFreshCommit(receipt)) {
                     if (terminal_match) |_| {
                         if (terminal_receipt_fingerprint.? != receipt.receipt_fingerprint or terminal_commit_fingerprint.? != receipt.commit_fingerprint) return error.DuplicateBinding;
                         continue;
@@ -28463,7 +28463,7 @@ pub const Continuity = struct {
             for (self.envelopes) |envelope| {
                 if (envelope.dependency_refs.len > options.max_dependency_count) return error.InvalidFrameEncoding;
                 try envelope.validate();
-                if (!bundleEnvelopeTypedPayloadValid(self.allocator, envelope)) {
+                if (!(try bundleEnvelopeTypedPayloadValid(self.allocator, envelope))) {
                     return ObjectValidationReport.init(.{
                         .object_ref = ObjectRef.init(.{
                             .kind = envelope.kind,
@@ -29829,40 +29829,61 @@ pub const Continuity = struct {
         };
     }
 
-    fn bundleEnvelopeTypedPayloadValid(allocator: std.mem.Allocator, envelope: ObjectEnvelope) bool {
+    fn bundleEnvelopeTypedPayloadValid(allocator: std.mem.Allocator, envelope: ObjectEnvelope) !bool {
         return switch (envelope.kind) {
             .capsule_image => blk: {
-                var image = Capsule.Image.decode(allocator, envelope.payload_bytes) catch break :blk false;
+                var image = Capsule.Image.decode(allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return err,
+                    else => break :blk false,
+                };
                 defer image.deinit(allocator);
                 break :blk true;
             },
             .actuation_intent => blk: {
-                var intent = Actuation.Intent.decode(allocator, envelope.payload_bytes) catch break :blk false;
+                var intent = Actuation.Intent.decode(allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return err,
+                    else => break :blk false,
+                };
                 defer intent.deinit(allocator);
                 break :blk true;
             },
             .actuation_receipt => blk: {
-                var receipt = Actuation.Receipt.decode(allocator, envelope.payload_bytes) catch break :blk false;
+                var receipt = Actuation.Receipt.decode(allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return err,
+                    else => break :blk false,
+                };
                 defer receipt.deinit(allocator);
                 break :blk true;
             },
             .actuation_journal => blk: {
-                var journal = Actuation.Journal.decode(allocator, envelope.payload_bytes) catch break :blk false;
+                var journal = Actuation.Journal.decode(allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return err,
+                    else => break :blk false,
+                };
                 defer journal.deinit(allocator);
                 break :blk true;
             },
             .value_image => blk: {
-                var image = Frame.ValueImage.decode(allocator, envelope.payload_bytes) catch break :blk false;
+                var image = Frame.ValueImage.decode(allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return err,
+                    else => break :blk false,
+                };
                 defer image.deinit(allocator);
                 break :blk true;
             },
             .transcript_image => blk: {
-                var image = TranscriptImage.decode(allocator, envelope.payload_bytes) catch break :blk false;
+                var image = TranscriptImage.decode(allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return err,
+                    else => break :blk false,
+                };
                 defer image.deinit(allocator);
                 break :blk true;
             },
             .run_image => blk: {
-                var image = RunImage.decode(allocator, envelope.payload_bytes) catch break :blk false;
+                var image = RunImage.decode(allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return err,
+                    else => break :blk false,
+                };
                 defer image.deinit(allocator);
                 break :blk true;
             },
@@ -30959,6 +30980,59 @@ test "bundle validation rejects malformed typed payloads" {
     try std.testing.expectError(error.InvalidFrameEncoding, Continuity.Bundle.importIntoVault(&vault, bytes, .{}));
 }
 
+test "bundle validation propagates typed payload decode allocation failure" {
+    const allocator = std.testing.allocator;
+    const key = Actuation.IdempotencyKey.init(.{
+        .target_ref_fingerprint = 0x3273_0001,
+        .world_surface_fingerprint = 0x3273_0002,
+        .world_port_id = 1,
+        .request_fingerprint = 0x3273_0003,
+        .actuator_ref_fingerprint = 0x3273_0004,
+    });
+    const receipt = Actuation.Receipt.init(.{
+        .intent_fingerprint = 0x3273_0010,
+        .envelope_fingerprint = 0x3273_0011,
+        .decision_fingerprint = 0x3273_0012,
+        .commit_fingerprint = 0x3273_0013,
+        .response_fingerprint = 0x3273_0014,
+        .frame_response_fingerprint = 0x3273_0015,
+        .actuator_ref_fingerprint = key.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .request_fingerprint = key.request_fingerprint,
+        .target_ref_fingerprint = key.target_ref_fingerprint,
+        .world_surface_fingerprint = key.world_surface_fingerprint,
+        .world_port_id = key.world_port_id,
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+        .fresh_called = true,
+    });
+    var journal = Actuation.Journal.init();
+    defer journal.deinit(allocator);
+    try journal.appendReceipt(allocator, receipt);
+    const payload = try journal.encode(allocator);
+    defer allocator.free(payload);
+    const envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_journal,
+        .object_format_version = world_actuation_journal_fingerprint_version,
+        .payload_bytes = payload,
+    });
+    var failing_allocator = std.testing.FailingAllocator.init(allocator, .{
+        .fail_index = 0,
+    });
+    var envelopes = [_]Continuity.ObjectEnvelope{envelope};
+    var bundle = Continuity.Bundle{
+        .allocator = failing_allocator.allocator(),
+        .manifest = Continuity.BundleManifest.init(.{
+            .roots = &.{envelope.objectRef()},
+            .object_count = 1,
+        }),
+        .envelopes = &envelopes,
+    };
+
+    try std.testing.expectError(error.OutOfMemory, bundle.validationReport(.{}));
+    try std.testing.expect(failing_allocator.has_induced_failure);
+}
+
 test "bundle validation rejects conflicting duplicate envelopes" {
     const allocator = std.testing.allocator;
     const payload = "same-payload";
@@ -31878,6 +31952,12 @@ test "bundle import permits failed fresh receipt before successful retry" {
     defer imported_manifest.deinit(allocator);
     try std.testing.expect(destination.has(failed_ref));
     try std.testing.expect(destination.has(retry_ref));
+    const lookup = try destination.lookupActuationByIdempotencyKey(key);
+    try std.testing.expect(lookup != null);
+    try std.testing.expect(lookup.?.eql(retry_ref));
+    var replayed = try Continuity.Recovery.replayActuation(&destination, key);
+    defer replayed.deinit(allocator);
+    try std.testing.expectEqual(retry.commit_fingerprint, replayed.commit_fingerprint);
 }
 
 test "bundle preflight rejects destination envelope conflicts" {
