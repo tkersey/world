@@ -31463,6 +31463,17 @@ test "vault resolves portable evidence envelopes by semantic fingerprint" {
     try std.testing.expectEqual(Continuity.ObjectKind.guest_conformance_report, report_ref.kind);
 }
 
+test "portable slice decode bounds length before allocation" {
+    const allocator = std.testing.allocator;
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(allocator);
+    try writeU64(&bytes, allocator, 2);
+    try writeU64(&bytes, allocator, 0x3120_0001);
+
+    var cursor: usize = 0;
+    try std.testing.expectError(error.InvalidFrameEncoding, decodePortableValue([]const u64, allocator, bytes.items, &cursor));
+}
+
 test "bundle validation rejects conflicting duplicate envelopes" {
     const allocator = std.testing.allocator;
     const payload = "same-payload";
@@ -42163,6 +42174,31 @@ fn portableValueDynamicByteLowerBound(comptime Value: type, value: Value) usize 
     };
 }
 
+fn portableValueStaticMinEncodedSize(comptime Value: type) ?usize {
+    return switch (@typeInfo(Value)) {
+        .void => 0,
+        .bool => 1,
+        .int, .comptime_int => 8,
+        .float, .comptime_float => if (Value == f32) 4 else if (Value == f64) 8 else null,
+        .@"enum" => 8,
+        .pointer => |pointer| blk: {
+            if (comptime pointer.size == .slice) break :blk 8;
+            break :blk null;
+        },
+        .optional => 1,
+        .@"struct" => |info| blk: {
+            var total: usize = 0;
+            inline for (info.fields) |field| {
+                const field_min = portableValueStaticMinEncodedSize(field.type) orelse break :blk null;
+                total += field_min;
+            }
+            break :blk total;
+        },
+        .@"union" => 4,
+        else => null,
+    };
+}
+
 fn encodePortableValue(comptime Value: type, allocator: std.mem.Allocator, out: *std.ArrayList(u8), value: Value) !void {
     switch (@typeInfo(Value)) {
         .void => {},
@@ -42307,7 +42343,9 @@ fn decodePortableValue(comptime Value: type, allocator: std.mem.Allocator, bytes
             }
             if (comptime pointer.size == .slice) {
                 const len = try readU64AsUsize(bytes, cursor);
-                if (len > bytes.len - cursor.*) return error.InvalidFrameEncoding;
+                const child_min = portableValueStaticMinEncodedSize(pointer.child) orelse return error.UnsupportedValueImage;
+                if (child_min == 0) return error.UnsupportedValueImage;
+                if (len > (bytes.len - cursor.*) / child_min) return error.InvalidFrameEncoding;
                 const result = try allocator.alloc(pointer.child, len);
                 errdefer allocator.free(result);
                 var initialized: usize = 0;
