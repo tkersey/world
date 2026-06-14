@@ -29095,8 +29095,42 @@ pub const Continuity = struct {
         }
 
         pub fn byIdempotencyKey(vault: *Continuity.MemoryVault, key: Actuation.IdempotencyKey) !@This() {
-            const ref = (try vault.lookupActuationByIdempotencyKey(key)) orelse return error.ObjectMissing;
-            return fromReceipt(vault, ref);
+            const index = Continuity.ActuationIndex.init(vault);
+            const ref = (try index.byIdempotencyKey(key)) orelse return error.ObjectMissing;
+            if (vault.has(ref)) return fromReceipt(vault, ref);
+            return (try fromIdempotencyKeyJournalEvidence(vault, key)) orelse error.ObjectMissing;
+        }
+
+        fn fromIdempotencyKeyJournalEvidence(vault: *Continuity.MemoryVault, key: Actuation.IdempotencyKey) !?@This() {
+            try key.validate();
+            var terminal_journal_ref: ?ObjectRef = null;
+            var terminal_receipt_fingerprint: ?u64 = null;
+            var terminal_commit_fingerprint: ?u64 = null;
+            var non_terminal_journal_ref: ?ObjectRef = null;
+            for (vault.objects.items) |envelope| {
+                if (envelope.kind != .actuation_journal) continue;
+                var journal = try Actuation.Journal.decode(vault.allocator, envelope.payload_bytes);
+                defer journal.deinit(vault.allocator);
+                for (journal.entries.items) |entry| {
+                    if (entry.idempotency_key_fingerprint != key.key_fingerprint) continue;
+                    if (journalEntryIsTerminalFreshCommit(entry)) {
+                        const receipt_fingerprint = entry.receipt_fingerprint orelse return error.InvalidFrameEncoding;
+                        const commit_fingerprint = entry.commit_fingerprint orelse return error.InvalidFrameEncoding;
+                        if (terminal_journal_ref) |_| {
+                            if (terminal_receipt_fingerprint.? != receipt_fingerprint or terminal_commit_fingerprint.? != commit_fingerprint) return error.DuplicateBinding;
+                            continue;
+                        }
+                        terminal_journal_ref = envelope.objectRef();
+                        terminal_receipt_fingerprint = receipt_fingerprint;
+                        terminal_commit_fingerprint = commit_fingerprint;
+                        continue;
+                    }
+                    non_terminal_journal_ref = envelope.objectRef();
+                }
+            }
+            if (terminal_journal_ref) |ref| return try fromJournal(vault, ref);
+            if (non_terminal_journal_ref) |ref| return try fromJournal(vault, ref);
+            return null;
         }
 
         pub fn assertNoDuplicateFreshCommit(self: @This()) !void {
@@ -32849,6 +32883,41 @@ test "actuation graph builds from receipt journal and detects duplicate fresh co
     } else false;
     try std.testing.expect(orphan_graph_missing_receipt);
     try std.testing.expectEqual(@as(usize, 0), orphan_graph.summary().replayable_count);
+    var orphan_by_key = try Continuity.ActuationGraph.byIdempotencyKey(&orphan_vault, key);
+    defer orphan_by_key.deinit();
+    try std.testing.expectEqual(@as(usize, 1), orphan_by_key.journal_refs.len);
+    try std.testing.expectEqual(@as(usize, 1), orphan_by_key.summary().fresh_commit_count);
+
+    var mixed_vault = Continuity.MemoryVault.init(allocator);
+    defer mixed_vault.deinit();
+    const stale_pending = Actuation.Receipt.init(.{
+        .intent_fingerprint = receipt.intent_fingerprint,
+        .envelope_fingerprint = receipt.envelope_fingerprint,
+        .decision_fingerprint = receipt.decision_fingerprint,
+        .commit_fingerprint = 0x3280_0093,
+        .response_fingerprint = 0x3280_0094,
+        .frame_response_fingerprint = 0x3280_0095,
+        .actuator_ref_fingerprint = key.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .request_fingerprint = key.request_fingerprint,
+        .target_ref_fingerprint = key.target_ref_fingerprint,
+        .world_surface_fingerprint = key.world_surface_fingerprint,
+        .world_port_id = key.world_port_id,
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+        .fresh_called = true,
+        .pending = true,
+    });
+    _ = try mixed_vault.putActuationReceipt(stale_pending);
+    var terminal_journal = Actuation.Journal.init();
+    defer terminal_journal.deinit(allocator);
+    try terminal_journal.appendReceipt(allocator, receipt);
+    _ = try mixed_vault.putActuationJournal(terminal_journal);
+    var mixed_by_key = try Continuity.ActuationGraph.byIdempotencyKey(&mixed_vault, key);
+    defer mixed_by_key.deinit();
+    const mixed_summary = mixed_by_key.summary();
+    try std.testing.expectEqual(@as(usize, 1), mixed_summary.fresh_commit_count);
+    try std.testing.expectEqual(@as(usize, 1), mixed_summary.committed_count);
 
     const same_commit_duplicate = Actuation.Receipt.init(.{
         .intent_fingerprint = receipt.intent_fingerprint,
