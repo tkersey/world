@@ -1092,6 +1092,21 @@ test "actuation commit response receipt journal and replay bind idempotency" {
     try pending_resolution_journal.appendCommit(std.testing.allocator, terminal_commit);
     try pending_resolution_journal.assertNoDuplicateFreshCommit();
 
+    const conflicting_terminal_commit = world.Actuation.Commit.init(.{
+        .intent_fingerprint = intent.intent_fingerprint +% 1,
+        .decision_fingerprint = decision.decision_fingerprint +% 1,
+        .envelope_fingerprint = envelope.envelope_fingerprint +% 1,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .attempt_number = 3,
+        .status = .committed,
+        .fresh_called = true,
+    });
+    var duplicate_commit_journal = world.Actuation.Journal.init();
+    defer duplicate_commit_journal.deinit(std.testing.allocator);
+    try duplicate_commit_journal.appendCommit(std.testing.allocator, terminal_commit);
+    try duplicate_commit_journal.appendCommit(std.testing.allocator, conflicting_terminal_commit);
+    try std.testing.expectError(error.DuplicateBinding, duplicate_commit_journal.assertNoDuplicateFreshCommit());
+
     const replay_source = world.Actuation.ReplaySource.init(.{ .receipts = &.{receipt} });
     const replay_response = try replay_source.responseForIntent(intent, key, .responded, .@"resume");
     try std.testing.expectEqual(world.Actuation.ResponseStatus.responded, replay_response.status);

@@ -336,7 +336,7 @@ pub const world_actuation_response_format_version: u32 = 1;
 pub const world_actuation_response_fingerprint_version: u32 = 1;
 pub const world_actuation_receipt_format_version: u32 = 1;
 pub const world_actuation_receipt_fingerprint_version: u32 = 2;
-pub const world_actuation_journal_fingerprint_version: u32 = 1;
+pub const world_actuation_journal_fingerprint_version: u32 = 2;
 pub const world_actuation_verify_report_fingerprint_version: u32 = 1;
 pub const world_continuity_object_ref_format_version: u32 = 1;
 pub const world_continuity_object_ref_fingerprint_version: u32 = 1;
@@ -19969,13 +19969,20 @@ pub const Actuation = struct {
             for (self.entries.items, 0..) |entry, index| {
                 if (!isTerminalFreshCommitEntry(entry)) continue;
                 const key = entry.idempotency_key_fingerprint orelse continue;
-                const receipt_fingerprint = entry.receipt_fingerprint orelse continue;
                 for (self.entries.items[index + 1 ..]) |later| {
                     if (!isTerminalFreshCommitEntry(later) or later.idempotency_key_fingerprint != key) continue;
-                    if (later.commit_fingerprint == entry.commit_fingerprint and later.receipt_fingerprint == receipt_fingerprint) continue;
+                    if (sameFreshBinding(entry, later)) continue;
                     return error.DuplicateBinding;
                 }
             }
+        }
+
+        fn sameFreshBinding(a: Entry, b: Entry) bool {
+            if (a.commit_fingerprint != b.commit_fingerprint) return false;
+            if (a.receipt_fingerprint) |a_receipt| {
+                if (b.receipt_fingerprint) |b_receipt| return a_receipt == b_receipt;
+            }
+            return true;
         }
 
         fn isTerminalFreshCommitEntry(entry: Entry) bool {
