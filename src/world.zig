@@ -28220,7 +28220,7 @@ pub const Continuity = struct {
                 if (envelope.kind != .actuation_receipt) continue;
                 var receipt = try Actuation.Receipt.decode(self.allocator, envelope.payload_bytes);
                 defer receipt.deinit(self.allocator);
-                if (receipt.idempotency_key_fingerprint != key.key_fingerprint) continue;
+                if (!receiptMatchesIdempotencyKey(receipt, key)) continue;
                 const ref = envelope.objectRef();
                 if (receiptIsTerminalFreshCommit(receipt)) {
                     if (terminal_match) |_| {
@@ -33257,6 +33257,28 @@ test "actuation index finds receipts by actuator target port capsule state and i
     const by_key = try index.byIdempotencyKey(key);
     try std.testing.expect(by_key != null);
     try std.testing.expect(by_key.?.eql(receipt_ref));
+
+    var forged_vault = Continuity.MemoryVault.init(allocator);
+    defer forged_vault.deinit();
+    const forged = Actuation.Receipt.init(.{
+        .intent_fingerprint = 0x3301_0041,
+        .envelope_fingerprint = 0x3301_0042,
+        .decision_fingerprint = 0x3301_0043,
+        .commit_fingerprint = 0x3301_0044,
+        .response_fingerprint = 0x3301_0045,
+        .actuator_ref_fingerprint = key.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .request_fingerprint = key.request_fingerprint ^ 1,
+        .target_ref_fingerprint = key.target_ref_fingerprint,
+        .world_surface_fingerprint = key.world_surface_fingerprint,
+        .world_port_id = key.world_port_id,
+        .class = .deterministic_fixture,
+        .mode = .audit,
+        .pending = true,
+    });
+    _ = try forged_vault.putActuationReceipt(forged);
+    const forged_index = Continuity.ActuationIndex.init(&forged_vault);
+    try std.testing.expect((try forged_index.byIdempotencyKey(key)) == null);
 }
 
 test "actuation idempotency lookup rejects conflicting terminal receipts" {
@@ -33501,7 +33523,7 @@ test "recovery preflight inspects capsules replays receipt evidence and rejects 
         .fresh_called = true,
     });
     _ = try mismatched_vault.putActuationReceipt(mismatched_receipt);
-    try std.testing.expectError(error.InvalidFrameEncoding, Continuity.Recovery.replayActuation(&mismatched_vault, key));
+    try std.testing.expectError(error.ObjectMissing, Continuity.Recovery.replayActuation(&mismatched_vault, key));
 
     const pending_key = Actuation.IdempotencyKey.init(.{
         .target_ref_fingerprint = key.target_ref_fingerprint,
