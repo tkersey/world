@@ -19486,6 +19486,7 @@ pub const Actuation = struct {
             if (self.environment_certificate_fingerprint != null and self.environment_certificate_fingerprint.? == 0) return error.InvalidFrameEncoding;
             if (self.run_receipt_fingerprint != null and self.run_receipt_fingerprint.? == 0) return error.InvalidFrameEncoding;
             if (self.capsule_fingerprint != null and self.capsule_fingerprint.? == 0) return error.InvalidFrameEncoding;
+            try validateOptionalFingerprint(self.response_value_image_fingerprint);
             if (self.mode == .replay and self.fresh_called) return error.InvalidFrameEncoding;
             if (self.replayed and self.verified) return error.InvalidFrameEncoding;
             switch (self.mode) {
@@ -30889,6 +30890,28 @@ test "continuity actuation receipt and journal codecs roundtrip" {
     defer decoded_receipt.deinit(allocator);
     try std.testing.expectEqual(receipt.receipt_fingerprint, decoded_receipt.receipt_fingerprint);
     try std.testing.expectEqualSlices(u64, receipt.blockers, decoded_receipt.blockers);
+
+    const zero_value_image_receipt = Actuation.Receipt.init(.{
+        .intent_fingerprint = 0x3270_0030,
+        .envelope_fingerprint = 0x3270_0031,
+        .decision_fingerprint = 0x3270_0032,
+        .commit_fingerprint = 0x3270_0033,
+        .response_fingerprint = 0x3270_0034,
+        .frame_response_fingerprint = 0,
+        .response_value_image_fingerprint = 0,
+        .actuator_ref_fingerprint = 0x3270_0004,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .request_fingerprint = key.request_fingerprint,
+        .target_ref_fingerprint = key.target_ref_fingerprint,
+        .world_surface_fingerprint = key.world_surface_fingerprint,
+        .world_port_id = key.world_port_id,
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+        .fresh_called = true,
+    });
+    const zero_value_image_bytes = try zero_value_image_receipt.encode(allocator);
+    defer allocator.free(zero_value_image_bytes);
+    try std.testing.expectError(error.InvalidFrameEncoding, Actuation.Receipt.decode(allocator, zero_value_image_bytes));
 
     var journal = Actuation.Journal.init();
     defer journal.deinit(allocator);
