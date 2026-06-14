@@ -27976,7 +27976,7 @@ pub const Continuity = struct {
 
         pub fn get(self: @This(), ref: ObjectRef) !ObjectEnvelope {
             try ref.validate();
-            const resolved_ref = self.resolveRef(ref) orelse return error.ObjectMissing;
+            const resolved_ref = (try self.resolveRef(ref)) orelse return error.ObjectMissing;
             for (self.objects.items) |envelope| {
                 if (envelope.objectRef().eql(resolved_ref)) return envelope.clone(self.allocator);
             }
@@ -27985,15 +27985,15 @@ pub const Continuity = struct {
 
         pub fn has(self: @This(), ref: ObjectRef) bool {
             ref.validate() catch return false;
-            return self.resolveRef(ref) != null;
+            return (self.resolveRef(ref) catch return false) != null;
         }
 
-        fn resolveRef(self: @This(), ref: ObjectRef) ?ObjectRef {
+        fn resolveRef(self: @This(), ref: ObjectRef) !?ObjectRef {
             for (self.objects.items) |envelope| {
                 if (envelope.objectRef().eql(ref)) return envelope.objectRef();
             }
             if (ref.byte_len != 0) return null;
-            return self.refByKindFingerprint(ref.kind, ref.object_fingerprint);
+            return try self.refByKindFingerprint(ref.kind, ref.object_fingerprint);
         }
 
         pub fn listByKind(self: @This(), kind: ObjectKind) ![]ObjectRef {
@@ -28007,7 +28007,7 @@ pub const Continuity = struct {
 
         pub fn validate(self: @This(), ref: ObjectRef) !ObjectValidationReport {
             try ref.validate();
-            const resolved_ref = self.resolveRef(ref) orelse return ObjectValidationReport.init(.{
+            const resolved_ref = (try self.resolveRef(ref)) orelse return ObjectValidationReport.init(.{
                 .object_ref = ref,
                 .valid = false,
                 .object_kind = ref.kind,
@@ -28205,43 +28205,64 @@ pub const Continuity = struct {
             return non_terminal_match;
         }
 
-        pub fn refByKindFingerprint(self: @This(), kind: ObjectKind, fingerprint: u64) ?ObjectRef {
+        pub fn refByKindFingerprint(self: @This(), kind: ObjectKind, fingerprint: u64) !?ObjectRef {
             for (self.objects.items) |envelope| {
                 if (envelope.kind == kind and envelope.object_fingerprint == fingerprint) return envelope.objectRef();
                 if (envelope.kind != kind) continue;
                 switch (kind) {
                     .capsule_image => {
-                        var image = Capsule.Image.decode(self.allocator, envelope.payload_bytes) catch continue;
+                        var image = Capsule.Image.decode(self.allocator, envelope.payload_bytes) catch |err| switch (err) {
+                            error.OutOfMemory => return err,
+                            else => continue,
+                        };
                         defer image.deinit(self.allocator);
                         if (image.image_fingerprint == fingerprint) return envelope.objectRef();
                     },
                     .actuation_receipt => {
-                        var receipt = Actuation.Receipt.decode(self.allocator, envelope.payload_bytes) catch continue;
+                        var receipt = Actuation.Receipt.decode(self.allocator, envelope.payload_bytes) catch |err| switch (err) {
+                            error.OutOfMemory => return err,
+                            else => continue,
+                        };
                         defer receipt.deinit(self.allocator);
                         if (receipt.receipt_fingerprint == fingerprint) return envelope.objectRef();
                     },
                     .actuation_intent => {
-                        var intent = Actuation.Intent.decode(self.allocator, envelope.payload_bytes) catch continue;
+                        var intent = Actuation.Intent.decode(self.allocator, envelope.payload_bytes) catch |err| switch (err) {
+                            error.OutOfMemory => return err,
+                            else => continue,
+                        };
                         defer intent.deinit(self.allocator);
                         if (intent.intent_fingerprint == fingerprint) return envelope.objectRef();
                     },
                     .actuation_journal => {
-                        var journal = Actuation.Journal.decode(self.allocator, envelope.payload_bytes) catch continue;
+                        var journal = Actuation.Journal.decode(self.allocator, envelope.payload_bytes) catch |err| switch (err) {
+                            error.OutOfMemory => return err,
+                            else => continue,
+                        };
                         defer journal.deinit(self.allocator);
                         if (journal.journal_fingerprint == fingerprint) return envelope.objectRef();
                     },
                     .value_image => {
-                        var image = Frame.ValueImage.decode(self.allocator, envelope.payload_bytes) catch continue;
+                        var image = Frame.ValueImage.decode(self.allocator, envelope.payload_bytes) catch |err| switch (err) {
+                            error.OutOfMemory => return err,
+                            else => continue,
+                        };
                         defer image.deinit(self.allocator);
                         if (image.value_image_fingerprint == fingerprint) return envelope.objectRef();
                     },
                     .transcript_image => {
-                        var image = TranscriptImage.decode(self.allocator, envelope.payload_bytes) catch continue;
+                        var image = TranscriptImage.decode(self.allocator, envelope.payload_bytes) catch |err| switch (err) {
+                            error.OutOfMemory => return err,
+                            else => continue,
+                        };
                         defer image.deinit(self.allocator);
                         if (image.transcript_image_fingerprint == fingerprint) return envelope.objectRef();
                     },
                     .run_image => {
-                        var image = RunImage.decode(self.allocator, envelope.payload_bytes) catch continue;
+                        var image = RunImage.decode(self.allocator, envelope.payload_bytes) catch |err| switch (err) {
+                            error.OutOfMemory => return err,
+                            else => continue,
+                        };
                         defer image.deinit(self.allocator);
                         if (image.run_image_fingerprint == fingerprint) return envelope.objectRef();
                     },
@@ -28594,7 +28615,7 @@ pub const Continuity = struct {
             active: *std.ArrayList(ObjectRef),
             dependency_cycle: *bool,
         ) !void {
-            const resolved_current = vault.resolveRef(current) orelse current;
+            const resolved_current = (try vault.resolveRef(current)) orelse current;
             if (containsRef(active.items, resolved_current)) {
                 dependency_cycle.* = true;
                 return;
@@ -28706,24 +28727,25 @@ pub const Continuity = struct {
             var graph = @This(){
                 .allocator = vault.allocator,
                 .graph_fingerprint = 0,
-                .capsule_image_ref = try capsule_ref.clone(vault.allocator),
-                .capsule_manifest_ref = refFromStoredOrFingerprint(vault, .capsule_manifest, image.manifest.manifest_fingerprint),
-                .runspace_image_refs = try refsFromFingerprints(vault, .capsule_runspace_image, &.{image.runspace_image.image_fingerprint}),
-                .fabric_image_refs = try optionalFingerprintRef(vault, .capsule_fabric_image, if (image.fabric_image) |fabric| fabric.fabric_image_fingerprint else null),
-                .link_image_refs = try optionalFingerprintRef(vault, .capsule_link_image, if (image.link_image) |link| link.link_image_fingerprint else null),
-                .transcript_refs = try capsuleExternalImageRefs(vault, image, .transcript_image, image.transcript_image_refs),
-                .run_image_refs = try capsuleExternalImageRefs(vault, image, .run_image, image.run_image_refs),
-                .value_image_refs = try capsuleExternalImageRefs(vault, image, .value_image, image.value_image_refs),
-                .environment_refs = try storedRefsFromFingerprints(vault, .environment_certificate, image.environment_refs),
-                .permit_refs = try storedRefsFromFingerprints(vault, .run_permit, image.supervision_refs),
-                .receipt_refs = try storedRefsFromFingerprints(vault, .run_receipt, image.manifest.run_receipt_fingerprints),
-                .admission_refs = try storedRefsFromFingerprints(vault, .admission_receipt, image.admission_refs),
-                .actuation_intent_refs = try refsFromFingerprints(vault, .actuation_intent, image.actuation_intent_refs),
-                .actuation_receipt_refs = try refsFromFingerprints(vault, .actuation_receipt, image.actuation_receipt_refs),
-                .actuation_journal_refs = try refsFromFingerprints(vault, .actuation_journal, image.actuation_journal_refs),
-                .guest_conformance_refs = try storedRefsFromFingerprints(vault, .guest_conformance_report, image.guest_conformance_refs),
+                .capsule_image_ref = capsule_ref,
             };
+            graph.capsule_image_ref = try capsule_ref.clone(vault.allocator);
             errdefer graph.deinit();
+            graph.capsule_manifest_ref = try refFromStoredOrFingerprint(vault, .capsule_manifest, image.manifest.manifest_fingerprint);
+            graph.runspace_image_refs = try refsFromFingerprints(vault, .capsule_runspace_image, &.{image.runspace_image.image_fingerprint});
+            graph.fabric_image_refs = try optionalFingerprintRef(vault, .capsule_fabric_image, if (image.fabric_image) |fabric| fabric.fabric_image_fingerprint else null);
+            graph.link_image_refs = try optionalFingerprintRef(vault, .capsule_link_image, if (image.link_image) |link| link.link_image_fingerprint else null);
+            graph.transcript_refs = try capsuleExternalImageRefs(vault, image, .transcript_image, image.transcript_image_refs);
+            graph.run_image_refs = try capsuleExternalImageRefs(vault, image, .run_image, image.run_image_refs);
+            graph.value_image_refs = try capsuleExternalImageRefs(vault, image, .value_image, image.value_image_refs);
+            graph.environment_refs = try storedRefsFromFingerprints(vault, .environment_certificate, image.environment_refs);
+            graph.permit_refs = try storedRefsFromFingerprints(vault, .run_permit, image.supervision_refs);
+            graph.receipt_refs = try storedRefsFromFingerprints(vault, .run_receipt, image.manifest.run_receipt_fingerprints);
+            graph.admission_refs = try storedRefsFromFingerprints(vault, .admission_receipt, image.admission_refs);
+            graph.actuation_intent_refs = try refsFromFingerprints(vault, .actuation_intent, image.actuation_intent_refs);
+            graph.actuation_receipt_refs = try refsFromFingerprints(vault, .actuation_receipt, image.actuation_receipt_refs);
+            graph.actuation_journal_refs = try refsFromFingerprints(vault, .actuation_journal, image.actuation_journal_refs);
+            graph.guest_conformance_refs = try storedRefsFromFingerprints(vault, .guest_conformance_report, image.guest_conformance_refs);
             graph.missing_deps = try graphMissingRefs(vault, &.{
                 graph.transcript_refs,
                 graph.run_image_refs,
@@ -28823,21 +28845,21 @@ pub const Continuity = struct {
             var graph = @This(){
                 .allocator = vault.allocator,
                 .graph_fingerprint = 0,
-                .root_actuation_receipt_refs = try cloneRefSlice(vault.allocator, &.{receipt_ref}),
-                .intent_refs = try refsFromFingerprints(vault, .actuation_intent, &.{receipt.intent_fingerprint}),
-                .envelope_refs = try refsFromFingerprints(vault, .actuation_envelope, &.{receipt.envelope_fingerprint}),
-                .decision_refs = try refsFromFingerprints(vault, .actuation_decision, &.{receipt.decision_fingerprint}),
-                .commit_refs = try refsFromFingerprints(vault, .actuation_commit, &.{receipt.commit_fingerprint}),
-                .response_refs = try refsFromFingerprints(vault, .actuation_response, &.{receipt.response_fingerprint}),
-                .response_value_image_refs = try responseValueImageRefsForReceipt(vault, receipt),
-                .receipt_refs = try cloneRefSlice(vault.allocator, &.{receipt_ref}),
-                .idempotency_key_refs = try refsFromFingerprints(vault, .actuation_idempotency_key, &.{receipt.idempotency_key_fingerprint}),
-                .capsule_refs = try optionalFingerprintRef(vault, .capsule_image, receipt.capsule_fingerprint),
-                .pending_actuation_refs = if (receipt.pending or receipt.deferred) try cloneRefSlice(vault.allocator, &.{receipt_ref}) else &.{},
-                .committed_actuation_refs = if (receiptIsTerminalFreshCommit(receipt)) try cloneRefSlice(vault.allocator, &.{receipt_ref}) else &.{},
-                .fresh_commit_count = if (receiptIsTerminalFreshCommit(receipt)) 1 else 0,
             };
             errdefer graph.deinit();
+            graph.root_actuation_receipt_refs = try cloneRefSlice(vault.allocator, &.{receipt_ref});
+            graph.intent_refs = try refsFromFingerprints(vault, .actuation_intent, &.{receipt.intent_fingerprint});
+            graph.envelope_refs = try refsFromFingerprints(vault, .actuation_envelope, &.{receipt.envelope_fingerprint});
+            graph.decision_refs = try refsFromFingerprints(vault, .actuation_decision, &.{receipt.decision_fingerprint});
+            graph.commit_refs = try refsFromFingerprints(vault, .actuation_commit, &.{receipt.commit_fingerprint});
+            graph.response_refs = try refsFromFingerprints(vault, .actuation_response, &.{receipt.response_fingerprint});
+            graph.response_value_image_refs = try responseValueImageRefsForReceipt(vault, receipt);
+            graph.receipt_refs = try cloneRefSlice(vault.allocator, &.{receipt_ref});
+            graph.idempotency_key_refs = try refsFromFingerprints(vault, .actuation_idempotency_key, &.{receipt.idempotency_key_fingerprint});
+            graph.capsule_refs = try optionalFingerprintRef(vault, .capsule_image, receipt.capsule_fingerprint);
+            graph.pending_actuation_refs = if (receipt.pending or receipt.deferred) try cloneRefSlice(vault.allocator, &.{receipt_ref}) else &.{};
+            graph.committed_actuation_refs = if (receiptIsTerminalFreshCommit(receipt)) try cloneRefSlice(vault.allocator, &.{receipt_ref}) else &.{};
+            graph.fresh_commit_count = if (receiptIsTerminalFreshCommit(receipt)) 1 else 0;
             if (isReplayableReceipt(receipt) and refsAllAvailable(vault, graph.response_value_image_refs)) {
                 graph.replayable_actuation_refs = try cloneRefSlice(vault.allocator, &.{receipt_ref});
             }
@@ -28897,7 +28919,7 @@ pub const Continuity = struct {
                 if (requiredResponseValueImageFingerprint(entry.frame_response_fingerprint, entry.response_value_image_fingerprint)) |fingerprint| try appendUniqueRefForFingerprint(vault, &response_value_image_refs, .value_image, fingerprint);
                 if (entry.idempotency_key_fingerprint) |fingerprint| try appendUniqueRefForFingerprint(vault, &idempotency_key_refs, .actuation_idempotency_key, fingerprint);
                 if (entry.receipt_fingerprint) |fingerprint| {
-                    const ref = vault.refByKindFingerprint(.actuation_receipt, fingerprint) orelse ObjectRef.init(.{
+                    const ref = (try vault.refByKindFingerprint(.actuation_receipt, fingerprint)) orelse ObjectRef.init(.{
                         .kind = .actuation_receipt,
                         .object_format_version = world_actuation_receipt_format_version,
                         .object_fingerprint = fingerprint,
@@ -28918,7 +28940,7 @@ pub const Continuity = struct {
                             }
                         }
                     }
-                    if (isReplayableJournalEntry(entry) and vault.has(ref) and journalEntryReplayEvidenceAvailable(vault, entry)) try replayable_refs.append(vault.allocator, ref);
+                    if (isReplayableJournalEntry(entry) and vault.has(ref) and try journalEntryReplayEvidenceAvailable(vault, entry)) try replayable_refs.append(vault.allocator, ref);
                 }
             }
             graph.intent_refs = try intent_refs.toOwnedSlice(vault.allocator);
@@ -29030,9 +29052,9 @@ pub const Continuity = struct {
         return true;
     }
 
-    fn journalEntryReplayEvidenceAvailable(vault: *Continuity.MemoryVault, entry: Actuation.Journal.Entry) bool {
+    fn journalEntryReplayEvidenceAvailable(vault: *Continuity.MemoryVault, entry: Actuation.Journal.Entry) !bool {
         const fingerprint = requiredResponseValueImageFingerprint(entry.frame_response_fingerprint, entry.response_value_image_fingerprint) orelse return true;
-        const ref = refFromStoredOrFingerprint(vault, .value_image, fingerprint) orelse return false;
+        const ref = try refFromStoredOrFingerprint(vault, .value_image, fingerprint);
         return vault.has(ref);
     }
 
@@ -29463,7 +29485,7 @@ pub const Continuity = struct {
             if (receipt.responseStatus() != .responded) return null;
             const frame_response_fingerprint = receipt.frame_response_fingerprint orelse return error.InvalidFrameEncoding;
             if (receipt.response_value_image_fingerprint) |value_image_fingerprint| {
-                if (vault.refByKindFingerprint(.value_image, value_image_fingerprint)) |ref| {
+                if (try vault.refByKindFingerprint(.value_image, value_image_fingerprint)) |ref| {
                     var envelope = try vault.get(ref);
                     defer envelope.deinit(vault.allocator);
                     var image = try Frame.ValueImage.decode(vault.allocator, envelope.payload_bytes);
@@ -30092,7 +30114,7 @@ pub const Continuity = struct {
         }
         for (roots, 0..) |root, index| {
             try root.validate();
-            const resolved = vault.resolveRef(root) orelse return error.ObjectMissing;
+            const resolved = (try vault.resolveRef(root)) orelse return error.ObjectMissing;
             resolved_roots[index] = try resolved.clone(vault.allocator);
             initialized += 1;
         }
@@ -30266,7 +30288,7 @@ pub const Continuity = struct {
         errdefer refs.deinit(vault.allocator);
         for (deps) |dep| {
             const kind = continuityKindForActuationDependency(dep.kind) orelse continue;
-            if (refFromStoredOrFingerprint(vault, kind, dep.fingerprint)) |ref| try refs.append(vault.allocator, ref);
+            try refs.append(vault.allocator, try refFromStoredOrFingerprint(vault, kind, dep.fingerprint));
         }
         return refs.toOwnedSlice(vault.allocator);
     }
@@ -30305,7 +30327,7 @@ pub const Continuity = struct {
     }
 
     fn appendActuationEvidenceRef(vault: *Continuity.MemoryVault, refs: *std.ArrayList(ObjectRef), kind: ObjectKind, fingerprint: u64) !void {
-        const ref = vault.refByKindFingerprint(kind, fingerprint) orelse return;
+        const ref = (try vault.refByKindFingerprint(kind, fingerprint)) orelse return;
         if (containsRef(refs.items, ref)) return;
         try refs.append(vault.allocator, ref);
     }
@@ -30365,7 +30387,7 @@ pub const Continuity = struct {
 
     fn capsuleReceiptListResolvesIntent(vault: *Continuity.MemoryVault, receipt_fingerprints: []const u64, intent_fingerprint: u64) !bool {
         for (receipt_fingerprints) |receipt_fingerprint| {
-            const receipt_ref = vault.refByKindFingerprint(.actuation_receipt, receipt_fingerprint) orelse continue;
+            const receipt_ref = (try vault.refByKindFingerprint(.actuation_receipt, receipt_fingerprint)) orelse continue;
             var receipt = vault.getActuationReceipt(receipt_ref) catch |err| switch (err) {
                 error.ObjectMissing => continue,
                 else => return err,
@@ -30382,7 +30404,7 @@ pub const Continuity = struct {
                 if (key_intent != intent_fingerprint) continue;
             }
             if (try capsuleIntentResolved(vault, image, intent_fingerprint)) continue;
-            const intent_ref = vault.refByKindFingerprint(.actuation_intent, intent_fingerprint) orelse continue;
+            const intent_ref = (try vault.refByKindFingerprint(.actuation_intent, intent_fingerprint)) orelse continue;
             var intent = try vault.getActuationIntent(intent_ref);
             defer intent.deinit(vault.allocator);
             if (Actuation.idempotencyKeyMatchesIntent(key, intent)) return true;
@@ -30426,8 +30448,8 @@ pub const Continuity = struct {
         };
     }
 
-    fn refFromStoredOrFingerprint(vault: *Continuity.MemoryVault, kind: ObjectKind, fingerprint: u64) ?ObjectRef {
-        return vault.refByKindFingerprint(kind, fingerprint) orelse ObjectRef.init(.{
+    fn refFromStoredOrFingerprint(vault: *Continuity.MemoryVault, kind: ObjectKind, fingerprint: u64) !ObjectRef {
+        return (try vault.refByKindFingerprint(kind, fingerprint)) orelse ObjectRef.init(.{
             .kind = kind,
             .object_format_version = kind.defaultFormatVersion(),
             .object_fingerprint = fingerprint,
@@ -30440,7 +30462,7 @@ pub const Continuity = struct {
         var initialized: usize = 0;
         errdefer allocatorFreeRefSlice(vault.allocator, refs, initialized);
         for (fingerprints, 0..) |fingerprint, index| {
-            refs[index] = vault.refByKindFingerprint(kind, fingerprint) orelse ObjectRef.init(.{
+            refs[index] = (try vault.refByKindFingerprint(kind, fingerprint)) orelse ObjectRef.init(.{
                 .kind = kind,
                 .object_format_version = kind.defaultFormatVersion(),
                 .object_fingerprint = fingerprint,
@@ -30455,14 +30477,14 @@ pub const Continuity = struct {
         var refs: std.ArrayList(ObjectRef) = .empty;
         errdefer deinitRefList(vault.allocator, &refs);
         for (fingerprints) |fingerprint| {
-            const ref = vault.refByKindFingerprint(kind, fingerprint) orelse continue;
+            const ref = (try vault.refByKindFingerprint(kind, fingerprint)) orelse continue;
             try refs.append(vault.allocator, try ref.clone(vault.allocator));
         }
         return refs.toOwnedSlice(vault.allocator);
     }
 
     fn appendUniqueRefForFingerprint(vault: *Continuity.MemoryVault, refs: *std.ArrayList(ObjectRef), kind: ObjectKind, fingerprint: u64) !void {
-        const ref = refFromStoredOrFingerprint(vault, kind, fingerprint) orelse return error.InvalidFrameEncoding;
+        const ref = try refFromStoredOrFingerprint(vault, kind, fingerprint);
         if (containsRef(refs.items, ref)) return;
         try refs.append(vault.allocator, try ref.clone(vault.allocator));
     }
@@ -31033,6 +31055,32 @@ test "bundle validation propagates typed payload decode allocation failure" {
     try std.testing.expect(failing_allocator.has_induced_failure);
 }
 
+test "vault semantic fingerprint lookup propagates allocation failure" {
+    const allocator = std.testing.allocator;
+    var value_image = try Frame.ValueImage.fromValue(allocator, null, null, null, 41, ValuePolicy.native_compatible);
+    defer value_image.deinit(allocator);
+    const payload = try value_image.encode(allocator);
+    defer allocator.free(payload);
+    const envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .value_image,
+        .object_format_version = world_frame_value_image_format_version,
+        .payload_bytes = payload,
+    });
+    var vault = Continuity.MemoryVault.init(allocator);
+    defer vault.deinit();
+    _ = try vault.put(envelope);
+
+    var failing_allocator = std.testing.FailingAllocator.init(allocator, .{
+        .fail_index = 0,
+    });
+    const original_allocator = vault.allocator;
+    vault.allocator = failing_allocator.allocator();
+    defer vault.allocator = original_allocator;
+
+    try std.testing.expectError(error.OutOfMemory, vault.refByKindFingerprint(.value_image, value_image.value_image_fingerprint));
+    try std.testing.expect(failing_allocator.has_induced_failure);
+}
+
 test "bundle validation rejects conflicting duplicate envelopes" {
     const allocator = std.testing.allocator;
     const payload = "same-payload";
@@ -31373,6 +31421,58 @@ test "capsule graph treats embedded value images as self contained" {
     var bundle = try Capsule.exportBundle(&vault, capsule_ref, .{});
     defer bundle.deinit();
     try std.testing.expectEqual(@as(usize, 1), bundle.manifest.object_count);
+}
+
+test "capsule graph construction cleans up partial allocation failure" {
+    const allocator = std.testing.allocator;
+    var vault = Continuity.MemoryVault.init(allocator);
+    defer vault.deinit();
+
+    const image = Capsule.Image.init(.{
+        .manifest = Capsule.Manifest.init(.{
+            .kind = .completed_assembly,
+            .root_target_ref_fingerprint = 0x3281_0001,
+            .normal_form = .quiescent_completed,
+            .run_receipt_fingerprints = &.{ 0x3281_0010, 0x3281_0011 },
+            .actuation_intent_fingerprints = &.{0x3281_0020},
+        }),
+        .runspace_image = Capsule.RunspaceImage.init(.{
+            .runspace_fingerprint = 0x3281_0002,
+            .runspace_report_fingerprint = 0x3281_0003,
+            .actuation_intent_refs = &.{0x3281_0020},
+        }),
+        .actuation_intent_refs = &.{0x3281_0020},
+        .transcript_image_refs = &.{0x3281_0030},
+        .run_image_refs = &.{0x3281_0040},
+        .value_image_refs = &.{0x3281_0050},
+        .environment_refs = &.{0x3281_0060},
+        .supervision_refs = &.{0x3281_0070},
+        .admission_refs = &.{0x3281_0080},
+        .guest_conformance_refs = &.{0x3281_00b0},
+    });
+    const capsule_ref = try vault.putCapsule(image);
+
+    const original_allocator = vault.allocator;
+    defer vault.allocator = original_allocator;
+    var induced_failures: usize = 0;
+    for (0..32) |fail_index| {
+        var failing_allocator = std.testing.FailingAllocator.init(allocator, .{
+            .fail_index = fail_index,
+        });
+        vault.allocator = failing_allocator.allocator();
+        var graph = Continuity.CapsuleGraph.fromCapsule(&vault, capsule_ref) catch |err| switch (err) {
+            error.OutOfMemory => {
+                try std.testing.expect(failing_allocator.has_induced_failure);
+                induced_failures += 1;
+                continue;
+            },
+            else => return err,
+        };
+        graph.deinit();
+        if (!failing_allocator.has_induced_failure) break;
+    }
+    vault.allocator = original_allocator;
+    try std.testing.expect(induced_failures > 0);
 }
 
 test "capsule validation rejects unmirrored actuation refs" {
