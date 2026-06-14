@@ -28834,8 +28834,8 @@ pub const Continuity = struct {
                 .idempotency_key_refs = try refsFromFingerprints(vault, .actuation_idempotency_key, &.{receipt.idempotency_key_fingerprint}),
                 .capsule_refs = try optionalFingerprintRef(vault, .capsule_image, receipt.capsule_fingerprint),
                 .pending_actuation_refs = if (receipt.pending or receipt.deferred) try cloneRefSlice(vault.allocator, &.{receipt_ref}) else &.{},
-                .committed_actuation_refs = if (receipt.fresh_called and !receipt.pending and !receipt.deferred) try cloneRefSlice(vault.allocator, &.{receipt_ref}) else &.{},
-                .fresh_commit_count = if (receipt.fresh_called and !receipt.pending and !receipt.deferred) 1 else 0,
+                .committed_actuation_refs = if (receiptIsTerminalFreshCommit(receipt)) try cloneRefSlice(vault.allocator, &.{receipt_ref}) else &.{},
+                .fresh_commit_count = if (receiptIsTerminalFreshCommit(receipt)) 1 else 0,
             };
             errdefer graph.deinit();
             if (isReplayableReceipt(receipt) and refsAllAvailable(vault, graph.response_value_image_refs)) {
@@ -28995,8 +28995,17 @@ pub const Continuity = struct {
     };
 
     fn isReplayableReceipt(receipt: Actuation.Receipt) bool {
-        if (receipt.pending or receipt.deferred) return false;
+        if (receipt.pending or receipt.deferred or receipt.failed or receipt.rejected or receipt.cancelled) return false;
         return receipt.fresh_called or receipt.replayed or (!receipt.fresh_called and receipt.responseStatus() == .responded);
+    }
+
+    fn receiptIsTerminalFreshCommit(receipt: Actuation.Receipt) bool {
+        return receipt.fresh_called and
+            !receipt.pending and
+            !receipt.deferred and
+            !receipt.failed and
+            !receipt.rejected and
+            !receipt.cancelled;
     }
 
     fn isReplayableJournalEntry(entry: Actuation.Journal.Entry) bool {
@@ -29266,7 +29275,7 @@ pub const Continuity = struct {
                     .capsule => receipt.capsule_fingerprint == needle,
                     .pending => receipt.pending,
                     .deferred => receipt.deferred,
-                    .fresh_commit => receipt.fresh_called and !receipt.pending and !receipt.deferred,
+                    .fresh_commit => receiptIsTerminalFreshCommit(receipt),
                     .replayed => receipt.replayed or receipt.mode == .replay,
                 };
                 receipt.deinit(self.vault.allocator);
@@ -30034,7 +30043,7 @@ pub const Continuity = struct {
             .actuation_receipt => {
                 var receipt = try Actuation.Receipt.decode(decode_allocator, envelope.payload_bytes);
                 defer receipt.deinit(decode_allocator);
-                if (!receipt.fresh_called or receipt.pending or receipt.deferred) return;
+                if (!receiptIsTerminalFreshCommit(receipt)) return;
                 try recordBundleFreshCommit(list_allocator, keys, receipts, commits, receipt.idempotency_key_fingerprint, receipt.receipt_fingerprint, receipt.commit_fingerprint);
             },
             .actuation_journal => {
@@ -31365,7 +31374,13 @@ test "actuation graph builds from receipt journal and detects duplicate fresh co
         .mode = .fresh,
         .cancelled = true,
     });
-    _ = try vault.putActuationReceipt(cancelled_receipt);
+    const cancelled_receipt_ref = try vault.putActuationReceipt(cancelled_receipt);
+    var cancelled_receipt_graph = try Continuity.ActuationGraph.fromReceipt(&vault, cancelled_receipt_ref);
+    defer cancelled_receipt_graph.deinit();
+    const cancelled_receipt_summary = cancelled_receipt_graph.summary();
+    try std.testing.expectEqual(@as(usize, 0), cancelled_receipt_summary.committed_count);
+    try std.testing.expectEqual(@as(usize, 0), cancelled_receipt_summary.replayable_count);
+    try std.testing.expectEqual(@as(usize, 0), cancelled_receipt_summary.fresh_commit_count);
     var cancelled_journal = Actuation.Journal.init();
     defer cancelled_journal.deinit(allocator);
     try cancelled_journal.appendReceipt(allocator, cancelled_receipt);
@@ -31797,6 +31812,72 @@ test "bundle import rejects duplicate fresh receipts already in destination" {
     try std.testing.expectError(error.DuplicateBinding, Continuity.Recovery.preflightBundleImport(&destination, incoming_journal_bytes, .{ .allow_external_dependencies = true }));
     try std.testing.expectError(error.DuplicateBinding, Continuity.Bundle.importIntoVault(&destination, incoming_journal_bytes, .{ .allow_external_dependencies = true }));
     try std.testing.expect(!destination.has(incoming_journal_envelope.objectRef()));
+}
+
+test "bundle import permits failed fresh receipt before successful retry" {
+    const allocator = std.testing.allocator;
+    var destination = Continuity.MemoryVault.init(allocator);
+    defer destination.deinit();
+    var source = Continuity.MemoryVault.init(allocator);
+    defer source.deinit();
+
+    const key = Actuation.IdempotencyKey.init(.{
+        .target_ref_fingerprint = 0x3285_0001,
+        .world_surface_fingerprint = 0x3285_0002,
+        .world_port_id = 4,
+        .request_fingerprint = 0x3285_0003,
+        .actuator_ref_fingerprint = 0x3285_0004,
+    });
+    const failed = Actuation.Receipt.init(.{
+        .intent_fingerprint = 0x3285_0010,
+        .envelope_fingerprint = 0x3285_0011,
+        .decision_fingerprint = 0x3285_0012,
+        .commit_fingerprint = 0x3285_0013,
+        .response_fingerprint = 0x3285_0014,
+        .frame_response_fingerprint = 0x3285_0015,
+        .actuator_ref_fingerprint = key.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .request_fingerprint = key.request_fingerprint,
+        .target_ref_fingerprint = key.target_ref_fingerprint,
+        .world_surface_fingerprint = key.world_surface_fingerprint,
+        .world_port_id = key.world_port_id,
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+        .fresh_called = true,
+        .failed = true,
+    });
+    const retry = Actuation.Receipt.init(.{
+        .intent_fingerprint = 0x3285_0020,
+        .envelope_fingerprint = 0x3285_0021,
+        .decision_fingerprint = 0x3285_0022,
+        .commit_fingerprint = 0x3285_0023,
+        .response_fingerprint = 0x3285_0024,
+        .frame_response_fingerprint = 0x3285_0025,
+        .actuator_ref_fingerprint = key.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .request_fingerprint = key.request_fingerprint,
+        .target_ref_fingerprint = key.target_ref_fingerprint,
+        .world_surface_fingerprint = key.world_surface_fingerprint,
+        .world_port_id = key.world_port_id,
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+        .fresh_called = true,
+    });
+    const failed_ref = try source.putActuationReceipt(failed);
+    const retry_ref = try source.putActuationReceipt(retry);
+    var bundle = try Continuity.Bundle.exportFromVault(&source, &.{ failed_ref, retry_ref }, .{ .include_dependencies = false });
+    defer bundle.deinit();
+    const bytes = try bundle.toBytes(allocator);
+    defer allocator.free(bytes);
+
+    const report = try Continuity.Bundle.validate(allocator, bytes, .{ .allow_external_dependencies = true });
+    try std.testing.expect(report.valid);
+    const preflight = try Continuity.Recovery.preflightBundleImport(&destination, bytes, .{ .allow_external_dependencies = true });
+    try std.testing.expect(preflight.valid);
+    var imported_manifest = try Continuity.Bundle.importIntoVault(&destination, bytes, .{ .allow_external_dependencies = true });
+    defer imported_manifest.deinit(allocator);
+    try std.testing.expect(destination.has(failed_ref));
+    try std.testing.expect(destination.has(retry_ref));
 }
 
 test "bundle preflight rejects destination envelope conflicts" {
