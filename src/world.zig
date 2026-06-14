@@ -30412,6 +30412,16 @@ pub const Continuity = struct {
                 defer frame.deinit(allocator);
                 break :blk true;
             },
+            .actuator_ref,
+            .actuation_descriptor,
+            .actuation_binding,
+            .actuation_policy,
+            .actuation_idempotency_key,
+            .actuation_envelope,
+            .actuation_decision,
+            .actuation_commit,
+            .actuation_response,
+            .actuation_verify_report,
             .environment_certificate,
             .run_permit,
             .run_receipt,
@@ -30438,16 +30448,6 @@ pub const Continuity = struct {
             .capsule_mailbox_image,
             .capsule_fabric_image,
             .capsule_link_image,
-            .actuator_ref,
-            .actuation_descriptor,
-            .actuation_binding,
-            .actuation_policy,
-            .actuation_idempotency_key,
-            .actuation_envelope,
-            .actuation_decision,
-            .actuation_commit,
-            .actuation_response,
-            .actuation_verify_report,
             .linker_certificate,
             .assembly,
             .bundle,
@@ -31795,10 +31795,31 @@ test "bundle validation rejects malformed typed payloads" {
     try std.testing.expectEqual(Continuity.ObjectValidationReport.Blocker.DecodeFailed, frame_report.blockers[0]);
     try std.testing.expectError(error.InvalidFrameEncoding, Continuity.Bundle.importIntoVault(&vault, frame_bytes, .{}));
 
-    const opaque_envelope = Continuity.ObjectEnvelope.init(.{
+    const malformed_actuation_envelope = Continuity.ObjectEnvelope.init(.{
         .kind = .actuation_commit,
         .object_format_version = world_actuation_commit_format_version,
         .payload_bytes = "not an actuation commit",
+    });
+    var malformed_actuation_bundle = Continuity.Bundle{
+        .allocator = allocator,
+        .manifest = Continuity.BundleManifest.init(.{
+            .roots = &.{malformed_actuation_envelope.objectRef()},
+            .object_count = 1,
+        }),
+        .envelopes = @constCast(&[_]Continuity.ObjectEnvelope{malformed_actuation_envelope}),
+    };
+    const malformed_actuation_bytes = try malformed_actuation_bundle.toBytes(allocator);
+    defer allocator.free(malformed_actuation_bytes);
+
+    const malformed_actuation_report = try Continuity.Bundle.validate(allocator, malformed_actuation_bytes, .{});
+    try std.testing.expect(!malformed_actuation_report.valid);
+    try std.testing.expectEqual(Continuity.ObjectValidationReport.Blocker.DecodeFailed, malformed_actuation_report.blockers[0]);
+    try std.testing.expectError(error.InvalidFrameEncoding, Continuity.Bundle.importIntoVault(&vault, malformed_actuation_bytes, .{}));
+
+    const opaque_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .linker_certificate,
+        .object_format_version = world_linker_certificate_format_version,
+        .payload_bytes = "opaque linker certificate",
     });
     var opaque_bundle = Continuity.Bundle{
         .allocator = allocator,
@@ -34652,6 +34673,22 @@ test "vault actuation receipt dependencies resolve stored opaque evidence" {
         if (dep.kind == .actuation_commit and dep.object_fingerprint == commit_ref.object_fingerprint and dep.byte_len == 0 and vault.has(dep)) has_stored_commit_dep = true;
     }
     try std.testing.expect(has_stored_commit_dep);
+}
+
+test "vault rejects malformed typed actuation evidence payload" {
+    const allocator = std.testing.allocator;
+    var vault = Continuity.MemoryVault.init(allocator);
+    defer vault.deinit();
+
+    const ref = try vault.put(Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_commit,
+        .object_format_version = world_actuation_commit_format_version,
+        .payload_bytes = "malformed typed commit evidence",
+    }));
+
+    const report = try vault.validate(ref);
+    try std.testing.expect(!report.valid);
+    try std.testing.expectEqual(Continuity.ObjectValidationReport.Blocker.DecodeFailed, report.blockers[0]);
 }
 
 test "vault actuation receipt dependencies preserve and resolve component evidence" {
