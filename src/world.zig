@@ -28232,7 +28232,7 @@ pub const Continuity = struct {
                     terminal_commit_fingerprint = receipt.commit_fingerprint;
                     continue;
                 }
-                if (non_terminal_match == null) non_terminal_match = ref;
+                non_terminal_match = ref;
             }
             if (terminal_match) |ref| return ref;
             return non_terminal_match;
@@ -28602,6 +28602,7 @@ pub const Continuity = struct {
                 .payload_fingerprint_valid = true,
                 .envelope_fingerprint_valid = true,
                 .dependency_count = self.envelopes.len,
+                .missing_dependency_count = missing_count,
             });
         }
 
@@ -32397,6 +32398,7 @@ test "bundle export import roundtrip and ledger events are stable" {
 
     const report = try Continuity.Bundle.validate(allocator, bytes, .{ .allow_external_dependencies = true });
     try std.testing.expect(report.valid);
+    try std.testing.expect(report.missing_dependency_count != 0);
 
     var imported_vault = Continuity.MemoryVault.init(allocator);
     defer imported_vault.deinit();
@@ -33366,6 +33368,49 @@ test "actuation index finds receipts by actuator target port capsule state and i
     _ = try wrong_fingerprint_vault.putActuationReceipt(wrong_key_fingerprint);
     const wrong_fingerprint_index = Continuity.ActuationIndex.init(&wrong_fingerprint_vault);
     try std.testing.expect((try wrong_fingerprint_index.byIdempotencyKey(key)) == null);
+
+    var latest_vault = Continuity.MemoryVault.init(allocator);
+    defer latest_vault.deinit();
+    const first_pending = Actuation.Receipt.init(.{
+        .intent_fingerprint = 0x3301_0061,
+        .envelope_fingerprint = 0x3301_0062,
+        .decision_fingerprint = 0x3301_0063,
+        .commit_fingerprint = 0x3301_0064,
+        .response_fingerprint = 0x3301_0065,
+        .actuator_ref_fingerprint = key.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .request_fingerprint = key.request_fingerprint,
+        .target_ref_fingerprint = key.target_ref_fingerprint,
+        .world_surface_fingerprint = key.world_surface_fingerprint,
+        .world_port_id = key.world_port_id,
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+        .fresh_called = true,
+        .pending = true,
+    });
+    const later_failed = Actuation.Receipt.init(.{
+        .intent_fingerprint = 0x3301_0071,
+        .envelope_fingerprint = 0x3301_0072,
+        .decision_fingerprint = 0x3301_0073,
+        .commit_fingerprint = 0x3301_0074,
+        .response_fingerprint = 0x3301_0075,
+        .actuator_ref_fingerprint = key.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .request_fingerprint = key.request_fingerprint,
+        .target_ref_fingerprint = key.target_ref_fingerprint,
+        .world_surface_fingerprint = key.world_surface_fingerprint,
+        .world_port_id = key.world_port_id,
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+        .fresh_called = true,
+        .failed = true,
+    });
+    _ = try latest_vault.putActuationReceipt(first_pending);
+    const later_failed_ref = try latest_vault.putActuationReceipt(later_failed);
+    const latest_index = Continuity.ActuationIndex.init(&latest_vault);
+    const latest_by_key = try latest_index.byIdempotencyKey(key);
+    try std.testing.expect(latest_by_key != null);
+    try std.testing.expect(latest_by_key.?.eql(later_failed_ref));
 }
 
 test "actuation idempotency lookup rejects conflicting terminal receipts" {
