@@ -30327,7 +30327,7 @@ pub const Continuity = struct {
     }
 
     fn appendActuationEvidenceRef(vault: *Continuity.MemoryVault, refs: *std.ArrayList(ObjectRef), kind: ObjectKind, fingerprint: u64) !void {
-        const ref = (try vault.refByKindFingerprint(kind, fingerprint)) orelse return;
+        const ref = try refFromStoredOrFingerprint(vault, kind, fingerprint);
         if (containsRef(refs.items, ref)) return;
         try refs.append(vault.allocator, ref);
     }
@@ -30737,6 +30737,15 @@ test "memory vault stores capsule receipt journal and looks up idempotency key" 
     var loaded_receipt = try vault.getActuationReceipt(receipt_ref);
     defer loaded_receipt.deinit(allocator);
     try std.testing.expectEqual(receipt.receipt_fingerprint, loaded_receipt.receipt_fingerprint);
+    const receipt_deps = try vault.dependencies(receipt_ref);
+    defer {
+        for (receipt_deps) |*dep| dep.deinit(allocator);
+        allocator.free(receipt_deps);
+    }
+    try std.testing.expect(receipt_deps.len != 0);
+    const receipt_report = try vault.validate(receipt_ref);
+    try std.testing.expect(!receipt_report.valid);
+    try std.testing.expectEqual(Continuity.ObjectValidationReport.Blocker.MissingDependency, receipt_report.blockers[0]);
 
     var journal = Actuation.Journal.init();
     defer journal.deinit(allocator);
@@ -30745,6 +30754,15 @@ test "memory vault stores capsule receipt journal and looks up idempotency key" 
     var loaded_journal = try vault.getActuationJournal(journal_ref);
     defer loaded_journal.deinit(allocator);
     try std.testing.expectEqual(journal.journal_fingerprint, loaded_journal.journal_fingerprint);
+    const journal_deps = try vault.dependencies(journal_ref);
+    defer {
+        for (journal_deps) |*dep| dep.deinit(allocator);
+        allocator.free(journal_deps);
+    }
+    try std.testing.expect(journal_deps.len != 0);
+    const journal_report = try vault.validate(journal_ref);
+    try std.testing.expect(!journal_report.valid);
+    try std.testing.expectEqual(Continuity.ObjectValidationReport.Blocker.MissingDependency, journal_report.blockers[0]);
 
     const lookup = try vault.lookupActuationByIdempotencyKey(key);
     try std.testing.expect(lookup != null);
@@ -31815,10 +31833,8 @@ test "bundle export import roundtrip and ledger events are stable" {
         for (receipt_deps) |*ref| ref.deinit(allocator);
         allocator.free(receipt_deps);
     }
-    try std.testing.expectEqual(@as(usize, 0), receipt_deps.len);
-    var strict_bundle = try Continuity.Bundle.exportFromVault(&vault, &.{receipt_ref}, .{});
-    defer strict_bundle.deinit();
-    try std.testing.expectEqual(@as(usize, 1), strict_bundle.manifest.object_count);
+    try std.testing.expect(receipt_deps.len != 0);
+    try std.testing.expectError(error.ObjectMissing, Continuity.Bundle.exportFromVault(&vault, &.{receipt_ref}, .{}));
     var bundle = try Continuity.Bundle.exportFromVault(&vault, &.{receipt_ref}, .{ .include_dependencies = false });
     defer bundle.deinit();
     const bytes = try bundle.toBytes(allocator);
@@ -32803,10 +32819,10 @@ test "recovery preflight inspects capsules replays receipt evidence and rejects 
         for (missing_evidence_deps) |*ref| ref.deinit(allocator);
         allocator.free(missing_evidence_deps);
     }
-    try std.testing.expectEqual(@as(usize, 1), missing_evidence_deps.len);
+    try std.testing.expect(missing_evidence_deps.len != 0);
     var missing_evidence_graph = try Continuity.Recovery.inspectCapsule(&vault, missing_evidence_ref);
     defer missing_evidence_graph.deinit();
-    try std.testing.expectEqual(@as(usize, 1), missing_evidence_graph.missing_deps.len);
+    try std.testing.expect(missing_evidence_graph.missing_deps.len != 0);
     try std.testing.expectError(error.ObjectMissing, Continuity.Recovery.preflightThawCapsule(&vault, missing_evidence_ref, {}, {}, {}, .{}));
 
     const recovery_target_ref_fingerprint = 0x3302_0100;
@@ -33098,9 +33114,9 @@ test "vault actuation helpers store load journal and replay receipt" {
     defer loaded_receipt.deinit(allocator);
     try std.testing.expectEqual(receipt.receipt_fingerprint, loaded_receipt.receipt_fingerprint);
     const receipt_report = try vault.validate(receipt_ref);
-    try std.testing.expect(receipt_report.valid);
-    var strict_receipt_bundle = try Continuity.Bundle.exportFromVault(&vault, &.{receipt_ref}, .{});
-    defer strict_receipt_bundle.deinit();
+    try std.testing.expect(!receipt_report.valid);
+    try std.testing.expectEqual(Continuity.ObjectValidationReport.Blocker.MissingDependency, receipt_report.blockers[0]);
+    try std.testing.expectError(error.ObjectMissing, Continuity.Bundle.exportFromVault(&vault, &.{receipt_ref}, .{}));
 
     var journal = Actuation.Journal.init();
     defer journal.deinit(allocator);
