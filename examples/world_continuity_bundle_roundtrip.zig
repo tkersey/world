@@ -41,7 +41,7 @@ pub fn main(init: std.process.Init) !void {
     });
     const receipt_ref = try world.Actuation.storeReceipt(&source, receipt);
 
-    var bundle = try world.Continuity.Bundle.exportFromVault(&source, &.{ capsule_ref, receipt_ref }, .{ .include_dependencies = false });
+    var bundle = try world.Continuity.Bundle.exportFromVault(&source, &.{ capsule_ref, receipt_ref }, .{ .include_dependencies = false, .allow_external_dependencies = true });
     defer bundle.deinit();
     const bytes = try bundle.toBytes(allocator);
     defer allocator.free(bytes);

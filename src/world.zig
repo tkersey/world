@@ -28454,6 +28454,13 @@ pub const Continuity = struct {
             };
             envelopes_owned_by_bundle = true;
             errdefer bundle.deinit();
+            if (!options.include_dependencies and !options.allow_external_dependencies) {
+                const report = try bundle.validationReport(options);
+                if (!report.valid) {
+                    if (report.blockers.len != 0 and report.blockers[0] == .MissingDependency) return error.ObjectMissing;
+                    return error.InvalidFrameEncoding;
+                }
+            }
             const bundle_bytes = try bundle.toBytes(vault.allocator);
             defer vault.allocator.free(bundle_bytes);
             if (bundle_bytes.len > options.max_bundle_bytes) return error.InvalidFrameEncoding;
@@ -33075,7 +33082,8 @@ test "bundle export import roundtrip and ledger events are stable" {
     }
     try std.testing.expect(receipt_deps.len != 0);
     try std.testing.expectError(error.ObjectMissing, Continuity.Bundle.exportFromVault(&vault, &.{receipt_ref}, .{}));
-    var bundle = try Continuity.Bundle.exportFromVault(&vault, &.{receipt_ref}, .{ .include_dependencies = false });
+    try std.testing.expectError(error.ObjectMissing, Continuity.Bundle.exportFromVault(&vault, &.{receipt_ref}, .{ .include_dependencies = false }));
+    var bundle = try Continuity.Bundle.exportFromVault(&vault, &.{receipt_ref}, .{ .include_dependencies = false, .allow_external_dependencies = true });
     defer bundle.deinit();
     const bytes = try bundle.toBytes(allocator);
     defer allocator.free(bytes);
@@ -33259,7 +33267,7 @@ test "bundle import rejects duplicate fresh receipts already in destination" {
     });
     _ = try destination.putActuationReceipt(existing);
     const incoming_ref = try source.putActuationReceipt(incoming);
-    var bundle = try Continuity.Bundle.exportFromVault(&source, &.{incoming_ref}, .{ .include_dependencies = false });
+    var bundle = try Continuity.Bundle.exportFromVault(&source, &.{incoming_ref}, .{ .include_dependencies = false, .allow_external_dependencies = true });
     defer bundle.deinit();
     const bytes = try bundle.toBytes(allocator);
     defer allocator.free(bytes);
@@ -33379,7 +33387,7 @@ test "bundle import permits failed fresh receipt before successful retry" {
     });
     const failed_ref = try source.putActuationReceipt(failed);
     const retry_ref = try source.putActuationReceipt(retry);
-    var bundle = try Continuity.Bundle.exportFromVault(&source, &.{ failed_ref, retry_ref }, .{ .include_dependencies = false });
+    var bundle = try Continuity.Bundle.exportFromVault(&source, &.{ failed_ref, retry_ref }, .{ .include_dependencies = false, .allow_external_dependencies = true });
     defer bundle.deinit();
     const bytes = try bundle.toBytes(allocator);
     defer allocator.free(bytes);
@@ -33420,7 +33428,7 @@ test "bundle preflight rejects destination envelope conflicts" {
         .payload_bytes = "same-payload",
     });
     const incoming_ref = try source.put(incoming);
-    var bundle = try Continuity.Bundle.exportFromVault(&source, &.{incoming_ref}, .{ .include_dependencies = false });
+    var bundle = try Continuity.Bundle.exportFromVault(&source, &.{incoming_ref}, .{ .include_dependencies = false, .allow_external_dependencies = true });
     defer bundle.deinit();
     const bytes = try bundle.toBytes(allocator);
     defer allocator.free(bytes);
@@ -33444,7 +33452,7 @@ test "bundle validation rejects missing dependency and duplicate fresh commit" {
         .payload_bytes = "manifest",
     });
     const root_ref = try vault.put(envelope);
-    var missing_bundle = try Continuity.Bundle.exportFromVault(&vault, &.{root_ref}, .{ .include_dependencies = false });
+    var missing_bundle = try Continuity.Bundle.exportFromVault(&vault, &.{root_ref}, .{ .include_dependencies = false, .allow_external_dependencies = true });
     defer missing_bundle.deinit();
     const missing_bytes = try missing_bundle.toBytes(allocator);
     defer allocator.free(missing_bytes);
@@ -33837,7 +33845,7 @@ test "capsule storage preserves unresolved dependency edges" {
     var resolved = try vault.get(deps[0]);
     defer resolved.deinit(allocator);
     try std.testing.expectEqual(Continuity.ObjectKind.actuation_receipt, resolved.kind);
-    var bundle = try Continuity.Bundle.exportFromVault(&vault, &.{ capsule_ref, deps[0] }, .{ .include_dependencies = false });
+    var bundle = try Continuity.Bundle.exportFromVault(&vault, &.{ capsule_ref, deps[0] }, .{ .include_dependencies = false, .allow_external_dependencies = true });
     defer bundle.deinit();
     const bundle_bytes = try bundle.toBytes(allocator);
     defer allocator.free(bundle_bytes);
@@ -34734,7 +34742,7 @@ test "recovery preflight inspects capsules replays receipt evidence and rejects 
         .payload_bytes = "manifest",
     });
     const root_ref = try vault.put(envelope);
-    var bundle = try Continuity.Bundle.exportFromVault(&vault, &.{root_ref}, .{ .include_dependencies = false });
+    var bundle = try Continuity.Bundle.exportFromVault(&vault, &.{root_ref}, .{ .include_dependencies = false, .allow_external_dependencies = true });
     defer bundle.deinit();
     const bytes = try bundle.toBytes(allocator);
     defer allocator.free(bytes);
@@ -35520,7 +35528,7 @@ test "vault replay preserves stored response value image for recorded frame resp
     try std.testing.expectEqual(value_image.value_image_fingerprint, replayed.response_image.?.value_image_fingerprint);
     try std.testing.expectEqual(receipt.response_fingerprint, replayed.recorded_response_fingerprint.?);
 
-    var partial_bundle = try Continuity.Bundle.exportFromVault(&vault, &.{receipt_ref}, .{ .include_dependencies = false });
+    var partial_bundle = try Continuity.Bundle.exportFromVault(&vault, &.{receipt_ref}, .{ .include_dependencies = false, .allow_external_dependencies = true });
     defer partial_bundle.deinit();
     const partial_bytes = try partial_bundle.toBytes(allocator);
     defer allocator.free(partial_bytes);
