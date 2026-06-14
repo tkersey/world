@@ -28889,7 +28889,10 @@ pub const Continuity = struct {
         fresh_commit_count: usize = 0,
 
         pub fn fromReceipt(vault: *Continuity.MemoryVault, receipt_ref: ObjectRef) !@This() {
-            var receipt = try vault.getActuationReceipt(receipt_ref);
+            var receipt_envelope = try vault.get(receipt_ref);
+            defer receipt_envelope.deinit(vault.allocator);
+            if (receipt_envelope.kind != .actuation_receipt) return error.InvalidFrameEncoding;
+            var receipt = try Actuation.Receipt.decode(vault.allocator, receipt_envelope.payload_bytes);
             defer receipt.deinit(vault.allocator);
             var graph = @This(){
                 .allocator = vault.allocator,
@@ -28921,6 +28924,7 @@ pub const Continuity = struct {
                 graph.response_value_image_refs,
                 graph.idempotency_key_refs,
                 graph.capsule_refs,
+                receipt_envelope.dependency_refs,
             });
             graph.graph_fingerprint = fingerprintActuationGraph(graph);
             return graph;
@@ -30757,7 +30761,7 @@ pub const Continuity = struct {
         return vault.allocator.alloc(ObjectRef, 0);
     }
 
-    fn graphMissingRefs(vault: *Continuity.MemoryVault, slices: []const []ObjectRef) ![]ObjectRef {
+    fn graphMissingRefs(vault: *Continuity.MemoryVault, slices: []const []const ObjectRef) ![]ObjectRef {
         var missing: std.ArrayList(ObjectRef) = .empty;
         errdefer deinitRefList(vault.allocator, &missing);
         for (slices) |refs| {
@@ -32335,6 +32339,7 @@ test "actuation graph gates replayable receipts on external response value image
         .class = .deterministic_fixture,
         .mode = .fresh,
         .fresh_called = true,
+        .run_permit_fingerprint = 0x3285_001a,
     });
     const receipt_ref = try vault.putActuationReceipt(receipt);
 
@@ -32347,6 +32352,11 @@ test "actuation graph gates replayable receipts on external response value image
         if (dep.kind == .value_image and dep.object_fingerprint == value_image.value_image_fingerprint) found_missing_value_image = true;
     }
     try std.testing.expect(found_missing_value_image);
+    var found_missing_run_permit = false;
+    for (missing_graph.missing_deps) |dep| {
+        if (dep.kind == .run_permit and dep.object_fingerprint == receipt.run_permit_fingerprint.?) found_missing_run_permit = true;
+    }
+    try std.testing.expect(found_missing_run_permit);
 
     var journal = Actuation.Journal.init();
     defer journal.deinit(allocator);
