@@ -30073,6 +30073,95 @@ pub const Continuity = struct {
 
     fn evidenceEnvelopeSemanticFingerprint(allocator: std.mem.Allocator, envelope: ObjectEnvelope) anyerror!?u64 {
         return switch (envelope.kind) {
+            .actuator_ref => blk: {
+                const ref = decodePortableEvidence(Actuation.Ref, allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => break :blk null,
+                };
+                defer deinitOwnedValue(allocator, ref);
+                if (!validActuationRefPayload(ref)) break :blk null;
+                break :blk ref.ref_fingerprint;
+            },
+            .actuation_descriptor => blk: {
+                const descriptor = decodePortableEvidence(Actuation.Descriptor, allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => break :blk null,
+                };
+                defer deinitOwnedValue(allocator, descriptor);
+                if (!validActuationDescriptorPayload(descriptor)) break :blk null;
+                break :blk descriptor.descriptor_fingerprint;
+            },
+            .actuation_binding => blk: {
+                const binding = decodePortableEvidence(Actuation.Binding, allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => break :blk null,
+                };
+                defer deinitOwnedValue(allocator, binding);
+                if (!validActuationBindingPayload(binding)) break :blk null;
+                break :blk binding.binding_fingerprint;
+            },
+            .actuation_policy => blk: {
+                const policy = decodePortableEvidence(Actuation.Policy, allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => break :blk null,
+                };
+                if (!validActuationPolicyPayload(policy)) break :blk null;
+                break :blk policy.policy_fingerprint;
+            },
+            .actuation_idempotency_key => blk: {
+                const key = decodePortableEvidence(Actuation.IdempotencyKey, allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => break :blk null,
+                };
+                defer deinitOwnedValue(allocator, key);
+                if (!validActuationIdempotencyKeyPayload(key)) break :blk null;
+                break :blk key.key_fingerprint;
+            },
+            .actuation_envelope => blk: {
+                const actuation_envelope = decodePortableEvidence(Actuation.Envelope, allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => break :blk null,
+                };
+                defer deinitOwnedValue(allocator, actuation_envelope);
+                if (!validActuationEnvelopePayload(actuation_envelope)) break :blk null;
+                break :blk actuation_envelope.envelope_fingerprint;
+            },
+            .actuation_decision => blk: {
+                const decision = decodePortableEvidence(Actuation.Decision, allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => break :blk null,
+                };
+                defer deinitOwnedValue(allocator, decision);
+                if (!validActuationDecisionPayload(decision)) break :blk null;
+                break :blk decision.decision_fingerprint;
+            },
+            .actuation_commit => blk: {
+                const commit = decodePortableEvidence(Actuation.Commit, allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => break :blk null,
+                };
+                defer deinitOwnedValue(allocator, commit);
+                if (!validActuationCommitPayload(commit)) break :blk null;
+                break :blk commit.commit_fingerprint;
+            },
+            .actuation_response => blk: {
+                const response = decodePortableEvidence(Actuation.Response, allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => break :blk null,
+                };
+                defer deinitOwnedValue(allocator, response);
+                if (!validActuationResponsePayload(response)) break :blk null;
+                break :blk response.response_fingerprint;
+            },
+            .actuation_verify_report => blk: {
+                const report = decodePortableEvidence(Actuation.VerifyReport, allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => break :blk null,
+                };
+                defer deinitOwnedValue(allocator, report);
+                if (!validActuationVerifyReportPayload(report)) break :blk null;
+                break :blk report.report_fingerprint;
+            },
             .environment_certificate => blk: {
                 const cert = decodePortableEvidence(EnvironmentCertificate, allocator, envelope.payload_bytes) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
@@ -30138,6 +30227,64 @@ pub const Continuity = struct {
         errdefer deinitOwnedValue(allocator, value);
         if (cursor != bytes.len) return error.InvalidFrameEncoding;
         return value;
+    }
+
+    fn encodePortableEvidence(comptime Value: type, allocator: std.mem.Allocator, value: Value) ![]const u8 {
+        @setEvalBranchQuota(10_000);
+        var out: std.ArrayList(u8) = .empty;
+        errdefer out.deinit(allocator);
+        try encodePortableValue(Value, allocator, &out, value);
+        return out.toOwnedSlice(allocator);
+    }
+
+    fn validActuationRefPayload(ref: Actuation.Ref) bool {
+        ref.validate() catch return false;
+        return ref.ref_fingerprint != 0;
+    }
+
+    fn validActuationDescriptorPayload(descriptor: Actuation.Descriptor) bool {
+        descriptor.validate() catch return false;
+        return descriptor.descriptor_fingerprint != 0;
+    }
+
+    fn validActuationBindingPayload(binding: Actuation.Binding) bool {
+        binding.validate() catch return false;
+        return binding.binding_fingerprint != 0;
+    }
+
+    fn validActuationPolicyPayload(policy: Actuation.Policy) bool {
+        policy.validate() catch return false;
+        return policy.policy_fingerprint != 0;
+    }
+
+    fn validActuationIdempotencyKeyPayload(key: Actuation.IdempotencyKey) bool {
+        key.validate() catch return false;
+        return key.key_fingerprint != 0;
+    }
+
+    fn validActuationEnvelopePayload(envelope: Actuation.Envelope) bool {
+        envelope.validate(.fixture_test) catch return false;
+        return envelope.envelope_fingerprint != 0;
+    }
+
+    fn validActuationDecisionPayload(decision: Actuation.Decision) bool {
+        decision.validate() catch return false;
+        return decision.decision_fingerprint != 0;
+    }
+
+    fn validActuationCommitPayload(commit: Actuation.Commit) bool {
+        commit.validate() catch return false;
+        return commit.commit_fingerprint != 0;
+    }
+
+    fn validActuationResponsePayload(response: Actuation.Response) bool {
+        response.validate(.fixture_test, null) catch return false;
+        return response.response_fingerprint != 0;
+    }
+
+    fn validActuationVerifyReportPayload(report: Actuation.VerifyReport) bool {
+        report.validate() catch return false;
+        return report.report_fingerprint != 0;
     }
 
     fn validEnvironmentCertificatePayload(cert: EnvironmentCertificate) bool {
@@ -30788,12 +30935,7 @@ pub const Continuity = struct {
     }
 
     fn appendActuationEvidenceRef(vault: *Continuity.MemoryVault, refs: *std.ArrayList(ObjectRef), kind: ObjectKind, fingerprint: u64) !void {
-        const ref = if (try vault.refByKindFingerprint(kind, fingerprint)) |stored|
-            stored
-        else if (kindHasSemanticRefLookup(kind))
-            semanticObjectRef(kind, fingerprint)
-        else
-            return;
+        const ref = try refFromStoredOrFingerprint(vault, kind, fingerprint);
         if (containsRef(refs.items, ref)) return;
         try refs.append(vault.allocator, ref);
     }
@@ -30939,9 +31081,19 @@ pub const Continuity = struct {
     fn kindHasSemanticRefLookup(kind: ObjectKind) bool {
         return switch (kind) {
             .capsule_image,
+            .actuator_ref,
+            .actuation_descriptor,
+            .actuation_binding,
+            .actuation_policy,
+            .actuation_idempotency_key,
             .actuation_intent,
+            .actuation_envelope,
+            .actuation_decision,
+            .actuation_commit,
+            .actuation_response,
             .actuation_receipt,
             .actuation_journal,
+            .actuation_verify_report,
             .value_image,
             .transcript_image,
             .run_image,
@@ -34497,22 +34649,27 @@ test "vault actuation receipt dependencies resolve stored opaque evidence" {
     }
     var has_stored_commit_dep = false;
     for (receipt_deps) |dep| {
-        if (dep.eql(commit_ref) and vault.has(dep)) has_stored_commit_dep = true;
+        if (dep.kind == .actuation_commit and dep.object_fingerprint == commit_ref.object_fingerprint and dep.byte_len == 0 and vault.has(dep)) has_stored_commit_dep = true;
     }
     try std.testing.expect(has_stored_commit_dep);
 }
 
-test "vault actuation receipt dependencies omit unclosable component evidence" {
+test "vault actuation receipt dependencies preserve and resolve component evidence" {
     const allocator = std.testing.allocator;
     var vault = Continuity.MemoryVault.init(allocator);
     defer vault.deinit();
 
+    const actuator_ref = Actuation.Ref.init(.{
+        .kind = .fixture,
+        .class = .deterministic_fixture,
+        .label = "component-evidence",
+    });
     const key = Actuation.IdempotencyKey.init(.{
         .target_ref_fingerprint = 0x3306_0101,
         .world_surface_fingerprint = 0x3306_0102,
         .world_port_id = 8,
         .request_fingerprint = 0x3306_0103,
-        .actuator_ref_fingerprint = 0x3306_0104,
+        .actuator_ref_fingerprint = actuator_ref.ref_fingerprint,
     });
     const intent = Actuation.Intent.init(.{
         .actuator_ref_fingerprint = key.actuator_ref_fingerprint,
@@ -34525,10 +34682,15 @@ test "vault actuation receipt dependencies omit unclosable component evidence" {
         .class = .deterministic_fixture,
     });
     _ = try vault.putActuationIntent(intent);
+    const envelope = Actuation.Envelope.init(.{
+        .intent_fingerprint = intent.intent_fingerprint,
+        .idempotency_key = key,
+    });
+    const decision = Actuation.Decision.approvedDecision(intent, Actuation.Policy.fixture_test, null);
     const commit = Actuation.Commit.init(.{
         .intent_fingerprint = intent.intent_fingerprint,
-        .decision_fingerprint = 0x3306_0111,
-        .envelope_fingerprint = 0x3306_0112,
+        .decision_fingerprint = decision.decision_fingerprint,
+        .envelope_fingerprint = envelope.envelope_fingerprint,
         .idempotency_key_fingerprint = key.key_fingerprint,
         .status = .committed,
         .fresh_called = true,
@@ -34543,8 +34705,8 @@ test "vault actuation receipt dependencies omit unclosable component evidence" {
     });
     const receipt = Actuation.Receipt.init(.{
         .intent_fingerprint = intent.intent_fingerprint,
-        .envelope_fingerprint = commit.envelope_fingerprint,
-        .decision_fingerprint = commit.decision_fingerprint,
+        .envelope_fingerprint = envelope.envelope_fingerprint,
+        .decision_fingerprint = decision.decision_fingerprint,
         .commit_fingerprint = commit.commit_fingerprint,
         .response_fingerprint = response.response_fingerprint,
         .frame_response_fingerprint = response.frame_response_fingerprint,
@@ -34565,12 +34727,65 @@ test "vault actuation receipt dependencies omit unclosable component evidence" {
         for (receipt_deps) |*ref| ref.deinit(allocator);
         allocator.free(receipt_deps);
     }
-    try std.testing.expectEqual(@as(usize, 1), receipt_deps.len);
-    try std.testing.expectEqual(Continuity.ObjectKind.actuation_intent, receipt_deps[0].kind);
-    try std.testing.expect(vault.has(receipt_deps[0]));
-    const report = try vault.validate(receipt_ref);
-    try std.testing.expect(report.valid);
-    try std.testing.expectEqual(@as(usize, 0), report.missing_dependency_count);
+    try std.testing.expectEqual(@as(usize, 7), receipt_deps.len);
+    var has_missing_commit_dep = false;
+    var has_stored_intent_dep = false;
+    for (receipt_deps) |dep| {
+        if (dep.kind == .actuation_commit and dep.object_fingerprint == commit.commit_fingerprint and dep.byte_len == 0 and !vault.has(dep)) has_missing_commit_dep = true;
+        if (dep.kind == .actuation_intent and vault.has(dep)) has_stored_intent_dep = true;
+    }
+    try std.testing.expect(has_missing_commit_dep);
+    try std.testing.expect(has_stored_intent_dep);
+    const missing_report = try vault.validate(receipt_ref);
+    try std.testing.expect(!missing_report.valid);
+    try std.testing.expect(missing_report.missing_dependency_count >= 6);
+
+    const actuator_ref_payload = try Continuity.encodePortableEvidence(Actuation.Ref, allocator, actuator_ref);
+    defer allocator.free(actuator_ref_payload);
+    _ = try vault.put(Continuity.ObjectEnvelope.init(.{
+        .kind = .actuator_ref,
+        .object_format_version = world_actuator_ref_format_version,
+        .payload_bytes = actuator_ref_payload,
+    }));
+    const key_payload = try Continuity.encodePortableEvidence(Actuation.IdempotencyKey, allocator, key);
+    defer allocator.free(key_payload);
+    _ = try vault.put(Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_idempotency_key,
+        .object_format_version = world_actuation_idempotency_key_format_version,
+        .payload_bytes = key_payload,
+    }));
+    const envelope_payload = try Continuity.encodePortableEvidence(Actuation.Envelope, allocator, envelope);
+    defer allocator.free(envelope_payload);
+    _ = try vault.put(Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_envelope,
+        .object_format_version = world_actuation_envelope_format_version,
+        .payload_bytes = envelope_payload,
+    }));
+    const decision_payload = try Continuity.encodePortableEvidence(Actuation.Decision, allocator, decision);
+    defer allocator.free(decision_payload);
+    _ = try vault.put(Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_decision,
+        .object_format_version = world_actuation_decision_format_version,
+        .payload_bytes = decision_payload,
+    }));
+    const commit_payload = try Continuity.encodePortableEvidence(Actuation.Commit, allocator, commit);
+    defer allocator.free(commit_payload);
+    _ = try vault.put(Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_commit,
+        .object_format_version = world_actuation_commit_format_version,
+        .payload_bytes = commit_payload,
+    }));
+    const response_payload = try Continuity.encodePortableEvidence(Actuation.Response, allocator, response);
+    defer allocator.free(response_payload);
+    _ = try vault.put(Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_response,
+        .object_format_version = world_actuation_response_format_version,
+        .payload_bytes = response_payload,
+    }));
+
+    const resolved_report = try vault.validate(receipt_ref);
+    try std.testing.expect(resolved_report.valid);
+    try std.testing.expectEqual(@as(usize, 0), resolved_report.missing_dependency_count);
 }
 
 test "vault actuation helpers store load journal and replay receipt" {
@@ -34632,7 +34847,7 @@ test "vault actuation helpers store load journal and replay receipt" {
     }
     var receipt_has_value_image_dep = false;
     for (receipt_deps) |dep| {
-        if (dep.kind == .value_image and dep.object_fingerprint == value_image.value_image_fingerprint and dep.byte_len == 0) receipt_has_value_image_dep = true;
+        if (dep.kind == .value_image and vault.has(dep)) receipt_has_value_image_dep = true;
     }
     try std.testing.expect(receipt_has_value_image_dep);
     var loaded_receipt = try Actuation.loadReceipt(&vault, receipt_ref);
@@ -34656,7 +34871,7 @@ test "vault actuation helpers store load journal and replay receipt" {
     var journal_has_value_image_dep = false;
     for (journal_deps) |dep| {
         if (dep.kind == .actuation_receipt and vault.has(dep)) journal_has_receipt_dep = true;
-        if (dep.kind == .value_image and dep.object_fingerprint == value_image.value_image_fingerprint and dep.byte_len == 0) journal_has_value_image_dep = true;
+        if (dep.kind == .value_image and vault.has(dep)) journal_has_value_image_dep = true;
     }
     try std.testing.expect(journal_has_receipt_dep);
     try std.testing.expect(journal_has_value_image_dep);
