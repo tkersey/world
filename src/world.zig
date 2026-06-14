@@ -27942,6 +27942,7 @@ pub const Continuity = struct {
 
         pub fn put(self: *@This(), envelope: ObjectEnvelope) !ObjectRef {
             try envelope.validate();
+            try self.rejectDuplicateFreshCommitsForEnvelope(envelope);
             const ref = envelope.objectRef();
             for (self.objects.items) |existing| {
                 if (existing.objectRef().eql(ref)) {
@@ -27959,6 +27960,21 @@ pub const Continuity = struct {
             }
             try self.objects.append(self.allocator, owned);
             return self.objects.items[self.objects.items.len - 1].objectRef();
+        }
+
+        fn rejectDuplicateFreshCommitsForEnvelope(self: *@This(), envelope: ObjectEnvelope) !void {
+            if (envelope.kind != .actuation_receipt) return;
+            var envelopes = [_]ObjectEnvelope{envelope};
+            var roots = [_]ObjectRef{envelope.objectRef()};
+            const bundle = Bundle{
+                .allocator = self.allocator,
+                .manifest = BundleManifest.init(.{
+                    .roots = &roots,
+                    .object_count = envelopes.len,
+                }),
+                .envelopes = &envelopes,
+            };
+            try rejectDuplicateFreshCommitsAgainstVault(self, bundle);
         }
 
         fn assertCanPutEnvelope(self: @This(), envelope: ObjectEnvelope) !void {
@@ -31513,6 +31529,17 @@ test "portable slice decode bounds length before allocation" {
 
     const values = [_]u64{ 1, 2 };
     try std.testing.expectError(error.UnsupportedValueImage, Frame.ValueImage.fromValue(allocator, null, null, null, values[0..], .{ .max_value_image_bytes = 16 }));
+
+    const NestedSlice = struct {
+        values: []const u16,
+    };
+    const empty_child: []const u16 = &.{};
+    const nested = [_]NestedSlice{.{ .values = empty_child }};
+    const nested_slice: []const NestedSlice = nested[0..];
+    var nested_image = try Frame.ValueImage.fromValue(allocator, null, null, null, nested_slice, .{ .max_value_image_bytes = 16 });
+    defer nested_image.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 16), nested_image.bytes.len);
+    try std.testing.expectError(error.UnsupportedValueImage, Frame.ValueImage.fromValue(allocator, null, null, null, nested_slice, .{ .max_value_image_bytes = 15 }));
 }
 
 test "bundle validation rejects conflicting duplicate envelopes" {
@@ -32050,11 +32077,11 @@ test "actuation graph builds from receipt journal and detects duplicate fresh co
     try std.testing.expectError(error.DuplicateBinding, vault.putActuationReceipt(duplicate));
     const duplicate_payload = try duplicate.encode(allocator);
     defer allocator.free(duplicate_payload);
-    _ = try vault.put(Continuity.ObjectEnvelope.init(.{
+    try std.testing.expectError(error.DuplicateBinding, vault.put(Continuity.ObjectEnvelope.init(.{
         .kind = .actuation_receipt,
         .object_format_version = duplicate.format_version,
         .payload_bytes = duplicate_payload,
-    }));
+    })));
     var journal = Actuation.Journal.init();
     defer journal.deinit(allocator);
     try journal.appendReceipt(allocator, receipt);
@@ -32062,7 +32089,7 @@ test "actuation graph builds from receipt journal and detects duplicate fresh co
     const journal_ref = try vault.putActuationJournal(journal);
     var graph = try Continuity.ActuationGraph.fromJournal(&vault, journal_ref);
     defer graph.deinit();
-    try std.testing.expectEqual(@as(usize, 2), graph.summary().replayable_count);
+    try std.testing.expectEqual(@as(usize, 1), graph.summary().replayable_count);
     try std.testing.expectError(error.DuplicateBinding, graph.assertNoDuplicateFreshCommit());
 
     var orphan_vault = Continuity.MemoryVault.init(allocator);
@@ -32727,6 +32754,10 @@ test "bundle validation rejects missing dependency and duplicate fresh commit" {
         .object_format_version = second.format_version,
         .payload_bytes = second_payload,
     });
+    var generic_vault = Continuity.MemoryVault.init(allocator);
+    defer generic_vault.deinit();
+    _ = try generic_vault.put(first_envelope);
+    try std.testing.expectError(error.DuplicateBinding, generic_vault.put(second_envelope));
     var duplicate_envelopes = [_]Continuity.ObjectEnvelope{ first_envelope, second_envelope };
     var duplicate_roots = [_]Continuity.ObjectRef{ first_envelope.objectRef(), second_envelope.objectRef() };
     var duplicate_bundle = Continuity.Bundle{
@@ -42271,19 +42302,20 @@ fn fingerprintResponse(frame: Frame.Response) u64 {
 
 fn portableValueDynamicByteLowerBound(comptime Value: type, value: Value) usize {
     return switch (@typeInfo(Value)) {
+        .void => 0,
+        .bool => 1,
+        .int, .comptime_int, .@"enum" => 8,
+        .float, .comptime_float => if (Value == f32) 4 else if (Value == f64) 8 else 0,
         .pointer => |pointer| blk: {
-            if (comptime pointer.size == .slice and pointer.child == u8) break :blk value.len;
+            if (comptime pointer.size == .slice and pointer.child == u8) break :blk addSatEncodedSize(8, value.len);
             if (comptime isStringList(Value)) {
-                var total: usize = 0;
-                for (value) |item| total += item.len;
+                var total: usize = 8;
+                for (value) |item| total = addSatEncodedSize(total, addSatEncodedSize(8, item.len));
                 break :blk total;
             }
             if (comptime pointer.size == .slice) {
-                const child_min = portableValueStaticMinEncodedSize(pointer.child) orelse break :blk 0;
-                if (child_min == 0) break :blk 0;
                 var total: usize = 8;
                 for (value) |item| {
-                    total = addSatEncodedSize(total, child_min);
                     total = addSatEncodedSize(total, portableValueDynamicByteLowerBound(pointer.child, item));
                 }
                 break :blk total;
@@ -42291,13 +42323,13 @@ fn portableValueDynamicByteLowerBound(comptime Value: type, value: Value) usize 
             break :blk 0;
         },
         .optional => |optional| if (value) |payload|
-            portableValueDynamicByteLowerBound(optional.child, payload)
+            addSatEncodedSize(1, portableValueDynamicByteLowerBound(optional.child, payload))
         else
-            0,
+            1,
         .@"struct" => |info| blk: {
             var total: usize = 0;
             inline for (info.fields) |field| {
-                total += portableValueDynamicByteLowerBound(field.type, @field(value, field.name));
+                total = addSatEncodedSize(total, portableValueDynamicByteLowerBound(field.type, @field(value, field.name)));
             }
             break :blk total;
         },
@@ -42306,8 +42338,9 @@ fn portableValueDynamicByteLowerBound(comptime Value: type, value: Value) usize 
             const active_tag = std.meta.activeTag(value);
             inline for (union_info.fields) |field| {
                 if (active_tag == @field(Tag, field.name)) {
-                    if (field.type == void) break :blk 0;
-                    break :blk portableValueDynamicByteLowerBound(field.type, @field(value, field.name));
+                    var total: usize = 4;
+                    if (field.type != void) total = addSatEncodedSize(total, portableValueDynamicByteLowerBound(field.type, @field(value, field.name)));
+                    break :blk total;
                 }
             }
             break :blk 0;
