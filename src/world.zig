@@ -29350,7 +29350,8 @@ pub const Continuity = struct {
         }
 
         pub fn byIdempotencyKey(self: @This(), key: Actuation.IdempotencyKey) !?ObjectRef {
-            return self.vault.lookupActuationByIdempotencyKey(key);
+            if (try self.vault.lookupActuationByIdempotencyKey(key)) |ref| return ref;
+            return self.receiptByIdempotencyKeyFromJournals(key);
         }
 
         const ReceiptQuery = enum {
@@ -29368,22 +29369,94 @@ pub const Continuity = struct {
             var refs: std.ArrayList(ObjectRef) = .empty;
             errdefer refs.deinit(self.vault.allocator);
             for (self.vault.objects.items) |envelope| {
-                if (envelope.kind != .actuation_receipt) continue;
-                var receipt = try Actuation.Receipt.decode(self.vault.allocator, envelope.payload_bytes);
-                const matches = switch (query) {
-                    .actuator => receipt.actuator_ref_fingerprint == needle,
-                    .target => receipt.target_ref_fingerprint == needle,
-                    .world_port => receipt.target_ref_fingerprint == needle and receipt.world_port_id == world_port_id,
-                    .capsule => receipt.capsule_fingerprint == needle,
-                    .pending => receipt.pending,
-                    .deferred => receipt.deferred,
-                    .fresh_commit => receiptIsTerminalFreshCommit(receipt),
-                    .replayed => receipt.replayed or receipt.mode == .replay,
-                };
-                receipt.deinit(self.vault.allocator);
-                if (matches) try refs.append(self.vault.allocator, envelope.objectRef());
+                switch (envelope.kind) {
+                    .actuation_receipt => {
+                        var receipt = try Actuation.Receipt.decode(self.vault.allocator, envelope.payload_bytes);
+                        const matches = switch (query) {
+                            .actuator => receipt.actuator_ref_fingerprint == needle,
+                            .target => receipt.target_ref_fingerprint == needle,
+                            .world_port => receipt.target_ref_fingerprint == needle and receipt.world_port_id == world_port_id,
+                            .capsule => receipt.capsule_fingerprint == needle,
+                            .pending => receipt.pending,
+                            .deferred => receipt.deferred,
+                            .fresh_commit => receiptIsTerminalFreshCommit(receipt),
+                            .replayed => receipt.replayed or receipt.mode == .replay,
+                        };
+                        receipt.deinit(self.vault.allocator);
+                        if (matches) try appendUniqueRef(&refs, self.vault.allocator, envelope.objectRef());
+                    },
+                    .actuation_journal => {
+                        if (!receiptQueryCanMatchJournalEntry(query)) continue;
+                        var journal = try Actuation.Journal.decode(self.vault.allocator, envelope.payload_bytes);
+                        defer journal.deinit(self.vault.allocator);
+                        for (journal.entries.items) |entry| {
+                            if (!journalEntryMatchesReceiptQuery(entry, query)) continue;
+                            if (entry.receipt_fingerprint) |fingerprint| try appendUniqueReceiptRefForFingerprint(self.vault, &refs, fingerprint);
+                        }
+                    },
+                    else => {},
+                }
             }
             return refs.toOwnedSlice(self.vault.allocator);
+        }
+
+        fn receiptByIdempotencyKeyFromJournals(self: @This(), key: Actuation.IdempotencyKey) !?ObjectRef {
+            try key.validate();
+            var terminal_match: ?ObjectRef = null;
+            var terminal_receipt_fingerprint: ?u64 = null;
+            var terminal_commit_fingerprint: ?u64 = null;
+            var non_terminal_match: ?ObjectRef = null;
+            for (self.vault.objects.items) |envelope| {
+                if (envelope.kind != .actuation_journal) continue;
+                var journal = try Actuation.Journal.decode(self.vault.allocator, envelope.payload_bytes);
+                defer journal.deinit(self.vault.allocator);
+                for (journal.entries.items) |entry| {
+                    if (entry.idempotency_key_fingerprint != key.key_fingerprint) continue;
+                    const receipt_fingerprint = entry.receipt_fingerprint orelse continue;
+                    const ref = try refFromStoredOrFingerprint(self.vault, .actuation_receipt, receipt_fingerprint);
+                    if (journalEntryIsTerminalFreshCommit(entry)) {
+                        const commit_fingerprint = entry.commit_fingerprint orelse return error.InvalidFrameEncoding;
+                        if (terminal_match) |_| {
+                            if (terminal_receipt_fingerprint.? != receipt_fingerprint or terminal_commit_fingerprint.? != commit_fingerprint) return error.DuplicateBinding;
+                            continue;
+                        }
+                        terminal_match = ref;
+                        terminal_receipt_fingerprint = receipt_fingerprint;
+                        terminal_commit_fingerprint = commit_fingerprint;
+                        continue;
+                    }
+                    non_terminal_match = ref;
+                }
+            }
+            if (terminal_match) |ref| return ref;
+            return non_terminal_match;
+        }
+
+        fn receiptQueryCanMatchJournalEntry(query: ReceiptQuery) bool {
+            return switch (query) {
+                .pending, .deferred, .fresh_commit, .replayed => true,
+                .actuator, .target, .world_port, .capsule => false,
+            };
+        }
+
+        fn journalEntryMatchesReceiptQuery(entry: Actuation.Journal.Entry, query: ReceiptQuery) bool {
+            return switch (query) {
+                .pending => entry.pending,
+                .deferred => entry.deferred,
+                .fresh_commit => journalEntryIsTerminalFreshCommit(entry),
+                .replayed => entry.replayed,
+                .actuator, .target, .world_port, .capsule => false,
+            };
+        }
+
+        fn appendUniqueReceiptRefForFingerprint(vault: *Continuity.MemoryVault, refs: *std.ArrayList(ObjectRef), fingerprint: u64) !void {
+            const ref = try refFromStoredOrFingerprint(vault, .actuation_receipt, fingerprint);
+            try appendUniqueRef(refs, vault.allocator, ref);
+        }
+
+        fn appendUniqueRef(refs: *std.ArrayList(ObjectRef), allocator: std.mem.Allocator, ref: ObjectRef) !void {
+            if (containsRef(refs.items, ref)) return;
+            try refs.append(allocator, ref);
         }
 
         fn receiptsByCapsuleFingerprint(self: @This(), object_fingerprint: u64, image_fingerprint: ?u64) ![]ObjectRef {
@@ -33370,6 +33443,30 @@ test "actuation index finds receipts by actuator target port capsule state and i
     const by_key = try index.byIdempotencyKey(key);
     try std.testing.expect(by_key != null);
     try std.testing.expect(by_key.?.eql(receipt_ref));
+
+    var journal_only_vault = Continuity.MemoryVault.init(allocator);
+    defer journal_only_vault.deinit();
+    var journal_only = Actuation.Journal.init();
+    defer journal_only.deinit(allocator);
+    try journal_only.appendReceipt(allocator, receipt);
+    try journal_only.appendReceipt(allocator, pending);
+    _ = try journal_only_vault.putActuationJournal(journal_only);
+    const journal_only_index = Continuity.ActuationIndex.init(&journal_only_vault);
+    const journal_fresh = try journal_only_index.freshCommits();
+    defer allocator.free(journal_fresh);
+    try std.testing.expectEqual(@as(usize, 1), journal_fresh.len);
+    const expected_journal_receipt_ref = Continuity.ObjectRef.init(.{
+        .kind = .actuation_receipt,
+        .object_fingerprint = receipt.receipt_fingerprint,
+        .byte_len = 0,
+    });
+    try std.testing.expect(journal_fresh[0].eql(expected_journal_receipt_ref));
+    const journal_pending = try journal_only_index.pendingActuations();
+    defer allocator.free(journal_pending);
+    try std.testing.expectEqual(@as(usize, 1), journal_pending.len);
+    const journal_by_key = try journal_only_index.byIdempotencyKey(key);
+    try std.testing.expect(journal_by_key != null);
+    try std.testing.expect(journal_by_key.?.eql(expected_journal_receipt_ref));
 
     var forged_vault = Continuity.MemoryVault.init(allocator);
     defer forged_vault.deinit();
