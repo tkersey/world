@@ -29511,7 +29511,7 @@ pub const Continuity = struct {
         }
 
         fn validateReplayTarget(vault: *Continuity.MemoryVault, capsule_ref: ObjectRef, target: anytype) !void {
-            const expected_target_ref_fingerprint = targetRefFingerprintFromArg(target) orelse return;
+            const expected_target_ref_fingerprint = targetRefFingerprintFromArg(target) orelse return error.InvalidFrameEncoding;
             var image = try vault.getCapsule(capsule_ref);
             defer image.deinit(vault.allocator);
             if (image.manifest.root_target_ref_fingerprint != expected_target_ref_fingerprint) return error.InvalidFrameEncoding;
@@ -29638,7 +29638,6 @@ pub const Continuity = struct {
                 .value_image_fingerprint = receipt.response_value_image_fingerprint,
                 .response_image = response_image,
                 .owns_response_image = response_image != null,
-                .response_fingerprint = receipt.response_fingerprint,
                 .recorded_response_fingerprint = receipt.response_fingerprint,
             });
         }
@@ -33725,6 +33724,12 @@ test "recovery preflight inspects capsules replays receipt evidence and rejects 
     try std.testing.expectError(error.InvalidFrameEncoding, Continuity.Recovery.preflightReplayCapsule(
         &vault,
         closed_replay_ref,
+        {},
+        .{},
+    ));
+    try std.testing.expectError(error.InvalidFrameEncoding, Continuity.Recovery.preflightReplayCapsule(
+        &vault,
+        closed_replay_ref,
         .{ .target_ref_fingerprint = image.manifest.root_target_ref_fingerprint + 1 },
         .{},
     ));
@@ -33744,7 +33749,7 @@ test "recovery preflight inspects capsules replays receipt evidence and rejects 
         .run_image_refs = &.{0x3302_0001},
     });
     const replay_ref = try vault.putCapsule(replay_image);
-    try std.testing.expectError(error.ObjectMissing, Continuity.Recovery.preflightReplayCapsule(&vault, replay_ref, {}, .{}));
+    try std.testing.expectError(error.InvalidFrameEncoding, Continuity.Recovery.preflightReplayCapsule(&vault, replay_ref, {}, .{}));
     const replay_only_closed_image = Capsule.Image.init(.{
         .manifest = Capsule.Manifest.init(.{
             .kind = .replay_only,
@@ -34144,7 +34149,6 @@ test "vault actuation helpers store load journal and replay receipt" {
     defer imported_replay.deinit(allocator);
     try std.testing.expect(imported_replay.response_image != null);
     try std.testing.expectEqual(value_image.value_image_fingerprint, imported_replay.response_image.?.value_image_fingerprint);
-    try std.testing.expectEqual(receipt.response_fingerprint, imported_replay.response_fingerprint);
     try std.testing.expectEqual(receipt.response_fingerprint, imported_replay.recorded_response_fingerprint.?);
 
     var replayed = try Actuation.replayFromVault(&vault, key);
@@ -34153,7 +34157,6 @@ test "vault actuation helpers store load journal and replay receipt" {
     try std.testing.expectEqual(key.world_port_id, replayed.world_port_id);
     try std.testing.expect(replayed.response_image != null);
     try std.testing.expectEqual(value_image.value_image_fingerprint, replayed.response_image.?.value_image_fingerprint);
-    try std.testing.expectEqual(receipt.response_fingerprint, replayed.response_fingerprint);
     try std.testing.expectEqual(receipt.response_fingerprint, replayed.recorded_response_fingerprint.?);
 }
 
