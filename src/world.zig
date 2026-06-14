@@ -29002,6 +29002,16 @@ pub const Continuity = struct {
         pub fn fromJournal(vault: *Continuity.MemoryVault, journal_ref: ObjectRef) !@This() {
             var journal = try vault.getActuationJournal(journal_ref);
             defer journal.deinit(vault.allocator);
+            return fromJournalEntries(vault, journal_ref, journal.entries.items, null);
+        }
+
+        fn fromJournalForIdempotencyKey(vault: *Continuity.MemoryVault, journal_ref: ObjectRef, key: Actuation.IdempotencyKey) !@This() {
+            var journal = try vault.getActuationJournal(journal_ref);
+            defer journal.deinit(vault.allocator);
+            return fromJournalEntries(vault, journal_ref, journal.entries.items, key.key_fingerprint);
+        }
+
+        fn fromJournalEntries(vault: *Continuity.MemoryVault, journal_ref: ObjectRef, entries: []const Actuation.Journal.Entry, key_fingerprint: ?u64) !@This() {
             var graph = @This(){
                 .allocator = vault.allocator,
                 .graph_fingerprint = 0,
@@ -29032,7 +29042,12 @@ pub const Continuity = struct {
             errdefer deinitRefList(vault.allocator, &idempotency_key_refs);
             var duplicate_keys: std.ArrayList(u64) = .empty;
             errdefer duplicate_keys.deinit(vault.allocator);
-            for (journal.entries.items) |entry| {
+            var matched = key_fingerprint == null;
+            for (entries) |entry| {
+                if (key_fingerprint) |filter| {
+                    if (entry.idempotency_key_fingerprint != filter) continue;
+                    matched = true;
+                }
                 if (entry.intent_fingerprint) |fingerprint| try appendUniqueRefForFingerprint(vault, &intent_refs, .actuation_intent, fingerprint);
                 if (entry.envelope_fingerprint) |fingerprint| try appendUniqueRefForFingerprint(vault, &envelope_refs, .actuation_envelope, fingerprint);
                 if (entry.decision_fingerprint) |fingerprint| try appendUniqueRefForFingerprint(vault, &decision_refs, .actuation_decision, fingerprint);
@@ -29044,7 +29059,7 @@ pub const Continuity = struct {
                 if (terminal_fresh_commit) {
                     graph.fresh_commit_count += 1;
                     if (entry.idempotency_key_fingerprint) |key| {
-                        for (journal.entries.items) |prior| {
+                        for (entries) |prior| {
                             if (prior.order >= entry.order) break;
                             if (!journalEntryIsTerminalFreshCommit(prior)) continue;
                             if (prior.idempotency_key_fingerprint == key and !journalEntriesSameFreshBinding(prior, entry) and !containsU64Local(duplicate_keys.items, key)) {
@@ -29068,6 +29083,7 @@ pub const Continuity = struct {
                     if (isReplayableJournalEntry(entry) and vault.has(ref) and try journalEntryReplayEvidenceAvailable(vault, entry)) try replayable_refs.append(vault.allocator, ref);
                 }
             }
+            if (!matched) return error.ObjectMissing;
             graph.intent_refs = try intent_refs.toOwnedSlice(vault.allocator);
             graph.envelope_refs = try envelope_refs.toOwnedSlice(vault.allocator);
             graph.decision_refs = try decision_refs.toOwnedSlice(vault.allocator);
@@ -29128,8 +29144,8 @@ pub const Continuity = struct {
                     non_terminal_journal_ref = envelope.objectRef();
                 }
             }
-            if (terminal_journal_ref) |ref| return try fromJournal(vault, ref);
-            if (non_terminal_journal_ref) |ref| return try fromJournal(vault, ref);
+            if (terminal_journal_ref) |ref| return try fromJournalForIdempotencyKey(vault, ref, key);
+            if (non_terminal_journal_ref) |ref| return try fromJournalForIdempotencyKey(vault, ref, key);
             return null;
         }
 
@@ -32869,6 +32885,31 @@ test "actuation graph builds from receipt journal and detects duplicate fresh co
     var orphan_journal = Actuation.Journal.init();
     defer orphan_journal.deinit(allocator);
     try orphan_journal.appendReceipt(allocator, receipt);
+    const unrelated_key = Actuation.IdempotencyKey.init(.{
+        .target_ref_fingerprint = key.target_ref_fingerprint +% 1,
+        .world_surface_fingerprint = key.world_surface_fingerprint,
+        .world_port_id = key.world_port_id,
+        .request_fingerprint = key.request_fingerprint +% 1,
+        .actuator_ref_fingerprint = key.actuator_ref_fingerprint,
+    });
+    const unrelated_receipt = Actuation.Receipt.init(.{
+        .intent_fingerprint = receipt.intent_fingerprint +% 1,
+        .envelope_fingerprint = receipt.envelope_fingerprint +% 1,
+        .decision_fingerprint = receipt.decision_fingerprint +% 1,
+        .commit_fingerprint = 0x3280_0083,
+        .response_fingerprint = 0x3280_0084,
+        .frame_response_fingerprint = 0x3280_0085,
+        .actuator_ref_fingerprint = unrelated_key.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = unrelated_key.key_fingerprint,
+        .request_fingerprint = unrelated_key.request_fingerprint,
+        .target_ref_fingerprint = unrelated_key.target_ref_fingerprint,
+        .world_surface_fingerprint = unrelated_key.world_surface_fingerprint,
+        .world_port_id = unrelated_key.world_port_id,
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+        .fresh_called = true,
+    });
+    try orphan_journal.appendReceipt(allocator, unrelated_receipt);
     const orphan_journal_ref = try orphan_vault.putActuationJournal(orphan_journal);
     var orphan_graph = try Continuity.ActuationGraph.fromJournal(&orphan_vault, orphan_journal_ref);
     defer orphan_graph.deinit();
