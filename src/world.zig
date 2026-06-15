@@ -29059,10 +29059,10 @@ pub const Continuity = struct {
         fn fromJournalForIdempotencyKey(vault: *Continuity.MemoryVault, journal_ref: ObjectRef, key: Actuation.IdempotencyKey) !@This() {
             var journal = try vault.getActuationJournal(journal_ref);
             defer journal.deinit(vault.allocator);
-            return fromJournalEntries(vault, journal_ref, journal.entries.items, key.key_fingerprint);
+            return fromJournalEntries(vault, journal_ref, journal.entries.items, key);
         }
 
-        fn fromJournalEntries(vault: *Continuity.MemoryVault, journal_ref: ObjectRef, entries: []const Actuation.Journal.Entry, key_fingerprint: ?u64) !@This() {
+        fn fromJournalEntries(vault: *Continuity.MemoryVault, journal_ref: ObjectRef, entries: []const Actuation.Journal.Entry, key_filter: ?Actuation.IdempotencyKey) !@This() {
             var graph = @This(){
                 .allocator = vault.allocator,
                 .graph_fingerprint = 0,
@@ -29093,10 +29093,10 @@ pub const Continuity = struct {
             errdefer deinitRefList(vault.allocator, &idempotency_key_refs);
             var duplicate_keys: std.ArrayList(u64) = .empty;
             errdefer duplicate_keys.deinit(vault.allocator);
-            var matched = key_fingerprint == null;
+            var matched = key_filter == null;
             for (entries) |entry| {
-                if (key_fingerprint) |filter| {
-                    if (entry.idempotency_key_fingerprint != filter) continue;
+                if (key_filter) |filter| {
+                    if (!journalEntryMatchesIdempotencyKey(entry, filter)) continue;
                     matched = true;
                 }
                 if (entry.intent_fingerprint) |fingerprint| try appendUniqueRefForFingerprint(vault, &intent_refs, .actuation_intent, fingerprint);
@@ -29189,7 +29189,7 @@ pub const Continuity = struct {
                 var journal = try Actuation.Journal.decode(vault.allocator, envelope.payload_bytes);
                 defer journal.deinit(vault.allocator);
                 for (journal.entries.items) |entry| {
-                    if (entry.idempotency_key_fingerprint != key.key_fingerprint) continue;
+                    if (!journalEntryMatchesIdempotencyKey(entry, key)) continue;
                     if (journalEntryIsTerminalFreshCommit(entry)) {
                         if (entry.commit_fingerprint == null) return error.InvalidFrameEncoding;
                         if (terminal_journal_ref) |_| {
@@ -29680,7 +29680,7 @@ pub const Continuity = struct {
                 var journal = try Actuation.Journal.decode(self.vault.allocator, envelope.payload_bytes);
                 defer journal.deinit(self.vault.allocator);
                 for (journal.entries.items) |entry| {
-                    if (entry.idempotency_key_fingerprint != key.key_fingerprint) continue;
+                    if (!journalEntryMatchesIdempotencyKey(entry, key)) continue;
                     const receipt_fingerprint = entry.receipt_fingerprint orelse continue;
                     const ref = try refFromStoredOrFingerprint(self.vault, .actuation_receipt, receipt_fingerprint);
                     if (journalEntryIsTerminalFreshCommit(entry)) {
@@ -29952,7 +29952,7 @@ pub const Continuity = struct {
                 var journal = try Actuation.Journal.decode(vault.allocator, envelope.payload_bytes);
                 defer journal.deinit(vault.allocator);
                 for (journal.entries.items) |entry| {
-                    if (entry.idempotency_key_fingerprint != idempotency_key.key_fingerprint) continue;
+                    if (!journalEntryMatchesIdempotencyKey(entry, idempotency_key)) continue;
                     if (!isReplayableJournalEntry(entry)) continue;
                     if (terminal_entry) |existing| {
                         if (!journalEntriesSameFreshBinding(existing, entry)) return error.DuplicateBinding;
@@ -31472,7 +31472,7 @@ pub const Continuity = struct {
             var journal = try Actuation.Journal.decode(vault.allocator, envelope.payload_bytes);
             defer journal.deinit(vault.allocator);
             for (journal.entries.items) |entry| {
-                if (entry.idempotency_key_fingerprint != key.key_fingerprint) continue;
+                if (!journalEntryMatchesIdempotencyKey(entry, key)) continue;
                 if (journalEntryIsTerminalFreshCommit(entry)) return true;
             }
         }
@@ -31490,6 +31490,19 @@ pub const Continuity = struct {
         if (receipt.actuator_ref_fingerprint != key.actuator_ref_fingerprint) return false;
         if (key.intent_fingerprint) |intent_fingerprint| {
             if (receipt.intent_fingerprint != intent_fingerprint) return false;
+        }
+        return true;
+    }
+
+    fn journalEntryMatchesIdempotencyKey(entry: Actuation.Journal.Entry, key: Actuation.IdempotencyKey) bool {
+        if (entry.idempotency_key_fingerprint != key.key_fingerprint) return false;
+        if (entry.request_fingerprint) |request_fingerprint| {
+            if (request_fingerprint != key.request_fingerprint) return false;
+        }
+        if (key.intent_fingerprint) |intent_fingerprint| {
+            if (entry.intent_fingerprint) |entry_intent_fingerprint| {
+                if (entry_intent_fingerprint != intent_fingerprint) return false;
+            }
         }
         return true;
     }
@@ -35358,6 +35371,24 @@ test "recovery preflight inspects capsules replays receipt evidence and rejects 
     const journal_replay_response = try Continuity.Recovery.replayActuation(&journal_replay_vault, key);
     try std.testing.expectEqual(Actuation.ResponseStatus.responded, journal_replay_response.status);
     try std.testing.expectEqual(receipt.response_fingerprint, journal_replay_response.recorded_response_fingerprint.?);
+
+    var mismatched_journal_vault = Continuity.MemoryVault.init(allocator);
+    defer mismatched_journal_vault.deinit();
+    var mismatched_journal = Actuation.Journal.init();
+    defer mismatched_journal.deinit(allocator);
+    try mismatched_journal.entries.append(allocator, .{
+        .order = mismatched_journal.takeOrder(),
+        .intent_fingerprint = receipt.intent_fingerprint,
+        .commit_fingerprint = receipt.commit_fingerprint,
+        .response_fingerprint = receipt.response_fingerprint,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .request_fingerprint = key.request_fingerprint ^ 0x55,
+        .frame_response_fingerprint = receipt.frame_response_fingerprint,
+        .fresh_called = true,
+    });
+    mismatched_journal.refreshFingerprint();
+    _ = try mismatched_journal_vault.putActuationJournal(mismatched_journal);
+    try std.testing.expectError(error.ObjectMissing, Continuity.Recovery.replayActuation(&mismatched_journal_vault, key));
 
     var mismatched_vault = Continuity.MemoryVault.init(allocator);
     defer mismatched_vault.deinit();
