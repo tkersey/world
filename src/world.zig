@@ -20003,8 +20003,31 @@ pub const Actuation = struct {
             if (a.commit_fingerprint != b.commit_fingerprint) return false;
             if (a.receipt_fingerprint) |a_receipt| {
                 if (b.receipt_fingerprint) |b_receipt| return a_receipt == b_receipt;
+                if (journalEntryReplayEvidenceFingerprint(b)) |b_evidence| return journalEntryReplayEvidenceFingerprint(a) == b_evidence;
+                return true;
             }
-            return true;
+            if (b.receipt_fingerprint) |_| {
+                if (journalEntryReplayEvidenceFingerprint(a)) |a_evidence| return journalEntryReplayEvidenceFingerprint(b) == a_evidence;
+                return true;
+            }
+            if (journalEntryReplayEvidenceFingerprint(a) == null and journalEntryReplayEvidenceFingerprint(b) == null) return true;
+            return journalEntryReplayEvidenceFingerprint(a) == journalEntryReplayEvidenceFingerprint(b);
+        }
+
+        fn journalEntryReplayEvidenceFingerprint(entry: Entry) ?u64 {
+            const has_replay_evidence = entry.response_fingerprint != null or
+                entry.response_kind != null or
+                entry.frame_response_fingerprint != null or
+                entry.response_value_image_fingerprint != null;
+            if (!has_replay_evidence) return null;
+            var hasher = std.hash.Wyhash.init(world_actuation_journal_fingerprint_version);
+            hashOptionalU64(&hasher, entry.intent_fingerprint);
+            hashOptionalU64(&hasher, entry.response_fingerprint);
+            hashOptionalU64(&hasher, if (entry.response_kind) |kind| @intFromEnum(kind) else null);
+            hashOptionalU64(&hasher, entry.frame_response_fingerprint);
+            hashOptionalU64(&hasher, entry.response_value_image_fingerprint);
+            hashOptionalU64(&hasher, entry.request_fingerprint);
+            return hasher.final();
         }
 
         fn isTerminalFreshCommitEntry(entry: Entry) bool {
@@ -28225,7 +28248,10 @@ pub const Continuity = struct {
                 defer existing.deinit(self.allocator);
                 if (!receiptIsTerminalFreshCommit(existing)) continue;
                 if (existing.idempotency_key_fingerprint != receipt.idempotency_key_fingerprint) continue;
-                if (!bundleFreshCommitRecordSameBinding(existing.receipt_fingerprint, existing.commit_fingerprint, receipt.receipt_fingerprint, receipt.commit_fingerprint)) return error.DuplicateBinding;
+                if (!freshCommitRecordsSameBinding(
+                    freshCommitRecordFromReceipt(existing.idempotency_key_fingerprint, existing),
+                    freshCommitRecordFromReceipt(receipt.idempotency_key_fingerprint, receipt),
+                )) return error.DuplicateBinding;
             }
         }
 
@@ -28879,16 +28905,23 @@ pub const Continuity = struct {
                 graph.actuation_receipt_refs,
                 graph.actuation_journal_refs,
             });
-            errdefer freeRefSlice(vault.allocator, missing_deps);
+            var missing_deps_owned = true;
+            errdefer if (missing_deps_owned) freeRefSlice(vault.allocator, missing_deps);
             try appendMissingDepsFromObjectGraphs(vault, &missing_deps, &.{
                 graph.actuation_journal_refs,
             });
+            const restorable = missing_deps.len == 0 and image.manifest.kind != .reference_only and image.manifest.kind != .replay_only;
+            const replayable = image.run_images.len != 0 or image.run_image_refs.len != 0 or image.manifest.kind == .replay_only;
+            const relink_required = image.link_image != null and image.manifest.assembly_fingerprint != null;
+            const actuation_replay_possible = image.actuation_receipt_refs.len != 0 or image.actuation_journal_refs.len != 0;
+            const local_fresh_actuation_required = try capsuleHasUnresolvedActuationIntent(vault, image);
             graph.missing_deps = missing_deps;
-            graph.restorable = graph.missing_deps.len == 0 and image.manifest.kind != .reference_only and image.manifest.kind != .replay_only;
-            graph.replayable = image.run_images.len != 0 or image.run_image_refs.len != 0 or image.manifest.kind == .replay_only;
-            graph.relink_required = image.link_image != null and image.manifest.assembly_fingerprint != null;
-            graph.actuation_replay_possible = image.actuation_receipt_refs.len != 0 or image.actuation_journal_refs.len != 0;
-            graph.local_fresh_actuation_required = try capsuleHasUnresolvedActuationIntent(vault, image);
+            missing_deps_owned = false;
+            graph.restorable = restorable;
+            graph.replayable = replayable;
+            graph.relink_required = relink_required;
+            graph.actuation_replay_possible = actuation_replay_possible;
+            graph.local_fresh_actuation_required = local_fresh_actuation_required;
             graph.graph_fingerprint = fingerprintCapsuleGraph(graph);
             return graph;
         }
@@ -29230,11 +29263,90 @@ pub const Continuity = struct {
     }
 
     fn journalEntriesSameFreshBinding(a: Actuation.Journal.Entry, b: Actuation.Journal.Entry) bool {
+        const a_record = freshCommitRecordFromJournalEntry(a.idempotency_key_fingerprint orelse 0, a);
+        const b_record = freshCommitRecordFromJournalEntry(b.idempotency_key_fingerprint orelse 0, b);
+        return freshCommitRecordsSameBinding(a_record, b_record);
+    }
+
+    const FreshCommitRecord = struct {
+        key_fingerprint: u64,
+        receipt_fingerprint: ?u64 = null,
+        commit_fingerprint: u64,
+        replay_evidence_fingerprint: ?u64 = null,
+    };
+
+    fn freshCommitRecordFromReceipt(key_fingerprint: u64, receipt: Actuation.Receipt) FreshCommitRecord {
+        return .{
+            .key_fingerprint = key_fingerprint,
+            .receipt_fingerprint = receipt.receipt_fingerprint,
+            .commit_fingerprint = receipt.commit_fingerprint,
+            .replay_evidence_fingerprint = freshCommitReplayEvidenceFingerprint(.{
+                .intent_fingerprint = receipt.intent_fingerprint,
+                .response_fingerprint = receipt.response_fingerprint,
+                .response_kind = @intFromEnum(receipt.response_kind),
+                .frame_response_fingerprint = receipt.frame_response_fingerprint,
+                .response_value_image_fingerprint = receipt.response_value_image_fingerprint,
+                .request_fingerprint = receipt.request_fingerprint,
+            }),
+        };
+    }
+
+    fn freshCommitRecordFromJournalEntry(key_fingerprint: u64, entry: Actuation.Journal.Entry) FreshCommitRecord {
+        return .{
+            .key_fingerprint = key_fingerprint,
+            .receipt_fingerprint = entry.receipt_fingerprint,
+            .commit_fingerprint = entry.commit_fingerprint orelse 0,
+            .replay_evidence_fingerprint = journalEntryReplayEvidenceFingerprint(entry),
+        };
+    }
+
+    fn freshCommitRecordsSameBinding(a: FreshCommitRecord, b: FreshCommitRecord) bool {
         if (a.commit_fingerprint != b.commit_fingerprint) return false;
         if (a.receipt_fingerprint) |a_receipt| {
             if (b.receipt_fingerprint) |b_receipt| return a_receipt == b_receipt;
+            if (b.replay_evidence_fingerprint) |b_evidence| return a.replay_evidence_fingerprint == b_evidence;
+            return true;
         }
-        return true;
+        if (b.receipt_fingerprint) |_| {
+            if (a.replay_evidence_fingerprint) |a_evidence| return b.replay_evidence_fingerprint == a_evidence;
+            return true;
+        }
+        if (a.replay_evidence_fingerprint == null and b.replay_evidence_fingerprint == null) return true;
+        return a.replay_evidence_fingerprint == b.replay_evidence_fingerprint;
+    }
+
+    fn journalEntryReplayEvidenceFingerprint(entry: Actuation.Journal.Entry) ?u64 {
+        const has_replay_evidence = entry.response_fingerprint != null or
+            entry.response_kind != null or
+            entry.frame_response_fingerprint != null or
+            entry.response_value_image_fingerprint != null;
+        if (!has_replay_evidence) return null;
+        return freshCommitReplayEvidenceFingerprint(.{
+            .intent_fingerprint = entry.intent_fingerprint,
+            .response_fingerprint = entry.response_fingerprint,
+            .response_kind = if (entry.response_kind) |kind| @intFromEnum(kind) else null,
+            .frame_response_fingerprint = entry.frame_response_fingerprint,
+            .response_value_image_fingerprint = entry.response_value_image_fingerprint,
+            .request_fingerprint = entry.request_fingerprint,
+        });
+    }
+
+    fn freshCommitReplayEvidenceFingerprint(args: struct {
+        intent_fingerprint: ?u64,
+        response_fingerprint: ?u64,
+        response_kind: ?u64,
+        frame_response_fingerprint: ?u64,
+        response_value_image_fingerprint: ?u64,
+        request_fingerprint: ?u64,
+    }) u64 {
+        var hasher = std.hash.Wyhash.init(world_actuation_journal_fingerprint_version);
+        hashOptionalU64(&hasher, args.intent_fingerprint);
+        hashOptionalU64(&hasher, args.response_fingerprint);
+        hashOptionalU64(&hasher, args.response_kind);
+        hashOptionalU64(&hasher, args.frame_response_fingerprint);
+        hashOptionalU64(&hasher, args.response_value_image_fingerprint);
+        hashOptionalU64(&hasher, args.request_fingerprint);
+        return hasher.final();
     }
 
     fn responseValueImageRefsForReceipt(vault: *Continuity.MemoryVault, receipt: Actuation.Receipt) ![]ObjectRef {
@@ -30872,14 +30984,10 @@ pub const Continuity = struct {
     }
 
     fn rejectDuplicateFreshCommitsInBundle(bundle: Bundle) !void {
-        var keys: std.ArrayList(u64) = .empty;
-        defer keys.deinit(bundle.allocator);
-        var receipts: std.ArrayList(?u64) = .empty;
-        defer receipts.deinit(bundle.allocator);
-        var commits: std.ArrayList(u64) = .empty;
-        defer commits.deinit(bundle.allocator);
+        var records: std.ArrayList(FreshCommitRecord) = .empty;
+        defer records.deinit(bundle.allocator);
         for (bundle.envelopes) |envelope| {
-            try recordFreshCommitsFromEnvelope(bundle.allocator, bundle.allocator, &keys, &receipts, &commits, envelope);
+            try recordFreshCommitsFromEnvelope(bundle.allocator, bundle.allocator, &records, envelope);
         }
     }
 
@@ -30895,53 +31003,31 @@ pub const Continuity = struct {
 
     fn recordBundleFreshCommit(
         allocator: std.mem.Allocator,
-        keys: *std.ArrayList(u64),
-        receipts: *std.ArrayList(?u64),
-        commits: *std.ArrayList(u64),
-        key_fingerprint: u64,
-        receipt_fingerprint: ?u64,
-        commit_fingerprint: u64,
+        records: *std.ArrayList(FreshCommitRecord),
+        record: FreshCommitRecord,
     ) !void {
-        for (keys.items, 0..) |key, index| {
-            if (key == key_fingerprint and !bundleFreshCommitRecordSameBinding(receipts.items[index], commits.items[index], receipt_fingerprint, commit_fingerprint)) return error.DuplicateBinding;
+        for (records.items) |existing| {
+            if (existing.key_fingerprint == record.key_fingerprint and !freshCommitRecordsSameBinding(existing, record)) return error.DuplicateBinding;
         }
-        try keys.append(allocator, key_fingerprint);
-        try receipts.append(allocator, receipt_fingerprint);
-        try commits.append(allocator, commit_fingerprint);
-    }
-
-    fn bundleFreshCommitRecordSameBinding(a_receipt: ?u64, a_commit: u64, b_receipt: ?u64, b_commit: u64) bool {
-        if (a_commit != b_commit) return false;
-        if (a_receipt) |a| {
-            if (b_receipt) |b| return a == b;
-        }
-        return true;
+        try records.append(allocator, record);
     }
 
     fn rejectDuplicateFreshCommitsAgainstVault(vault: *Continuity.MemoryVault, bundle: Bundle) !void {
         try rejectDuplicateFreshCommitsInBundle(bundle);
-        var incoming_keys: std.ArrayList(u64) = .empty;
-        defer incoming_keys.deinit(bundle.allocator);
-        var incoming_receipts: std.ArrayList(?u64) = .empty;
-        defer incoming_receipts.deinit(bundle.allocator);
-        var incoming_commits: std.ArrayList(u64) = .empty;
-        defer incoming_commits.deinit(bundle.allocator);
+        var incoming_records: std.ArrayList(FreshCommitRecord) = .empty;
+        defer incoming_records.deinit(bundle.allocator);
         for (bundle.envelopes) |incoming_envelope| {
-            try recordFreshCommitsFromEnvelope(bundle.allocator, bundle.allocator, &incoming_keys, &incoming_receipts, &incoming_commits, incoming_envelope);
+            try recordFreshCommitsFromEnvelope(bundle.allocator, bundle.allocator, &incoming_records, incoming_envelope);
         }
-        var existing_keys: std.ArrayList(u64) = .empty;
-        defer existing_keys.deinit(vault.allocator);
-        var existing_receipts: std.ArrayList(?u64) = .empty;
-        defer existing_receipts.deinit(vault.allocator);
-        var existing_commits: std.ArrayList(u64) = .empty;
-        defer existing_commits.deinit(vault.allocator);
+        var existing_records: std.ArrayList(FreshCommitRecord) = .empty;
+        defer existing_records.deinit(vault.allocator);
         for (vault.objects.items) |existing_envelope| {
-            try recordFreshCommitsFromEnvelope(vault.allocator, vault.allocator, &existing_keys, &existing_receipts, &existing_commits, existing_envelope);
+            try recordFreshCommitsFromEnvelope(vault.allocator, vault.allocator, &existing_records, existing_envelope);
         }
-        for (incoming_keys.items, 0..) |incoming_key, incoming_index| {
-            for (existing_keys.items, 0..) |existing_key, existing_index| {
-                if (incoming_key != existing_key) continue;
-                if (!bundleFreshCommitRecordSameBinding(incoming_receipts.items[incoming_index], incoming_commits.items[incoming_index], existing_receipts.items[existing_index], existing_commits.items[existing_index])) return error.DuplicateBinding;
+        for (incoming_records.items) |incoming| {
+            for (existing_records.items) |existing| {
+                if (incoming.key_fingerprint != existing.key_fingerprint) continue;
+                if (!freshCommitRecordsSameBinding(incoming, existing)) return error.DuplicateBinding;
             }
         }
     }
@@ -30949,9 +31035,7 @@ pub const Continuity = struct {
     fn recordFreshCommitsFromEnvelope(
         list_allocator: std.mem.Allocator,
         decode_allocator: std.mem.Allocator,
-        keys: *std.ArrayList(u64),
-        receipts: *std.ArrayList(?u64),
-        commits: *std.ArrayList(u64),
+        records: *std.ArrayList(FreshCommitRecord),
         envelope: ObjectEnvelope,
     ) !void {
         switch (envelope.kind) {
@@ -30963,13 +31047,16 @@ pub const Continuity = struct {
                 defer deinitOwnedValue(decode_allocator, commit);
                 if (!validActuationCommitPayload(commit)) return;
                 if (!commitIsTerminalFreshCommit(commit)) return;
-                try recordBundleFreshCommit(list_allocator, keys, receipts, commits, commit.idempotency_key_fingerprint, null, commit.commit_fingerprint);
+                try recordBundleFreshCommit(list_allocator, records, .{
+                    .key_fingerprint = commit.idempotency_key_fingerprint,
+                    .commit_fingerprint = commit.commit_fingerprint,
+                });
             },
             .actuation_receipt => {
                 var receipt = try Actuation.Receipt.decode(decode_allocator, envelope.payload_bytes);
                 defer receipt.deinit(decode_allocator);
                 if (!receiptIsTerminalFreshCommit(receipt)) return;
-                try recordBundleFreshCommit(list_allocator, keys, receipts, commits, receipt.idempotency_key_fingerprint, receipt.receipt_fingerprint, receipt.commit_fingerprint);
+                try recordBundleFreshCommit(list_allocator, records, freshCommitRecordFromReceipt(receipt.idempotency_key_fingerprint, receipt));
             },
             .actuation_journal => {
                 var journal = try Actuation.Journal.decode(decode_allocator, envelope.payload_bytes);
@@ -30979,7 +31066,8 @@ pub const Continuity = struct {
                     if (!bundleJournalEntryIsTerminalFreshCommit(entry)) continue;
                     const key = entry.idempotency_key_fingerprint orelse continue;
                     const commit_fingerprint = entry.commit_fingerprint orelse continue;
-                    try recordBundleFreshCommit(list_allocator, keys, receipts, commits, key, entry.receipt_fingerprint, commit_fingerprint);
+                    _ = commit_fingerprint;
+                    try recordBundleFreshCommit(list_allocator, records, freshCommitRecordFromJournalEntry(key, entry));
                 }
             },
             else => return,
@@ -33189,6 +33277,55 @@ test "actuation graph builds from receipt journal and detects duplicate fresh co
     const same_commit_summary = same_commit_by_key.summary();
     try std.testing.expectEqual(@as(usize, 1), same_commit_summary.receipt_count);
     try std.testing.expect(same_commit_summary.committed_count >= 1);
+
+    var conflicting_replay_journal = Actuation.Journal.init();
+    defer conflicting_replay_journal.deinit(allocator);
+    try conflicting_replay_journal.entries.append(allocator, .{
+        .order = conflicting_replay_journal.takeOrder(),
+        .intent_fingerprint = receipt.intent_fingerprint,
+        .commit_fingerprint = receipt.commit_fingerprint,
+        .response_fingerprint = 0x3280_00a1,
+        .frame_response_fingerprint = 0x3280_00a2,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .request_fingerprint = key.request_fingerprint,
+        .fresh_called = true,
+    });
+    try conflicting_replay_journal.entries.append(allocator, .{
+        .order = conflicting_replay_journal.takeOrder(),
+        .intent_fingerprint = receipt.intent_fingerprint,
+        .commit_fingerprint = receipt.commit_fingerprint,
+        .response_fingerprint = 0x3280_00b1,
+        .frame_response_fingerprint = 0x3280_00b2,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .request_fingerprint = key.request_fingerprint,
+        .fresh_called = true,
+    });
+    conflicting_replay_journal.refreshFingerprint();
+    try std.testing.expectError(error.DuplicateBinding, conflicting_replay_journal.assertNoDuplicateFreshCommit());
+
+    var conflicting_replay_vault = Continuity.MemoryVault.init(allocator);
+    defer conflicting_replay_vault.deinit();
+    var first_replay_journal = Actuation.Journal.init();
+    defer first_replay_journal.deinit(allocator);
+    try first_replay_journal.entries.append(allocator, conflicting_replay_journal.entries.items[0]);
+    first_replay_journal.next_order = 1;
+    first_replay_journal.refreshFingerprint();
+    _ = try conflicting_replay_vault.putActuationJournal(first_replay_journal);
+    var second_replay_journal = Actuation.Journal.init();
+    defer second_replay_journal.deinit(allocator);
+    try second_replay_journal.entries.append(allocator, .{
+        .order = 0,
+        .intent_fingerprint = receipt.intent_fingerprint,
+        .commit_fingerprint = receipt.commit_fingerprint,
+        .response_fingerprint = 0x3280_00c1,
+        .frame_response_fingerprint = 0x3280_00c2,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .request_fingerprint = key.request_fingerprint,
+        .fresh_called = true,
+    });
+    second_replay_journal.next_order = 1;
+    second_replay_journal.refreshFingerprint();
+    try std.testing.expectError(error.DuplicateBinding, conflicting_replay_vault.putActuationJournal(second_replay_journal));
 
     var stale_pending_commit_only_vault = Continuity.MemoryVault.init(allocator);
     defer stale_pending_commit_only_vault.deinit();
