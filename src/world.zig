@@ -29082,6 +29082,10 @@ pub const Continuity = struct {
                         try committed_refs.append(vault.allocator, ref);
                     }
                     if (isReplayableJournalEntry(entry) and vault.has(ref) and try journalEntryReplayEvidenceAvailable(vault, entry)) try replayable_refs.append(vault.allocator, ref);
+                } else if (terminal_fresh_commit) {
+                    if (entry.commit_fingerprint) |fingerprint| {
+                        try appendUniqueRefForFingerprint(vault, &committed_refs, .actuation_commit, fingerprint);
+                    }
                 }
             }
             if (!matched) return error.ObjectMissing;
@@ -29113,8 +29117,9 @@ pub const Continuity = struct {
 
         pub fn byIdempotencyKey(vault: *Continuity.MemoryVault, key: Actuation.IdempotencyKey) !@This() {
             const index = Continuity.ActuationIndex.init(vault);
-            const ref = (try index.byIdempotencyKey(key)) orelse return error.ObjectMissing;
-            if (vault.has(ref)) return fromReceipt(vault, ref);
+            if (try index.byIdempotencyKey(key)) |ref| {
+                if (vault.has(ref)) return fromReceipt(vault, ref);
+            }
             return (try fromIdempotencyKeyJournalEvidence(vault, key)) orelse error.ObjectMissing;
         }
 
@@ -29131,14 +29136,13 @@ pub const Continuity = struct {
                 for (journal.entries.items) |entry| {
                     if (entry.idempotency_key_fingerprint != key.key_fingerprint) continue;
                     if (journalEntryIsTerminalFreshCommit(entry)) {
-                        const receipt_fingerprint = entry.receipt_fingerprint orelse return error.InvalidFrameEncoding;
                         const commit_fingerprint = entry.commit_fingerprint orelse return error.InvalidFrameEncoding;
                         if (terminal_journal_ref) |_| {
-                            if (terminal_receipt_fingerprint.? != receipt_fingerprint or terminal_commit_fingerprint.? != commit_fingerprint) return error.DuplicateBinding;
+                            if (terminal_receipt_fingerprint != entry.receipt_fingerprint or terminal_commit_fingerprint.? != commit_fingerprint) return error.DuplicateBinding;
                             continue;
                         }
                         terminal_journal_ref = envelope.objectRef();
-                        terminal_receipt_fingerprint = receipt_fingerprint;
+                        terminal_receipt_fingerprint = entry.receipt_fingerprint;
                         terminal_commit_fingerprint = commit_fingerprint;
                         continue;
                     }
@@ -32978,6 +32982,28 @@ test "actuation graph builds from receipt journal and detects duplicate fresh co
     const mixed_summary = mixed_by_key.summary();
     try std.testing.expectEqual(@as(usize, 1), mixed_summary.fresh_commit_count);
     try std.testing.expectEqual(@as(usize, 1), mixed_summary.committed_count);
+
+    var commit_only_vault = Continuity.MemoryVault.init(allocator);
+    defer commit_only_vault.deinit();
+    const single_commit_only = Actuation.Commit.init(.{
+        .intent_fingerprint = receipt.intent_fingerprint,
+        .decision_fingerprint = receipt.decision_fingerprint,
+        .envelope_fingerprint = receipt.envelope_fingerprint,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .attempt_number = 1,
+        .status = .committed,
+        .fresh_called = true,
+    });
+    var single_commit_only_journal = Actuation.Journal.init();
+    defer single_commit_only_journal.deinit(allocator);
+    try single_commit_only_journal.appendCommit(allocator, single_commit_only);
+    _ = try commit_only_vault.putActuationJournal(single_commit_only_journal);
+    var commit_only_by_key = try Continuity.ActuationGraph.byIdempotencyKey(&commit_only_vault, key);
+    defer commit_only_by_key.deinit();
+    const commit_only_summary = commit_only_by_key.summary();
+    try std.testing.expectEqual(@as(usize, 0), commit_only_summary.receipt_count);
+    try std.testing.expectEqual(@as(usize, 1), commit_only_summary.committed_count);
+    try std.testing.expectEqual(@as(usize, 1), commit_only_summary.fresh_commit_count);
 
     const same_commit_duplicate = Actuation.Receipt.init(.{
         .intent_fingerprint = receipt.intent_fingerprint,
