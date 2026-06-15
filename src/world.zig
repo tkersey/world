@@ -30625,7 +30625,7 @@ pub const Continuity = struct {
                     else => break :blk false,
                 };
                 defer image.deinit(allocator);
-                break :blk true;
+                break :blk image.format_version == envelope.object_format_version;
             },
             .actuation_intent => blk: {
                 var intent = Actuation.Intent.decode(allocator, envelope.payload_bytes) catch |err| switch (err) {
@@ -30633,7 +30633,7 @@ pub const Continuity = struct {
                     else => break :blk false,
                 };
                 defer intent.deinit(allocator);
-                break :blk true;
+                break :blk intent.format_version == envelope.object_format_version;
             },
             .actuation_receipt => blk: {
                 var receipt = Actuation.Receipt.decode(allocator, envelope.payload_bytes) catch |err| switch (err) {
@@ -30641,7 +30641,7 @@ pub const Continuity = struct {
                     else => break :blk false,
                 };
                 defer receipt.deinit(allocator);
-                break :blk true;
+                break :blk receipt.format_version == envelope.object_format_version;
             },
             .actuation_journal => blk: {
                 var journal = Actuation.Journal.decode(allocator, envelope.payload_bytes) catch |err| switch (err) {
@@ -30657,7 +30657,7 @@ pub const Continuity = struct {
                     else => break :blk false,
                 };
                 defer image.deinit(allocator);
-                break :blk true;
+                break :blk image.format_version == envelope.object_format_version;
             },
             .transcript_image => blk: {
                 var image = TranscriptImage.decode(allocator, envelope.payload_bytes) catch |err| switch (err) {
@@ -30665,7 +30665,7 @@ pub const Continuity = struct {
                     else => break :blk false,
                 };
                 defer image.deinit(allocator);
-                break :blk true;
+                break :blk image.format_version == envelope.object_format_version;
             },
             .run_image => blk: {
                 var image = RunImage.decode(allocator, envelope.payload_bytes) catch |err| switch (err) {
@@ -30673,7 +30673,7 @@ pub const Continuity = struct {
                     else => break :blk false,
                 };
                 defer image.deinit(allocator);
-                break :blk true;
+                break :blk image.format_version == envelope.object_format_version;
             },
             .frame_request => blk: {
                 var frame = Frame.Request.decode(allocator, envelope.payload_bytes) catch |err| switch (err) {
@@ -30681,7 +30681,7 @@ pub const Continuity = struct {
                     else => break :blk false,
                 };
                 defer frame.deinit(allocator);
-                break :blk true;
+                break :blk frame.format_version == envelope.object_format_version;
             },
             .frame_response => blk: {
                 var frame = Frame.Response.decode(allocator, envelope.payload_bytes) catch |err| switch (err) {
@@ -30689,7 +30689,7 @@ pub const Continuity = struct {
                     else => break :blk false,
                 };
                 defer frame.deinit(allocator);
-                break :blk true;
+                break :blk frame.format_version == envelope.object_format_version;
             },
             .actuator_ref,
             .actuation_descriptor,
@@ -31981,6 +31981,34 @@ test "bundle export validates typed dependencies after graph expansion" {
     try std.testing.expectError(error.ObjectMissing, Continuity.Bundle.exportFromVault(&vault, &.{receipt_ref}, .{}));
     var external_bundle = try Continuity.Bundle.exportFromVault(&vault, &.{receipt_ref}, .{ .allow_external_dependencies = true });
     defer external_bundle.deinit();
+}
+
+test "bundle validation rejects typed payload envelope version mismatch" {
+    const allocator = std.testing.allocator;
+    var vault = Continuity.MemoryVault.init(allocator);
+    defer vault.deinit();
+
+    const image = Capsule.Image.init(.{
+        .manifest = Capsule.Manifest.init(.{
+            .kind = .completed_assembly,
+            .root_target_ref_fingerprint = 0x3174_0001,
+            .normal_form = .quiescent_completed,
+        }),
+        .runspace_image = Capsule.RunspaceImage.init(.{
+            .runspace_fingerprint = 0x3174_0002,
+            .runspace_report_fingerprint = 0x3174_0003,
+        }),
+    });
+    try std.testing.expectEqual(world_capsule_image_format_version, image.format_version);
+    const payload = try image.encode(allocator);
+    defer allocator.free(payload);
+    const mismatched_ref = try vault.put(Continuity.ObjectEnvelope.init(.{
+        .kind = .capsule_image,
+        .object_format_version = 1,
+        .payload_bytes = payload,
+    }));
+
+    try std.testing.expectError(error.InvalidFrameEncoding, Continuity.Bundle.exportFromVault(&vault, &.{mismatched_ref}, .{}));
 }
 
 test "continuity refs and envelopes reject unsupported object format versions" {
