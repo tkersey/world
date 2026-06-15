@@ -29302,6 +29302,10 @@ pub const Continuity = struct {
             !entry.cancelled;
     }
 
+    fn journalEntryIsTerminalResponse(entry: Actuation.Journal.Entry) bool {
+        return isReplayableJournalEntry(entry);
+    }
+
     fn journalEntriesSameFreshBinding(a: Actuation.Journal.Entry, b: Actuation.Journal.Entry) bool {
         const a_record = freshCommitRecordFromJournalEntry(a.idempotency_key_fingerprint orelse 0, a);
         const b_record = freshCommitRecordFromJournalEntry(b.idempotency_key_fingerprint orelse 0, b);
@@ -31464,7 +31468,7 @@ pub const Continuity = struct {
             defer journal.deinit(vault.allocator);
             for (journal.entries.items) |entry| {
                 if (entry.intent_fingerprint != intent_fingerprint) continue;
-                if (journalEntryIsTerminalFreshCommit(entry)) return true;
+                if (journalEntryIsTerminalResponse(entry)) return true;
             }
         }
         return false;
@@ -31479,7 +31483,7 @@ pub const Continuity = struct {
             };
             defer journal.deinit(vault.allocator);
             for (journal.entries.items) |entry| {
-                if (journalEntryIsTerminalFreshCommit(entry)) return true;
+                if (journalEntryIsTerminalResponse(entry)) return true;
             }
         }
         return false;
@@ -35011,6 +35015,55 @@ test "capsule graph resolves pending intents from journal refs" {
     defer allocator.free(committed);
     try std.testing.expectEqual(@as(usize, 1), committed.len);
     try std.testing.expect(committed[0].eql(capsule_ref));
+
+    var failed_vault = Continuity.MemoryVault.init(allocator);
+    defer failed_vault.deinit();
+    const failed_intent_fingerprint: u64 = 0x3300_00a0;
+    var failed_journal = Actuation.Journal.init();
+    defer failed_journal.deinit(allocator);
+    try failed_journal.entries.append(allocator, .{
+        .order = failed_journal.takeOrder(),
+        .intent_fingerprint = failed_intent_fingerprint,
+        .commit_fingerprint = 0x3300_00a1,
+        .response_fingerprint = 0x3300_00a2,
+        .idempotency_key_fingerprint = 0x3300_00a3,
+        .request_fingerprint = 0x3300_00a4,
+        .failed = true,
+    });
+    failed_journal.refreshFingerprint();
+    _ = try failed_vault.putActuationJournal(failed_journal);
+
+    const failed_journal_refs = [_]u64{failed_journal.journal_fingerprint};
+    const failed_image = Capsule.Image.init(.{
+        .manifest = Capsule.Manifest.init(.{
+            .kind = .completed_assembly,
+            .root_target_ref_fingerprint = 0x3300_00a5,
+            .actuation_intent_fingerprints = &.{failed_intent_fingerprint},
+            .actuation_journal_fingerprints = &failed_journal_refs,
+            .normal_form = .quiescent_completed,
+        }),
+        .runspace_image = Capsule.RunspaceImage.init(.{
+            .runspace_fingerprint = 0x3300_00a6,
+            .runspace_report_fingerprint = 0x3300_00a7,
+            .actuation_intent_refs = &.{failed_intent_fingerprint},
+            .actuation_journal_refs = &failed_journal_refs,
+        }),
+        .actuation_intent_refs = &.{failed_intent_fingerprint},
+        .actuation_journal_refs = &failed_journal_refs,
+    });
+    const failed_capsule_ref = try failed_vault.putCapsule(failed_image);
+    var failed_graph = try Continuity.CapsuleGraph.fromCapsule(&failed_vault, failed_capsule_ref);
+    defer failed_graph.deinit();
+    try std.testing.expect(!failed_graph.local_fresh_actuation_required);
+
+    const failed_index = Continuity.CapsuleIndex.init(&failed_vault);
+    const failed_pending = try failed_index.pendingActuationCapsules();
+    defer allocator.free(failed_pending);
+    try std.testing.expectEqual(@as(usize, 0), failed_pending.len);
+    const failed_committed = try failed_index.committedActuationCapsules();
+    defer allocator.free(failed_committed);
+    try std.testing.expectEqual(@as(usize, 1), failed_committed.len);
+    try std.testing.expect(failed_committed[0].eql(failed_capsule_ref));
 }
 
 test "actuation index finds receipts by actuator target port capsule state and idempotency" {
