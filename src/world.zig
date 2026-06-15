@@ -28372,6 +28372,9 @@ pub const Continuity = struct {
                         defer image.deinit(self.allocator);
                         if (image.value_image_fingerprint == fingerprint) return envelope.objectRef();
                     },
+                    .frame_request => {
+                        if (try frameRequestSemanticFingerprintMatches(self.allocator, envelope.payload_bytes, fingerprint)) return envelope.objectRef();
+                    },
                     .transcript_image => {
                         var image = TranscriptImage.decode(self.allocator, envelope.payload_bytes) catch |err| switch (err) {
                             error.OutOfMemory => return err,
@@ -30400,6 +30403,7 @@ pub const Continuity = struct {
                 defer image.deinit(allocator);
                 break :blk image.value_image_fingerprint == fingerprint;
             },
+            .frame_request => try frameRequestSemanticFingerprintMatches(allocator, envelope.payload_bytes, fingerprint),
             .transcript_image => blk: {
                 var image = TranscriptImage.decode(allocator, envelope.payload_bytes) catch |err| switch (err) {
                     error.OutOfMemory => return err,
@@ -30421,6 +30425,16 @@ pub const Continuity = struct {
                 break :blk semantic_fingerprint != null and semantic_fingerprint.? == fingerprint;
             },
         };
+    }
+
+    fn frameRequestSemanticFingerprintMatches(allocator: std.mem.Allocator, payload_bytes: []const u8, fingerprint: u64) !bool {
+        var frame = Frame.Request.decode(allocator, payload_bytes) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => return false,
+        };
+        defer frame.deinit(allocator);
+        validateRequestFrameImage(frame) catch return false;
+        return frame.frame_fingerprint == fingerprint or frame.request_fingerprint == fingerprint;
     }
 
     fn evidenceEnvelopeSemanticFingerprint(allocator: std.mem.Allocator, envelope: ObjectEnvelope) anyerror!?u64 {
@@ -31619,6 +31633,7 @@ pub const Continuity = struct {
             .actuation_receipt,
             .actuation_journal,
             .actuation_verify_report,
+            .frame_request,
             .value_image,
             .transcript_image,
             .run_image,
@@ -33785,9 +33800,27 @@ test "actuation envelope dependencies cover frame request and payload evidence" 
         .request_fingerprint = 0x3286_0003,
         .actuator_ref_fingerprint = 0x3286_0004,
     });
+    const request_frame = Frame.Request.init(.{
+        .world_surface_fingerprint = key.world_surface_fingerprint,
+        .target_certificate_fingerprint = 0x3286_0005,
+        .world_port_id = key.world_port_id,
+        .residual_site_index = 0,
+        .residual_site_fingerprint = 0x3286_0006,
+        .request_fingerprint = key.request_fingerprint,
+        .turn_index = 0,
+    });
+    const encoded_request_frame = Frame.Request.init(.{
+        .world_surface_fingerprint = key.world_surface_fingerprint,
+        .target_certificate_fingerprint = 0x3286_0007,
+        .world_port_id = key.world_port_id,
+        .residual_site_index = 1,
+        .residual_site_fingerprint = 0x3286_0008,
+        .request_fingerprint = 0x3286_0009,
+        .turn_index = 1,
+    });
     const envelope = Actuation.Envelope.init(.{
         .intent_fingerprint = 0x3286_0010,
-        .encoded_frame_request_fingerprint = 0x3286_0011,
+        .encoded_frame_request_fingerprint = encoded_request_frame.frame_fingerprint,
         .payload_value_image_fingerprint = 0x3286_0012,
         .idempotency_key = key,
     });
@@ -33844,6 +33877,50 @@ test "actuation envelope dependencies cover frame request and payload evidence" 
     const complete_bundle_report = try Continuity.Bundle.validate(allocator, complete_bytes, .{ .allow_external_dependencies = true });
     try std.testing.expect(complete_bundle_report.valid);
     try std.testing.expect(complete_bundle_report.missing_dependency_count >= 5);
+
+    const request_payload = try request_frame.encode(allocator);
+    defer allocator.free(request_payload);
+    const request_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .frame_request,
+        .object_format_version = world_frame_request_format_version,
+        .payload_bytes = request_payload,
+    });
+    const encoded_request_payload = try encoded_request_frame.encode(allocator);
+    defer allocator.free(encoded_request_payload);
+    const encoded_request_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .frame_request,
+        .object_format_version = world_frame_request_format_version,
+        .payload_bytes = encoded_request_payload,
+    });
+    var stored_dependency_refs = [_]Continuity.ObjectRef{
+        Continuity.semanticObjectRef(.actuation_intent, envelope.intent_fingerprint),
+        Continuity.semanticObjectRef(.actuation_idempotency_key, envelope.idempotency_key.key_fingerprint),
+        request_envelope.objectRef(),
+        encoded_request_envelope.objectRef(),
+        Continuity.semanticObjectRef(.value_image, envelope.payload_value_image_fingerprint.?),
+    };
+    const stored_dep_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_envelope,
+        .object_format_version = envelope.format_version,
+        .dependency_refs = &stored_dependency_refs,
+        .payload_bytes = payload,
+    });
+    var stored_dep_bundle_envelopes = [_]Continuity.ObjectEnvelope{
+        stored_dep_envelope,
+        request_envelope,
+        encoded_request_envelope,
+    };
+    var stored_dep_bundle_roots = [_]Continuity.ObjectRef{stored_dep_envelope.objectRef()};
+    var stored_dep_bundle = Continuity.Bundle{
+        .allocator = allocator,
+        .manifest = Continuity.BundleManifest.init(.{ .roots = &stored_dep_bundle_roots, .object_count = stored_dep_bundle_envelopes.len }),
+        .envelopes = &stored_dep_bundle_envelopes,
+    };
+    const stored_dep_bytes = try stored_dep_bundle.toBytes(allocator);
+    defer allocator.free(stored_dep_bytes);
+    const stored_dep_report = try Continuity.Bundle.validate(allocator, stored_dep_bytes, .{ .allow_external_dependencies = true });
+    try std.testing.expect(stored_dep_report.valid);
+    try std.testing.expectEqual(@as(usize, 3), stored_dep_report.missing_dependency_count);
 }
 
 test "bundle export import roundtrip and ledger events are stable" {
@@ -36263,6 +36340,23 @@ test "vault rejects malformed typed actuation evidence payload" {
         .kind = .actuation_commit,
         .object_format_version = world_actuation_commit_format_version,
         .payload_bytes = "malformed typed commit evidence",
+    })));
+    var forged_response = Actuation.Response.init(.{
+        .intent_fingerprint = 0x3306_0201,
+        .commit_fingerprint = 0x3306_0202,
+        .actuator_ref_fingerprint = 0x3306_0203,
+        .world_port_id = 2,
+        .request_fingerprint = 0x3306_0204,
+        .frame_response_fingerprint = 0x3306_0205,
+    });
+    forged_response.response_fingerprint ^= 1;
+    const forged_payload = try Continuity.encodePortableEvidence(Actuation.Response, allocator, forged_response);
+    defer allocator.free(forged_payload);
+    try std.testing.expect(!Continuity.validActuationResponsePayload(forged_response));
+    try std.testing.expectError(error.InvalidFrameEncoding, vault.put(Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_response,
+        .object_format_version = world_actuation_response_format_version,
+        .payload_bytes = forged_payload,
     })));
     try std.testing.expectEqual(@as(usize, 0), vault.objectCount());
 }
