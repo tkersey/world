@@ -28483,6 +28483,7 @@ pub const Continuity = struct {
             for (refs, 0..) |ref, index| {
                 envelopes[index] = try vault.get(ref);
                 initialized += 1;
+                if (envelopes[index].dependency_refs.len > options.max_dependency_count) return error.InvalidFrameEncoding;
             }
             var bundle = @This(){
                 .allocator = vault.allocator,
@@ -32266,6 +32267,17 @@ test "bundle export enforces object count and byte limits" {
     );
     defer decoded_roots_with_zero_dependency_cap.deinit();
     try std.testing.expectEqual(@as(usize, 2), decoded_roots_with_zero_dependency_cap.manifest.roots.len);
+    const dependent = try vault.put(Continuity.ObjectEnvelope.init(.{
+        .kind = .capsule_manifest,
+        .object_format_version = world_capsule_manifest_format_version,
+        .dependency_refs = &.{first},
+        .payload_bytes = "dependent",
+    }));
+    try std.testing.expectError(error.InvalidFrameEncoding, Continuity.Bundle.exportFromVault(
+        &vault,
+        &.{dependent},
+        .{ .include_dependencies = false, .allow_external_dependencies = true, .max_object_count = 1, .max_dependency_count = 0 },
+    ));
     try std.testing.expectError(error.InvalidFrameEncoding, Continuity.Bundle.exportFromVault(
         &vault,
         &.{first},
