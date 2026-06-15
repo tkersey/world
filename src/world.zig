@@ -29467,12 +29467,12 @@ pub const Continuity = struct {
             for (self.vault.objects.items) |envelope| {
                 if (envelope.kind != .capsule_image) continue;
                 var image = try Capsule.Image.decode(self.vault.allocator, envelope.payload_bytes);
+                defer image.deinit(self.vault.allocator);
                 const matches = image.actuation_receipt_refs.len != 0 or
                     image.runspace_image.actuation_receipt_refs.len != 0 or
                     image.manifest.actuation_receipt_fingerprints.len != 0 or
                     try capsuleHasTerminalActuationJournal(self.vault, image) or
                     (image.runspace_image.mailbox_image != null and image.runspace_image.mailbox_image.?.committed_actuation_receipt_fingerprints.len != 0);
-                image.deinit(self.vault.allocator);
                 if (matches) try refs.append(self.vault.allocator, envelope.objectRef());
             }
             return refs.toOwnedSlice(self.vault.allocator);
