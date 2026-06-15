@@ -28172,7 +28172,31 @@ pub const Continuity = struct {
         fn validateStorableEnvelope(self: @This(), envelope: ObjectEnvelope) !void {
             try envelope.validate();
             if (!(try bundleEnvelopeTypedPayloadValid(self.allocator, envelope))) return error.InvalidFrameEncoding;
-            if (!(try storableEnvelopeDeclaresRequiredDependencies(self.allocator, envelope))) return error.InvalidFrameEncoding;
+            if (!(try self.storableEnvelopeDeclaresRequiredDependencies(envelope))) return error.InvalidFrameEncoding;
+        }
+
+        fn storableEnvelopeDeclaresRequiredDependencies(self: @This(), envelope: ObjectEnvelope) !bool {
+            const required_refs = try bundleEnvelopeRequiredDependencyRefs(self.allocator, envelope);
+            defer freeRefSlice(self.allocator, required_refs);
+            for (required_refs) |required_ref| {
+                if (!(try self.vaultDeclaredDependenciesContain(envelope.dependency_refs, required_ref))) return false;
+            }
+            return true;
+        }
+
+        fn vaultDeclaredDependenciesContain(self: @This(), declared_refs: []const ObjectRef, required_ref: ObjectRef) !bool {
+            for (declared_refs) |declared_ref| {
+                if (try self.vaultDeclaredDependencySatisfiesRequiredRef(declared_ref, required_ref)) return true;
+            }
+            return false;
+        }
+
+        fn vaultDeclaredDependencySatisfiesRequiredRef(self: @This(), declared_ref: ObjectRef, required_ref: ObjectRef) !bool {
+            if (storableDeclaredDependenciesContain(&.{declared_ref}, required_ref)) return true;
+            if (required_ref.byte_len != 0 or declared_ref.kind != required_ref.kind) return false;
+            const resolved_declared_ref = (try self.resolveRef(declared_ref)) orelse return false;
+            const resolved_required_ref = (try self.refByKindFingerprint(required_ref.kind, required_ref.object_fingerprint)) orelse return false;
+            return resolved_declared_ref.eql(resolved_required_ref);
         }
 
         pub fn get(self: @This(), ref: ObjectRef) !ObjectEnvelope {
@@ -35024,6 +35048,34 @@ test "actuation envelope dependencies cover frame request and payload evidence" 
     defer Continuity.freeRefSlice(allocator, imported_deps);
     try std.testing.expect(Continuity.containsRef(imported_deps, Continuity.semanticObjectRef(.frame_request, key.request_fingerprint)));
     try std.testing.expect(Continuity.containsRef(imported_deps, Continuity.semanticObjectRef(.frame_request, envelope.encoded_frame_request_fingerprint.?)));
+
+    var direct_vault = Continuity.MemoryVault.init(allocator);
+    defer direct_vault.deinit();
+    const exact_intent_ref = try direct_vault.putActuationIntent(matching_intent);
+    try std.testing.expect(direct_vault.has(Continuity.semanticObjectRef(.actuation_intent, matching_intent.intent_fingerprint)));
+    const direct_key = Actuation.IdempotencyKey.init(.{
+        .target_ref_fingerprint = matching_intent.target_ref_fingerprint,
+        .world_surface_fingerprint = matching_intent.world_surface_fingerprint,
+        .world_port_id = matching_intent.world_port_id,
+        .request_fingerprint = matching_intent.frame_request_fingerprint,
+        .actuator_ref_fingerprint = matching_intent.actuator_ref_fingerprint,
+        .intent_fingerprint = matching_intent.intent_fingerprint,
+    });
+    const direct_key_payload = try Continuity.encodePortableEvidence(Actuation.IdempotencyKey, allocator, direct_key);
+    defer allocator.free(direct_key_payload);
+    var direct_key_dependency_refs = [_]Continuity.ObjectRef{
+        Continuity.semanticObjectRef(.frame_request, direct_key.request_fingerprint),
+        Continuity.semanticObjectRef(.actuator_ref, direct_key.actuator_ref_fingerprint),
+        exact_intent_ref,
+    };
+    const direct_key_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_idempotency_key,
+        .object_format_version = world_actuation_idempotency_key_format_version,
+        .dependency_refs = &direct_key_dependency_refs,
+        .payload_bytes = direct_key_payload,
+    });
+    const exact_dep_ref = try direct_vault.put(direct_key_envelope);
+    try std.testing.expect(direct_vault.has(exact_dep_ref));
 }
 
 test "actuation evidence bundle dependencies cover generic roots" {
