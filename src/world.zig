@@ -29719,7 +29719,8 @@ pub const Continuity = struct {
         }
 
         fn appendUniqueReceiptRefForFingerprint(vault: *Continuity.MemoryVault, refs: *std.ArrayList(ObjectRef), fingerprint: u64) !void {
-            const ref = try refFromStoredOrFingerprint(vault, .actuation_receipt, fingerprint);
+            const ref = (try vault.refByKindFingerprint(.actuation_receipt, fingerprint)) orelse
+                semanticObjectRef(.actuation_receipt, fingerprint);
             try appendUniqueRef(refs, vault.allocator, ref);
         }
 
@@ -31530,6 +31531,22 @@ pub const Continuity = struct {
         };
     }
 
+    fn semanticObjectRef(kind: ObjectKind, fingerprint: u64) ObjectRef {
+        return ObjectRef.init(.{
+            .kind = kind,
+            .object_format_version = kind.defaultFormatVersion(),
+            .object_fingerprint = fingerprint,
+            .byte_len = 0,
+        });
+    }
+
+    fn refFromStoredOrFingerprint(vault: *Continuity.MemoryVault, kind: ObjectKind, fingerprint: u64) !ObjectRef {
+        if (!kindHasSemanticRefLookup(kind)) {
+            if (try vault.refByKindFingerprint(kind, fingerprint)) |ref| return ref;
+        }
+        return semanticObjectRef(kind, fingerprint);
+    }
+
     fn kindHasSemanticRefLookup(kind: ObjectKind) bool {
         return switch (kind) {
             .capsule_image,
@@ -31558,22 +31575,6 @@ pub const Continuity = struct {
             => true,
             else => false,
         };
-    }
-
-    fn semanticObjectRef(kind: ObjectKind, fingerprint: u64) ObjectRef {
-        return ObjectRef.init(.{
-            .kind = kind,
-            .object_format_version = kind.defaultFormatVersion(),
-            .object_fingerprint = fingerprint,
-            .byte_len = 0,
-        });
-    }
-
-    fn refFromStoredOrFingerprint(vault: *Continuity.MemoryVault, kind: ObjectKind, fingerprint: u64) !ObjectRef {
-        if (!kindHasSemanticRefLookup(kind)) {
-            if (try vault.refByKindFingerprint(kind, fingerprint)) |ref| return ref;
-        }
-        return semanticObjectRef(kind, fingerprint);
     }
 
     fn refsFromFingerprints(vault: *Continuity.MemoryVault, kind: ObjectKind, fingerprints: []const u64) ![]ObjectRef {
@@ -34792,7 +34793,7 @@ test "actuation index finds receipts by actuator target port capsule state and i
         .mode = .audit,
         .pending = true,
     });
-    _ = try vault.putActuationReceipt(pending);
+    const pending_ref = try vault.putActuationReceipt(pending);
     const replayed = Actuation.Receipt.init(.{
         .intent_fingerprint = 0x3301_0030,
         .envelope_fingerprint = 0x3301_0031,
@@ -34847,7 +34848,7 @@ test "actuation index finds receipts by actuator target port capsule state and i
     const by_declared_capsule = try index.receiptsByCapsule(declared_capsule_ref);
     defer allocator.free(by_declared_capsule);
     try std.testing.expectEqual(@as(usize, 1), by_declared_capsule.len);
-    try std.testing.expectEqual(pending.receipt_fingerprint, by_declared_capsule[0].object_fingerprint);
+    try std.testing.expect(by_declared_capsule[0].eql(pending_ref));
     const forged_capsule_ref = Continuity.ObjectRef.init(.{
         .kind = .value_image,
         .object_format_version = 1,
