@@ -308,7 +308,7 @@ pub const world_capsule_pending_port_image_fingerprint_version: u32 = 4;
 pub const world_capsule_mailbox_image_fingerprint_version: u32 = 1;
 pub const world_capsule_fabric_image_fingerprint_version: u32 = 1;
 pub const world_capsule_link_image_fingerprint_version: u32 = 1;
-pub const world_capsule_image_format_version: u32 = 2;
+pub const world_capsule_image_format_version: u32 = 3;
 pub const world_capsule_image_fingerprint_version: u32 = 1;
 pub const world_capsule_certificate_format_version: u32 = 1;
 pub const world_capsule_certificate_fingerprint_version: u32 = 1;
@@ -19735,6 +19735,8 @@ pub const Actuation = struct {
             if (self.fingerprint_version != world_actuation_journal_fingerprint_version) return error.InvalidFrameEncoding;
             if (self.journal_fingerprint != fingerprintJournal(self)) return error.InvalidFrameEncoding;
             if (self.entries.items.len > max_journal_entries) return error.InvalidFrameEncoding;
+            if (self.next_order > @as(u64, @intCast(max_journal_entries))) return error.InvalidFrameEncoding;
+            if (@as(u64, @intCast(self.entries.items.len)) > self.next_order) return error.InvalidFrameEncoding;
             var previous_order: ?u64 = null;
             for (self.entries.items) |entry| {
                 if (entry.order >= self.next_order) return error.InvalidFrameEncoding;
@@ -22974,6 +22976,24 @@ pub const Capsule = struct {
         }
 
         pub fn decodeWithOptions(allocator: std.mem.Allocator, bytes: []const u8, options: ValidateOptions) !@This() {
+            return decodeWithOptionsLayout(allocator, bytes, options, .default) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => {
+                    if (!capsuleImageDecodeShouldTryLegacyV2(bytes)) return err;
+                    return decodeWithOptionsLayout(allocator, bytes, options, .v2_without_actuation_slices) catch |fallback_err| switch (fallback_err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        else => return err,
+                    };
+                },
+            };
+        }
+
+        const DecodeActuationLayout = enum {
+            default,
+            v2_without_actuation_slices,
+        };
+
+        fn decodeWithOptionsLayout(allocator: std.mem.Allocator, bytes: []const u8, options: ValidateOptions, layout: DecodeActuationLayout) !@This() {
             if (bytes.len > options.max_image_bytes) return error.InvalidFrameEncoding;
             var cursor: usize = 0;
             const format_version = try readU32(bytes, &cursor);
@@ -23021,7 +23041,11 @@ pub const Capsule = struct {
             var actuation_journal_refs: []const u64 = &.{};
             var actuation_journal_refs_owned = false;
             errdefer if (actuation_journal_refs_owned) allocator.free(actuation_journal_refs);
-            if (capsuleImageFormatSupportsActuationRefs(format_version)) {
+            const read_actuation_refs = switch (layout) {
+                .default => capsuleImageFormatSupportsActuationRefs(format_version),
+                .v2_without_actuation_slices => false,
+            };
+            if (read_actuation_refs) {
                 actuation_intent_refs = try readU64SliceOwned(allocator, bytes, &cursor, options.max_dependencies);
                 actuation_intent_refs_owned = true;
                 actuation_receipt_refs = try readU64SliceOwned(allocator, bytes, &cursor, options.max_dependencies);
@@ -23157,59 +23181,128 @@ pub const Capsule = struct {
         }
     };
 
-    test "capsule image v1 decode skips actuation reference slices" {
+    fn capsuleImageDecodeShouldTryLegacyV2(bytes: []const u8) bool {
+        var cursor: usize = 0;
+        const format_version = readU32(bytes, &cursor) catch return false;
+        return format_version == 2;
+    }
+
+    test "capsule image legacy decode skips actuation reference slices" {
         const allocator = std.testing.allocator;
-        const manifest = Manifest.init(.{
-            .kind = .replay_only,
-            .root_target_ref_fingerprint = 0x5150_ca01,
-            .normal_form = .quiescent_completed,
-            .metadata = "legacy-manifest",
-        });
-        var runspace_image = RunspaceImage{
-            .image_fingerprint = 0,
-            .runspace_fingerprint = 0x5150_ca02,
-            .runspace_report_fingerprint = 0x5150_ca03,
-            .metadata = "legacy-runspace",
-        };
-        runspace_image.image_fingerprint = fingerprintRunspaceImage(runspace_image);
-        var legacy = Image.init(.{
-            .manifest = manifest,
-            .runspace_image = runspace_image,
-            .metadata = "legacy-image",
-        });
-        legacy.format_version = 1;
-        legacy.image_fingerprint = fingerprintImage(legacy);
 
-        var encoded: std.ArrayList(u8) = .empty;
-        defer encoded.deinit(allocator);
-        try writeU32(&encoded, allocator, legacy.format_version);
-        try writeU32(&encoded, allocator, legacy.fingerprint_version);
-        try writeU64(&encoded, allocator, legacy.image_fingerprint);
-        try encodeManifest(&encoded, allocator, legacy.manifest);
-        try encodeRunspaceImage(&encoded, allocator, legacy.runspace_image);
-        try writeOptionalLinkImage(&encoded, allocator, legacy.link_image);
-        try writeOptionalFabricImage(&encoded, allocator, legacy.fabric_image);
-        try writeU64Slice(&encoded, allocator, legacy.admission_refs);
-        try writeU64Slice(&encoded, allocator, legacy.environment_refs);
-        try writeU64Slice(&encoded, allocator, legacy.supervision_refs);
-        try writeU64Slice(&encoded, allocator, legacy.guest_conformance_refs);
-        try writeU64Slice(&encoded, allocator, legacy.transcript_image_refs);
-        try writeU64Slice(&encoded, allocator, legacy.run_image_refs);
-        try writeU64Slice(&encoded, allocator, legacy.value_image_refs);
-        try writeTranscriptImageSlice(&encoded, allocator, legacy.transcript_images);
-        try writeRunImageSlice(&encoded, allocator, legacy.run_images);
-        try writeValueImageSlice(&encoded, allocator, legacy.value_images);
-        try writeDependencyRefSlice(&encoded, allocator, legacy.dependency_refs);
-        try writeObjectRefSlice(&encoded, allocator, legacy.object_refs);
-        try writeBytes(&encoded, allocator, legacy.metadata);
+        for ([_]u32{ 1, 2 }) |legacy_format_version| {
+            const manifest = Manifest.init(.{
+                .kind = .replay_only,
+                .root_target_ref_fingerprint = 0x5150_ca01,
+                .normal_form = .quiescent_completed,
+                .metadata = "legacy-manifest",
+            });
+            var runspace_image = RunspaceImage{
+                .image_fingerprint = 0,
+                .runspace_fingerprint = 0x5150_ca02,
+                .runspace_report_fingerprint = 0x5150_ca03,
+                .metadata = "legacy-runspace",
+            };
+            runspace_image.image_fingerprint = fingerprintRunspaceImage(runspace_image);
+            var legacy = Image.init(.{
+                .manifest = manifest,
+                .runspace_image = runspace_image,
+                .metadata = "legacy-image",
+            });
+            legacy.format_version = legacy_format_version;
+            legacy.image_fingerprint = fingerprintImage(legacy);
 
-        var decoded = try Image.decode(allocator, encoded.items);
-        defer decoded.deinit(allocator);
-        try std.testing.expectEqual(@as(u32, 1), decoded.format_version);
-        try std.testing.expectEqual(@as(usize, 0), decoded.actuation_intent_refs.len);
-        try std.testing.expectEqual(@as(usize, 0), decoded.actuation_receipt_refs.len);
-        try std.testing.expectEqual(@as(usize, 0), decoded.actuation_journal_refs.len);
-        try std.testing.expectEqualStrings("legacy-image", decoded.metadata);
+            var encoded: std.ArrayList(u8) = .empty;
+            defer encoded.deinit(allocator);
+            try writeU32(&encoded, allocator, legacy.format_version);
+            try writeU32(&encoded, allocator, legacy.fingerprint_version);
+            try writeU64(&encoded, allocator, legacy.image_fingerprint);
+            try encodeManifest(&encoded, allocator, legacy.manifest);
+            try encodeRunspaceImage(&encoded, allocator, legacy.runspace_image);
+            try writeOptionalLinkImage(&encoded, allocator, legacy.link_image);
+            try writeOptionalFabricImage(&encoded, allocator, legacy.fabric_image);
+            try writeU64Slice(&encoded, allocator, legacy.admission_refs);
+            try writeU64Slice(&encoded, allocator, legacy.environment_refs);
+            try writeU64Slice(&encoded, allocator, legacy.supervision_refs);
+            try writeU64Slice(&encoded, allocator, legacy.guest_conformance_refs);
+            try writeU64Slice(&encoded, allocator, legacy.transcript_image_refs);
+            try writeU64Slice(&encoded, allocator, legacy.run_image_refs);
+            try writeU64Slice(&encoded, allocator, legacy.value_image_refs);
+            try writeTranscriptImageSlice(&encoded, allocator, legacy.transcript_images);
+            try writeRunImageSlice(&encoded, allocator, legacy.run_images);
+            try writeValueImageSlice(&encoded, allocator, legacy.value_images);
+            try writeDependencyRefSlice(&encoded, allocator, legacy.dependency_refs);
+            try writeObjectRefSlice(&encoded, allocator, legacy.object_refs);
+            try writeBytes(&encoded, allocator, legacy.metadata);
+
+            var decoded = try Image.decode(allocator, encoded.items);
+            defer decoded.deinit(allocator);
+            try std.testing.expectEqual(legacy_format_version, decoded.format_version);
+            try std.testing.expectEqual(@as(usize, 0), decoded.actuation_intent_refs.len);
+            try std.testing.expectEqual(@as(usize, 0), decoded.actuation_receipt_refs.len);
+            try std.testing.expectEqual(@as(usize, 0), decoded.actuation_journal_refs.len);
+            try std.testing.expectEqualStrings("legacy-image", decoded.metadata);
+        }
+
+        const actuation_intent_refs = [_]u64{0x5150_ca04};
+        var v2_with_actuation = Image.init(.{
+            .manifest = Manifest.init(.{
+                .kind = .replay_only,
+                .root_target_ref_fingerprint = 0x5150_ca05,
+                .actuation_intent_fingerprints = &actuation_intent_refs,
+                .normal_form = .quiescent_completed,
+                .metadata = "v2-actuation-manifest",
+            }),
+            .runspace_image = RunspaceImage.init(.{
+                .runspace_fingerprint = 0x5150_ca06,
+                .runspace_report_fingerprint = 0x5150_ca07,
+                .actuation_intent_refs = &actuation_intent_refs,
+                .metadata = "v2-actuation-runspace",
+            }),
+            .actuation_intent_refs = &actuation_intent_refs,
+            .metadata = "v2-actuation-image",
+        });
+        v2_with_actuation.format_version = 2;
+        v2_with_actuation.image_fingerprint = fingerprintImage(v2_with_actuation);
+
+        const encoded_v2_with_actuation = try v2_with_actuation.encode(allocator);
+        defer allocator.free(encoded_v2_with_actuation);
+        var decoded_v2_with_actuation = try Image.decode(allocator, encoded_v2_with_actuation);
+        defer decoded_v2_with_actuation.deinit(allocator);
+        try std.testing.expectEqual(@as(u32, 2), decoded_v2_with_actuation.format_version);
+        try std.testing.expectEqualSlices(u64, &actuation_intent_refs, decoded_v2_with_actuation.actuation_intent_refs);
+        try std.testing.expectEqual(@as(usize, 0), decoded_v2_with_actuation.actuation_receipt_refs.len);
+        try std.testing.expectEqual(@as(usize, 0), decoded_v2_with_actuation.actuation_journal_refs.len);
+
+        const v2_manifest_intent_refs = [_]u64{0x5150_ca08};
+        const v2_runspace_intent_refs = [_]u64{ 0x5150_ca09, 0x5150_ca08 };
+        const v2_image_intent_refs = [_]u64{ 0x5150_ca08, 0x5150_ca0a };
+        var v2_legacy_containment = Image.init(.{
+            .manifest = Manifest.init(.{
+                .kind = .replay_only,
+                .root_target_ref_fingerprint = 0x5150_ca0b,
+                .actuation_intent_fingerprints = &v2_manifest_intent_refs,
+                .normal_form = .quiescent_completed,
+                .metadata = "v2-containment-manifest",
+            }),
+            .runspace_image = RunspaceImage.init(.{
+                .runspace_fingerprint = 0x5150_ca0c,
+                .runspace_report_fingerprint = 0x5150_ca0d,
+                .actuation_intent_refs = &v2_runspace_intent_refs,
+                .metadata = "v2-containment-runspace",
+            }),
+            .actuation_intent_refs = &v2_image_intent_refs,
+            .metadata = "v2-containment-image",
+        });
+        v2_legacy_containment.format_version = 2;
+        v2_legacy_containment.image_fingerprint = fingerprintImage(v2_legacy_containment);
+
+        const encoded_v2_legacy_containment = try v2_legacy_containment.encode(allocator);
+        defer allocator.free(encoded_v2_legacy_containment);
+        var decoded_v2_legacy_containment = try Image.decode(allocator, encoded_v2_legacy_containment);
+        defer decoded_v2_legacy_containment.deinit(allocator);
+        try std.testing.expectEqual(@as(u32, 2), decoded_v2_legacy_containment.format_version);
+        try std.testing.expectEqualSlices(u64, &v2_image_intent_refs, decoded_v2_legacy_containment.actuation_intent_refs);
     }
 
     pub const Certificate = struct {
@@ -24852,9 +24945,9 @@ pub const Capsule = struct {
         for (image.guest_conformance_refs) |fingerprint| {
             if (fingerprint == 0) return error.InvalidFrameEncoding;
         }
-        try validateMirroredCapsuleRefs(manifest.actuation_intent_fingerprints, runspace_image_value.actuation_intent_refs, image.actuation_intent_refs);
-        try validateMirroredCapsuleRefs(manifest.actuation_receipt_fingerprints, runspace_image_value.actuation_receipt_refs, image.actuation_receipt_refs);
-        try validateMirroredCapsuleRefs(manifest.actuation_journal_fingerprints, runspace_image_value.actuation_journal_refs, image.actuation_journal_refs);
+        try validateMirroredCapsuleRefs(image.format_version, manifest.actuation_intent_fingerprints, runspace_image_value.actuation_intent_refs, image.actuation_intent_refs);
+        try validateMirroredCapsuleRefs(image.format_version, manifest.actuation_receipt_fingerprints, runspace_image_value.actuation_receipt_refs, image.actuation_receipt_refs);
+        try validateMirroredCapsuleRefs(image.format_version, manifest.actuation_journal_fingerprints, runspace_image_value.actuation_journal_refs, image.actuation_journal_refs);
         if (runspace_image_value.mailbox_image) |mailbox| {
             for (mailbox.pending_actuation_intent_fingerprints) |fingerprint| {
                 if (!u64SliceContains(manifest.actuation_intent_fingerprints, fingerprint)) return error.InvalidFrameEncoding;
@@ -24867,10 +24960,19 @@ pub const Capsule = struct {
         }
     }
 
-    fn validateMirroredCapsuleRefs(manifest_refs: []const u64, runspace_refs: []const u64, image_refs: []const u64) !void {
+    fn validateMirroredCapsuleRefs(format_version: u32, manifest_refs: []const u64, runspace_refs: []const u64, image_refs: []const u64) !void {
+        try validateNoZeroU64(manifest_refs);
+        try validateNoZeroU64(runspace_refs);
+        try validateNoZeroU64(image_refs);
+        if (format_version < world_capsule_image_format_version) {
+            for (manifest_refs) |fingerprint| {
+                if (!u64SliceContains(runspace_refs, fingerprint)) return error.InvalidFrameEncoding;
+                if (!u64SliceContains(image_refs, fingerprint)) return error.InvalidFrameEncoding;
+            }
+            return;
+        }
         if (!u64SlicesEqual(manifest_refs, runspace_refs)) return error.InvalidFrameEncoding;
         if (!u64SlicesEqual(manifest_refs, image_refs)) return error.InvalidFrameEncoding;
-        try validateNoZeroU64(manifest_refs);
     }
 
     fn validateQuiescenceReportImageConsistency(image: Image, report: QuiescenceReport) !void {
@@ -25842,7 +25944,7 @@ pub const Capsule = struct {
     }
 
     fn capsuleImageFormatVersionSupported(format_version: u32) bool {
-        return format_version == 1 or format_version == world_capsule_image_format_version;
+        return format_version == 1 or format_version == 2 or format_version == world_capsule_image_format_version;
     }
 
     fn capsuleImageFormatSupportsActuationRefs(format_version: u32) bool {
@@ -27654,7 +27756,7 @@ pub const Continuity = struct {
 
         pub fn supportsFormatVersion(self: @This(), format_version: u32) bool {
             return switch (self) {
-                .capsule_image => format_version == 1 or format_version == world_capsule_image_format_version,
+                .capsule_image => format_version == 1 or format_version == 2 or format_version == world_capsule_image_format_version,
                 .capsule_manifest => format_version == 1 or format_version == world_capsule_manifest_format_version,
                 .capsule_runspace_image => format_version == 1 or format_version == 2 or format_version == world_capsule_runspace_image_format_version,
                 .run_image => format_version == 1 or format_version == 2 or format_version == world_run_image_format_version,
@@ -28070,6 +28172,7 @@ pub const Continuity = struct {
         fn validateStorableEnvelope(self: @This(), envelope: ObjectEnvelope) !void {
             try envelope.validate();
             if (!(try bundleEnvelopeTypedPayloadValid(self.allocator, envelope))) return error.InvalidFrameEncoding;
+            if (!(try storableEnvelopeDeclaresRequiredDependencies(self.allocator, envelope))) return error.InvalidFrameEncoding;
         }
 
         pub fn get(self: @This(), ref: ObjectRef) !ObjectEnvelope {
@@ -28129,15 +28232,19 @@ pub const Continuity = struct {
                     try bundleEnvelopeDependencyPayloadsValid(self.allocator, self.objects.items, envelope)
                 else
                     true;
+                var graph_missing_count: ?usize = null;
                 const dependency_cycle = if (payload_ok and envelope_ok and decode_ok and dependency_payloads_ok) blk: {
                     var graph_vault = self;
                     var graph = try ObjectGraph.buildFromRoots(&graph_vault, &.{resolved_ref}, .{});
                     defer graph.deinit();
+                    graph_missing_count = graph.missing_deps.len;
                     break :blk graph.dependency_cycle;
                 } else false;
-                var missing_count: usize = 0;
-                for (envelope.dependency_refs) |dep| {
-                    if (!self.has(dep)) missing_count += 1;
+                var missing_count: usize = graph_missing_count orelse 0;
+                if (graph_missing_count == null) {
+                    for (envelope.dependency_refs) |dep| {
+                        if (!self.has(dep)) missing_count += 1;
+                    }
                 }
                 if (decode_ok and !declares_required_deps) missing_count += 1;
                 const valid = payload_ok and envelope_ok and decode_ok and dependency_payloads_ok and declares_required_deps and missing_count == 0 and !dependency_cycle;
@@ -28225,9 +28332,12 @@ pub const Continuity = struct {
             try intent.validate();
             const payload = try intent.encode(self.allocator);
             defer self.allocator.free(payload);
+            const deps = try actuationIntentStoredDependencyRefs(self, intent);
+            defer freeRefSlice(self.allocator, deps);
             const envelope = ObjectEnvelope.init(.{
                 .kind = .actuation_intent,
                 .object_format_version = intent.format_version,
+                .dependency_refs = deps,
                 .payload_bytes = payload,
                 .label = "actuation.intent",
             });
@@ -28316,6 +28426,8 @@ pub const Continuity = struct {
             try key.validate();
             var terminal_match: ?ObjectRef = null;
             var terminal_record: ?FreshCommitRecord = null;
+            var replayable_match: ?ObjectRef = null;
+            var replayable_attempt: u32 = 0;
             var non_terminal_match: ?ObjectRef = null;
             for (self.objects.items) |envelope| {
                 if (envelope.kind != .actuation_receipt) continue;
@@ -28333,9 +28445,17 @@ pub const Continuity = struct {
                     terminal_record = record;
                     continue;
                 }
+                if (isReplayableReceipt(receipt)) {
+                    if (replayable_match == null or receipt.attempt_number >= replayable_attempt) {
+                        replayable_match = ref;
+                        replayable_attempt = receipt.attempt_number;
+                    }
+                    continue;
+                }
                 non_terminal_match = ref;
             }
             if (terminal_match) |ref| return ref;
+            if (replayable_match) |ref| return ref;
             return non_terminal_match;
         }
 
@@ -28482,7 +28602,10 @@ pub const Continuity = struct {
                 if (graph.missing_deps.len != 0 and !options.allow_external_dependencies) return error.ObjectMissing;
                 if (graph.dependency_cycle) return error.InvalidFrameEncoding;
                 refs = try bundleExportRefsFromGraph(vault, graph.objects, manifest_roots, options);
-                if (refs.len != graph.objects.len and !options.allow_external_dependencies) return error.ObjectMissing;
+                if (refs.len != graph.objects.len and !options.allow_external_dependencies) {
+                    freeRefSlice(vault.allocator, refs);
+                    return error.ObjectMissing;
+                }
             } else {
                 if (manifest_roots.len > options.max_object_count) return error.InvalidFrameEncoding;
                 refs = try cloneRefSlice(vault.allocator, manifest_roots);
@@ -28529,6 +28652,7 @@ pub const Continuity = struct {
             defer bundle.deinit();
             const report = try bundle.validationReport(options);
             if (!report.valid) return error.InvalidFrameEncoding;
+            try canonicalizeBundleDependencyRefsForStorage(&bundle);
             try rejectDuplicateFreshCommitsAgainstVault(vault, bundle);
             for (bundle.envelopes) |envelope| try vault.assertCanPutEnvelope(envelope);
             var imported_manifest = try bundle.manifest.clone(vault.allocator);
@@ -28935,9 +29059,21 @@ pub const Continuity = struct {
             graph.receipt_refs = try refsFromFingerprints(vault, .run_receipt, image.manifest.run_receipt_fingerprints);
             graph.admission_refs = try refsFromFingerprints(vault, .admission_receipt, image.admission_refs);
             graph.fabric_receipt_refs = try refsFromFingerprints(vault, .fabric_receipt, image.manifest.fabric_receipt_fingerprints);
-            graph.actuation_intent_refs = try refsFromFingerprints(vault, .actuation_intent, image.actuation_intent_refs);
-            graph.actuation_receipt_refs = try refsFromFingerprints(vault, .actuation_receipt, image.actuation_receipt_refs);
-            graph.actuation_journal_refs = try refsFromFingerprints(vault, .actuation_journal, image.actuation_journal_refs);
+            graph.actuation_intent_refs = try capsuleActuationRefs(vault, image, .actuation_intent, &.{
+                image.actuation_intent_refs,
+                image.runspace_image.actuation_intent_refs,
+                image.manifest.actuation_intent_fingerprints,
+            });
+            graph.actuation_receipt_refs = try capsuleActuationRefs(vault, image, .actuation_receipt, &.{
+                image.actuation_receipt_refs,
+                image.runspace_image.actuation_receipt_refs,
+                image.manifest.actuation_receipt_fingerprints,
+            });
+            graph.actuation_journal_refs = try capsuleActuationRefs(vault, image, .actuation_journal, &.{
+                image.actuation_journal_refs,
+                image.runspace_image.actuation_journal_refs,
+                image.manifest.actuation_journal_fingerprints,
+            });
             graph.guest_conformance_refs = try refsFromFingerprints(vault, .guest_conformance_report, image.guest_conformance_refs);
             var missing_deps = try graphMissingRefs(vault, &.{
                 graph.transcript_refs,
@@ -28956,13 +29092,20 @@ pub const Continuity = struct {
             var missing_deps_owned = true;
             errdefer if (missing_deps_owned) freeRefSlice(vault.allocator, missing_deps);
             try appendMissingDepsFromObjectGraphs(vault, &graph, &missing_deps, &.{
+                graph.environment_refs,
+                graph.permit_refs,
+                graph.receipt_refs,
+                graph.admission_refs,
+                graph.fabric_receipt_refs,
+                graph.guest_conformance_refs,
+                graph.actuation_intent_refs,
                 graph.actuation_receipt_refs,
                 graph.actuation_journal_refs,
             });
             const restorable = missing_deps.len == 0 and !graph.dependency_cycle and image.manifest.kind != .reference_only and image.manifest.kind != .replay_only;
             const replayable = image.run_images.len != 0 or image.run_image_refs.len != 0 or image.manifest.kind == .replay_only;
             const relink_required = image.link_image != null and image.manifest.assembly_fingerprint != null;
-            const actuation_replay_possible = image.actuation_receipt_refs.len != 0 or image.actuation_journal_refs.len != 0;
+            const actuation_replay_possible = graph.actuation_receipt_refs.len != 0 or graph.actuation_journal_refs.len != 0;
             const local_fresh_actuation_required = try capsuleHasUnresolvedActuationIntent(vault, image);
             graph.missing_deps = missing_deps;
             missing_deps_owned = false;
@@ -29111,11 +29254,11 @@ pub const Continuity = struct {
             var receipt_refs: std.ArrayList(ObjectRef) = .empty;
             errdefer receipt_refs.deinit(vault.allocator);
             var pending_refs: std.ArrayList(ObjectRef) = .empty;
-            errdefer pending_refs.deinit(vault.allocator);
+            errdefer deinitRefList(vault.allocator, &pending_refs);
             var committed_refs: std.ArrayList(ObjectRef) = .empty;
-            errdefer committed_refs.deinit(vault.allocator);
+            errdefer deinitRefList(vault.allocator, &committed_refs);
             var replayable_refs: std.ArrayList(ObjectRef) = .empty;
-            errdefer replayable_refs.deinit(vault.allocator);
+            errdefer deinitRefList(vault.allocator, &replayable_refs);
             var intent_refs: std.ArrayList(ObjectRef) = .empty;
             errdefer deinitRefList(vault.allocator, &intent_refs);
             var envelope_refs: std.ArrayList(ObjectRef) = .empty;
@@ -29321,7 +29464,8 @@ pub const Continuity = struct {
     fn isReplayableJournalEntry(entry: Actuation.Journal.Entry) bool {
         return !entry.pending and
             !entry.deferred and
-            entry.response_fingerprint != null;
+            entry.response_fingerprint != null and
+            (journalEntryResponseStatus(entry) != .responded or entry.frame_response_fingerprint != null);
     }
 
     fn journalEntryResponseStatus(entry: Actuation.Journal.Entry) Actuation.ResponseStatus {
@@ -29723,7 +29867,12 @@ pub const Continuity = struct {
                         defer journal.deinit(self.vault.allocator);
                         for (journal.entries.items) |entry| {
                             if (!journalEntryMatchesReceiptQuery(entry, query)) continue;
-                            if (entry.receipt_fingerprint) |fingerprint| try appendUniqueReceiptRefForFingerprint(self.vault, &refs, fingerprint);
+                            if (entry.receipt_fingerprint) |fingerprint| {
+                                try appendUniqueReceiptRefForFingerprint(self.vault, &refs, fingerprint);
+                            } else {
+                                const ref = try journalEntryActuationEvidenceRef(self.vault, envelope.objectRef(), entry);
+                                try appendUniqueRef(&refs, self.vault.allocator, ref);
+                            }
                         }
                     },
                     else => {},
@@ -29743,8 +29892,7 @@ pub const Continuity = struct {
                 defer journal.deinit(self.vault.allocator);
                 for (journal.entries.items) |entry| {
                     if (!journalEntryMatchesIdempotencyKey(entry, key)) continue;
-                    const receipt_fingerprint = entry.receipt_fingerprint orelse continue;
-                    const ref = try refFromStoredOrFingerprint(self.vault, .actuation_receipt, receipt_fingerprint);
+                    const ref = try journalEntryActuationEvidenceRef(self.vault, envelope.objectRef(), entry);
                     if (journalEntryIsTerminalFreshCommit(entry)) {
                         if (entry.commit_fingerprint == null) return error.InvalidFrameEncoding;
                         const record = freshCommitRecordFromJournalEntry(key.key_fingerprint, entry);
@@ -29761,6 +29909,13 @@ pub const Continuity = struct {
             }
             if (terminal_match) |ref| return ref;
             return non_terminal_match;
+        }
+
+        fn journalEntryActuationEvidenceRef(vault: *Continuity.MemoryVault, journal_ref: ObjectRef, entry: Actuation.Journal.Entry) !ObjectRef {
+            if (entry.receipt_fingerprint) |fingerprint| return refFromStoredOrFingerprint(vault, .actuation_receipt, fingerprint);
+            if (entry.commit_fingerprint) |fingerprint| return refFromStoredOrFingerprint(vault, .actuation_commit, fingerprint);
+            if (entry.response_fingerprint) |fingerprint| return refFromStoredOrFingerprint(vault, .actuation_response, fingerprint);
+            return journal_ref;
         }
 
         fn receiptQueryCanMatchJournalEntry(query: ReceiptQuery) bool {
@@ -29975,21 +30130,25 @@ pub const Continuity = struct {
             const has_pending_intent_for_key = try capsuleHasPendingIntentForKey(vault, image, idempotency_key);
             var graph = try CapsuleGraph.fromCapsule(vault, capsule_ref);
             errdefer graph.deinit();
-            if (graph.missing_deps.len != 0) {
-                try vault.ledger.record(.recovery_rejected, capsule_ref);
-                return error.ObjectMissing;
-            }
             if (graph.dependency_cycle) {
                 try vault.ledger.record(.recovery_rejected, capsule_ref);
                 return error.InvalidFrameEncoding;
             }
             if (!has_pending_intent_for_key) {
                 try vault.ledger.record(.recovery_rejected, capsule_ref);
+                if (capsuleMissingDepsContainIntentForKey(idempotency_key, graph.missing_deps)) return error.ObjectMissing;
                 return error.InvalidFrameEncoding;
             }
             if (!graph.local_fresh_actuation_required) {
                 try vault.ledger.record(.recovery_rejected, capsule_ref);
                 return error.InvalidFrameEncoding;
+            }
+            if (graph.missing_deps.len != 0) {
+                const missing_allowed = try capsuleMissingDepsArePendingIntentDeps(vault, image, idempotency_key, graph.missing_deps);
+                if (!missing_allowed) {
+                    try vault.ledger.record(.recovery_rejected, capsule_ref);
+                    return error.ObjectMissing;
+                }
             }
             try vault.ledger.record(.recovery_preflighted, capsule_ref);
             return graph;
@@ -30121,6 +30280,7 @@ pub const Continuity = struct {
             defer bundle.deinit();
             const report = try bundle.validationReport(options);
             if (report.valid) {
+                try canonicalizeBundleDependencyRefsForStorage(&bundle);
                 try rejectDuplicateFreshCommitsAgainstVault(vault, bundle);
                 for (bundle.envelopes) |envelope| try vault.assertCanPutEnvelope(envelope);
             }
@@ -30531,6 +30691,15 @@ pub const Continuity = struct {
                 if (!validActuationIdempotencyKeyPayload(key)) break :blk null;
                 break :blk key.key_fingerprint;
             },
+            .actuation_intent => blk: {
+                var intent = Actuation.Intent.decode(allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => break :blk null,
+                };
+                defer intent.deinit(allocator);
+                if (!validActuationIntentPayload(intent)) break :blk null;
+                break :blk intent.intent_fingerprint;
+            },
             .actuation_envelope => blk: {
                 const actuation_envelope = decodePortableEvidence(Actuation.Envelope, allocator, envelope.payload_bytes) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
@@ -30676,7 +30845,7 @@ pub const Continuity = struct {
         }
 
         fn toResponse(self: @This()) Actuation.Response {
-            return Actuation.Response.init(.{
+            var response = Actuation.Response.init(.{
                 .intent_fingerprint = self.intent_fingerprint,
                 .commit_fingerprint = self.commit_fingerprint,
                 .actuator_ref_fingerprint = self.actuator_ref_fingerprint,
@@ -30694,6 +30863,9 @@ pub const Continuity = struct {
                 .reason = self.reason,
                 .metadata = self.metadata,
             });
+            response.format_version = self.format_version;
+            response.fingerprint_version = self.fingerprint_version;
+            return response;
         }
     };
 
@@ -30745,6 +30917,11 @@ pub const Continuity = struct {
     fn validActuationIdempotencyKeyPayload(key: Actuation.IdempotencyKey) bool {
         key.validate() catch return false;
         return key.key_fingerprint != 0;
+    }
+
+    fn validActuationIntentPayload(intent: Actuation.Intent) bool {
+        intent.validate() catch return false;
+        return intent.intent_fingerprint != 0;
     }
 
     fn validActuationEnvelopePayload(envelope: Actuation.Envelope) bool {
@@ -30955,8 +31132,72 @@ pub const Continuity = struct {
         return true;
     }
 
+    fn storableEnvelopeDeclaresRequiredDependencies(allocator: std.mem.Allocator, envelope: ObjectEnvelope) !bool {
+        const required_refs = try bundleEnvelopeRequiredDependencyRefs(allocator, envelope);
+        defer freeRefSlice(allocator, required_refs);
+        for (required_refs) |required_ref| {
+            if (!storableDeclaredDependenciesContain(envelope.dependency_refs, required_ref)) return false;
+        }
+        return true;
+    }
+
+    fn storableDeclaredDependenciesContain(declared_refs: []const ObjectRef, required_ref: ObjectRef) bool {
+        for (declared_refs) |declared_ref| {
+            if (declared_ref.eql(required_ref)) return true;
+            if (declared_ref.kind == required_ref.kind and declared_ref.object_fingerprint == required_ref.object_fingerprint) return true;
+        }
+        return false;
+    }
+
     fn bundleEnvelopeDependencyPayloadsValid(allocator: std.mem.Allocator, envelopes: []const ObjectEnvelope, envelope: ObjectEnvelope) !bool {
         return switch (envelope.kind) {
+            .actuation_idempotency_key => blk: {
+                const key = decodePortableEvidence(Actuation.IdempotencyKey, allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => break :blk false,
+                };
+                defer deinitOwnedValue(allocator, key);
+                if (!validActuationIdempotencyKeyPayload(key)) break :blk false;
+                const intent_fingerprint = key.intent_fingerprint orelse break :blk true;
+                const intent_ref = semanticObjectRef(.actuation_intent, intent_fingerprint);
+                const intent_envelope = (try bundleEnvelopeForRef(allocator, envelopes, intent_ref)) orelse break :blk true;
+                var intent = Actuation.Intent.decode(allocator, intent_envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => break :blk false,
+                };
+                defer intent.deinit(allocator);
+                if (!validActuationIntentPayload(intent)) break :blk false;
+                Actuation.validateIdempotencyKeyForIntent(key, intent) catch break :blk false;
+                break :blk true;
+            },
+            .actuation_envelope => blk: {
+                const actuation_envelope = decodePortableEvidence(Actuation.Envelope, allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => break :blk false,
+                };
+                defer deinitOwnedValue(allocator, actuation_envelope);
+                if (!validActuationEnvelopePayload(actuation_envelope)) break :blk false;
+                const intent_ref = semanticObjectRef(.actuation_intent, actuation_envelope.intent_fingerprint);
+                const intent_envelope = (try bundleEnvelopeForRef(allocator, envelopes, intent_ref)) orelse break :blk true;
+                var intent = Actuation.Intent.decode(allocator, intent_envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => break :blk false,
+                };
+                defer intent.deinit(allocator);
+                if (!validActuationIntentPayload(intent)) break :blk false;
+                Actuation.validateIdempotencyKeyForIntent(actuation_envelope.idempotency_key, intent) catch break :blk false;
+                break :blk true;
+            },
+            .actuation_receipt => blk: {
+                var receipt = Actuation.Receipt.decode(allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => break :blk false,
+                };
+                defer receipt.deinit(allocator);
+                if (receipt.receipt_fingerprint == 0) break :blk false;
+                receipt.validate() catch break :blk false;
+                break :blk try bundleActuationReceiptDependencyPayloadsValid(allocator, envelopes, receipt);
+            },
             .actuation_commit => blk: {
                 const commit = decodePortableEvidence(Actuation.Commit, allocator, envelope.payload_bytes) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
@@ -30978,6 +31219,105 @@ pub const Continuity = struct {
         };
     }
 
+    fn bundleActuationReceiptDependencyPayloadsValid(allocator: std.mem.Allocator, envelopes: []const ObjectEnvelope, receipt: Actuation.Receipt) !bool {
+        if (try bundleEnvelopeForRef(allocator, envelopes, semanticObjectRef(.actuation_intent, receipt.intent_fingerprint))) |intent_envelope| {
+            var intent = Actuation.Intent.decode(allocator, intent_envelope.payload_bytes) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return false,
+            };
+            defer intent.deinit(allocator);
+            if (!validActuationIntentPayload(intent)) return false;
+            if (intent.intent_fingerprint != receipt.intent_fingerprint) return false;
+            if (intent.actuator_ref_fingerprint != receipt.actuator_ref_fingerprint) return false;
+            if (intent.target_ref_fingerprint != receipt.target_ref_fingerprint) return false;
+            if (intent.world_surface_fingerprint != receipt.world_surface_fingerprint) return false;
+            if (intent.world_port_id != receipt.world_port_id) return false;
+            if (receipt.request_fingerprint) |fingerprint| if (intent.frame_request_fingerprint != fingerprint) return false;
+            if (intent.idempotency_key_fingerprint != receipt.idempotency_key_fingerprint) return false;
+            if (intent.class != receipt.class) return false;
+            if (intent.requested_mode != receipt.mode) return false;
+        }
+
+        if (try bundleEnvelopeForRef(allocator, envelopes, semanticObjectRef(.actuation_envelope, receipt.envelope_fingerprint))) |actuation_envelope| {
+            const envelope = decodePortableEvidence(Actuation.Envelope, allocator, actuation_envelope.payload_bytes) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return false,
+            };
+            defer deinitOwnedValue(allocator, envelope);
+            if (!validActuationEnvelopePayload(envelope)) return false;
+            if (envelope.envelope_fingerprint != receipt.envelope_fingerprint) return false;
+            if (envelope.intent_fingerprint != receipt.intent_fingerprint) return false;
+            if (envelope.idempotency_key.key_fingerprint != receipt.idempotency_key_fingerprint) return false;
+            if (receipt.request_fingerprint) |fingerprint| if (envelope.idempotency_key.request_fingerprint != fingerprint) return false;
+        }
+
+        if (try bundleEnvelopeForRef(allocator, envelopes, semanticObjectRef(.actuation_idempotency_key, receipt.idempotency_key_fingerprint))) |key_envelope| {
+            const key = decodePortableEvidence(Actuation.IdempotencyKey, allocator, key_envelope.payload_bytes) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return false,
+            };
+            defer deinitOwnedValue(allocator, key);
+            if (!validActuationIdempotencyKeyPayload(key)) return false;
+            if (key.key_fingerprint != receipt.idempotency_key_fingerprint) return false;
+            if (key.target_ref_fingerprint != receipt.target_ref_fingerprint) return false;
+            if (key.world_surface_fingerprint != receipt.world_surface_fingerprint) return false;
+            if (key.world_port_id != receipt.world_port_id) return false;
+            if (receipt.request_fingerprint) |fingerprint| if (key.request_fingerprint != fingerprint) return false;
+            if (key.actuator_ref_fingerprint != receipt.actuator_ref_fingerprint) return false;
+            if (key.intent_fingerprint) |fingerprint| if (fingerprint != receipt.intent_fingerprint) return false;
+            if (key.capsule_fingerprint != receipt.capsule_fingerprint) return false;
+        }
+
+        if (try bundleEnvelopeForRef(allocator, envelopes, semanticObjectRef(.actuation_decision, receipt.decision_fingerprint))) |decision_envelope| {
+            const decision = decodePortableEvidence(Actuation.Decision, allocator, decision_envelope.payload_bytes) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return false,
+            };
+            defer deinitOwnedValue(allocator, decision);
+            if (!validActuationDecisionPayload(decision)) return false;
+            if (decision.decision_fingerprint != receipt.decision_fingerprint) return false;
+            if (decision.intent_fingerprint != receipt.intent_fingerprint) return false;
+        }
+
+        if (try bundleEnvelopeForRef(allocator, envelopes, semanticObjectRef(.actuation_commit, receipt.commit_fingerprint))) |commit_envelope| {
+            const commit = decodePortableEvidence(Actuation.Commit, allocator, commit_envelope.payload_bytes) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return false,
+            };
+            defer deinitOwnedValue(allocator, commit);
+            if (!validActuationCommitPayload(commit)) return false;
+            if (commit.commit_fingerprint != receipt.commit_fingerprint) return false;
+            if (commit.intent_fingerprint != receipt.intent_fingerprint) return false;
+            if (commit.decision_fingerprint != receipt.decision_fingerprint) return false;
+            if (commit.envelope_fingerprint != receipt.envelope_fingerprint) return false;
+            if (commit.idempotency_key_fingerprint != receipt.idempotency_key_fingerprint) return false;
+            if (commit.fresh_called != receipt.fresh_called) return false;
+            if (commit.replayed != receipt.replayed) return false;
+            if (commit.verified != receipt.verified) return false;
+        }
+
+        if (try bundleEnvelopeForRef(allocator, envelopes, semanticObjectRef(.actuation_response, receipt.response_fingerprint))) |response_envelope| {
+            const response = decodePortableEvidence(Actuation.Response, allocator, response_envelope.payload_bytes) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return false,
+            };
+            defer deinitOwnedValue(allocator, response);
+            if (!validActuationResponsePayload(response)) return false;
+            if (response.response_fingerprint != receipt.response_fingerprint) return false;
+            if (response.intent_fingerprint != receipt.intent_fingerprint) return false;
+            if (response.commit_fingerprint) |fingerprint| if (fingerprint != receipt.commit_fingerprint) return false;
+            if (response.actuator_ref_fingerprint != receipt.actuator_ref_fingerprint) return false;
+            if (response.world_port_id != receipt.world_port_id) return false;
+            if (receipt.request_fingerprint) |fingerprint| if (response.request_fingerprint != fingerprint) return false;
+            if (response.status != receipt.responseStatus()) return false;
+            if (response.response_kind != receipt.response_kind) return false;
+            if (response.frame_response_fingerprint != receipt.frame_response_fingerprint) return false;
+            if (response.value_image_fingerprint != receipt.response_value_image_fingerprint) return false;
+        }
+
+        return true;
+    }
+
     fn bundleEnvelopeRequiredDependencyRefs(allocator: std.mem.Allocator, envelope: ObjectEnvelope) ![]ObjectRef {
         return switch (envelope.kind) {
             .actuation_descriptor => blk: {
@@ -30994,6 +31334,11 @@ pub const Continuity = struct {
                 const key = try decodePortableEvidence(Actuation.IdempotencyKey, allocator, envelope.payload_bytes);
                 defer deinitOwnedValue(allocator, key);
                 break :blk try bundleActuationIdempotencyKeyRequiredDependencyRefs(allocator, key);
+            },
+            .actuation_intent => blk: {
+                var intent = try Actuation.Intent.decode(allocator, envelope.payload_bytes);
+                defer intent.deinit(allocator);
+                break :blk try bundleActuationIntentRequiredDependencyRefs(allocator, intent);
             },
             .actuation_receipt => blk: {
                 var receipt = try Actuation.Receipt.decode(allocator, envelope.payload_bytes);
@@ -31049,6 +31394,16 @@ pub const Continuity = struct {
                 const receipt = try decodePortableEvidence(Fabric.Receipt, allocator, envelope.payload_bytes);
                 defer deinitOwnedValue(allocator, receipt);
                 break :blk try bundleFabricReceiptRequiredDependencyRefs(allocator, receipt);
+            },
+            .frame_response => blk: {
+                var response = try Frame.Response.decode(allocator, envelope.payload_bytes);
+                defer response.deinit(allocator);
+                break :blk try bundleFrameResponseRequiredDependencyRefs(allocator, response);
+            },
+            .guest_conformance_report => blk: {
+                const report = try decodePortableEvidence(Guest.ConformanceReport, allocator, envelope.payload_bytes);
+                defer deinitOwnedValue(allocator, report);
+                break :blk try bundleGuestConformanceReportRequiredDependencyRefs(allocator, report);
             },
             .capsule_image => blk: {
                 var image = try Capsule.Image.decode(allocator, envelope.payload_bytes);
@@ -31132,6 +31487,22 @@ pub const Continuity = struct {
         return refs.toOwnedSlice(allocator);
     }
 
+    fn bundleActuationIntentRequiredDependencyRefs(allocator: std.mem.Allocator, intent: Actuation.Intent) ![]ObjectRef {
+        var refs: std.ArrayList(ObjectRef) = .empty;
+        errdefer deinitRefList(allocator, &refs);
+        try appendUniqueSemanticRef(allocator, &refs, .actuator_ref, intent.actuator_ref_fingerprint);
+        try appendUniqueSemanticRef(allocator, &refs, .actuation_descriptor, intent.descriptor_fingerprint);
+        if (intent.binding_fingerprint) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .actuation_binding, fingerprint);
+        try appendUniqueSemanticRef(allocator, &refs, .frame_request, intent.frame_request_fingerprint);
+        if (intent.encoded_frame_request_fingerprint) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .frame_request, fingerprint);
+        if (intent.payload_value_image_fingerprint) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .value_image, fingerprint);
+        try appendUniqueSemanticRef(allocator, &refs, .actuation_idempotency_key, intent.idempotency_key_fingerprint);
+        if (intent.run_permit_fingerprint) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .run_permit, fingerprint);
+        if (intent.environment_certificate_fingerprint) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .environment_certificate, fingerprint);
+        if (intent.capsule_fingerprint) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .capsule_image, fingerprint);
+        return refs.toOwnedSlice(allocator);
+    }
+
     fn bundleActuationEnvelopeRequiredDependencyRefs(allocator: std.mem.Allocator, envelope: Actuation.Envelope) ![]ObjectRef {
         var refs: std.ArrayList(ObjectRef) = .empty;
         errdefer deinitRefList(allocator, &refs);
@@ -31183,6 +31554,29 @@ pub const Continuity = struct {
         return refs.toOwnedSlice(allocator);
     }
 
+    fn bundleFrameResponseRequiredDependencyRefs(allocator: std.mem.Allocator, response: Frame.Response) ![]ObjectRef {
+        var refs: std.ArrayList(ObjectRef) = .empty;
+        errdefer deinitRefList(allocator, &refs);
+        try appendUniqueSemanticRef(allocator, &refs, .frame_request, response.request_fingerprint);
+        return refs.toOwnedSlice(allocator);
+    }
+
+    fn bundleGuestConformanceReportRequiredDependencyRefs(allocator: std.mem.Allocator, report: Guest.ConformanceReport) ![]ObjectRef {
+        var refs: std.ArrayList(ObjectRef) = .empty;
+        errdefer deinitRefList(allocator, &refs);
+        try appendGuestRunResultDependencyRefs(allocator, &refs, report.native_run_result);
+        try appendGuestRunResultDependencyRefs(allocator, &refs, report.native_abi_result);
+        if (report.wasm_runtime_result) |summary| try appendGuestRunResultDependencyRefs(allocator, &refs, summary);
+        return refs.toOwnedSlice(allocator);
+    }
+
+    fn appendGuestRunResultDependencyRefs(allocator: std.mem.Allocator, refs: *std.ArrayList(ObjectRef), summary: Guest.RunResultSummary) !void {
+        if (summary.transcript_fingerprint) |fingerprint| try appendUniqueSemanticRef(allocator, refs, .transcript_image, fingerprint);
+        if (summary.receipt_fingerprint) |fingerprint| try appendUniqueSemanticRef(allocator, refs, .run_receipt, fingerprint);
+        for (summary.pending_frame_fingerprints) |fingerprint| try appendUniqueSemanticRef(allocator, refs, .frame_request, fingerprint);
+        for (summary.actuation_receipt_fingerprints) |fingerprint| try appendUniqueSemanticRef(allocator, refs, .actuation_receipt, fingerprint);
+    }
+
     fn bundleRunPermitRequiredDependencyRefs(allocator: std.mem.Allocator, permit: RunPermit) ![]ObjectRef {
         var refs: std.ArrayList(ObjectRef) = .empty;
         errdefer deinitRefList(allocator, &refs);
@@ -31226,14 +31620,61 @@ pub const Continuity = struct {
 
     fn bundleDeclaredDependenciesContain(allocator: std.mem.Allocator, envelopes: []const ObjectEnvelope, declared_refs: []const ObjectRef, required_ref: ObjectRef) !bool {
         for (declared_refs) |declared_ref| {
-            if (declared_ref.eql(required_ref)) return true;
-            if (required_ref.byte_len != 0 or declared_ref.kind != required_ref.kind) continue;
-            if (declared_ref.byte_len == 0 and declared_ref.object_fingerprint == required_ref.object_fingerprint) return true;
-            if (try bundleEnvelopeForRef(allocator, envelopes, declared_ref)) |declared_envelope| {
-                if (try bundleEnvelopeSemanticFingerprintMatches(allocator, declared_envelope, required_ref.object_fingerprint)) return true;
-            }
+            if (try bundleDeclaredDependencyRefSatisfiesRequiredRef(allocator, envelopes, declared_ref, required_ref)) return true;
         }
         return false;
+    }
+
+    fn bundleDeclaredDependencyRefSatisfiesRequiredRef(allocator: std.mem.Allocator, envelopes: []const ObjectEnvelope, declared_ref: ObjectRef, required_ref: ObjectRef) !bool {
+        if (declared_ref.eql(required_ref)) return true;
+        if (required_ref.byte_len != 0 or declared_ref.kind != required_ref.kind) return false;
+        if (declared_ref.byte_len == 0 and declared_ref.object_fingerprint == required_ref.object_fingerprint) return true;
+        if (try bundleEnvelopeForRef(allocator, envelopes, declared_ref)) |declared_envelope| {
+            if (try bundleEnvelopeSemanticFingerprintMatches(allocator, declared_envelope, required_ref.object_fingerprint)) return true;
+        }
+        return false;
+    }
+
+    fn canonicalizeBundleDependencyRefsForStorage(bundle: *Bundle) !void {
+        for (bundle.envelopes) |*envelope| {
+            try canonicalizeEnvelopeDependencyRefsForStorage(bundle.allocator, bundle.envelopes, envelope);
+        }
+    }
+
+    fn canonicalizeEnvelopeDependencyRefsForStorage(allocator: std.mem.Allocator, envelopes: []const ObjectEnvelope, envelope: *ObjectEnvelope) !void {
+        const required_refs = try bundleEnvelopeRequiredDependencyRefs(allocator, envelope.*);
+        defer freeRefSlice(allocator, required_refs);
+
+        var canonical_refs: std.ArrayList(ObjectRef) = .empty;
+        errdefer deinitRefList(allocator, &canonical_refs);
+        var changed = false;
+
+        for (envelope.dependency_refs) |declared_ref| {
+            var replacement_ref: ?ObjectRef = null;
+            for (required_refs) |required_ref| {
+                if (storableDeclaredDependenciesContain(&.{declared_ref}, required_ref)) continue;
+                if (try bundleDeclaredDependencyRefSatisfiesRequiredRef(allocator, envelopes, declared_ref, required_ref)) {
+                    replacement_ref = required_ref;
+                    changed = true;
+                    break;
+                }
+            }
+            var canonical_ref = replacement_ref orelse try declared_ref.clone(allocator);
+            canonical_refs.append(allocator, canonical_ref) catch |err| {
+                canonical_ref.deinit(allocator);
+                return err;
+            };
+        }
+
+        if (!changed) {
+            deinitRefList(allocator, &canonical_refs);
+            return;
+        }
+
+        const new_refs = try canonical_refs.toOwnedSlice(allocator);
+        if (envelope.owns_memory) freeRefSlice(allocator, @constCast(envelope.dependency_refs));
+        envelope.dependency_refs = new_refs;
+        envelope.envelope_fingerprint = fingerprintObjectEnvelope(envelope.*);
     }
 
     fn opaqueContinuityPayloadKind(kind: ObjectKind) bool {
@@ -31635,8 +32076,27 @@ pub const Continuity = struct {
         return refs.toOwnedSlice(vault.allocator);
     }
 
+    fn capsuleActuationRefs(vault: *Continuity.MemoryVault, image: Capsule.Image, kind: ObjectKind, fingerprint_slices: []const []const u64) ![]ObjectRef {
+        var refs: std.ArrayList(ObjectRef) = .empty;
+        errdefer deinitRefList(vault.allocator, &refs);
+        for (fingerprint_slices) |fingerprints| {
+            for (fingerprints) |fingerprint| try appendUniqueRefForFingerprint(vault, &refs, kind, fingerprint);
+        }
+        if (image.runspace_image.mailbox_image) |mailbox| switch (kind) {
+            .actuation_intent => for (mailbox.pending_actuation_intent_fingerprints) |fingerprint| try appendUniqueRefForFingerprint(vault, &refs, kind, fingerprint),
+            .actuation_receipt => for (mailbox.committed_actuation_receipt_fingerprints) |fingerprint| try appendUniqueRefForFingerprint(vault, &refs, kind, fingerprint),
+            .actuation_journal => {},
+            else => unreachable,
+        };
+        return refs.toOwnedSlice(vault.allocator);
+    }
+
     fn capsuleDependencyEmbedded(image: Capsule.Image, kind: ObjectKind, fingerprint: u64) bool {
         return switch (kind) {
+            .capsule_manifest => image.manifest.manifest_fingerprint == fingerprint,
+            .capsule_runspace_image => image.runspace_image.image_fingerprint == fingerprint,
+            .capsule_link_image => if (image.link_image) |embedded| embedded.link_image_fingerprint == fingerprint else false,
+            .capsule_fabric_image => if (image.fabric_image) |embedded| embedded.fabric_image_fingerprint == fingerprint else false,
             .transcript_image => blk: {
                 for (image.transcript_images) |embedded| {
                     if (embedded.transcript_image_fingerprint == fingerprint) break :blk true;
@@ -31689,6 +32149,22 @@ pub const Continuity = struct {
             const kind = continuityKindForActuationDependency(dep.kind) orelse continue;
             try refs.append(vault.allocator, try refFromStoredOrFingerprint(vault, kind, dep.fingerprint));
         }
+        return refs.toOwnedSlice(vault.allocator);
+    }
+
+    fn actuationIntentStoredDependencyRefs(vault: *Continuity.MemoryVault, intent: Actuation.Intent) ![]ObjectRef {
+        var refs: std.ArrayList(ObjectRef) = .empty;
+        errdefer deinitRefList(vault.allocator, &refs);
+        try appendActuationEvidenceRef(vault, &refs, .actuator_ref, intent.actuator_ref_fingerprint);
+        try appendActuationEvidenceRef(vault, &refs, .actuation_descriptor, intent.descriptor_fingerprint);
+        if (intent.binding_fingerprint) |fingerprint| try appendActuationEvidenceRef(vault, &refs, .actuation_binding, fingerprint);
+        try appendUniqueRefForFingerprint(vault, &refs, .frame_request, intent.frame_request_fingerprint);
+        if (intent.encoded_frame_request_fingerprint) |fingerprint| try appendUniqueRefForFingerprint(vault, &refs, .frame_request, fingerprint);
+        if (intent.payload_value_image_fingerprint) |fingerprint| try appendUniqueRefForFingerprint(vault, &refs, .value_image, fingerprint);
+        try appendActuationEvidenceRef(vault, &refs, .actuation_idempotency_key, intent.idempotency_key_fingerprint);
+        if (intent.run_permit_fingerprint) |fingerprint| try appendUniqueRefForFingerprint(vault, &refs, .run_permit, fingerprint);
+        if (intent.environment_certificate_fingerprint) |fingerprint| try appendUniqueRefForFingerprint(vault, &refs, .environment_certificate, fingerprint);
+        if (intent.capsule_fingerprint) |fingerprint| try appendUniqueRefForFingerprint(vault, &refs, .capsule_image, fingerprint);
         return refs.toOwnedSlice(vault.allocator);
     }
 
@@ -31856,6 +32332,44 @@ pub const Continuity = struct {
         return false;
     }
 
+    fn capsuleMissingDepsArePendingIntentDeps(vault: *Continuity.MemoryVault, image: Capsule.Image, key: Actuation.IdempotencyKey, missing_deps: []const ObjectRef) !bool {
+        var allowed: std.ArrayList(ObjectRef) = .empty;
+        defer deinitRefList(vault.allocator, &allowed);
+        try appendPendingIntentDependencyRefs(vault, image, key, image.actuation_intent_refs, &allowed);
+        try appendPendingIntentDependencyRefs(vault, image, key, image.runspace_image.actuation_intent_refs, &allowed);
+        try appendPendingIntentDependencyRefs(vault, image, key, image.manifest.actuation_intent_fingerprints, &allowed);
+        if (image.runspace_image.mailbox_image) |mailbox| {
+            try appendPendingIntentDependencyRefs(vault, image, key, mailbox.pending_actuation_intent_fingerprints, &allowed);
+        }
+        if (allowed.items.len == 0) return false;
+        for (missing_deps) |dep| {
+            if (!containsRef(allowed.items, dep)) return false;
+        }
+        return true;
+    }
+
+    fn capsuleMissingDepsContainIntentForKey(key: Actuation.IdempotencyKey, missing_deps: []const ObjectRef) bool {
+        const intent_fingerprint = key.intent_fingerprint orelse return false;
+        for (missing_deps) |dep| {
+            if (dep.kind == .actuation_intent and dep.object_fingerprint == intent_fingerprint) return true;
+        }
+        return false;
+    }
+
+    fn appendPendingIntentDependencyRefs(vault: *Continuity.MemoryVault, image: Capsule.Image, key: Actuation.IdempotencyKey, intent_fingerprints: []const u64, allowed: *std.ArrayList(ObjectRef)) !void {
+        for (intent_fingerprints) |intent_fingerprint| {
+            if (!(try capsulePendingIntentRefMatchesKey(vault, image, key, intent_fingerprint))) continue;
+            const intent_ref = (try vault.refByKindFingerprint(.actuation_intent, intent_fingerprint)) orelse continue;
+            var intent = try vault.getActuationIntent(intent_ref);
+            defer intent.deinit(vault.allocator);
+            const deps = try actuationIntentStoredDependencyRefs(vault, intent);
+            defer freeRefSlice(vault.allocator, deps);
+            for (deps) |dep| {
+                if (!containsRef(allowed.items, dep)) try allowed.append(vault.allocator, try dep.clone(vault.allocator));
+            }
+        }
+    }
+
     fn capsulePendingIntentRefMatchesKey(vault: *Continuity.MemoryVault, image: Capsule.Image, key: Actuation.IdempotencyKey, intent_fingerprint: u64) !bool {
         if (key.intent_fingerprint) |key_intent| {
             if (key_intent != intent_fingerprint) return false;
@@ -31898,6 +32412,9 @@ pub const Continuity = struct {
         if (receipt.actuator_ref_fingerprint != key.actuator_ref_fingerprint) return false;
         if (key.intent_fingerprint) |intent_fingerprint| {
             if (receipt.intent_fingerprint != intent_fingerprint) return false;
+        }
+        if (key.capsule_fingerprint) |capsule_fingerprint| {
+            if (receipt.capsule_fingerprint == null or receipt.capsule_fingerprint.? != capsule_fingerprint) return false;
         }
         return true;
     }
@@ -32034,6 +32551,7 @@ pub const Continuity = struct {
         for (missing.*) |dep| try refs.append(vault.allocator, try dep.clone(vault.allocator));
         for (slices) |roots| {
             for (roots) |root| {
+                if (!vault.has(root)) continue;
                 var object_graph = try ObjectGraph.buildFromRoots(vault, &.{root}, .{});
                 defer object_graph.deinit();
                 graph.dependency_cycle = graph.dependency_cycle or object_graph.dependency_cycle;
@@ -32258,6 +32776,15 @@ test "continuity actuation receipt and journal codecs roundtrip" {
     oversized_journal.next_order = Actuation.max_journal_entries + 1;
     oversized_journal.refreshFingerprint();
     try std.testing.expectError(error.InvalidFrameEncoding, oversized_journal.validate());
+
+    var overflow_cursor_journal = Actuation.Journal.init();
+    defer overflow_cursor_journal.deinit(allocator);
+    try overflow_cursor_journal.appendReceipt(allocator, receipt);
+    overflow_cursor_journal.next_order = std.math.maxInt(u64);
+    overflow_cursor_journal.refreshFingerprint();
+    const overflow_cursor_bytes = try overflow_cursor_journal.encode(allocator);
+    defer allocator.free(overflow_cursor_bytes);
+    try std.testing.expectError(error.InvalidFrameEncoding, Actuation.Journal.decode(allocator, overflow_cursor_bytes));
 }
 
 test "memory vault put get has list and deduplicates envelopes" {
@@ -32394,6 +32921,25 @@ test "object graph builds closure and reports missing dependencies" {
     const report = try Continuity.ObjectGraph.validateClosure(&vault, &.{root_ref}, .{});
     try std.testing.expect(!report.valid);
     try std.testing.expectEqual(@as(usize, 1), report.missing_dependency_count);
+
+    const child_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .capsule_manifest,
+        .object_format_version = world_capsule_manifest_format_version,
+        .dependency_refs = &.{missing_dep},
+        .payload_bytes = "child-manifest",
+    });
+    const child_ref = try vault.put(child_envelope);
+    const transitive_root_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .capsule_manifest,
+        .object_format_version = world_capsule_manifest_format_version,
+        .dependency_refs = &.{child_ref},
+        .payload_bytes = "transitive-root-manifest",
+    });
+    const transitive_root_ref = try vault.put(transitive_root_envelope);
+    const transitive_report = try vault.validate(transitive_root_ref);
+    try std.testing.expect(!transitive_report.valid);
+    try std.testing.expectEqual(@as(usize, 1), transitive_report.missing_dependency_count);
+    try std.testing.expectEqual(Continuity.ObjectValidationReport.Blocker.MissingDependency, transitive_report.blockers[0]);
 }
 
 test "bundle export validates typed dependencies after graph expansion" {
@@ -32427,9 +32973,17 @@ test "bundle export validates typed dependencies after graph expansion" {
     });
     const payload = try receipt.encode(allocator);
     defer allocator.free(payload);
+    const receipt_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_receipt,
+        .object_format_version = world_actuation_receipt_format_version,
+        .payload_bytes = payload,
+    });
+    const receipt_deps = try Continuity.bundleEnvelopeRequiredDependencyRefs(allocator, receipt_envelope);
+    defer Continuity.freeRefSlice(allocator, receipt_deps);
     const receipt_ref = try vault.put(Continuity.ObjectEnvelope.init(.{
         .kind = .actuation_receipt,
         .object_format_version = world_actuation_receipt_format_version,
+        .dependency_refs = receipt_deps,
         .payload_bytes = payload,
     }));
 
@@ -32975,8 +33529,15 @@ test "vault resolves portable evidence envelopes by semantic fingerprint" {
     var permit_payload: std.ArrayList(u8) = .empty;
     defer permit_payload.deinit(allocator);
     try encodePortableValue(RunPermit, allocator, &permit_payload, permit);
+    const permit_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .run_permit,
+        .payload_bytes = permit_payload.items,
+    });
+    const permit_deps = try Continuity.bundleEnvelopeRequiredDependencyRefs(allocator, permit_envelope);
+    defer Continuity.freeRefSlice(allocator, permit_deps);
     _ = try vault.put(Continuity.ObjectEnvelope.init(.{
         .kind = .run_permit,
+        .dependency_refs = permit_deps,
         .payload_bytes = permit_payload.items,
     }));
     const permit_ref = (try vault.refByKindFingerprint(.run_permit, permit.permit_fingerprint)) orelse return error.TestUnexpectedResult;
@@ -32993,8 +33554,15 @@ test "vault resolves portable evidence envelopes by semantic fingerprint" {
     var run_receipt_payload: std.ArrayList(u8) = .empty;
     defer run_receipt_payload.deinit(allocator);
     try encodePortableValue(RunReceipt, allocator, &run_receipt_payload, run_receipt);
+    const run_receipt_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .run_receipt,
+        .payload_bytes = run_receipt_payload.items,
+    });
+    const run_receipt_deps = try Continuity.bundleEnvelopeRequiredDependencyRefs(allocator, run_receipt_envelope);
+    defer Continuity.freeRefSlice(allocator, run_receipt_deps);
     _ = try vault.put(Continuity.ObjectEnvelope.init(.{
         .kind = .run_receipt,
+        .dependency_refs = run_receipt_deps,
         .payload_bytes = run_receipt_payload.items,
     }));
     const run_receipt_ref = (try vault.refByKindFingerprint(.run_receipt, run_receipt.receipt_fingerprint)) orelse return error.TestUnexpectedResult;
@@ -33015,8 +33583,15 @@ test "vault resolves portable evidence envelopes by semantic fingerprint" {
     var admission_payload: std.ArrayList(u8) = .empty;
     defer admission_payload.deinit(allocator);
     try encodePortableValue(Admission.AdmissionReceipt, allocator, &admission_payload, admission_receipt);
+    const admission_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .admission_receipt,
+        .payload_bytes = admission_payload.items,
+    });
+    const admission_deps = try Continuity.bundleEnvelopeRequiredDependencyRefs(allocator, admission_envelope);
+    defer Continuity.freeRefSlice(allocator, admission_deps);
     _ = try vault.put(Continuity.ObjectEnvelope.init(.{
         .kind = .admission_receipt,
+        .dependency_refs = admission_deps,
         .payload_bytes = admission_payload.items,
     }));
     const admission_ref = (try vault.refByKindFingerprint(.admission_receipt, admission_receipt.receipt_fingerprint)) orelse return error.TestUnexpectedResult;
@@ -33033,8 +33608,15 @@ test "vault resolves portable evidence envelopes by semantic fingerprint" {
     var fabric_payload: std.ArrayList(u8) = .empty;
     defer fabric_payload.deinit(allocator);
     try encodePortableValue(Fabric.Receipt, allocator, &fabric_payload, fabric_receipt);
+    const fabric_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .fabric_receipt,
+        .payload_bytes = fabric_payload.items,
+    });
+    const fabric_deps = try Continuity.bundleEnvelopeRequiredDependencyRefs(allocator, fabric_envelope);
+    defer Continuity.freeRefSlice(allocator, fabric_deps);
     _ = try vault.put(Continuity.ObjectEnvelope.init(.{
         .kind = .fabric_receipt,
+        .dependency_refs = fabric_deps,
         .payload_bytes = fabric_payload.items,
     }));
     const fabric_ref = (try vault.refByKindFingerprint(.fabric_receipt, fabric_receipt.receipt_fingerprint)) orelse return error.TestUnexpectedResult;
@@ -33061,8 +33643,15 @@ test "vault resolves portable evidence envelopes by semantic fingerprint" {
     var report_payload: std.ArrayList(u8) = .empty;
     defer report_payload.deinit(allocator);
     try encodePortableValue(Guest.ConformanceReport, allocator, &report_payload, report);
+    const report_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .guest_conformance_report,
+        .payload_bytes = report_payload.items,
+    });
+    const report_deps = try Continuity.bundleEnvelopeRequiredDependencyRefs(allocator, report_envelope);
+    defer Continuity.freeRefSlice(allocator, report_deps);
     _ = try vault.put(Continuity.ObjectEnvelope.init(.{
         .kind = .guest_conformance_report,
+        .dependency_refs = report_deps,
         .payload_bytes = report_payload.items,
     }));
     const report_ref = (try vault.refByKindFingerprint(.guest_conformance_report, report.report_fingerprint)) orelse return error.TestUnexpectedResult;
@@ -33709,9 +34298,12 @@ test "actuation graph builds from receipt journal and detects duplicate fresh co
     try std.testing.expectError(error.DuplicateBinding, vault.putActuationReceipt(duplicate));
     const duplicate_payload = try duplicate.encode(allocator);
     defer allocator.free(duplicate_payload);
+    const duplicate_deps = try Continuity.bundleActuationReceiptRequiredDependencyRefs(allocator, duplicate);
+    defer Continuity.freeRefSlice(allocator, duplicate_deps);
     try std.testing.expectError(error.DuplicateBinding, vault.put(Continuity.ObjectEnvelope.init(.{
         .kind = .actuation_receipt,
         .object_format_version = duplicate.format_version,
+        .dependency_refs = duplicate_deps,
         .payload_bytes = duplicate_payload,
     })));
     var journal = Actuation.Journal.init();
@@ -33801,6 +34393,51 @@ test "actuation graph builds from receipt journal and detects duplicate fresh co
     try std.testing.expectEqual(@as(usize, 1), mixed_summary.fresh_commit_count);
     try std.testing.expectEqual(@as(usize, 1), mixed_summary.committed_count);
 
+    var terminal_error_vault = Continuity.MemoryVault.init(allocator);
+    defer terminal_error_vault.deinit();
+    const rejected_for_key = Actuation.Receipt.init(.{
+        .intent_fingerprint = receipt.intent_fingerprint,
+        .envelope_fingerprint = receipt.envelope_fingerprint,
+        .decision_fingerprint = receipt.decision_fingerprint,
+        .commit_fingerprint = 0x3280_00a3,
+        .response_fingerprint = 0x3280_00a4,
+        .actuator_ref_fingerprint = key.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .request_fingerprint = key.request_fingerprint,
+        .target_ref_fingerprint = key.target_ref_fingerprint,
+        .world_surface_fingerprint = key.world_surface_fingerprint,
+        .world_port_id = key.world_port_id,
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+        .rejected = true,
+        .attempt_number = 2,
+    });
+    const rejected_ref = try terminal_error_vault.putActuationReceipt(rejected_for_key);
+    const later_pending = Actuation.Receipt.init(.{
+        .intent_fingerprint = receipt.intent_fingerprint,
+        .envelope_fingerprint = receipt.envelope_fingerprint,
+        .decision_fingerprint = receipt.decision_fingerprint,
+        .commit_fingerprint = 0x3280_00b3,
+        .response_fingerprint = 0x3280_00b4,
+        .frame_response_fingerprint = 0x3280_00b5,
+        .actuator_ref_fingerprint = key.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .request_fingerprint = key.request_fingerprint,
+        .target_ref_fingerprint = key.target_ref_fingerprint,
+        .world_surface_fingerprint = key.world_surface_fingerprint,
+        .world_port_id = key.world_port_id,
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+        .fresh_called = true,
+        .pending = true,
+        .attempt_number = 1,
+    });
+    _ = try terminal_error_vault.putActuationReceipt(later_pending);
+    const selected_ref = (try terminal_error_vault.lookupActuationByIdempotencyKey(key)) orelse return error.TestUnexpectedResult;
+    try std.testing.expect(selected_ref.eql(rejected_ref));
+    const replayed_rejected = try Continuity.Recovery.replayActuation(&terminal_error_vault, key);
+    try std.testing.expectEqual(Actuation.ResponseStatus.rejected, replayed_rejected.status);
+
     var commit_only_vault = Continuity.MemoryVault.init(allocator);
     defer commit_only_vault.deinit();
     const single_commit_only = Actuation.Commit.init(.{
@@ -33846,6 +34483,25 @@ test "actuation graph builds from receipt journal and detects duplicate fresh co
     try std.testing.expectEqual(@as(usize, 1), replayable_commit_only_summary.committed_count);
     try std.testing.expectEqual(@as(usize, 1), replayable_commit_only_summary.replayable_count);
     try std.testing.expectEqual(Continuity.ObjectKind.actuation_commit, replayable_commit_only_by_key.replayable_actuation_refs[0].kind);
+
+    var response_without_frame_vault = Continuity.MemoryVault.init(allocator);
+    defer response_without_frame_vault.deinit();
+    var response_without_frame_journal = Actuation.Journal.init();
+    defer response_without_frame_journal.deinit(allocator);
+    try response_without_frame_journal.entries.append(allocator, .{
+        .order = response_without_frame_journal.takeOrder(),
+        .intent_fingerprint = receipt.intent_fingerprint,
+        .commit_fingerprint = receipt.commit_fingerprint,
+        .response_fingerprint = receipt.response_fingerprint,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .request_fingerprint = key.request_fingerprint,
+        .fresh_called = true,
+    });
+    response_without_frame_journal.refreshFingerprint();
+    const response_without_frame_ref = try response_without_frame_vault.putActuationJournal(response_without_frame_journal);
+    var response_without_frame_graph = try Continuity.ActuationGraph.fromJournal(&response_without_frame_vault, response_without_frame_ref);
+    defer response_without_frame_graph.deinit();
+    try std.testing.expectEqual(@as(usize, 0), response_without_frame_graph.summary().replayable_count);
 
     var same_commit_lookup_vault = Continuity.MemoryVault.init(allocator);
     defer same_commit_lookup_vault.deinit();
@@ -34195,10 +34851,7 @@ test "actuation envelope dependencies cover frame request and payload evidence" 
         .object_format_version = envelope.format_version,
         .payload_bytes = payload,
     });
-    const incomplete_ref = try vault.put(incomplete_envelope);
-    const incomplete_report = try vault.validate(incomplete_ref);
-    try std.testing.expect(!incomplete_report.valid);
-    try std.testing.expectEqual(Continuity.ObjectValidationReport.Blocker.MissingDependency, incomplete_report.blockers[0]);
+    try std.testing.expectError(error.InvalidFrameEncoding, vault.put(incomplete_envelope));
 
     var incomplete_bundle_envelopes = [_]Continuity.ObjectEnvelope{incomplete_envelope};
     var incomplete_bundle_roots = [_]Continuity.ObjectRef{incomplete_envelope.objectRef()};
@@ -34241,6 +34894,81 @@ test "actuation envelope dependencies cover frame request and payload evidence" 
     const complete_bundle_report = try Continuity.Bundle.validate(allocator, complete_bytes, .{ .allow_external_dependencies = true });
     try std.testing.expect(complete_bundle_report.valid);
     try std.testing.expect(complete_bundle_report.missing_dependency_count >= 5);
+
+    const matching_intent = Actuation.Intent.init(.{
+        .actuator_ref_fingerprint = key.actuator_ref_fingerprint,
+        .descriptor_fingerprint = 0x3286_0020,
+        .target_ref_fingerprint = key.target_ref_fingerprint,
+        .world_surface_fingerprint = key.world_surface_fingerprint,
+        .world_port_id = key.world_port_id,
+        .frame_request_fingerprint = key.request_fingerprint,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .class = .deterministic_fixture,
+    });
+    const mismatched_key = Actuation.IdempotencyKey.init(.{
+        .target_ref_fingerprint = key.target_ref_fingerprint,
+        .world_surface_fingerprint = key.world_surface_fingerprint,
+        .world_port_id = key.world_port_id,
+        .request_fingerprint = key.request_fingerprint +% 1,
+        .actuator_ref_fingerprint = key.actuator_ref_fingerprint,
+        .intent_fingerprint = matching_intent.intent_fingerprint,
+    });
+    const mismatched_envelope = Actuation.Envelope.init(.{
+        .intent_fingerprint = matching_intent.intent_fingerprint,
+        .idempotency_key = mismatched_key,
+    });
+    const matching_intent_payload = try matching_intent.encode(allocator);
+    defer allocator.free(matching_intent_payload);
+    const matching_intent_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_intent,
+        .object_format_version = world_actuation_intent_format_version,
+        .payload_bytes = matching_intent_payload,
+    });
+    const mismatched_key_payload = try Continuity.encodePortableEvidence(Actuation.IdempotencyKey, allocator, mismatched_key);
+    defer allocator.free(mismatched_key_payload);
+    const mismatched_key_deps = try Continuity.bundleActuationIdempotencyKeyRequiredDependencyRefs(allocator, mismatched_key);
+    defer Continuity.freeRefSlice(allocator, mismatched_key_deps);
+    const mismatched_key_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_idempotency_key,
+        .object_format_version = world_actuation_idempotency_key_format_version,
+        .dependency_refs = mismatched_key_deps,
+        .payload_bytes = mismatched_key_payload,
+    });
+    var mismatched_key_bundle_envelopes = [_]Continuity.ObjectEnvelope{ mismatched_key_envelope, matching_intent_envelope };
+    var mismatched_key_bundle_roots = [_]Continuity.ObjectRef{mismatched_key_envelope.objectRef()};
+    var mismatched_key_bundle = Continuity.Bundle{
+        .allocator = allocator,
+        .manifest = Continuity.BundleManifest.init(.{ .roots = &mismatched_key_bundle_roots, .object_count = mismatched_key_bundle_envelopes.len }),
+        .envelopes = &mismatched_key_bundle_envelopes,
+    };
+    const mismatched_key_bytes = try mismatched_key_bundle.toBytes(allocator);
+    defer allocator.free(mismatched_key_bytes);
+    const mismatched_key_report = try Continuity.Bundle.validate(allocator, mismatched_key_bytes, .{ .allow_external_dependencies = true });
+    try std.testing.expect(!mismatched_key_report.valid);
+    try std.testing.expectEqual(Continuity.ObjectValidationReport.Blocker.DecodeFailed, mismatched_key_report.blockers[0]);
+
+    const mismatched_payload = try Continuity.encodePortableEvidence(Actuation.Envelope, allocator, mismatched_envelope);
+    defer allocator.free(mismatched_payload);
+    const mismatched_deps = try Continuity.bundleActuationEnvelopeRequiredDependencyRefs(allocator, mismatched_envelope);
+    defer Continuity.freeRefSlice(allocator, mismatched_deps);
+    const mismatched_object_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_envelope,
+        .object_format_version = mismatched_envelope.format_version,
+        .dependency_refs = mismatched_deps,
+        .payload_bytes = mismatched_payload,
+    });
+    var mismatched_bundle_envelopes = [_]Continuity.ObjectEnvelope{ mismatched_object_envelope, matching_intent_envelope };
+    var mismatched_bundle_roots = [_]Continuity.ObjectRef{mismatched_object_envelope.objectRef()};
+    var mismatched_bundle = Continuity.Bundle{
+        .allocator = allocator,
+        .manifest = Continuity.BundleManifest.init(.{ .roots = &mismatched_bundle_roots, .object_count = mismatched_bundle_envelopes.len }),
+        .envelopes = &mismatched_bundle_envelopes,
+    };
+    const mismatched_bytes = try mismatched_bundle.toBytes(allocator);
+    defer allocator.free(mismatched_bytes);
+    const mismatched_report = try Continuity.Bundle.validate(allocator, mismatched_bytes, .{ .allow_external_dependencies = true });
+    try std.testing.expect(!mismatched_report.valid);
+    try std.testing.expectEqual(Continuity.ObjectValidationReport.Blocker.DecodeFailed, mismatched_report.blockers[0]);
 
     const request_payload = try request_frame.encode(allocator);
     defer allocator.free(request_payload);
@@ -34285,6 +35013,17 @@ test "actuation envelope dependencies cover frame request and payload evidence" 
     const stored_dep_report = try Continuity.Bundle.validate(allocator, stored_dep_bytes, .{ .allow_external_dependencies = true });
     try std.testing.expect(stored_dep_report.valid);
     try std.testing.expectEqual(@as(usize, 3), stored_dep_report.missing_dependency_count);
+    var stored_dep_destination = Continuity.MemoryVault.init(allocator);
+    defer stored_dep_destination.deinit();
+    const stored_dep_preflight = try Continuity.Recovery.preflightBundleImport(&stored_dep_destination, stored_dep_bytes, .{ .allow_external_dependencies = true });
+    try std.testing.expect(stored_dep_preflight.valid);
+    var stored_dep_manifest = try Continuity.Bundle.importIntoVault(&stored_dep_destination, stored_dep_bytes, .{ .allow_external_dependencies = true });
+    defer stored_dep_manifest.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 3), stored_dep_destination.objectCount());
+    const imported_deps = try stored_dep_destination.dependencies(stored_dep_envelope.objectRef());
+    defer Continuity.freeRefSlice(allocator, imported_deps);
+    try std.testing.expect(Continuity.containsRef(imported_deps, Continuity.semanticObjectRef(.frame_request, key.request_fingerprint)));
+    try std.testing.expect(Continuity.containsRef(imported_deps, Continuity.semanticObjectRef(.frame_request, envelope.encoded_frame_request_fingerprint.?)));
 }
 
 test "actuation evidence bundle dependencies cover generic roots" {
@@ -34465,6 +35204,98 @@ test "actuation evidence bundle dependencies cover generic roots" {
     try std.testing.expect(Continuity.containsRef(key_deps, Continuity.semanticObjectRef(.actuator_ref, key.actuator_ref_fingerprint)));
     try std.testing.expect(Continuity.containsRef(key_deps, Continuity.semanticObjectRef(.actuation_intent, key.intent_fingerprint.?)));
     try std.testing.expect(Continuity.containsRef(key_deps, Continuity.semanticObjectRef(.capsule_image, key.capsule_fingerprint.?)));
+
+    const intent = Actuation.Intent.init(.{
+        .actuator_ref_fingerprint = binding.actuator_ref_fingerprint,
+        .descriptor_fingerprint = binding.descriptor_fingerprint,
+        .binding_fingerprint = binding.binding_fingerprint,
+        .target_ref_fingerprint = binding.target_ref_fingerprint,
+        .world_surface_fingerprint = binding.world_surface_fingerprint,
+        .world_port_id = binding.world_port_id,
+        .frame_request_fingerprint = key.request_fingerprint,
+        .encoded_frame_request_fingerprint = 0x3287_0033,
+        .payload_value_image_fingerprint = 0x3287_0034,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .run_permit_fingerprint = run_permit.permit_fingerprint,
+        .environment_certificate_fingerprint = binding.environment_certificate_fingerprint,
+        .capsule_fingerprint = key.capsule_fingerprint,
+        .class = .idempotent_mutation,
+    });
+    const intent_payload = try intent.encode(allocator);
+    defer allocator.free(intent_payload);
+    const intent_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_intent,
+        .object_format_version = world_actuation_intent_format_version,
+        .payload_bytes = intent_payload,
+    });
+    const intent_deps = try Continuity.bundleEnvelopeRequiredDependencyRefs(allocator, intent_envelope);
+    defer Continuity.freeRefSlice(allocator, intent_deps);
+    try std.testing.expect(Continuity.containsRef(intent_deps, Continuity.semanticObjectRef(.actuator_ref, intent.actuator_ref_fingerprint)));
+    try std.testing.expect(Continuity.containsRef(intent_deps, Continuity.semanticObjectRef(.actuation_descriptor, intent.descriptor_fingerprint)));
+    try std.testing.expect(Continuity.containsRef(intent_deps, Continuity.semanticObjectRef(.actuation_binding, intent.binding_fingerprint.?)));
+    try std.testing.expect(Continuity.containsRef(intent_deps, Continuity.semanticObjectRef(.frame_request, intent.frame_request_fingerprint)));
+    try std.testing.expect(Continuity.containsRef(intent_deps, Continuity.semanticObjectRef(.frame_request, intent.encoded_frame_request_fingerprint.?)));
+    try std.testing.expect(Continuity.containsRef(intent_deps, Continuity.semanticObjectRef(.value_image, intent.payload_value_image_fingerprint.?)));
+    try std.testing.expect(Continuity.containsRef(intent_deps, Continuity.semanticObjectRef(.actuation_idempotency_key, intent.idempotency_key_fingerprint)));
+    try std.testing.expect(Continuity.containsRef(intent_deps, Continuity.semanticObjectRef(.run_permit, intent.run_permit_fingerprint.?)));
+    try std.testing.expect(Continuity.containsRef(intent_deps, Continuity.semanticObjectRef(.environment_certificate, intent.environment_certificate_fingerprint.?)));
+    try std.testing.expect(Continuity.containsRef(intent_deps, Continuity.semanticObjectRef(.capsule_image, intent.capsule_fingerprint.?)));
+    var intent_vault = Continuity.MemoryVault.init(allocator);
+    defer intent_vault.deinit();
+    const stored_intent_ref = try intent_vault.putActuationIntent(intent);
+    const stored_intent_deps = try intent_vault.dependencies(stored_intent_ref);
+    defer Continuity.freeRefSlice(allocator, stored_intent_deps);
+    try std.testing.expect(Continuity.containsRef(stored_intent_deps, Continuity.semanticObjectRef(.actuation_descriptor, intent.descriptor_fingerprint)));
+    try std.testing.expect(Continuity.containsRef(stored_intent_deps, Continuity.semanticObjectRef(.frame_request, intent.frame_request_fingerprint)));
+    try std.testing.expect(Continuity.containsRef(stored_intent_deps, Continuity.semanticObjectRef(.actuation_idempotency_key, intent.idempotency_key_fingerprint)));
+
+    const receipt_with_wrong_intent_binding = Actuation.Receipt.init(.{
+        .intent_fingerprint = intent.intent_fingerprint,
+        .envelope_fingerprint = 0x3287_0035,
+        .decision_fingerprint = 0x3287_0036,
+        .commit_fingerprint = 0x3287_0037,
+        .response_fingerprint = 0x3287_0038,
+        .frame_response_fingerprint = 0x3287_0039,
+        .actuator_ref_fingerprint = intent.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = intent.idempotency_key_fingerprint,
+        .request_fingerprint = intent.frame_request_fingerprint,
+        .target_ref_fingerprint = intent.target_ref_fingerprint +% 1,
+        .world_surface_fingerprint = intent.world_surface_fingerprint,
+        .world_port_id = intent.world_port_id,
+        .class = intent.class,
+        .mode = intent.requested_mode,
+        .fresh_called = true,
+    });
+    const bad_receipt_payload = try receipt_with_wrong_intent_binding.encode(allocator);
+    defer allocator.free(bad_receipt_payload);
+    const bad_receipt_deps = try Continuity.bundleActuationReceiptRequiredDependencyRefs(allocator, receipt_with_wrong_intent_binding);
+    defer Continuity.freeRefSlice(allocator, bad_receipt_deps);
+    const bad_receipt_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_receipt,
+        .object_format_version = receipt_with_wrong_intent_binding.format_version,
+        .dependency_refs = bad_receipt_deps,
+        .payload_bytes = bad_receipt_payload,
+    });
+    const missing_receipt_deps_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_receipt,
+        .object_format_version = receipt_with_wrong_intent_binding.format_version,
+        .payload_bytes = bad_receipt_payload,
+    });
+    var missing_receipt_deps_vault = Continuity.MemoryVault.init(allocator);
+    defer missing_receipt_deps_vault.deinit();
+    try std.testing.expectError(error.InvalidFrameEncoding, missing_receipt_deps_vault.put(missing_receipt_deps_envelope));
+    var bad_receipt_envelopes = [_]Continuity.ObjectEnvelope{ bad_receipt_envelope, intent_envelope };
+    var bad_receipt_roots = [_]Continuity.ObjectRef{bad_receipt_envelope.objectRef()};
+    var bad_receipt_bundle = Continuity.Bundle{
+        .allocator = allocator,
+        .manifest = Continuity.BundleManifest.init(.{ .roots = &bad_receipt_roots, .object_count = bad_receipt_envelopes.len }),
+        .envelopes = &bad_receipt_envelopes,
+    };
+    const bad_receipt_bytes = try bad_receipt_bundle.toBytes(allocator);
+    defer allocator.free(bad_receipt_bytes);
+    const bad_receipt_report = try Continuity.Bundle.validate(allocator, bad_receipt_bytes, .{ .allow_external_dependencies = true });
+    try std.testing.expect(!bad_receipt_report.valid);
+    try std.testing.expectEqual(Continuity.ObjectValidationReport.Blocker.DecodeFailed, bad_receipt_report.blockers[0]);
 
     const admission_payload = try Continuity.encodePortableEvidence(Admission.AdmissionReceipt, allocator, admission_receipt);
     defer allocator.free(admission_payload);
@@ -34656,6 +35487,61 @@ test "actuation evidence bundle dependencies cover generic roots" {
     try std.testing.expect(Continuity.containsRef(run_receipt_deps, Continuity.semanticObjectRef(.run_image, run_receipt.run_image_fingerprint.?)));
     try std.testing.expect(Continuity.containsRef(run_receipt_deps, Continuity.semanticObjectRef(.transcript_image, run_receipt.transcript_image_fingerprint.?)));
     try std.testing.expect(Continuity.containsRef(run_receipt_deps, Continuity.semanticObjectRef(.admission_receipt, run_receipt.admission_receipt_fingerprint.?)));
+
+    const frame_response = Frame.Response.init(.{
+        .world_surface_fingerprint = binding.world_surface_fingerprint,
+        .target_certificate_fingerprint = 0x3287_0040,
+        .world_port_id = binding.world_port_id,
+        .request_fingerprint = key.request_fingerprint,
+        .response_fingerprint = 0x3287_0041,
+        .replay_key = 0x3287_0042,
+    });
+    const frame_response_payload = try frame_response.encode(allocator);
+    defer allocator.free(frame_response_payload);
+    const frame_response_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .frame_response,
+        .object_format_version = world_frame_response_format_version,
+        .payload_bytes = frame_response_payload,
+    });
+    const frame_response_deps = try Continuity.bundleEnvelopeRequiredDependencyRefs(allocator, frame_response_envelope);
+    defer Continuity.freeRefSlice(allocator, frame_response_deps);
+    try std.testing.expect(Continuity.containsRef(frame_response_deps, Continuity.semanticObjectRef(.frame_request, frame_response.request_fingerprint)));
+
+    const conformance_report = Guest.ConformanceReport.init(.{
+        .vector_fingerprint = 0x3287_0050,
+        .native_run_result = .{
+            .status = .done,
+            .transcript_fingerprint = 0x3287_0051,
+            .receipt_fingerprint = run_receipt.receipt_fingerprint,
+            .pending_frame_fingerprints = &.{0x3287_0052},
+            .actuation_receipt_fingerprints = &.{report.fresh_receipt_fingerprint.?},
+        },
+        .native_abi_result = .{
+            .status = .done,
+            .transcript_fingerprint = 0x3287_0053,
+        },
+        .wasm_runtime_result = .{
+            .status = .parked,
+            .pending_frame_fingerprints = &.{0x3287_0054},
+            .actuation_receipt_fingerprints = &.{0x3287_0055},
+        },
+    });
+    const conformance_payload = try Continuity.encodePortableEvidence(Guest.ConformanceReport, allocator, conformance_report);
+    defer allocator.free(conformance_payload);
+    const conformance_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .guest_conformance_report,
+        .object_format_version = world_guest_conformance_report_fingerprint_version,
+        .payload_bytes = conformance_payload,
+    });
+    const conformance_deps = try Continuity.bundleEnvelopeRequiredDependencyRefs(allocator, conformance_envelope);
+    defer Continuity.freeRefSlice(allocator, conformance_deps);
+    try std.testing.expect(Continuity.containsRef(conformance_deps, Continuity.semanticObjectRef(.transcript_image, conformance_report.native_run_result.transcript_fingerprint.?)));
+    try std.testing.expect(Continuity.containsRef(conformance_deps, Continuity.semanticObjectRef(.run_receipt, conformance_report.native_run_result.receipt_fingerprint.?)));
+    try std.testing.expect(Continuity.containsRef(conformance_deps, Continuity.semanticObjectRef(.frame_request, conformance_report.native_run_result.pending_frame_fingerprints[0])));
+    try std.testing.expect(Continuity.containsRef(conformance_deps, Continuity.semanticObjectRef(.actuation_receipt, conformance_report.native_run_result.actuation_receipt_fingerprints[0])));
+    try std.testing.expect(Continuity.containsRef(conformance_deps, Continuity.semanticObjectRef(.transcript_image, conformance_report.native_abi_result.transcript_fingerprint.?)));
+    try std.testing.expect(Continuity.containsRef(conformance_deps, Continuity.semanticObjectRef(.frame_request, conformance_report.wasm_runtime_result.?.pending_frame_fingerprints[0])));
+    try std.testing.expect(Continuity.containsRef(conformance_deps, Continuity.semanticObjectRef(.actuation_receipt, conformance_report.wasm_runtime_result.?.actuation_receipt_fingerprints[0])));
 
     const fabric_receipt_payload = try Continuity.encodePortableEvidence(Fabric.Receipt, allocator, fabric_receipt);
     defer allocator.free(fabric_receipt_payload);
@@ -35275,10 +36161,7 @@ test "bundle validation rejects missing dependency and duplicate fresh commit" {
     try std.testing.expectEqual(Continuity.ObjectValidationReport.Blocker.MissingDependency, incomplete_report.blockers[0]);
     var incomplete_vault = Continuity.MemoryVault.init(allocator);
     defer incomplete_vault.deinit();
-    const incomplete_ref = try incomplete_vault.put(incomplete_envelope);
-    const incomplete_vault_report = try incomplete_vault.validate(incomplete_ref);
-    try std.testing.expect(!incomplete_vault_report.valid);
-    try std.testing.expectEqual(Continuity.ObjectValidationReport.Blocker.MissingDependency, incomplete_vault_report.blockers[0]);
+    try std.testing.expectError(error.InvalidFrameEncoding, incomplete_vault.put(incomplete_envelope));
     try std.testing.expectError(error.InvalidFrameEncoding, Continuity.Bundle.importIntoVault(&empty_destination, incomplete_bytes, .{}));
 
     var duplicate_journal = Actuation.Journal.init();
@@ -35479,10 +36362,147 @@ test "capsule storage preserves unresolved dependency edges" {
     try std.testing.expectEqual(Continuity.ObjectKind.actuation_receipt, resolved.kind);
     var missing_receipt_dep_graph = try Continuity.CapsuleGraph.fromCapsule(&vault, capsule_ref);
     defer missing_receipt_dep_graph.deinit();
+    try std.testing.expect(missing_receipt_dep_graph.actuation_replay_possible);
+    try std.testing.expectEqual(@as(usize, 1), missing_receipt_dep_graph.actuation_receipt_refs.len);
+    try std.testing.expectEqual(receipt.receipt_fingerprint, missing_receipt_dep_graph.actuation_receipt_refs[0].object_fingerprint);
     const missing_receipt_value_image = for (missing_receipt_dep_graph.missing_deps) |dep| {
         if (dep.kind == .value_image and dep.object_fingerprint == receipt.response_value_image_fingerprint.?) break true;
     } else false;
     try std.testing.expect(missing_receipt_value_image);
+
+    var nested_intent_vault = Continuity.MemoryVault.init(allocator);
+    defer nested_intent_vault.deinit();
+    const nested_intent = Actuation.Intent.init(.{
+        .actuator_ref_fingerprint = 0x3293_0201,
+        .descriptor_fingerprint = 0x3293_0202,
+        .target_ref_fingerprint = 0x3293_0203,
+        .world_surface_fingerprint = 0x3293_0204,
+        .world_port_id = 9,
+        .frame_request_fingerprint = 0x3293_0205,
+        .idempotency_key_fingerprint = 0x3293_0206,
+        .class = .deterministic_fixture,
+    });
+    _ = try nested_intent_vault.putActuationIntent(nested_intent);
+    const nested_intent_capsule = Capsule.Image.init(.{
+        .manifest = Capsule.Manifest.init(.{
+            .kind = .completed_assembly,
+            .root_target_ref_fingerprint = 0x3293_0207,
+            .actuation_intent_fingerprints = &.{nested_intent.intent_fingerprint},
+            .normal_form = .quiescent_completed,
+        }),
+        .runspace_image = Capsule.RunspaceImage.init(.{
+            .runspace_fingerprint = 0x3293_0208,
+            .runspace_report_fingerprint = 0x3293_0209,
+            .actuation_intent_refs = &.{nested_intent.intent_fingerprint},
+        }),
+        .actuation_intent_refs = &.{nested_intent.intent_fingerprint},
+    });
+    const nested_intent_capsule_ref = try nested_intent_vault.putCapsule(nested_intent_capsule);
+    var nested_intent_graph = try Continuity.CapsuleGraph.fromCapsule(&nested_intent_vault, nested_intent_capsule_ref);
+    defer nested_intent_graph.deinit();
+    try std.testing.expectEqual(@as(usize, 1), nested_intent_graph.actuation_intent_refs.len);
+    try std.testing.expectEqual(nested_intent.intent_fingerprint, nested_intent_graph.actuation_intent_refs[0].object_fingerprint);
+    const missing_nested_descriptor = for (nested_intent_graph.missing_deps) |dep| {
+        if (dep.kind == .actuation_descriptor and dep.object_fingerprint == nested_intent.descriptor_fingerprint) break true;
+    } else false;
+    try std.testing.expect(missing_nested_descriptor);
+
+    var legacy_actuation_vault = Continuity.MemoryVault.init(allocator);
+    defer legacy_actuation_vault.deinit();
+    const legacy_intent = Actuation.Intent.init(.{
+        .actuator_ref_fingerprint = 0x3293_0301,
+        .descriptor_fingerprint = 0x3293_0302,
+        .target_ref_fingerprint = 0x3293_0303,
+        .world_surface_fingerprint = 0x3293_0304,
+        .world_port_id = 10,
+        .frame_request_fingerprint = 0x3293_0305,
+        .idempotency_key_fingerprint = 0x3293_0306,
+        .class = .deterministic_fixture,
+    });
+    _ = try legacy_actuation_vault.putActuationIntent(legacy_intent);
+    const legacy_runspace_only_intent = Actuation.Intent.init(.{
+        .actuator_ref_fingerprint = 0x3293_0321,
+        .descriptor_fingerprint = 0x3293_0322,
+        .target_ref_fingerprint = 0x3293_0323,
+        .world_surface_fingerprint = 0x3293_0324,
+        .world_port_id = 11,
+        .frame_request_fingerprint = 0x3293_0325,
+        .idempotency_key_fingerprint = 0x3293_0326,
+        .class = .deterministic_fixture,
+    });
+    _ = try legacy_actuation_vault.putActuationIntent(legacy_runspace_only_intent);
+    const legacy_receipt = Actuation.Receipt.init(.{
+        .intent_fingerprint = legacy_intent.intent_fingerprint,
+        .envelope_fingerprint = 0x3293_0311,
+        .decision_fingerprint = 0x3293_0312,
+        .commit_fingerprint = 0x3293_0313,
+        .response_fingerprint = 0x3293_0314,
+        .frame_response_fingerprint = 0x3293_0315,
+        .response_value_image_fingerprint = 0x3293_0316,
+        .actuator_ref_fingerprint = legacy_intent.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = legacy_intent.idempotency_key_fingerprint,
+        .request_fingerprint = legacy_intent.frame_request_fingerprint,
+        .target_ref_fingerprint = legacy_intent.target_ref_fingerprint,
+        .world_surface_fingerprint = legacy_intent.world_surface_fingerprint,
+        .world_port_id = legacy_intent.world_port_id,
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+        .fresh_called = true,
+    });
+    _ = try legacy_actuation_vault.putActuationReceipt(legacy_receipt);
+    const legacy_runspace_only_receipt = Actuation.Receipt.init(.{
+        .intent_fingerprint = legacy_runspace_only_intent.intent_fingerprint,
+        .envelope_fingerprint = 0x3293_0331,
+        .decision_fingerprint = 0x3293_0332,
+        .commit_fingerprint = 0x3293_0333,
+        .response_fingerprint = 0x3293_0334,
+        .frame_response_fingerprint = 0x3293_0335,
+        .response_value_image_fingerprint = 0x3293_0336,
+        .actuator_ref_fingerprint = legacy_runspace_only_intent.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = legacy_runspace_only_intent.idempotency_key_fingerprint,
+        .request_fingerprint = legacy_runspace_only_intent.frame_request_fingerprint,
+        .target_ref_fingerprint = legacy_runspace_only_intent.target_ref_fingerprint,
+        .world_surface_fingerprint = legacy_runspace_only_intent.world_surface_fingerprint,
+        .world_port_id = legacy_runspace_only_intent.world_port_id,
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+        .fresh_called = true,
+    });
+    _ = try legacy_actuation_vault.putActuationReceipt(legacy_runspace_only_receipt);
+    const legacy_runspace_intents = [_]u64{ legacy_intent.intent_fingerprint, legacy_runspace_only_intent.intent_fingerprint };
+    const legacy_runspace_receipts = [_]u64{ legacy_receipt.receipt_fingerprint, legacy_runspace_only_receipt.receipt_fingerprint };
+    var legacy_actuation_capsule = Capsule.Image.init(.{
+        .manifest = Capsule.Manifest.init(.{
+            .kind = .replay_only,
+            .root_target_ref_fingerprint = 0x3293_0317,
+            .actuation_intent_fingerprints = &.{legacy_intent.intent_fingerprint},
+            .actuation_receipt_fingerprints = &.{legacy_receipt.receipt_fingerprint},
+            .normal_form = .quiescent_completed,
+        }),
+        .runspace_image = Capsule.RunspaceImage.init(.{
+            .runspace_fingerprint = 0x3293_0318,
+            .runspace_report_fingerprint = 0x3293_0319,
+            .actuation_intent_refs = &legacy_runspace_intents,
+            .actuation_receipt_refs = &legacy_runspace_receipts,
+        }),
+        .actuation_intent_refs = &.{legacy_intent.intent_fingerprint},
+        .actuation_receipt_refs = &.{legacy_receipt.receipt_fingerprint},
+    });
+    legacy_actuation_capsule.format_version = 2;
+    legacy_actuation_capsule.image_fingerprint = Capsule.fingerprintImage(legacy_actuation_capsule);
+    const legacy_actuation_capsule_ref = try legacy_actuation_vault.putCapsule(legacy_actuation_capsule);
+    var legacy_actuation_graph = try Continuity.CapsuleGraph.fromCapsule(&legacy_actuation_vault, legacy_actuation_capsule_ref);
+    defer legacy_actuation_graph.deinit();
+    try std.testing.expect(legacy_actuation_graph.actuation_replay_possible);
+    try std.testing.expectEqual(@as(usize, 2), legacy_actuation_graph.actuation_intent_refs.len);
+    try std.testing.expectEqual(@as(usize, 2), legacy_actuation_graph.actuation_receipt_refs.len);
+    try std.testing.expectEqual(legacy_intent.intent_fingerprint, legacy_actuation_graph.actuation_intent_refs[0].object_fingerprint);
+    try std.testing.expectEqual(legacy_receipt.receipt_fingerprint, legacy_actuation_graph.actuation_receipt_refs[0].object_fingerprint);
+    const missing_legacy_receipt_value_image = for (legacy_actuation_graph.missing_deps) |dep| {
+        if (dep.kind == .value_image and dep.object_fingerprint == legacy_runspace_only_receipt.response_value_image_fingerprint.?) break true;
+    } else false;
+    try std.testing.expect(missing_legacy_receipt_value_image);
+
     var bundle = try Continuity.Bundle.exportFromVault(&vault, &.{ capsule_ref, deps[0] }, .{ .include_dependencies = false, .allow_external_dependencies = true });
     defer bundle.deinit();
     const bundle_bytes = try bundle.toBytes(allocator);
@@ -35544,16 +36564,28 @@ test "capsule storage preserves unresolved dependency edges" {
         .object_fingerprint = cycle_b_receipt.receipt_fingerprint,
         .byte_len = 0,
     });
+    const cycle_a_required_deps = try Continuity.bundleActuationReceiptRequiredDependencyRefs(allocator, cycle_a_receipt);
+    defer Continuity.freeRefSlice(allocator, cycle_a_required_deps);
+    var cycle_a_deps: std.ArrayList(Continuity.ObjectRef) = .empty;
+    defer cycle_a_deps.deinit(allocator);
+    try cycle_a_deps.append(allocator, cycle_b_ref);
+    for (cycle_a_required_deps) |dep| try cycle_a_deps.append(allocator, dep);
+    const cycle_b_required_deps = try Continuity.bundleActuationReceiptRequiredDependencyRefs(allocator, cycle_b_receipt);
+    defer Continuity.freeRefSlice(allocator, cycle_b_required_deps);
+    var cycle_b_deps: std.ArrayList(Continuity.ObjectRef) = .empty;
+    defer cycle_b_deps.deinit(allocator);
+    try cycle_b_deps.append(allocator, cycle_a_ref);
+    for (cycle_b_required_deps) |dep| try cycle_b_deps.append(allocator, dep);
     _ = try cycle_vault.put(Continuity.ObjectEnvelope.init(.{
         .kind = .actuation_receipt,
         .object_format_version = cycle_a_receipt.format_version,
-        .dependency_refs = &.{cycle_b_ref},
+        .dependency_refs = cycle_a_deps.items,
         .payload_bytes = cycle_a_payload,
     }));
     _ = try cycle_vault.put(Continuity.ObjectEnvelope.init(.{
         .kind = .actuation_receipt,
         .object_format_version = cycle_b_receipt.format_version,
-        .dependency_refs = &.{cycle_a_ref},
+        .dependency_refs = cycle_b_deps.items,
         .payload_bytes = cycle_b_payload,
     }));
     const cycle_manifest = Capsule.Manifest.init(.{
@@ -35576,7 +36608,7 @@ test "capsule storage preserves unresolved dependency edges" {
     var cycle_capsule_graph = try Continuity.CapsuleGraph.fromCapsule(&cycle_vault, cycle_capsule_ref);
     defer cycle_capsule_graph.deinit();
     try std.testing.expect(cycle_capsule_graph.dependency_cycle);
-    try std.testing.expectEqual(@as(usize, 0), cycle_capsule_graph.missing_deps.len);
+    try std.testing.expect(cycle_capsule_graph.missing_deps.len != 0);
     try std.testing.expect(!cycle_capsule_graph.validateRestoreClosure());
 
     const replay_cycle_image = Capsule.Image.init(.{
@@ -35594,7 +36626,7 @@ test "capsule storage preserves unresolved dependency edges" {
         .actuation_receipt_refs = &.{cycle_a_receipt.receipt_fingerprint},
     });
     const replay_cycle_capsule_ref = try cycle_vault.putCapsule(replay_cycle_image);
-    try std.testing.expectError(error.InvalidFrameEncoding, Continuity.Recovery.preflightReplayCapsule(
+    try std.testing.expectError(error.ObjectMissing, Continuity.Recovery.preflightReplayCapsule(
         &cycle_vault,
         replay_cycle_capsule_ref,
         .{ .target_ref_fingerprint = base_image.manifest.root_target_ref_fingerprint },
@@ -36063,6 +37095,38 @@ test "actuation index finds receipts by actuator target port capsule state and i
     try std.testing.expect(by_key != null);
     try std.testing.expect(by_key.?.eql(receipt_ref));
 
+    const capsule_bound_key = Actuation.IdempotencyKey.init(.{
+        .target_ref_fingerprint = key.target_ref_fingerprint,
+        .world_surface_fingerprint = key.world_surface_fingerprint,
+        .world_port_id = key.world_port_id,
+        .request_fingerprint = key.request_fingerprint,
+        .actuator_ref_fingerprint = key.actuator_ref_fingerprint,
+        .capsule_fingerprint = image.image_fingerprint,
+    });
+    var wrong_capsule_vault = Continuity.MemoryVault.init(allocator);
+    defer wrong_capsule_vault.deinit();
+    const wrong_capsule_receipt = Actuation.Receipt.init(.{
+        .intent_fingerprint = 0x3301_00b1,
+        .envelope_fingerprint = 0x3301_00b2,
+        .decision_fingerprint = 0x3301_00b3,
+        .commit_fingerprint = 0x3301_00b4,
+        .response_fingerprint = 0x3301_00b5,
+        .frame_response_fingerprint = 0x3301_00b6,
+        .actuator_ref_fingerprint = capsule_bound_key.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = capsule_bound_key.key_fingerprint,
+        .request_fingerprint = capsule_bound_key.request_fingerprint,
+        .target_ref_fingerprint = capsule_bound_key.target_ref_fingerprint,
+        .world_surface_fingerprint = capsule_bound_key.world_surface_fingerprint,
+        .world_port_id = capsule_bound_key.world_port_id,
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+        .fresh_called = true,
+        .capsule_fingerprint = image.image_fingerprint ^ 0x55,
+    });
+    _ = try wrong_capsule_vault.putActuationReceipt(wrong_capsule_receipt);
+    const wrong_capsule_index = Continuity.ActuationIndex.init(&wrong_capsule_vault);
+    try std.testing.expect((try wrong_capsule_index.byIdempotencyKey(capsule_bound_key)) == null);
+
     var journal_only_vault = Continuity.MemoryVault.init(allocator);
     defer journal_only_vault.deinit();
     var journal_only = Actuation.Journal.init();
@@ -36086,6 +37150,30 @@ test "actuation index finds receipts by actuator target port capsule state and i
     const journal_by_key = try journal_only_index.byIdempotencyKey(key);
     try std.testing.expect(journal_by_key != null);
     try std.testing.expect(journal_by_key.?.eql(expected_journal_receipt_ref));
+
+    var journal_commit_only_vault = Continuity.MemoryVault.init(allocator);
+    defer journal_commit_only_vault.deinit();
+    var journal_commit_only = Actuation.Journal.init();
+    defer journal_commit_only.deinit(allocator);
+    try journal_commit_only.entries.append(allocator, .{
+        .order = journal_commit_only.takeOrder(),
+        .intent_fingerprint = receipt.intent_fingerprint,
+        .commit_fingerprint = 0x3301_00a1,
+        .response_fingerprint = 0x3301_00a2,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .request_fingerprint = key.request_fingerprint,
+        .fresh_called = true,
+    });
+    journal_commit_only.refreshFingerprint();
+    _ = try journal_commit_only_vault.putActuationJournal(journal_commit_only);
+    const journal_commit_only_index = Continuity.ActuationIndex.init(&journal_commit_only_vault);
+    const journal_commit_only_by_key = try journal_commit_only_index.byIdempotencyKey(key);
+    try std.testing.expect(journal_commit_only_by_key != null);
+    try std.testing.expect(journal_commit_only_by_key.?.eql(Continuity.semanticObjectRef(.actuation_commit, 0x3301_00a1)));
+    const journal_commit_only_fresh = try journal_commit_only_index.freshCommits();
+    defer allocator.free(journal_commit_only_fresh);
+    try std.testing.expectEqual(@as(usize, 1), journal_commit_only_fresh.len);
+    try std.testing.expect(journal_commit_only_fresh[0].eql(Continuity.semanticObjectRef(.actuation_commit, 0x3301_00a1)));
 
     var mixed_vault = Continuity.MemoryVault.init(allocator);
     defer mixed_vault.deinit();
@@ -37156,9 +38244,17 @@ test "vault actuation receipt dependencies resolve stored semantic evidence" {
     });
     const commit_payload = try Continuity.encodePortableEvidence(Actuation.Commit, allocator, commit);
     defer allocator.free(commit_payload);
+    const commit_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_commit,
+        .object_format_version = world_actuation_commit_format_version,
+        .payload_bytes = commit_payload,
+    });
+    const commit_deps = try Continuity.bundleEnvelopeRequiredDependencyRefs(allocator, commit_envelope);
+    defer Continuity.freeRefSlice(allocator, commit_deps);
     _ = try vault.put(Continuity.ObjectEnvelope.init(.{
         .kind = .actuation_commit,
         .object_format_version = world_actuation_commit_format_version,
+        .dependency_refs = commit_deps,
         .payload_bytes = commit_payload,
     }));
     const receipt = Actuation.Receipt.init(.{
@@ -37219,6 +38315,22 @@ test "vault rejects malformed typed actuation evidence payload" {
         .object_format_version = world_actuation_response_format_version,
         .payload_bytes = forged_payload,
     })));
+    var stale_version_payload_value = Continuity.ActuationResponsePortableEvidence.fromResponse(Actuation.Response.init(.{
+        .intent_fingerprint = 0x3306_0211,
+        .commit_fingerprint = 0x3306_0212,
+        .actuator_ref_fingerprint = 0x3306_0213,
+        .world_port_id = 3,
+        .request_fingerprint = 0x3306_0214,
+        .frame_response_fingerprint = 0x3306_0215,
+    }));
+    stale_version_payload_value.format_version = 0;
+    const stale_version_payload = try Continuity.encodePortableEvidence(Continuity.ActuationResponsePortableEvidence, allocator, stale_version_payload_value);
+    defer allocator.free(stale_version_payload);
+    try std.testing.expectError(error.InvalidFrameEncoding, vault.put(Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_response,
+        .object_format_version = world_actuation_response_format_version,
+        .payload_bytes = stale_version_payload,
+    })));
     try std.testing.expectEqual(@as(usize, 0), vault.objectCount());
 }
 
@@ -37239,9 +38351,15 @@ test "vault actuation receipt dependencies preserve and resolve component eviden
         .request_fingerprint = 0x3306_0103,
         .actuator_ref_fingerprint = actuator_ref.ref_fingerprint,
     });
+    const descriptor = Actuation.Descriptor.init(.{
+        .actuator_ref = actuator_ref,
+        .world_surface_fingerprint = key.world_surface_fingerprint,
+        .target_ref_fingerprint = key.target_ref_fingerprint,
+        .world_port_id = key.world_port_id,
+    });
     const intent = Actuation.Intent.init(.{
         .actuator_ref_fingerprint = key.actuator_ref_fingerprint,
-        .descriptor_fingerprint = 0x3306_0110,
+        .descriptor_fingerprint = descriptor.descriptor_fingerprint,
         .target_ref_fingerprint = key.target_ref_fingerprint,
         .world_surface_fingerprint = key.world_surface_fingerprint,
         .world_port_id = key.world_port_id,
@@ -37263,13 +38381,21 @@ test "vault actuation receipt dependencies preserve and resolve component eviden
         .status = .committed,
         .fresh_called = true,
     });
+    const frame_response = Frame.Response.init(.{
+        .world_surface_fingerprint = key.world_surface_fingerprint,
+        .target_certificate_fingerprint = 0x3306_0112,
+        .world_port_id = key.world_port_id,
+        .request_fingerprint = key.request_fingerprint,
+        .response_fingerprint = 0x3306_0113,
+        .replay_key = 0x3306_0114,
+    });
     const response = Actuation.Response.init(.{
         .intent_fingerprint = intent.intent_fingerprint,
         .commit_fingerprint = commit.commit_fingerprint,
         .actuator_ref_fingerprint = key.actuator_ref_fingerprint,
         .world_port_id = key.world_port_id,
         .request_fingerprint = key.request_fingerprint,
-        .frame_response_fingerprint = 0x3306_0113,
+        .frame_response_fingerprint = frame_response.frame_fingerprint,
     });
     const receipt = Actuation.Receipt.init(.{
         .intent_fingerprint = intent.intent_fingerprint,
@@ -37315,39 +38441,131 @@ test "vault actuation receipt dependencies preserve and resolve component eviden
         .object_format_version = world_actuator_ref_format_version,
         .payload_bytes = actuator_ref_payload,
     }));
+    const descriptor_payload = try Continuity.encodePortableEvidence(Actuation.Descriptor, allocator, descriptor);
+    defer allocator.free(descriptor_payload);
+    const descriptor_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_descriptor,
+        .object_format_version = world_actuation_descriptor_format_version,
+        .payload_bytes = descriptor_payload,
+    });
+    const descriptor_deps = try Continuity.bundleEnvelopeRequiredDependencyRefs(allocator, descriptor_envelope);
+    defer Continuity.freeRefSlice(allocator, descriptor_deps);
+    _ = try vault.put(Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_descriptor,
+        .object_format_version = world_actuation_descriptor_format_version,
+        .dependency_refs = descriptor_deps,
+        .payload_bytes = descriptor_payload,
+    }));
+    const frame_request = Frame.Request.init(.{
+        .world_surface_fingerprint = key.world_surface_fingerprint,
+        .target_certificate_fingerprint = 0x3306_0104,
+        .world_port_id = key.world_port_id,
+        .residual_site_index = 0,
+        .residual_site_fingerprint = 0x3306_0105,
+        .request_fingerprint = key.request_fingerprint,
+        .turn_index = 0,
+    });
+    const frame_request_payload = try frame_request.encode(allocator);
+    defer allocator.free(frame_request_payload);
+    _ = try vault.put(Continuity.ObjectEnvelope.init(.{
+        .kind = .frame_request,
+        .object_format_version = world_frame_request_format_version,
+        .payload_bytes = frame_request_payload,
+    }));
+    const frame_response_payload = try frame_response.encode(allocator);
+    defer allocator.free(frame_response_payload);
+    const frame_response_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .frame_response,
+        .object_format_version = world_frame_response_format_version,
+        .payload_bytes = frame_response_payload,
+    });
+    const frame_response_deps = try Continuity.bundleEnvelopeRequiredDependencyRefs(allocator, frame_response_envelope);
+    defer Continuity.freeRefSlice(allocator, frame_response_deps);
+    _ = try vault.put(Continuity.ObjectEnvelope.init(.{
+        .kind = .frame_response,
+        .object_format_version = world_frame_response_format_version,
+        .dependency_refs = frame_response_deps,
+        .payload_bytes = frame_response_payload,
+    }));
     const key_payload = try Continuity.encodePortableEvidence(Actuation.IdempotencyKey, allocator, key);
     defer allocator.free(key_payload);
+    const key_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_idempotency_key,
+        .object_format_version = world_actuation_idempotency_key_format_version,
+        .payload_bytes = key_payload,
+    });
+    const key_deps = try Continuity.bundleEnvelopeRequiredDependencyRefs(allocator, key_envelope);
+    defer Continuity.freeRefSlice(allocator, key_deps);
     _ = try vault.put(Continuity.ObjectEnvelope.init(.{
         .kind = .actuation_idempotency_key,
         .object_format_version = world_actuation_idempotency_key_format_version,
+        .dependency_refs = key_deps,
         .payload_bytes = key_payload,
     }));
     const envelope_payload = try Continuity.encodePortableEvidence(Actuation.Envelope, allocator, envelope);
     defer allocator.free(envelope_payload);
+    const actuation_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_envelope,
+        .object_format_version = world_actuation_envelope_format_version,
+        .payload_bytes = envelope_payload,
+    });
+    const envelope_deps = try Continuity.bundleEnvelopeRequiredDependencyRefs(allocator, actuation_envelope);
+    defer Continuity.freeRefSlice(allocator, envelope_deps);
     _ = try vault.put(Continuity.ObjectEnvelope.init(.{
         .kind = .actuation_envelope,
         .object_format_version = world_actuation_envelope_format_version,
+        .dependency_refs = envelope_deps,
         .payload_bytes = envelope_payload,
     }));
     const decision_payload = try Continuity.encodePortableEvidence(Actuation.Decision, allocator, decision);
     defer allocator.free(decision_payload);
+    const policy_payload = try Continuity.encodePortableEvidence(Actuation.Policy, allocator, Actuation.Policy.fixture_test);
+    defer allocator.free(policy_payload);
+    _ = try vault.put(Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_policy,
+        .payload_bytes = policy_payload,
+    }));
+    const decision_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_decision,
+        .object_format_version = world_actuation_decision_format_version,
+        .payload_bytes = decision_payload,
+    });
+    const decision_deps = try Continuity.bundleEnvelopeRequiredDependencyRefs(allocator, decision_envelope);
+    defer Continuity.freeRefSlice(allocator, decision_deps);
     _ = try vault.put(Continuity.ObjectEnvelope.init(.{
         .kind = .actuation_decision,
         .object_format_version = world_actuation_decision_format_version,
+        .dependency_refs = decision_deps,
         .payload_bytes = decision_payload,
     }));
     const commit_payload = try Continuity.encodePortableEvidence(Actuation.Commit, allocator, commit);
     defer allocator.free(commit_payload);
+    const commit_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_commit,
+        .object_format_version = world_actuation_commit_format_version,
+        .payload_bytes = commit_payload,
+    });
+    const commit_deps = try Continuity.bundleEnvelopeRequiredDependencyRefs(allocator, commit_envelope);
+    defer Continuity.freeRefSlice(allocator, commit_deps);
     _ = try vault.put(Continuity.ObjectEnvelope.init(.{
         .kind = .actuation_commit,
         .object_format_version = world_actuation_commit_format_version,
+        .dependency_refs = commit_deps,
         .payload_bytes = commit_payload,
     }));
     const response_payload = try Continuity.encodePortableEvidence(Actuation.Response, allocator, response);
     defer allocator.free(response_payload);
+    const response_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_response,
+        .object_format_version = world_actuation_response_format_version,
+        .payload_bytes = response_payload,
+    });
+    const response_deps = try Continuity.bundleEnvelopeRequiredDependencyRefs(allocator, response_envelope);
+    defer Continuity.freeRefSlice(allocator, response_deps);
     _ = try vault.put(Continuity.ObjectEnvelope.init(.{
         .kind = .actuation_response,
         .object_format_version = world_actuation_response_format_version,
+        .dependency_refs = response_deps,
         .payload_bytes = response_payload,
     }));
 

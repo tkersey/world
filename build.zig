@@ -812,7 +812,7 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Continuity capsule basic example.",
             .expected_stdout =
             \\stored_object_count=1
-            \\capsule_ref=ef5d71c6d3e04d8e
+            \\capsule_ref=886e63b600519640
             \\capsule_certificate_ref=0
             \\graph_restorable=true
             \\graph_replayable=false
@@ -838,7 +838,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-continuity-bundle-roundtrip",
             .desc = "Run the World Continuity bundle roundtrip example.",
             .expected_stdout =
-            \\bundle_fingerprint=edbaedc52de5293b
+            \\bundle_fingerprint=bde4c2fab59b369d
             \\imported_object_count=2
             \\capsule_restored_to_inspectable_state=true
             \\
@@ -850,7 +850,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-continuity-pending-actuation",
             .desc = "Run the World Continuity pending actuation example.",
             .expected_stdout =
-            \\capsule_ref=7c26dc1b42b94192
+            \\capsule_ref=2af9818da304011f
             \\pending_actuation_count=1
             \\local_fresh_actuation_required=true
             \\
@@ -862,7 +862,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-continuity-agent-evidence",
             .desc = "Run the World Continuity agent evidence example.",
             .expected_stdout =
-            \\capsule_ref=ef5d71c6d3e04d8e
+            \\capsule_ref=886e63b600519640
             \\model_receipt_count=1
             \\tool_receipt_count=1
             \\final_result=continuity-agent-evidence-ok
