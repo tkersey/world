@@ -29097,16 +29097,21 @@ pub const Continuity = struct {
                 if (entry.idempotency_key_fingerprint) |fingerprint| try appendUniqueRefForFingerprint(vault, &idempotency_key_refs, .actuation_idempotency_key, fingerprint);
                 const terminal_fresh_commit = journalEntryIsTerminalFreshCommit(entry);
                 if (terminal_fresh_commit) {
-                    graph.fresh_commit_count += 1;
+                    var duplicate_fresh_binding = false;
                     if (entry.idempotency_key_fingerprint) |key| {
                         for (entries) |prior| {
                             if (prior.order >= entry.order) break;
                             if (!journalEntryIsTerminalFreshCommit(prior)) continue;
-                            if (prior.idempotency_key_fingerprint == key and !journalEntriesSameFreshBinding(prior, entry) and !containsU64Local(duplicate_keys.items, key)) {
-                                try duplicate_keys.append(vault.allocator, key);
+                            if (prior.idempotency_key_fingerprint == key) {
+                                if (journalEntriesSameFreshBinding(prior, entry)) {
+                                    duplicate_fresh_binding = true;
+                                    continue;
+                                }
+                                if (!containsU64Local(duplicate_keys.items, key)) try duplicate_keys.append(vault.allocator, key);
                             }
                         }
                     }
+                    if (!duplicate_fresh_binding) graph.fresh_commit_count += 1;
                 }
                 if (entry.receipt_fingerprint) |fingerprint| {
                     const ref = (try vault.refByKindFingerprint(.actuation_receipt, fingerprint)) orelse ObjectRef.init(.{
@@ -33341,6 +33346,7 @@ test "actuation graph builds from receipt journal and detects duplicate fresh co
     const same_commit_summary = same_commit_by_key.summary();
     try std.testing.expectEqual(@as(usize, 1), same_commit_summary.receipt_count);
     try std.testing.expect(same_commit_summary.committed_count >= 1);
+    try std.testing.expectEqual(@as(usize, 1), same_commit_summary.fresh_commit_count);
 
     var conflicting_replay_journal = Actuation.Journal.init();
     defer conflicting_replay_journal.deinit(allocator);
