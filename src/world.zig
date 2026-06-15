@@ -332,7 +332,7 @@ pub const world_actuation_decision_format_version: u32 = 1;
 pub const world_actuation_decision_fingerprint_version: u32 = 1;
 pub const world_actuation_commit_format_version: u32 = 1;
 pub const world_actuation_commit_fingerprint_version: u32 = 1;
-pub const world_actuation_response_format_version: u32 = 1;
+pub const world_actuation_response_format_version: u32 = 2;
 pub const world_actuation_response_fingerprint_version: u32 = 2;
 pub const world_actuation_receipt_format_version: u32 = 1;
 pub const world_actuation_receipt_fingerprint_version: u32 = 2;
@@ -29159,6 +29159,13 @@ pub const Continuity = struct {
                     if (entry.commit_fingerprint) |fingerprint| {
                         try appendUniqueRefForFingerprint(vault, &committed_refs, .actuation_commit, fingerprint);
                     }
+                    if (isReplayableJournalEntry(entry) and try journalEntryReplayEvidenceAvailable(vault, entry)) {
+                        if (entry.commit_fingerprint) |fingerprint| {
+                            try appendUniqueRefForFingerprint(vault, &replayable_refs, .actuation_commit, fingerprint);
+                        } else if (entry.response_fingerprint) |fingerprint| {
+                            try appendUniqueRefForFingerprint(vault, &replayable_refs, .actuation_response, fingerprint);
+                        }
+                    }
                 }
             }
             if (!matched) return error.ObjectMissing;
@@ -30828,6 +30835,26 @@ pub const Continuity = struct {
                 defer deinitOwnedValue(allocator, actuation_envelope);
                 break :blk try bundleActuationEnvelopeRequiredDependencyRefs(allocator, actuation_envelope);
             },
+            .actuation_decision => blk: {
+                const decision = try decodePortableEvidence(Actuation.Decision, allocator, envelope.payload_bytes);
+                defer deinitOwnedValue(allocator, decision);
+                break :blk try bundleActuationDecisionRequiredDependencyRefs(allocator, decision);
+            },
+            .actuation_commit => blk: {
+                const commit = try decodePortableEvidence(Actuation.Commit, allocator, envelope.payload_bytes);
+                defer deinitOwnedValue(allocator, commit);
+                break :blk try bundleActuationCommitRequiredDependencyRefs(allocator, commit);
+            },
+            .actuation_response => blk: {
+                const response = try decodePortableEvidence(Actuation.Response, allocator, envelope.payload_bytes);
+                defer deinitOwnedValue(allocator, response);
+                break :blk try bundleActuationResponseRequiredDependencyRefs(allocator, response);
+            },
+            .actuation_verify_report => blk: {
+                const report = try decodePortableEvidence(Actuation.VerifyReport, allocator, envelope.payload_bytes);
+                defer deinitOwnedValue(allocator, report);
+                break :blk try bundleActuationVerifyReportRequiredDependencyRefs(allocator, report);
+            },
             .capsule_image => blk: {
                 var image = try Capsule.Image.decode(allocator, envelope.payload_bytes);
                 defer image.deinit(allocator);
@@ -30892,6 +30919,44 @@ pub const Continuity = struct {
         try appendUniqueSemanticRef(allocator, &refs, .frame_request, envelope.idempotency_key.request_fingerprint);
         if (envelope.encoded_frame_request_fingerprint) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .frame_request, fingerprint);
         if (envelope.payload_value_image_fingerprint) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .value_image, fingerprint);
+        return refs.toOwnedSlice(allocator);
+    }
+
+    fn bundleActuationDecisionRequiredDependencyRefs(allocator: std.mem.Allocator, decision: Actuation.Decision) ![]ObjectRef {
+        var refs: std.ArrayList(ObjectRef) = .empty;
+        errdefer deinitRefList(allocator, &refs);
+        try appendUniqueSemanticRef(allocator, &refs, .actuation_intent, decision.intent_fingerprint);
+        try appendUniqueSemanticRef(allocator, &refs, .actuation_policy, decision.policy_fingerprint);
+        if (decision.run_permit_fingerprint) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .run_permit, fingerprint);
+        return refs.toOwnedSlice(allocator);
+    }
+
+    fn bundleActuationCommitRequiredDependencyRefs(allocator: std.mem.Allocator, commit: Actuation.Commit) ![]ObjectRef {
+        var refs: std.ArrayList(ObjectRef) = .empty;
+        errdefer deinitRefList(allocator, &refs);
+        try appendUniqueSemanticRef(allocator, &refs, .actuation_intent, commit.intent_fingerprint);
+        try appendUniqueSemanticRef(allocator, &refs, .actuation_decision, commit.decision_fingerprint);
+        try appendUniqueSemanticRef(allocator, &refs, .actuation_envelope, commit.envelope_fingerprint);
+        try appendUniqueSemanticRef(allocator, &refs, .actuation_idempotency_key, commit.idempotency_key_fingerprint);
+        return refs.toOwnedSlice(allocator);
+    }
+
+    fn bundleActuationResponseRequiredDependencyRefs(allocator: std.mem.Allocator, response: Actuation.Response) ![]ObjectRef {
+        var refs: std.ArrayList(ObjectRef) = .empty;
+        errdefer deinitRefList(allocator, &refs);
+        try appendUniqueSemanticRef(allocator, &refs, .actuation_intent, response.intent_fingerprint);
+        if (response.commit_fingerprint) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .actuation_commit, fingerprint);
+        try appendUniqueSemanticRef(allocator, &refs, .actuator_ref, response.actuator_ref_fingerprint);
+        if (response.value_image_fingerprint) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .value_image, fingerprint);
+        return refs.toOwnedSlice(allocator);
+    }
+
+    fn bundleActuationVerifyReportRequiredDependencyRefs(allocator: std.mem.Allocator, report: Actuation.VerifyReport) ![]ObjectRef {
+        var refs: std.ArrayList(ObjectRef) = .empty;
+        errdefer deinitRefList(allocator, &refs);
+        try appendUniqueSemanticRef(allocator, &refs, .actuation_intent, report.intent_fingerprint);
+        if (report.expected_receipt_fingerprint) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .actuation_receipt, fingerprint);
+        if (report.fresh_receipt_fingerprint) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .actuation_receipt, fingerprint);
         return refs.toOwnedSlice(allocator);
     }
 
@@ -33483,6 +33548,30 @@ test "actuation graph builds from receipt journal and detects duplicate fresh co
     try std.testing.expectEqual(@as(usize, 1), commit_only_summary.committed_count);
     try std.testing.expectEqual(@as(usize, 1), commit_only_summary.fresh_commit_count);
 
+    var replayable_commit_only_vault = Continuity.MemoryVault.init(allocator);
+    defer replayable_commit_only_vault.deinit();
+    var replayable_commit_only_journal = Actuation.Journal.init();
+    defer replayable_commit_only_journal.deinit(allocator);
+    try replayable_commit_only_journal.entries.append(allocator, .{
+        .order = replayable_commit_only_journal.takeOrder(),
+        .intent_fingerprint = receipt.intent_fingerprint,
+        .commit_fingerprint = single_commit_only.commit_fingerprint,
+        .response_fingerprint = receipt.response_fingerprint,
+        .frame_response_fingerprint = receipt.frame_response_fingerprint,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .request_fingerprint = key.request_fingerprint,
+        .fresh_called = true,
+    });
+    replayable_commit_only_journal.refreshFingerprint();
+    _ = try replayable_commit_only_vault.putActuationJournal(replayable_commit_only_journal);
+    var replayable_commit_only_by_key = try Continuity.ActuationGraph.byIdempotencyKey(&replayable_commit_only_vault, key);
+    defer replayable_commit_only_by_key.deinit();
+    const replayable_commit_only_summary = replayable_commit_only_by_key.summary();
+    try std.testing.expectEqual(@as(usize, 0), replayable_commit_only_summary.receipt_count);
+    try std.testing.expectEqual(@as(usize, 1), replayable_commit_only_summary.committed_count);
+    try std.testing.expectEqual(@as(usize, 1), replayable_commit_only_summary.replayable_count);
+    try std.testing.expectEqual(Continuity.ObjectKind.actuation_commit, replayable_commit_only_by_key.replayable_actuation_refs[0].kind);
+
     var same_commit_lookup_vault = Continuity.MemoryVault.init(allocator);
     defer same_commit_lookup_vault.deinit();
     var same_commit_lookup_journal = Actuation.Journal.init();
@@ -33921,6 +34010,107 @@ test "actuation envelope dependencies cover frame request and payload evidence" 
     const stored_dep_report = try Continuity.Bundle.validate(allocator, stored_dep_bytes, .{ .allow_external_dependencies = true });
     try std.testing.expect(stored_dep_report.valid);
     try std.testing.expectEqual(@as(usize, 3), stored_dep_report.missing_dependency_count);
+}
+
+test "actuation evidence bundle dependencies cover generic roots" {
+    const allocator = std.testing.allocator;
+
+    const decision = Actuation.Decision.init(.{
+        .intent_fingerprint = 0x3287_0010,
+        .policy_fingerprint = Actuation.Policy.fixture_test.policy_fingerprint,
+        .run_permit_fingerprint = 0x3287_0011,
+        .approved = true,
+        .status = .approved,
+    });
+    const commit = Actuation.Commit.init(.{
+        .intent_fingerprint = decision.intent_fingerprint,
+        .decision_fingerprint = decision.decision_fingerprint,
+        .envelope_fingerprint = 0x3287_0012,
+        .idempotency_key_fingerprint = 0x3287_0013,
+        .status = .committed,
+        .fresh_called = true,
+    });
+    const response = Actuation.Response.init(.{
+        .intent_fingerprint = decision.intent_fingerprint,
+        .commit_fingerprint = commit.commit_fingerprint,
+        .actuator_ref_fingerprint = 0x3287_0014,
+        .world_port_id = 7,
+        .request_fingerprint = 0x3287_0015,
+        .frame_response_fingerprint = 0x3287_0016,
+        .value_image_fingerprint = 0x3287_0017,
+    });
+    const report = Actuation.VerifyReport.init(.{
+        .intent_fingerprint = decision.intent_fingerprint,
+        .expected_receipt_fingerprint = 0x3287_0018,
+        .fresh_receipt_fingerprint = 0x3287_0019,
+        .matched = true,
+    });
+
+    const decision_payload = try Continuity.encodePortableEvidence(Actuation.Decision, allocator, decision);
+    defer allocator.free(decision_payload);
+    const decision_without_deps = Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_decision,
+        .object_format_version = world_actuation_decision_format_version,
+        .payload_bytes = decision_payload,
+    });
+    var invalid_roots = [_]Continuity.ObjectRef{decision_without_deps.objectRef()};
+    var invalid_envelopes = [_]Continuity.ObjectEnvelope{decision_without_deps};
+    var invalid_bundle = Continuity.Bundle{
+        .allocator = allocator,
+        .manifest = Continuity.BundleManifest.init(.{ .roots = &invalid_roots, .object_count = invalid_envelopes.len }),
+        .envelopes = &invalid_envelopes,
+    };
+    const invalid_bytes = try invalid_bundle.toBytes(allocator);
+    defer allocator.free(invalid_bytes);
+    const invalid_report = try Continuity.Bundle.validate(allocator, invalid_bytes, .{ .allow_external_dependencies = true });
+    try std.testing.expect(!invalid_report.valid);
+    try std.testing.expectEqual(Continuity.ObjectValidationReport.Blocker.MissingDependency, invalid_report.blockers[0]);
+
+    const decision_deps = try Continuity.bundleEnvelopeRequiredDependencyRefs(allocator, decision_without_deps);
+    defer Continuity.freeRefSlice(allocator, decision_deps);
+    try std.testing.expect(Continuity.containsRef(decision_deps, Continuity.semanticObjectRef(.actuation_intent, decision.intent_fingerprint)));
+    try std.testing.expect(Continuity.containsRef(decision_deps, Continuity.semanticObjectRef(.actuation_policy, decision.policy_fingerprint)));
+    try std.testing.expect(Continuity.containsRef(decision_deps, Continuity.semanticObjectRef(.run_permit, decision.run_permit_fingerprint.?)));
+
+    const commit_payload = try Continuity.encodePortableEvidence(Actuation.Commit, allocator, commit);
+    defer allocator.free(commit_payload);
+    const commit_without_deps = Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_commit,
+        .object_format_version = world_actuation_commit_format_version,
+        .payload_bytes = commit_payload,
+    });
+    const commit_deps = try Continuity.bundleEnvelopeRequiredDependencyRefs(allocator, commit_without_deps);
+    defer Continuity.freeRefSlice(allocator, commit_deps);
+    try std.testing.expect(Continuity.containsRef(commit_deps, Continuity.semanticObjectRef(.actuation_intent, commit.intent_fingerprint)));
+    try std.testing.expect(Continuity.containsRef(commit_deps, Continuity.semanticObjectRef(.actuation_decision, commit.decision_fingerprint)));
+    try std.testing.expect(Continuity.containsRef(commit_deps, Continuity.semanticObjectRef(.actuation_envelope, commit.envelope_fingerprint)));
+    try std.testing.expect(Continuity.containsRef(commit_deps, Continuity.semanticObjectRef(.actuation_idempotency_key, commit.idempotency_key_fingerprint)));
+
+    const response_payload = try Continuity.encodePortableEvidence(Actuation.Response, allocator, response);
+    defer allocator.free(response_payload);
+    const response_without_deps = Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_response,
+        .object_format_version = world_actuation_response_format_version,
+        .payload_bytes = response_payload,
+    });
+    const response_deps = try Continuity.bundleEnvelopeRequiredDependencyRefs(allocator, response_without_deps);
+    defer Continuity.freeRefSlice(allocator, response_deps);
+    try std.testing.expect(Continuity.containsRef(response_deps, Continuity.semanticObjectRef(.actuation_intent, response.intent_fingerprint)));
+    try std.testing.expect(Continuity.containsRef(response_deps, Continuity.semanticObjectRef(.actuation_commit, response.commit_fingerprint.?)));
+    try std.testing.expect(Continuity.containsRef(response_deps, Continuity.semanticObjectRef(.actuator_ref, response.actuator_ref_fingerprint)));
+    try std.testing.expect(Continuity.containsRef(response_deps, Continuity.semanticObjectRef(.value_image, response.value_image_fingerprint.?)));
+
+    const report_payload = try Continuity.encodePortableEvidence(Actuation.VerifyReport, allocator, report);
+    defer allocator.free(report_payload);
+    const report_without_deps = Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_verify_report,
+        .payload_bytes = report_payload,
+    });
+    const report_deps = try Continuity.bundleEnvelopeRequiredDependencyRefs(allocator, report_without_deps);
+    defer Continuity.freeRefSlice(allocator, report_deps);
+    try std.testing.expect(Continuity.containsRef(report_deps, Continuity.semanticObjectRef(.actuation_intent, report.intent_fingerprint)));
+    try std.testing.expect(Continuity.containsRef(report_deps, Continuity.semanticObjectRef(.actuation_receipt, report.expected_receipt_fingerprint.?)));
+    try std.testing.expect(Continuity.containsRef(report_deps, Continuity.semanticObjectRef(.actuation_receipt, report.fresh_receipt_fingerprint.?)));
 }
 
 test "bundle export import roundtrip and ledger events are stable" {
@@ -34439,14 +34629,20 @@ test "bundle validation rejects missing dependency and duplicate fresh commit" {
     defer allocator.free(first_commit_payload);
     const second_commit_payload = try Continuity.encodePortableEvidence(Actuation.Commit, allocator, second_commit_only);
     defer allocator.free(second_commit_payload);
+    const first_commit_deps = try Continuity.bundleActuationCommitRequiredDependencyRefs(allocator, first_commit_only);
+    defer Continuity.freeRefSlice(allocator, first_commit_deps);
+    const second_commit_deps = try Continuity.bundleActuationCommitRequiredDependencyRefs(allocator, second_commit_only);
+    defer Continuity.freeRefSlice(allocator, second_commit_deps);
     const first_commit_envelope = Continuity.ObjectEnvelope.init(.{
         .kind = .actuation_commit,
         .object_format_version = first_commit_only.format_version,
+        .dependency_refs = first_commit_deps,
         .payload_bytes = first_commit_payload,
     });
     const second_commit_envelope = Continuity.ObjectEnvelope.init(.{
         .kind = .actuation_commit,
         .object_format_version = second_commit_only.format_version,
+        .dependency_refs = second_commit_deps,
         .payload_bytes = second_commit_payload,
     });
     var commit_vault = Continuity.MemoryVault.init(allocator);
