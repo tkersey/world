@@ -29971,6 +29971,13 @@ pub const Continuity = struct {
                     if (!journalEntryMatchesIdempotencyKey(entry, idempotency_key)) continue;
                     if (!isReplayableJournalEntry(entry)) continue;
                     if (terminal_entry) |existing| {
+                        const existing_terminal = journalEntryIsTerminalFreshCommit(existing);
+                        const entry_terminal = journalEntryIsTerminalFreshCommit(entry);
+                        if (entry_terminal and !existing_terminal) {
+                            terminal_entry = entry;
+                            continue;
+                        }
+                        if (existing_terminal and !entry_terminal) continue;
                         if (!journalEntriesSameFreshBinding(existing, entry)) return error.DuplicateBinding;
                         continue;
                     }
@@ -35638,6 +35645,25 @@ test "recovery preflight inspects capsules replays receipt evidence and rejects 
     const journal_replay_response = try Continuity.Recovery.replayActuation(&journal_replay_vault, key);
     try std.testing.expectEqual(Actuation.ResponseStatus.responded, journal_replay_response.status);
     try std.testing.expectEqual(receipt.response_fingerprint, journal_replay_response.recorded_response_fingerprint.?);
+
+    var failed_then_retry_journal_vault = Continuity.MemoryVault.init(allocator);
+    defer failed_then_retry_journal_vault.deinit();
+    var failed_then_retry_journal = Actuation.Journal.init();
+    defer failed_then_retry_journal.deinit(allocator);
+    try failed_then_retry_journal.entries.append(allocator, .{
+        .order = failed_then_retry_journal.takeOrder(),
+        .intent_fingerprint = receipt.intent_fingerprint,
+        .commit_fingerprint = receipt.commit_fingerprint ^ 0xaa,
+        .response_fingerprint = receipt.response_fingerprint ^ 0xaa,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .request_fingerprint = key.request_fingerprint,
+        .failed = true,
+    });
+    try failed_then_retry_journal.appendReceipt(allocator, receipt);
+    _ = try failed_then_retry_journal_vault.putActuationJournal(failed_then_retry_journal);
+    const failed_then_retry_response = try Continuity.Recovery.replayActuation(&failed_then_retry_journal_vault, key);
+    try std.testing.expectEqual(Actuation.ResponseStatus.responded, failed_then_retry_response.status);
+    try std.testing.expectEqual(receipt.response_fingerprint, failed_then_retry_response.recorded_response_fingerprint.?);
 
     var mismatched_journal_vault = Continuity.MemoryVault.init(allocator);
     defer mismatched_journal_vault.deinit();
