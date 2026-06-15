@@ -28922,6 +28922,7 @@ pub const Continuity = struct {
             var missing_deps_owned = true;
             errdefer if (missing_deps_owned) freeRefSlice(vault.allocator, missing_deps);
             try appendMissingDepsFromObjectGraphs(vault, &missing_deps, &.{
+                graph.actuation_receipt_refs,
                 graph.actuation_journal_refs,
             });
             const restorable = missing_deps.len == 0 and image.manifest.kind != .reference_only and image.manifest.kind != .replay_only;
@@ -34417,6 +34418,7 @@ test "capsule storage preserves unresolved dependency edges" {
         .commit_fingerprint = 0x3293_0013,
         .response_fingerprint = 0x3293_0014,
         .frame_response_fingerprint = 0x3293_0015,
+        .response_value_image_fingerprint = 0x3293_0016,
         .actuator_ref_fingerprint = key.actuator_ref_fingerprint,
         .idempotency_key_fingerprint = key.key_fingerprint,
         .request_fingerprint = key.request_fingerprint,
@@ -34483,6 +34485,12 @@ test "capsule storage preserves unresolved dependency edges" {
     var resolved = try vault.get(deps[0]);
     defer resolved.deinit(allocator);
     try std.testing.expectEqual(Continuity.ObjectKind.actuation_receipt, resolved.kind);
+    var missing_receipt_dep_graph = try Continuity.CapsuleGraph.fromCapsule(&vault, capsule_ref);
+    defer missing_receipt_dep_graph.deinit();
+    const missing_receipt_value_image = for (missing_receipt_dep_graph.missing_deps) |dep| {
+        if (dep.kind == .value_image and dep.object_fingerprint == receipt.response_value_image_fingerprint.?) break true;
+    } else false;
+    try std.testing.expect(missing_receipt_value_image);
     var bundle = try Continuity.Bundle.exportFromVault(&vault, &.{ capsule_ref, deps[0] }, .{ .include_dependencies = false, .allow_external_dependencies = true });
     defer bundle.deinit();
     const bundle_bytes = try bundle.toBytes(allocator);
