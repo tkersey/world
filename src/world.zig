@@ -30859,6 +30859,16 @@ pub const Continuity = struct {
                 defer deinitOwnedValue(allocator, report);
                 break :blk try bundleActuationVerifyReportRequiredDependencyRefs(allocator, report);
             },
+            .run_receipt => blk: {
+                const receipt = try decodePortableEvidence(RunReceipt, allocator, envelope.payload_bytes);
+                defer deinitOwnedValue(allocator, receipt);
+                break :blk try bundleRunReceiptRequiredDependencyRefs(allocator, receipt);
+            },
+            .fabric_receipt => blk: {
+                const receipt = try decodePortableEvidence(Fabric.Receipt, allocator, envelope.payload_bytes);
+                defer deinitOwnedValue(allocator, receipt);
+                break :blk try bundleFabricReceiptRequiredDependencyRefs(allocator, receipt);
+            },
             .capsule_image => blk: {
                 var image = try Capsule.Image.decode(allocator, envelope.payload_bytes);
                 defer image.deinit(allocator);
@@ -30951,7 +30961,9 @@ pub const Continuity = struct {
         try appendUniqueSemanticRef(allocator, &refs, .actuation_intent, response.intent_fingerprint);
         if (response.commit_fingerprint) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .actuation_commit, fingerprint);
         try appendUniqueSemanticRef(allocator, &refs, .actuator_ref, response.actuator_ref_fingerprint);
-        if (response.value_image_fingerprint) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .value_image, fingerprint);
+        if (response.response_image == null) {
+            if (response.value_image_fingerprint) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .value_image, fingerprint);
+        }
         return refs.toOwnedSlice(allocator);
     }
 
@@ -30961,6 +30973,25 @@ pub const Continuity = struct {
         try appendUniqueSemanticRef(allocator, &refs, .actuation_intent, report.intent_fingerprint);
         if (report.expected_receipt_fingerprint) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .actuation_receipt, fingerprint);
         if (report.fresh_receipt_fingerprint) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .actuation_receipt, fingerprint);
+        return refs.toOwnedSlice(allocator);
+    }
+
+    fn bundleRunReceiptRequiredDependencyRefs(allocator: std.mem.Allocator, receipt: RunReceipt) ![]ObjectRef {
+        var refs: std.ArrayList(ObjectRef) = .empty;
+        errdefer deinitRefList(allocator, &refs);
+        try appendUniqueSemanticRef(allocator, &refs, .run_permit, receipt.run_permit_fingerprint);
+        try appendUniqueSemanticRef(allocator, &refs, .environment_certificate, receipt.environment_certificate_fingerprint);
+        if (receipt.run_image_fingerprint) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .run_image, fingerprint);
+        if (receipt.transcript_image_fingerprint) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .transcript_image, fingerprint);
+        if (receipt.admission_receipt_fingerprint) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .admission_receipt, fingerprint);
+        return refs.toOwnedSlice(allocator);
+    }
+
+    fn bundleFabricReceiptRequiredDependencyRefs(allocator: std.mem.Allocator, receipt: Fabric.Receipt) ![]ObjectRef {
+        var refs: std.ArrayList(ObjectRef) = .empty;
+        errdefer deinitRefList(allocator, &refs);
+        if (receipt.provider_run_receipt_fingerprint) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .run_receipt, fingerprint);
+        if (receipt.actuation_receipt_fingerprint) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .actuation_receipt, fingerprint);
         return refs.toOwnedSlice(allocator);
     }
 
@@ -34049,6 +34080,25 @@ test "actuation evidence bundle dependencies cover generic roots" {
         .fresh_receipt_fingerprint = 0x3287_0019,
         .matched = true,
     });
+    const run_receipt = RunReceipt.init(.{
+        .run_permit_fingerprint = 0x3287_0020,
+        .environment_certificate_fingerprint = 0x3287_0021,
+        .target_ref_fingerprint = 0x3287_0022,
+        .run_image_fingerprint = 0x3287_0023,
+        .transcript_image_fingerprint = 0x3287_0024,
+        .admission_receipt_fingerprint = 0x3287_0025,
+        .usage_ledger_fingerprint = 0x3287_0026,
+        .final_run_state_fingerprint = 0x3287_0027,
+        .final_status = .completed,
+    });
+    const fabric_receipt = Fabric.Receipt.init(.{
+        .invocation_fingerprint = 0x3287_0030,
+        .route_fingerprint = 0x3287_0031,
+        .parent_pending_port_fingerprint = 0x3287_0032,
+        .provider_run_receipt_fingerprint = run_receipt.receipt_fingerprint,
+        .actuation_receipt_fingerprint = report.fresh_receipt_fingerprint,
+        .status = .provider_parked,
+    });
 
     const decision_payload = try Continuity.encodePortableEvidence(Actuation.Decision, allocator, decision);
     defer allocator.free(decision_payload);
@@ -34104,6 +34154,28 @@ test "actuation evidence bundle dependencies cover generic roots" {
     try std.testing.expect(Continuity.containsRef(response_deps, Continuity.semanticObjectRef(.actuator_ref, response.actuator_ref_fingerprint)));
     try std.testing.expect(Continuity.containsRef(response_deps, Continuity.semanticObjectRef(.value_image, response.value_image_fingerprint.?)));
 
+    var embedded_image = try Frame.ValueImage.fromValue(allocator, null, null, null, 21, ValuePolicy.native_compatible);
+    defer embedded_image.deinit(allocator);
+    const embedded_response = Actuation.Response.init(.{
+        .intent_fingerprint = response.intent_fingerprint,
+        .commit_fingerprint = response.commit_fingerprint,
+        .actuator_ref_fingerprint = response.actuator_ref_fingerprint,
+        .world_port_id = response.world_port_id,
+        .request_fingerprint = response.request_fingerprint,
+        .frame_response_fingerprint = 0,
+        .response_image = embedded_image,
+    });
+    const embedded_response_payload = try Continuity.encodePortableEvidence(Actuation.Response, allocator, embedded_response);
+    defer allocator.free(embedded_response_payload);
+    const embedded_response_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_response,
+        .object_format_version = world_actuation_response_format_version,
+        .payload_bytes = embedded_response_payload,
+    });
+    const embedded_response_deps = try Continuity.bundleEnvelopeRequiredDependencyRefs(allocator, embedded_response_envelope);
+    defer Continuity.freeRefSlice(allocator, embedded_response_deps);
+    try std.testing.expect(!Continuity.containsRef(embedded_response_deps, Continuity.semanticObjectRef(.value_image, embedded_response.value_image_fingerprint.?)));
+
     const report_payload = try Continuity.encodePortableEvidence(Actuation.VerifyReport, allocator, report);
     defer allocator.free(report_payload);
     const report_without_deps = Continuity.ObjectEnvelope.init(.{
@@ -34115,6 +34187,33 @@ test "actuation evidence bundle dependencies cover generic roots" {
     try std.testing.expect(Continuity.containsRef(report_deps, Continuity.semanticObjectRef(.actuation_intent, report.intent_fingerprint)));
     try std.testing.expect(Continuity.containsRef(report_deps, Continuity.semanticObjectRef(.actuation_receipt, report.expected_receipt_fingerprint.?)));
     try std.testing.expect(Continuity.containsRef(report_deps, Continuity.semanticObjectRef(.actuation_receipt, report.fresh_receipt_fingerprint.?)));
+
+    const run_receipt_payload = try Continuity.encodePortableEvidence(RunReceipt, allocator, run_receipt);
+    defer allocator.free(run_receipt_payload);
+    const run_receipt_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .run_receipt,
+        .object_format_version = world_run_receipt_format_version,
+        .payload_bytes = run_receipt_payload,
+    });
+    const run_receipt_deps = try Continuity.bundleEnvelopeRequiredDependencyRefs(allocator, run_receipt_envelope);
+    defer Continuity.freeRefSlice(allocator, run_receipt_deps);
+    try std.testing.expect(Continuity.containsRef(run_receipt_deps, Continuity.semanticObjectRef(.run_permit, run_receipt.run_permit_fingerprint)));
+    try std.testing.expect(Continuity.containsRef(run_receipt_deps, Continuity.semanticObjectRef(.environment_certificate, run_receipt.environment_certificate_fingerprint)));
+    try std.testing.expect(Continuity.containsRef(run_receipt_deps, Continuity.semanticObjectRef(.run_image, run_receipt.run_image_fingerprint.?)));
+    try std.testing.expect(Continuity.containsRef(run_receipt_deps, Continuity.semanticObjectRef(.transcript_image, run_receipt.transcript_image_fingerprint.?)));
+    try std.testing.expect(Continuity.containsRef(run_receipt_deps, Continuity.semanticObjectRef(.admission_receipt, run_receipt.admission_receipt_fingerprint.?)));
+
+    const fabric_receipt_payload = try Continuity.encodePortableEvidence(Fabric.Receipt, allocator, fabric_receipt);
+    defer allocator.free(fabric_receipt_payload);
+    const fabric_receipt_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .fabric_receipt,
+        .object_format_version = world_fabric_receipt_format_version,
+        .payload_bytes = fabric_receipt_payload,
+    });
+    const fabric_receipt_deps = try Continuity.bundleEnvelopeRequiredDependencyRefs(allocator, fabric_receipt_envelope);
+    defer Continuity.freeRefSlice(allocator, fabric_receipt_deps);
+    try std.testing.expect(Continuity.containsRef(fabric_receipt_deps, Continuity.semanticObjectRef(.run_receipt, fabric_receipt.provider_run_receipt_fingerprint.?)));
+    try std.testing.expect(Continuity.containsRef(fabric_receipt_deps, Continuity.semanticObjectRef(.actuation_receipt, fabric_receipt.actuation_receipt_fingerprint.?)));
 }
 
 test "bundle export import roundtrip and ledger events are stable" {
