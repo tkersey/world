@@ -20002,7 +20002,12 @@ pub const Actuation = struct {
         fn sameFreshBinding(a: Entry, b: Entry) bool {
             if (a.commit_fingerprint != b.commit_fingerprint) return false;
             if (a.receipt_fingerprint) |a_receipt| {
-                if (b.receipt_fingerprint) |b_receipt| return a_receipt == b_receipt;
+                if (b.receipt_fingerprint) |b_receipt| {
+                    const a_evidence = journalEntryReplayEvidenceFingerprint(a);
+                    const b_evidence = journalEntryReplayEvidenceFingerprint(b);
+                    if (a_evidence != null and b_evidence != null) return a_evidence == b_evidence;
+                    return a_receipt == b_receipt;
+                }
                 if (journalEntryReplayEvidenceFingerprint(b)) |b_evidence| return journalEntryReplayEvidenceFingerprint(a) == b_evidence;
                 return true;
             }
@@ -28296,8 +28301,7 @@ pub const Continuity = struct {
         pub fn lookupActuationByIdempotencyKey(self: @This(), key: Actuation.IdempotencyKey) !?ObjectRef {
             try key.validate();
             var terminal_match: ?ObjectRef = null;
-            var terminal_receipt_fingerprint: ?u64 = null;
-            var terminal_commit_fingerprint: ?u64 = null;
+            var terminal_record: ?FreshCommitRecord = null;
             var non_terminal_match: ?ObjectRef = null;
             for (self.objects.items) |envelope| {
                 if (envelope.kind != .actuation_receipt) continue;
@@ -28306,13 +28310,13 @@ pub const Continuity = struct {
                 if (!receiptMatchesIdempotencyKey(receipt, key)) continue;
                 const ref = envelope.objectRef();
                 if (receiptIsTerminalFreshCommit(receipt)) {
+                    const record = freshCommitRecordFromReceipt(key.key_fingerprint, receipt);
                     if (terminal_match) |_| {
-                        if (terminal_receipt_fingerprint.? != receipt.receipt_fingerprint or terminal_commit_fingerprint.? != receipt.commit_fingerprint) return error.DuplicateBinding;
+                        if (!freshCommitRecordsSameBinding(terminal_record.?, record)) return error.DuplicateBinding;
                         continue;
                     }
                     terminal_match = ref;
-                    terminal_receipt_fingerprint = receipt.receipt_fingerprint;
-                    terminal_commit_fingerprint = receipt.commit_fingerprint;
+                    terminal_record = record;
                     continue;
                 }
                 non_terminal_match = ref;
@@ -29322,7 +29326,12 @@ pub const Continuity = struct {
     fn freshCommitRecordsSameBinding(a: FreshCommitRecord, b: FreshCommitRecord) bool {
         if (a.commit_fingerprint != b.commit_fingerprint) return false;
         if (a.receipt_fingerprint) |a_receipt| {
-            if (b.receipt_fingerprint) |b_receipt| return a_receipt == b_receipt;
+            if (b.receipt_fingerprint) |b_receipt| {
+                if (a.replay_evidence_fingerprint != null and b.replay_evidence_fingerprint != null) {
+                    return a.replay_evidence_fingerprint == b.replay_evidence_fingerprint;
+                }
+                return a_receipt == b_receipt;
+            }
             if (b.replay_evidence_fingerprint) |b_evidence| return a.replay_evidence_fingerprint == b_evidence;
             return true;
         }
@@ -29662,8 +29671,7 @@ pub const Continuity = struct {
         fn receiptByIdempotencyKeyFromJournals(self: @This(), key: Actuation.IdempotencyKey) !?ObjectRef {
             try key.validate();
             var terminal_match: ?ObjectRef = null;
-            var terminal_receipt_fingerprint: ?u64 = null;
-            var terminal_commit_fingerprint: ?u64 = null;
+            var terminal_record: ?FreshCommitRecord = null;
             var non_terminal_match: ?ObjectRef = null;
             for (self.vault.objects.items) |envelope| {
                 if (envelope.kind != .actuation_journal) continue;
@@ -29674,14 +29682,14 @@ pub const Continuity = struct {
                     const receipt_fingerprint = entry.receipt_fingerprint orelse continue;
                     const ref = try refFromStoredOrFingerprint(self.vault, .actuation_receipt, receipt_fingerprint);
                     if (journalEntryIsTerminalFreshCommit(entry)) {
-                        const commit_fingerprint = entry.commit_fingerprint orelse return error.InvalidFrameEncoding;
+                        if (entry.commit_fingerprint == null) return error.InvalidFrameEncoding;
+                        const record = freshCommitRecordFromJournalEntry(key.key_fingerprint, entry);
                         if (terminal_match) |_| {
-                            if (terminal_receipt_fingerprint.? != receipt_fingerprint or terminal_commit_fingerprint.? != commit_fingerprint) return error.DuplicateBinding;
+                            if (!freshCommitRecordsSameBinding(terminal_record.?, record)) return error.DuplicateBinding;
                             continue;
                         }
                         terminal_match = ref;
-                        terminal_receipt_fingerprint = receipt_fingerprint;
-                        terminal_commit_fingerprint = commit_fingerprint;
+                        terminal_record = record;
                         continue;
                     }
                     non_terminal_match = ref;
@@ -35019,6 +35027,25 @@ test "actuation idempotency lookup rejects conflicting terminal receipts" {
         .mode = .fresh,
         .fresh_called = true,
     });
+    const duplicate_diagnostics = Actuation.Receipt.init(.{
+        .intent_fingerprint = first.intent_fingerprint,
+        .envelope_fingerprint = first.envelope_fingerprint,
+        .decision_fingerprint = first.decision_fingerprint,
+        .commit_fingerprint = first.commit_fingerprint,
+        .response_fingerprint = first.response_fingerprint,
+        .frame_response_fingerprint = first.frame_response_fingerprint,
+        .actuator_ref_fingerprint = key.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .request_fingerprint = key.request_fingerprint,
+        .target_ref_fingerprint = key.target_ref_fingerprint,
+        .world_surface_fingerprint = key.world_surface_fingerprint,
+        .world_port_id = key.world_port_id,
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+        .fresh_called = true,
+        .warnings = &.{0x3301_0dd1},
+        .metadata = "same binding with receipt diagnostics",
+    });
     const second = Actuation.Receipt.init(.{
         .intent_fingerprint = first.intent_fingerprint,
         .envelope_fingerprint = first.envelope_fingerprint,
@@ -35036,7 +35063,23 @@ test "actuation idempotency lookup rejects conflicting terminal receipts" {
         .mode = .fresh,
         .fresh_called = true,
     });
-    _ = try vault.putActuationReceipt(first);
+    const first_ref = try vault.putActuationReceipt(first);
+    const duplicate_ref = try vault.putActuationReceipt(duplicate_diagnostics);
+    try std.testing.expect(!duplicate_ref.eql(first_ref));
+    const duplicate_lookup = try vault.lookupActuationByIdempotencyKey(key);
+    try std.testing.expect(duplicate_lookup != null);
+    try std.testing.expect(duplicate_lookup.?.eql(first_ref));
+    var journal_vault = Continuity.MemoryVault.init(allocator);
+    defer journal_vault.deinit();
+    var same_binding_journal = Actuation.Journal.init();
+    defer same_binding_journal.deinit(allocator);
+    try same_binding_journal.appendReceipt(allocator, first);
+    try same_binding_journal.appendReceipt(allocator, duplicate_diagnostics);
+    try same_binding_journal.assertNoDuplicateFreshCommit();
+    _ = try journal_vault.putActuationJournal(same_binding_journal);
+    var journal_index = Continuity.ActuationIndex.init(&journal_vault);
+    const journal_lookup = try journal_index.byIdempotencyKey(key);
+    try std.testing.expect(journal_lookup != null);
     try std.testing.expectError(error.DuplicateBinding, vault.putActuationReceipt(second));
 
     const lookup = try vault.lookupActuationByIdempotencyKey(key);
