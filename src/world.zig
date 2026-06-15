@@ -31688,19 +31688,33 @@ pub const Continuity = struct {
 
     fn capsuleHasPendingIntentForKey(vault: *Continuity.MemoryVault, image: Capsule.Image, key: Actuation.IdempotencyKey) !bool {
         for (image.actuation_intent_refs) |intent_fingerprint| {
-            if (key.intent_fingerprint) |key_intent| {
-                if (key_intent != intent_fingerprint) continue;
-            }
-            if (try capsuleIntentResolved(vault, image, intent_fingerprint)) continue;
-            const intent_ref = (try vault.refByKindFingerprint(.actuation_intent, intent_fingerprint)) orelse continue;
-            var intent = try vault.getActuationIntent(intent_ref);
-            defer intent.deinit(vault.allocator);
-            if (Actuation.idempotencyKeyMatchesIntent(key, intent)) {
-                if (try vaultHasTerminalFreshCommitForKey(vault, key)) return false;
-                return true;
+            if (try capsulePendingIntentRefMatchesKey(vault, image, key, intent_fingerprint)) return true;
+        }
+        for (image.runspace_image.actuation_intent_refs) |intent_fingerprint| {
+            if (try capsulePendingIntentRefMatchesKey(vault, image, key, intent_fingerprint)) return true;
+        }
+        for (image.manifest.actuation_intent_fingerprints) |intent_fingerprint| {
+            if (try capsulePendingIntentRefMatchesKey(vault, image, key, intent_fingerprint)) return true;
+        }
+        if (image.runspace_image.mailbox_image) |mailbox| {
+            for (mailbox.pending_actuation_intent_fingerprints) |intent_fingerprint| {
+                if (try capsulePendingIntentRefMatchesKey(vault, image, key, intent_fingerprint)) return true;
             }
         }
         return false;
+    }
+
+    fn capsulePendingIntentRefMatchesKey(vault: *Continuity.MemoryVault, image: Capsule.Image, key: Actuation.IdempotencyKey, intent_fingerprint: u64) !bool {
+        if (key.intent_fingerprint) |key_intent| {
+            if (key_intent != intent_fingerprint) return false;
+        }
+        if (try capsuleIntentResolved(vault, image, intent_fingerprint)) return false;
+        const intent_ref = (try vault.refByKindFingerprint(.actuation_intent, intent_fingerprint)) orelse return false;
+        var intent = try vault.getActuationIntent(intent_ref);
+        defer intent.deinit(vault.allocator);
+        if (!Actuation.idempotencyKeyMatchesIntent(key, intent)) return false;
+        if (try vaultHasTerminalFreshCommitForKey(vault, key)) return false;
+        return true;
     }
 
     fn vaultHasTerminalFreshCommitForKey(vault: *Continuity.MemoryVault, key: Actuation.IdempotencyKey) !bool {
@@ -36294,6 +36308,57 @@ test "recovery preflight inspects capsules replays receipt evidence and rejects 
     var pending_graph = try Continuity.Recovery.preflightPendingActuation(&vault, pending_ref, pending_key, actuator_ref);
     defer pending_graph.deinit();
     try std.testing.expect(pending_graph.local_fresh_actuation_required);
+
+    const manifest_only_pending_manifest = Capsule.Manifest.init(.{
+        .kind = image.manifest.kind,
+        .root_target_ref_fingerprint = recovery_target_ref_fingerprint,
+        .actuation_intent_fingerprints = &.{pending_intent.intent_fingerprint},
+        .normal_form = image.manifest.normal_form,
+    });
+    const manifest_only_pending_runspace = Capsule.RunspaceImage.init(.{
+        .runspace_fingerprint = 0x3302_0033,
+        .runspace_report_fingerprint = 0x3302_0034,
+    });
+    const manifest_only_pending_image = Capsule.Image.init(.{
+        .manifest = manifest_only_pending_manifest,
+        .runspace_image = manifest_only_pending_runspace,
+    });
+    try std.testing.expect(try Continuity.capsuleHasPendingIntentForKey(&vault, manifest_only_pending_image, pending_key));
+
+    const runspace_only_pending_manifest = Capsule.Manifest.init(.{
+        .kind = image.manifest.kind,
+        .root_target_ref_fingerprint = recovery_target_ref_fingerprint,
+        .normal_form = image.manifest.normal_form,
+    });
+    const runspace_only_pending_runspace = Capsule.RunspaceImage.init(.{
+        .runspace_fingerprint = 0x3302_0035,
+        .runspace_report_fingerprint = 0x3302_0036,
+        .actuation_intent_refs = &.{pending_intent.intent_fingerprint},
+    });
+    const runspace_only_pending_image = Capsule.Image.init(.{
+        .manifest = runspace_only_pending_manifest,
+        .runspace_image = runspace_only_pending_runspace,
+    });
+    try std.testing.expect(try Continuity.capsuleHasPendingIntentForKey(&vault, runspace_only_pending_image, pending_key));
+
+    const mailbox_only_pending_manifest = Capsule.Manifest.init(.{
+        .kind = image.manifest.kind,
+        .root_target_ref_fingerprint = recovery_target_ref_fingerprint,
+        .normal_form = image.manifest.normal_form,
+    });
+    const mailbox_only_pending_mailbox = Capsule.MailboxImage.init(.{
+        .pending_actuation_intent_fingerprints = &.{pending_intent.intent_fingerprint},
+    });
+    const mailbox_only_pending_runspace = Capsule.RunspaceImage.init(.{
+        .runspace_fingerprint = 0x3302_0037,
+        .runspace_report_fingerprint = 0x3302_0038,
+        .mailbox_image = mailbox_only_pending_mailbox,
+    });
+    const mailbox_only_pending_image = Capsule.Image.init(.{
+        .manifest = mailbox_only_pending_manifest,
+        .runspace_image = mailbox_only_pending_runspace,
+    });
+    try std.testing.expect(try Continuity.capsuleHasPendingIntentForKey(&vault, mailbox_only_pending_image, pending_key));
 
     const child_pending_key = Actuation.IdempotencyKey.init(.{
         .target_ref_fingerprint = recovery_target_ref_fingerprint + 1,
