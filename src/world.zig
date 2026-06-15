@@ -28007,7 +28007,7 @@ pub const Continuity = struct {
         }
 
         pub fn put(self: *@This(), envelope: ObjectEnvelope) !ObjectRef {
-            try envelope.validate();
+            try self.validateStorableEnvelope(envelope);
             try self.rejectDuplicateFreshCommitsForEnvelope(envelope);
             const ref = envelope.objectRef();
             for (self.objects.items) |existing| {
@@ -28047,7 +28047,7 @@ pub const Continuity = struct {
         }
 
         fn assertCanPutEnvelope(self: @This(), envelope: ObjectEnvelope) !void {
-            try envelope.validate();
+            try self.validateStorableEnvelope(envelope);
             const ref = envelope.objectRef();
             for (self.objects.items) |existing| {
                 if (existing.objectRef().eql(ref)) {
@@ -28058,6 +28058,11 @@ pub const Continuity = struct {
                     return error.InvalidFrameEncoding;
                 }
             }
+        }
+
+        fn validateStorableEnvelope(self: @This(), envelope: ObjectEnvelope) !void {
+            try envelope.validate();
+            if (!(try bundleEnvelopeTypedPayloadValid(self.allocator, envelope))) return error.InvalidFrameEncoding;
         }
 
         pub fn get(self: @This(), ref: ObjectRef) !ObjectEnvelope {
@@ -31828,8 +31833,8 @@ test "memory vault put get has list and deduplicates envelopes" {
     defer vault.deinit();
 
     const envelope = Continuity.ObjectEnvelope.init(.{
-        .kind = .value_image,
-        .object_format_version = 1,
+        .kind = .capsule_manifest,
+        .object_format_version = world_capsule_manifest_format_version,
         .payload_bytes = "payload",
         .label = "value",
     });
@@ -31837,8 +31842,8 @@ test "memory vault put get has list and deduplicates envelopes" {
     const duplicate = try vault.put(envelope);
     try std.testing.expect(ref.eql(duplicate));
     const relabeled = Continuity.ObjectEnvelope.init(.{
-        .kind = .value_image,
-        .object_format_version = 1,
+        .kind = .capsule_manifest,
+        .object_format_version = world_capsule_manifest_format_version,
         .payload_bytes = "payload",
         .label = "diagnostic label changed",
         .metadata = "diagnostic metadata changed",
@@ -31851,7 +31856,7 @@ test "memory vault put get has list and deduplicates envelopes" {
     defer stored.deinit(allocator);
     try std.testing.expectEqual(envelope.envelope_fingerprint, stored.envelope_fingerprint);
 
-    const refs = try vault.listByKind(.value_image);
+    const refs = try vault.listByKind(.capsule_manifest);
     defer allocator.free(refs);
     try std.testing.expectEqual(@as(usize, 1), refs.len);
     try std.testing.expect(refs[0].eql(ref));
@@ -32019,13 +32024,26 @@ test "bundle validation rejects typed payload envelope version mismatch" {
     try std.testing.expectEqual(world_capsule_image_format_version, image.format_version);
     const payload = try image.encode(allocator);
     defer allocator.free(payload);
-    const mismatched_ref = try vault.put(Continuity.ObjectEnvelope.init(.{
+    const mismatched_envelope = Continuity.ObjectEnvelope.init(.{
         .kind = .capsule_image,
         .object_format_version = 1,
         .payload_bytes = payload,
-    }));
+    });
 
-    try std.testing.expectError(error.InvalidFrameEncoding, Continuity.Bundle.exportFromVault(&vault, &.{mismatched_ref}, .{}));
+    try std.testing.expectError(error.InvalidFrameEncoding, vault.put(mismatched_envelope));
+    var mismatched_bundle = Continuity.Bundle{
+        .allocator = allocator,
+        .manifest = Continuity.BundleManifest.init(.{
+            .roots = &.{mismatched_envelope.objectRef()},
+            .object_count = 1,
+        }),
+        .envelopes = @constCast(&[_]Continuity.ObjectEnvelope{mismatched_envelope}),
+    };
+    const mismatched_bytes = try mismatched_bundle.toBytes(allocator);
+    defer allocator.free(mismatched_bytes);
+    const mismatched_report = try Continuity.Bundle.validate(allocator, mismatched_bytes, .{});
+    try std.testing.expect(!mismatched_report.valid);
+    try std.testing.expectEqual(Continuity.ObjectValidationReport.Blocker.DecodeFailed, mismatched_report.blockers[0]);
 }
 
 test "continuity refs and envelopes reject unsupported object format versions" {
@@ -32094,15 +32112,15 @@ test "vault rejects conflicting envelopes and oversized payloads before storage"
 
     const payload = "same-payload";
     const first = Continuity.ObjectEnvelope.init(.{
-        .kind = .value_image,
-        .object_format_version = 1,
+        .kind = .capsule_manifest,
+        .object_format_version = world_capsule_manifest_format_version,
         .payload_bytes = payload,
     });
     const ref = try vault.put(first);
     const dep = Continuity.ObjectRef.fromPayload(.capsule_manifest, world_capsule_manifest_format_version, "dep", "dep");
     const conflicting = Continuity.ObjectEnvelope.init(.{
-        .kind = .value_image,
-        .object_format_version = 1,
+        .kind = .capsule_manifest,
+        .object_format_version = world_capsule_manifest_format_version,
         .dependency_refs = &.{dep},
         .payload_bytes = payload,
     });
@@ -32113,8 +32131,8 @@ test "vault rejects conflicting envelopes and oversized payloads before storage"
     defer allocator.free(oversized);
     @memset(oversized, 'x');
     const oversized_envelope = Continuity.ObjectEnvelope.init(.{
-        .kind = .value_image,
-        .object_format_version = 1,
+        .kind = .capsule_manifest,
+        .object_format_version = world_capsule_manifest_format_version,
         .payload_bytes = oversized,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, vault.put(oversized_envelope));
@@ -32132,11 +32150,8 @@ test "vault capsule validation rejects undecodable generic capsule envelope" {
         .label = "decoded-bundle-owned-label",
         .metadata = "decoded-bundle-owned-metadata",
     });
-    const ref = try vault.put(envelope);
-    const report = try vault.validateCapsule(ref);
-    try std.testing.expect(!report.valid);
-    try std.testing.expectEqual(Continuity.ObjectValidationReport.Blocker.DecodeFailed, report.blockers[0]);
-    try std.testing.expectError(error.InvalidFrameEncoding, vault.getCapsule(ref));
+    try std.testing.expectError(error.InvalidFrameEncoding, vault.put(envelope));
+    try std.testing.expectEqual(@as(usize, 0), vault.objectCount());
 }
 
 test "bundle decode error owns root refs once" {
@@ -32366,6 +32381,8 @@ test "bundle validation rejects malformed typed payloads" {
     const malformed_actuation_report = try Continuity.Bundle.validate(allocator, malformed_actuation_bytes, .{});
     try std.testing.expect(!malformed_actuation_report.valid);
     try std.testing.expectEqual(Continuity.ObjectValidationReport.Blocker.DecodeFailed, malformed_actuation_report.blockers[0]);
+    try std.testing.expectError(error.InvalidFrameEncoding, vault.put(malformed_actuation_envelope));
+    try std.testing.expectEqual(@as(usize, 0), vault.objectCount());
     try std.testing.expectError(error.InvalidFrameEncoding, Continuity.Bundle.importIntoVault(&vault, malformed_actuation_bytes, .{}));
 
     const opaque_envelope = Continuity.ObjectEnvelope.init(.{
@@ -32711,10 +32728,14 @@ test "object graph accepts shared dag dependencies and flags real cycles" {
     var vault = Continuity.MemoryVault.init(allocator);
     defer vault.deinit();
 
+    var leaf_image = try Frame.ValueImage.fromValue(allocator, null, null, null, 32716, ValuePolicy.native_compatible);
+    defer leaf_image.deinit(allocator);
+    const leaf_payload = try leaf_image.encode(allocator);
+    defer allocator.free(leaf_payload);
     const leaf_envelope = Continuity.ObjectEnvelope.init(.{
         .kind = .value_image,
-        .object_format_version = 1,
-        .payload_bytes = "leaf",
+        .object_format_version = world_frame_value_image_format_version,
+        .payload_bytes = leaf_payload,
     });
     const leaf_ref = try vault.put(leaf_envelope);
     const shared_envelope = Continuity.ObjectEnvelope.init(.{
@@ -33702,20 +33723,20 @@ test "bundle import preflights destination conflicts atomically" {
     defer destination.deinit();
 
     const first = Continuity.ObjectEnvelope.init(.{
-        .kind = .value_image,
-        .object_format_version = 1,
+        .kind = .capsule_manifest,
+        .object_format_version = world_capsule_manifest_format_version,
         .payload_bytes = "first",
     });
     const first_ref = first.objectRef();
     const existing = Continuity.ObjectEnvelope.init(.{
-        .kind = .value_image,
-        .object_format_version = 1,
+        .kind = .capsule_manifest,
+        .object_format_version = world_capsule_manifest_format_version,
         .payload_bytes = "shared",
     });
     _ = try destination.put(existing);
     const conflicting = Continuity.ObjectEnvelope.init(.{
-        .kind = .value_image,
-        .object_format_version = 1,
+        .kind = .capsule_manifest,
+        .object_format_version = world_capsule_manifest_format_version,
         .dependency_refs = &.{first_ref},
         .payload_bytes = "shared",
     });
@@ -35719,16 +35740,11 @@ test "vault actuation receipt storage is independent of dependency store order" 
     try std.testing.expect(second_ref.eql(first_ref));
 }
 
-test "vault actuation receipt dependencies resolve stored opaque evidence" {
+test "vault actuation receipt dependencies resolve stored semantic evidence" {
     const allocator = std.testing.allocator;
     var vault = Continuity.MemoryVault.init(allocator);
     defer vault.deinit();
 
-    const commit_ref = try vault.put(Continuity.ObjectEnvelope.init(.{
-        .kind = .actuation_commit,
-        .object_format_version = world_actuation_commit_format_version,
-        .payload_bytes = "stored opaque commit evidence",
-    }));
     const key = Actuation.IdempotencyKey.init(.{
         .target_ref_fingerprint = 0x3306_0001,
         .world_surface_fingerprint = 0x3306_0002,
@@ -35736,11 +35752,26 @@ test "vault actuation receipt dependencies resolve stored opaque evidence" {
         .request_fingerprint = 0x3306_0003,
         .actuator_ref_fingerprint = 0x3306_0004,
     });
+    const commit = Actuation.Commit.init(.{
+        .intent_fingerprint = 0x3306_0010,
+        .envelope_fingerprint = 0x3306_0011,
+        .decision_fingerprint = 0x3306_0012,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .status = .committed,
+        .fresh_called = true,
+    });
+    const commit_payload = try Continuity.encodePortableEvidence(Actuation.Commit, allocator, commit);
+    defer allocator.free(commit_payload);
+    _ = try vault.put(Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_commit,
+        .object_format_version = world_actuation_commit_format_version,
+        .payload_bytes = commit_payload,
+    }));
     const receipt = Actuation.Receipt.init(.{
         .intent_fingerprint = 0x3306_0010,
         .envelope_fingerprint = 0x3306_0011,
         .decision_fingerprint = 0x3306_0012,
-        .commit_fingerprint = commit_ref.object_fingerprint,
+        .commit_fingerprint = commit.commit_fingerprint,
         .response_fingerprint = 0x3306_0014,
         .frame_response_fingerprint = 0x3306_0015,
         .actuator_ref_fingerprint = key.actuator_ref_fingerprint,
@@ -35762,7 +35793,7 @@ test "vault actuation receipt dependencies resolve stored opaque evidence" {
     }
     var has_stored_commit_dep = false;
     for (receipt_deps) |dep| {
-        if (dep.kind == .actuation_commit and dep.object_fingerprint == commit_ref.object_fingerprint and dep.byte_len == 0 and vault.has(dep)) has_stored_commit_dep = true;
+        if (dep.kind == .actuation_commit and dep.object_fingerprint == commit.commit_fingerprint and dep.byte_len == 0 and vault.has(dep)) has_stored_commit_dep = true;
     }
     try std.testing.expect(has_stored_commit_dep);
 }
@@ -35772,15 +35803,12 @@ test "vault rejects malformed typed actuation evidence payload" {
     var vault = Continuity.MemoryVault.init(allocator);
     defer vault.deinit();
 
-    const ref = try vault.put(Continuity.ObjectEnvelope.init(.{
+    try std.testing.expectError(error.InvalidFrameEncoding, vault.put(Continuity.ObjectEnvelope.init(.{
         .kind = .actuation_commit,
         .object_format_version = world_actuation_commit_format_version,
         .payload_bytes = "malformed typed commit evidence",
-    }));
-
-    const report = try vault.validate(ref);
-    try std.testing.expect(!report.valid);
-    try std.testing.expectEqual(Continuity.ObjectValidationReport.Blocker.DecodeFailed, report.blockers[0]);
+    })));
+    try std.testing.expectEqual(@as(usize, 0), vault.objectCount());
 }
 
 test "vault actuation receipt dependencies preserve and resolve component evidence" {
@@ -36229,11 +36257,12 @@ test "vault replay preserves stored response value image for recorded frame resp
     const response_boundary_value_fingerprint: u64 = 0x3312_ffff;
     var value_image = try Frame.ValueImage.fromValue(allocator, null, response_boundary_value_fingerprint, null, 91, ValuePolicy.native_compatible);
     defer value_image.deinit(allocator);
-    _ = try vault.put(Continuity.ObjectEnvelope.init(.{
+    try std.testing.expectError(error.InvalidFrameEncoding, vault.put(Continuity.ObjectEnvelope.init(.{
         .kind = .value_image,
         .object_format_version = world_frame_value_image_format_version,
         .payload_bytes = "not a value image",
-    }));
+    })));
+    try std.testing.expectEqual(@as(usize, 0), vault.objectCount());
     const value_image_payload = try value_image.encode(allocator);
     defer allocator.free(value_image_payload);
     _ = try vault.put(Continuity.ObjectEnvelope.init(.{
