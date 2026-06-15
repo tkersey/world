@@ -28867,6 +28867,7 @@ pub const Continuity = struct {
         permit_refs: []ObjectRef = &.{},
         receipt_refs: []ObjectRef = &.{},
         admission_refs: []ObjectRef = &.{},
+        fabric_receipt_refs: []ObjectRef = &.{},
         actuation_intent_refs: []ObjectRef = &.{},
         actuation_receipt_refs: []ObjectRef = &.{},
         actuation_journal_refs: []ObjectRef = &.{},
@@ -28899,6 +28900,7 @@ pub const Continuity = struct {
             graph.permit_refs = try refsFromFingerprints(vault, .run_permit, image.supervision_refs);
             graph.receipt_refs = try refsFromFingerprints(vault, .run_receipt, image.manifest.run_receipt_fingerprints);
             graph.admission_refs = try refsFromFingerprints(vault, .admission_receipt, image.admission_refs);
+            graph.fabric_receipt_refs = try refsFromFingerprints(vault, .fabric_receipt, image.manifest.fabric_receipt_fingerprints);
             graph.actuation_intent_refs = try refsFromFingerprints(vault, .actuation_intent, image.actuation_intent_refs);
             graph.actuation_receipt_refs = try refsFromFingerprints(vault, .actuation_receipt, image.actuation_receipt_refs);
             graph.actuation_journal_refs = try refsFromFingerprints(vault, .actuation_journal, image.actuation_journal_refs);
@@ -28911,6 +28913,7 @@ pub const Continuity = struct {
                 graph.permit_refs,
                 graph.receipt_refs,
                 graph.admission_refs,
+                graph.fabric_receipt_refs,
                 graph.guest_conformance_refs,
                 graph.actuation_intent_refs,
                 graph.actuation_receipt_refs,
@@ -28977,6 +28980,7 @@ pub const Continuity = struct {
             freeRefSlice(self.allocator, self.permit_refs);
             freeRefSlice(self.allocator, self.receipt_refs);
             freeRefSlice(self.allocator, self.admission_refs);
+            freeRefSlice(self.allocator, self.fabric_receipt_refs);
             freeRefSlice(self.allocator, self.actuation_intent_refs);
             freeRefSlice(self.allocator, self.actuation_receipt_refs);
             freeRefSlice(self.allocator, self.actuation_journal_refs);
@@ -30251,6 +30255,7 @@ pub const Continuity = struct {
         hashRefSlice(&hasher, graph.permit_refs);
         hashRefSlice(&hasher, graph.receipt_refs);
         hashRefSlice(&hasher, graph.admission_refs);
+        hashRefSlice(&hasher, graph.fabric_receipt_refs);
         hashRefSlice(&hasher, graph.actuation_intent_refs);
         hashRefSlice(&hasher, graph.actuation_receipt_refs);
         hashRefSlice(&hasher, graph.actuation_journal_refs);
@@ -32990,6 +32995,31 @@ test "capsule graph tracks external value image dependencies" {
     defer resolved_graph.deinit();
     try std.testing.expect(resolved_graph.restorable);
     try std.testing.expectEqual(@as(usize, 0), resolved_graph.missing_deps.len);
+
+    const fabric_receipt_fingerprint: u64 = 0x3275_00f1;
+    const fabric_capsule = Capsule.Image.init(.{
+        .manifest = Capsule.Manifest.init(.{
+            .kind = .completed_assembly,
+            .root_target_ref_fingerprint = 0x3275_00f2,
+            .normal_form = .quiescent_completed,
+            .fabric_receipt_fingerprints = &.{fabric_receipt_fingerprint},
+        }),
+        .runspace_image = Capsule.RunspaceImage.init(.{
+            .runspace_fingerprint = 0x3275_00f3,
+            .runspace_report_fingerprint = 0x3275_00f4,
+        }),
+        .fabric_image = Capsule.FabricImage.init(.{
+            .completed_receipt_fingerprints = &.{fabric_receipt_fingerprint},
+        }),
+    });
+    const fabric_capsule_ref = try vault.putCapsule(fabric_capsule);
+    var fabric_missing_graph = try Continuity.CapsuleGraph.fromCapsule(&vault, fabric_capsule_ref);
+    defer fabric_missing_graph.deinit();
+    try std.testing.expect(!fabric_missing_graph.restorable);
+    try std.testing.expectEqual(@as(usize, 1), fabric_missing_graph.fabric_receipt_refs.len);
+    try std.testing.expectEqual(@as(usize, 1), fabric_missing_graph.missing_deps.len);
+    try std.testing.expectEqual(Continuity.ObjectKind.fabric_receipt, fabric_missing_graph.missing_deps[0].kind);
+    try std.testing.expectEqual(fabric_receipt_fingerprint, fabric_missing_graph.missing_deps[0].object_fingerprint);
 }
 
 test "capsule graph treats embedded value images as self contained" {
