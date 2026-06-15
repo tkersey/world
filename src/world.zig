@@ -29251,8 +29251,14 @@ pub const Continuity = struct {
     fn isReplayableJournalEntry(entry: Actuation.Journal.Entry) bool {
         return !entry.pending and
             !entry.deferred and
-            entry.response_fingerprint != null and
-            (entry.receipt_fingerprint != null or journalEntryIsTerminalFreshCommit(entry));
+            entry.response_fingerprint != null;
+    }
+
+    fn journalEntryResponseStatus(entry: Actuation.Journal.Entry) Actuation.ResponseStatus {
+        if (entry.rejected) return .rejected;
+        if (entry.failed) return .failed;
+        if (entry.cancelled) return .cancelled;
+        return .responded;
     }
 
     fn journalEntryIsTerminalFreshCommit(entry: Actuation.Journal.Entry) bool {
@@ -29924,7 +29930,6 @@ pub const Continuity = struct {
                 defer journal.deinit(vault.allocator);
                 for (journal.entries.items) |entry| {
                     if (entry.idempotency_key_fingerprint != idempotency_key.key_fingerprint) continue;
-                    if (!journalEntryIsTerminalFreshCommit(entry)) continue;
                     if (!isReplayableJournalEntry(entry)) continue;
                     if (terminal_entry) |existing| {
                         if (!journalEntriesSameFreshBinding(existing, entry)) return error.DuplicateBinding;
@@ -29942,7 +29947,7 @@ pub const Continuity = struct {
                 .actuator_ref_fingerprint = idempotency_key.actuator_ref_fingerprint,
                 .world_port_id = idempotency_key.world_port_id,
                 .request_fingerprint = entry.request_fingerprint orelse idempotency_key.request_fingerprint,
-                .status = .responded,
+                .status = journalEntryResponseStatus(entry),
                 .response_kind = entry.response_kind orelse .@"resume",
                 .frame_response_fingerprint = entry.frame_response_fingerprint,
                 .value_image_fingerprint = entry.response_value_image_fingerprint,
@@ -29976,6 +29981,7 @@ pub const Continuity = struct {
         }
 
         fn replayResponseImageFromJournalEntry(vault: *Continuity.MemoryVault, entry: Actuation.Journal.Entry) !?Frame.ValueImage {
+            if (journalEntryResponseStatus(entry) != .responded) return null;
             const frame_response_fingerprint = entry.frame_response_fingerprint orelse return error.InvalidFrameEncoding;
             if (entry.response_value_image_fingerprint) |value_image_fingerprint| {
                 if (try vault.refByKindFingerprint(.value_image, value_image_fingerprint)) |ref| {
@@ -33142,6 +33148,16 @@ test "actuation graph builds from receipt journal and detects duplicate fresh co
     var journal_only_cancelled_graph = try Continuity.ActuationGraph.fromJournal(&vault, journal_only_cancelled_ref);
     defer journal_only_cancelled_graph.deinit();
     try std.testing.expectEqual(@as(usize, 0), journal_only_cancelled_graph.summary().replayable_count);
+    var journal_only_cancelled_vault = Continuity.MemoryVault.init(allocator);
+    defer journal_only_cancelled_vault.deinit();
+    var replayable_cancelled_journal = Actuation.Journal.init();
+    defer replayable_cancelled_journal.deinit(allocator);
+    try replayable_cancelled_journal.entries.append(allocator, journal_only_cancelled.entries.items[0]);
+    replayable_cancelled_journal.next_order = 1;
+    replayable_cancelled_journal.refreshFingerprint();
+    _ = try journal_only_cancelled_vault.putActuationJournal(replayable_cancelled_journal);
+    const journal_only_cancelled_response = try Continuity.Recovery.replayActuation(&journal_only_cancelled_vault, cancelled_key);
+    try std.testing.expectEqual(Actuation.ResponseStatus.cancelled, journal_only_cancelled_response.status);
 
     const in_progress_intent = Actuation.Intent.init(.{
         .actuator_ref_fingerprint = key.actuator_ref_fingerprint,
