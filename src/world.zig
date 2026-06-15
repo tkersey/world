@@ -29902,28 +29902,31 @@ pub const Continuity = struct {
         }
 
         pub fn replayActuation(vault: *Continuity.MemoryVault, idempotency_key: Actuation.IdempotencyKey) !Actuation.Response {
+            if (try vault.lookupActuationByIdempotencyKey(idempotency_key)) |receipt_ref| {
+                var receipt = try vault.getActuationReceipt(receipt_ref);
+                defer receipt.deinit(vault.allocator);
+                if (receipt.idempotency_key_fingerprint != idempotency_key.key_fingerprint) return error.InvalidFrameEncoding;
+                if (!receiptMatchesIdempotencyKey(receipt, idempotency_key)) return error.InvalidFrameEncoding;
+                if (!receipt.pending and !receipt.deferred) {
+                    const response_image = try replayResponseImage(vault, receipt);
+                    return Actuation.Response.init(.{
+                        .intent_fingerprint = receipt.intent_fingerprint,
+                        .commit_fingerprint = receipt.commit_fingerprint,
+                        .actuator_ref_fingerprint = receipt.actuator_ref_fingerprint,
+                        .world_port_id = receipt.world_port_id,
+                        .request_fingerprint = receipt.request_fingerprint orelse idempotency_key.request_fingerprint,
+                        .status = receipt.responseStatus(),
+                        .response_kind = receipt.response_kind,
+                        .frame_response_fingerprint = receipt.frame_response_fingerprint,
+                        .value_image_fingerprint = receipt.response_value_image_fingerprint,
+                        .response_image = response_image,
+                        .owns_response_image = response_image != null,
+                        .recorded_response_fingerprint = receipt.response_fingerprint,
+                    });
+                }
+            }
             if (try replayActuationFromJournalEvidence(vault, idempotency_key)) |response| return response;
-            const receipt_ref = (try vault.lookupActuationByIdempotencyKey(idempotency_key)) orelse return error.ObjectMissing;
-            var receipt = try vault.getActuationReceipt(receipt_ref);
-            defer receipt.deinit(vault.allocator);
-            if (receipt.idempotency_key_fingerprint != idempotency_key.key_fingerprint) return error.InvalidFrameEncoding;
-            if (!receiptMatchesIdempotencyKey(receipt, idempotency_key)) return error.InvalidFrameEncoding;
-            if (receipt.pending or receipt.deferred) return error.PortRuleDenied;
-            const response_image = try replayResponseImage(vault, receipt);
-            return Actuation.Response.init(.{
-                .intent_fingerprint = receipt.intent_fingerprint,
-                .commit_fingerprint = receipt.commit_fingerprint,
-                .actuator_ref_fingerprint = receipt.actuator_ref_fingerprint,
-                .world_port_id = receipt.world_port_id,
-                .request_fingerprint = receipt.request_fingerprint orelse idempotency_key.request_fingerprint,
-                .status = receipt.responseStatus(),
-                .response_kind = receipt.response_kind,
-                .frame_response_fingerprint = receipt.frame_response_fingerprint,
-                .value_image_fingerprint = receipt.response_value_image_fingerprint,
-                .response_image = response_image,
-                .owns_response_image = response_image != null,
-                .recorded_response_fingerprint = receipt.response_fingerprint,
-            });
+            return error.ObjectMissing;
         }
 
         fn replayActuationFromJournalEvidence(vault: *Continuity.MemoryVault, idempotency_key: Actuation.IdempotencyKey) !?Actuation.Response {
@@ -35261,6 +35264,25 @@ test "recovery preflight inspects capsules replays receipt evidence and rejects 
     _ = try vault.putActuationReceipt(receipt);
     const replay_response = try Continuity.Recovery.replayActuation(&vault, key);
     try std.testing.expectEqual(Actuation.ResponseStatus.responded, replay_response.status);
+    var stale_journal_winning_receipt_vault = Continuity.MemoryVault.init(allocator);
+    defer stale_journal_winning_receipt_vault.deinit();
+    var stale_failure_journal = Actuation.Journal.init();
+    defer stale_failure_journal.deinit(allocator);
+    try stale_failure_journal.entries.append(allocator, .{
+        .order = stale_failure_journal.takeOrder(),
+        .intent_fingerprint = receipt.intent_fingerprint,
+        .commit_fingerprint = receipt.commit_fingerprint ^ 0x55,
+        .response_fingerprint = receipt.response_fingerprint ^ 0x55,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .request_fingerprint = key.request_fingerprint,
+        .failed = true,
+    });
+    stale_failure_journal.refreshFingerprint();
+    _ = try stale_journal_winning_receipt_vault.putActuationJournal(stale_failure_journal);
+    _ = try stale_journal_winning_receipt_vault.putActuationReceipt(receipt);
+    const winning_receipt_replay = try Continuity.Recovery.replayActuation(&stale_journal_winning_receipt_vault, key);
+    try std.testing.expectEqual(Actuation.ResponseStatus.responded, winning_receipt_replay.status);
+    try std.testing.expectEqual(receipt.response_fingerprint, winning_receipt_replay.recorded_response_fingerprint.?);
     var journal_replay_vault = Continuity.MemoryVault.init(allocator);
     defer journal_replay_vault.deinit();
     var replay_journal = Actuation.Journal.init();
