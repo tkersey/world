@@ -28873,6 +28873,7 @@ pub const Continuity = struct {
         actuation_journal_refs: []ObjectRef = &.{},
         guest_conformance_refs: []ObjectRef = &.{},
         missing_deps: []ObjectRef = &.{},
+        dependency_cycle: bool = false,
         restorable: bool = false,
         replayable: bool = false,
         relink_required: bool = false,
@@ -28921,11 +28922,11 @@ pub const Continuity = struct {
             });
             var missing_deps_owned = true;
             errdefer if (missing_deps_owned) freeRefSlice(vault.allocator, missing_deps);
-            try appendMissingDepsFromObjectGraphs(vault, &missing_deps, &.{
+            try appendMissingDepsFromObjectGraphs(vault, &graph, &missing_deps, &.{
                 graph.actuation_receipt_refs,
                 graph.actuation_journal_refs,
             });
-            const restorable = missing_deps.len == 0 and image.manifest.kind != .reference_only and image.manifest.kind != .replay_only;
+            const restorable = missing_deps.len == 0 and !graph.dependency_cycle and image.manifest.kind != .reference_only and image.manifest.kind != .replay_only;
             const replayable = image.run_images.len != 0 or image.run_image_refs.len != 0 or image.manifest.kind == .replay_only;
             const relink_required = image.link_image != null and image.manifest.assembly_fingerprint != null;
             const actuation_replay_possible = image.actuation_receipt_refs.len != 0 or image.actuation_journal_refs.len != 0;
@@ -28942,15 +28943,15 @@ pub const Continuity = struct {
         }
 
         pub fn validateRestoreClosure(self: @This()) bool {
-            return self.restorable and self.missing_deps.len == 0;
+            return self.restorable and self.missing_deps.len == 0 and !self.dependency_cycle;
         }
 
         pub fn validateReplayClosure(self: @This()) bool {
-            return self.replayable and self.missing_deps.len == 0;
+            return self.replayable and self.missing_deps.len == 0 and !self.dependency_cycle;
         }
 
         pub fn validateActuationClosure(self: @This()) bool {
-            return !self.local_fresh_actuation_required and self.missing_deps.len == 0;
+            return !self.local_fresh_actuation_required and self.missing_deps.len == 0 and !self.dependency_cycle;
         }
 
         pub fn summary(self: @This()) struct {
@@ -29142,6 +29143,14 @@ pub const Continuity = struct {
                         try committed_refs.append(vault.allocator, ref);
                     }
                     if (isReplayableJournalEntry(entry) and vault.has(ref) and try journalEntryReplayEvidenceAvailable(vault, entry)) try replayable_refs.append(vault.allocator, ref);
+                } else if (entry.pending or entry.deferred) {
+                    if (entry.commit_fingerprint) |fingerprint| {
+                        try appendUniqueRefForFingerprint(vault, &pending_refs, .actuation_commit, fingerprint);
+                    } else if (entry.intent_fingerprint) |fingerprint| {
+                        try appendUniqueRefForFingerprint(vault, &pending_refs, .actuation_intent, fingerprint);
+                    } else if (entry.envelope_fingerprint) |fingerprint| {
+                        try appendUniqueRefForFingerprint(vault, &pending_refs, .actuation_envelope, fingerprint);
+                    }
                 } else if (terminal_fresh_commit) {
                     if (entry.commit_fingerprint) |fingerprint| {
                         try appendUniqueRefForFingerprint(vault, &committed_refs, .actuation_commit, fingerprint);
@@ -30262,6 +30271,7 @@ pub const Continuity = struct {
         hashRefSlice(&hasher, graph.actuation_journal_refs);
         hashRefSlice(&hasher, graph.guest_conformance_refs);
         hashRefSlice(&hasher, graph.missing_deps);
+        hashBool(&hasher, graph.dependency_cycle);
         hashBool(&hasher, graph.restorable);
         hashBool(&hasher, graph.replayable);
         hashBool(&hasher, graph.relink_required);
@@ -30775,6 +30785,11 @@ pub const Continuity = struct {
                 defer journal.deinit(allocator);
                 break :blk try bundleActuationJournalRequiredDependencyRefs(allocator, journal);
             },
+            .actuation_envelope => blk: {
+                const actuation_envelope = try decodePortableEvidence(Actuation.Envelope, allocator, envelope.payload_bytes);
+                defer deinitOwnedValue(allocator, actuation_envelope);
+                break :blk try bundleActuationEnvelopeRequiredDependencyRefs(allocator, actuation_envelope);
+            },
             .capsule_image => blk: {
                 var image = try Capsule.Image.decode(allocator, envelope.payload_bytes);
                 defer image.deinit(allocator);
@@ -30828,6 +30843,17 @@ pub const Continuity = struct {
                 try appendUniqueSemanticRef(allocator, &refs, .value_image, fingerprint);
             }
         }
+        return refs.toOwnedSlice(allocator);
+    }
+
+    fn bundleActuationEnvelopeRequiredDependencyRefs(allocator: std.mem.Allocator, envelope: Actuation.Envelope) ![]ObjectRef {
+        var refs: std.ArrayList(ObjectRef) = .empty;
+        errdefer deinitRefList(allocator, &refs);
+        try appendUniqueSemanticRef(allocator, &refs, .actuation_intent, envelope.intent_fingerprint);
+        try appendUniqueSemanticRef(allocator, &refs, .actuation_idempotency_key, envelope.idempotency_key.key_fingerprint);
+        try appendUniqueSemanticRef(allocator, &refs, .frame_request, envelope.idempotency_key.request_fingerprint);
+        if (envelope.encoded_frame_request_fingerprint) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .frame_request, fingerprint);
+        if (envelope.payload_value_image_fingerprint) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .value_image, fingerprint);
         return refs.toOwnedSlice(allocator);
     }
 
@@ -31626,7 +31652,7 @@ pub const Continuity = struct {
         return missing.toOwnedSlice(vault.allocator);
     }
 
-    fn appendMissingDepsFromObjectGraphs(vault: *Continuity.MemoryVault, missing: *[]ObjectRef, slices: []const []const ObjectRef) !void {
+    fn appendMissingDepsFromObjectGraphs(vault: *Continuity.MemoryVault, graph: *CapsuleGraph, missing: *[]ObjectRef, slices: []const []const ObjectRef) !void {
         var refs: std.ArrayList(ObjectRef) = .empty;
         errdefer deinitRefList(vault.allocator, &refs);
         for (missing.*) |dep| try refs.append(vault.allocator, try dep.clone(vault.allocator));
@@ -31634,6 +31660,7 @@ pub const Continuity = struct {
             for (roots) |root| {
                 var object_graph = try ObjectGraph.buildFromRoots(vault, &.{root}, .{});
                 defer object_graph.deinit();
+                graph.dependency_cycle = graph.dependency_cycle or object_graph.dependency_cycle;
                 for (object_graph.missing_deps) |dep| {
                     if (containsRef(refs.items, dep)) continue;
                     try refs.append(vault.allocator, try dep.clone(vault.allocator));
@@ -33489,6 +33516,33 @@ test "actuation graph builds from receipt journal and detects duplicate fresh co
     try std.testing.expectEqual(@as(usize, 1), stale_pending_commit_only_summary.committed_count);
     try std.testing.expectEqual(@as(usize, 0), stale_pending_commit_only_summary.pending_count);
 
+    const receiptless_pending_key = Actuation.IdempotencyKey.init(.{
+        .target_ref_fingerprint = key.target_ref_fingerprint,
+        .world_surface_fingerprint = key.world_surface_fingerprint,
+        .world_port_id = key.world_port_id,
+        .request_fingerprint = 0x3280_00d0,
+        .actuator_ref_fingerprint = key.actuator_ref_fingerprint,
+    });
+    var receiptless_pending_journal = Actuation.Journal.init();
+    defer receiptless_pending_journal.deinit(allocator);
+    try receiptless_pending_journal.entries.append(allocator, .{
+        .order = receiptless_pending_journal.takeOrder(),
+        .intent_fingerprint = receipt.intent_fingerprint,
+        .commit_fingerprint = 0x3280_00d1,
+        .idempotency_key_fingerprint = receiptless_pending_key.key_fingerprint,
+        .request_fingerprint = receiptless_pending_key.request_fingerprint,
+        .pending = true,
+    });
+    receiptless_pending_journal.refreshFingerprint();
+    var receiptless_pending_vault = Continuity.MemoryVault.init(allocator);
+    defer receiptless_pending_vault.deinit();
+    const receiptless_pending_journal_ref = try receiptless_pending_vault.putActuationJournal(receiptless_pending_journal);
+    var receiptless_pending_graph = try Continuity.ActuationGraph.fromJournal(&receiptless_pending_vault, receiptless_pending_journal_ref);
+    defer receiptless_pending_graph.deinit();
+    try std.testing.expectEqual(@as(usize, 0), receiptless_pending_graph.summary().receipt_count);
+    try std.testing.expectEqual(@as(usize, 1), receiptless_pending_graph.summary().pending_count);
+    try std.testing.expectEqual(Continuity.ObjectKind.actuation_commit, receiptless_pending_graph.pending_actuation_refs[0].kind);
+
     const same_commit_duplicate = Actuation.Receipt.init(.{
         .intent_fingerprint = receipt.intent_fingerprint,
         .envelope_fingerprint = receipt.envelope_fingerprint,
@@ -33682,6 +33736,79 @@ test "actuation graph gates replayable receipts on external response value image
     var resolved_journal_graph = try Continuity.ActuationGraph.fromJournal(&vault, journal_ref);
     defer resolved_journal_graph.deinit();
     try std.testing.expectEqual(@as(usize, 1), resolved_journal_graph.summary().replayable_count);
+}
+
+test "actuation envelope dependencies cover frame request and payload evidence" {
+    const allocator = std.testing.allocator;
+    var vault = Continuity.MemoryVault.init(allocator);
+    defer vault.deinit();
+
+    const key = Actuation.IdempotencyKey.init(.{
+        .target_ref_fingerprint = 0x3286_0001,
+        .world_surface_fingerprint = 0x3286_0002,
+        .world_port_id = 9,
+        .request_fingerprint = 0x3286_0003,
+        .actuator_ref_fingerprint = 0x3286_0004,
+    });
+    const envelope = Actuation.Envelope.init(.{
+        .intent_fingerprint = 0x3286_0010,
+        .encoded_frame_request_fingerprint = 0x3286_0011,
+        .payload_value_image_fingerprint = 0x3286_0012,
+        .idempotency_key = key,
+    });
+    const payload = try Continuity.encodePortableEvidence(Actuation.Envelope, allocator, envelope);
+    defer allocator.free(payload);
+    const incomplete_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_envelope,
+        .object_format_version = envelope.format_version,
+        .payload_bytes = payload,
+    });
+    const incomplete_ref = try vault.put(incomplete_envelope);
+    const incomplete_report = try vault.validate(incomplete_ref);
+    try std.testing.expect(!incomplete_report.valid);
+    try std.testing.expectEqual(Continuity.ObjectValidationReport.Blocker.MissingDependency, incomplete_report.blockers[0]);
+
+    var incomplete_bundle_envelopes = [_]Continuity.ObjectEnvelope{incomplete_envelope};
+    var incomplete_bundle_roots = [_]Continuity.ObjectRef{incomplete_envelope.objectRef()};
+    var incomplete_bundle = Continuity.Bundle{
+        .allocator = allocator,
+        .manifest = Continuity.BundleManifest.init(.{ .roots = &incomplete_bundle_roots, .object_count = incomplete_bundle_envelopes.len }),
+        .envelopes = &incomplete_bundle_envelopes,
+    };
+    const incomplete_bytes = try incomplete_bundle.toBytes(allocator);
+    defer allocator.free(incomplete_bytes);
+    const incomplete_bundle_report = try Continuity.Bundle.validate(allocator, incomplete_bytes, .{ .allow_external_dependencies = true });
+    try std.testing.expect(!incomplete_bundle_report.valid);
+
+    const deps = try Continuity.bundleActuationEnvelopeRequiredDependencyRefs(allocator, envelope);
+    defer Continuity.freeRefSlice(allocator, deps);
+    const complete_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_envelope,
+        .object_format_version = envelope.format_version,
+        .dependency_refs = deps,
+        .payload_bytes = payload,
+    });
+    var found_encoded_request = false;
+    var found_payload_value = false;
+    for (complete_envelope.dependency_refs) |dep| {
+        if (dep.kind == .frame_request and dep.object_fingerprint == envelope.encoded_frame_request_fingerprint.?) found_encoded_request = true;
+        if (dep.kind == .value_image and dep.object_fingerprint == envelope.payload_value_image_fingerprint.?) found_payload_value = true;
+    }
+    try std.testing.expect(found_encoded_request);
+    try std.testing.expect(found_payload_value);
+
+    var complete_bundle_envelopes = [_]Continuity.ObjectEnvelope{complete_envelope};
+    var complete_bundle_roots = [_]Continuity.ObjectRef{complete_envelope.objectRef()};
+    var complete_bundle = Continuity.Bundle{
+        .allocator = allocator,
+        .manifest = Continuity.BundleManifest.init(.{ .roots = &complete_bundle_roots, .object_count = complete_bundle_envelopes.len }),
+        .envelopes = &complete_bundle_envelopes,
+    };
+    const complete_bytes = try complete_bundle.toBytes(allocator);
+    defer allocator.free(complete_bytes);
+    const complete_bundle_report = try Continuity.Bundle.validate(allocator, complete_bytes, .{ .allow_external_dependencies = true });
+    try std.testing.expect(complete_bundle_report.valid);
+    try std.testing.expect(complete_bundle_report.missing_dependency_count >= 5);
 }
 
 test "bundle export import roundtrip and ledger events are stable" {
@@ -34497,6 +34624,95 @@ test "capsule storage preserves unresolved dependency edges" {
     defer allocator.free(bundle_bytes);
     const report = try Continuity.Bundle.validate(allocator, bundle_bytes, .{ .allow_external_dependencies = true });
     try std.testing.expect(report.valid);
+
+    var cycle_vault = Continuity.MemoryVault.init(allocator);
+    defer cycle_vault.deinit();
+    const cycle_a_receipt = Actuation.Receipt.init(.{
+        .intent_fingerprint = 0x3293_0030,
+        .envelope_fingerprint = 0x3293_0031,
+        .decision_fingerprint = 0x3293_0032,
+        .commit_fingerprint = 0x3293_0033,
+        .response_fingerprint = 0x3293_0034,
+        .frame_response_fingerprint = 0x3293_0035,
+        .actuator_ref_fingerprint = 0x3293_0036,
+        .idempotency_key_fingerprint = 0x3293_0037,
+        .request_fingerprint = 0x3293_0038,
+        .target_ref_fingerprint = 0x3293_0039,
+        .world_surface_fingerprint = 0x3293_003a,
+        .world_port_id = 4,
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+        .fresh_called = true,
+        .pending = true,
+    });
+    const cycle_b_receipt = Actuation.Receipt.init(.{
+        .intent_fingerprint = 0x3293_0040,
+        .envelope_fingerprint = 0x3293_0041,
+        .decision_fingerprint = 0x3293_0042,
+        .commit_fingerprint = 0x3293_0043,
+        .response_fingerprint = 0x3293_0044,
+        .frame_response_fingerprint = 0x3293_0045,
+        .actuator_ref_fingerprint = 0x3293_0046,
+        .idempotency_key_fingerprint = 0x3293_0047,
+        .request_fingerprint = 0x3293_0048,
+        .target_ref_fingerprint = 0x3293_0049,
+        .world_surface_fingerprint = 0x3293_004a,
+        .world_port_id = 4,
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+        .fresh_called = true,
+        .pending = true,
+    });
+    const cycle_a_payload = try cycle_a_receipt.encode(allocator);
+    defer allocator.free(cycle_a_payload);
+    const cycle_b_payload = try cycle_b_receipt.encode(allocator);
+    defer allocator.free(cycle_b_payload);
+    const cycle_a_ref = Continuity.ObjectRef.init(.{
+        .kind = .actuation_receipt,
+        .object_format_version = world_actuation_receipt_format_version,
+        .object_fingerprint = cycle_a_receipt.receipt_fingerprint,
+        .byte_len = 0,
+    });
+    const cycle_b_ref = Continuity.ObjectRef.init(.{
+        .kind = .actuation_receipt,
+        .object_format_version = world_actuation_receipt_format_version,
+        .object_fingerprint = cycle_b_receipt.receipt_fingerprint,
+        .byte_len = 0,
+    });
+    _ = try cycle_vault.put(Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_receipt,
+        .object_format_version = cycle_a_receipt.format_version,
+        .dependency_refs = &.{cycle_b_ref},
+        .payload_bytes = cycle_a_payload,
+    }));
+    _ = try cycle_vault.put(Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_receipt,
+        .object_format_version = cycle_b_receipt.format_version,
+        .dependency_refs = &.{cycle_a_ref},
+        .payload_bytes = cycle_b_payload,
+    }));
+    const cycle_manifest = Capsule.Manifest.init(.{
+        .kind = base_image.manifest.kind,
+        .root_target_ref_fingerprint = base_image.manifest.root_target_ref_fingerprint,
+        .actuation_receipt_fingerprints = &.{cycle_a_receipt.receipt_fingerprint},
+        .normal_form = base_image.manifest.normal_form,
+    });
+    const cycle_runspace_image = Capsule.RunspaceImage.init(.{
+        .runspace_fingerprint = base_image.runspace_image.runspace_fingerprint,
+        .runspace_report_fingerprint = base_image.runspace_image.runspace_report_fingerprint,
+        .actuation_receipt_refs = &.{cycle_a_receipt.receipt_fingerprint},
+    });
+    const cycle_image = Capsule.Image.init(.{
+        .manifest = cycle_manifest,
+        .runspace_image = cycle_runspace_image,
+        .actuation_receipt_refs = &.{cycle_a_receipt.receipt_fingerprint},
+    });
+    const cycle_capsule_ref = try cycle_vault.putCapsule(cycle_image);
+    var cycle_capsule_graph = try Continuity.CapsuleGraph.fromCapsule(&cycle_vault, cycle_capsule_ref);
+    defer cycle_capsule_graph.deinit();
+    try std.testing.expect(cycle_capsule_graph.dependency_cycle);
+    try std.testing.expectEqual(@as(usize, 0), cycle_capsule_graph.missing_deps.len);
+    try std.testing.expect(!cycle_capsule_graph.validateRestoreClosure());
 }
 
 test "capsule index finds target completed pending committed and relink capsules" {
