@@ -31182,6 +31182,9 @@ pub const Continuity = struct {
         if (try capsuleReceiptListResolvesIntent(vault, image.actuation_receipt_refs, intent_fingerprint)) return true;
         if (try capsuleReceiptListResolvesIntent(vault, image.runspace_image.actuation_receipt_refs, intent_fingerprint)) return true;
         if (try capsuleReceiptListResolvesIntent(vault, image.manifest.actuation_receipt_fingerprints, intent_fingerprint)) return true;
+        if (try capsuleJournalListResolvesIntent(vault, image.actuation_journal_refs, intent_fingerprint)) return true;
+        if (try capsuleJournalListResolvesIntent(vault, image.runspace_image.actuation_journal_refs, intent_fingerprint)) return true;
+        if (try capsuleJournalListResolvesIntent(vault, image.manifest.actuation_journal_fingerprints, intent_fingerprint)) return true;
         if (image.runspace_image.mailbox_image) |mailbox| {
             if (try capsuleReceiptListResolvesIntent(vault, mailbox.committed_actuation_receipt_fingerprints, intent_fingerprint)) return true;
         }
@@ -31197,6 +31200,22 @@ pub const Continuity = struct {
             };
             defer receipt.deinit(vault.allocator);
             if (receipt.intent_fingerprint == intent_fingerprint and !receipt.pending and !receipt.deferred) return true;
+        }
+        return false;
+    }
+
+    fn capsuleJournalListResolvesIntent(vault: *Continuity.MemoryVault, journal_fingerprints: []const u64, intent_fingerprint: u64) !bool {
+        for (journal_fingerprints) |journal_fingerprint| {
+            const journal_ref = (try vault.refByKindFingerprint(.actuation_journal, journal_fingerprint)) orelse continue;
+            var journal = vault.getActuationJournal(journal_ref) catch |err| switch (err) {
+                error.ObjectMissing => continue,
+                else => return err,
+            };
+            defer journal.deinit(vault.allocator);
+            for (journal.entries.items) |entry| {
+                if (entry.intent_fingerprint != intent_fingerprint) continue;
+                if (journalEntryIsTerminalFreshCommit(entry)) return true;
+            }
         }
         return false;
     }
@@ -34169,6 +34188,64 @@ test "capsule graph treats unresolved intents as pending despite other receipts"
     var full_graph = try Continuity.CapsuleGraph.fromCapsule(&vault, full_ref);
     defer full_graph.deinit();
     try std.testing.expect(!full_graph.local_fresh_actuation_required);
+}
+
+test "capsule graph resolves pending intents from journal refs" {
+    const allocator = std.testing.allocator;
+    var vault = Continuity.MemoryVault.init(allocator);
+    defer vault.deinit();
+
+    const intent_fingerprint: u64 = 0x3300_0080;
+    const receipt = Actuation.Receipt.init(.{
+        .intent_fingerprint = intent_fingerprint,
+        .envelope_fingerprint = 0x3300_0081,
+        .decision_fingerprint = 0x3300_0082,
+        .commit_fingerprint = 0x3300_0083,
+        .response_fingerprint = 0x3300_0084,
+        .frame_response_fingerprint = 0x3300_0085,
+        .actuator_ref_fingerprint = 0x3300_0086,
+        .idempotency_key_fingerprint = 0x3300_0087,
+        .request_fingerprint = 0x3300_0088,
+        .target_ref_fingerprint = 0x3300_0089,
+        .world_surface_fingerprint = 0x3300_008a,
+        .world_port_id = 4,
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+        .fresh_called = true,
+    });
+    var journal = Actuation.Journal.init();
+    defer journal.deinit(allocator);
+    try journal.appendReceipt(allocator, receipt);
+    _ = try vault.putActuationJournal(journal);
+
+    const journal_refs = [_]u64{journal.journal_fingerprint};
+    const image = Capsule.Image.init(.{
+        .manifest = Capsule.Manifest.init(.{
+            .kind = .completed_assembly,
+            .root_target_ref_fingerprint = 0x3300_0090,
+            .actuation_intent_fingerprints = &.{intent_fingerprint},
+            .actuation_journal_fingerprints = &journal_refs,
+            .normal_form = .quiescent_completed,
+        }),
+        .runspace_image = Capsule.RunspaceImage.init(.{
+            .runspace_fingerprint = 0x3300_0091,
+            .runspace_report_fingerprint = 0x3300_0092,
+            .actuation_intent_refs = &.{intent_fingerprint},
+            .actuation_journal_refs = &journal_refs,
+        }),
+        .actuation_intent_refs = &.{intent_fingerprint},
+        .actuation_journal_refs = &journal_refs,
+    });
+    const capsule_ref = try vault.putCapsule(image);
+
+    var graph = try Continuity.CapsuleGraph.fromCapsule(&vault, capsule_ref);
+    defer graph.deinit();
+    try std.testing.expect(!graph.local_fresh_actuation_required);
+
+    const index = Continuity.CapsuleIndex.init(&vault);
+    const pending = try index.pendingActuationCapsules();
+    defer allocator.free(pending);
+    try std.testing.expectEqual(@as(usize, 0), pending.len);
 }
 
 test "actuation index finds receipts by actuator target port capsule state and idempotency" {
