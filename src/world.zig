@@ -29734,7 +29734,6 @@ pub const Continuity = struct {
             if (actuator_ref_fingerprint != idempotency_key.actuator_ref_fingerprint) return error.InvalidFrameEncoding;
             var image = try vault.getCapsule(capsule_ref);
             defer image.deinit(vault.allocator);
-            if (image.manifest.root_target_ref_fingerprint != idempotency_key.target_ref_fingerprint) return error.InvalidFrameEncoding;
             if (idempotency_key.capsule_fingerprint) |capsule_fingerprint| {
                 if (capsule_fingerprint != image.image_fingerprint and capsule_fingerprint != capsule_ref.object_fingerprint) return error.InvalidFrameEncoding;
             }
@@ -34835,6 +34834,45 @@ test "recovery preflight inspects capsules replays receipt evidence and rejects 
     var pending_graph = try Continuity.Recovery.preflightPendingActuation(&vault, pending_ref, pending_key, actuator_ref);
     defer pending_graph.deinit();
     try std.testing.expect(pending_graph.local_fresh_actuation_required);
+
+    const child_pending_key = Actuation.IdempotencyKey.init(.{
+        .target_ref_fingerprint = recovery_target_ref_fingerprint + 1,
+        .world_surface_fingerprint = pending_key.world_surface_fingerprint,
+        .world_port_id = pending_key.world_port_id + 1,
+        .request_fingerprint = pending_key.request_fingerprint ^ 0x3302_00b0,
+        .actuator_ref_fingerprint = pending_key.actuator_ref_fingerprint,
+    });
+    const child_pending_intent = Actuation.Intent.init(.{
+        .actuator_ref_fingerprint = child_pending_key.actuator_ref_fingerprint,
+        .descriptor_fingerprint = 0x3302_00b1,
+        .target_ref_fingerprint = child_pending_key.target_ref_fingerprint,
+        .world_surface_fingerprint = child_pending_key.world_surface_fingerprint,
+        .world_port_id = child_pending_key.world_port_id,
+        .frame_request_fingerprint = child_pending_key.request_fingerprint,
+        .idempotency_key_fingerprint = child_pending_key.key_fingerprint,
+        .class = .deterministic_fixture,
+    });
+    _ = try vault.putActuationIntent(child_pending_intent);
+    const child_pending_manifest = Capsule.Manifest.init(.{
+        .kind = image.manifest.kind,
+        .root_target_ref_fingerprint = recovery_target_ref_fingerprint,
+        .actuation_intent_fingerprints = &.{child_pending_intent.intent_fingerprint},
+        .normal_form = image.manifest.normal_form,
+    });
+    const child_pending_runspace = Capsule.RunspaceImage.init(.{
+        .runspace_fingerprint = 0x3302_00b2,
+        .runspace_report_fingerprint = 0x3302_00b3,
+        .actuation_intent_refs = &.{child_pending_intent.intent_fingerprint},
+    });
+    const child_pending_image = Capsule.Image.init(.{
+        .manifest = child_pending_manifest,
+        .runspace_image = child_pending_runspace,
+        .actuation_intent_refs = &.{child_pending_intent.intent_fingerprint},
+    });
+    const child_pending_ref = try vault.putCapsule(child_pending_image);
+    var child_pending_graph = try Continuity.Recovery.preflightPendingActuation(&vault, child_pending_ref, child_pending_key, actuator_ref);
+    defer child_pending_graph.deinit();
+    try std.testing.expect(child_pending_graph.local_fresh_actuation_required);
 
     const incomplete_key = Actuation.IdempotencyKey.init(.{
         .target_ref_fingerprint = pending_key.target_ref_fingerprint,
