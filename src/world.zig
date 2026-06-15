@@ -30597,7 +30597,75 @@ pub const Continuity = struct {
         };
     }
 
+    const ActuationResponsePortableEvidence = struct {
+        format_version: u32 = world_actuation_response_format_version,
+        fingerprint_version: u32 = world_actuation_response_fingerprint_version,
+        response_fingerprint: u64,
+        intent_fingerprint: u64,
+        commit_fingerprint: ?u64 = null,
+        actuator_ref_fingerprint: u64,
+        world_port_id: u32,
+        request_fingerprint: u64,
+        status: Actuation.ResponseStatus = .responded,
+        response_kind: ResponseKind = .@"resume",
+        frame_response_fingerprint: ?u64 = null,
+        value_image_fingerprint: ?u64 = null,
+        response_image: ?Frame.ValueImage = null,
+        recorded_response_fingerprint: ?u64 = null,
+        code: ?u32 = null,
+        reason: []const u8 = "",
+        metadata: []const u8 = "",
+
+        fn fromResponse(response: Actuation.Response) @This() {
+            return .{
+                .format_version = response.format_version,
+                .fingerprint_version = response.fingerprint_version,
+                .response_fingerprint = response.response_fingerprint,
+                .intent_fingerprint = response.intent_fingerprint,
+                .commit_fingerprint = response.commit_fingerprint,
+                .actuator_ref_fingerprint = response.actuator_ref_fingerprint,
+                .world_port_id = response.world_port_id,
+                .request_fingerprint = response.request_fingerprint,
+                .status = response.status,
+                .response_kind = response.response_kind,
+                .frame_response_fingerprint = response.frame_response_fingerprint,
+                .value_image_fingerprint = response.value_image_fingerprint,
+                .response_image = response.response_image,
+                .recorded_response_fingerprint = response.recorded_response_fingerprint,
+                .code = response.code,
+                .reason = response.reason,
+                .metadata = response.metadata,
+            };
+        }
+
+        fn toResponse(self: @This()) Actuation.Response {
+            return Actuation.Response.init(.{
+                .intent_fingerprint = self.intent_fingerprint,
+                .commit_fingerprint = self.commit_fingerprint,
+                .actuator_ref_fingerprint = self.actuator_ref_fingerprint,
+                .world_port_id = self.world_port_id,
+                .request_fingerprint = self.request_fingerprint,
+                .status = self.status,
+                .response_kind = self.response_kind,
+                .frame_response_fingerprint = self.frame_response_fingerprint,
+                .value_image_fingerprint = self.value_image_fingerprint,
+                .response_image = self.response_image,
+                .response_fingerprint = self.response_fingerprint,
+                .owns_response_image = self.response_image != null,
+                .recorded_response_fingerprint = self.recorded_response_fingerprint,
+                .code = self.code,
+                .reason = self.reason,
+                .metadata = self.metadata,
+            });
+        }
+    };
+
     fn decodePortableEvidence(comptime Value: type, allocator: std.mem.Allocator, bytes: []const u8) anyerror!Value {
+        if (comptime Value == Actuation.Response) {
+            const payload = try decodePortableEvidence(ActuationResponsePortableEvidence, allocator, bytes);
+            errdefer deinitOwnedValue(allocator, payload);
+            return payload.toResponse();
+        }
         @setEvalBranchQuota(10_000);
         var cursor: usize = 0;
         const value = try decodePortableValue(Value, allocator, bytes, &cursor);
@@ -30607,6 +30675,9 @@ pub const Continuity = struct {
     }
 
     fn encodePortableEvidence(comptime Value: type, allocator: std.mem.Allocator, value: Value) ![]const u8 {
+        if (comptime Value == Actuation.Response) {
+            return encodePortableEvidence(ActuationResponsePortableEvidence, allocator, ActuationResponsePortableEvidence.fromResponse(value));
+        }
         @setEvalBranchQuota(10_000);
         var out: std.ArrayList(u8) = .empty;
         errdefer out.deinit(allocator);
@@ -34167,6 +34238,23 @@ test "actuation evidence bundle dependencies cover generic roots" {
     });
     const embedded_response_payload = try Continuity.encodePortableEvidence(Actuation.Response, allocator, embedded_response);
     defer allocator.free(embedded_response_payload);
+    const owned_embedded_response = Actuation.Response.init(.{
+        .intent_fingerprint = response.intent_fingerprint,
+        .commit_fingerprint = response.commit_fingerprint,
+        .actuator_ref_fingerprint = response.actuator_ref_fingerprint,
+        .world_port_id = response.world_port_id,
+        .request_fingerprint = response.request_fingerprint,
+        .frame_response_fingerprint = 0,
+        .response_image = embedded_image,
+        .owns_response_image = true,
+    });
+    const owned_embedded_response_payload = try Continuity.encodePortableEvidence(Actuation.Response, allocator, owned_embedded_response);
+    defer allocator.free(owned_embedded_response_payload);
+    try std.testing.expectEqualSlices(u8, embedded_response_payload, owned_embedded_response_payload);
+    const decoded_embedded_response = try Continuity.decodePortableEvidence(Actuation.Response, allocator, embedded_response_payload);
+    defer deinitOwnedValue(allocator, decoded_embedded_response);
+    try std.testing.expect(decoded_embedded_response.owns_response_image);
+    try std.testing.expect(decoded_embedded_response.response_fingerprint == embedded_response.response_fingerprint);
     const embedded_response_envelope = Continuity.ObjectEnvelope.init(.{
         .kind = .actuation_response,
         .object_format_version = world_actuation_response_format_version,
