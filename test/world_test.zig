@@ -676,6 +676,7 @@ test "actuation policy idempotency key and intent gates are deterministic" {
     try std.testing.expect(!strict.allowsResponseStatus(.pending));
     try std.testing.expect(!strict.allowsResponseStatus(.deferred));
     try std.testing.expect(!strict.allowsResponseStatus(.cancelled));
+    try std.testing.expectEqual(@as(u32, 2), world.world_actuation_response_fingerprint_version);
     const cancelled_response = world.Actuation.Response.init(.{
         .intent_fingerprint = intent.intent_fingerprint,
         .actuator_ref_fingerprint = ref.ref_fingerprint,
