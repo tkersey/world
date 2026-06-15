@@ -12039,6 +12039,7 @@ pub const Runspace = struct {
 
     fn frameResponseFromActuation(self: *@This(), pending: Runspace.PendingPort, actuation_response: Actuation.Response) !Frame.Response {
         const request = pending.request_frame orelse return error.InvalidPendingPortTransition;
+        if (actuation_response.response_fingerprint != Actuation.fingerprintResponse(actuation_response)) return error.InvalidFrameEncoding;
         const status: ResponseStatus = switch (actuation_response.status) {
             .responded => .responded,
             .rejected, .cancelled => .rejected,
@@ -21493,6 +21494,7 @@ pub const Actuation = struct {
         hashU64(&hasher, @intFromEnum(response.response_kind));
         hashOptionalU64(&hasher, response.frame_response_fingerprint);
         hashOptionalU64(&hasher, response.value_image_fingerprint);
+        hashOptionalU64(&hasher, response.recorded_response_fingerprint);
         hashOptionalU32(&hasher, response.code);
         hashBytesWithLen(&hasher, response.reason);
         hashBytesWithLen(&hasher, response.metadata);
@@ -36270,6 +36272,18 @@ test "actuation response deinit does not free borrowed response image" {
         .recorded_response_fingerprint = 0x3311_fffe,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, mismatched.validate(.strict_fresh, null));
+    var recorded = Actuation.Response.init(.{
+        .intent_fingerprint = 0x3311_0040,
+        .commit_fingerprint = 0x3311_0041,
+        .actuator_ref_fingerprint = 0x3311_0042,
+        .world_port_id = 5,
+        .request_fingerprint = 0x3311_0043,
+        .status = .failed,
+        .recorded_response_fingerprint = 0x3311_0044,
+    });
+    try recorded.validate(.fixture_test, null);
+    recorded.recorded_response_fingerprint = 0x3311_0045;
+    try std.testing.expectError(error.InvalidFrameEncoding, recorded.validate(.fixture_test, null));
 }
 
 test "actuation response rejects zero recorded response fingerprint" {
