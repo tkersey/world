@@ -28125,7 +28125,11 @@ pub const Continuity = struct {
                     try bundleEnvelopeDeclaresRequiredDependencies(self.allocator, self.objects.items, envelope)
                 else
                     false;
-                const dependency_cycle = if (payload_ok and envelope_ok and decode_ok) blk: {
+                const dependency_payloads_ok = if (decode_ok and declares_required_deps)
+                    try bundleEnvelopeDependencyPayloadsValid(self.allocator, self.objects.items, envelope)
+                else
+                    true;
+                const dependency_cycle = if (payload_ok and envelope_ok and decode_ok and dependency_payloads_ok) blk: {
                     var graph_vault = self;
                     var graph = try ObjectGraph.buildFromRoots(&graph_vault, &.{resolved_ref}, .{});
                     defer graph.deinit();
@@ -28136,14 +28140,14 @@ pub const Continuity = struct {
                     if (!self.has(dep)) missing_count += 1;
                 }
                 if (decode_ok and !declares_required_deps) missing_count += 1;
-                const valid = payload_ok and envelope_ok and decode_ok and declares_required_deps and missing_count == 0 and !dependency_cycle;
+                const valid = payload_ok and envelope_ok and decode_ok and dependency_payloads_ok and declares_required_deps and missing_count == 0 and !dependency_cycle;
                 const blockers: []const ObjectValidationReport.Blocker = if (valid)
                     &.{}
                 else if (!payload_ok)
                     &.{.PayloadFingerprintMismatch}
                 else if (!envelope_ok)
                     &.{.EnvelopeFingerprintMismatch}
-                else if (!decode_ok)
+                else if (!decode_ok or !dependency_payloads_ok)
                     &.{.DecodeFailed}
                 else if (dependency_cycle)
                     &.{.DependencyCycle}
@@ -28666,6 +28670,23 @@ pub const Continuity = struct {
                         .dependency_count = envelope.dependency_refs.len,
                         .missing_dependency_count = 1,
                         .blockers = &.{.MissingDependency},
+                    });
+                }
+                if (!(try bundleEnvelopeDependencyPayloadsValid(self.allocator, self.envelopes, envelope))) {
+                    return ObjectValidationReport.init(.{
+                        .object_ref = ObjectRef.init(.{
+                            .kind = envelope.kind,
+                            .object_format_version = envelope.object_format_version,
+                            .object_fingerprint = envelope.object_fingerprint,
+                            .byte_len = envelope.object_byte_len,
+                        }),
+                        .valid = false,
+                        .object_kind = envelope.kind,
+                        .object_format_version = envelope.object_format_version,
+                        .payload_fingerprint_valid = true,
+                        .envelope_fingerprint_valid = true,
+                        .dependency_count = envelope.dependency_refs.len,
+                        .blockers = &.{.DecodeFailed},
                     });
                 }
                 for (envelope.dependency_refs) |dep| {
@@ -30769,6 +30790,9 @@ pub const Continuity = struct {
         if (permit.format_version != world_run_permit_format_version) return false;
         if (permit.fingerprint_version != world_run_permit_fingerprint_version) return false;
         if (permit.permit_fingerprint == 0 or permit.permit_fingerprint != fingerprintRunPermit(permit)) return false;
+        if (permit.target_ref_fingerprint == 0 or permit.world_surface_fingerprint == 0) return false;
+        if (permit.target_certificate_fingerprint == 0 or permit.environment_certificate_fingerprint == 0) return false;
+        if (permit.binding_plan_fingerprint == 0) return false;
         if (permit.policy.policy_fingerprint != policy.policy_fingerprint or permit.supervision_policy_fingerprint != policy.policy_fingerprint) return false;
         if (permit.budget.budget_fingerprint != budget.budget_fingerprint or permit.budget_fingerprint != budget.budget_fingerprint) return false;
         if (permit.cost_model.cost_model_fingerprint != cost_model.cost_model_fingerprint or permit.cost_model_fingerprint != cost_model.cost_model_fingerprint) return false;
@@ -30782,10 +30806,13 @@ pub const Continuity = struct {
     }
 
     fn validRunReceiptPayload(receipt: RunReceipt) bool {
-        return receipt.format_version == world_run_receipt_format_version and
-            receipt.fingerprint_version == world_run_receipt_fingerprint_version and
-            receipt.receipt_fingerprint != 0 and
-            receipt.receipt_fingerprint == fingerprintRunReceipt(receipt);
+        if (receipt.format_version != world_run_receipt_format_version) return false;
+        if (receipt.fingerprint_version != world_run_receipt_fingerprint_version) return false;
+        if (receipt.receipt_fingerprint == 0 or receipt.receipt_fingerprint != fingerprintRunReceipt(receipt)) return false;
+        if (receipt.run_permit_fingerprint == 0 or receipt.environment_certificate_fingerprint == 0) return false;
+        if (receipt.target_ref_fingerprint == 0 or receipt.usage_ledger_fingerprint == 0) return false;
+        if (receipt.final_run_state_fingerprint == 0) return false;
+        return true;
     }
 
     fn validAdmissionReceiptPayload(receipt: Admission.AdmissionReceipt) bool {
@@ -30803,9 +30830,22 @@ pub const Continuity = struct {
     }
 
     fn validGuestConformanceReportPayload(report: Guest.ConformanceReport) bool {
-        return report.fingerprint_version == world_guest_conformance_report_fingerprint_version and
-            report.report_fingerprint != 0 and
-            report.report_fingerprint == Guest.fingerprintReport(report);
+        if (report.fingerprint_version != world_guest_conformance_report_fingerprint_version) return false;
+        if (report.report_fingerprint == 0 or report.report_fingerprint != Guest.fingerprintReport(report)) return false;
+        if (report.vector_fingerprint == 0) return false;
+        if (!validGuestConformanceRunResult(report.native_run_result)) return false;
+        if (!validGuestConformanceRunResult(report.native_abi_result)) return false;
+        if (report.wasm_runtime_result) |summary| if (!validGuestConformanceRunResult(summary)) return false;
+        return true;
+    }
+
+    fn validGuestConformanceRunResult(summary: Guest.RunResultSummary) bool {
+        if (summary.result_fingerprint) |fingerprint| if (fingerprint == 0) return false;
+        if (summary.transcript_fingerprint) |fingerprint| if (fingerprint == 0) return false;
+        if (summary.receipt_fingerprint) |fingerprint| if (fingerprint == 0) return false;
+        for (summary.pending_frame_fingerprints) |fingerprint| if (fingerprint == 0) return false;
+        for (summary.actuation_receipt_fingerprints) |fingerprint| if (fingerprint == 0) return false;
+        return true;
     }
 
     fn bundleEnvelopeTypedPayloadValid(allocator: std.mem.Allocator, envelope: ObjectEnvelope) !bool {
@@ -30913,6 +30953,29 @@ pub const Continuity = struct {
             if (!(try bundleDeclaredDependenciesContain(allocator, envelopes, envelope.dependency_refs, required_ref))) return false;
         }
         return true;
+    }
+
+    fn bundleEnvelopeDependencyPayloadsValid(allocator: std.mem.Allocator, envelopes: []const ObjectEnvelope, envelope: ObjectEnvelope) !bool {
+        return switch (envelope.kind) {
+            .actuation_commit => blk: {
+                const commit = decodePortableEvidence(Actuation.Commit, allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => break :blk false,
+                };
+                defer deinitOwnedValue(allocator, commit);
+                const decision_ref = semanticObjectRef(.actuation_decision, commit.decision_fingerprint);
+                const decision_envelope = (try bundleEnvelopeForRef(allocator, envelopes, decision_ref)) orelse break :blk true;
+                const decision = decodePortableEvidence(Actuation.Decision, allocator, decision_envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => break :blk false,
+                };
+                defer deinitOwnedValue(allocator, decision);
+                if (!validActuationDecisionPayload(decision)) break :blk false;
+                commit.validateAfterDecision(decision) catch break :blk false;
+                break :blk true;
+            },
+            else => true,
+        };
     }
 
     fn bundleEnvelopeRequiredDependencyRefs(allocator: std.mem.Allocator, envelope: ObjectEnvelope) ![]ObjectRef {
@@ -34293,6 +34356,10 @@ test "actuation evidence bundle dependencies cover generic roots" {
     zero_identity_admission_receipt.target_ref_fingerprint = 0;
     zero_identity_admission_receipt.receipt_fingerprint = fingerprintAdmissionReceipt(zero_identity_admission_receipt);
     try std.testing.expect(!Continuity.validAdmissionReceiptPayload(zero_identity_admission_receipt));
+    var zero_identity_run_permit = run_permit;
+    zero_identity_run_permit.target_ref_fingerprint = 0;
+    zero_identity_run_permit.permit_fingerprint = fingerprintRunPermit(zero_identity_run_permit);
+    try std.testing.expect(!Continuity.validRunPermitPayload(zero_identity_run_permit));
     const decision = Actuation.Decision.init(.{
         .intent_fingerprint = 0x3287_0010,
         .policy_fingerprint = Actuation.Policy.fixture_test.policy_fingerprint,
@@ -34334,6 +34401,24 @@ test "actuation evidence bundle dependencies cover generic roots" {
         .final_run_state_fingerprint = 0x3287_0027,
         .final_status = .completed,
     });
+    var zero_identity_run_receipt = run_receipt;
+    zero_identity_run_receipt.usage_ledger_fingerprint = 0;
+    zero_identity_run_receipt.receipt_fingerprint = fingerprintRunReceipt(zero_identity_run_receipt);
+    try std.testing.expect(!Continuity.validRunReceiptPayload(zero_identity_run_receipt));
+    var zero_vector_report = Guest.ConformanceReport.init(.{
+        .vector_fingerprint = 0,
+        .native_run_result = .{ .status = .done },
+        .native_abi_result = .{ .status = .done },
+    });
+    zero_vector_report.report_fingerprint = Guest.fingerprintReport(zero_vector_report);
+    try std.testing.expect(!Continuity.validGuestConformanceReportPayload(zero_vector_report));
+    var zero_result_report = Guest.ConformanceReport.init(.{
+        .vector_fingerprint = 0x3287_0028,
+        .native_run_result = .{ .status = .done, .result_fingerprint = 0 },
+        .native_abi_result = .{ .status = .done },
+    });
+    zero_result_report.report_fingerprint = Guest.fingerprintReport(zero_result_report);
+    try std.testing.expect(!Continuity.validGuestConformanceReportPayload(zero_result_report));
     const fabric_receipt = Fabric.Receipt.init(.{
         .invocation_fingerprint = 0x3287_0030,
         .route_fingerprint = 0x3287_0031,
@@ -34444,6 +34529,53 @@ test "actuation evidence bundle dependencies cover generic roots" {
     try std.testing.expect(Continuity.containsRef(commit_deps, Continuity.semanticObjectRef(.actuation_decision, commit.decision_fingerprint)));
     try std.testing.expect(Continuity.containsRef(commit_deps, Continuity.semanticObjectRef(.actuation_envelope, commit.envelope_fingerprint)));
     try std.testing.expect(Continuity.containsRef(commit_deps, Continuity.semanticObjectRef(.actuation_idempotency_key, commit.idempotency_key_fingerprint)));
+
+    const denied_decision = Actuation.Decision.init(.{
+        .intent_fingerprint = decision.intent_fingerprint,
+        .policy_fingerprint = decision.policy_fingerprint,
+        .approved = false,
+        .status = .denied,
+    });
+    const denied_decision_payload = try Continuity.encodePortableEvidence(Actuation.Decision, allocator, denied_decision);
+    defer allocator.free(denied_decision_payload);
+    const denied_decision_deps = try Continuity.bundleActuationDecisionRequiredDependencyRefs(allocator, denied_decision);
+    defer Continuity.freeRefSlice(allocator, denied_decision_deps);
+    const denied_decision_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_decision,
+        .object_format_version = world_actuation_decision_format_version,
+        .dependency_refs = denied_decision_deps,
+        .payload_bytes = denied_decision_payload,
+    });
+    const invalid_commit = Actuation.Commit.init(.{
+        .intent_fingerprint = denied_decision.intent_fingerprint,
+        .decision_fingerprint = denied_decision.decision_fingerprint,
+        .envelope_fingerprint = commit.envelope_fingerprint,
+        .idempotency_key_fingerprint = commit.idempotency_key_fingerprint,
+        .status = .committed,
+        .fresh_called = true,
+    });
+    const invalid_commit_payload = try Continuity.encodePortableEvidence(Actuation.Commit, allocator, invalid_commit);
+    defer allocator.free(invalid_commit_payload);
+    const invalid_commit_deps = try Continuity.bundleActuationCommitRequiredDependencyRefs(allocator, invalid_commit);
+    defer Continuity.freeRefSlice(allocator, invalid_commit_deps);
+    const invalid_commit_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_commit,
+        .object_format_version = world_actuation_commit_format_version,
+        .dependency_refs = invalid_commit_deps,
+        .payload_bytes = invalid_commit_payload,
+    });
+    var invalid_commit_roots = [_]Continuity.ObjectRef{invalid_commit_envelope.objectRef()};
+    var invalid_commit_envelopes = [_]Continuity.ObjectEnvelope{ denied_decision_envelope, invalid_commit_envelope };
+    var invalid_commit_bundle = Continuity.Bundle{
+        .allocator = allocator,
+        .manifest = Continuity.BundleManifest.init(.{ .roots = &invalid_commit_roots, .object_count = invalid_commit_envelopes.len }),
+        .envelopes = &invalid_commit_envelopes,
+    };
+    const invalid_commit_bytes = try invalid_commit_bundle.toBytes(allocator);
+    defer allocator.free(invalid_commit_bytes);
+    const invalid_commit_report = try Continuity.Bundle.validate(allocator, invalid_commit_bytes, .{ .allow_external_dependencies = true });
+    try std.testing.expect(!invalid_commit_report.valid);
+    try std.testing.expectEqual(Continuity.ObjectValidationReport.Blocker.DecodeFailed, invalid_commit_report.blockers[0]);
 
     const response_payload = try Continuity.encodePortableEvidence(Actuation.Response, allocator, response);
     defer allocator.free(response_payload);
