@@ -30752,10 +30752,14 @@ pub const Continuity = struct {
     }
 
     fn validEnvironmentCertificatePayload(cert: EnvironmentCertificate) bool {
-        return cert.format_version == world_environment_certificate_format_version and
-            cert.fingerprint_version == world_environment_certificate_fingerprint_version and
-            cert.certificate_fingerprint != 0 and
-            cert.certificate_fingerprint == fingerprintEnvironmentCertificate(cert);
+        if (cert.format_version != world_environment_certificate_format_version) return false;
+        if (cert.fingerprint_version != world_environment_certificate_fingerprint_version) return false;
+        if (cert.certificate_fingerprint == 0 or cert.certificate_fingerprint != fingerprintEnvironmentCertificate(cert)) return false;
+        if (cert.target_ref_fingerprint == 0 or cert.world_surface_fingerprint == 0) return false;
+        if (cert.target_certificate_fingerprint == 0 or cert.import_set_fingerprint == 0) return false;
+        if (cert.binding_plan_fingerprint == 0 or cert.acceptance_report_fingerprint == 0) return false;
+        if (cert.policy_fingerprint == 0 or cert.authority_descriptor_fingerprint == 0 or cert.adapter_descriptor_fingerprint == 0) return false;
+        return true;
     }
 
     fn validRunPermitPayload(permit: RunPermit) bool {
@@ -30785,10 +30789,12 @@ pub const Continuity = struct {
     }
 
     fn validAdmissionReceiptPayload(receipt: Admission.AdmissionReceipt) bool {
-        return receipt.format_version == world_admission_receipt_format_version and
-            receipt.fingerprint_version == world_admission_receipt_fingerprint_version and
-            receipt.receipt_fingerprint != 0 and
-            receipt.receipt_fingerprint == fingerprintAdmissionReceipt(receipt);
+        if (receipt.format_version != world_admission_receipt_format_version) return false;
+        if (receipt.fingerprint_version != world_admission_receipt_fingerprint_version) return false;
+        if (receipt.receipt_fingerprint == 0 or receipt.receipt_fingerprint != fingerprintAdmissionReceipt(receipt)) return false;
+        if (receipt.admission_request_fingerprint == 0 or receipt.admission_report_fingerprint == 0) return false;
+        if (receipt.package_fingerprint == 0 or receipt.target_ref_fingerprint == 0) return false;
+        return true;
     }
 
     fn validFabricReceiptPayload(receipt: Fabric.Receipt) bool {
@@ -30961,6 +30967,11 @@ pub const Continuity = struct {
                 defer deinitOwnedValue(allocator, report);
                 break :blk try bundleActuationVerifyReportRequiredDependencyRefs(allocator, report);
             },
+            .run_permit => blk: {
+                const permit = try decodePortableEvidence(RunPermit, allocator, envelope.payload_bytes);
+                defer deinitOwnedValue(allocator, permit);
+                break :blk try bundleRunPermitRequiredDependencyRefs(allocator, permit);
+            },
             .run_receipt => blk: {
                 const receipt = try decodePortableEvidence(RunReceipt, allocator, envelope.payload_bytes);
                 defer deinitOwnedValue(allocator, receipt);
@@ -31106,6 +31117,14 @@ pub const Continuity = struct {
         try appendUniqueSemanticRef(allocator, &refs, .actuation_intent, report.intent_fingerprint);
         if (report.expected_receipt_fingerprint) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .actuation_receipt, fingerprint);
         if (report.fresh_receipt_fingerprint) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .actuation_receipt, fingerprint);
+        return refs.toOwnedSlice(allocator);
+    }
+
+    fn bundleRunPermitRequiredDependencyRefs(allocator: std.mem.Allocator, permit: RunPermit) ![]ObjectRef {
+        var refs: std.ArrayList(ObjectRef) = .empty;
+        errdefer deinitRefList(allocator, &refs);
+        try appendUniqueSemanticRef(allocator, &refs, .environment_certificate, permit.environment_certificate_fingerprint);
+        if (permit.admission_receipt_fingerprint) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .admission_receipt, fingerprint);
         return refs.toOwnedSlice(allocator);
     }
 
@@ -34247,6 +34266,33 @@ test "actuation evidence bundle dependencies cover generic roots" {
         .accepted_mode = .continue_fresh,
     };
     admission_receipt.receipt_fingerprint = fingerprintAdmissionReceipt(admission_receipt);
+    const run_permit = RunPermit.init(.{
+        .target_ref_fingerprint = binding.target_ref_fingerprint,
+        .world_surface_fingerprint = binding.world_surface_fingerprint,
+        .target_certificate_fingerprint = 0x3287_000d,
+        .environment_certificate_fingerprint = admission_receipt.environment_certificate_fingerprint.?,
+        .binding_plan_fingerprint = 0x3287_000e,
+        .mode = .fresh,
+        .admission_receipt_fingerprint = admission_receipt.receipt_fingerprint,
+    });
+    var zero_identity_cert = EnvironmentCertificate{
+        .certificate_fingerprint = 0,
+        .target_ref_fingerprint = 0,
+        .world_surface_fingerprint = 0,
+        .target_certificate_fingerprint = 0,
+        .import_set_fingerprint = 0,
+        .binding_plan_fingerprint = 0,
+        .acceptance_report_fingerprint = 0,
+        .policy_fingerprint = 0,
+        .authority_descriptor_fingerprint = 0,
+        .adapter_descriptor_fingerprint = 0,
+    };
+    zero_identity_cert.certificate_fingerprint = fingerprintEnvironmentCertificate(zero_identity_cert);
+    try std.testing.expect(!Continuity.validEnvironmentCertificatePayload(zero_identity_cert));
+    var zero_identity_admission_receipt = admission_receipt;
+    zero_identity_admission_receipt.target_ref_fingerprint = 0;
+    zero_identity_admission_receipt.receipt_fingerprint = fingerprintAdmissionReceipt(zero_identity_admission_receipt);
+    try std.testing.expect(!Continuity.validAdmissionReceiptPayload(zero_identity_admission_receipt));
     const decision = Actuation.Decision.init(.{
         .intent_fingerprint = 0x3287_0010,
         .policy_fingerprint = Actuation.Policy.fixture_test.policy_fingerprint,
@@ -34346,6 +34392,18 @@ test "actuation evidence bundle dependencies cover generic roots" {
     defer Continuity.freeRefSlice(allocator, admission_deps);
     try std.testing.expect(Continuity.containsRef(admission_deps, Continuity.semanticObjectRef(.environment_certificate, admission_receipt.environment_certificate_fingerprint.?)));
     try std.testing.expect(Continuity.containsRef(admission_deps, Continuity.semanticObjectRef(.run_permit, admission_receipt.run_permit_fingerprint.?)));
+
+    const permit_payload = try Continuity.encodePortableEvidence(RunPermit, allocator, run_permit);
+    defer allocator.free(permit_payload);
+    const permit_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .run_permit,
+        .object_format_version = world_run_permit_format_version,
+        .payload_bytes = permit_payload,
+    });
+    const permit_deps = try Continuity.bundleEnvelopeRequiredDependencyRefs(allocator, permit_envelope);
+    defer Continuity.freeRefSlice(allocator, permit_deps);
+    try std.testing.expect(Continuity.containsRef(permit_deps, Continuity.semanticObjectRef(.environment_certificate, run_permit.environment_certificate_fingerprint)));
+    try std.testing.expect(Continuity.containsRef(permit_deps, Continuity.semanticObjectRef(.admission_receipt, run_permit.admission_receipt_fingerprint.?)));
 
     const decision_payload = try Continuity.encodePortableEvidence(Actuation.Decision, allocator, decision);
     defer allocator.free(decision_payload);
