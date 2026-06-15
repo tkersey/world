@@ -29249,7 +29249,10 @@ pub const Continuity = struct {
     }
 
     fn isReplayableJournalEntry(entry: Actuation.Journal.Entry) bool {
-        return !entry.pending and !entry.deferred and entry.response_fingerprint != null;
+        return !entry.pending and
+            !entry.deferred and
+            entry.response_fingerprint != null and
+            (entry.receipt_fingerprint != null or journalEntryIsTerminalFreshCommit(entry));
     }
 
     fn journalEntryIsTerminalFreshCommit(entry: Actuation.Journal.Entry) bool {
@@ -33122,6 +33125,23 @@ test "actuation graph builds from receipt journal and detects duplicate fresh co
     try std.testing.expectEqual(@as(usize, 0), cancelled_summary.committed_count);
     try std.testing.expectEqual(@as(usize, 1), cancelled_summary.replayable_count);
     try std.testing.expectEqual(@as(usize, 0), cancelled_summary.fresh_commit_count);
+    var journal_only_cancelled = Actuation.Journal.init();
+    defer journal_only_cancelled.deinit(allocator);
+    try journal_only_cancelled.entries.append(allocator, .{
+        .order = journal_only_cancelled.takeOrder(),
+        .intent_fingerprint = cancelled_receipt.intent_fingerprint,
+        .commit_fingerprint = cancelled_receipt.commit_fingerprint,
+        .response_fingerprint = cancelled_receipt.response_fingerprint,
+        .frame_response_fingerprint = cancelled_receipt.frame_response_fingerprint,
+        .idempotency_key_fingerprint = cancelled_key.key_fingerprint,
+        .request_fingerprint = cancelled_key.request_fingerprint,
+        .cancelled = true,
+    });
+    journal_only_cancelled.refreshFingerprint();
+    const journal_only_cancelled_ref = try vault.putActuationJournal(journal_only_cancelled);
+    var journal_only_cancelled_graph = try Continuity.ActuationGraph.fromJournal(&vault, journal_only_cancelled_ref);
+    defer journal_only_cancelled_graph.deinit();
+    try std.testing.expectEqual(@as(usize, 0), journal_only_cancelled_graph.summary().replayable_count);
 
     const in_progress_intent = Actuation.Intent.init(.{
         .actuator_ref_fingerprint = key.actuator_ref_fingerprint,
