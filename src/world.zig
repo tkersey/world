@@ -29794,6 +29794,10 @@ pub const Continuity = struct {
                 try vault.ledger.record(.recovery_rejected, capsule_ref);
                 return error.ObjectMissing;
             }
+            if (graph.dependency_cycle) {
+                try vault.ledger.record(.recovery_rejected, capsule_ref);
+                return error.InvalidFrameEncoding;
+            }
             if (options.require_replayable and !graph.replayable) {
                 try vault.ledger.record(.recovery_rejected, capsule_ref);
                 return error.InvalidFrameEncoding;
@@ -29857,6 +29861,10 @@ pub const Continuity = struct {
             if (!options.allow_external_dependencies and graph.missing_deps.len != 0) {
                 try vault.ledger.record(.recovery_rejected, capsule_ref);
                 return error.ObjectMissing;
+            }
+            if (graph.dependency_cycle) {
+                try vault.ledger.record(.recovery_rejected, capsule_ref);
+                return error.InvalidFrameEncoding;
             }
             const restorable_shape = image.manifest.kind != .reference_only and image.manifest.kind != .replay_only;
             if (options.require_restorable and !graph.restorable and !(options.allow_external_dependencies and graph.missing_deps.len != 0 and restorable_shape)) {
@@ -29927,6 +29935,10 @@ pub const Continuity = struct {
             if (graph.missing_deps.len != 0) {
                 try vault.ledger.record(.recovery_rejected, capsule_ref);
                 return error.ObjectMissing;
+            }
+            if (graph.dependency_cycle) {
+                try vault.ledger.record(.recovery_rejected, capsule_ref);
+                return error.InvalidFrameEncoding;
             }
             if (!graph.local_fresh_actuation_required) {
                 try vault.ledger.record(.recovery_rejected, capsule_ref);
@@ -34736,6 +34748,28 @@ test "capsule storage preserves unresolved dependency edges" {
     try std.testing.expect(cycle_capsule_graph.dependency_cycle);
     try std.testing.expectEqual(@as(usize, 0), cycle_capsule_graph.missing_deps.len);
     try std.testing.expect(!cycle_capsule_graph.validateRestoreClosure());
+
+    const replay_cycle_image = Capsule.Image.init(.{
+        .manifest = Capsule.Manifest.init(.{
+            .kind = .replay_only,
+            .root_target_ref_fingerprint = base_image.manifest.root_target_ref_fingerprint,
+            .actuation_receipt_fingerprints = &.{cycle_a_receipt.receipt_fingerprint},
+            .normal_form = base_image.manifest.normal_form,
+        }),
+        .runspace_image = Capsule.RunspaceImage.init(.{
+            .runspace_fingerprint = base_image.runspace_image.runspace_fingerprint ^ 0x3293_0100,
+            .runspace_report_fingerprint = base_image.runspace_image.runspace_report_fingerprint ^ 0x3293_0101,
+            .actuation_receipt_refs = &.{cycle_a_receipt.receipt_fingerprint},
+        }),
+        .actuation_receipt_refs = &.{cycle_a_receipt.receipt_fingerprint},
+    });
+    const replay_cycle_capsule_ref = try cycle_vault.putCapsule(replay_cycle_image);
+    try std.testing.expectError(error.InvalidFrameEncoding, Continuity.Recovery.preflightReplayCapsule(
+        &cycle_vault,
+        replay_cycle_capsule_ref,
+        .{ .target_ref_fingerprint = base_image.manifest.root_target_ref_fingerprint },
+        .{},
+    ));
 }
 
 test "capsule index finds target completed pending committed and relink capsules" {
