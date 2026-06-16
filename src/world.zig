@@ -19571,6 +19571,11 @@ pub const Actuation = struct {
         }
 
         pub fn encode(self: @This(), allocator: std.mem.Allocator) ![]const u8 {
+            const legacy_receipt = self.format_version == world_actuation_receipt_legacy_format_version and
+                self.fingerprint_version == world_actuation_receipt_legacy_fingerprint_version;
+            const current_receipt = self.format_version == world_actuation_receipt_format_version and
+                self.fingerprint_version == world_actuation_receipt_fingerprint_version;
+            if (!legacy_receipt and !current_receipt) return error.InvalidFrameEncoding;
             var out: std.ArrayList(u8) = .empty;
             errdefer out.deinit(allocator);
             try writeU32(&out, allocator, self.format_version);
@@ -19584,7 +19589,7 @@ pub const Actuation = struct {
             try writeU8(&out, allocator, @intFromEnum(self.response_kind));
             try writeOptionalU64(&out, allocator, self.frame_response_fingerprint);
             try writeOptionalU64(&out, allocator, self.response_value_image_fingerprint);
-            try writeOptionalU64(&out, allocator, self.recorded_response_fingerprint);
+            if (current_receipt) try writeOptionalU64(&out, allocator, self.recorded_response_fingerprint);
             try writeU64(&out, allocator, self.actuator_ref_fingerprint);
             try writeU64(&out, allocator, self.idempotency_key_fingerprint);
             try writeOptionalU64(&out, allocator, self.request_fingerprint);
@@ -19856,6 +19861,9 @@ pub const Actuation = struct {
         }
 
         pub fn encode(self: @This(), allocator: std.mem.Allocator) ![]const u8 {
+            const legacy_journal = self.fingerprint_version == world_actuation_journal_legacy_fingerprint_version;
+            const current_journal = self.fingerprint_version == world_actuation_journal_fingerprint_version;
+            if (!legacy_journal and !current_journal) return error.InvalidFrameEncoding;
             var out: std.ArrayList(u8) = .empty;
             errdefer out.deinit(allocator);
             try writeU32(&out, allocator, self.fingerprint_version);
@@ -19877,7 +19885,7 @@ pub const Actuation = struct {
                 }
                 try writeOptionalU64(&out, allocator, entry.frame_response_fingerprint);
                 try writeOptionalU64(&out, allocator, entry.response_value_image_fingerprint);
-                try writeOptionalU64(&out, allocator, entry.recorded_response_fingerprint);
+                if (current_journal) try writeOptionalU64(&out, allocator, entry.recorded_response_fingerprint);
                 try writeOptionalU64(&out, allocator, entry.receipt_fingerprint);
                 try writeOptionalU64(&out, allocator, entry.idempotency_key_fingerprint);
                 try writeOptionalU64(&out, allocator, entry.request_fingerprint);
@@ -39241,6 +39249,9 @@ test "actuation legacy receipt and journal payloads decode for vault replay" {
     try std.testing.expectEqual(world_actuation_receipt_legacy_fingerprint_version, decoded_receipt.fingerprint_version);
     try std.testing.expectEqual(@as(?u64, null), decoded_receipt.recorded_response_fingerprint);
     try std.testing.expectEqual(legacy_receipt.receipt_fingerprint, decoded_receipt.receipt_fingerprint);
+    const reencoded_receipt_payload = try decoded_receipt.encode(allocator);
+    defer allocator.free(reencoded_receipt_payload);
+    try std.testing.expectEqualSlices(u8, legacy_receipt_payload, reencoded_receipt_payload);
 
     var receipt_vault = Continuity.MemoryVault.init(allocator);
     defer receipt_vault.deinit();
@@ -39256,6 +39267,12 @@ test "actuation legacy receipt and journal payloads decode for vault replay" {
     const receipt_replay = try Actuation.replayFromVault(&receipt_vault, key);
     try std.testing.expectEqual(Actuation.ResponseStatus.rejected, receipt_replay.status);
     try std.testing.expectEqual(legacy_receipt.response_fingerprint, receipt_replay.recorded_response_fingerprint.?);
+    var typed_receipt_vault = Continuity.MemoryVault.init(allocator);
+    defer typed_receipt_vault.deinit();
+    _ = try typed_receipt_vault.putActuationReceipt(decoded_receipt);
+    const typed_receipt_replay = try Actuation.replayFromVault(&typed_receipt_vault, key);
+    try std.testing.expectEqual(Actuation.ResponseStatus.rejected, typed_receipt_replay.status);
+    try std.testing.expectEqual(legacy_receipt.response_fingerprint, typed_receipt_replay.recorded_response_fingerprint.?);
 
     var legacy_journal = Actuation.Journal.init();
     defer legacy_journal.deinit(allocator);
@@ -39271,6 +39288,9 @@ test "actuation legacy receipt and journal payloads decode for vault replay" {
     try std.testing.expectEqual(world_actuation_journal_legacy_fingerprint_version, decoded_journal.fingerprint_version);
     try std.testing.expectEqual(@as(?u64, null), decoded_journal.entries.items[0].recorded_response_fingerprint);
     try std.testing.expectEqual(legacy_journal.journal_fingerprint, decoded_journal.journal_fingerprint);
+    const reencoded_journal_payload = try decoded_journal.encode(allocator);
+    defer allocator.free(reencoded_journal_payload);
+    try std.testing.expectEqualSlices(u8, legacy_journal_payload, reencoded_journal_payload);
 
     var journal_vault = Continuity.MemoryVault.init(allocator);
     defer journal_vault.deinit();
@@ -39286,6 +39306,12 @@ test "actuation legacy receipt and journal payloads decode for vault replay" {
     const journal_replay = try Actuation.replayFromVault(&journal_vault, key);
     try std.testing.expectEqual(Actuation.ResponseStatus.rejected, journal_replay.status);
     try std.testing.expectEqual(legacy_receipt.response_fingerprint, journal_replay.recorded_response_fingerprint.?);
+    var typed_journal_vault = Continuity.MemoryVault.init(allocator);
+    defer typed_journal_vault.deinit();
+    _ = try typed_journal_vault.putActuationJournal(decoded_journal);
+    const typed_journal_replay = try Actuation.replayFromVault(&typed_journal_vault, key);
+    try std.testing.expectEqual(Actuation.ResponseStatus.rejected, typed_journal_replay.status);
+    try std.testing.expectEqual(legacy_receipt.response_fingerprint, typed_journal_replay.recorded_response_fingerprint.?);
 }
 
 test "vault replay preserves stored fingerprint for terminal receipt" {
