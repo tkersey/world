@@ -20031,6 +20031,7 @@ pub const Actuation = struct {
                 .response_value_image_fingerprint = response.value_image_fingerprint,
                 .recorded_response_fingerprint = response.recorded_response_fingerprint,
                 .request_fingerprint = response.request_fingerprint,
+                .replayed = response.recorded_response_fingerprint != null,
                 .pending = response.status == .pending,
                 .deferred = response.status == .deferred,
                 .failed = response.status == .failed,
@@ -40488,6 +40489,23 @@ test "recorded response fingerprints require replay evidence" {
     });
     journal.refreshFingerprint();
     try journal.validate();
+
+    const replay_response = Actuation.Response.init(.{
+        .intent_fingerprint = 0x3318_0060,
+        .commit_fingerprint = 0x3318_0061,
+        .actuator_ref_fingerprint = 0x3318_0062,
+        .world_port_id = 8,
+        .request_fingerprint = 0x3318_0063,
+        .status = .failed,
+        .recorded_response_fingerprint = 0x3318_0064,
+    });
+    try replay_response.validate(.fixture_test, null);
+
+    journal.entries.clearRetainingCapacity();
+    journal.next_order = 0;
+    try journal.appendResponse(allocator, replay_response);
+    try journal.validate();
+    try std.testing.expect(journal.entries.items[0].replayed);
 
     const intent = Actuation.Intent.init(.{
         .actuator_ref_fingerprint = 0x3318_0040,
