@@ -31080,7 +31080,9 @@ pub const Continuity = struct {
         if (comptime Value == Actuation.Response) {
             const payload = try decodePortableEvidence(ActuationResponsePortableEvidence, allocator, bytes);
             errdefer deinitOwnedValue(allocator, payload);
-            return payload.toResponse();
+            const response = payload.toResponse();
+            if (response.response_fingerprint == 0 or response.response_fingerprint != Actuation.fingerprintResponse(response)) return error.InvalidFrameEncoding;
+            return response;
         }
         @setEvalBranchQuota(10_000);
         var cursor: usize = 0;
@@ -38803,6 +38805,7 @@ test "vault rejects malformed typed actuation evidence payload" {
     const forged_payload = try Continuity.encodePortableEvidence(Actuation.Response, allocator, forged_response);
     defer allocator.free(forged_payload);
     try std.testing.expect(!Continuity.validActuationResponsePayload(forged_response));
+    try std.testing.expectError(error.InvalidFrameEncoding, Continuity.decodePortableEvidence(Actuation.Response, allocator, forged_payload));
     try std.testing.expectError(error.InvalidFrameEncoding, vault.put(Continuity.ObjectEnvelope.init(.{
         .kind = .actuation_response,
         .object_format_version = world_actuation_response_format_version,
