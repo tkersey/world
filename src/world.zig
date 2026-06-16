@@ -29416,7 +29416,7 @@ pub const Continuity = struct {
                 });
                 const ref = envelope.objectRef();
                 const event = Event.init(.{ .kind = .inbox_item_created, .inbox_outbox_item_ref = ref, .bundle_ref = bundle_ref });
-                try self.session.vault.appendChronicleEvent(event);
+                try self.session.appendChronicleEvent(event);
                 return ref;
             }
 
@@ -29432,25 +29432,25 @@ pub const Continuity = struct {
             pub fn validate(self: *@This(), ref: ObjectRef) !void {
                 _ = try self.inspect(ref);
                 const event = Event.init(.{ .kind = .inbox_item_validated, .inbox_outbox_item_ref = ref });
-                try self.session.vault.appendChronicleEvent(event);
+                try self.session.appendChronicleEvent(event);
             }
 
             pub fn planRecovery(self: *@This(), ref: ObjectRef) !void {
                 _ = try self.inspect(ref);
                 const event = Event.init(.{ .kind = .recovery_preflighted, .inbox_outbox_item_ref = ref });
-                try self.session.vault.appendChronicleEvent(event);
+                try self.session.appendChronicleEvent(event);
             }
 
             pub fn accept(self: *@This(), ref: ObjectRef) !void {
                 _ = try self.inspect(ref);
                 const event = Event.init(.{ .kind = .inbox_item_accepted, .inbox_outbox_item_ref = ref });
-                try self.session.vault.appendChronicleEvent(event);
+                try self.session.appendChronicleEvent(event);
             }
 
             pub fn reject(self: *@This(), ref: ObjectRef, reason: []const u8) !void {
                 _ = try self.inspect(ref);
                 const event = Event.init(.{ .kind = .inbox_item_rejected, .inbox_outbox_item_ref = ref, .blocker_summary = reason });
-                try self.session.vault.appendChronicleEvent(event);
+                try self.session.appendChronicleEvent(event);
             }
         };
 
@@ -29470,7 +29470,7 @@ pub const Continuity = struct {
                 });
                 const ref = envelope.objectRef();
                 const event = Event.init(.{ .kind = .outbox_item_created, .inbox_outbox_item_ref = ref, .capsule_ref = capsule_ref });
-                try self.session.vault.appendChronicleEvent(event);
+                try self.session.appendChronicleEvent(event);
                 return ref;
             }
 
@@ -29485,14 +29485,14 @@ pub const Continuity = struct {
                     .byte_len = bundle.manifest.bundle_byte_len,
                 });
                 const event = Event.init(.{ .kind = .outbox_item_exported, .inbox_outbox_item_ref = ref, .bundle_ref = bundle_ref });
-                try self.session.vault.appendChronicleEvent(event);
+                try self.session.appendChronicleEvent(event);
                 return bundle;
             }
 
             pub fn markExported(self: *@This(), ref: ObjectRef) !void {
                 _ = try self.inspect(ref);
                 const event = Event.init(.{ .kind = .outbox_item_completed, .inbox_outbox_item_ref = ref });
-                try self.session.vault.appendChronicleEvent(event);
+                try self.session.appendChronicleEvent(event);
             }
 
             pub fn listPending(self: @This()) ![]ObjectRef {
@@ -30221,6 +30221,11 @@ pub const Continuity = struct {
             self.refreshFingerprint();
         }
 
+        fn appendChronicleEvent(self: *@This(), event: Chronicle.Event) !void {
+            try self.vault.appendChronicleEvent(event);
+            self.refreshFingerprint();
+        }
+
         pub fn cursor(self: @This()) Chronicle.Cursor {
             return self.vault.cursor();
         }
@@ -30298,7 +30303,7 @@ pub const Continuity = struct {
             try tx.putBundle(bundle);
             try tx.addEvent(Chronicle.Event.init(.{ .kind = .bundle_import_validated, .bundle_ref = bundle_ref }));
             _ = try tx.commit();
-            try self.vault.appendChronicleEvent(Chronicle.Event.init(.{ .kind = .bundle_import_committed, .bundle_ref = bundle_ref }));
+            try self.appendChronicleEvent(Chronicle.Event.init(.{ .kind = .bundle_import_committed, .bundle_ref = bundle_ref }));
             self.finishTransaction();
             return bundle.manifest.clone(self.allocator);
         }
@@ -30400,7 +30405,7 @@ pub const Continuity = struct {
 
         pub fn recordGuestReport(self: *@This(), report: Guest.ConformanceReport) !void {
             if (!self.policy.persist_guest_report) return;
-            try self.session.vault.appendChronicleEvent(Chronicle.Event.init(.{
+            try self.session.appendChronicleEvent(Chronicle.Event.init(.{
                 .kind = .guest_report_stored,
                 .target_ref = semanticObjectRef(.guest_conformance_report, report.report_fingerprint),
             }));
@@ -32021,13 +32026,13 @@ pub const Continuity = struct {
             const blockers: []const u64 = blk: {
                 var graph = preflightThawCapsule(session.vault, capsule_ref, registry, env, permit, options) catch |err| switch (err) {
                     error.ObjectMissing, error.InvalidFrameEncoding, error.DuplicateBinding => {
-                        try session.vault.appendChronicleEvent(Chronicle.Event.init(.{ .kind = .recovery_blocked, .capsule_ref = capsule_ref }));
+                        try session.appendChronicleEvent(Chronicle.Event.init(.{ .kind = .recovery_blocked, .capsule_ref = capsule_ref }));
                         break :blk &.{1};
                     },
                     else => return err,
                 };
                 graph.deinit();
-                try session.vault.appendChronicleEvent(Chronicle.Event.init(.{ .kind = .recovery_ready, .capsule_ref = capsule_ref }));
+                try session.appendChronicleEvent(Chronicle.Event.init(.{ .kind = .recovery_ready, .capsule_ref = capsule_ref }));
                 break :blk &.{};
             };
             const plan = RecoveryPlan.init(.{
@@ -32038,7 +32043,7 @@ pub const Continuity = struct {
                 .runspace_mutation_plan = if (blockers.len == 0) "capsule thaw may mutate runspace" else "blocked before runspace mutation",
             });
             try plan.validate();
-            try session.vault.appendChronicleEvent(Chronicle.Event.init(.{
+            try session.appendChronicleEvent(Chronicle.Event.init(.{
                 .kind = if (blockers.len == 0) .capsule_recovery_ready else .capsule_recovery_rejected,
                 .capsule_ref = capsule_ref,
                 .recovery_plan_ref = semanticObjectRef(.capsule_thaw_plan, plan.plan_fingerprint),
@@ -32062,12 +32067,12 @@ pub const Continuity = struct {
             defer restore.deinit(session.vault.allocator);
             const handles = try session.vault.allocator.dupe(u64, restore.restored_root_run_handles);
             errdefer session.vault.allocator.free(handles);
-            try session.vault.appendChronicleEvent(Chronicle.Event.init(.{
+            try session.appendChronicleEvent(Chronicle.Event.init(.{
                 .kind = if (restore.accepted) .recovery_executed else .recovery_blocked,
                 .capsule_ref = capsule_ref,
                 .recovery_plan_ref = semanticObjectRef(.capsule_thaw_plan, plan.plan_fingerprint),
             }));
-            try session.vault.appendChronicleEvent(Chronicle.Event.init(.{ .kind = .recovery_report_stored, .capsule_ref = capsule_ref }));
+            try session.appendChronicleEvent(Chronicle.Event.init(.{ .kind = .recovery_report_stored, .capsule_ref = capsule_ref }));
             var report = RecoveryReport.init(.{
                 .recovery_plan_fingerprint = plan.plan_fingerprint,
                 .accepted = restore.accepted,
@@ -32086,7 +32091,7 @@ pub const Continuity = struct {
             const blockers: []const u64 = blk: {
                 var graph = preflightReplayCapsule(session.vault, capsule_ref, target, options) catch |err| switch (err) {
                     error.ObjectMissing, error.InvalidFrameEncoding, error.DuplicateBinding => {
-                        try session.vault.appendChronicleEvent(Chronicle.Event.init(.{ .kind = .recovery_blocked, .capsule_ref = capsule_ref }));
+                        try session.appendChronicleEvent(Chronicle.Event.init(.{ .kind = .recovery_blocked, .capsule_ref = capsule_ref }));
                         break :blk &.{1};
                     },
                     else => return err,
@@ -32106,13 +32111,13 @@ pub const Continuity = struct {
         pub fn replayFromVault(session: *Session, capsule_ref: ObjectRef, target: anytype, options: Options) !RecoveryReport {
             const plan = try planReplayFromVault(session, capsule_ref, target, options);
             if (plan.blockers.len != 0) return recoveryRejectedReport(session, plan);
+            try session.appendChronicleEvent(Chronicle.Event.init(.{ .kind = .capsule_replayed, .capsule_ref = capsule_ref }));
             const report = RecoveryReport.init(.{
                 .recovery_plan_fingerprint = plan.plan_fingerprint,
                 .accepted = true,
                 .resulting_cursor_fingerprint = session.cursor().cursor_fingerprint,
                 .restored_capsule_ref = capsule_ref,
             });
-            try session.vault.appendChronicleEvent(Chronicle.Event.init(.{ .kind = .capsule_replayed, .capsule_ref = capsule_ref }));
             return report;
         }
 
@@ -32136,6 +32141,11 @@ pub const Continuity = struct {
         }
 
         fn recoveryRejectedReport(session: *Session, plan: RecoveryPlan) !RecoveryReport {
+            try session.appendChronicleEvent(Chronicle.Event.init(.{
+                .kind = .recovery_blocked,
+                .capsule_ref = plan.capsule_ref,
+                .recovery_plan_ref = semanticObjectRef(.capsule_thaw_plan, plan.plan_fingerprint),
+            }));
             const report = RecoveryReport.init(.{
                 .recovery_plan_fingerprint = plan.plan_fingerprint,
                 .accepted = false,
@@ -32144,12 +32154,6 @@ pub const Continuity = struct {
                 .blockers = if (plan.blockers.len == 0) &.{1} else plan.blockers,
             });
             try report.validate();
-            try session.vault.appendChronicleEvent(Chronicle.Event.init(.{
-                .kind = .recovery_blocked,
-                .capsule_ref = plan.capsule_ref,
-                .recovery_plan_ref = semanticObjectRef(.capsule_thaw_plan, plan.plan_fingerprint),
-                .recovery_report_ref = semanticObjectRef(.capsule_restore_report, report.report_fingerprint),
-            }));
             return report;
         }
 
