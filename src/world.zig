@@ -29998,7 +29998,7 @@ pub const Continuity = struct {
                 var receipt = try self.vault.getActuationReceipt(ref);
                 defer receipt.deinit(self.vault.allocator);
                 if (isReplayableReceipt(receipt) and receiptIsTerminalFreshCommit(receipt)) return ref;
-                return (try self.receiptByIdempotencyKeyFromJournals(key)) orelse if (isReplayableReceipt(receipt)) ref else null;
+                return (try self.receiptByIdempotencyKeyFromJournals(key)) orelse ref;
             }
             return self.receiptByIdempotencyKeyFromJournals(key);
         }
@@ -37528,6 +37528,37 @@ test "actuation index finds receipts by actuator target port capsule state and i
     const pending_refs = try index.pendingActuations();
     defer allocator.free(pending_refs);
     try std.testing.expectEqual(@as(usize, 1), pending_refs.len);
+
+    var pending_only_vault = Continuity.MemoryVault.init(allocator);
+    defer pending_only_vault.deinit();
+    const pending_lookup_key = Actuation.IdempotencyKey.init(.{
+        .target_ref_fingerprint = 0x3301_00b1,
+        .world_surface_fingerprint = 0x3301_00b2,
+        .world_port_id = 9,
+        .request_fingerprint = 0x3301_00b3,
+        .actuator_ref_fingerprint = 0x3301_00b4,
+    });
+    const pending_lookup_receipt = Actuation.Receipt.init(.{
+        .intent_fingerprint = 0x3301_00b5,
+        .envelope_fingerprint = 0x3301_00b6,
+        .decision_fingerprint = 0x3301_00b7,
+        .commit_fingerprint = 0x3301_00b8,
+        .response_fingerprint = 0x3301_00b9,
+        .actuator_ref_fingerprint = pending_lookup_key.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = pending_lookup_key.key_fingerprint,
+        .request_fingerprint = pending_lookup_key.request_fingerprint,
+        .target_ref_fingerprint = pending_lookup_key.target_ref_fingerprint,
+        .world_surface_fingerprint = pending_lookup_key.world_surface_fingerprint,
+        .world_port_id = pending_lookup_key.world_port_id,
+        .class = .deterministic_fixture,
+        .mode = .audit,
+        .pending = true,
+    });
+    const pending_only_ref = try pending_only_vault.putActuationReceipt(pending_lookup_receipt);
+    const pending_only_index = Continuity.ActuationIndex.init(&pending_only_vault);
+    const pending_only_by_key = try pending_only_index.byIdempotencyKey(pending_lookup_key);
+    try std.testing.expect(pending_only_by_key != null);
+    try std.testing.expect(pending_only_by_key.?.eql(pending_only_ref));
 
     const replay_refs = try index.replayedActuations();
     defer allocator.free(replay_refs);
