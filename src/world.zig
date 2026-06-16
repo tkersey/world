@@ -32435,7 +32435,11 @@ pub const Continuity = struct {
             var report = RecoveryReport.init(.{
                 .recovery_plan_fingerprint = plan.plan_fingerprint,
                 .accepted = restore.accepted,
-                .resulting_cursor_fingerprint = session.cursor().cursor_fingerprint,
+                .resulting_cursor_fingerprint = recoveryReportResultingCursorFingerprint(session, Chronicle.Event.init(.{
+                    .kind = .recovery_report_stored,
+                    .capsule_ref = capsule_ref,
+                    .recovery_plan_ref = semanticObjectRef(.capsule_thaw_plan, plan.plan_fingerprint),
+                })),
                 .restored_capsule_ref = if (restore.accepted) capsule_ref else null,
                 .restored_run_handles = restored_handles,
                 .blockers = if (restore.accepted) &.{} else &.{1},
@@ -32448,7 +32452,6 @@ pub const Continuity = struct {
                     .recovery_plan_ref = semanticObjectRef(.capsule_thaw_plan, plan.plan_fingerprint),
                     .recovery_report_ref = semanticObjectRef(.capsule_restore_report, report.report_fingerprint),
                 }));
-                report.resulting_cursor_fingerprint = session.cursor().cursor_fingerprint;
             }
             try report.validate();
             return report;
@@ -32495,7 +32498,11 @@ pub const Continuity = struct {
             var report = RecoveryReport.init(.{
                 .recovery_plan_fingerprint = plan.plan_fingerprint,
                 .accepted = true,
-                .resulting_cursor_fingerprint = session.cursor().cursor_fingerprint,
+                .resulting_cursor_fingerprint = recoveryReportResultingCursorFingerprint(session, Chronicle.Event.init(.{
+                    .kind = .recovery_report_stored,
+                    .capsule_ref = capsule_ref,
+                    .recovery_plan_ref = plan_ref,
+                })),
                 .restored_capsule_ref = capsule_ref,
             });
             try appendRecoveryChronicleEvent(session, Chronicle.Event.init(.{
@@ -32504,7 +32511,6 @@ pub const Continuity = struct {
                 .recovery_plan_ref = plan_ref,
                 .recovery_report_ref = semanticObjectRef(.capsule_restore_report, report.report_fingerprint),
             }));
-            report.resulting_cursor_fingerprint = session.cursor().cursor_fingerprint;
             try report.validate();
             return report;
         }
@@ -32537,7 +32543,11 @@ pub const Continuity = struct {
             var report = RecoveryReport.init(.{
                 .recovery_plan_fingerprint = plan.plan_fingerprint,
                 .accepted = false,
-                .resulting_cursor_fingerprint = session.cursor().cursor_fingerprint,
+                .resulting_cursor_fingerprint = recoveryReportResultingCursorFingerprint(session, Chronicle.Event.init(.{
+                    .kind = .recovery_report_stored,
+                    .capsule_ref = plan.capsule_ref,
+                    .recovery_plan_ref = semanticObjectRef(.capsule_thaw_plan, plan.plan_fingerprint),
+                })),
                 .blockers = if (plan.blockers.len == 0) &.{1} else plan.blockers,
             });
             try appendRecoveryChronicleEvent(session, Chronicle.Event.init(.{
@@ -32546,7 +32556,6 @@ pub const Continuity = struct {
                 .recovery_plan_ref = semanticObjectRef(.capsule_thaw_plan, plan.plan_fingerprint),
                 .recovery_report_ref = semanticObjectRef(.capsule_restore_report, report.report_fingerprint),
             }));
-            report.resulting_cursor_fingerprint = session.cursor().cursor_fingerprint;
             try report.validate();
             return report;
         }
@@ -32554,6 +32563,11 @@ pub const Continuity = struct {
         fn appendRecoveryChronicleEvent(session: *Session, event: Chronicle.Event) !void {
             if (!session.policy.require_transaction_for_recovery) return;
             try session.appendChronicleEvent(event);
+        }
+
+        fn recoveryReportResultingCursorFingerprint(session: *Session, event: Chronicle.Event) u64 {
+            if (!session.policy.require_transaction_for_recovery) return session.cursor().cursor_fingerprint;
+            return session.cursor().advance(&.{event.event_fingerprint}, 0, 0).cursor_fingerprint;
         }
 
         fn recoveryPlanWasRecorded(vault: *const Continuity.MemoryVault, plan: RecoveryPlan) bool {
@@ -33179,7 +33193,7 @@ pub const Continuity = struct {
         hashOptionalRef(&hasher, event.actuation_idempotency_key_ref);
         hashOptionalRef(&hasher, event.bundle_ref);
         hashOptionalRef(&hasher, event.recovery_plan_ref);
-        hashOptionalRef(&hasher, event.recovery_report_ref);
+        hashOptionalRef(&hasher, @as(?ObjectRef, null));
         hashOptionalRef(&hasher, event.inbox_outbox_item_ref);
         hashOptionalRef(&hasher, event.target_ref);
         hashOptionalRef(&hasher, event.module_ref);
@@ -33474,6 +33488,7 @@ pub const Continuity = struct {
         hashBytes(&hasher, "world.continuity.recovery.report");
         hashU64(&hasher, report.recovery_plan_fingerprint);
         hashBool(&hasher, report.accepted);
+        hashU64(&hasher, report.resulting_cursor_fingerprint);
         hashOptionalRef(&hasher, report.restored_capsule_ref);
         hashU64SliceLocal(&hasher, report.restored_run_handles);
         hashU64SliceLocal(&hasher, report.restored_pending_ports);
@@ -36470,6 +36485,31 @@ test "chronicle event fingerprint binds parents refs and excludes metadata autho
     parent_fingerprints[0] = 0xabc1;
     object_refs[0] = receipt_ref;
     try std.testing.expectError(error.InvalidFrameEncoding, event.validate());
+}
+
+test "chronicle recovery report refs remain projectable without cursor cycle" {
+    const capsule_ref = Continuity.semanticObjectRef(.capsule_image, 0x4401_0001);
+    const plan_ref = Continuity.semanticObjectRef(.capsule_thaw_plan, 0x4401_0002);
+    const report_ref_a = Continuity.semanticObjectRef(.capsule_restore_report, 0x4401_0003);
+    const report_ref_b = Continuity.semanticObjectRef(.capsule_restore_report, 0x4401_0004);
+
+    const event_a = Continuity.Chronicle.Event.init(.{
+        .kind = .recovery_report_stored,
+        .capsule_ref = capsule_ref,
+        .recovery_plan_ref = plan_ref,
+        .recovery_report_ref = report_ref_a,
+    });
+    const event_b = Continuity.Chronicle.Event.init(.{
+        .kind = .recovery_report_stored,
+        .capsule_ref = capsule_ref,
+        .recovery_plan_ref = plan_ref,
+        .recovery_report_ref = report_ref_b,
+    });
+    try event_a.validate();
+    try event_b.validate();
+    try std.testing.expectEqual(event_a.event_fingerprint, event_b.event_fingerprint);
+    try std.testing.expect(event_a.recovery_report_ref.?.eql(report_ref_a));
+    try std.testing.expect(event_b.recovery_report_ref.?.eql(report_ref_b));
 }
 
 test "chronicle cursor initial and deterministic advancement" {
