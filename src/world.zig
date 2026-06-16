@@ -30278,6 +30278,7 @@ pub const Continuity = struct {
         }
 
         pub fn importBundle(self: *@This(), bytes: []const u8) !BundleManifest {
+            if (!self.policy.require_transaction_for_bundle_import) return error.PersistenceDisabled;
             var tx = try self.begin(.import_bundle);
             errdefer self.abandonTransaction();
             defer tx.deinit();
@@ -32061,6 +32062,12 @@ pub const Continuity = struct {
             defer restore.deinit(session.vault.allocator);
             const handles = try session.vault.allocator.dupe(u64, restore.restored_root_run_handles);
             errdefer session.vault.allocator.free(handles);
+            try session.vault.appendChronicleEvent(Chronicle.Event.init(.{
+                .kind = if (restore.accepted) .recovery_executed else .recovery_blocked,
+                .capsule_ref = capsule_ref,
+                .recovery_plan_ref = semanticObjectRef(.capsule_thaw_plan, plan.plan_fingerprint),
+            }));
+            try session.vault.appendChronicleEvent(Chronicle.Event.init(.{ .kind = .recovery_report_stored, .capsule_ref = capsule_ref }));
             var report = RecoveryReport.init(.{
                 .recovery_plan_fingerprint = plan.plan_fingerprint,
                 .accepted = restore.accepted,
@@ -32071,13 +32078,6 @@ pub const Continuity = struct {
             });
             report.owns_memory = true;
             try report.validate();
-            try session.vault.appendChronicleEvent(Chronicle.Event.init(.{
-                .kind = if (restore.accepted) .recovery_executed else .recovery_blocked,
-                .capsule_ref = capsule_ref,
-                .recovery_plan_ref = semanticObjectRef(.capsule_thaw_plan, plan.plan_fingerprint),
-                .recovery_report_ref = semanticObjectRef(.capsule_restore_report, report.report_fingerprint),
-            }));
-            try session.vault.appendChronicleEvent(Chronicle.Event.init(.{ .kind = .recovery_report_stored, .capsule_ref = capsule_ref }));
             return report;
         }
 
@@ -36387,6 +36387,7 @@ test "continuity session begins transactions and policy gates persistence" {
     var image = try Capsule.freezeRunspace(&runspace, .{});
     defer image.deinit(allocator);
     try std.testing.expectError(error.PersistenceDisabled, session.storeCapsule(image));
+    try std.testing.expectError(error.PersistenceDisabled, session.importBundle("not a bundle"));
     try std.testing.expectEqual(@as(usize, 0), vault.objectCount());
 }
 
