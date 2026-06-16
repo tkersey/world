@@ -19276,6 +19276,7 @@ pub const Actuation = struct {
                 const frame_response_fingerprint = self.frame_response_fingerprint orelse return error.MissingValueImage;
                 if (frame_response_fingerprint == 0 and self.response_image == null) return error.MissingValueImage;
             }
+            if (self.status != .responded and self.frame_response_fingerprint != null and self.frame_response_fingerprint.? == 0) return error.InvalidFrameEncoding;
             if (self.status == .pending or self.status == .deferred) {
                 if (self.response_image != null or self.value_image_fingerprint != null) return error.InvalidFrameEncoding;
                 if (policy.max_pending_actuations) |max_pending| {
@@ -19542,6 +19543,7 @@ pub const Actuation = struct {
                 const frame_response_fingerprint = self.frame_response_fingerprint orelse return error.InvalidFrameEncoding;
                 if (frame_response_fingerprint == 0 and self.response_value_image_fingerprint == null) return error.InvalidFrameEncoding;
             }
+            if (self.responseStatus() != .responded and self.frame_response_fingerprint != null and self.frame_response_fingerprint.? == 0) return error.InvalidFrameEncoding;
             if (self.responseStatus() != .responded and self.response_value_image_fingerprint != null) return error.InvalidFrameEncoding;
             if (self.blockers.len > max_receipt_evidence_refs) return error.InvalidFrameEncoding;
             if (self.warnings.len > max_receipt_evidence_refs) return error.InvalidFrameEncoding;
@@ -19815,6 +19817,7 @@ pub const Actuation = struct {
             try validateJournalEntryFingerprint(entry.response_fingerprint, &evidence_count);
             try validateJournalEntryFrameResponseFingerprint(entry.frame_response_fingerprint, entry.response_value_image_fingerprint, &evidence_count);
             try validateJournalEntryFingerprint(entry.response_value_image_fingerprint, &evidence_count);
+            if (entryResponseStatus(entry) != .responded and entry.frame_response_fingerprint != null and entry.frame_response_fingerprint.? == 0) return error.InvalidFrameEncoding;
             try validateJournalEntryFingerprint(entry.recorded_response_fingerprint, &evidence_count);
             if (entry.recorded_response_fingerprint != null) {
                 switch (entryResponseStatus(entry)) {
@@ -39616,6 +39619,51 @@ test "recorded response fingerprints require replay evidence" {
         .response_fingerprint = 0x3318_0030,
         .recorded_response_fingerprint = 0x3318_0031,
         .fresh_called = true,
+        .rejected = true,
+    });
+    journal.refreshFingerprint();
+    try std.testing.expectError(error.InvalidFrameEncoding, journal.validate());
+}
+
+test "terminal actuation evidence rejects zero frame response fingerprints" {
+    const allocator = std.testing.allocator;
+    const response = Actuation.Response.init(.{
+        .intent_fingerprint = 0x3319_0010,
+        .commit_fingerprint = 0x3319_0011,
+        .actuator_ref_fingerprint = 0x3319_0012,
+        .world_port_id = 9,
+        .request_fingerprint = 0x3319_0013,
+        .status = .rejected,
+        .frame_response_fingerprint = 0,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, response.validate(.fixture_test, null));
+
+    const receipt = Actuation.Receipt.init(.{
+        .intent_fingerprint = 0x3319_0020,
+        .envelope_fingerprint = 0x3319_0021,
+        .decision_fingerprint = 0x3319_0022,
+        .commit_fingerprint = 0x3319_0023,
+        .response_fingerprint = 0x3319_0024,
+        .frame_response_fingerprint = 0,
+        .actuator_ref_fingerprint = 0x3319_0025,
+        .idempotency_key_fingerprint = 0x3319_0026,
+        .target_ref_fingerprint = 0x3319_0027,
+        .world_surface_fingerprint = 0x3319_0028,
+        .world_port_id = 9,
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+        .fresh_called = true,
+        .rejected = true,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, receipt.validate());
+
+    var journal = Actuation.Journal.init();
+    defer journal.deinit(allocator);
+    try journal.entries.append(allocator, .{
+        .order = journal.takeOrder(),
+        .response_fingerprint = 0x3319_0030,
+        .frame_response_fingerprint = 0,
+        .response_value_image_fingerprint = 0x3319_0031,
         .rejected = true,
     });
     journal.refreshFingerprint();
