@@ -29416,16 +29416,16 @@ pub const Continuity = struct {
         pub fn fromJournal(vault: *Continuity.MemoryVault, journal_ref: ObjectRef) !@This() {
             var journal = try vault.getActuationJournal(journal_ref);
             defer journal.deinit(vault.allocator);
-            return fromJournalEntries(vault, journal_ref, journal.entries.items, null);
+            return fromJournalEntries(vault, journal_ref, journal.fingerprint_version, journal.entries.items, null);
         }
 
         fn fromJournalForIdempotencyKey(vault: *Continuity.MemoryVault, journal_ref: ObjectRef, key: Actuation.IdempotencyKey) !@This() {
             var journal = try vault.getActuationJournal(journal_ref);
             defer journal.deinit(vault.allocator);
-            return fromJournalEntries(vault, journal_ref, journal.entries.items, key);
+            return fromJournalEntries(vault, journal_ref, journal.fingerprint_version, journal.entries.items, key);
         }
 
-        fn fromJournalEntries(vault: *Continuity.MemoryVault, journal_ref: ObjectRef, entries: []const Actuation.Journal.Entry, key_filter: ?Actuation.IdempotencyKey) !@This() {
+        fn fromJournalEntries(vault: *Continuity.MemoryVault, journal_ref: ObjectRef, journal_fingerprint_version: u32, entries: []const Actuation.Journal.Entry, key_filter: ?Actuation.IdempotencyKey) !@This() {
             var graph = @This(){
                 .allocator = vault.allocator,
                 .graph_fingerprint = 0,
@@ -29499,7 +29499,7 @@ pub const Continuity = struct {
                     if (terminal_fresh_commit) {
                         try committed_refs.append(vault.allocator, ref);
                     }
-                    if (isReplayableJournalEntry(entry) and vault.has(ref) and try journalEntryReplayEvidenceAvailable(vault, entry)) try replayable_refs.append(vault.allocator, ref);
+                    if (vault.has(ref) and try isReplayableJournalEntryForVault(vault, entry, journal_fingerprint_version) and try journalEntryReplayEvidenceAvailable(vault, entry)) try replayable_refs.append(vault.allocator, ref);
                 } else if (entry.pending or entry.deferred) {
                     if (entry.commit_fingerprint) |fingerprint| {
                         try appendUniqueRefForFingerprint(vault, &pending_refs, .actuation_commit, fingerprint);
@@ -29637,7 +29637,14 @@ pub const Continuity = struct {
     };
 
     fn isReplayableReceipt(receipt: Actuation.Receipt) bool {
-        return !receipt.pending and !receipt.deferred;
+        return receiptModeReplayAuthoritative(receipt.mode) and !receipt.pending and !receipt.deferred;
+    }
+
+    fn receiptModeReplayAuthoritative(mode: Mode) bool {
+        return switch (mode) {
+            .fresh, .replay => true,
+            .verify, .audit => false,
+        };
     }
 
     fn receiptIsTerminalFreshCommit(receipt: Actuation.Receipt) bool {
@@ -29650,10 +29657,35 @@ pub const Continuity = struct {
     }
 
     fn isReplayableJournalEntry(entry: Actuation.Journal.Entry) bool {
+        return journalEntryHasReplayAuthority(entry) and journalEntryHasReplayPayload(entry);
+    }
+
+    fn isReplayableJournalEntryForVersion(entry: Actuation.Journal.Entry, journal_fingerprint_version: u32) bool {
+        return journalEntryHasReplayPayload(entry) and
+            (journalEntryHasReplayAuthority(entry) or legacyActuationJournalFingerprintVersion(journal_fingerprint_version));
+    }
+
+    fn journalEntryHasReplayAuthority(entry: Actuation.Journal.Entry) bool {
+        return entry.fresh_called or entry.replayed;
+    }
+
+    fn journalEntryHasReplayPayload(entry: Actuation.Journal.Entry) bool {
         return !entry.pending and
             !entry.deferred and
             entry.response_fingerprint != null and
             (journalEntryResponseStatus(entry) != .responded or entry.frame_response_fingerprint != null);
+    }
+
+    fn isReplayableJournalEntryForVault(vault: *Continuity.MemoryVault, entry: Actuation.Journal.Entry, journal_fingerprint_version: u32) !bool {
+        if (!journalEntryHasReplayPayload(entry)) return false;
+        if (entry.receipt_fingerprint) |fingerprint| {
+            if (try vault.refByKindFingerprint(.actuation_receipt, fingerprint)) |ref| {
+                var receipt = try vault.getActuationReceipt(ref);
+                defer receipt.deinit(vault.allocator);
+                return isReplayableReceipt(receipt);
+            }
+        }
+        return isReplayableJournalEntryForVersion(entry, journal_fingerprint_version);
     }
 
     fn journalEntryResponseStatus(entry: Actuation.Journal.Entry) Actuation.ResponseStatus {
@@ -30354,7 +30386,7 @@ pub const Continuity = struct {
                 defer receipt.deinit(vault.allocator);
                 if (receipt.idempotency_key_fingerprint != idempotency_key.key_fingerprint) return error.InvalidFrameEncoding;
                 if (!receiptMatchesIdempotencyKey(receipt, idempotency_key)) return error.InvalidFrameEncoding;
-                if (!receipt.pending and !receipt.deferred) {
+                if (isReplayableReceipt(receipt)) {
                     if (!receiptIsTerminalFreshCommit(receipt)) {
                         if (try replayActuationFromJournalEvidence(vault, idempotency_key)) |response| return response;
                     }
@@ -30393,7 +30425,7 @@ pub const Continuity = struct {
                 defer journal.deinit(vault.allocator);
                 for (journal.entries.items) |entry| {
                     if (!journalEntryMatchesIdempotencyKey(entry, idempotency_key)) continue;
-                    if (!isReplayableJournalEntry(entry)) continue;
+                    if (!try isReplayableJournalEntryForVault(vault, entry, journal.fingerprint_version)) continue;
                     if (terminal_entry) |existing| {
                         const existing_terminal = journalEntryIsTerminalFreshCommit(existing);
                         const entry_terminal = journalEntryIsTerminalFreshCommit(entry);
@@ -35256,8 +35288,10 @@ test "actuation graph builds from receipt journal and detects duplicate fresh co
     replayable_cancelled_journal.next_order = 1;
     replayable_cancelled_journal.refreshFingerprint();
     _ = try journal_only_cancelled_vault.putActuationJournal(replayable_cancelled_journal);
-    const journal_only_cancelled_response = try Continuity.Recovery.replayActuation(&journal_only_cancelled_vault, cancelled_key);
-    try std.testing.expectEqual(Actuation.ResponseStatus.cancelled, journal_only_cancelled_response.status);
+    var replayable_cancelled_graph = try Continuity.ActuationGraph.byIdempotencyKey(&journal_only_cancelled_vault, cancelled_key);
+    defer replayable_cancelled_graph.deinit();
+    try std.testing.expectEqual(@as(usize, 0), replayable_cancelled_graph.summary().replayable_count);
+    try std.testing.expectError(error.ObjectMissing, Continuity.Recovery.replayActuation(&journal_only_cancelled_vault, cancelled_key));
 
     const in_progress_intent = Actuation.Intent.init(.{
         .actuator_ref_fingerprint = key.actuator_ref_fingerprint,
@@ -35447,6 +35481,54 @@ test "actuation graph builds from receipt journal and detects duplicate fresh co
     try std.testing.expect(selected_ref.eql(rejected_ref));
     const replayed_rejected = try Continuity.Recovery.replayActuation(&terminal_error_vault, key);
     try std.testing.expectEqual(Actuation.ResponseStatus.rejected, replayed_rejected.status);
+
+    var audit_only_vault = Continuity.MemoryVault.init(allocator);
+    defer audit_only_vault.deinit();
+    const audit_only_receipt = Actuation.Receipt.init(.{
+        .intent_fingerprint = receipt.intent_fingerprint,
+        .envelope_fingerprint = receipt.envelope_fingerprint,
+        .decision_fingerprint = receipt.decision_fingerprint,
+        .commit_fingerprint = 0x3280_00c3,
+        .response_fingerprint = 0x3280_00c4,
+        .actuator_ref_fingerprint = key.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .request_fingerprint = key.request_fingerprint,
+        .target_ref_fingerprint = key.target_ref_fingerprint,
+        .world_surface_fingerprint = key.world_surface_fingerprint,
+        .world_port_id = key.world_port_id,
+        .class = .deterministic_fixture,
+        .mode = .audit,
+        .rejected = true,
+    });
+    const audit_only_ref = try audit_only_vault.putActuationReceipt(audit_only_receipt);
+    var audit_only_graph = try Continuity.ActuationGraph.fromReceipt(&audit_only_vault, audit_only_ref);
+    defer audit_only_graph.deinit();
+    try std.testing.expectEqual(@as(usize, 0), audit_only_graph.summary().replayable_count);
+    try std.testing.expectError(error.ObjectMissing, Continuity.Recovery.replayActuation(&audit_only_vault, key));
+
+    var verify_only_vault = Continuity.MemoryVault.init(allocator);
+    defer verify_only_vault.deinit();
+    const verify_only_receipt = Actuation.Receipt.init(.{
+        .intent_fingerprint = receipt.intent_fingerprint,
+        .envelope_fingerprint = receipt.envelope_fingerprint,
+        .decision_fingerprint = receipt.decision_fingerprint,
+        .commit_fingerprint = 0x3280_00d3,
+        .response_fingerprint = 0x3280_00d4,
+        .actuator_ref_fingerprint = key.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .request_fingerprint = key.request_fingerprint,
+        .target_ref_fingerprint = key.target_ref_fingerprint,
+        .world_surface_fingerprint = key.world_surface_fingerprint,
+        .world_port_id = key.world_port_id,
+        .class = .deterministic_fixture,
+        .mode = .verify,
+        .rejected = true,
+    });
+    const verify_only_ref = try verify_only_vault.putActuationReceipt(verify_only_receipt);
+    var verify_only_graph = try Continuity.ActuationGraph.fromReceipt(&verify_only_vault, verify_only_ref);
+    defer verify_only_graph.deinit();
+    try std.testing.expectEqual(@as(usize, 0), verify_only_graph.summary().replayable_count);
+    try std.testing.expectError(error.ObjectMissing, Continuity.Recovery.replayActuation(&verify_only_vault, key));
 
     var commit_only_vault = Continuity.MemoryVault.init(allocator);
     defer commit_only_vault.deinit();
@@ -38181,6 +38263,7 @@ test "capsule graph resolves pending intents from journal refs" {
         .response_fingerprint = 0x3300_00a2,
         .idempotency_key_fingerprint = 0x3300_00a3,
         .request_fingerprint = 0x3300_00a4,
+        .fresh_called = true,
         .failed = true,
     });
     failed_journal.refreshFingerprint();
