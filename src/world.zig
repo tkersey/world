@@ -29036,19 +29036,19 @@ pub const Continuity = struct {
                 if (self.committed or self.aborted) return error.InvalidRunspaceTransition;
                 if (self.transaction_fingerprint_version != world_chronicle_transaction_fingerprint_version) return error.InvalidFrameEncoding;
                 try self.vault.rejectConflictingTransactionEnvelopes(self.staged_envelopes.items);
+                const staged_bundle = Bundle{
+                    .allocator = self.allocator,
+                    .manifest = BundleManifest.init(.{
+                        .roots = self.staged_root_refs.items,
+                        .object_count = self.staged_envelopes.items.len,
+                    }),
+                    .envelopes = self.staged_envelopes.items,
+                };
+                try rejectDuplicateFreshCommitsAgainstVault(self.vault, staged_bundle);
                 if (self.staged_bundle_envelopes) {
-                    const bundle = Bundle{
-                        .allocator = self.allocator,
-                        .manifest = BundleManifest.init(.{
-                            .roots = self.staged_root_refs.items,
-                            .object_count = self.staged_envelopes.items.len,
-                        }),
-                        .envelopes = self.staged_envelopes.items,
-                    };
-                    const report = try bundle.validationReport(.{});
+                    const report = try staged_bundle.validationReport(.{});
                     if (!report.valid) return error.InvalidFrameEncoding;
-                    try rejectDuplicateFreshCommitsAgainstVault(self.vault, bundle);
-                    for (self.staged_envelopes.items) |envelope| try self.vault.assertTransactionBundleEnvelopeCanStage(self, bundle, envelope);
+                    for (self.staged_envelopes.items) |envelope| try self.vault.assertTransactionBundleEnvelopeCanStage(self, staged_bundle, envelope);
                 } else {
                     for (self.staged_envelopes.items) |envelope| try self.vault.assertTransactionCanStageEnvelope(self, envelope);
                 }
@@ -30181,7 +30181,7 @@ pub const Continuity = struct {
             return session;
         }
 
-        pub fn begin(self: *@This(), kind: Chronicle.TransactionKind) !Chronicle.Transaction {
+        fn begin(self: *@This(), kind: Chronicle.TransactionKind) !Chronicle.Transaction {
             self.active_transaction_count += 1;
             self.refreshFingerprint();
             errdefer self.abandonTransaction();
@@ -36703,6 +36703,15 @@ test "idempotency registry records fresh commits and allows replay receipts" {
         .fresh_called = true,
     });
     try std.testing.expectError(error.DuplicateBinding, mixed_session.storeActuationReceipt(duplicate_fresh_b));
+
+    var transaction_vault = Continuity.MemoryVault.init(allocator);
+    defer transaction_vault.deinit();
+    var duplicate_tx = try transaction_vault.beginTransaction(.store_actuation, .{});
+    defer duplicate_tx.deinit();
+    _ = try duplicate_tx.putActuationReceipt(fresh_b);
+    _ = try duplicate_tx.putActuationReceipt(duplicate_fresh_b);
+    try std.testing.expectError(error.DuplicateBinding, duplicate_tx.validate());
+    try std.testing.expectError(error.DuplicateBinding, duplicate_tx.commit());
 }
 
 test "inbox outbox views rebuild from chronicle events" {
