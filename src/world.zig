@@ -28429,6 +28429,9 @@ pub const Continuity = struct {
             rebuild_capsule_index: bool = true,
             rebuild_actuation_index: bool = true,
             rebuild_idempotency_registry: bool = true,
+            rebuild_inbox: bool = true,
+            rebuild_outbox: bool = true,
+            rebuild_recovery_queue: bool = true,
         };
 
         pub fn replay(vault: *Continuity.MemoryVault, options: ReplayOptions) !ReplayReport {
@@ -28452,9 +28455,28 @@ pub const Continuity = struct {
                 defer registry.deinit(registry.allocator);
                 rebuilt_count += 1;
             }
+            if (options.rebuild_inbox) {
+                var projection = try Projection.rebuild(vault, .inbox);
+                defer projection.deinit();
+                try projection.report.validate();
+                rebuilt_count += 1;
+            }
+            if (options.rebuild_outbox) {
+                var projection = try Projection.rebuild(vault, .outbox);
+                defer projection.deinit();
+                try projection.report.validate();
+                rebuilt_count += 1;
+            }
+            if (options.rebuild_recovery_queue) {
+                var projection = try Projection.rebuild(vault, .recovery_queue);
+                defer projection.deinit();
+                try projection.report.validate();
+                rebuilt_count += 1;
+            }
             var replay_vault = Continuity.MemoryVault.init(vault.allocator);
             defer replay_vault.deinit();
             try replayCommittedObjectsIntoVault(vault, &replay_vault);
+            try replayChronicleEventsIntoVault(vault, &replay_vault);
             if (options.rebuild_capsule_index) {
                 const source = try projectionSummaryForReplay(vault, .capsule_index);
                 const replayed = try projectionSummaryForReplay(&replay_vault, .capsule_index);
@@ -28463,6 +28485,21 @@ pub const Continuity = struct {
             if (options.rebuild_actuation_index) {
                 const source = try projectionSummaryForReplay(vault, .actuation_index);
                 const replayed = try projectionSummaryForReplay(&replay_vault, .actuation_index);
+                if (source != replayed) mismatch_count += 1;
+            }
+            if (options.rebuild_inbox) {
+                const source = try projectionSummaryForReplay(vault, .inbox);
+                const replayed = try projectionSummaryForReplay(&replay_vault, .inbox);
+                if (source != replayed) mismatch_count += 1;
+            }
+            if (options.rebuild_outbox) {
+                const source = try projectionSummaryForReplay(vault, .outbox);
+                const replayed = try projectionSummaryForReplay(&replay_vault, .outbox);
+                if (source != replayed) mismatch_count += 1;
+            }
+            if (options.rebuild_recovery_queue) {
+                const source = try projectionSummaryForReplay(vault, .recovery_queue);
+                const replayed = try projectionSummaryForReplay(&replay_vault, .recovery_queue);
                 if (source != replayed) mismatch_count += 1;
             }
             return ReplayReport.init(.{
@@ -29254,6 +29291,7 @@ pub const Continuity = struct {
                 var refs: std.ArrayList(ObjectRef) = .empty;
                 defer refs.deinit(vault.allocator);
                 for (vault.chronicle_events.items) |event| {
+                    if (!projectionKindConsumesEvent(kind, event.kind)) continue;
                     for (event.object_refs) |ref| try appendProjectionRef(vault.allocator, &refs, kind, ref);
                     if (event.capsule_ref) |ref| try appendProjectionRef(vault.allocator, &refs, kind, ref);
                     if (event.bundle_ref) |ref| try appendProjectionRef(vault.allocator, &refs, kind, ref);
@@ -33077,16 +33115,47 @@ pub const Continuity = struct {
         hashRefSlice(&hasher, refs);
         for (vault.objects.items) |envelope| {
             const ref = envelope.objectRef();
-            if (!projectionKindIncludesRef(kind, ref)) continue;
+            if (!projectionSummaryIncludesObject(kind, refs, ref)) continue;
             hashU64(&hasher, ref.ref_fingerprint);
         }
         return hasher.final();
+    }
+
+    fn projectionSummaryIncludesObject(kind: Chronicle.ProjectionKind, refs: []const ObjectRef, ref: ObjectRef) bool {
+        if (!projectionKindIncludesRef(kind, ref)) return false;
+        return switch (kind) {
+            .inbox, .outbox, .recovery_queue => containsRef(refs, ref),
+            else => true,
+        };
     }
 
     fn appendProjectionRef(allocator: std.mem.Allocator, refs: *std.ArrayList(ObjectRef), kind: Chronicle.ProjectionKind, ref: ObjectRef) !void {
         if (!projectionKindIncludesRef(kind, ref)) return;
         if (containsRef(refs.items, ref)) return;
         try refs.append(allocator, ref);
+    }
+
+    fn projectionKindConsumesEvent(kind: Chronicle.ProjectionKind, event_kind: Chronicle.EventKind) bool {
+        return switch (kind) {
+            .inbox => event_kind == .inbox_item_created or
+                event_kind == .inbox_item_validated or
+                event_kind == .inbox_item_accepted or
+                event_kind == .inbox_item_rejected or
+                event_kind == .inbox_item_restored,
+            .outbox => event_kind == .outbox_item_created or
+                event_kind == .outbox_item_exported or
+                event_kind == .outbox_item_completed,
+            .recovery_queue => event_kind == .capsule_recovery_planned or
+                event_kind == .capsule_recovery_rejected or
+                event_kind == .capsule_recovery_ready or
+                event_kind == .capsule_restored or
+                event_kind == .recovery_preflighted or
+                event_kind == .recovery_blocked or
+                event_kind == .recovery_ready or
+                event_kind == .recovery_executed or
+                event_kind == .recovery_report_stored,
+            else => true,
+        };
     }
 
     fn projectionKindIncludesRef(kind: Chronicle.ProjectionKind, ref: ObjectRef) bool {
@@ -33101,22 +33170,31 @@ pub const Continuity = struct {
     }
 
     fn projectionSummaryForReplay(vault: *Continuity.MemoryVault, kind: Chronicle.ProjectionKind) !u64 {
-        var refs: std.ArrayList(ObjectRef) = .empty;
-        defer refs.deinit(vault.allocator);
-        for (vault.objects.items) |envelope| {
-            try appendProjectionRef(vault.allocator, &refs, kind, envelope.objectRef());
-        }
-        var hasher = std.hash.Wyhash.init(0);
-        hashBytes(&hasher, "world.continuity.chronicle.replay.projection.summary");
-        hashU64(&hasher, @intFromEnum(kind));
-        hashRefSlice(&hasher, refs.items);
-        return hasher.final();
+        var projection = try Chronicle.Projection.rebuild(vault, kind);
+        defer projection.deinit();
+        return projection.report.result_summary_fingerprint;
     }
 
     fn replayCommittedObjectsIntoVault(source: *Continuity.MemoryVault, destination: *Continuity.MemoryVault) !void {
         for (source.chronicle_commit_backing.items) |backing| {
             for (backing) |envelope| _ = try destination.putValidatedEnvelopeFromTransaction(envelope);
         }
+    }
+
+    fn replayChronicleEventsIntoVault(source: *Continuity.MemoryVault, destination: *Continuity.MemoryVault) !void {
+        for (destination.chronicle_events.items) |*event| event.deinit(destination.allocator);
+        destination.chronicle_events.clearRetainingCapacity();
+        for (source.chronicle_events.items) |event| {
+            const owned = try event.clone(destination.allocator);
+            var owned_pending = true;
+            errdefer if (owned_pending) {
+                var cleanup = owned;
+                cleanup.deinit(destination.allocator);
+            };
+            try destination.chronicle_events.append(destination.allocator, owned);
+            owned_pending = false;
+        }
+        destination.chronicle_cursor = source.chronicle_cursor;
     }
 
     fn fingerprintHandoffEnvelope(envelope: HandoffEnvelope) u64 {
@@ -37164,6 +37242,12 @@ test "inbox outbox views rebuild from chronicle events" {
     }
     try std.testing.expectEqual(@as(usize, 1), pending_outbound.len);
 
+    const staged_outbox_replay = try Continuity.Chronicle.replay(&outbound_vault, .{});
+    try std.testing.expectEqual(@as(usize, 0), staged_outbox_replay.mismatch_count);
+    var outbound_inbox_projection = try Continuity.Chronicle.Projection.rebuild(&outbound_vault, .inbox);
+    defer outbound_inbox_projection.deinit();
+    try std.testing.expect(!Continuity.containsRef(outbound_inbox_projection.report.object_refs_consumed, outbound_ref));
+
     try std.testing.expectError(error.OutboxItemNotExported, outbox.markExported(outbound_ref));
     var bundle = try outbox.exportBundle(outbound_ref);
     defer bundle.deinit();
@@ -37228,6 +37312,9 @@ test "inbox outbox views rebuild from chronicle events" {
     var inbox_projection = try Continuity.Chronicle.Projection.rebuild(&inbound_vault, .inbox);
     defer inbox_projection.deinit();
     try std.testing.expect(Continuity.containsRef(inbox_projection.report.object_refs_consumed, inbound_ref));
+    var inbound_outbox_projection = try Continuity.Chronicle.Projection.rebuild(&inbound_vault, .outbox);
+    defer inbound_outbox_projection.deinit();
+    try std.testing.expect(!Continuity.containsRef(inbound_outbox_projection.report.object_refs_consumed, inbound_ref));
     const accepted_inbound = try inbox.listPending();
     defer {
         for (accepted_inbound) |*ref| ref.deinit(allocator);
