@@ -19251,6 +19251,13 @@ pub const Actuation = struct {
             if (self.intent_fingerprint == 0 or self.actuator_ref_fingerprint == 0 or self.request_fingerprint == 0) return error.InvalidFrameEncoding;
             try validateOptionalFingerprint(self.value_image_fingerprint);
             try validateOptionalFingerprint(self.recorded_response_fingerprint);
+            if (self.recorded_response_fingerprint != null) {
+                switch (self.status) {
+                    .rejected, .failed, .cancelled => {},
+                    else => return error.InvalidFrameEncoding,
+                }
+                if (self.frame_response_fingerprint != null) return error.InvalidFrameEncoding;
+            }
             if (!policy.allowsResponseStatus(self.status)) return error.PortRuleDenied;
             if (self.status == .responded) {
                 const frame_response_fingerprint = self.frame_response_fingerprint orelse return error.MissingValueImage;
