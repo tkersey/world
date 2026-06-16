@@ -21796,7 +21796,7 @@ pub const Actuation = struct {
         try key.validate();
         if (!options.strict_idempotency) return;
         var registry = try Continuity.Chronicle.IdempotencyRegistry.rebuild(session.vault);
-        defer registry.deinit(session.allocator);
+        defer registry.deinit(registry.allocator);
         try registry.assertFreshCommitAllowed(Continuity.semanticObjectRef(.actuation_idempotency_key, key.key_fingerprint));
     }
 
@@ -21806,7 +21806,7 @@ pub const Actuation = struct {
             !receipt.pending and !receipt.deferred and !receipt.failed and !receipt.rejected and !receipt.cancelled)
         {
             var registry = try Continuity.Chronicle.IdempotencyRegistry.rebuild(session.vault);
-            defer registry.deinit(session.allocator);
+            defer registry.deinit(registry.allocator);
             try registry.assertFreshCommitAllowed(Continuity.semanticObjectRef(.actuation_idempotency_key, receipt.idempotency_key_fingerprint));
         }
         return session.storeActuationReceipt(receipt);
@@ -28449,7 +28449,7 @@ pub const Continuity = struct {
             }
             if (options.rebuild_idempotency_registry) {
                 var registry = try IdempotencyRegistry.rebuild(vault);
-                defer registry.deinit(vault.allocator);
+                defer registry.deinit(registry.allocator);
                 rebuilt_count += 1;
             }
             var replay_vault = Continuity.MemoryVault.init(vault.allocator);
@@ -29366,8 +29366,11 @@ pub const Continuity = struct {
                     }
                 }
                 const keys = try key_refs.toOwnedSlice(vault.allocator);
+                errdefer freeRefSlice(vault.allocator, keys);
                 const receipts = try receipt_refs.toOwnedSlice(vault.allocator);
+                errdefer freeRefSlice(vault.allocator, receipts);
                 const blocker_slice = try blockers.toOwnedSlice(vault.allocator);
+                errdefer vault.allocator.free(blocker_slice);
                 var registry = @This(){
                     .allocator = vault.allocator,
                     .registry_fingerprint = 0,
@@ -30324,7 +30327,7 @@ pub const Continuity = struct {
             if (!self.policy.persist_actuation_receipts) return error.PersistenceDisabled;
             if (self.policy.reject_unstored_fresh_actuation and receiptIsTerminalFreshCommit(receipt)) {
                 var registry = try Chronicle.IdempotencyRegistry.rebuild(self.vault);
-                defer registry.deinit(self.allocator);
+                defer registry.deinit(registry.allocator);
                 try registry.assertFreshCommitAllowed(semanticObjectRef(.actuation_idempotency_key, receipt.idempotency_key_fingerprint));
             }
             var tx = try self.begin(.store_actuation);
@@ -36600,6 +36603,43 @@ test "continuity session stores capsule and actuation receipt through chronicle 
     try std.testing.expectEqual(@as(usize, 2), vault.commitCount());
 }
 
+test "actuation session idempotency rebuild deinitializes with vault allocator" {
+    const session_allocator = std.testing.allocator;
+    var vault_buffer: [65536]u8 = undefined;
+    var fixed_allocator = std.heap.FixedBufferAllocator.init(&vault_buffer);
+    var vault = Continuity.MemoryVault.init(fixed_allocator.allocator());
+    defer vault.deinit();
+    var session = try Continuity.Session.init(session_allocator, &vault, Continuity.PersistPolicy.actuation_only());
+
+    const receipt = Actuation.Receipt.init(.{
+        .intent_fingerprint = 0x3470_7010,
+        .envelope_fingerprint = 0x3470_7011,
+        .decision_fingerprint = 0x3470_7012,
+        .commit_fingerprint = 0x3470_7013,
+        .response_fingerprint = 0x3470_7014,
+        .frame_response_fingerprint = 0x3470_7015,
+        .actuator_ref_fingerprint = 0x3470_7004,
+        .idempotency_key_fingerprint = 0x3470_7020,
+        .request_fingerprint = 0x3470_7003,
+        .target_ref_fingerprint = 0x3470_7001,
+        .world_surface_fingerprint = 0x3470_7002,
+        .world_port_id = 7,
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+        .fresh_called = true,
+    });
+    _ = try Actuation.commitToSession(&session, receipt, .{});
+
+    const new_key = Actuation.IdempotencyKey.init(.{
+        .target_ref_fingerprint = 0x3470_7101,
+        .world_surface_fingerprint = 0x3470_7102,
+        .world_port_id = 8,
+        .request_fingerprint = 0x3470_7103,
+        .actuator_ref_fingerprint = 0x3470_7104,
+    });
+    try Actuation.assertIdempotencyAvailable(&session, new_key, .{});
+}
+
 test "freeze to session stores completed and handle capsules through chronicle transactions" {
     const allocator = std.testing.allocator;
     var vault = Continuity.MemoryVault.init(allocator);
@@ -36903,7 +36943,7 @@ test "idempotency registry records fresh commits and allows replay receipts" {
     });
     const receipt_ref = try session.storeActuationReceipt(receipt);
     var registry = try Continuity.Chronicle.IdempotencyRegistry.rebuild(&vault);
-    defer registry.deinit(allocator);
+    defer registry.deinit(registry.allocator);
     try std.testing.expectEqual(@as(usize, 1), registry.fresh_commit_count);
     const key_ref = Continuity.ObjectRef.init(.{
         .kind = .actuation_idempotency_key,
@@ -36916,7 +36956,7 @@ test "idempotency registry records fresh commits and allows replay receipts" {
     var incremental_vault = Continuity.MemoryVault.init(allocator);
     defer incremental_vault.deinit();
     var incremental_registry = try Continuity.Chronicle.IdempotencyRegistry.rebuild(&incremental_vault);
-    defer incremental_registry.deinit(allocator);
+    defer incremental_registry.deinit(incremental_registry.allocator);
     const incremental_key_ref = Continuity.semanticObjectRef(.actuation_idempotency_key, 0x3470_4040);
     const incremental_receipt_ref = Continuity.semanticObjectRef(.actuation_receipt, 0x3470_4014);
     try incremental_registry.assertFreshCommitAllowed(incremental_key_ref);
@@ -36950,7 +36990,7 @@ test "idempotency registry records fresh commits and allows replay receipts" {
     try fresh_journal.appendReceipt(allocator, journal_receipt);
     const journal_ref = try journal_only_session.storeActuationJournal(fresh_journal);
     var journal_registry = try Continuity.Chronicle.IdempotencyRegistry.rebuild(&journal_only_vault);
-    defer journal_registry.deinit(allocator);
+    defer journal_registry.deinit(journal_registry.allocator);
     const journal_key_ref = Continuity.semanticObjectRef(.actuation_idempotency_key, journal_receipt.idempotency_key_fingerprint);
     try std.testing.expect(journal_registry.lookup(journal_key_ref).?.eql(journal_ref));
     try std.testing.expectError(error.DuplicateBinding, journal_registry.assertFreshCommitAllowed(journal_key_ref));
@@ -36975,7 +37015,7 @@ test "idempotency registry records fresh commits and allows replay receipts" {
     });
     _ = try session.storeActuationReceipt(replay_receipt);
     var replay_registry = try Continuity.Chronicle.IdempotencyRegistry.rebuild(&vault);
-    defer replay_registry.deinit(allocator);
+    defer replay_registry.deinit(replay_registry.allocator);
     try std.testing.expectEqual(@as(usize, 1), replay_registry.fresh_commit_count);
     try std.testing.expectEqual(@as(usize, 1), replay_registry.replay_receipt_count);
 
@@ -37020,7 +37060,7 @@ test "idempotency registry records fresh commits and allows replay receipts" {
     });
     const fresh_b_ref = try mixed_session.storeActuationReceipt(fresh_b);
     var mixed_registry = try Continuity.Chronicle.IdempotencyRegistry.rebuild(&mixed_vault);
-    defer mixed_registry.deinit(allocator);
+    defer mixed_registry.deinit(mixed_registry.allocator);
     const fresh_b_key = Continuity.ObjectRef.init(.{
         .kind = .actuation_idempotency_key,
         .object_fingerprint = fresh_b.idempotency_key_fingerprint,
