@@ -19528,7 +19528,7 @@ pub const Actuation = struct {
                     else => return error.InvalidFrameEncoding,
                 }
                 if (self.frame_response_fingerprint != null) return error.InvalidFrameEncoding;
-                if (self.mode != .replay and self.mode != .verify) return error.InvalidFrameEncoding;
+                if (self.mode != .replay) return error.InvalidFrameEncoding;
             }
             if (self.mode == .replay and self.fresh_called) return error.InvalidFrameEncoding;
             if (self.replayed and self.verified) return error.InvalidFrameEncoding;
@@ -19825,7 +19825,7 @@ pub const Actuation = struct {
                     else => return error.InvalidFrameEncoding,
                 }
                 if (entry.frame_response_fingerprint != null) return error.InvalidFrameEncoding;
-                if (entry.fresh_called) return error.InvalidFrameEncoding;
+                if (!entry.replayed) return error.InvalidFrameEncoding;
             }
             try validateJournalEntryFingerprint(entry.receipt_fingerprint, &evidence_count);
             try validateJournalEntryFingerprint(entry.idempotency_key_fingerprint, &evidence_count);
@@ -20411,6 +20411,7 @@ pub const Actuation = struct {
                 expected_status == fresh_status and
                 expected.?.response_kind == fresh.?.response_kind and
                 expected.?.frame_response_fingerprint == fresh.?.frame_response_fingerprint and
+                expected.?.recorded_response_fingerprint == fresh.?.recorded_response_fingerprint and
                 expected.?.response_value_image_fingerprint == fresh.?.response_value_image_fingerprint and
                 receiptAuxiliaryEvidenceMatches(expected.?, fresh.?);
             const divergence_kind: ?DivergenceKind = if (matched)
@@ -21298,6 +21299,7 @@ pub const Actuation = struct {
             return lhs.responseStatus() == rhs.responseStatus() and
                 lhs.response_kind == rhs.response_kind and
                 lhs.frame_response_fingerprint == rhs.frame_response_fingerprint and
+                lhs.recorded_response_fingerprint == rhs.recorded_response_fingerprint and
                 lhs.response_value_image_fingerprint == rhs.response_value_image_fingerprint;
         }
 
@@ -31458,6 +31460,23 @@ pub const Continuity = struct {
                 if (!validRunReceiptPayload(receipt)) break :blk false;
                 break :blk try bundleRunReceiptDependencyPayloadsValid(allocator, envelopes, receipt);
             },
+            .run_image => blk: {
+                var image = RunImage.decode(allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => break :blk false,
+                };
+                defer image.deinit(allocator);
+                break :blk try bundleRunImageDependencyPayloadsValid(allocator, envelopes, image);
+            },
+            .guest_conformance_report => blk: {
+                const report = decodePortableEvidence(Guest.ConformanceReport, allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => break :blk false,
+                };
+                defer deinitOwnedValue(allocator, report);
+                if (!validGuestConformanceReportPayload(report)) break :blk false;
+                break :blk try bundleGuestConformanceReportDependencyPayloadsValid(allocator, envelopes, report);
+            },
             else => true,
         };
     }
@@ -31591,6 +31610,80 @@ pub const Continuity = struct {
         }
 
         return true;
+    }
+
+    fn bundleRunImageDependencyPayloadsValid(allocator: std.mem.Allocator, envelopes: []const ObjectEnvelope, image: RunImage) !bool {
+        const transcript_fingerprint = image.current_state.transcript_image_fingerprint orelse return true;
+        if (try bundleEnvelopeForRef(allocator, envelopes, semanticObjectRef(.transcript_image, transcript_fingerprint))) |transcript_envelope| {
+            var transcript = TranscriptImage.decode(allocator, transcript_envelope.payload_bytes) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return false,
+            };
+            defer transcript.deinit(allocator);
+            if (transcript.transcript_image_fingerprint != transcript_fingerprint) return false;
+            if (transcript.world_surface_fingerprint != image.target_ref.world_surface_fingerprint) return false;
+            if (transcript.target_certificate_fingerprint != image.target_ref.target_certificate_fingerprint) return false;
+        }
+        return true;
+    }
+
+    fn bundleGuestConformanceReportDependencyPayloadsValid(allocator: std.mem.Allocator, envelopes: []const ObjectEnvelope, report: Guest.ConformanceReport) !bool {
+        if (!try bundleGuestRunResultDependencyPayloadsValid(allocator, envelopes, report.native_run_result)) return false;
+        if (!try bundleGuestRunResultDependencyPayloadsValid(allocator, envelopes, report.native_abi_result)) return false;
+        if (report.wasm_runtime_result) |summary| {
+            if (!try bundleGuestRunResultDependencyPayloadsValid(allocator, envelopes, summary)) return false;
+        }
+        return true;
+    }
+
+    fn bundleGuestRunResultDependencyPayloadsValid(allocator: std.mem.Allocator, envelopes: []const ObjectEnvelope, summary: Guest.RunResultSummary) !bool {
+        if (summary.receipt_fingerprint) |fingerprint| {
+            if (try bundleEnvelopeForRef(allocator, envelopes, semanticObjectRef(.run_receipt, fingerprint))) |receipt_envelope| {
+                const receipt = decodePortableEvidence(RunReceipt, allocator, receipt_envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => return false,
+                };
+                defer deinitOwnedValue(allocator, receipt);
+                if (!validRunReceiptPayload(receipt)) return false;
+                if (receipt.receipt_fingerprint != fingerprint) return false;
+                if (!guestStatusMatchesRunReceipt(summary.status, receipt.final_status)) return false;
+                if (summary.transcript_fingerprint) |transcript| if (receipt.transcript_image_fingerprint != transcript) return false;
+            }
+        }
+        if (summary.transcript_fingerprint) |fingerprint| {
+            if (try bundleEnvelopeForRef(allocator, envelopes, semanticObjectRef(.transcript_image, fingerprint))) |transcript_envelope| {
+                var transcript = TranscriptImage.decode(allocator, transcript_envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => return false,
+                };
+                defer transcript.deinit(allocator);
+                if (transcript.transcript_image_fingerprint != fingerprint) return false;
+            }
+        }
+        for (summary.actuation_receipt_fingerprints) |fingerprint| {
+            if (try bundleEnvelopeForRef(allocator, envelopes, semanticObjectRef(.actuation_receipt, fingerprint))) |receipt_envelope| {
+                var receipt = Actuation.Receipt.decode(allocator, receipt_envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => return false,
+                };
+                defer receipt.deinit(allocator);
+                receipt.validate() catch return false;
+                if (receipt.receipt_fingerprint != fingerprint) return false;
+                if (summary.receipt_fingerprint) |run_receipt| {
+                    if (receipt.run_receipt_fingerprint) |bound| if (bound != run_receipt) return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    fn guestStatusMatchesRunReceipt(status: Guest.Status, final_status: RunReceipt.FinalStatus) bool {
+        return switch (status) {
+            .done => final_status == .completed,
+            .failed, .invalid_frame, .invalid_state, .supervision_denied, .target_mismatch, .admission_failed => final_status == .failed or final_status == .rejected,
+            .parked, .unknown_pending, .stale_pending => final_status == .parked or final_status == .interrupted,
+            else => true,
+        };
     }
 
     fn bundleEnvelopeRequiredDependencyRefs(allocator: std.mem.Allocator, envelope: ObjectEnvelope) ![]ObjectRef {
@@ -31952,20 +32045,20 @@ pub const Continuity = struct {
         var changed = false;
 
         for (envelope.dependency_refs) |declared_ref| {
-            var replacement_ref: ?ObjectRef = null;
+            var storable_match = false;
+            var semantic_replacement = false;
             for (required_refs) |required_ref| {
-                if (storableDeclaredDependenciesContain(&.{declared_ref}, required_ref)) continue;
+                if (storableDeclaredDependenciesContain(&.{declared_ref}, required_ref)) {
+                    storable_match = true;
+                    continue;
+                }
                 if (try bundleDeclaredDependencyRefSatisfiesRequiredRef(allocator, envelopes, declared_ref, required_ref)) {
-                    replacement_ref = required_ref;
+                    try appendUniqueClonedRef(allocator, &canonical_refs, required_ref);
+                    semantic_replacement = true;
                     changed = true;
-                    break;
                 }
             }
-            var canonical_ref = replacement_ref orelse try declared_ref.clone(allocator);
-            canonical_refs.append(allocator, canonical_ref) catch |err| {
-                canonical_ref.deinit(allocator);
-                return err;
-            };
+            if (!semantic_replacement or storable_match) try appendUniqueClonedRef(allocator, &canonical_refs, declared_ref);
         }
 
         if (!changed) {
@@ -31977,6 +32070,15 @@ pub const Continuity = struct {
         if (envelope.owns_memory) freeRefSlice(allocator, @constCast(envelope.dependency_refs));
         envelope.dependency_refs = new_refs;
         envelope.envelope_fingerprint = fingerprintObjectEnvelope(envelope.*);
+    }
+
+    fn appendUniqueClonedRef(allocator: std.mem.Allocator, refs: *std.ArrayList(ObjectRef), ref: ObjectRef) !void {
+        if (containsRef(refs.items, ref)) return;
+        var cloned = try ref.clone(allocator);
+        refs.append(allocator, cloned) catch |err| {
+            cloned.deinit(allocator);
+            return err;
+        };
     }
 
     fn opaqueContinuityPayloadKind(kind: ObjectKind) bool {
@@ -39618,11 +39720,57 @@ test "recorded response fingerprints require replay evidence" {
         .order = journal.takeOrder(),
         .response_fingerprint = 0x3318_0030,
         .recorded_response_fingerprint = 0x3318_0031,
-        .fresh_called = true,
         .rejected = true,
     });
     journal.refreshFingerprint();
     try std.testing.expectError(error.InvalidFrameEncoding, journal.validate());
+
+    journal.entries.clearRetainingCapacity();
+    journal.next_order = 0;
+    try journal.entries.append(allocator, .{
+        .order = journal.takeOrder(),
+        .response_fingerprint = 0x3318_0032,
+        .recorded_response_fingerprint = 0x3318_0033,
+        .replayed = true,
+        .rejected = true,
+    });
+    journal.refreshFingerprint();
+    try journal.validate();
+
+    const intent = Actuation.Intent.init(.{
+        .actuator_ref_fingerprint = 0x3318_0040,
+        .descriptor_fingerprint = 0x3318_0041,
+        .target_ref_fingerprint = 0x3318_0042,
+        .world_surface_fingerprint = 0x3318_0043,
+        .world_port_id = 8,
+        .frame_request_fingerprint = 0x3318_0044,
+        .idempotency_key_fingerprint = 0x3318_0045,
+        .class = .deterministic_fixture,
+        .requested_mode = .replay,
+    });
+    const expected_receipt = Actuation.Receipt.init(.{
+        .intent_fingerprint = intent.intent_fingerprint,
+        .envelope_fingerprint = 0x3318_0050,
+        .decision_fingerprint = 0x3318_0051,
+        .commit_fingerprint = 0x3318_0052,
+        .response_fingerprint = 0x3318_0053,
+        .recorded_response_fingerprint = 0x3318_0054,
+        .actuator_ref_fingerprint = intent.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = intent.idempotency_key_fingerprint,
+        .request_fingerprint = intent.frame_request_fingerprint,
+        .target_ref_fingerprint = intent.target_ref_fingerprint,
+        .world_surface_fingerprint = intent.world_surface_fingerprint,
+        .world_port_id = intent.world_port_id,
+        .class = intent.class,
+        .mode = .replay,
+        .replayed = true,
+        .rejected = true,
+    });
+    var mismatched_receipt = expected_receipt;
+    mismatched_receipt.recorded_response_fingerprint = 0x3318_0055;
+    mismatched_receipt.receipt_fingerprint = Actuation.fingerprintReceipt(mismatched_receipt);
+    const verify_report = Actuation.VerifyReport.compare(intent, expected_receipt, mismatched_receipt);
+    try std.testing.expect(!verify_report.matched);
 }
 
 test "terminal actuation evidence rejects zero frame response fingerprints" {
