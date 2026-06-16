@@ -1,0 +1,5 @@
+zig fmt --check src/world.zig: pass
+zig build test --summary none -- --test-filter "chronicle": pass
+zig build test --summary none -- --test-filter "chronicle event": pass
+zig build test --summary none -- --test-filter "chronicle cursor": pass
+zig build test --summary none -- --test-filter "chronicle commit": pass

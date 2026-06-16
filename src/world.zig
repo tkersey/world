@@ -347,6 +347,13 @@ pub const world_continuity_object_ref_fingerprint_version: u32 = 1;
 pub const world_continuity_object_envelope_format_version: u32 = 1;
 pub const world_continuity_object_envelope_fingerprint_version: u32 = 1;
 pub const world_continuity_object_validation_report_fingerprint_version: u32 = 1;
+pub const world_chronicle_event_format_version: u32 = 1;
+pub const world_chronicle_event_fingerprint_version: u32 = 1;
+pub const world_chronicle_cursor_fingerprint_version: u32 = 1;
+pub const world_chronicle_commit_format_version: u32 = 1;
+pub const world_chronicle_commit_fingerprint_version: u32 = 1;
+pub const world_chronicle_transaction_fingerprint_version: u32 = 1;
+pub const world_continuity_persist_policy_fingerprint_version: u32 = 1;
 pub const world_guest_abi_version: u32 = 1;
 pub const world_guest_abi_contract_fingerprint_version: u32 = 1;
 pub const world_guest_conformance_vector_fingerprint_version: u32 = 3;
@@ -21781,6 +21788,36 @@ pub const Actuation = struct {
         return vault.putActuationJournal(journal);
     }
 
+    pub const SessionStoreOptions = struct {
+        strict_idempotency: bool = true,
+    };
+
+    pub fn assertIdempotencyAvailable(session: *Continuity.Session, key: IdempotencyKey, options: SessionStoreOptions) !void {
+        try key.validate();
+        if (!options.strict_idempotency) return;
+        var registry = try Continuity.Chronicle.IdempotencyRegistry.rebuild(session.vault);
+        defer registry.deinit(session.allocator);
+        try registry.assertFreshCommitAllowed(Continuity.semanticObjectRef(.actuation_idempotency_key, key.key_fingerprint));
+    }
+
+    pub fn commitToSession(session: *Continuity.Session, receipt: Receipt, options: SessionStoreOptions) !Continuity.ObjectRef {
+        try receipt.validate();
+        if (options.strict_idempotency and receipt.fresh_called and
+            !receipt.pending and !receipt.deferred and !receipt.failed and !receipt.rejected and !receipt.cancelled)
+        {
+            var registry = try Continuity.Chronicle.IdempotencyRegistry.rebuild(session.vault);
+            defer registry.deinit(session.allocator);
+            try registry.assertFreshCommitAllowed(Continuity.semanticObjectRef(.actuation_idempotency_key, receipt.idempotency_key_fingerprint));
+        }
+        return session.storeActuationReceipt(receipt);
+    }
+
+    pub fn journalToSession(session: *Continuity.Session, journal: Journal, options: SessionStoreOptions) !Continuity.ObjectRef {
+        _ = options;
+        try journal.validate();
+        return session.storeActuationJournal(journal);
+    }
+
     pub fn loadReceipt(vault: *Continuity.MemoryVault, ref: Continuity.ObjectRef) !Receipt {
         return vault.getActuationReceipt(ref);
     }
@@ -24273,8 +24310,20 @@ pub const Capsule = struct {
         return freezeRunspaceWithAssembly(runspace, null, options);
     }
 
+    pub fn freezeToSession(session: *Continuity.Session, runspace: *Runspace, options: FreezeOptions) !Continuity.ObjectRef {
+        var image = try freezeRunspace(runspace, options);
+        defer image.deinit(runspace.allocator);
+        return session.storeCapsule(image);
+    }
+
     pub fn freezeAssembly(runspace: *Runspace, assembly: Assembly, options: FreezeOptions) !Image {
         return freezeRunspaceWithAssembly(runspace, assembly, options);
+    }
+
+    pub fn freezeAssemblyToSession(session: *Continuity.Session, runspace: *Runspace, assembly: Assembly, options: FreezeOptions) !Continuity.ObjectRef {
+        var image = try freezeAssembly(runspace, assembly, options);
+        defer image.deinit(runspace.allocator);
+        return session.storeCapsule(image);
     }
 
     pub fn freezeRun(handle: RunHandle, options: FreezeOptions) !Image {
@@ -24295,6 +24344,13 @@ pub const Capsule = struct {
         });
         try image.validate(validate_options);
         return image;
+    }
+
+    pub fn freezeRunToSession(session: *Continuity.Session, runspace: *Runspace, handle: RunHandle, options: FreezeOptions) !Continuity.ObjectRef {
+        _ = runspace;
+        var image = try freezeRun(handle, options);
+        defer image.deinit(session.allocator);
+        return session.storeCapsule(image);
     }
 
     fn freezeRunspaceWithAssembly(runspace: *Runspace, assembly: ?Assembly, options: FreezeOptions) !Image {
@@ -27845,6 +27901,7 @@ pub const Continuity = struct {
         fabric_receipt = 35,
         guest_conformance_report = 36,
         bundle = 37,
+        handoff_envelope = 38,
 
         pub fn defaultFormatVersion(self: @This()) u32 {
             return switch (self) {
@@ -28157,6 +28214,1229 @@ pub const Continuity = struct {
         }
     };
 
+    pub const HandoffEnvelope = struct {
+        pub const Direction = enum(u8) {
+            inbound = 0,
+            outbound = 1,
+            local = 2,
+        };
+
+        pub const Status = enum(u8) {
+            created = 0,
+            imported = 1,
+            validated = 2,
+            accepted = 3,
+            rejected = 4,
+            restored = 5,
+            exported = 6,
+            completed = 7,
+        };
+
+        envelope_fingerprint: u64,
+        direction: Direction,
+        capsule_ref: ?ObjectRef = null,
+        bundle_ref: ?ObjectRef = null,
+        transfer_package_ref: ?ObjectRef = null,
+        admission_receipt_ref: ?ObjectRef = null,
+        recovery_plan_ref: ?ObjectRef = null,
+        recovery_report_ref: ?ObjectRef = null,
+        actuation_refs: []const ObjectRef = &.{},
+        status: Status = .created,
+        metadata_bytes: []const u8 = "",
+
+        pub fn init(args: struct {
+            direction: Direction,
+            capsule_ref: ?ObjectRef = null,
+            bundle_ref: ?ObjectRef = null,
+            transfer_package_ref: ?ObjectRef = null,
+            admission_receipt_ref: ?ObjectRef = null,
+            recovery_plan_ref: ?ObjectRef = null,
+            recovery_report_ref: ?ObjectRef = null,
+            actuation_refs: []const ObjectRef = &.{},
+            status: Status = .created,
+            metadata_bytes: []const u8 = "",
+        }) @This() {
+            var envelope = @This(){
+                .envelope_fingerprint = 0,
+                .direction = args.direction,
+                .capsule_ref = args.capsule_ref,
+                .bundle_ref = args.bundle_ref,
+                .transfer_package_ref = args.transfer_package_ref,
+                .admission_receipt_ref = args.admission_receipt_ref,
+                .recovery_plan_ref = args.recovery_plan_ref,
+                .recovery_report_ref = args.recovery_report_ref,
+                .actuation_refs = args.actuation_refs,
+                .status = args.status,
+                .metadata_bytes = args.metadata_bytes,
+            };
+            envelope.envelope_fingerprint = fingerprintHandoffEnvelope(envelope);
+            return envelope;
+        }
+
+        pub fn objectRef(self: @This()) ObjectRef {
+            return ObjectRef.init(.{
+                .kind = .handoff_envelope,
+                .object_format_version = 1,
+                .object_fingerprint = self.envelope_fingerprint,
+                .byte_len = 0,
+            });
+        }
+
+        pub fn validate(self: @This()) !void {
+            if (self.envelope_fingerprint != fingerprintHandoffEnvelope(self)) return error.InvalidFrameEncoding;
+            if (self.capsule_ref) |ref| try ref.validate();
+            if (self.bundle_ref) |ref| try ref.validate();
+            if (self.transfer_package_ref) |ref| try ref.validate();
+            if (self.admission_receipt_ref) |ref| try ref.validate();
+            if (self.recovery_plan_ref) |ref| try ref.validate();
+            if (self.recovery_report_ref) |ref| try ref.validate();
+            for (self.actuation_refs) |ref| try ref.validate();
+            if (self.metadata_bytes.len > world_max_decoded_byte_field_len) return error.InvalidFrameEncoding;
+        }
+    };
+
+    pub const PersistPolicy = struct {
+        persist_capsules: bool = false,
+        persist_actuation_receipts: bool = false,
+        persist_actuation_journals: bool = false,
+        persist_transcript_images: bool = false,
+        persist_run_images: bool = false,
+        persist_run_receipts: bool = false,
+        persist_admission_receipts: bool = false,
+        persist_environment_certificates: bool = false,
+        persist_link_certificates: bool = false,
+        persist_fabric_receipts: bool = false,
+        persist_guest_reports: bool = false,
+        persist_pending_ports: bool = false,
+        auto_freeze_on_completed: bool = false,
+        auto_freeze_on_parked: bool = false,
+        auto_store_on_actuation_commit: bool = false,
+        reject_unstored_fresh_actuation: bool = false,
+        require_transaction_for_bundle_import: bool = false,
+        require_transaction_for_capsule_store: bool = false,
+        require_transaction_for_recovery: bool = false,
+        policy_fingerprint_version: u32 = world_continuity_persist_policy_fingerprint_version,
+        policy_fingerprint: u64 = 0,
+
+        pub fn none() @This() {
+            return init(.{});
+        }
+
+        pub fn capsule_only() @This() {
+            return init(.{ .persist_capsules = true, .require_transaction_for_capsule_store = true });
+        }
+
+        pub fn actuation_only() @This() {
+            return init(.{
+                .persist_actuation_receipts = true,
+                .persist_actuation_journals = true,
+                .auto_store_on_actuation_commit = true,
+                .reject_unstored_fresh_actuation = true,
+            });
+        }
+
+        pub fn capsule_and_actuation() @This() {
+            var policy = actuation_only();
+            policy.persist_capsules = true;
+            policy.require_transaction_for_capsule_store = true;
+            policy.policy_fingerprint = fingerprintPersistPolicy(policy);
+            return policy;
+        }
+
+        pub fn replay_evidence() @This() {
+            var policy = capsule_and_actuation();
+            policy.persist_transcript_images = true;
+            policy.persist_run_images = true;
+            policy.persist_run_receipts = true;
+            policy.policy_fingerprint = fingerprintPersistPolicy(policy);
+            return policy;
+        }
+
+        pub fn full_local_evidence() @This() {
+            var policy = replay_evidence();
+            policy.persist_admission_receipts = true;
+            policy.persist_environment_certificates = true;
+            policy.persist_link_certificates = true;
+            policy.persist_fabric_receipts = true;
+            policy.persist_guest_reports = true;
+            policy.persist_pending_ports = true;
+            policy.auto_freeze_on_completed = true;
+            policy.auto_freeze_on_parked = true;
+            policy.require_transaction_for_bundle_import = true;
+            policy.require_transaction_for_recovery = true;
+            policy.policy_fingerprint = fingerprintPersistPolicy(policy);
+            return policy;
+        }
+
+        pub fn test_fixture() @This() {
+            return full_local_evidence();
+        }
+
+        pub fn init(args: struct {
+            persist_capsules: bool = false,
+            persist_actuation_receipts: bool = false,
+            persist_actuation_journals: bool = false,
+            persist_transcript_images: bool = false,
+            persist_run_images: bool = false,
+            persist_run_receipts: bool = false,
+            persist_admission_receipts: bool = false,
+            persist_environment_certificates: bool = false,
+            persist_link_certificates: bool = false,
+            persist_fabric_receipts: bool = false,
+            persist_guest_reports: bool = false,
+            persist_pending_ports: bool = false,
+            auto_freeze_on_completed: bool = false,
+            auto_freeze_on_parked: bool = false,
+            auto_store_on_actuation_commit: bool = false,
+            reject_unstored_fresh_actuation: bool = false,
+            require_transaction_for_bundle_import: bool = false,
+            require_transaction_for_capsule_store: bool = false,
+            require_transaction_for_recovery: bool = false,
+        }) @This() {
+            var policy = @This(){
+                .persist_capsules = args.persist_capsules,
+                .persist_actuation_receipts = args.persist_actuation_receipts,
+                .persist_actuation_journals = args.persist_actuation_journals,
+                .persist_transcript_images = args.persist_transcript_images,
+                .persist_run_images = args.persist_run_images,
+                .persist_run_receipts = args.persist_run_receipts,
+                .persist_admission_receipts = args.persist_admission_receipts,
+                .persist_environment_certificates = args.persist_environment_certificates,
+                .persist_link_certificates = args.persist_link_certificates,
+                .persist_fabric_receipts = args.persist_fabric_receipts,
+                .persist_guest_reports = args.persist_guest_reports,
+                .persist_pending_ports = args.persist_pending_ports,
+                .auto_freeze_on_completed = args.auto_freeze_on_completed,
+                .auto_freeze_on_parked = args.auto_freeze_on_parked,
+                .auto_store_on_actuation_commit = args.auto_store_on_actuation_commit,
+                .reject_unstored_fresh_actuation = args.reject_unstored_fresh_actuation,
+                .require_transaction_for_bundle_import = args.require_transaction_for_bundle_import,
+                .require_transaction_for_capsule_store = args.require_transaction_for_capsule_store,
+                .require_transaction_for_recovery = args.require_transaction_for_recovery,
+            };
+            policy.policy_fingerprint = fingerprintPersistPolicy(policy);
+            return policy;
+        }
+
+        pub fn validate(self: @This()) !void {
+            if (self.policy_fingerprint_version != world_continuity_persist_policy_fingerprint_version) return error.InvalidFrameEncoding;
+            if (self.policy_fingerprint != fingerprintPersistPolicy(self)) return error.InvalidFrameEncoding;
+        }
+    };
+
+    pub const Chronicle = struct {
+        pub const ReplayOptions = struct {
+            rebuild_capsule_index: bool = true,
+            rebuild_actuation_index: bool = true,
+            rebuild_idempotency_registry: bool = true,
+        };
+
+        pub fn replay(vault: *Continuity.MemoryVault, options: ReplayOptions) !ReplayReport {
+            const start = Cursor.initial();
+            var rebuilt_count: usize = 0;
+            var mismatch_count: usize = 0;
+            if (options.rebuild_capsule_index) {
+                var projection = try Projection.rebuild(vault, .capsule_index);
+                try projection.report.validate();
+                rebuilt_count += 1;
+            }
+            if (options.rebuild_actuation_index) {
+                var projection = try Projection.rebuild(vault, .actuation_index);
+                try projection.report.validate();
+                rebuilt_count += 1;
+            }
+            if (options.rebuild_idempotency_registry) {
+                var registry = try IdempotencyRegistry.rebuild(vault);
+                defer registry.deinit(vault.allocator);
+                rebuilt_count += 1;
+            }
+            var replay_vault = Continuity.MemoryVault.init(vault.allocator);
+            defer replay_vault.deinit();
+            try replayCommittedObjectsIntoVault(vault, &replay_vault);
+            if (options.rebuild_capsule_index) {
+                const source = try projectionSummaryForReplay(vault, .capsule_index);
+                const replayed = try projectionSummaryForReplay(&replay_vault, .capsule_index);
+                if (source != replayed) mismatch_count += 1;
+            }
+            if (options.rebuild_actuation_index) {
+                const source = try projectionSummaryForReplay(vault, .actuation_index);
+                const replayed = try projectionSummaryForReplay(&replay_vault, .actuation_index);
+                if (source != replayed) mismatch_count += 1;
+            }
+            return ReplayReport.init(.{
+                .start_cursor_fingerprint = start.cursor_fingerprint,
+                .end_cursor_fingerprint = vault.cursor().cursor_fingerprint,
+                .replayed_event_count = vault.chronicle_events.items.len,
+                .rebuilt_projection_count = rebuilt_count,
+                .mismatch_count = mismatch_count,
+            });
+        }
+
+        pub const EventKind = enum(u8) {
+            vault_initialized = 0,
+            object_staged = 1,
+            object_committed = 2,
+            object_rejected = 3,
+            object_validated = 4,
+            capsule_staged = 5,
+            capsule_stored = 6,
+            capsule_validated = 7,
+            capsule_imported = 8,
+            capsule_exported = 9,
+            capsule_recovery_planned = 10,
+            capsule_recovery_rejected = 11,
+            capsule_recovery_ready = 12,
+            capsule_restored = 13,
+            capsule_replay_planned = 14,
+            capsule_replayed = 15,
+            actuation_intent_stored = 16,
+            actuation_decision_stored = 17,
+            actuation_commit_stored = 18,
+            actuation_response_stored = 19,
+            actuation_receipt_stored = 20,
+            actuation_journal_stored = 21,
+            actuation_idempotency_registered = 22,
+            actuation_idempotency_conflict = 23,
+            actuation_replay_planned = 24,
+            actuation_replayed = 25,
+            actuation_verify_report_stored = 26,
+            bundle_import_started = 27,
+            bundle_import_validated = 28,
+            bundle_import_committed = 29,
+            bundle_import_rejected = 30,
+            bundle_export_started = 31,
+            bundle_export_committed = 32,
+            bundle_export_rejected = 33,
+            inbox_item_created = 34,
+            inbox_item_validated = 35,
+            inbox_item_accepted = 36,
+            inbox_item_rejected = 37,
+            inbox_item_restored = 38,
+            outbox_item_created = 39,
+            outbox_item_exported = 40,
+            outbox_item_completed = 41,
+            recovery_preflighted = 42,
+            recovery_blocked = 43,
+            recovery_ready = 44,
+            recovery_executed = 45,
+            recovery_report_stored = 46,
+            guest_report_stored = 47,
+            guest_report_validated = 48,
+        };
+
+        pub const Event = struct {
+            event_format_version: u32 = world_chronicle_event_format_version,
+            event_fingerprint_version: u32 = world_chronicle_event_fingerprint_version,
+            event_fingerprint: u64,
+            kind: Chronicle.EventKind,
+            parent_event_fingerprints: []const u64 = &.{},
+            transaction_fingerprint: ?u64 = null,
+            object_refs: []const ObjectRef = &.{},
+            root_refs: []const ObjectRef = &.{},
+            capsule_ref: ?ObjectRef = null,
+            actuation_refs: []const ObjectRef = &.{},
+            actuation_idempotency_key_ref: ?ObjectRef = null,
+            bundle_ref: ?ObjectRef = null,
+            recovery_plan_ref: ?ObjectRef = null,
+            recovery_report_ref: ?ObjectRef = null,
+            inbox_outbox_item_ref: ?ObjectRef = null,
+            target_ref: ?ObjectRef = null,
+            module_ref: ?ObjectRef = null,
+            assembly_ref: ?ObjectRef = null,
+            run_ref: ?ObjectRef = null,
+            run_permit_ref: ?ObjectRef = null,
+            admission_receipt_ref: ?ObjectRef = null,
+            environment_certificate_ref: ?ObjectRef = null,
+            blocker_summary: []const u8 = "",
+            warning_summary: []const u8 = "",
+            metadata_bytes: []const u8 = "",
+            owns_memory: bool = false,
+
+            pub fn init(args: struct {
+                kind: Chronicle.EventKind,
+                parent_event_fingerprints: []const u64 = &.{},
+                transaction_fingerprint: ?u64 = null,
+                object_refs: []const ObjectRef = &.{},
+                root_refs: []const ObjectRef = &.{},
+                capsule_ref: ?ObjectRef = null,
+                actuation_refs: []const ObjectRef = &.{},
+                actuation_idempotency_key_ref: ?ObjectRef = null,
+                bundle_ref: ?ObjectRef = null,
+                recovery_plan_ref: ?ObjectRef = null,
+                recovery_report_ref: ?ObjectRef = null,
+                inbox_outbox_item_ref: ?ObjectRef = null,
+                target_ref: ?ObjectRef = null,
+                module_ref: ?ObjectRef = null,
+                assembly_ref: ?ObjectRef = null,
+                run_ref: ?ObjectRef = null,
+                run_permit_ref: ?ObjectRef = null,
+                admission_receipt_ref: ?ObjectRef = null,
+                environment_certificate_ref: ?ObjectRef = null,
+                blocker_summary: []const u8 = "",
+                warning_summary: []const u8 = "",
+                metadata_bytes: []const u8 = "",
+            }) @This() {
+                var event = @This(){
+                    .event_fingerprint = 0,
+                    .kind = args.kind,
+                    .parent_event_fingerprints = args.parent_event_fingerprints,
+                    .transaction_fingerprint = args.transaction_fingerprint,
+                    .object_refs = args.object_refs,
+                    .root_refs = args.root_refs,
+                    .capsule_ref = args.capsule_ref,
+                    .actuation_refs = args.actuation_refs,
+                    .actuation_idempotency_key_ref = args.actuation_idempotency_key_ref,
+                    .bundle_ref = args.bundle_ref,
+                    .recovery_plan_ref = args.recovery_plan_ref,
+                    .recovery_report_ref = args.recovery_report_ref,
+                    .inbox_outbox_item_ref = args.inbox_outbox_item_ref,
+                    .target_ref = args.target_ref,
+                    .module_ref = args.module_ref,
+                    .assembly_ref = args.assembly_ref,
+                    .run_ref = args.run_ref,
+                    .run_permit_ref = args.run_permit_ref,
+                    .admission_receipt_ref = args.admission_receipt_ref,
+                    .environment_certificate_ref = args.environment_certificate_ref,
+                    .blocker_summary = args.blocker_summary,
+                    .warning_summary = args.warning_summary,
+                    .metadata_bytes = args.metadata_bytes,
+                };
+                event.event_fingerprint = fingerprintChronicleEvent(event);
+                return event;
+            }
+
+            pub fn validate(self: @This()) !void {
+                if (self.event_format_version != world_chronicle_event_format_version) return error.InvalidFrameEncoding;
+                if (self.event_fingerprint_version != world_chronicle_event_fingerprint_version) return error.InvalidFrameEncoding;
+                if (self.event_fingerprint != fingerprintChronicleEvent(self)) return error.InvalidFrameEncoding;
+                if (self.parent_event_fingerprints.len > world_max_decoded_byte_field_len / @sizeOf(u64)) return error.InvalidFrameEncoding;
+                for (self.parent_event_fingerprints) |parent| {
+                    if (parent == 0) return error.InvalidFrameEncoding;
+                }
+                for (self.object_refs) |ref| try ref.validate();
+                for (self.root_refs) |ref| try ref.validate();
+                if (self.capsule_ref) |ref| try ref.validate();
+                for (self.actuation_refs) |ref| try ref.validate();
+                if (self.actuation_idempotency_key_ref) |ref| try ref.validate();
+                if (self.bundle_ref) |ref| try ref.validate();
+                if (self.recovery_plan_ref) |ref| try ref.validate();
+                if (self.recovery_report_ref) |ref| try ref.validate();
+                if (self.inbox_outbox_item_ref) |ref| try ref.validate();
+                if (self.target_ref) |ref| try ref.validate();
+                if (self.module_ref) |ref| try ref.validate();
+                if (self.assembly_ref) |ref| try ref.validate();
+                if (self.run_ref) |ref| try ref.validate();
+                if (self.run_permit_ref) |ref| try ref.validate();
+                if (self.admission_receipt_ref) |ref| try ref.validate();
+                if (self.environment_certificate_ref) |ref| try ref.validate();
+                if (self.blocker_summary.len > world_max_decoded_byte_field_len or
+                    self.warning_summary.len > world_max_decoded_byte_field_len or
+                    self.metadata_bytes.len > world_max_decoded_byte_field_len) return error.InvalidFrameEncoding;
+            }
+
+            pub fn clone(self: @This(), allocator: std.mem.Allocator) !@This() {
+                var result = self;
+                result.parent_event_fingerprints = try allocator.dupe(u64, self.parent_event_fingerprints);
+                errdefer allocator.free(result.parent_event_fingerprints);
+                result.object_refs = try cloneRefSlice(allocator, self.object_refs);
+                errdefer freeRefSlice(allocator, @constCast(result.object_refs));
+                result.root_refs = try cloneRefSlice(allocator, self.root_refs);
+                errdefer freeRefSlice(allocator, @constCast(result.root_refs));
+                if (self.capsule_ref) |ref| result.capsule_ref = try ref.clone(allocator);
+                errdefer if (result.capsule_ref) |*ref| ref.deinit(allocator);
+                result.actuation_refs = try cloneRefSlice(allocator, self.actuation_refs);
+                errdefer freeRefSlice(allocator, @constCast(result.actuation_refs));
+                if (self.actuation_idempotency_key_ref) |ref| result.actuation_idempotency_key_ref = try ref.clone(allocator);
+                errdefer if (result.actuation_idempotency_key_ref) |*ref| ref.deinit(allocator);
+                if (self.bundle_ref) |ref| result.bundle_ref = try ref.clone(allocator);
+                errdefer if (result.bundle_ref) |*ref| ref.deinit(allocator);
+                if (self.recovery_plan_ref) |ref| result.recovery_plan_ref = try ref.clone(allocator);
+                errdefer if (result.recovery_plan_ref) |*ref| ref.deinit(allocator);
+                if (self.recovery_report_ref) |ref| result.recovery_report_ref = try ref.clone(allocator);
+                errdefer if (result.recovery_report_ref) |*ref| ref.deinit(allocator);
+                if (self.inbox_outbox_item_ref) |ref| result.inbox_outbox_item_ref = try ref.clone(allocator);
+                errdefer if (result.inbox_outbox_item_ref) |*ref| ref.deinit(allocator);
+                if (self.target_ref) |ref| result.target_ref = try ref.clone(allocator);
+                errdefer if (result.target_ref) |*ref| ref.deinit(allocator);
+                if (self.module_ref) |ref| result.module_ref = try ref.clone(allocator);
+                errdefer if (result.module_ref) |*ref| ref.deinit(allocator);
+                if (self.assembly_ref) |ref| result.assembly_ref = try ref.clone(allocator);
+                errdefer if (result.assembly_ref) |*ref| ref.deinit(allocator);
+                if (self.run_ref) |ref| result.run_ref = try ref.clone(allocator);
+                errdefer if (result.run_ref) |*ref| ref.deinit(allocator);
+                if (self.run_permit_ref) |ref| result.run_permit_ref = try ref.clone(allocator);
+                errdefer if (result.run_permit_ref) |*ref| ref.deinit(allocator);
+                if (self.admission_receipt_ref) |ref| result.admission_receipt_ref = try ref.clone(allocator);
+                errdefer if (result.admission_receipt_ref) |*ref| ref.deinit(allocator);
+                if (self.environment_certificate_ref) |ref| result.environment_certificate_ref = try ref.clone(allocator);
+                errdefer if (result.environment_certificate_ref) |*ref| ref.deinit(allocator);
+                result.blocker_summary = try allocator.dupe(u8, self.blocker_summary);
+                errdefer allocator.free(result.blocker_summary);
+                result.warning_summary = try allocator.dupe(u8, self.warning_summary);
+                errdefer allocator.free(result.warning_summary);
+                result.metadata_bytes = try allocator.dupe(u8, self.metadata_bytes);
+                result.owns_memory = true;
+                return result;
+            }
+
+            pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+                if (self.owns_memory) {
+                    allocator.free(self.parent_event_fingerprints);
+                    freeRefSlice(allocator, @constCast(self.object_refs));
+                    freeRefSlice(allocator, @constCast(self.root_refs));
+                    if (self.capsule_ref) |*ref| ref.deinit(allocator);
+                    freeRefSlice(allocator, @constCast(self.actuation_refs));
+                    if (self.actuation_idempotency_key_ref) |*ref| ref.deinit(allocator);
+                    if (self.bundle_ref) |*ref| ref.deinit(allocator);
+                    if (self.recovery_plan_ref) |*ref| ref.deinit(allocator);
+                    if (self.recovery_report_ref) |*ref| ref.deinit(allocator);
+                    if (self.inbox_outbox_item_ref) |*ref| ref.deinit(allocator);
+                    if (self.target_ref) |*ref| ref.deinit(allocator);
+                    if (self.module_ref) |*ref| ref.deinit(allocator);
+                    if (self.assembly_ref) |*ref| ref.deinit(allocator);
+                    if (self.run_ref) |*ref| ref.deinit(allocator);
+                    if (self.run_permit_ref) |*ref| ref.deinit(allocator);
+                    if (self.admission_receipt_ref) |*ref| ref.deinit(allocator);
+                    if (self.environment_certificate_ref) |*ref| ref.deinit(allocator);
+                    allocator.free(self.blocker_summary);
+                    allocator.free(self.warning_summary);
+                    allocator.free(self.metadata_bytes);
+                }
+                self.* = undefined;
+            }
+        };
+
+        pub const Cursor = struct {
+            cursor_fingerprint_version: u32 = world_chronicle_cursor_fingerprint_version,
+            cursor_fingerprint: u64,
+            event_index: u64,
+            last_event_fingerprint: ?u64 = null,
+            cumulative_prefix_fingerprint: u64,
+            committed_object_count: u64 = 0,
+            committed_transaction_count: u64 = 0,
+            metadata_bytes: []const u8 = "",
+
+            pub fn initial() @This() {
+                var cursor = @This(){
+                    .cursor_fingerprint = 0,
+                    .event_index = 0,
+                    .cumulative_prefix_fingerprint = fingerprintChroniclePrefix(0, &.{}),
+                };
+                cursor.cursor_fingerprint = fingerprintChronicleCursor(cursor);
+                return cursor;
+            }
+
+            pub fn advance(
+                self: @This(),
+                event_fingerprints: []const u64,
+                committed_object_count: u64,
+                committed_transaction_count: u64,
+            ) @This() {
+                var cursor = @This(){
+                    .cursor_fingerprint = 0,
+                    .event_index = self.event_index + event_fingerprints.len,
+                    .last_event_fingerprint = if (event_fingerprints.len == 0) self.last_event_fingerprint else event_fingerprints[event_fingerprints.len - 1],
+                    .cumulative_prefix_fingerprint = fingerprintChroniclePrefix(self.cumulative_prefix_fingerprint, event_fingerprints),
+                    .committed_object_count = self.committed_object_count + committed_object_count,
+                    .committed_transaction_count = self.committed_transaction_count + committed_transaction_count,
+                };
+                cursor.cursor_fingerprint = fingerprintChronicleCursor(cursor);
+                return cursor;
+            }
+
+            pub fn validate(self: @This()) !void {
+                if (self.cursor_fingerprint_version != world_chronicle_cursor_fingerprint_version) return error.InvalidFrameEncoding;
+                if (self.cursor_fingerprint != fingerprintChronicleCursor(self)) return error.InvalidFrameEncoding;
+                if (self.event_index == 0 and self.last_event_fingerprint != null) return error.InvalidFrameEncoding;
+                if (self.event_index > 0 and self.last_event_fingerprint == null) return error.InvalidFrameEncoding;
+                if (self.metadata_bytes.len > world_max_decoded_byte_field_len) return error.InvalidFrameEncoding;
+            }
+        };
+
+        pub const Commit = struct {
+            commit_format_version: u32 = world_chronicle_commit_format_version,
+            commit_fingerprint_version: u32 = world_chronicle_commit_fingerprint_version,
+            commit_fingerprint: u64,
+            transaction_fingerprint: u64,
+            parent_cursor_fingerprint: u64,
+            resulting_cursor_fingerprint: u64,
+            committed_object_refs: []const ObjectRef = &.{},
+            committed_event_fingerprints: []const u64 = &.{},
+            bundle_refs: []const ObjectRef = &.{},
+            capsule_refs: []const ObjectRef = &.{},
+            actuation_refs: []const ObjectRef = &.{},
+            idempotency_key_refs: []const ObjectRef = &.{},
+            validation_report_refs: []const ObjectRef = &.{},
+            blocker_summary: []const u8 = "",
+            warning_summary: []const u8 = "",
+            metadata_bytes: []const u8 = "",
+            owns_memory: bool = false,
+
+            pub fn init(args: struct {
+                transaction_fingerprint: u64,
+                parent_cursor_fingerprint: u64,
+                resulting_cursor_fingerprint: u64,
+                committed_object_refs: []const ObjectRef = &.{},
+                committed_event_fingerprints: []const u64 = &.{},
+                bundle_refs: []const ObjectRef = &.{},
+                capsule_refs: []const ObjectRef = &.{},
+                actuation_refs: []const ObjectRef = &.{},
+                idempotency_key_refs: []const ObjectRef = &.{},
+                validation_report_refs: []const ObjectRef = &.{},
+                blocker_summary: []const u8 = "",
+                warning_summary: []const u8 = "",
+                metadata_bytes: []const u8 = "",
+            }) @This() {
+                var commit = @This(){
+                    .commit_fingerprint = 0,
+                    .transaction_fingerprint = args.transaction_fingerprint,
+                    .parent_cursor_fingerprint = args.parent_cursor_fingerprint,
+                    .resulting_cursor_fingerprint = args.resulting_cursor_fingerprint,
+                    .committed_object_refs = args.committed_object_refs,
+                    .committed_event_fingerprints = args.committed_event_fingerprints,
+                    .bundle_refs = args.bundle_refs,
+                    .capsule_refs = args.capsule_refs,
+                    .actuation_refs = args.actuation_refs,
+                    .idempotency_key_refs = args.idempotency_key_refs,
+                    .validation_report_refs = args.validation_report_refs,
+                    .blocker_summary = args.blocker_summary,
+                    .warning_summary = args.warning_summary,
+                    .metadata_bytes = args.metadata_bytes,
+                };
+                commit.commit_fingerprint = fingerprintChronicleCommit(commit);
+                return commit;
+            }
+
+            pub fn validate(self: @This()) !void {
+                if (self.commit_format_version != world_chronicle_commit_format_version) return error.InvalidFrameEncoding;
+                if (self.commit_fingerprint_version != world_chronicle_commit_fingerprint_version) return error.InvalidFrameEncoding;
+                if (self.transaction_fingerprint == 0 or self.parent_cursor_fingerprint == 0 or self.resulting_cursor_fingerprint == 0) return error.InvalidFrameEncoding;
+                if (self.commit_fingerprint != fingerprintChronicleCommit(self)) return error.InvalidFrameEncoding;
+                for (self.committed_object_refs) |ref| try ref.validate();
+                for (self.committed_event_fingerprints) |event_fingerprint| {
+                    if (event_fingerprint == 0) return error.InvalidFrameEncoding;
+                }
+                for (self.bundle_refs) |ref| try ref.validate();
+                for (self.capsule_refs) |ref| try ref.validate();
+                for (self.actuation_refs) |ref| try ref.validate();
+                for (self.idempotency_key_refs) |ref| try ref.validate();
+                for (self.validation_report_refs) |ref| try ref.validate();
+                if (self.blocker_summary.len > world_max_decoded_byte_field_len or
+                    self.warning_summary.len > world_max_decoded_byte_field_len or
+                    self.metadata_bytes.len > world_max_decoded_byte_field_len) return error.InvalidFrameEncoding;
+            }
+
+            pub fn clone(self: @This(), allocator: std.mem.Allocator) !@This() {
+                var result = self;
+                result.committed_object_refs = try cloneRefSlice(allocator, self.committed_object_refs);
+                errdefer freeRefSlice(allocator, @constCast(result.committed_object_refs));
+                result.committed_event_fingerprints = try allocator.dupe(u64, self.committed_event_fingerprints);
+                errdefer allocator.free(result.committed_event_fingerprints);
+                result.bundle_refs = try cloneRefSlice(allocator, self.bundle_refs);
+                errdefer freeRefSlice(allocator, @constCast(result.bundle_refs));
+                result.capsule_refs = try cloneRefSlice(allocator, self.capsule_refs);
+                errdefer freeRefSlice(allocator, @constCast(result.capsule_refs));
+                result.actuation_refs = try cloneRefSlice(allocator, self.actuation_refs);
+                errdefer freeRefSlice(allocator, @constCast(result.actuation_refs));
+                result.idempotency_key_refs = try cloneRefSlice(allocator, self.idempotency_key_refs);
+                errdefer freeRefSlice(allocator, @constCast(result.idempotency_key_refs));
+                result.validation_report_refs = try cloneRefSlice(allocator, self.validation_report_refs);
+                errdefer freeRefSlice(allocator, @constCast(result.validation_report_refs));
+                result.blocker_summary = try allocator.dupe(u8, self.blocker_summary);
+                errdefer allocator.free(result.blocker_summary);
+                result.warning_summary = try allocator.dupe(u8, self.warning_summary);
+                errdefer allocator.free(result.warning_summary);
+                result.metadata_bytes = try allocator.dupe(u8, self.metadata_bytes);
+                result.owns_memory = true;
+                return result;
+            }
+
+            pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+                if (self.owns_memory) {
+                    freeRefSlice(allocator, @constCast(self.committed_object_refs));
+                    allocator.free(self.committed_event_fingerprints);
+                    freeRefSlice(allocator, @constCast(self.bundle_refs));
+                    freeRefSlice(allocator, @constCast(self.capsule_refs));
+                    freeRefSlice(allocator, @constCast(self.actuation_refs));
+                    freeRefSlice(allocator, @constCast(self.idempotency_key_refs));
+                    freeRefSlice(allocator, @constCast(self.validation_report_refs));
+                    allocator.free(self.blocker_summary);
+                    allocator.free(self.warning_summary);
+                    allocator.free(self.metadata_bytes);
+                }
+                self.* = undefined;
+            }
+        };
+
+        pub const TransactionKind = enum(u8) {
+            store_capsule = 0,
+            store_actuation = 1,
+            import_bundle = 2,
+            export_bundle = 3,
+            freeze_capsule = 4,
+            recovery_preflight = 5,
+            recovery_execute = 6,
+            inbox_import = 7,
+            outbox_export = 8,
+            guest_report_record = 9,
+            custom = 10,
+        };
+
+        pub const TransactionOptions = struct {
+            metadata_bytes: []const u8 = "",
+        };
+
+        pub const Transaction = struct {
+            allocator: std.mem.Allocator,
+            vault: *Continuity.MemoryVault,
+            transaction_fingerprint_version: u32 = world_chronicle_transaction_fingerprint_version,
+            transaction_fingerprint: u64,
+            transaction_kind: TransactionKind,
+            parent_cursor_fingerprint: u64,
+            staged_envelopes: std.ArrayList(ObjectEnvelope) = .empty,
+            staged_events: std.ArrayList(Event) = .empty,
+            staged_root_refs: std.ArrayList(ObjectRef) = .empty,
+            dependency_refs: std.ArrayList(ObjectRef) = .empty,
+            validation_report_refs: std.ArrayList(ObjectRef) = .empty,
+            idempotency_key_refs: std.ArrayList(ObjectRef) = .empty,
+            accepted: bool = false,
+            committed: bool = false,
+            aborted: bool = false,
+            blockers: []const u8 = "",
+            warnings: []const u8 = "",
+            metadata_bytes: []const u8 = "",
+            owns_metadata: bool = false,
+
+            fn init(vault: *Continuity.MemoryVault, kind: TransactionKind, options: TransactionOptions) !@This() {
+                var tx = @This(){
+                    .allocator = vault.allocator,
+                    .vault = vault,
+                    .transaction_fingerprint = 0,
+                    .transaction_kind = kind,
+                    .parent_cursor_fingerprint = vault.chronicle_cursor.cursor_fingerprint,
+                    .metadata_bytes = try vault.allocator.dupe(u8, options.metadata_bytes),
+                    .owns_metadata = true,
+                };
+                tx.refreshFingerprint();
+                return tx;
+            }
+
+            pub fn deinit(self: *@This()) void {
+                for (self.staged_envelopes.items) |*envelope| envelope.deinit(self.allocator);
+                self.staged_envelopes.deinit(self.allocator);
+                for (self.staged_events.items) |*event| event.deinit(self.allocator);
+                self.staged_events.deinit(self.allocator);
+                deinitRefList(self.allocator, &self.staged_root_refs);
+                deinitRefList(self.allocator, &self.dependency_refs);
+                deinitRefList(self.allocator, &self.validation_report_refs);
+                deinitRefList(self.allocator, &self.idempotency_key_refs);
+                if (self.owns_metadata) self.allocator.free(self.metadata_bytes);
+                self.* = undefined;
+            }
+
+            pub fn put(self: *@This(), envelope: ObjectEnvelope) !ObjectRef {
+                if (self.committed or self.aborted) return error.InvalidRunspaceTransition;
+                try self.vault.assertTransactionCanStageEnvelope(self, envelope);
+                const ref = envelope.objectRef();
+                for (self.staged_envelopes.items) |existing| {
+                    if (existing.objectRef().eql(ref)) {
+                        if (existing.envelope_fingerprint != envelope.envelope_fingerprint) return error.InvalidFrameEncoding;
+                        return existing.objectRef();
+                    }
+                }
+                const owned = try envelope.clone(self.allocator);
+                errdefer {
+                    var cleanup = owned;
+                    cleanup.deinit(self.allocator);
+                }
+                try self.staged_envelopes.append(self.allocator, owned);
+                try self.staged_root_refs.append(self.allocator, try ref.clone(self.allocator));
+                self.refreshFingerprint();
+                return ref;
+            }
+
+            pub fn putCapsule(self: *@This(), image: Capsule.Image) !ObjectRef {
+                try image.validate(.{});
+                const payload = try image.encode(self.allocator);
+                defer self.allocator.free(payload);
+                const envelope = ObjectEnvelope.init(.{
+                    .kind = .capsule_image,
+                    .object_format_version = image.format_version,
+                    .payload_bytes = payload,
+                    .label = "capsule.image",
+                });
+                return self.put(envelope);
+            }
+
+            pub fn putActuationReceipt(self: *@This(), receipt: Actuation.Receipt) !ObjectRef {
+                try receipt.validate();
+                const payload = try receipt.encode(self.allocator);
+                defer self.allocator.free(payload);
+                const envelope = ObjectEnvelope.init(.{
+                    .kind = .actuation_receipt,
+                    .object_format_version = receipt.format_version,
+                    .payload_bytes = payload,
+                    .label = "actuation.receipt",
+                });
+                return self.put(envelope);
+            }
+
+            pub fn putActuationJournal(self: *@This(), journal: Actuation.Journal) !ObjectRef {
+                try journal.validate();
+                const payload = try journal.encode(self.allocator);
+                defer self.allocator.free(payload);
+                const envelope = ObjectEnvelope.init(.{
+                    .kind = .actuation_journal,
+                    .object_format_version = journal.fingerprint_version,
+                    .payload_bytes = payload,
+                    .label = "actuation.journal",
+                });
+                return self.put(envelope);
+            }
+
+            pub fn putBundle(self: *@This(), bundle: Bundle) !void {
+                for (bundle.envelopes) |envelope| _ = try self.put(envelope);
+            }
+
+            pub fn addEvent(self: *@This(), event: Event) !void {
+                if (self.committed or self.aborted) return error.InvalidRunspaceTransition;
+                try event.validate();
+                const owned = try event.clone(self.allocator);
+                errdefer {
+                    var cleanup = owned;
+                    cleanup.deinit(self.allocator);
+                }
+                try self.staged_events.append(self.allocator, owned);
+                self.refreshFingerprint();
+            }
+
+            pub fn validate(self: *@This()) !void {
+                if (self.committed or self.aborted) return error.InvalidRunspaceTransition;
+                if (self.transaction_fingerprint_version != world_chronicle_transaction_fingerprint_version) return error.InvalidFrameEncoding;
+                try self.vault.rejectConflictingTransactionEnvelopes(self.staged_envelopes.items);
+                for (self.staged_envelopes.items) |envelope| try self.vault.assertTransactionCanStageEnvelope(self, envelope);
+                for (self.staged_events.items) |event| try event.validate();
+                self.accepted = true;
+                self.refreshFingerprint();
+            }
+
+            pub fn commit(self: *@This()) !Commit {
+                if (!self.accepted) try self.validate();
+                if (self.committed or self.aborted) return error.InvalidRunspaceTransition;
+
+                var committed_refs: std.ArrayList(ObjectRef) = .empty;
+                errdefer deinitRefList(self.allocator, &committed_refs);
+                var committed_event_fingerprints: std.ArrayList(u64) = .empty;
+                errdefer committed_event_fingerprints.deinit(self.allocator);
+
+                const object_count_before = self.vault.objects.items.len;
+                const event_count_before = self.vault.chronicle_events.items.len;
+                const commit_count_before = self.vault.chronicle_commits.items.len;
+                const backing_count_before = self.vault.chronicle_commit_backing.items.len;
+                const ledger_count_before = self.vault.ledger.events.items.len;
+                const ledger_next_order_before = self.vault.ledger.next_order;
+                const cursor_before = self.vault.chronicle_cursor;
+                errdefer {
+                    for (self.vault.objects.items[object_count_before..]) |*object| object.deinit(self.allocator);
+                    self.vault.objects.shrinkRetainingCapacity(object_count_before);
+                    for (self.vault.chronicle_events.items[event_count_before..]) |*event| event.deinit(self.allocator);
+                    self.vault.chronicle_events.shrinkRetainingCapacity(event_count_before);
+                    for (self.vault.chronicle_commits.items[commit_count_before..]) |*record| record.deinit(self.allocator);
+                    self.vault.chronicle_commits.shrinkRetainingCapacity(commit_count_before);
+                    for (self.vault.chronicle_commit_backing.items[backing_count_before..]) |backing| freeEnvelopeSlice(self.allocator, backing);
+                    self.vault.chronicle_commit_backing.shrinkRetainingCapacity(backing_count_before);
+                    self.vault.ledger.events.shrinkRetainingCapacity(ledger_count_before);
+                    self.vault.ledger.next_order = ledger_next_order_before;
+                    self.vault.chronicle_cursor = cursor_before;
+                }
+                const backing_envelopes = try cloneEnvelopeSlice(self.allocator, self.staged_envelopes.items);
+                errdefer freeEnvelopeSlice(self.allocator, backing_envelopes);
+
+                for (self.staged_envelopes.items) |envelope| {
+                    const ref = try self.vault.putValidatedEnvelopeFromTransaction(envelope);
+                    if (!containsRef(committed_refs.items, ref)) try committed_refs.append(self.allocator, try ref.clone(self.allocator));
+                    const event_refs = [_]ObjectRef{ref};
+                    const event = Event.init(.{
+                        .kind = .object_committed,
+                        .transaction_fingerprint = self.transaction_fingerprint,
+                        .object_refs = &event_refs,
+                        .target_ref = ref,
+                    });
+                    try self.vault.appendChronicleEvent(event);
+                    try committed_event_fingerprints.append(self.allocator, event.event_fingerprint);
+                }
+
+                for (self.staged_events.items) |event| {
+                    try self.vault.appendChronicleEvent(event);
+                    try committed_event_fingerprints.append(self.allocator, event.event_fingerprint);
+                }
+
+                const event_fingerprints = try committed_event_fingerprints.toOwnedSlice(self.allocator);
+                defer self.allocator.free(event_fingerprints);
+                const committed_object_refs = try committed_refs.toOwnedSlice(self.allocator);
+                defer freeRefSlice(self.allocator, committed_object_refs);
+                self.vault.chronicle_cursor = self.vault.chronicle_cursor.advance(event_fingerprints, committed_object_refs.len, 1);
+                var commit_record = Commit.init(.{
+                    .transaction_fingerprint = self.transaction_fingerprint,
+                    .parent_cursor_fingerprint = self.parent_cursor_fingerprint,
+                    .resulting_cursor_fingerprint = self.vault.chronicle_cursor.cursor_fingerprint,
+                    .committed_object_refs = committed_object_refs,
+                    .committed_event_fingerprints = event_fingerprints,
+                });
+                try commit_record.validate();
+                const owned_commit = try commit_record.clone(self.allocator);
+                try self.vault.chronicle_commits.append(self.allocator, owned_commit);
+                try self.vault.chronicle_commit_backing.append(self.allocator, backing_envelopes);
+                const stored_commit = self.vault.chronicle_commits.items[self.vault.chronicle_commits.items.len - 1];
+                self.committed = true;
+                self.refreshFingerprint();
+                return stored_commit;
+            }
+
+            pub fn abort(self: *@This()) void {
+                self.aborted = true;
+                self.accepted = false;
+                self.refreshFingerprint();
+            }
+
+            fn refreshFingerprint(self: *@This()) void {
+                self.transaction_fingerprint = fingerprintChronicleTransaction(self.*);
+            }
+        };
+        pub const ProjectionKind = enum(u8) {
+            capsule_index = 0,
+            actuation_index = 1,
+            object_index = 2,
+            inbox = 3,
+            outbox = 4,
+            recovery_queue = 5,
+            idempotency_registry = 6,
+            bundle_history = 7,
+        };
+
+        pub const ProjectionReport = struct {
+            projection_fingerprint: u64,
+            projection_kind: ProjectionKind,
+            source_cursor_fingerprint: u64,
+            event_count_consumed: usize = 0,
+            object_refs_consumed: []const ObjectRef = &.{},
+            result_summary_fingerprint: u64 = 0,
+            blockers: []const u64 = &.{},
+            warnings: []const u64 = &.{},
+
+            pub fn init(args: struct {
+                projection_kind: ProjectionKind,
+                source_cursor_fingerprint: u64,
+                event_count_consumed: usize,
+                object_refs_consumed: []const ObjectRef = &.{},
+                result_summary_fingerprint: u64 = 0,
+                blockers: []const u64 = &.{},
+                warnings: []const u64 = &.{},
+            }) @This() {
+                var report = @This(){
+                    .projection_fingerprint = 0,
+                    .projection_kind = args.projection_kind,
+                    .source_cursor_fingerprint = args.source_cursor_fingerprint,
+                    .event_count_consumed = args.event_count_consumed,
+                    .object_refs_consumed = args.object_refs_consumed,
+                    .result_summary_fingerprint = args.result_summary_fingerprint,
+                    .blockers = args.blockers,
+                    .warnings = args.warnings,
+                };
+                report.projection_fingerprint = fingerprintProjectionReport(report);
+                return report;
+            }
+
+            pub fn validate(self: @This()) !void {
+                if (self.source_cursor_fingerprint == 0) return error.InvalidFrameEncoding;
+                if (self.projection_fingerprint != fingerprintProjectionReport(self)) return error.InvalidFrameEncoding;
+                for (self.object_refs_consumed) |ref| try ref.validate();
+            }
+        };
+
+        pub const ReplayReport = struct {
+            report_fingerprint: u64,
+            start_cursor_fingerprint: u64,
+            end_cursor_fingerprint: u64,
+            replayed_event_count: usize = 0,
+            rebuilt_projection_count: usize = 0,
+            mismatch_count: usize = 0,
+            blockers: []const u64 = &.{},
+            warnings: []const u64 = &.{},
+
+            pub fn init(args: struct {
+                start_cursor_fingerprint: u64,
+                end_cursor_fingerprint: u64,
+                replayed_event_count: usize,
+                rebuilt_projection_count: usize,
+                mismatch_count: usize = 0,
+                blockers: []const u64 = &.{},
+                warnings: []const u64 = &.{},
+            }) @This() {
+                var report = @This(){
+                    .report_fingerprint = 0,
+                    .start_cursor_fingerprint = args.start_cursor_fingerprint,
+                    .end_cursor_fingerprint = args.end_cursor_fingerprint,
+                    .replayed_event_count = args.replayed_event_count,
+                    .rebuilt_projection_count = args.rebuilt_projection_count,
+                    .mismatch_count = args.mismatch_count,
+                    .blockers = args.blockers,
+                    .warnings = args.warnings,
+                };
+                report.report_fingerprint = fingerprintReplayReport(report);
+                return report;
+            }
+
+            pub fn validate(self: @This()) !void {
+                if (self.start_cursor_fingerprint == 0 or self.end_cursor_fingerprint == 0) return error.InvalidFrameEncoding;
+                if (self.report_fingerprint != fingerprintReplayReport(self)) return error.InvalidFrameEncoding;
+            }
+        };
+
+        pub const Projection = struct {
+            report: ProjectionReport,
+
+            pub fn rebuild(vault: *Continuity.MemoryVault, kind: ProjectionKind) !@This() {
+                var refs: std.ArrayList(ObjectRef) = .empty;
+                defer refs.deinit(vault.allocator);
+                for (vault.chronicle_events.items) |event| {
+                    for (event.object_refs) |ref| if (!containsRef(refs.items, ref)) try refs.append(vault.allocator, ref);
+                    if (event.capsule_ref) |ref| if (!containsRef(refs.items, ref)) try refs.append(vault.allocator, ref);
+                    if (event.bundle_ref) |ref| if (!containsRef(refs.items, ref)) try refs.append(vault.allocator, ref);
+                    for (event.actuation_refs) |ref| if (!containsRef(refs.items, ref)) try refs.append(vault.allocator, ref);
+                }
+                const summary = projectionSummaryFingerprint(vault, kind, refs.items);
+                return .{ .report = ProjectionReport.init(.{
+                    .projection_kind = kind,
+                    .source_cursor_fingerprint = vault.cursor().cursor_fingerprint,
+                    .event_count_consumed = vault.chronicle_events.items.len,
+                    .result_summary_fingerprint = summary,
+                }) };
+            }
+
+            pub fn replayFrom(vault: *Continuity.MemoryVault, cursor: Cursor) !@This() {
+                return replayFromKind(vault, cursor, .object_index);
+            }
+
+            pub fn replayFromKind(vault: *Continuity.MemoryVault, cursor: Cursor, kind: ProjectionKind) !@This() {
+                var projection = try rebuild(vault, kind);
+                if (cursor.cursor_fingerprint != vault.cursor().cursor_fingerprint) {
+                    projection.report.blockers = &.{cursor.cursor_fingerprint};
+                    projection.report.projection_fingerprint = fingerprintProjectionReport(projection.report);
+                }
+                return projection;
+            }
+
+            pub fn assertFresh(self: @This(), cursor: Cursor) !void {
+                if (self.report.source_cursor_fingerprint != cursor.cursor_fingerprint) return error.StaleProjection;
+            }
+        };
+
+        pub const IdempotencyRegistry = struct {
+            registry_fingerprint: u64,
+            source_cursor_fingerprint: u64,
+            idempotency_key_refs: []const ObjectRef = &.{},
+            committed_receipt_refs: []const ObjectRef = &.{},
+            fresh_commit_count: usize = 0,
+            replay_receipt_count: usize = 0,
+            conflict_count: usize = 0,
+            blockers: []const u64 = &.{},
+
+            pub fn rebuild(vault: *Continuity.MemoryVault) !@This() {
+                var key_refs: std.ArrayList(ObjectRef) = .empty;
+                errdefer deinitRefList(vault.allocator, &key_refs);
+                var receipt_refs: std.ArrayList(ObjectRef) = .empty;
+                errdefer deinitRefList(vault.allocator, &receipt_refs);
+                var blockers: std.ArrayList(u64) = .empty;
+                errdefer blockers.deinit(vault.allocator);
+                var fresh_count: usize = 0;
+                var replay_count: usize = 0;
+                var conflict_count: usize = 0;
+                for (vault.objects.items) |envelope| {
+                    if (envelope.kind != .actuation_receipt) continue;
+                    var receipt = try Actuation.Receipt.decode(vault.allocator, envelope.payload_bytes);
+                    defer receipt.deinit(vault.allocator);
+                    const key_ref = semanticObjectRef(.actuation_idempotency_key, receipt.idempotency_key_fingerprint);
+                    if (!containsRef(key_refs.items, key_ref)) try key_refs.append(vault.allocator, try key_ref.clone(vault.allocator));
+                    if (receiptIsTerminalFreshCommit(receipt)) {
+                        for (receipt_refs.items) |existing_ref| {
+                            var existing = try vault.getActuationReceipt(existing_ref);
+                            defer existing.deinit(vault.allocator);
+                            if (existing.idempotency_key_fingerprint != receipt.idempotency_key_fingerprint) continue;
+                            if (!freshCommitRecordsSameBinding(
+                                freshCommitRecordFromReceipt(existing.idempotency_key_fingerprint, existing),
+                                freshCommitRecordFromReceipt(receipt.idempotency_key_fingerprint, receipt),
+                            )) {
+                                conflict_count += 1;
+                                try blockers.append(vault.allocator, receipt.idempotency_key_fingerprint);
+                            }
+                        }
+                        fresh_count += 1;
+                        try receipt_refs.append(vault.allocator, try envelope.objectRef().clone(vault.allocator));
+                    } else if (isReplayableReceipt(receipt)) {
+                        replay_count += 1;
+                    }
+                }
+                const keys = try key_refs.toOwnedSlice(vault.allocator);
+                const receipts = try receipt_refs.toOwnedSlice(vault.allocator);
+                const blocker_slice = try blockers.toOwnedSlice(vault.allocator);
+                var registry = @This(){
+                    .registry_fingerprint = 0,
+                    .source_cursor_fingerprint = vault.cursor().cursor_fingerprint,
+                    .idempotency_key_refs = keys,
+                    .committed_receipt_refs = receipts,
+                    .fresh_commit_count = fresh_count,
+                    .replay_receipt_count = replay_count,
+                    .conflict_count = conflict_count,
+                    .blockers = blocker_slice,
+                };
+                registry.registry_fingerprint = fingerprintIdempotencyRegistry(registry);
+                return registry;
+            }
+
+            pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+                freeRefSlice(allocator, @constCast(self.idempotency_key_refs));
+                freeRefSlice(allocator, @constCast(self.committed_receipt_refs));
+                allocator.free(self.blockers);
+                self.* = undefined;
+            }
+
+            pub fn lookup(self: @This(), key: ObjectRef) ?ObjectRef {
+                for (self.idempotency_key_refs, 0..) |ref, index| {
+                    if (ref.object_fingerprint == key.object_fingerprint and index < self.committed_receipt_refs.len) return self.committed_receipt_refs[index];
+                }
+                return null;
+            }
+
+            pub fn assertFreshCommitAllowed(self: @This(), key: ObjectRef) !void {
+                if (self.lookup(key) != null) return error.DuplicateBinding;
+            }
+
+            pub fn recordFreshCommit(self: *@This(), key: ObjectRef, receipt_ref: ObjectRef) !void {
+                _ = self;
+                _ = key;
+                _ = receipt_ref;
+            }
+
+            pub fn recordReplay(self: *@This(), key: ObjectRef, receipt_ref: ObjectRef) !void {
+                _ = key;
+                _ = receipt_ref;
+                self.replay_receipt_count += 1;
+                self.registry_fingerprint = fingerprintIdempotencyRegistry(self.*);
+            }
+        };
+        pub const Inbox = struct {
+            session: *Continuity.Session,
+
+            pub fn init(session: *Continuity.Session) @This() {
+                return .{ .session = session };
+            }
+
+            pub fn importBundle(self: *@This(), bytes: []const u8) !ObjectRef {
+                var manifest = try self.session.importBundle(bytes);
+                defer manifest.deinit(self.session.allocator);
+                const bundle_ref = ObjectRef.init(.{
+                    .kind = .bundle,
+                    .object_format_version = 1,
+                    .object_fingerprint = manifest.manifest_fingerprint,
+                    .byte_len = manifest.bundle_byte_len,
+                });
+                const envelope = HandoffEnvelope.init(.{
+                    .direction = .inbound,
+                    .bundle_ref = bundle_ref,
+                    .status = .imported,
+                });
+                const ref = envelope.objectRef();
+                const event = Event.init(.{ .kind = .inbox_item_created, .inbox_outbox_item_ref = ref, .bundle_ref = bundle_ref });
+                try self.session.vault.appendChronicleEvent(event);
+                return ref;
+            }
+
+            pub fn listPending(self: @This()) ![]ObjectRef {
+                return inboxOutboxPendingRefs(self.session.vault, true);
+            }
+
+            pub fn inspect(self: @This(), ref: ObjectRef) !ObjectRef {
+                if (!chronicleSawInboxOutboxRef(self.session.vault, ref)) return error.ObjectMissing;
+                return ref;
+            }
+
+            pub fn validate(self: *@This(), ref: ObjectRef) !void {
+                _ = try self.inspect(ref);
+                const event = Event.init(.{ .kind = .inbox_item_validated, .inbox_outbox_item_ref = ref });
+                try self.session.vault.appendChronicleEvent(event);
+            }
+
+            pub fn planRecovery(self: *@This(), ref: ObjectRef) !void {
+                _ = try self.inspect(ref);
+                const event = Event.init(.{ .kind = .recovery_preflighted, .inbox_outbox_item_ref = ref });
+                try self.session.vault.appendChronicleEvent(event);
+            }
+
+            pub fn accept(self: *@This(), ref: ObjectRef) !void {
+                _ = try self.inspect(ref);
+                const event = Event.init(.{ .kind = .inbox_item_accepted, .inbox_outbox_item_ref = ref });
+                try self.session.vault.appendChronicleEvent(event);
+            }
+
+            pub fn reject(self: *@This(), ref: ObjectRef, reason: []const u8) !void {
+                _ = try self.inspect(ref);
+                const event = Event.init(.{ .kind = .inbox_item_rejected, .inbox_outbox_item_ref = ref, .blocker_summary = reason });
+                try self.session.vault.appendChronicleEvent(event);
+            }
+        };
+
+        pub const Outbox = struct {
+            session: *Continuity.Session,
+
+            pub fn init(session: *Continuity.Session) @This() {
+                return .{ .session = session };
+            }
+
+            pub fn stageCapsule(self: *@This(), capsule_ref: ObjectRef) !ObjectRef {
+                try capsule_ref.validate();
+                const envelope = HandoffEnvelope.init(.{
+                    .direction = .outbound,
+                    .capsule_ref = capsule_ref,
+                    .status = .created,
+                });
+                const ref = envelope.objectRef();
+                const event = Event.init(.{ .kind = .outbox_item_created, .inbox_outbox_item_ref = ref, .capsule_ref = capsule_ref });
+                try self.session.vault.appendChronicleEvent(event);
+                return ref;
+            }
+
+            pub fn exportBundle(self: *@This(), ref: ObjectRef) !Bundle {
+                const capsule_ref = try outboxCapsuleForRef(self.session.vault, ref);
+                const bundle = try self.session.exportBundle(&.{capsule_ref});
+                const bundle_ref = ObjectRef.init(.{
+                    .kind = .bundle,
+                    .object_format_version = 1,
+                    .object_fingerprint = bundle.manifest.manifest_fingerprint,
+                    .byte_len = bundle.manifest.bundle_byte_len,
+                });
+                const event = Event.init(.{ .kind = .outbox_item_exported, .inbox_outbox_item_ref = ref, .bundle_ref = bundle_ref });
+                try self.session.vault.appendChronicleEvent(event);
+                return bundle;
+            }
+
+            pub fn markExported(self: *@This(), ref: ObjectRef) !void {
+                _ = try self.inspect(ref);
+                const event = Event.init(.{ .kind = .outbox_item_completed, .inbox_outbox_item_ref = ref });
+                try self.session.vault.appendChronicleEvent(event);
+            }
+
+            pub fn listPending(self: @This()) ![]ObjectRef {
+                return inboxOutboxPendingRefs(self.session.vault, false);
+            }
+
+            fn inspect(self: @This(), ref: ObjectRef) !ObjectRef {
+                if (!chronicleSawInboxOutboxRef(self.session.vault, ref)) return error.ObjectMissing;
+                return ref;
+            }
+        };
+    };
+
     pub const Ledger = struct {
         pub const EventKind = enum(u8) {
             vault_initialized = 0,
@@ -28223,23 +29503,52 @@ pub const Continuity = struct {
     pub const MemoryVault = struct {
         allocator: std.mem.Allocator,
         objects: std.ArrayList(ObjectEnvelope) = .empty,
+        chronicle_events: std.ArrayList(Chronicle.Event) = .empty,
+        chronicle_commits: std.ArrayList(Chronicle.Commit) = .empty,
+        chronicle_commit_backing: std.ArrayList([]ObjectEnvelope) = .empty,
+        chronicle_cursor: Chronicle.Cursor = Chronicle.Cursor.initial(),
         ledger: Ledger,
 
         pub fn init(allocator: std.mem.Allocator) @This() {
             var vault = @This(){ .allocator = allocator, .ledger = Ledger.init(allocator) };
             vault.ledger.record(.vault_initialized, null) catch {};
+            const event = Chronicle.Event.init(.{ .kind = .vault_initialized });
+            vault.appendChronicleEvent(event) catch return vault;
+            vault.chronicle_cursor = vault.chronicle_cursor.advance(&.{event.event_fingerprint}, 0, 0);
             return vault;
         }
 
         pub fn deinit(self: *@This()) void {
             for (self.objects.items) |*object| object.deinit(self.allocator);
             self.objects.deinit(self.allocator);
+            for (self.chronicle_events.items) |*event| event.deinit(self.allocator);
+            self.chronicle_events.deinit(self.allocator);
+            for (self.chronicle_commits.items) |*commit| commit.deinit(self.allocator);
+            self.chronicle_commits.deinit(self.allocator);
+            for (self.chronicle_commit_backing.items) |backing| freeEnvelopeSlice(self.allocator, backing);
+            self.chronicle_commit_backing.deinit(self.allocator);
             self.ledger.deinit();
             self.* = undefined;
         }
 
         pub fn objectCount(self: @This()) usize {
             return self.objects.items.len;
+        }
+
+        pub fn cursor(self: @This()) Chronicle.Cursor {
+            return self.chronicle_cursor;
+        }
+
+        pub fn eventCount(self: @This()) usize {
+            return self.chronicle_events.items.len;
+        }
+
+        pub fn commitCount(self: @This()) usize {
+            return self.chronicle_commits.items.len;
+        }
+
+        pub fn beginTransaction(self: *@This(), kind: Chronicle.TransactionKind, options: Chronicle.TransactionOptions) !Chronicle.Transaction {
+            return Chronicle.Transaction.init(self, kind, options);
         }
 
         pub fn put(self: *@This(), envelope: ObjectEnvelope) !ObjectRef {
@@ -28262,6 +29571,77 @@ pub const Continuity = struct {
             }
             try self.objects.append(self.allocator, owned);
             return self.objects.items[self.objects.items.len - 1].objectRef();
+        }
+
+        fn appendChronicleEvent(self: *@This(), event: Chronicle.Event) !void {
+            try event.validate();
+            const owned = try event.clone(self.allocator);
+            errdefer {
+                var cleanup = owned;
+                cleanup.deinit(self.allocator);
+            }
+            try self.chronicle_events.append(self.allocator, owned);
+        }
+
+        fn putValidatedEnvelopeFromTransaction(self: *@This(), envelope: ObjectEnvelope) !ObjectRef {
+            const ref = envelope.objectRef();
+            for (self.objects.items) |existing| {
+                if (existing.objectRef().eql(ref)) {
+                    if (existing.envelope_fingerprint != envelope.envelope_fingerprint) return error.InvalidFrameEncoding;
+                    return existing.objectRef();
+                }
+                if (existing.kind == ref.kind and existing.object_fingerprint == ref.object_fingerprint and existing.object_byte_len == ref.byte_len) {
+                    return error.InvalidFrameEncoding;
+                }
+            }
+            const owned = try envelope.clone(self.allocator);
+            errdefer {
+                var cleanup = owned;
+                cleanup.deinit(self.allocator);
+            }
+            try self.objects.append(self.allocator, owned);
+            return self.objects.items[self.objects.items.len - 1].objectRef();
+        }
+
+        fn rejectConflictingTransactionEnvelopes(self: @This(), envelopes: []const ObjectEnvelope) !void {
+            _ = self;
+            for (envelopes, 0..) |envelope, index| {
+                const ref = envelope.objectRef();
+                for (envelopes[index + 1 ..]) |other| {
+                    const other_ref = other.objectRef();
+                    if (other_ref.eql(ref)) {
+                        if (other.envelope_fingerprint != envelope.envelope_fingerprint) return error.InvalidFrameEncoding;
+                        continue;
+                    }
+                    if (other.kind == ref.kind and other.object_fingerprint == ref.object_fingerprint and other.object_byte_len == ref.byte_len) {
+                        return error.InvalidFrameEncoding;
+                    }
+                }
+            }
+        }
+
+        fn assertTransactionCanStageEnvelope(self: @This(), tx: *const Chronicle.Transaction, envelope: ObjectEnvelope) !void {
+            try envelope.validate();
+            if (!(try bundleEnvelopeTypedPayloadValid(self.allocator, envelope))) return error.InvalidFrameEncoding;
+            const ref = envelope.objectRef();
+            for (self.objects.items) |existing| {
+                if (existing.objectRef().eql(ref)) {
+                    if (existing.envelope_fingerprint != envelope.envelope_fingerprint) return error.InvalidFrameEncoding;
+                    return;
+                }
+                if (existing.kind == ref.kind and existing.object_fingerprint == ref.object_fingerprint and existing.object_byte_len == ref.byte_len) {
+                    return error.InvalidFrameEncoding;
+                }
+            }
+            for (tx.staged_envelopes.items) |existing| {
+                if (existing.objectRef().eql(ref)) {
+                    if (existing.envelope_fingerprint != envelope.envelope_fingerprint) return error.InvalidFrameEncoding;
+                    return;
+                }
+                if (existing.kind == ref.kind and existing.object_fingerprint == ref.object_fingerprint and existing.object_byte_len == ref.byte_len) {
+                    return error.InvalidFrameEncoding;
+                }
+            }
         }
 
         fn rejectDuplicateFreshCommitsForEnvelope(self: *@This(), envelope: ObjectEnvelope) !void {
@@ -28711,6 +30091,210 @@ pub const Continuity = struct {
                 }
             }
             return null;
+        }
+    };
+
+    pub const Session = struct {
+        allocator: std.mem.Allocator,
+        vault: *Continuity.MemoryVault,
+        policy: PersistPolicy,
+        session_fingerprint: u64,
+        active_transaction_count: usize = 0,
+        committed_transaction_count: usize = 0,
+        metadata_bytes: []const u8 = "",
+
+        pub fn init(allocator: std.mem.Allocator, vault: *Continuity.MemoryVault, policy: ?PersistPolicy) !@This() {
+            const effective_policy = policy orelse PersistPolicy.none();
+            try effective_policy.validate();
+            var session = @This(){
+                .allocator = allocator,
+                .vault = vault,
+                .policy = effective_policy,
+                .session_fingerprint = 0,
+            };
+            session.refreshFingerprint();
+            return session;
+        }
+
+        pub fn begin(self: *@This(), kind: Chronicle.TransactionKind) !Chronicle.Transaction {
+            self.active_transaction_count += 1;
+            self.refreshFingerprint();
+            return self.vault.beginTransaction(kind, .{});
+        }
+
+        pub fn cursor(self: @This()) Chronicle.Cursor {
+            return self.vault.cursor();
+        }
+
+        pub fn storeCapsule(self: *@This(), image: Capsule.Image) !ObjectRef {
+            if (!self.policy.persist_capsules) return error.PersistenceDisabled;
+            var tx = try self.begin(.store_capsule);
+            defer tx.deinit();
+            const ref = try tx.putCapsule(image);
+            try tx.addEvent(Chronicle.Event.init(.{ .kind = .capsule_stored, .capsule_ref = ref }));
+            try tx.addEvent(Chronicle.Event.init(.{ .kind = .capsule_validated, .capsule_ref = ref }));
+            _ = try tx.commit();
+            self.finishTransaction();
+            return ref;
+        }
+
+        pub fn storeActuationReceipt(self: *@This(), receipt: Actuation.Receipt) !ObjectRef {
+            if (!self.policy.persist_actuation_receipts) return error.PersistenceDisabled;
+            if (self.policy.reject_unstored_fresh_actuation and receiptIsTerminalFreshCommit(receipt)) {
+                var registry = try Chronicle.IdempotencyRegistry.rebuild(self.vault);
+                defer registry.deinit(self.allocator);
+                try registry.assertFreshCommitAllowed(semanticObjectRef(.actuation_idempotency_key, receipt.idempotency_key_fingerprint));
+            }
+            var tx = try self.begin(.store_actuation);
+            defer tx.deinit();
+            const ref = try tx.putActuationReceipt(receipt);
+            const actuation_refs = [_]ObjectRef{ref};
+            try tx.addEvent(Chronicle.Event.init(.{ .kind = .actuation_receipt_stored, .actuation_refs = &actuation_refs, .target_ref = ref }));
+            if (receiptIsTerminalFreshCommit(receipt)) {
+                try tx.addEvent(Chronicle.Event.init(.{
+                    .kind = .actuation_idempotency_registered,
+                    .actuation_refs = &actuation_refs,
+                    .actuation_idempotency_key_ref = semanticObjectRef(.actuation_idempotency_key, receipt.idempotency_key_fingerprint),
+                    .target_ref = ref,
+                }));
+            }
+            _ = try tx.commit();
+            self.finishTransaction();
+            return ref;
+        }
+
+        pub fn storeActuationJournal(self: *@This(), journal: Actuation.Journal) !ObjectRef {
+            if (!self.policy.persist_actuation_journals) return error.PersistenceDisabled;
+            var tx = try self.begin(.store_actuation);
+            defer tx.deinit();
+            const ref = try tx.putActuationJournal(journal);
+            const actuation_refs = [_]ObjectRef{ref};
+            try tx.addEvent(Chronicle.Event.init(.{ .kind = .actuation_journal_stored, .actuation_refs = &actuation_refs, .target_ref = ref }));
+            _ = try tx.commit();
+            self.finishTransaction();
+            return ref;
+        }
+
+        pub fn importBundle(self: *@This(), bytes: []const u8) !BundleManifest {
+            var tx = try self.begin(.import_bundle);
+            defer tx.deinit();
+            var bundle = try Bundle.decode(self.allocator, bytes, .{});
+            defer bundle.deinit();
+            const bundle_ref = ObjectRef.init(.{
+                .kind = .bundle,
+                .object_format_version = 1,
+                .object_fingerprint = bundle.manifest.manifest_fingerprint,
+                .byte_len = bytes.len,
+            });
+            try tx.addEvent(Chronicle.Event.init(.{ .kind = .bundle_import_started, .bundle_ref = bundle_ref }));
+            try tx.putBundle(bundle);
+            try tx.addEvent(Chronicle.Event.init(.{ .kind = .bundle_import_validated, .bundle_ref = bundle_ref }));
+            _ = try tx.commit();
+            try self.vault.appendChronicleEvent(Chronicle.Event.init(.{ .kind = .bundle_import_committed, .bundle_ref = bundle_ref }));
+            self.finishTransaction();
+            return bundle.manifest.clone(self.allocator);
+        }
+
+        pub fn exportBundle(self: *@This(), roots: []const ObjectRef) !Bundle {
+            var tx = try self.begin(.export_bundle);
+            defer tx.deinit();
+            try tx.addEvent(Chronicle.Event.init(.{ .kind = .bundle_export_started, .root_refs = roots }));
+            const bundle = try Bundle.exportFromVault(self.vault, roots, .{});
+            const bundle_ref = ObjectRef.init(.{
+                .kind = .bundle,
+                .object_format_version = 1,
+                .object_fingerprint = bundle.manifest.manifest_fingerprint,
+                .byte_len = bundle.manifest.bundle_byte_len,
+            });
+            try tx.addEvent(Chronicle.Event.init(.{ .kind = .bundle_export_committed, .bundle_ref = bundle_ref, .root_refs = roots }));
+            _ = try tx.commit();
+            self.finishTransaction();
+            return bundle;
+        }
+
+        pub fn recovery(self: @This()) Chronicle.Cursor {
+            return self.cursor();
+        }
+
+        pub fn projections(self: @This()) Chronicle.Cursor {
+            return self.cursor();
+        }
+
+        fn finishTransaction(self: *@This()) void {
+            if (self.active_transaction_count != 0) self.active_transaction_count -= 1;
+            self.committed_transaction_count += 1;
+            self.refreshFingerprint();
+        }
+
+        fn refreshFingerprint(self: *@This()) void {
+            self.session_fingerprint = fingerprintContinuitySession(self.*);
+        }
+    };
+
+    pub const SinkPolicy = struct {
+        persist_completed_capsule: bool = false,
+        persist_parked_capsule: bool = false,
+        persist_actuation_receipt: bool = false,
+        persist_actuation_journal: bool = false,
+        persist_guest_report: bool = false,
+
+        pub fn none() @This() {
+            return .{};
+        }
+
+        pub fn actuation_receipts() @This() {
+            return .{ .persist_actuation_receipt = true };
+        }
+
+        pub fn completed_capsules() @This() {
+            return .{ .persist_completed_capsule = true };
+        }
+
+        pub fn full_local_evidence() @This() {
+            return .{
+                .persist_completed_capsule = true,
+                .persist_parked_capsule = true,
+                .persist_actuation_receipt = true,
+                .persist_actuation_journal = true,
+                .persist_guest_report = true,
+            };
+        }
+    };
+
+    pub const Sink = struct {
+        session: *Continuity.Session,
+        policy: SinkPolicy = SinkPolicy.none(),
+
+        pub fn init(session: *Continuity.Session, policy: SinkPolicy) @This() {
+            return .{ .session = session, .policy = policy };
+        }
+
+        pub fn recordActuationReceipt(self: *@This(), receipt: Actuation.Receipt) !?ObjectRef {
+            if (!self.policy.persist_actuation_receipt) return null;
+            return try Actuation.commitToSession(self.session, receipt, .{});
+        }
+
+        pub fn recordActuationJournal(self: *@This(), journal: Actuation.Journal) !?ObjectRef {
+            if (!self.policy.persist_actuation_journal) return null;
+            return try Actuation.journalToSession(self.session, journal, .{});
+        }
+
+        pub fn recordCompletedCapsule(self: *@This(), runspace: *Runspace, options: Capsule.FreezeOptions) !?ObjectRef {
+            if (!self.policy.persist_completed_capsule) return null;
+            return try Capsule.freezeToSession(self.session, runspace, options);
+        }
+
+        pub fn recordParkedCapsule(self: *@This(), runspace: *Runspace, options: Capsule.FreezeOptions) !?ObjectRef {
+            if (!self.policy.persist_parked_capsule) return null;
+            return try Capsule.freezeToSession(self.session, runspace, options);
+        }
+
+        pub fn recordGuestReport(self: *@This(), report: Guest.ConformanceReport) !void {
+            if (!self.policy.persist_guest_report) return;
+            try self.session.vault.appendChronicleEvent(Chronicle.Event.init(.{
+                .kind = .guest_report_stored,
+                .target_ref = semanticObjectRef(.guest_conformance_report, report.report_fingerprint),
+            }));
         }
     };
 
@@ -30198,6 +31782,114 @@ pub const Continuity = struct {
         }
     };
 
+    pub const RecoveryPlan = struct {
+        pub const RequestedMode = enum(u8) {
+            inspect_only = 0,
+            replay_only = 1,
+            thaw_parked = 2,
+            thaw_completed = 3,
+            thaw_failed = 4,
+            resume_parked = 5,
+            verify = 6,
+        };
+
+        plan_fingerprint: u64,
+        capsule_ref: ObjectRef,
+        source_cursor_fingerprint: u64,
+        requested_mode: RequestedMode,
+        target_match_refs: []const ObjectRef = &.{},
+        module_match_refs: []const ObjectRef = &.{},
+        link_verification_status: bool = false,
+        environment_preflight_refs: []const ObjectRef = &.{},
+        permit_refs: []const ObjectRef = &.{},
+        actuation_replay_refs: []const ObjectRef = &.{},
+        actuation_local_fresh_requirements: []const ObjectRef = &.{},
+        idempotency_conflict_blockers: []const u64 = &.{},
+        runspace_mutation_plan: []const u8 = "",
+        handle_remap_plan: []const u8 = "",
+        mailbox_remap_plan: []const u8 = "",
+        blockers: []const u64 = &.{},
+        warnings: []const u64 = &.{},
+
+        pub fn init(args: struct {
+            capsule_ref: ObjectRef,
+            source_cursor_fingerprint: u64,
+            requested_mode: RequestedMode,
+            blockers: []const u64 = &.{},
+            warnings: []const u64 = &.{},
+            runspace_mutation_plan: []const u8 = "",
+        }) @This() {
+            var plan = @This(){
+                .plan_fingerprint = 0,
+                .capsule_ref = args.capsule_ref,
+                .source_cursor_fingerprint = args.source_cursor_fingerprint,
+                .requested_mode = args.requested_mode,
+                .blockers = args.blockers,
+                .warnings = args.warnings,
+                .runspace_mutation_plan = args.runspace_mutation_plan,
+            };
+            plan.plan_fingerprint = fingerprintRecoveryPlan(plan);
+            return plan;
+        }
+
+        pub fn validate(self: @This()) !void {
+            try self.capsule_ref.validate();
+            if (self.source_cursor_fingerprint == 0) return error.InvalidFrameEncoding;
+            if (self.plan_fingerprint != fingerprintRecoveryPlan(self)) return error.InvalidFrameEncoding;
+        }
+    };
+
+    pub const RestoredCapsule = struct {
+        capsule_ref: ObjectRef,
+        restore_report_fingerprint: ?u64 = null,
+        accepted: bool = false,
+    };
+
+    pub const RecoveryReport = struct {
+        report_fingerprint: u64,
+        recovery_plan_fingerprint: u64,
+        accepted: bool,
+        resulting_cursor_fingerprint: u64,
+        restored_capsule_ref: ?ObjectRef = null,
+        restored_run_handles: []const u64 = &.{},
+        restored_pending_ports: []const u64 = &.{},
+        restored_actuation_intents: []const ObjectRef = &.{},
+        replayed_actuation_refs: []const ObjectRef = &.{},
+        new_local_actuation_refs: []const ObjectRef = &.{},
+        receiver_permit_ref: ?ObjectRef = null,
+        blockers: []const u64 = &.{},
+        warnings: []const u64 = &.{},
+
+        pub fn init(args: struct {
+            recovery_plan_fingerprint: u64,
+            accepted: bool,
+            resulting_cursor_fingerprint: u64,
+            restored_capsule_ref: ?ObjectRef = null,
+            restored_run_handles: []const u64 = &.{},
+            blockers: []const u64 = &.{},
+            warnings: []const u64 = &.{},
+        }) @This() {
+            var report = @This(){
+                .report_fingerprint = 0,
+                .recovery_plan_fingerprint = args.recovery_plan_fingerprint,
+                .accepted = args.accepted,
+                .resulting_cursor_fingerprint = args.resulting_cursor_fingerprint,
+                .restored_capsule_ref = args.restored_capsule_ref,
+                .restored_run_handles = args.restored_run_handles,
+                .blockers = args.blockers,
+                .warnings = args.warnings,
+            };
+            report.report_fingerprint = fingerprintRecoveryReport(report);
+            return report;
+        }
+
+        pub fn validate(self: @This()) !void {
+            if (self.recovery_plan_fingerprint == 0 or self.resulting_cursor_fingerprint == 0) return error.InvalidFrameEncoding;
+            if (self.restored_capsule_ref) |ref| try ref.validate();
+            if (self.report_fingerprint != fingerprintRecoveryReport(self)) return error.InvalidFrameEncoding;
+        }
+    };
+
     pub const Recovery = struct {
         pub const Options = struct {
             allow_external_dependencies: bool = false,
@@ -30205,6 +31897,135 @@ pub const Continuity = struct {
             require_restorable: bool = true,
             thaw_options: Capsule.ThawOptions = .{ .mode = .restore_completed },
         };
+
+        pub fn planThawFromVault(session: *Session, capsule_ref: ObjectRef, registry: anytype, env: anytype, permit: anytype, options: Options) !RecoveryPlan {
+            const requested_mode = recoveryRequestedModeFromThaw(options.thaw_options.mode);
+            const blockers: []const u64 = blk: {
+                var graph = preflightThawCapsule(session.vault, capsule_ref, registry, env, permit, options) catch {
+                    try session.vault.appendChronicleEvent(Chronicle.Event.init(.{ .kind = .recovery_blocked, .capsule_ref = capsule_ref }));
+                    break :blk &.{1};
+                };
+                graph.deinit();
+                try session.vault.appendChronicleEvent(Chronicle.Event.init(.{ .kind = .recovery_ready, .capsule_ref = capsule_ref }));
+                break :blk &.{};
+            };
+            const plan = RecoveryPlan.init(.{
+                .capsule_ref = capsule_ref,
+                .source_cursor_fingerprint = session.cursor().cursor_fingerprint,
+                .requested_mode = requested_mode,
+                .blockers = blockers,
+                .runspace_mutation_plan = if (blockers.len == 0) "capsule thaw may mutate runspace" else "blocked before runspace mutation",
+            });
+            try plan.validate();
+            try session.vault.appendChronicleEvent(Chronicle.Event.init(.{
+                .kind = if (blockers.len == 0) .capsule_recovery_ready else .capsule_recovery_rejected,
+                .capsule_ref = capsule_ref,
+                .recovery_plan_ref = semanticObjectRef(.capsule_thaw_plan, plan.plan_fingerprint),
+            }));
+            return plan;
+        }
+
+        pub fn thawFromVault(session: *Session, runspace: *Runspace, capsule_ref: ObjectRef, registry: anytype, env: anytype, permit: anytype, options: Options) !RecoveryReport {
+            const before_slots = runspace.slots.items.len;
+            const plan = try planThawFromVault(session, capsule_ref, registry, env, permit, options);
+            if (plan.blockers.len != 0) {
+                if (before_slots != runspace.slots.items.len) return error.InvalidRunspaceTransition;
+                return recoveryRejectedReport(session, plan);
+            }
+            var image = try session.vault.getCapsule(capsule_ref);
+            defer image.deinit(session.vault.allocator);
+            const target = thawTargetRefFingerprintFromArg(registry, image.manifest.root_target_ref_fingerprint) orelse 0;
+            const environment = environmentFingerprintFromArg(env) orelse 0;
+            const permit_fingerprint = permitFingerprintFromArg(permit);
+            var restore = try Capsule.thawIntoRunspace(image, runspace, target, environment, permit_fingerprint, options.thaw_options);
+            defer restore.deinit(session.vault.allocator);
+            const handles = restore.restored_root_run_handles;
+            const report = RecoveryReport.init(.{
+                .recovery_plan_fingerprint = plan.plan_fingerprint,
+                .accepted = restore.accepted,
+                .resulting_cursor_fingerprint = session.cursor().cursor_fingerprint,
+                .restored_capsule_ref = capsule_ref,
+                .restored_run_handles = handles,
+                .blockers = if (restore.accepted) &.{} else &.{1},
+            });
+            try report.validate();
+            try session.vault.appendChronicleEvent(Chronicle.Event.init(.{
+                .kind = if (restore.accepted) .recovery_executed else .recovery_blocked,
+                .capsule_ref = capsule_ref,
+                .recovery_plan_ref = semanticObjectRef(.capsule_thaw_plan, plan.plan_fingerprint),
+                .recovery_report_ref = semanticObjectRef(.capsule_restore_report, report.report_fingerprint),
+            }));
+            try session.vault.appendChronicleEvent(Chronicle.Event.init(.{ .kind = .recovery_report_stored, .capsule_ref = capsule_ref }));
+            return report;
+        }
+
+        pub fn planReplayFromVault(session: *Session, capsule_ref: ObjectRef, target: anytype, options: Options) !RecoveryPlan {
+            const blockers: []const u64 = blk: {
+                var graph = preflightReplayCapsule(session.vault, capsule_ref, target, options) catch {
+                    try session.vault.appendChronicleEvent(Chronicle.Event.init(.{ .kind = .recovery_blocked, .capsule_ref = capsule_ref }));
+                    break :blk &.{1};
+                };
+                graph.deinit();
+                break :blk &.{};
+            };
+            return RecoveryPlan.init(.{
+                .capsule_ref = capsule_ref,
+                .source_cursor_fingerprint = session.cursor().cursor_fingerprint,
+                .requested_mode = .replay_only,
+                .blockers = blockers,
+                .runspace_mutation_plan = "replay without fresh host calls",
+            });
+        }
+
+        pub fn replayFromVault(session: *Session, capsule_ref: ObjectRef, target: anytype, options: Options) !RecoveryReport {
+            const plan = try planReplayFromVault(session, capsule_ref, target, options);
+            if (plan.blockers.len != 0) return recoveryRejectedReport(session, plan);
+            const report = RecoveryReport.init(.{
+                .recovery_plan_fingerprint = plan.plan_fingerprint,
+                .accepted = true,
+                .resulting_cursor_fingerprint = session.cursor().cursor_fingerprint,
+                .restored_capsule_ref = capsule_ref,
+            });
+            try session.vault.appendChronicleEvent(Chronicle.Event.init(.{ .kind = .capsule_replayed, .capsule_ref = capsule_ref }));
+            return report;
+        }
+
+        pub fn planResumeParked(session: *Session, capsule_ref: ObjectRef, registry: anytype, env: anytype, permit: anytype, options: Options) !RecoveryPlan {
+            return planThawFromVault(session, capsule_ref, registry, env, permit, options);
+        }
+
+        pub fn resumeParked(session: *Session, runspace: *Runspace, capsule_ref: ObjectRef, registry: anytype, env: anytype, permit: anytype, options: Options) !RecoveryReport {
+            return thawFromVault(session, runspace, capsule_ref, registry, env, permit, options);
+        }
+
+        fn recoveryRequestedModeFromThaw(mode: Capsule.RestoreMode) RecoveryPlan.RequestedMode {
+            return switch (mode) {
+                .inspect_only => .inspect_only,
+                .replay_only => .replay_only,
+                .restore_parked => .thaw_parked,
+                .restore_completed, .relink_and_restore => .thaw_completed,
+                .restore_failed => .thaw_failed,
+                .verify_and_restore => .verify,
+            };
+        }
+
+        fn recoveryRejectedReport(session: *Session, plan: RecoveryPlan) !RecoveryReport {
+            const report = RecoveryReport.init(.{
+                .recovery_plan_fingerprint = plan.plan_fingerprint,
+                .accepted = false,
+                .resulting_cursor_fingerprint = session.cursor().cursor_fingerprint,
+                .restored_capsule_ref = plan.capsule_ref,
+                .blockers = if (plan.blockers.len == 0) &.{1} else plan.blockers,
+            });
+            try report.validate();
+            try session.vault.appendChronicleEvent(Chronicle.Event.init(.{
+                .kind = .recovery_blocked,
+                .capsule_ref = plan.capsule_ref,
+                .recovery_plan_ref = semanticObjectRef(.capsule_thaw_plan, plan.plan_fingerprint),
+                .recovery_report_ref = semanticObjectRef(.capsule_restore_report, report.report_fingerprint),
+            }));
+            return report;
+        }
 
         pub fn inspectCapsule(vault: *Continuity.MemoryVault, capsule_ref: ObjectRef) !CapsuleGraph {
             return CapsuleGraph.fromCapsule(vault, capsule_ref);
@@ -30793,6 +32614,321 @@ pub const Continuity = struct {
         hashU64(&hasher, @intFromEnum(event.kind));
         hashOptionalU64(&hasher, event.object_ref_fingerprint);
         return hasher.final();
+    }
+
+    fn fingerprintChronicleEvent(event: Chronicle.Event) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        hashBytes(&hasher, "world.continuity.chronicle.event");
+        hashU64(&hasher, event.event_format_version);
+        hashU64(&hasher, event.event_fingerprint_version);
+        hashU64(&hasher, @intFromEnum(event.kind));
+        hashU64SliceLocal(&hasher, event.parent_event_fingerprints);
+        hashOptionalU64(&hasher, event.transaction_fingerprint);
+        hashRefSlice(&hasher, event.object_refs);
+        hashRefSlice(&hasher, event.root_refs);
+        hashOptionalRef(&hasher, event.capsule_ref);
+        hashRefSlice(&hasher, event.actuation_refs);
+        hashOptionalRef(&hasher, event.actuation_idempotency_key_ref);
+        hashOptionalRef(&hasher, event.bundle_ref);
+        hashOptionalRef(&hasher, event.recovery_plan_ref);
+        hashOptionalRef(&hasher, event.recovery_report_ref);
+        hashOptionalRef(&hasher, event.inbox_outbox_item_ref);
+        hashOptionalRef(&hasher, event.target_ref);
+        hashOptionalRef(&hasher, event.module_ref);
+        hashOptionalRef(&hasher, event.assembly_ref);
+        hashOptionalRef(&hasher, event.run_ref);
+        hashOptionalRef(&hasher, event.run_permit_ref);
+        hashOptionalRef(&hasher, event.admission_receipt_ref);
+        hashOptionalRef(&hasher, event.environment_certificate_ref);
+        hashBytes(&hasher, event.blocker_summary);
+        hashBytes(&hasher, event.warning_summary);
+        return hasher.final();
+    }
+
+    fn fingerprintChroniclePrefix(previous_prefix_fingerprint: u64, event_fingerprints: []const u64) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        hashBytes(&hasher, "world.continuity.chronicle.prefix");
+        hashU64(&hasher, previous_prefix_fingerprint);
+        hashU64SliceLocal(&hasher, event_fingerprints);
+        return hasher.final();
+    }
+
+    fn fingerprintChronicleCursor(cursor: Chronicle.Cursor) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        hashBytes(&hasher, "world.continuity.chronicle.cursor");
+        hashU64(&hasher, cursor.cursor_fingerprint_version);
+        hashU64(&hasher, cursor.event_index);
+        hashOptionalU64(&hasher, cursor.last_event_fingerprint);
+        hashU64(&hasher, cursor.cumulative_prefix_fingerprint);
+        hashU64(&hasher, cursor.committed_object_count);
+        hashU64(&hasher, cursor.committed_transaction_count);
+        return hasher.final();
+    }
+
+    fn fingerprintChronicleCommit(commit: Chronicle.Commit) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        hashBytes(&hasher, "world.continuity.chronicle.commit");
+        hashU64(&hasher, commit.commit_format_version);
+        hashU64(&hasher, commit.commit_fingerprint_version);
+        hashU64(&hasher, commit.transaction_fingerprint);
+        hashU64(&hasher, commit.parent_cursor_fingerprint);
+        hashU64(&hasher, commit.resulting_cursor_fingerprint);
+        hashRefSlice(&hasher, commit.committed_object_refs);
+        hashU64SliceLocal(&hasher, commit.committed_event_fingerprints);
+        hashRefSlice(&hasher, commit.bundle_refs);
+        hashRefSlice(&hasher, commit.capsule_refs);
+        hashRefSlice(&hasher, commit.actuation_refs);
+        hashRefSlice(&hasher, commit.idempotency_key_refs);
+        hashRefSlice(&hasher, commit.validation_report_refs);
+        hashBytes(&hasher, commit.blocker_summary);
+        hashBytes(&hasher, commit.warning_summary);
+        return hasher.final();
+    }
+
+    fn fingerprintChronicleTransaction(tx: Chronicle.Transaction) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        hashBytes(&hasher, "world.continuity.chronicle.transaction");
+        hashU64(&hasher, tx.transaction_fingerprint_version);
+        hashU64(&hasher, @intFromEnum(tx.transaction_kind));
+        hashU64(&hasher, tx.parent_cursor_fingerprint);
+        hashU64(&hasher, tx.staged_envelopes.items.len);
+        for (tx.staged_envelopes.items) |envelope| {
+            hashU64(&hasher, envelope.objectRef().ref_fingerprint);
+            hashU64(&hasher, envelope.envelope_fingerprint);
+        }
+        hashU64(&hasher, tx.staged_events.items.len);
+        for (tx.staged_events.items) |event| hashU64(&hasher, event.event_fingerprint);
+        hashRefSlice(&hasher, tx.staged_root_refs.items);
+        hashRefSlice(&hasher, tx.dependency_refs.items);
+        hashRefSlice(&hasher, tx.validation_report_refs.items);
+        hashRefSlice(&hasher, tx.idempotency_key_refs.items);
+        hashBool(&hasher, tx.accepted);
+        hashBool(&hasher, tx.committed);
+        hashBool(&hasher, tx.aborted);
+        hashBytes(&hasher, tx.blockers);
+        hashBytes(&hasher, tx.warnings);
+        hashBytes(&hasher, tx.metadata_bytes);
+        return hasher.final();
+    }
+
+    fn fingerprintPersistPolicy(policy: PersistPolicy) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        hashBytes(&hasher, "world.continuity.persist.policy");
+        hashU64(&hasher, policy.policy_fingerprint_version);
+        hashBool(&hasher, policy.persist_capsules);
+        hashBool(&hasher, policy.persist_actuation_receipts);
+        hashBool(&hasher, policy.persist_actuation_journals);
+        hashBool(&hasher, policy.persist_transcript_images);
+        hashBool(&hasher, policy.persist_run_images);
+        hashBool(&hasher, policy.persist_run_receipts);
+        hashBool(&hasher, policy.persist_admission_receipts);
+        hashBool(&hasher, policy.persist_environment_certificates);
+        hashBool(&hasher, policy.persist_link_certificates);
+        hashBool(&hasher, policy.persist_fabric_receipts);
+        hashBool(&hasher, policy.persist_guest_reports);
+        hashBool(&hasher, policy.persist_pending_ports);
+        hashBool(&hasher, policy.auto_freeze_on_completed);
+        hashBool(&hasher, policy.auto_freeze_on_parked);
+        hashBool(&hasher, policy.auto_store_on_actuation_commit);
+        hashBool(&hasher, policy.reject_unstored_fresh_actuation);
+        hashBool(&hasher, policy.require_transaction_for_bundle_import);
+        hashBool(&hasher, policy.require_transaction_for_capsule_store);
+        hashBool(&hasher, policy.require_transaction_for_recovery);
+        return hasher.final();
+    }
+
+    fn fingerprintContinuitySession(session: Session) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        hashBytes(&hasher, "world.continuity.session");
+        hashU64(&hasher, session.vault.objectCount());
+        hashU64(&hasher, session.vault.cursor().cursor_fingerprint);
+        hashU64(&hasher, session.policy.policy_fingerprint);
+        hashU64(&hasher, session.active_transaction_count);
+        hashU64(&hasher, session.committed_transaction_count);
+        hashU64(&hasher, session.vault.ledger.events.items.len);
+        hashBytes(&hasher, session.metadata_bytes);
+        return hasher.final();
+    }
+
+    fn fingerprintProjectionReport(report: Chronicle.ProjectionReport) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        hashBytes(&hasher, "world.continuity.chronicle.projection.report");
+        hashU64(&hasher, @intFromEnum(report.projection_kind));
+        hashU64(&hasher, report.source_cursor_fingerprint);
+        hashU64(&hasher, report.event_count_consumed);
+        hashRefSlice(&hasher, report.object_refs_consumed);
+        hashU64(&hasher, report.result_summary_fingerprint);
+        hashU64SliceLocal(&hasher, report.blockers);
+        hashU64SliceLocal(&hasher, report.warnings);
+        return hasher.final();
+    }
+
+    fn fingerprintReplayReport(report: Chronicle.ReplayReport) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        hashBytes(&hasher, "world.continuity.chronicle.replay.report");
+        hashU64(&hasher, report.start_cursor_fingerprint);
+        hashU64(&hasher, report.end_cursor_fingerprint);
+        hashU64(&hasher, report.replayed_event_count);
+        hashU64(&hasher, report.rebuilt_projection_count);
+        hashU64(&hasher, report.mismatch_count);
+        hashU64SliceLocal(&hasher, report.blockers);
+        hashU64SliceLocal(&hasher, report.warnings);
+        return hasher.final();
+    }
+
+    fn fingerprintIdempotencyRegistry(registry: Chronicle.IdempotencyRegistry) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        hashBytes(&hasher, "world.continuity.chronicle.idempotency.registry");
+        hashU64(&hasher, registry.source_cursor_fingerprint);
+        hashRefSlice(&hasher, registry.idempotency_key_refs);
+        hashRefSlice(&hasher, registry.committed_receipt_refs);
+        hashU64(&hasher, registry.fresh_commit_count);
+        hashU64(&hasher, registry.replay_receipt_count);
+        hashU64(&hasher, registry.conflict_count);
+        hashU64SliceLocal(&hasher, registry.blockers);
+        return hasher.final();
+    }
+
+    fn projectionSummaryFingerprint(vault: *Continuity.MemoryVault, kind: Chronicle.ProjectionKind, refs: []const ObjectRef) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        hashBytes(&hasher, "world.continuity.chronicle.projection.summary");
+        hashU64(&hasher, @intFromEnum(kind));
+        hashU64(&hasher, vault.objectCount());
+        hashU64(&hasher, vault.eventCount());
+        hashU64(&hasher, vault.commitCount());
+        hashRefSlice(&hasher, refs);
+        for (vault.objects.items) |envelope| {
+            switch (kind) {
+                .capsule_index => if (envelope.kind != .capsule_image) continue,
+                .actuation_index, .idempotency_registry => if (envelope.kind != .actuation_receipt and envelope.kind != .actuation_journal) continue,
+                .object_index => {},
+                .bundle_history => if (envelope.kind != .bundle) continue,
+                .inbox, .outbox, .recovery_queue => {},
+            }
+            hashU64(&hasher, envelope.objectRef().ref_fingerprint);
+        }
+        return hasher.final();
+    }
+
+    fn projectionSummaryForReplay(vault: *Continuity.MemoryVault, kind: Chronicle.ProjectionKind) !u64 {
+        var refs: std.ArrayList(ObjectRef) = .empty;
+        defer refs.deinit(vault.allocator);
+        for (vault.objects.items) |envelope| {
+            switch (kind) {
+                .capsule_index => if (envelope.kind != .capsule_image) continue,
+                .actuation_index, .idempotency_registry => if (envelope.kind != .actuation_receipt and envelope.kind != .actuation_journal) continue,
+                .object_index => {},
+                .bundle_history => if (envelope.kind != .bundle) continue,
+                .inbox, .outbox, .recovery_queue => {},
+            }
+            const ref = envelope.objectRef();
+            if (!containsRef(refs.items, ref)) try refs.append(vault.allocator, ref);
+        }
+        var hasher = std.hash.Wyhash.init(0);
+        hashBytes(&hasher, "world.continuity.chronicle.replay.projection.summary");
+        hashU64(&hasher, @intFromEnum(kind));
+        hashRefSlice(&hasher, refs.items);
+        return hasher.final();
+    }
+
+    fn replayCommittedObjectsIntoVault(source: *Continuity.MemoryVault, destination: *Continuity.MemoryVault) !void {
+        for (source.chronicle_commit_backing.items) |backing| {
+            for (backing) |envelope| _ = try destination.putValidatedEnvelopeFromTransaction(envelope);
+        }
+    }
+
+    fn fingerprintHandoffEnvelope(envelope: HandoffEnvelope) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        hashBytes(&hasher, "world.continuity.handoff.envelope");
+        hashU64(&hasher, @intFromEnum(envelope.direction));
+        hashOptionalRef(&hasher, envelope.capsule_ref);
+        hashOptionalRef(&hasher, envelope.bundle_ref);
+        hashOptionalRef(&hasher, envelope.transfer_package_ref);
+        hashOptionalRef(&hasher, envelope.admission_receipt_ref);
+        hashOptionalRef(&hasher, envelope.recovery_plan_ref);
+        hashOptionalRef(&hasher, envelope.recovery_report_ref);
+        hashRefSlice(&hasher, envelope.actuation_refs);
+        hashU64(&hasher, @intFromEnum(envelope.status));
+        hashBytes(&hasher, envelope.metadata_bytes);
+        return hasher.final();
+    }
+
+    fn fingerprintRecoveryPlan(plan: RecoveryPlan) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        hashBytes(&hasher, "world.continuity.recovery.plan");
+        hashOptionalRef(&hasher, plan.capsule_ref);
+        hashU64(&hasher, plan.source_cursor_fingerprint);
+        hashU64(&hasher, @intFromEnum(plan.requested_mode));
+        hashRefSlice(&hasher, plan.target_match_refs);
+        hashRefSlice(&hasher, plan.module_match_refs);
+        hashBool(&hasher, plan.link_verification_status);
+        hashRefSlice(&hasher, plan.environment_preflight_refs);
+        hashRefSlice(&hasher, plan.permit_refs);
+        hashRefSlice(&hasher, plan.actuation_replay_refs);
+        hashRefSlice(&hasher, plan.actuation_local_fresh_requirements);
+        hashU64SliceLocal(&hasher, plan.idempotency_conflict_blockers);
+        hashBytes(&hasher, plan.runspace_mutation_plan);
+        hashBytes(&hasher, plan.handle_remap_plan);
+        hashBytes(&hasher, plan.mailbox_remap_plan);
+        hashU64SliceLocal(&hasher, plan.blockers);
+        hashU64SliceLocal(&hasher, plan.warnings);
+        return hasher.final();
+    }
+
+    fn fingerprintRecoveryReport(report: RecoveryReport) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        hashBytes(&hasher, "world.continuity.recovery.report");
+        hashU64(&hasher, report.recovery_plan_fingerprint);
+        hashBool(&hasher, report.accepted);
+        hashU64(&hasher, report.resulting_cursor_fingerprint);
+        hashOptionalRef(&hasher, report.restored_capsule_ref);
+        hashU64SliceLocal(&hasher, report.restored_run_handles);
+        hashU64SliceLocal(&hasher, report.restored_pending_ports);
+        hashRefSlice(&hasher, report.restored_actuation_intents);
+        hashRefSlice(&hasher, report.replayed_actuation_refs);
+        hashRefSlice(&hasher, report.new_local_actuation_refs);
+        hashOptionalRef(&hasher, report.receiver_permit_ref);
+        hashU64SliceLocal(&hasher, report.blockers);
+        hashU64SliceLocal(&hasher, report.warnings);
+        return hasher.final();
+    }
+
+    fn chronicleSawInboxOutboxRef(vault: *Continuity.MemoryVault, ref: ObjectRef) bool {
+        for (vault.chronicle_events.items) |event| {
+            if (event.inbox_outbox_item_ref) |item_ref| {
+                if (item_ref.eql(ref)) return true;
+            }
+        }
+        return false;
+    }
+
+    fn inboxOutboxPendingRefs(vault: *Continuity.MemoryVault, inbox: bool) ![]ObjectRef {
+        var refs: std.ArrayList(ObjectRef) = .empty;
+        errdefer deinitRefList(vault.allocator, &refs);
+        for (vault.chronicle_events.items) |event| {
+            const ref = event.inbox_outbox_item_ref orelse continue;
+            const created = if (inbox)
+                event.kind == .inbox_item_created or event.kind == .inbox_item_validated
+            else
+                event.kind == .outbox_item_created or event.kind == .outbox_item_exported;
+            const terminal = if (inbox)
+                event.kind == .inbox_item_accepted or event.kind == .inbox_item_rejected or event.kind == .inbox_item_restored
+            else
+                event.kind == .outbox_item_completed;
+            if (created and !containsRef(refs.items, ref)) try refs.append(vault.allocator, try ref.clone(vault.allocator));
+            if (terminal) removeRef(&refs, vault.allocator, ref);
+        }
+        return refs.toOwnedSlice(vault.allocator);
+    }
+
+    fn outboxCapsuleForRef(vault: *Continuity.MemoryVault, ref: ObjectRef) !ObjectRef {
+        for (vault.chronicle_events.items) |event| {
+            if (event.kind != .outbox_item_created) continue;
+            const item_ref = event.inbox_outbox_item_ref orelse continue;
+            if (!item_ref.eql(ref)) continue;
+            return event.capsule_ref orelse error.ObjectMissing;
+        }
+        return error.ObjectMissing;
     }
 
     fn fingerprintBundleManifest(manifest: BundleManifest) u64 {
@@ -33021,6 +35157,26 @@ pub const Continuity = struct {
         allocator.free(refs);
     }
 
+    fn cloneEnvelopeSlice(allocator: std.mem.Allocator, envelopes: []const ObjectEnvelope) ![]ObjectEnvelope {
+        const result = try allocator.alloc(ObjectEnvelope, envelopes.len);
+        errdefer allocator.free(result);
+        var initialized: usize = 0;
+        errdefer {
+            for (result[0..initialized]) |*envelope| envelope.deinit(allocator);
+        }
+        for (envelopes, 0..) |envelope, index| {
+            result[index] = try envelope.clone(allocator);
+            initialized += 1;
+        }
+        return result;
+    }
+
+    fn freeEnvelopeSlice(allocator: std.mem.Allocator, envelopes: []ObjectEnvelope) void {
+        if (envelopes.len == 0) return;
+        for (envelopes) |*envelope| envelope.deinit(allocator);
+        allocator.free(envelopes);
+    }
+
     fn deinitRefList(allocator: std.mem.Allocator, list: *std.ArrayList(ObjectRef)) void {
         for (list.items) |*ref| ref.deinit(allocator);
         list.deinit(allocator);
@@ -33031,6 +35187,16 @@ pub const Continuity = struct {
             if (ref.eql(needle)) return true;
         }
         return false;
+    }
+
+    fn removeRef(refs: *std.ArrayList(ObjectRef), allocator: std.mem.Allocator, needle: ObjectRef) void {
+        var index: usize = 0;
+        while (index < refs.items.len) : (index += 1) {
+            if (!refs.items[index].eql(needle)) continue;
+            var owned = refs.orderedRemove(index);
+            owned.deinit(allocator);
+            return;
+        }
     }
 
     fn containsU64Local(values: []const u64, needle: u64) bool {
@@ -33657,6 +35823,99 @@ test "continuity object ref fingerprint stable and kind-sensitive" {
     try std.testing.expectEqual(@as(usize, payload.len), ref_a.byte_len);
 }
 
+test "chronicle event fingerprint binds parents refs and excludes metadata authority" {
+    const capsule_ref = Continuity.ObjectRef.fromPayload(.capsule_image, world_capsule_image_format_version, "capsule", "capsule");
+    const receipt_ref = Continuity.ObjectRef.fromPayload(.actuation_receipt, world_actuation_receipt_format_version, "receipt", "receipt");
+    var parent_fingerprints = [_]u64{0xabc1};
+    var object_refs = [_]Continuity.ObjectRef{capsule_ref};
+    const event = Continuity.Chronicle.Event.init(.{
+        .kind = .capsule_stored,
+        .parent_event_fingerprints = &parent_fingerprints,
+        .transaction_fingerprint = 0x4400,
+        .object_refs = &object_refs,
+        .capsule_ref = capsule_ref,
+        .metadata_bytes = "diagnostic a",
+    });
+    try event.validate();
+
+    const same_authority_different_metadata = Continuity.Chronicle.Event.init(.{
+        .kind = .capsule_stored,
+        .parent_event_fingerprints = &parent_fingerprints,
+        .transaction_fingerprint = 0x4400,
+        .object_refs = &object_refs,
+        .capsule_ref = capsule_ref,
+        .metadata_bytes = "diagnostic b",
+    });
+    try std.testing.expectEqual(event.event_fingerprint, same_authority_different_metadata.event_fingerprint);
+
+    parent_fingerprints[0] = 0xabc2;
+    try std.testing.expectError(error.InvalidFrameEncoding, event.validate());
+    parent_fingerprints[0] = 0xabc1;
+    object_refs[0] = receipt_ref;
+    try std.testing.expectError(error.InvalidFrameEncoding, event.validate());
+}
+
+test "chronicle cursor initial and deterministic advancement" {
+    const initial = Continuity.Chronicle.Cursor.initial();
+    try initial.validate();
+    try std.testing.expectEqual(@as(u64, 0), initial.event_index);
+    try std.testing.expectEqual(@as(u64, 0), initial.committed_object_count);
+    try std.testing.expectEqual(@as(u64, 0), initial.committed_transaction_count);
+
+    const events = [_]u64{ 0x11, 0x22 };
+    const advanced = initial.advance(&events, 3, 1);
+    try advanced.validate();
+    try std.testing.expectEqual(@as(u64, 2), advanced.event_index);
+    try std.testing.expectEqual(@as(?u64, 0x22), advanced.last_event_fingerprint);
+    try std.testing.expectEqual(@as(u64, 3), advanced.committed_object_count);
+    try std.testing.expectEqual(@as(u64, 1), advanced.committed_transaction_count);
+    try std.testing.expect(initial.cursor_fingerprint != advanced.cursor_fingerprint);
+
+    const advanced_again = initial.advance(&events, 3, 1);
+    try std.testing.expectEqual(advanced.cursor_fingerprint, advanced_again.cursor_fingerprint);
+    try std.testing.expectEqual(advanced.cumulative_prefix_fingerprint, advanced_again.cumulative_prefix_fingerprint);
+}
+
+test "chronicle commit fingerprint binds transaction cursors objects and events" {
+    const capsule_ref = Continuity.ObjectRef.fromPayload(.capsule_image, world_capsule_image_format_version, "capsule", "capsule");
+    const initial = Continuity.Chronicle.Cursor.initial();
+    const events = [_]u64{0x9999};
+    const advanced = initial.advance(&events, 1, 1);
+    const objects = [_]Continuity.ObjectRef{capsule_ref};
+    const commit = Continuity.Chronicle.Commit.init(.{
+        .transaction_fingerprint = 0x5151,
+        .parent_cursor_fingerprint = initial.cursor_fingerprint,
+        .resulting_cursor_fingerprint = advanced.cursor_fingerprint,
+        .committed_object_refs = &objects,
+        .committed_event_fingerprints = &events,
+        .capsule_refs = &objects,
+        .metadata_bytes = "diagnostic a",
+    });
+    try commit.validate();
+
+    const same_authority_different_metadata = Continuity.Chronicle.Commit.init(.{
+        .transaction_fingerprint = 0x5151,
+        .parent_cursor_fingerprint = initial.cursor_fingerprint,
+        .resulting_cursor_fingerprint = advanced.cursor_fingerprint,
+        .committed_object_refs = &objects,
+        .committed_event_fingerprints = &events,
+        .capsule_refs = &objects,
+        .metadata_bytes = "diagnostic b",
+    });
+    try std.testing.expectEqual(commit.commit_fingerprint, same_authority_different_metadata.commit_fingerprint);
+
+    var changed_events = [_]u64{0xaaaa};
+    const changed_commit = Continuity.Chronicle.Commit.init(.{
+        .transaction_fingerprint = 0x5151,
+        .parent_cursor_fingerprint = initial.cursor_fingerprint,
+        .resulting_cursor_fingerprint = advanced.cursor_fingerprint,
+        .committed_object_refs = &objects,
+        .committed_event_fingerprints = &changed_events,
+        .capsule_refs = &objects,
+    });
+    try std.testing.expect(commit.commit_fingerprint != changed_commit.commit_fingerprint);
+}
+
 test "continuity object envelope encode decode preserves dependencies" {
     const allocator = std.testing.allocator;
     const dep = Continuity.ObjectRef.fromPayload(.actuation_receipt, world_actuation_receipt_format_version, "receipt", "receipt");
@@ -33879,6 +36138,473 @@ test "memory vault put get has list and deduplicates envelopes" {
     defer allocator.free(refs);
     try std.testing.expectEqual(@as(usize, 1), refs.len);
     try std.testing.expect(refs[0].eql(ref));
+}
+
+test "chronicle transaction staged put abort and commit are atomic" {
+    const allocator = std.testing.allocator;
+    var vault = Continuity.MemoryVault.init(allocator);
+    defer vault.deinit();
+    const initial_object_count = vault.objectCount();
+    const initial_event_count = vault.eventCount();
+    const initial_cursor = vault.cursor();
+
+    const envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .capsule_manifest,
+        .object_format_version = world_capsule_manifest_format_version,
+        .payload_bytes = "manifest",
+        .label = "manifest",
+    });
+
+    var abort_tx = try vault.beginTransaction(.custom, .{});
+    defer abort_tx.deinit();
+    const staged_ref = try abort_tx.put(envelope);
+    try std.testing.expect(!vault.has(staged_ref));
+    try std.testing.expectEqual(initial_object_count, vault.objectCount());
+    abort_tx.abort();
+    try std.testing.expectEqual(initial_object_count, vault.objectCount());
+    try std.testing.expectEqual(initial_event_count, vault.eventCount());
+    try std.testing.expectEqual(initial_cursor.cursor_fingerprint, vault.cursor().cursor_fingerprint);
+
+    var commit_tx = try vault.beginTransaction(.custom, .{});
+    defer commit_tx.deinit();
+    const committed_ref = try commit_tx.put(envelope);
+    try commit_tx.validate();
+    const commit = try commit_tx.commit();
+    try commit.validate();
+    try std.testing.expect(vault.has(committed_ref));
+    try std.testing.expectEqual(initial_object_count + 1, vault.objectCount());
+    try std.testing.expect(vault.eventCount() > initial_event_count);
+    try std.testing.expect(vault.cursor().cursor_fingerprint != initial_cursor.cursor_fingerprint);
+    try std.testing.expectEqual(@as(usize, 1), vault.commitCount());
+}
+
+test "chronicle transaction duplicate identical deduplicates and conflicting object rejects" {
+    const allocator = std.testing.allocator;
+    var vault = Continuity.MemoryVault.init(allocator);
+    defer vault.deinit();
+
+    const envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .capsule_manifest,
+        .object_format_version = world_capsule_manifest_format_version,
+        .payload_bytes = "manifest",
+        .label = "manifest",
+    });
+    var tx = try vault.beginTransaction(.custom, .{});
+    defer tx.deinit();
+    const first_ref = try tx.put(envelope);
+    const second_ref = try tx.put(envelope);
+    try std.testing.expect(first_ref.eql(second_ref));
+    try std.testing.expectEqual(@as(usize, 1), tx.staged_envelopes.items.len);
+
+    const conflicting = Continuity.ObjectEnvelope{
+        .envelope_fingerprint = envelope.envelope_fingerprint +% 1,
+        .kind = envelope.kind,
+        .object_format_version = envelope.object_format_version,
+        .object_fingerprint = envelope.object_fingerprint,
+        .object_byte_len = envelope.object_byte_len,
+        .payload_bytes = envelope.payload_bytes,
+        .label = "conflicting diagnostics",
+    };
+    try std.testing.expectError(error.InvalidFrameEncoding, tx.put(conflicting));
+}
+
+test "persist policy presets are deterministic and default persists nothing" {
+    const none = Continuity.PersistPolicy.none();
+    try none.validate();
+    try std.testing.expect(!none.persist_capsules);
+    try std.testing.expect(!none.persist_actuation_receipts);
+    try std.testing.expect(!none.persist_actuation_journals);
+
+    const capsule = Continuity.PersistPolicy.capsule_only();
+    try capsule.validate();
+    try std.testing.expect(capsule.persist_capsules);
+    try std.testing.expect(!capsule.persist_actuation_receipts);
+
+    const actuation = Continuity.PersistPolicy.actuation_only();
+    try actuation.validate();
+    try std.testing.expect(!actuation.persist_capsules);
+    try std.testing.expect(actuation.persist_actuation_receipts);
+    try std.testing.expect(actuation.persist_actuation_journals);
+
+    const full = Continuity.PersistPolicy.full_local_evidence();
+    try full.validate();
+    try std.testing.expect(full.persist_capsules);
+    try std.testing.expect(full.persist_guest_reports);
+    try std.testing.expect(full.policy_fingerprint != none.policy_fingerprint);
+}
+
+test "continuity session begins transactions and policy gates persistence" {
+    const allocator = std.testing.allocator;
+    var vault = Continuity.MemoryVault.init(allocator);
+    defer vault.deinit();
+
+    var session = try Continuity.Session.init(allocator, &vault, null);
+    var tx = try session.begin(.custom);
+    defer tx.deinit();
+    try std.testing.expectEqual(@as(usize, 1), session.active_transaction_count);
+    tx.abort();
+
+    var runspace = Runspace.init(allocator, .{});
+    defer runspace.deinit();
+    var image = try Capsule.freezeRunspace(&runspace, .{});
+    defer image.deinit(allocator);
+    try std.testing.expectError(error.PersistenceDisabled, session.storeCapsule(image));
+    try std.testing.expectEqual(@as(usize, 0), vault.objectCount());
+}
+
+test "continuity session stores capsule and actuation receipt through chronicle transactions" {
+    const allocator = std.testing.allocator;
+    var vault = Continuity.MemoryVault.init(allocator);
+    defer vault.deinit();
+    var session = try Continuity.Session.init(allocator, &vault, Continuity.PersistPolicy.capsule_and_actuation());
+
+    var runspace = Runspace.init(allocator, .{});
+    defer runspace.deinit();
+    var image = try Capsule.freezeRunspace(&runspace, .{});
+    defer image.deinit(allocator);
+    const capsule_ref = try session.storeCapsule(image);
+    try std.testing.expect(vault.has(capsule_ref));
+
+    const receipt = Actuation.Receipt.init(.{
+        .intent_fingerprint = 0x3460_0010,
+        .envelope_fingerprint = 0x3460_0011,
+        .decision_fingerprint = 0x3460_0012,
+        .commit_fingerprint = 0x3460_0013,
+        .response_fingerprint = 0x3460_0014,
+        .frame_response_fingerprint = 0x3460_0015,
+        .actuator_ref_fingerprint = 0x3460_0004,
+        .idempotency_key_fingerprint = 0x3460_0020,
+        .request_fingerprint = 0x3460_0003,
+        .target_ref_fingerprint = 0x3460_0001,
+        .world_surface_fingerprint = 0x3460_0002,
+        .world_port_id = 7,
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+        .fresh_called = true,
+    });
+    const receipt_ref = try session.storeActuationReceipt(receipt);
+    try std.testing.expect(vault.has(receipt_ref));
+    try std.testing.expectEqual(@as(usize, 2), session.committed_transaction_count);
+    try std.testing.expectEqual(@as(usize, 2), vault.commitCount());
+}
+
+test "freeze to session stores completed and handle capsules through chronicle transactions" {
+    const allocator = std.testing.allocator;
+    var vault = Continuity.MemoryVault.init(allocator);
+    defer vault.deinit();
+    var session = try Continuity.Session.init(allocator, &vault, Continuity.PersistPolicy.capsule_only());
+
+    var runspace = Runspace.init(allocator, .{});
+    defer runspace.deinit();
+    const capsule_ref = try Capsule.freezeToSession(&session, &runspace, .{});
+    try std.testing.expect(vault.has(capsule_ref));
+
+    const handle = RunHandle.init(.{
+        .runspace_fingerprint = runspace.runspace_fingerprint,
+        .local_run_id = 0,
+        .target_ref_fingerprint = 0x3465_0001,
+    });
+    const handle_ref = try Capsule.freezeRunToSession(&session, &runspace, handle, .{});
+    try std.testing.expect(vault.has(handle_ref));
+    try std.testing.expectEqual(@as(usize, 2), session.committed_transaction_count);
+
+    var disabled_vault = Continuity.MemoryVault.init(allocator);
+    defer disabled_vault.deinit();
+    var disabled_session = try Continuity.Session.init(allocator, &disabled_vault, null);
+    try std.testing.expectError(error.PersistenceDisabled, Capsule.freezeToSession(&disabled_session, &runspace, .{}));
+}
+
+test "actuation to session records idempotency and permits replay receipts" {
+    const allocator = std.testing.allocator;
+    var vault = Continuity.MemoryVault.init(allocator);
+    defer vault.deinit();
+    var session = try Continuity.Session.init(allocator, &vault, Continuity.PersistPolicy.actuation_only());
+
+    const key = Actuation.IdempotencyKey.init(.{
+        .target_ref_fingerprint = 0x3466_0001,
+        .world_surface_fingerprint = 0x3466_0002,
+        .world_port_id = 7,
+        .request_fingerprint = 0x3466_0003,
+        .actuator_ref_fingerprint = 0x3466_0004,
+    });
+    try Actuation.assertIdempotencyAvailable(&session, key, .{});
+    const receipt = Actuation.Receipt.init(.{
+        .intent_fingerprint = 0x3466_0010,
+        .envelope_fingerprint = 0x3466_0011,
+        .decision_fingerprint = 0x3466_0012,
+        .commit_fingerprint = 0x3466_0013,
+        .response_fingerprint = 0x3466_0014,
+        .frame_response_fingerprint = 0x3466_0015,
+        .actuator_ref_fingerprint = key.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .request_fingerprint = key.request_fingerprint,
+        .target_ref_fingerprint = key.target_ref_fingerprint,
+        .world_surface_fingerprint = key.world_surface_fingerprint,
+        .world_port_id = key.world_port_id,
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+        .fresh_called = true,
+    });
+    const receipt_ref = try Actuation.commitToSession(&session, receipt, .{});
+    try std.testing.expect(vault.has(receipt_ref));
+    try std.testing.expectError(error.DuplicateBinding, Actuation.assertIdempotencyAvailable(&session, key, .{}));
+    try std.testing.expectError(error.DuplicateBinding, Actuation.commitToSession(&session, receipt, .{}));
+
+    const replay_receipt = Actuation.Receipt.init(.{
+        .intent_fingerprint = 0x3466_0030,
+        .envelope_fingerprint = 0x3466_0031,
+        .decision_fingerprint = 0x3466_0032,
+        .commit_fingerprint = 0x3466_0033,
+        .response_fingerprint = 0x3466_0034,
+        .frame_response_fingerprint = 0x3466_0035,
+        .actuator_ref_fingerprint = key.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .request_fingerprint = key.request_fingerprint,
+        .target_ref_fingerprint = key.target_ref_fingerprint,
+        .world_surface_fingerprint = key.world_surface_fingerprint,
+        .world_port_id = key.world_port_id,
+        .class = .deterministic_fixture,
+        .mode = .replay,
+        .fresh_called = false,
+        .replayed = true,
+    });
+    const replay_ref = try Actuation.commitToSession(&session, replay_receipt, .{});
+    try std.testing.expect(vault.has(replay_ref));
+
+    var journal = Actuation.Journal.init();
+    defer journal.deinit(allocator);
+    try journal.appendReceipt(allocator, replay_receipt);
+    const journal_ref = try Actuation.journalToSession(&session, journal, .{});
+    try std.testing.expect(vault.has(journal_ref));
+}
+
+test "ContinuitySink opt-in bridge persists configured evidence and surfaces failure" {
+    const allocator = std.testing.allocator;
+    const receipt = Actuation.Receipt.init(.{
+        .intent_fingerprint = 0x3467_0010,
+        .envelope_fingerprint = 0x3467_0011,
+        .decision_fingerprint = 0x3467_0012,
+        .commit_fingerprint = 0x3467_0013,
+        .response_fingerprint = 0x3467_0014,
+        .frame_response_fingerprint = 0x3467_0015,
+        .actuator_ref_fingerprint = 0x3467_0004,
+        .idempotency_key_fingerprint = 0x3467_0020,
+        .request_fingerprint = 0x3467_0003,
+        .target_ref_fingerprint = 0x3467_0001,
+        .world_surface_fingerprint = 0x3467_0002,
+        .world_port_id = 7,
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+        .fresh_called = true,
+    });
+
+    var idle_vault = Continuity.MemoryVault.init(allocator);
+    defer idle_vault.deinit();
+    _ = try Continuity.Session.init(allocator, &idle_vault, Continuity.PersistPolicy.full_local_evidence());
+    try std.testing.expectEqual(@as(usize, 0), idle_vault.objectCount());
+
+    var disabled_vault = Continuity.MemoryVault.init(allocator);
+    defer disabled_vault.deinit();
+    var disabled_session = try Continuity.Session.init(allocator, &disabled_vault, null);
+    var failing_sink = Continuity.Sink.init(&disabled_session, Continuity.SinkPolicy.actuation_receipts());
+    try std.testing.expectError(error.PersistenceDisabled, failing_sink.recordActuationReceipt(receipt));
+
+    var vault = Continuity.MemoryVault.init(allocator);
+    defer vault.deinit();
+    var session = try Continuity.Session.init(allocator, &vault, Continuity.PersistPolicy.full_local_evidence());
+    var sink = Continuity.Sink.init(&session, Continuity.SinkPolicy.full_local_evidence());
+    const receipt_ref = (try sink.recordActuationReceipt(receipt)).?;
+    try std.testing.expect(vault.has(receipt_ref));
+
+    var runspace = Runspace.init(allocator, .{});
+    defer runspace.deinit();
+    const capsule_ref = (try sink.recordCompletedCapsule(&runspace, .{})).?;
+    try std.testing.expect(vault.has(capsule_ref));
+}
+
+test "projection reports detect stale cursor and chronicle replay reports are stable" {
+    const allocator = std.testing.allocator;
+    var vault = Continuity.MemoryVault.init(allocator);
+    defer vault.deinit();
+
+    const envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .capsule_manifest,
+        .object_format_version = world_capsule_manifest_format_version,
+        .payload_bytes = "manifest",
+        .label = "manifest",
+    });
+    var tx = try vault.beginTransaction(.custom, .{});
+    defer tx.deinit();
+    _ = try tx.put(envelope);
+    _ = try tx.commit();
+
+    const cursor = vault.cursor();
+    var projection = try Continuity.Chronicle.Projection.rebuild(&vault, .object_index);
+    try projection.report.validate();
+    try projection.assertFresh(cursor);
+
+    const report = try Continuity.Chronicle.replay(&vault, .{});
+    try report.validate();
+    try std.testing.expectEqual(vault.eventCount(), report.replayed_event_count);
+    const report_again = try Continuity.Chronicle.replay(&vault, .{});
+    try std.testing.expectEqual(report.report_fingerprint, report_again.report_fingerprint);
+
+    const second = Continuity.ObjectEnvelope.init(.{
+        .kind = .capsule_certificate,
+        .object_format_version = 1,
+        .payload_bytes = "certificate",
+        .label = "certificate",
+    });
+    var second_tx = try vault.beginTransaction(.custom, .{});
+    defer second_tx.deinit();
+    _ = try second_tx.put(second);
+    _ = try second_tx.commit();
+    try std.testing.expectError(error.StaleProjection, projection.assertFresh(vault.cursor()));
+}
+
+test "idempotency registry records fresh commits and allows replay receipts" {
+    const allocator = std.testing.allocator;
+    var vault = Continuity.MemoryVault.init(allocator);
+    defer vault.deinit();
+    var session = try Continuity.Session.init(allocator, &vault, Continuity.PersistPolicy.actuation_only());
+
+    const receipt = Actuation.Receipt.init(.{
+        .intent_fingerprint = 0x3470_0010,
+        .envelope_fingerprint = 0x3470_0011,
+        .decision_fingerprint = 0x3470_0012,
+        .commit_fingerprint = 0x3470_0013,
+        .response_fingerprint = 0x3470_0014,
+        .frame_response_fingerprint = 0x3470_0015,
+        .actuator_ref_fingerprint = 0x3470_0004,
+        .idempotency_key_fingerprint = 0x3470_0020,
+        .request_fingerprint = 0x3470_0003,
+        .target_ref_fingerprint = 0x3470_0001,
+        .world_surface_fingerprint = 0x3470_0002,
+        .world_port_id = 7,
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+        .fresh_called = true,
+    });
+    const receipt_ref = try session.storeActuationReceipt(receipt);
+    var registry = try Continuity.Chronicle.IdempotencyRegistry.rebuild(&vault);
+    defer registry.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), registry.fresh_commit_count);
+    const key_ref = Continuity.ObjectRef.init(.{
+        .kind = .actuation_idempotency_key,
+        .object_fingerprint = receipt.idempotency_key_fingerprint,
+        .byte_len = 0,
+    });
+    try std.testing.expect(registry.lookup(key_ref).?.eql(receipt_ref));
+    try std.testing.expectError(error.DuplicateBinding, registry.assertFreshCommitAllowed(key_ref));
+
+    const replay_receipt = Actuation.Receipt.init(.{
+        .intent_fingerprint = 0x3470_0030,
+        .envelope_fingerprint = 0x3470_0031,
+        .decision_fingerprint = 0x3470_0032,
+        .commit_fingerprint = 0x3470_0033,
+        .response_fingerprint = 0x3470_0034,
+        .frame_response_fingerprint = 0x3470_0035,
+        .actuator_ref_fingerprint = 0x3470_0004,
+        .idempotency_key_fingerprint = 0x3470_0040,
+        .request_fingerprint = 0x3470_0003,
+        .target_ref_fingerprint = 0x3470_0001,
+        .world_surface_fingerprint = 0x3470_0002,
+        .world_port_id = 7,
+        .class = .deterministic_fixture,
+        .mode = .replay,
+        .fresh_called = false,
+        .replayed = true,
+    });
+    _ = try session.storeActuationReceipt(replay_receipt);
+    var replay_registry = try Continuity.Chronicle.IdempotencyRegistry.rebuild(&vault);
+    defer replay_registry.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), replay_registry.fresh_commit_count);
+    try std.testing.expectEqual(@as(usize, 1), replay_registry.replay_receipt_count);
+}
+
+test "inbox outbox views rebuild from chronicle events" {
+    const allocator = std.testing.allocator;
+    var outbound_vault = Continuity.MemoryVault.init(allocator);
+    defer outbound_vault.deinit();
+    var outbound_session = try Continuity.Session.init(allocator, &outbound_vault, Continuity.PersistPolicy.full_local_evidence());
+
+    const envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .capsule_manifest,
+        .object_format_version = world_capsule_manifest_format_version,
+        .payload_bytes = "manifest",
+        .label = "manifest",
+    });
+    var tx = try outbound_vault.beginTransaction(.custom, .{});
+    defer tx.deinit();
+    const root_ref = try tx.put(envelope);
+    _ = try tx.commit();
+
+    var outbox = Continuity.Chronicle.Outbox.init(&outbound_session);
+    const outbound_ref = try outbox.stageCapsule(root_ref);
+    const pending_outbound = try outbox.listPending();
+    defer {
+        for (pending_outbound) |*ref| ref.deinit(allocator);
+        allocator.free(pending_outbound);
+    }
+    try std.testing.expectEqual(@as(usize, 1), pending_outbound.len);
+
+    var bundle = try outbox.exportBundle(outbound_ref);
+    defer bundle.deinit();
+    try outbox.markExported(outbound_ref);
+    const completed_outbound = try outbox.listPending();
+    defer {
+        for (completed_outbound) |*ref| ref.deinit(allocator);
+        allocator.free(completed_outbound);
+    }
+    try std.testing.expectEqual(@as(usize, 0), completed_outbound.len);
+
+    const bundle_bytes = try bundle.toBytes(allocator);
+    defer allocator.free(bundle_bytes);
+    var inbound_vault = Continuity.MemoryVault.init(allocator);
+    defer inbound_vault.deinit();
+    var inbound_session = try Continuity.Session.init(allocator, &inbound_vault, Continuity.PersistPolicy.full_local_evidence());
+    var inbox = Continuity.Chronicle.Inbox.init(&inbound_session);
+    const inbound_ref = try inbox.importBundle(bundle_bytes);
+    const pending_inbound = try inbox.listPending();
+    defer {
+        for (pending_inbound) |*ref| ref.deinit(allocator);
+        allocator.free(pending_inbound);
+    }
+    try std.testing.expectEqual(@as(usize, 1), pending_inbound.len);
+    try std.testing.expect(pending_inbound[0].eql(inbound_ref));
+    try inbox.validate(inbound_ref);
+    try inbox.accept(inbound_ref);
+    const accepted_inbound = try inbox.listPending();
+    defer {
+        for (accepted_inbound) |*ref| ref.deinit(allocator);
+        allocator.free(accepted_inbound);
+    }
+    try std.testing.expectEqual(@as(usize, 0), accepted_inbound.len);
+}
+
+test "executable recovery plans and rejects before runspace mutation" {
+    const allocator = std.testing.allocator;
+    var vault = Continuity.MemoryVault.init(allocator);
+    defer vault.deinit();
+    var session = try Continuity.Session.init(allocator, &vault, Continuity.PersistPolicy.full_local_evidence());
+    const missing_capsule = Continuity.ObjectRef.init(.{
+        .kind = .capsule_image,
+        .object_format_version = world_capsule_image_format_version,
+        .object_fingerprint = 0x3490_0001,
+        .byte_len = 0,
+    });
+    var runspace = Runspace.init(allocator, .{});
+    defer runspace.deinit();
+    const before_slots = runspace.slots.items.len;
+
+    const plan = try Continuity.Recovery.planThawFromVault(&session, missing_capsule, {}, {}, {}, .{});
+    try plan.validate();
+    try std.testing.expectEqual(session.cursor().cursor_fingerprint, plan.source_cursor_fingerprint);
+    try std.testing.expect(plan.blockers.len != 0);
+    const report = try Continuity.Recovery.thawFromVault(&session, &runspace, missing_capsule, {}, {}, {}, .{});
+    try report.validate();
+    try std.testing.expect(!report.accepted);
+    try std.testing.expectEqual(before_slots, runspace.slots.items.len);
 }
 
 test "memory vault stores capsule receipt journal and looks up idempotency key" {

@@ -1,0 +1,7 @@
+st-350 session sink/domain helper proof
+zig fmt --check src/world.zig: PASS
+zig build test --summary none -- --test-filter "freeze to session": PASS
+zig build test --summary none -- --test-filter "actuation to session": PASS
+zig build test --summary none -- --test-filter "ContinuitySink": PASS
+zig build test --summary none -- --test-filter "chronicle": PASS
+zig build test --summary none -- --test-filter "continuity": PASS
