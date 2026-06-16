@@ -29767,11 +29767,8 @@ pub const Continuity = struct {
                 if (envelope.kind != .capsule_image) continue;
                 var image = try Capsule.Image.decode(self.vault.allocator, envelope.payload_bytes);
                 defer image.deinit(self.vault.allocator);
-                const matches = image.actuation_receipt_refs.len != 0 or
-                    image.runspace_image.actuation_receipt_refs.len != 0 or
-                    image.manifest.actuation_receipt_fingerprints.len != 0 or
-                    try capsuleHasTerminalActuationJournal(self.vault, image) or
-                    (image.runspace_image.mailbox_image != null and image.runspace_image.mailbox_image.?.committed_actuation_receipt_fingerprints.len != 0);
+                const matches = try capsuleHasTerminalActuationReceipt(self.vault, image) or
+                    try capsuleHasTerminalActuationJournal(self.vault, image);
                 if (matches) try refs.append(self.vault.allocator, envelope.objectRef());
             }
             return refs.toOwnedSlice(self.vault.allocator);
@@ -29891,8 +29888,8 @@ pub const Continuity = struct {
             if (try self.vault.lookupActuationByIdempotencyKey(key)) |ref| {
                 var receipt = try self.vault.getActuationReceipt(ref);
                 defer receipt.deinit(self.vault.allocator);
-                if (isReplayableReceipt(receipt)) return ref;
-                return (try self.receiptByIdempotencyKeyFromJournals(key)) orelse ref;
+                if (isReplayableReceipt(receipt) and receiptIsTerminalFreshCommit(receipt)) return ref;
+                return (try self.receiptByIdempotencyKeyFromJournals(key)) orelse if (isReplayableReceipt(receipt)) ref else null;
             }
             return self.receiptByIdempotencyKeyFromJournals(key);
         }
@@ -32463,6 +32460,29 @@ pub const Continuity = struct {
         if (try capsuleJournalListHasTerminalCommit(vault, image.actuation_journal_refs)) return true;
         if (try capsuleJournalListHasTerminalCommit(vault, image.runspace_image.actuation_journal_refs)) return true;
         if (try capsuleJournalListHasTerminalCommit(vault, image.manifest.actuation_journal_fingerprints)) return true;
+        return false;
+    }
+
+    fn capsuleHasTerminalActuationReceipt(vault: *Continuity.MemoryVault, image: Capsule.Image) !bool {
+        if (try capsuleReceiptListHasTerminalFreshCommit(vault, image.actuation_receipt_refs)) return true;
+        if (try capsuleReceiptListHasTerminalFreshCommit(vault, image.runspace_image.actuation_receipt_refs)) return true;
+        if (try capsuleReceiptListHasTerminalFreshCommit(vault, image.manifest.actuation_receipt_fingerprints)) return true;
+        if (image.runspace_image.mailbox_image) |mailbox| {
+            if (try capsuleReceiptListHasTerminalFreshCommit(vault, mailbox.committed_actuation_receipt_fingerprints)) return true;
+        }
+        return false;
+    }
+
+    fn capsuleReceiptListHasTerminalFreshCommit(vault: *Continuity.MemoryVault, receipt_fingerprints: []const u64) !bool {
+        for (receipt_fingerprints) |receipt_fingerprint| {
+            const receipt_ref = (try vault.refByKindFingerprint(.actuation_receipt, receipt_fingerprint)) orelse continue;
+            var receipt = vault.getActuationReceipt(receipt_ref) catch |err| switch (err) {
+                error.ObjectMissing => continue,
+                else => return err,
+            };
+            defer receipt.deinit(vault.allocator);
+            if (receiptIsTerminalFreshCommit(receipt)) return true;
+        }
         return false;
     }
 
@@ -36888,22 +36908,41 @@ test "capsule index finds target completed pending committed and relink capsules
     });
     const pending_ref = try vault.putCapsule(pending_image);
 
+    const committed_receipt = Actuation.Receipt.init(.{
+        .intent_fingerprint = 0x3300_0020,
+        .envelope_fingerprint = 0x3300_0021,
+        .decision_fingerprint = 0x3300_0022,
+        .commit_fingerprint = 0x3300_0023,
+        .response_fingerprint = 0x3300_0024,
+        .frame_response_fingerprint = 0x3300_0025,
+        .actuator_ref_fingerprint = 0x3300_0026,
+        .idempotency_key_fingerprint = 0x3300_0027,
+        .request_fingerprint = 0x3300_0028,
+        .target_ref_fingerprint = 0x3300_0029,
+        .world_surface_fingerprint = 0x3300_002a,
+        .world_port_id = 4,
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+        .fresh_called = true,
+    });
+    _ = try vault.putActuationReceipt(committed_receipt);
+
     const committed_manifest = Capsule.Manifest.init(.{
         .kind = base_image.manifest.kind,
         .root_target_ref_fingerprint = base_image.manifest.root_target_ref_fingerprint,
         .root_module_ref_fingerprint = 0x3300_0002,
-        .actuation_receipt_fingerprints = &.{0x3300_0020},
+        .actuation_receipt_fingerprints = &.{committed_receipt.receipt_fingerprint},
         .normal_form = base_image.manifest.normal_form,
     });
     const committed_runspace = Capsule.RunspaceImage.init(.{
         .runspace_fingerprint = base_image.runspace_image.runspace_fingerprint,
         .runspace_report_fingerprint = base_image.runspace_image.runspace_report_fingerprint,
-        .actuation_receipt_refs = &.{0x3300_0020},
+        .actuation_receipt_refs = &.{committed_receipt.receipt_fingerprint},
     });
     const committed_image = Capsule.Image.init(.{
         .manifest = committed_manifest,
         .runspace_image = committed_runspace,
-        .actuation_receipt_refs = &.{0x3300_0020},
+        .actuation_receipt_refs = &.{committed_receipt.receipt_fingerprint},
     });
     const committed_ref = try vault.putCapsule(committed_image);
 
