@@ -876,8 +876,8 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Chronicle capsule commit example.",
             .expected_stdout =
             \\capsule_ref=886e63b600519640
-            \\commit_fingerprint=4f7af41e26449b45
-            \\cursor_fingerprint=d5420df9f43dc1a7
+            \\commit_fingerprint=4cd56ba14df6809c
+            \\cursor_fingerprint=218ebe5d3bfe22f8
             \\final_result=chronicle-capsule-commit-ok
             \\
             ,
@@ -902,7 +902,7 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Chronicle replay projection example.",
             .expected_stdout =
             \\event_count=7
-            \\replay_report_fingerprint=f7b6468107b88c78
+            \\replay_report_fingerprint=1cc8b988f3f655d7
             \\projection_match=true
             \\
             ,
@@ -925,8 +925,8 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-chronicle-recovery",
             .desc = "Run the World Chronicle recovery example.",
             .expected_stdout =
-            \\recovery_plan_fingerprint=91c6fef2fea49fc4
-            \\recovery_report_fingerprint=5654e595225146ff
+            \\recovery_plan_fingerprint=5c95cd300297f567
+            \\recovery_report_fingerprint=731e04ab0b5523f5
             \\restored=true
             \\final_result=chronicle-recovery-ok
             \\

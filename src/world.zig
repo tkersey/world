@@ -33242,8 +33242,8 @@ pub const Continuity = struct {
         hashRefSlice(&hasher, commit.actuation_refs);
         hashRefSlice(&hasher, commit.idempotency_key_refs);
         hashRefSlice(&hasher, commit.validation_report_refs);
-        hashBytes(&hasher, commit.blocker_summary);
-        hashBytes(&hasher, commit.warning_summary);
+        hashBytesWithLenLocal(&hasher, commit.blocker_summary);
+        hashBytesWithLenLocal(&hasher, commit.warning_summary);
         return hasher.final();
     }
 
@@ -33264,9 +33264,9 @@ pub const Continuity = struct {
         hashRefSlice(&hasher, tx.dependency_refs.items);
         hashRefSlice(&hasher, tx.validation_report_refs.items);
         hashRefSlice(&hasher, tx.idempotency_key_refs.items);
-        hashBytes(&hasher, tx.blockers);
-        hashBytes(&hasher, tx.warnings);
-        hashBytes(&hasher, tx.metadata_bytes);
+        hashBytesWithLenLocal(&hasher, tx.blockers);
+        hashBytesWithLenLocal(&hasher, tx.warnings);
+        hashBytesWithLenLocal(&hasher, tx.metadata_bytes);
         return hasher.final();
     }
 
@@ -36571,6 +36571,28 @@ test "chronicle commit fingerprint binds transaction cursors objects and events"
         .capsule_refs = &objects,
     });
     try std.testing.expect(commit.commit_fingerprint != changed_commit.commit_fingerprint);
+
+    const delimited_summary_a = Continuity.Chronicle.Commit.init(.{
+        .transaction_fingerprint = 0x5151,
+        .parent_cursor_fingerprint = initial.cursor_fingerprint,
+        .resulting_cursor_fingerprint = advanced.cursor_fingerprint,
+        .committed_object_refs = &objects,
+        .committed_event_fingerprints = &events,
+        .capsule_refs = &objects,
+        .blocker_summary = "a",
+        .warning_summary = "bc",
+    });
+    const delimited_summary_b = Continuity.Chronicle.Commit.init(.{
+        .transaction_fingerprint = 0x5151,
+        .parent_cursor_fingerprint = initial.cursor_fingerprint,
+        .resulting_cursor_fingerprint = advanced.cursor_fingerprint,
+        .committed_object_refs = &objects,
+        .committed_event_fingerprints = &events,
+        .capsule_refs = &objects,
+        .blocker_summary = "ab",
+        .warning_summary = "c",
+    });
+    try std.testing.expect(delimited_summary_a.commit_fingerprint != delimited_summary_b.commit_fingerprint);
 }
 
 test "continuity object envelope encode decode preserves dependencies" {
