@@ -29041,6 +29041,7 @@ pub const Continuity = struct {
             pub fn validate(self: *@This()) !void {
                 if (self.committed or self.aborted) return error.InvalidRunspaceTransition;
                 if (self.transaction_fingerprint_version != world_chronicle_transaction_fingerprint_version) return error.InvalidFrameEncoding;
+                if (self.parent_cursor_fingerprint != self.vault.chronicle_cursor.cursor_fingerprint) return error.StaleTransaction;
                 try self.vault.rejectConflictingTransactionEnvelopes(self.staged_envelopes.items);
                 const staged_bundle = Bundle{
                     .allocator = self.allocator,
@@ -36490,6 +36491,25 @@ test "chronicle transaction staged put abort and commit are atomic" {
     try std.testing.expectEqual(object_count_before_duplicate, vault.objectCount());
     try std.testing.expectEqual(@as(usize, 0), duplicate_commit.committed_object_refs.len);
     try std.testing.expectEqual(committed_object_count_before_duplicate, vault.cursor().committed_object_count);
+
+    var stale_tx = try vault.beginTransaction(.custom, .{});
+    defer stale_tx.deinit();
+    const stale_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .capsule_manifest,
+        .object_format_version = world_capsule_manifest_format_version,
+        .payload_bytes = "stale",
+        .label = "stale",
+    });
+    const stale_ref = try stale_tx.put(stale_envelope);
+    const interleaving_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .capsule_manifest,
+        .object_format_version = world_capsule_manifest_format_version,
+        .payload_bytes = "interleaving",
+        .label = "interleaving",
+    });
+    _ = try vault.put(interleaving_envelope);
+    try std.testing.expectError(error.StaleTransaction, stale_tx.commit());
+    try std.testing.expect(!vault.has(stale_ref));
 }
 
 test "chronicle transaction duplicate identical deduplicates and conflicting object rejects" {
