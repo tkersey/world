@@ -29182,8 +29182,11 @@ pub const Continuity = struct {
                     .committed_event_fingerprints = event_fingerprints,
                 });
                 try commit_record.validate();
-                const owned_commit = try commit_record.clone(self.allocator);
+                var owned_commit = try commit_record.clone(self.allocator);
+                var commit_appended = false;
+                errdefer if (!commit_appended) owned_commit.deinit(self.allocator);
                 try self.vault.chronicle_commits.append(self.allocator, owned_commit);
+                commit_appended = true;
                 try self.vault.chronicle_commit_backing.append(self.allocator, backing_envelopes);
                 var stored_commit = self.vault.chronicle_commits.items[self.vault.chronicle_commits.items.len - 1];
                 stored_commit.owns_memory = false;
@@ -30477,8 +30480,16 @@ pub const Continuity = struct {
             var tx = try self.begin(.export_bundle);
             errdefer self.abandonTransaction();
             defer tx.deinit();
+            const ledger_count_before = self.vault.ledger.events.items.len;
+            const ledger_next_order_before = self.vault.ledger.next_order;
+            var restore_ledger = true;
+            errdefer if (restore_ledger) {
+                self.vault.ledger.events.shrinkRetainingCapacity(ledger_count_before);
+                self.vault.ledger.next_order = ledger_next_order_before;
+            };
             try tx.addEvent(Chronicle.Event.init(.{ .kind = .bundle_export_started, .root_refs = roots }));
-            const bundle = try Bundle.exportFromVault(self.vault, roots, .{});
+            var bundle = try Bundle.exportFromVault(self.vault, roots, .{});
+            errdefer bundle.deinit();
             const bundle_ref = ObjectRef.init(.{
                 .kind = .bundle,
                 .object_format_version = 1,
@@ -30488,6 +30499,7 @@ pub const Continuity = struct {
             try tx.addEvent(Chronicle.Event.init(.{ .kind = .bundle_export_committed, .bundle_ref = bundle_ref, .root_refs = roots }));
             _ = try tx.commit();
             self.finishTransaction();
+            restore_ledger = false;
             return bundle;
         }
 
@@ -38021,6 +38033,52 @@ test "bundle import allocation failure restores chronicle state" {
         };
         imported_manifest.deinit(failing_allocator.allocator());
     }
+}
+
+test "continuity session export allocation failure restores ledger state" {
+    const allocator = std.testing.allocator;
+    const envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .capsule_manifest,
+        .object_format_version = world_capsule_manifest_format_version,
+        .payload_bytes = "session export rollback root",
+    });
+
+    var induced_failures: usize = 0;
+    for (0..128) |fail_index| {
+        var failing_allocator = std.testing.FailingAllocator.init(allocator, .{
+            .fail_index = fail_index,
+        });
+        var vault = Continuity.MemoryVault.init(failing_allocator.allocator());
+        defer vault.deinit();
+        const root_ref = vault.put(envelope) catch |err| switch (err) {
+            error.OutOfMemory => continue,
+            else => return err,
+        };
+        var session = try Continuity.Session.init(failing_allocator.allocator(), &vault, Continuity.PersistPolicy.full_local_evidence());
+        if (failing_allocator.has_induced_failure) continue;
+        const ledger_count_before = vault.ledger.events.items.len;
+        const ledger_next_order_before = vault.ledger.next_order;
+        const active_transaction_count_before = session.active_transaction_count;
+        const session_fingerprint_before = session.session_fingerprint;
+        const roots = [_]Continuity.ObjectRef{root_ref};
+
+        var bundle = session.exportBundle(&roots) catch |err| switch (err) {
+            error.OutOfMemory => {
+                try std.testing.expect(failing_allocator.has_induced_failure);
+                induced_failures += 1;
+                try std.testing.expectEqual(ledger_count_before, vault.ledger.events.items.len);
+                try std.testing.expectEqual(ledger_next_order_before, vault.ledger.next_order);
+                try std.testing.expectEqual(active_transaction_count_before, session.active_transaction_count);
+                try std.testing.expectEqual(session_fingerprint_before, session.session_fingerprint);
+                continue;
+            },
+            else => return err,
+        };
+        bundle.deinit();
+        try std.testing.expect(!failing_allocator.has_induced_failure);
+        break;
+    }
+    try std.testing.expect(induced_failures > 0);
 }
 
 test "object envelope fingerprint binds metadata fields" {
