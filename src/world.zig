@@ -29254,6 +29254,9 @@ pub const Continuity = struct {
                     for (event.object_refs) |ref| try appendProjectionRef(vault.allocator, &refs, kind, ref);
                     if (event.capsule_ref) |ref| try appendProjectionRef(vault.allocator, &refs, kind, ref);
                     if (event.bundle_ref) |ref| try appendProjectionRef(vault.allocator, &refs, kind, ref);
+                    if (event.inbox_outbox_item_ref) |ref| try appendProjectionRef(vault.allocator, &refs, kind, ref);
+                    if (event.recovery_plan_ref) |ref| try appendProjectionRef(vault.allocator, &refs, kind, ref);
+                    if (event.recovery_report_ref) |ref| try appendProjectionRef(vault.allocator, &refs, kind, ref);
                     for (event.actuation_refs) |ref| try appendProjectionRef(vault.allocator, &refs, kind, ref);
                 }
                 const summary = projectionSummaryFingerprint(vault, kind, refs.items);
@@ -29676,12 +29679,15 @@ pub const Continuity = struct {
             }
             const object_count_before = self.objects.items.len;
             const event_count_before = self.chronicle_events.items.len;
+            const backing_count_before = self.chronicle_commit_backing.items.len;
             const cursor_before = self.chronicle_cursor;
             errdefer {
                 for (self.objects.items[object_count_before..]) |*object| object.deinit(self.allocator);
                 self.objects.shrinkRetainingCapacity(object_count_before);
                 for (self.chronicle_events.items[event_count_before..]) |*event| event.deinit(self.allocator);
                 self.chronicle_events.shrinkRetainingCapacity(event_count_before);
+                for (self.chronicle_commit_backing.items[backing_count_before..]) |backing| freeEnvelopeSlice(self.allocator, backing);
+                self.chronicle_commit_backing.shrinkRetainingCapacity(backing_count_before);
                 self.chronicle_cursor = cursor_before;
             }
             const owned = try envelope.clone(self.allocator);
@@ -29700,6 +29706,9 @@ pub const Continuity = struct {
                 .target_ref = stored_ref,
             });
             try self.appendChronicleEventWithoutCursor(event);
+            const backing_envelopes = try cloneEnvelopeSlice(self.allocator, &.{envelope});
+            errdefer freeEnvelopeSlice(self.allocator, backing_envelopes);
+            try self.chronicle_commit_backing.append(self.allocator, backing_envelopes);
             self.chronicle_cursor = self.chronicle_cursor.advance(&.{event.event_fingerprint}, 1, 0);
             return stored_ref;
         }
@@ -30356,6 +30365,8 @@ pub const Continuity = struct {
             if (!report.valid) return error.InvalidFrameEncoding;
             try canonicalizeBundleDependencyRefsForStorage(&bundle);
             try rejectDuplicateFreshCommitsAgainstVault(self.vault, bundle);
+            var manifest = try bundle.manifest.clone(self.allocator);
+            errdefer manifest.deinit(self.allocator);
             const bundle_ref = ObjectRef.init(.{
                 .kind = .bundle,
                 .object_format_version = 1,
@@ -30368,7 +30379,7 @@ pub const Continuity = struct {
             try tx.addEvent(Chronicle.Event.init(.{ .kind = .bundle_import_committed, .bundle_ref = bundle_ref }));
             _ = try tx.commit();
             self.finishTransaction();
-            return bundle.manifest.clone(self.allocator);
+            return manifest;
         }
 
         pub fn exportBundle(self: *@This(), roots: []const ObjectRef) !Bundle {
@@ -33083,7 +33094,8 @@ pub const Continuity = struct {
             .actuation_index, .idempotency_registry => ref.kind == .actuation_receipt or ref.kind == .actuation_journal,
             .object_index => true,
             .bundle_history => ref.kind == .bundle,
-            .inbox, .outbox, .recovery_queue => true,
+            .inbox, .outbox => ref.kind == .handoff_envelope or ref.kind == .bundle or ref.kind == .capsule_image,
+            .recovery_queue => ref.kind == .handoff_envelope or ref.kind == .capsule_thaw_plan or ref.kind == .capsule_restore_report or ref.kind == .capsule_image,
         };
     }
 
@@ -36797,6 +36809,8 @@ test "projection reports detect stale cursor and chronicle replay reports are st
         .label = "certificate",
     });
     _ = try vault.put(second);
+    const replay_after_public_put = try Continuity.Chronicle.replay(&vault, .{});
+    try std.testing.expectEqual(@as(usize, 0), replay_after_public_put.mismatch_count);
     try std.testing.expectError(error.StaleProjection, projection.assertFresh(vault.cursor()));
     try std.testing.expectError(error.StaleProjection, Continuity.Chronicle.Projection.replayFromKind(&vault, cursor, .object_index));
 }
@@ -37077,6 +37091,9 @@ test "inbox outbox views rebuild from chronicle events" {
     const cursor_before_mark_exported = outbound_session.cursor();
     try outbox.markExported(outbound_ref);
     try std.testing.expect(cursor_before_mark_exported.cursor_fingerprint != outbound_session.cursor().cursor_fingerprint);
+    var outbox_projection = try Continuity.Chronicle.Projection.rebuild(&outbound_vault, .outbox);
+    defer outbox_projection.deinit();
+    try std.testing.expect(Continuity.containsRef(outbox_projection.report.object_refs_consumed, outbound_ref));
     try std.testing.expectError(error.ObjectMissing, outbox.exportBundle(outbound_ref));
     const completed_outbound = try outbox.listPending();
     defer {
@@ -37109,6 +37126,9 @@ test "inbox outbox views rebuild from chronicle events" {
     const cursor_before_inbox_accept = inbound_session.cursor();
     try inbox.accept(inbound_ref);
     try std.testing.expect(cursor_before_inbox_accept.cursor_fingerprint != inbound_session.cursor().cursor_fingerprint);
+    var inbox_projection = try Continuity.Chronicle.Projection.rebuild(&inbound_vault, .inbox);
+    defer inbox_projection.deinit();
+    try std.testing.expect(Continuity.containsRef(inbox_projection.report.object_refs_consumed, inbound_ref));
     const accepted_inbound = try inbox.listPending();
     defer {
         for (accepted_inbound) |*ref| ref.deinit(allocator);
@@ -37175,6 +37195,9 @@ test "executable recovery plans and rejects before runspace mutation" {
     try report.validate();
     try std.testing.expect(!report.accepted);
     try std.testing.expect(report.restored_capsule_ref == null);
+    var recovery_projection = try Continuity.Chronicle.Projection.rebuild(&vault, .recovery_queue);
+    defer recovery_projection.deinit();
+    try std.testing.expect(recovery_projection.report.object_refs_consumed.len != 0);
     try std.testing.expectEqual(before_slots, runspace.slots.items.len);
 }
 
