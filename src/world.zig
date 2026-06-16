@@ -363,6 +363,10 @@ fn legacyActuationJournalFingerprintVersion(fingerprint_version: u32) bool {
         fingerprint_version == world_actuation_journal_branch_legacy_fingerprint_version;
 }
 
+fn actuationJournalIncludesCancelledFlag(fingerprint_version: u32) bool {
+    return fingerprint_version != world_actuation_journal_legacy_fingerprint_version;
+}
+
 pub const ValuePolicy = struct {
     require_portable_values: bool = false,
     allow_native_only_values: bool = true,
@@ -19795,6 +19799,7 @@ pub const Actuation = struct {
                     if (entry.order <= prior) return error.InvalidFrameEncoding;
                 }
                 if (legacy_journal and entry.recorded_response_fingerprint != null) return error.InvalidFrameEncoding;
+                if (!actuationJournalIncludesCancelledFlag(self.fingerprint_version) and entry.cancelled) return error.InvalidFrameEncoding;
                 try validateJournalEntry(entry);
                 previous_order = entry.order;
             }
@@ -19902,7 +19907,7 @@ pub const Actuation = struct {
                 try writeBool(&out, allocator, entry.deferred);
                 try writeBool(&out, allocator, entry.failed);
                 try writeBool(&out, allocator, entry.rejected);
-                try writeBool(&out, allocator, entry.cancelled);
+                if (actuationJournalIncludesCancelledFlag(self.fingerprint_version)) try writeBool(&out, allocator, entry.cancelled);
             }
             return out.toOwnedSlice(allocator);
         }
@@ -19959,7 +19964,10 @@ pub const Actuation = struct {
                     .deferred = try readBool(bytes, &cursor),
                     .failed = try readBool(bytes, &cursor),
                     .rejected = try readBool(bytes, &cursor),
-                    .cancelled = try readBool(bytes, &cursor),
+                    .cancelled = if (actuationJournalIncludesCancelledFlag(fingerprint_version))
+                        try readBool(bytes, &cursor)
+                    else
+                        false,
                 });
             }
             if (cursor != bytes.len) return error.InvalidFrameEncoding;
@@ -21676,7 +21684,9 @@ pub const Actuation = struct {
             hashBool(&hasher, entry.deferred);
             hashBool(&hasher, entry.failed);
             hashBool(&hasher, entry.rejected);
-            hashBool(&hasher, entry.cancelled);
+            if (actuationJournalIncludesCancelledFlag(journal.fingerprint_version)) {
+                hashBool(&hasher, entry.cancelled);
+            }
         }
         return hasher.final();
     }
@@ -39211,7 +39221,7 @@ fn encodeLegacyActuationJournalPayloadForTest(allocator: std.mem.Allocator, jour
         try writeBool(&out, allocator, entry.deferred);
         try writeBool(&out, allocator, entry.failed);
         try writeBool(&out, allocator, entry.rejected);
-        try writeBool(&out, allocator, entry.cancelled);
+        if (actuationJournalIncludesCancelledFlag(journal.fingerprint_version)) try writeBool(&out, allocator, entry.cancelled);
     }
     return out.toOwnedSlice(allocator);
 }
