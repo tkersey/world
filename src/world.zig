@@ -28957,6 +28957,7 @@ pub const Continuity = struct {
                 }
                 try self.staged_envelopes.append(self.allocator, owned);
                 try self.staged_root_refs.append(self.allocator, try ref.clone(self.allocator));
+                self.accepted = false;
                 self.refreshFingerprint();
                 return ref;
             }
@@ -29018,6 +29019,8 @@ pub const Continuity = struct {
                 for (bundle.envelopes) |envelope| try self.vault.assertTransactionBundleEnvelopeCanStage(self, bundle, envelope);
                 for (bundle.envelopes) |envelope| _ = try self.stageValidatedEnvelope(envelope);
                 self.staged_bundle_envelopes = true;
+                self.accepted = false;
+                self.refreshFingerprint();
             }
 
             pub fn addEvent(self: *@This(), event: Event) !void {
@@ -29029,6 +29032,7 @@ pub const Continuity = struct {
                     cleanup.deinit(self.allocator);
                 }
                 try self.staged_events.append(self.allocator, owned);
+                self.accepted = false;
                 self.refreshFingerprint();
             }
 
@@ -29058,8 +29062,8 @@ pub const Continuity = struct {
             }
 
             pub fn commit(self: *@This()) !Commit {
-                if (!self.accepted) try self.validate();
                 if (self.committed or self.aborted) return error.InvalidRunspaceTransition;
+                try self.validate();
 
                 var committed_refs: std.ArrayList(ObjectRef) = .empty;
                 errdefer deinitRefList(self.allocator, &committed_refs);
@@ -36950,6 +36954,16 @@ test "idempotency registry records fresh commits and allows replay receipts" {
     _ = try duplicate_tx.putActuationReceipt(duplicate_fresh_b);
     try std.testing.expectError(error.DuplicateBinding, duplicate_tx.validate());
     try std.testing.expectError(error.DuplicateBinding, duplicate_tx.commit());
+
+    var stale_acceptance_vault = Continuity.MemoryVault.init(allocator);
+    defer stale_acceptance_vault.deinit();
+    var stale_acceptance_tx = try stale_acceptance_vault.beginTransaction(.store_actuation, .{});
+    defer stale_acceptance_tx.deinit();
+    _ = try stale_acceptance_tx.putActuationReceipt(fresh_b);
+    try stale_acceptance_tx.validate();
+    _ = try stale_acceptance_tx.putActuationReceipt(duplicate_fresh_b);
+    try std.testing.expect(!stale_acceptance_tx.accepted);
+    try std.testing.expectError(error.DuplicateBinding, stale_acceptance_tx.commit());
 }
 
 test "inbox outbox views rebuild from chronicle events" {
