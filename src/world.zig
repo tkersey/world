@@ -29505,13 +29505,21 @@ pub const Continuity = struct {
             }
 
             pub fn importBundle(self: *@This(), bytes: []const u8) !ObjectRef {
-                var manifest = try self.session.importBundle(bytes);
-                defer manifest.deinit(self.session.allocator);
+                if (!self.session.policy.require_transaction_for_bundle_import) return error.PersistenceDisabled;
+                var tx = try self.session.begin(.inbox_import);
+                errdefer self.session.abandonTransaction();
+                defer tx.deinit();
+                var bundle = try Bundle.decode(self.session.allocator, bytes, .{});
+                defer bundle.deinit();
+                const report = try bundle.validationReport(.{});
+                if (!report.valid) return error.InvalidFrameEncoding;
+                try canonicalizeBundleDependencyRefsForStorage(&bundle);
+                try rejectDuplicateFreshCommitsAgainstVault(self.session.vault, bundle);
                 const bundle_ref = ObjectRef.init(.{
                     .kind = .bundle,
                     .object_format_version = 1,
-                    .object_fingerprint = manifest.manifest_fingerprint,
-                    .byte_len = manifest.bundle_byte_len,
+                    .object_fingerprint = bundle.manifest.manifest_fingerprint,
+                    .byte_len = bytes.len,
                 });
                 const envelope = HandoffEnvelope.init(.{
                     .direction = .inbound,
@@ -29519,8 +29527,13 @@ pub const Continuity = struct {
                     .status = .imported,
                 });
                 const ref = envelope.objectRef();
-                const event = Event.init(.{ .kind = .inbox_item_created, .inbox_outbox_item_ref = ref, .bundle_ref = bundle_ref });
-                try self.session.appendChronicleEvent(event);
+                try tx.addEvent(Chronicle.Event.init(.{ .kind = .bundle_import_started, .bundle_ref = bundle_ref }));
+                try tx.putBundle(bundle);
+                try tx.addEvent(Chronicle.Event.init(.{ .kind = .bundle_import_validated, .bundle_ref = bundle_ref }));
+                try tx.addEvent(Event.init(.{ .kind = .inbox_item_created, .inbox_outbox_item_ref = ref, .bundle_ref = bundle_ref }));
+                try tx.addEvent(Chronicle.Event.init(.{ .kind = .bundle_import_committed, .bundle_ref = bundle_ref }));
+                _ = try tx.commit();
+                self.session.finishTransaction();
                 return ref;
             }
 
@@ -29583,15 +29596,31 @@ pub const Continuity = struct {
             pub fn exportBundle(self: *@This(), ref: ObjectRef) !Bundle {
                 _ = try self.inspect(ref);
                 const capsule_ref = try outboxCapsuleForRef(self.session.vault, ref);
-                const bundle = try self.session.exportBundle(&.{capsule_ref});
+                var tx = try self.session.begin(.outbox_export);
+                errdefer self.session.abandonTransaction();
+                defer tx.deinit();
+                const ledger_count_before = self.session.vault.ledger.events.items.len;
+                const ledger_next_order_before = self.session.vault.ledger.next_order;
+                var restore_ledger = true;
+                errdefer if (restore_ledger) {
+                    self.session.vault.ledger.events.shrinkRetainingCapacity(ledger_count_before);
+                    self.session.vault.ledger.next_order = ledger_next_order_before;
+                };
+                const roots = [_]ObjectRef{capsule_ref};
+                try tx.addEvent(Chronicle.Event.init(.{ .kind = .bundle_export_started, .root_refs = &roots }));
+                var bundle = try Bundle.exportFromVault(self.session.vault, &roots, .{});
+                errdefer bundle.deinit();
                 const bundle_ref = ObjectRef.init(.{
                     .kind = .bundle,
                     .object_format_version = 1,
                     .object_fingerprint = bundle.manifest.manifest_fingerprint,
                     .byte_len = bundle.manifest.bundle_byte_len,
                 });
-                const event = Event.init(.{ .kind = .outbox_item_exported, .inbox_outbox_item_ref = ref, .bundle_ref = bundle_ref });
-                try self.session.appendChronicleEvent(event);
+                try tx.addEvent(Event.init(.{ .kind = .outbox_item_exported, .inbox_outbox_item_ref = ref, .bundle_ref = bundle_ref }));
+                try tx.addEvent(Chronicle.Event.init(.{ .kind = .bundle_export_committed, .bundle_ref = bundle_ref, .root_refs = &roots }));
+                _ = try tx.commit();
+                self.session.finishTransaction();
+                restore_ledger = false;
                 return bundle;
             }
 
@@ -32280,10 +32309,20 @@ pub const Continuity = struct {
             const target = thawTargetRefFingerprintFromArg(registry, image.manifest.root_target_ref_fingerprint) orelse 0;
             const environment = environmentFingerprintFromArg(env) orelse 0;
             const permit_fingerprint = permitFingerprintFromArg(permit);
+            var restored_root_count: usize = 0;
+            for (image.runspace_image.run_slots) |slot_image| {
+                if (slot_image.role == .root) restored_root_count += 1;
+            }
+            const handles = try session.vault.allocator.alloc(u64, restored_root_count);
+            var handles_owned = true;
+            errdefer if (handles_owned) session.vault.allocator.free(handles);
+            if (session.policy.require_transaction_for_recovery) {
+                try session.vault.chronicle_events.ensureUnusedCapacity(session.vault.allocator, 2);
+            }
             var restore = try Capsule.thawIntoRunspace(image, runspace, target, environment, permit_fingerprint, options.thaw_options);
             defer restore.deinit(session.vault.allocator);
-            const handles = try session.vault.allocator.dupe(u64, restore.restored_root_run_handles);
-            errdefer session.vault.allocator.free(handles);
+            if (restore.restored_root_run_handles.len != handles.len) return error.InvalidFrameEncoding;
+            @memcpy(handles, restore.restored_root_run_handles);
             try appendRecoveryChronicleEvent(session, Chronicle.Event.init(.{
                 .kind = if (restore.accepted) .recovery_executed else .recovery_blocked,
                 .capsule_ref = capsule_ref,
@@ -32300,6 +32339,7 @@ pub const Continuity = struct {
             });
             report.owns_memory = true;
             try report.validate();
+            handles_owned = false;
             return report;
         }
 
