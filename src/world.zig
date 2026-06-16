@@ -29674,13 +29674,34 @@ pub const Continuity = struct {
                     return error.InvalidFrameEncoding;
                 }
             }
-            const owned = try envelope.clone(self.allocator);
+            const object_count_before = self.objects.items.len;
+            const event_count_before = self.chronicle_events.items.len;
+            const cursor_before = self.chronicle_cursor;
             errdefer {
+                for (self.objects.items[object_count_before..]) |*object| object.deinit(self.allocator);
+                self.objects.shrinkRetainingCapacity(object_count_before);
+                for (self.chronicle_events.items[event_count_before..]) |*event| event.deinit(self.allocator);
+                self.chronicle_events.shrinkRetainingCapacity(event_count_before);
+                self.chronicle_cursor = cursor_before;
+            }
+            const owned = try envelope.clone(self.allocator);
+            var owned_pending = true;
+            errdefer if (owned_pending) {
                 var cleanup = owned;
                 cleanup.deinit(self.allocator);
-            }
+            };
             try self.objects.append(self.allocator, owned);
-            return self.objects.items[self.objects.items.len - 1].objectRef();
+            owned_pending = false;
+            const stored_ref = self.objects.items[self.objects.items.len - 1].objectRef();
+            const event_refs = [_]ObjectRef{stored_ref};
+            const event = Chronicle.Event.init(.{
+                .kind = .object_committed,
+                .object_refs = &event_refs,
+                .target_ref = stored_ref,
+            });
+            try self.appendChronicleEventWithoutCursor(event);
+            self.chronicle_cursor = self.chronicle_cursor.advance(&.{event.event_fingerprint}, 1, 0);
+            return stored_ref;
         }
 
         fn appendChronicleEvent(self: *@This(), event: Chronicle.Event) !void {
@@ -36775,10 +36796,7 @@ test "projection reports detect stale cursor and chronicle replay reports are st
         .payload_bytes = "certificate",
         .label = "certificate",
     });
-    var second_tx = try vault.beginTransaction(.custom, .{});
-    defer second_tx.deinit();
-    _ = try second_tx.put(second);
-    _ = try second_tx.commit();
+    _ = try vault.put(second);
     try std.testing.expectError(error.StaleProjection, projection.assertFresh(vault.cursor()));
     try std.testing.expectError(error.StaleProjection, Continuity.Chronicle.Projection.replayFromKind(&vault, cursor, .object_index));
 }
