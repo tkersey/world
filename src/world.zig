@@ -340,7 +340,8 @@ pub const world_actuation_journal_fingerprint_version: u32 = 3;
 pub const world_actuation_verify_report_fingerprint_version: u32 = 1;
 const world_actuation_receipt_legacy_format_version: u32 = 1;
 const world_actuation_receipt_legacy_fingerprint_version: u32 = 2;
-const world_actuation_journal_legacy_fingerprint_version: u32 = 2;
+const world_actuation_journal_legacy_fingerprint_version: u32 = 1;
+const world_actuation_journal_branch_legacy_fingerprint_version: u32 = 2;
 pub const world_continuity_object_ref_format_version: u32 = 1;
 pub const world_continuity_object_ref_fingerprint_version: u32 = 1;
 pub const world_continuity_object_envelope_format_version: u32 = 1;
@@ -356,6 +357,11 @@ pub const world_max_decoded_byte_field_len: usize = 16 * 1024 * 1024;
 const frame_response_deferred_fingerprint_flag: u32 = 1 << 0;
 const world_min_transcript_event_image_encoded_len_v2: usize = 8 + 1 + 8 + 8 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1;
 const world_min_transcript_event_image_encoded_len: usize = world_min_transcript_event_image_encoded_len_v2 + 1 + 1 + 1 + 1 + 1;
+
+fn legacyActuationJournalFingerprintVersion(fingerprint_version: u32) bool {
+    return fingerprint_version == world_actuation_journal_legacy_fingerprint_version or
+        fingerprint_version == world_actuation_journal_branch_legacy_fingerprint_version;
+}
 
 pub const ValuePolicy = struct {
     require_portable_values: bool = false,
@@ -19775,7 +19781,7 @@ pub const Actuation = struct {
         }
 
         pub fn validate(self: @This()) !void {
-            const legacy_journal = self.fingerprint_version == world_actuation_journal_legacy_fingerprint_version;
+            const legacy_journal = legacyActuationJournalFingerprintVersion(self.fingerprint_version);
             const current_journal = self.fingerprint_version == world_actuation_journal_fingerprint_version;
             if (!legacy_journal and !current_journal) return error.InvalidFrameEncoding;
             if (self.journal_fingerprint != fingerprintJournal(self)) return error.InvalidFrameEncoding;
@@ -19861,7 +19867,7 @@ pub const Actuation = struct {
         }
 
         pub fn encode(self: @This(), allocator: std.mem.Allocator) ![]const u8 {
-            const legacy_journal = self.fingerprint_version == world_actuation_journal_legacy_fingerprint_version;
+            const legacy_journal = legacyActuationJournalFingerprintVersion(self.fingerprint_version);
             const current_journal = self.fingerprint_version == world_actuation_journal_fingerprint_version;
             if (!legacy_journal and !current_journal) return error.InvalidFrameEncoding;
             var out: std.ArrayList(u8) = .empty;
@@ -19908,7 +19914,7 @@ pub const Actuation = struct {
             const next_order = try readU64(bytes, &cursor);
             const count = try readU64AsUsize(bytes, &cursor);
             if (count > max_journal_entries) return error.InvalidFrameEncoding;
-            const legacy_journal = fingerprint_version == world_actuation_journal_legacy_fingerprint_version;
+            const legacy_journal = legacyActuationJournalFingerprintVersion(fingerprint_version);
             const current_journal = fingerprint_version == world_actuation_journal_fingerprint_version;
             if (!legacy_journal and !current_journal) return error.InvalidFrameEncoding;
             var journal = @This(){
@@ -27861,7 +27867,7 @@ pub const Continuity = struct {
                 .run_image => format_version == 1 or format_version == 2 or format_version == world_run_image_format_version,
                 .transcript_image => format_version == 2 or format_version == world_transcript_image_format_version,
                 .actuation_receipt => format_version == world_actuation_receipt_legacy_format_version or format_version == world_actuation_receipt_format_version,
-                .actuation_journal => format_version == world_actuation_journal_legacy_fingerprint_version or format_version == world_actuation_journal_fingerprint_version,
+                .actuation_journal => legacyActuationJournalFingerprintVersion(format_version) or format_version == world_actuation_journal_fingerprint_version,
                 else => format_version == self.defaultFormatVersion(),
             };
         }
@@ -39291,6 +39297,18 @@ test "actuation legacy receipt and journal payloads decode for vault replay" {
     const reencoded_journal_payload = try decoded_journal.encode(allocator);
     defer allocator.free(reencoded_journal_payload);
     try std.testing.expectEqualSlices(u8, legacy_journal_payload, reencoded_journal_payload);
+
+    var branch_legacy_journal = legacy_journal;
+    branch_legacy_journal.fingerprint_version = world_actuation_journal_branch_legacy_fingerprint_version;
+    branch_legacy_journal.journal_fingerprint = Actuation.fingerprintJournal(branch_legacy_journal);
+    try branch_legacy_journal.validate();
+    const branch_legacy_journal_payload = try encodeLegacyActuationJournalPayloadForTest(allocator, branch_legacy_journal);
+    defer allocator.free(branch_legacy_journal_payload);
+    var decoded_branch_legacy_journal = try Actuation.Journal.decode(allocator, branch_legacy_journal_payload);
+    defer decoded_branch_legacy_journal.deinit(allocator);
+    try std.testing.expectEqual(world_actuation_journal_branch_legacy_fingerprint_version, decoded_branch_legacy_journal.fingerprint_version);
+    try std.testing.expectEqual(@as(?u64, null), decoded_branch_legacy_journal.entries.items[0].recorded_response_fingerprint);
+    try std.testing.expectEqual(branch_legacy_journal.journal_fingerprint, decoded_branch_legacy_journal.journal_fingerprint);
 
     var journal_vault = Continuity.MemoryVault.init(allocator);
     defer journal_vault.deinit();
