@@ -334,9 +334,9 @@ pub const world_actuation_commit_format_version: u32 = 1;
 pub const world_actuation_commit_fingerprint_version: u32 = 1;
 pub const world_actuation_response_format_version: u32 = 2;
 pub const world_actuation_response_fingerprint_version: u32 = 2;
-pub const world_actuation_receipt_format_version: u32 = 1;
-pub const world_actuation_receipt_fingerprint_version: u32 = 2;
-pub const world_actuation_journal_fingerprint_version: u32 = 2;
+pub const world_actuation_receipt_format_version: u32 = 2;
+pub const world_actuation_receipt_fingerprint_version: u32 = 3;
+pub const world_actuation_journal_fingerprint_version: u32 = 3;
 pub const world_actuation_verify_report_fingerprint_version: u32 = 1;
 pub const world_continuity_object_ref_format_version: u32 = 1;
 pub const world_continuity_object_ref_fingerprint_version: u32 = 1;
@@ -19330,6 +19330,7 @@ pub const Actuation = struct {
         response_kind: ResponseKind = .@"resume",
         frame_response_fingerprint: ?u64 = null,
         response_value_image_fingerprint: ?u64 = null,
+        recorded_response_fingerprint: ?u64 = null,
         actuator_ref_fingerprint: u64,
         idempotency_key_fingerprint: u64,
         request_fingerprint: ?u64 = null,
@@ -19367,6 +19368,7 @@ pub const Actuation = struct {
             response_kind: ResponseKind = .@"resume",
             frame_response_fingerprint: ?u64 = null,
             response_value_image_fingerprint: ?u64 = null,
+            recorded_response_fingerprint: ?u64 = null,
             actuator_ref_fingerprint: u64,
             idempotency_key_fingerprint: u64,
             request_fingerprint: ?u64 = null,
@@ -19404,6 +19406,7 @@ pub const Actuation = struct {
                 .response_kind = args.response_kind,
                 .frame_response_fingerprint = args.frame_response_fingerprint,
                 .response_value_image_fingerprint = args.response_value_image_fingerprint,
+                .recorded_response_fingerprint = args.recorded_response_fingerprint,
                 .actuator_ref_fingerprint = args.actuator_ref_fingerprint,
                 .idempotency_key_fingerprint = args.idempotency_key_fingerprint,
                 .request_fingerprint = args.request_fingerprint,
@@ -19458,6 +19461,7 @@ pub const Actuation = struct {
                 .response_kind = args.response.response_kind,
                 .frame_response_fingerprint = args.response.frame_response_fingerprint,
                 .response_value_image_fingerprint = args.response.value_image_fingerprint,
+                .recorded_response_fingerprint = args.response.recorded_response_fingerprint,
                 .actuator_ref_fingerprint = args.response.actuator_ref_fingerprint,
                 .idempotency_key_fingerprint = args.envelope.idempotency_key.key_fingerprint,
                 .request_fingerprint = args.envelope.idempotency_key.request_fingerprint,
@@ -19499,6 +19503,14 @@ pub const Actuation = struct {
             if (self.run_receipt_fingerprint != null and self.run_receipt_fingerprint.? == 0) return error.InvalidFrameEncoding;
             if (self.capsule_fingerprint != null and self.capsule_fingerprint.? == 0) return error.InvalidFrameEncoding;
             try validateOptionalFingerprint(self.response_value_image_fingerprint);
+            try validateOptionalFingerprint(self.recorded_response_fingerprint);
+            if (self.recorded_response_fingerprint != null) {
+                switch (self.responseStatus()) {
+                    .rejected, .failed, .cancelled => {},
+                    else => return error.InvalidFrameEncoding,
+                }
+                if (self.frame_response_fingerprint != null) return error.InvalidFrameEncoding;
+            }
             if (self.mode == .replay and self.fresh_called) return error.InvalidFrameEncoding;
             if (self.replayed and self.verified) return error.InvalidFrameEncoding;
             switch (self.mode) {
@@ -19565,6 +19577,7 @@ pub const Actuation = struct {
             try writeU8(&out, allocator, @intFromEnum(self.response_kind));
             try writeOptionalU64(&out, allocator, self.frame_response_fingerprint);
             try writeOptionalU64(&out, allocator, self.response_value_image_fingerprint);
+            try writeOptionalU64(&out, allocator, self.recorded_response_fingerprint);
             try writeU64(&out, allocator, self.actuator_ref_fingerprint);
             try writeU64(&out, allocator, self.idempotency_key_fingerprint);
             try writeOptionalU64(&out, allocator, self.request_fingerprint);
@@ -19607,6 +19620,7 @@ pub const Actuation = struct {
             const response_kind = try enumFromByte(ResponseKind, try readU8(bytes, &cursor));
             const frame_response_fingerprint = try readOptionalU64(bytes, &cursor);
             const response_value_image_fingerprint = try readOptionalU64(bytes, &cursor);
+            const recorded_response_fingerprint = try readOptionalU64(bytes, &cursor);
             const actuator_ref_fingerprint = try readU64(bytes, &cursor);
             const idempotency_key_fingerprint = try readU64(bytes, &cursor);
             const request_fingerprint = try readOptionalU64(bytes, &cursor);
@@ -19649,6 +19663,7 @@ pub const Actuation = struct {
                 .response_kind = response_kind,
                 .frame_response_fingerprint = frame_response_fingerprint,
                 .response_value_image_fingerprint = response_value_image_fingerprint,
+                .recorded_response_fingerprint = recorded_response_fingerprint,
                 .actuator_ref_fingerprint = actuator_ref_fingerprint,
                 .idempotency_key_fingerprint = idempotency_key_fingerprint,
                 .request_fingerprint = request_fingerprint,
@@ -19693,6 +19708,7 @@ pub const Actuation = struct {
             response_kind: ?ResponseKind = null,
             frame_response_fingerprint: ?u64 = null,
             response_value_image_fingerprint: ?u64 = null,
+            recorded_response_fingerprint: ?u64 = null,
             receipt_fingerprint: ?u64 = null,
             idempotency_key_fingerprint: ?u64 = null,
             request_fingerprint: ?u64 = null,
@@ -19764,6 +19780,14 @@ pub const Actuation = struct {
             try validateJournalEntryFingerprint(entry.response_fingerprint, &evidence_count);
             try validateJournalEntryFrameResponseFingerprint(entry.frame_response_fingerprint, entry.response_value_image_fingerprint, &evidence_count);
             try validateJournalEntryFingerprint(entry.response_value_image_fingerprint, &evidence_count);
+            try validateJournalEntryFingerprint(entry.recorded_response_fingerprint, &evidence_count);
+            if (entry.recorded_response_fingerprint != null) {
+                switch (entryResponseStatus(entry)) {
+                    .rejected, .failed, .cancelled => {},
+                    else => return error.InvalidFrameEncoding,
+                }
+                if (entry.frame_response_fingerprint != null) return error.InvalidFrameEncoding;
+            }
             try validateJournalEntryFingerprint(entry.receipt_fingerprint, &evidence_count);
             try validateJournalEntryFingerprint(entry.idempotency_key_fingerprint, &evidence_count);
             try validateJournalEntryFingerprint(entry.request_fingerprint, &evidence_count);
@@ -19779,6 +19803,15 @@ pub const Actuation = struct {
                 @as(usize, @intFromBool(entry.failed)) +
                 @as(usize, @intFromBool(entry.rejected)) +
                 @as(usize, @intFromBool(entry.cancelled));
+        }
+
+        fn entryResponseStatus(entry: Entry) Actuation.ResponseStatus {
+            if (entry.rejected) return .rejected;
+            if (entry.failed) return .failed;
+            if (entry.cancelled) return .cancelled;
+            if (entry.pending) return .pending;
+            if (entry.deferred) return .deferred;
+            return .responded;
         }
 
         fn journalEntryExecutionFlagCount(entry: Entry) usize {
@@ -19826,6 +19859,7 @@ pub const Actuation = struct {
                 }
                 try writeOptionalU64(&out, allocator, entry.frame_response_fingerprint);
                 try writeOptionalU64(&out, allocator, entry.response_value_image_fingerprint);
+                try writeOptionalU64(&out, allocator, entry.recorded_response_fingerprint);
                 try writeOptionalU64(&out, allocator, entry.receipt_fingerprint);
                 try writeOptionalU64(&out, allocator, entry.idempotency_key_fingerprint);
                 try writeOptionalU64(&out, allocator, entry.request_fingerprint);
@@ -19876,6 +19910,7 @@ pub const Actuation = struct {
                     .response_kind = response_kind,
                     .frame_response_fingerprint = try readOptionalU64(bytes, &cursor),
                     .response_value_image_fingerprint = try readOptionalU64(bytes, &cursor),
+                    .recorded_response_fingerprint = try readOptionalU64(bytes, &cursor),
                     .receipt_fingerprint = try readOptionalU64(bytes, &cursor),
                     .idempotency_key_fingerprint = try readOptionalU64(bytes, &cursor),
                     .request_fingerprint = try readOptionalU64(bytes, &cursor),
@@ -19943,6 +19978,7 @@ pub const Actuation = struct {
                 .response_kind = response.response_kind,
                 .frame_response_fingerprint = response.frame_response_fingerprint,
                 .response_value_image_fingerprint = response.value_image_fingerprint,
+                .recorded_response_fingerprint = response.recorded_response_fingerprint,
                 .request_fingerprint = response.request_fingerprint,
                 .pending = response.status == .pending,
                 .deferred = response.status == .deferred,
@@ -19962,6 +19998,7 @@ pub const Actuation = struct {
                 .response_kind = receipt.response_kind,
                 .frame_response_fingerprint = receipt.frame_response_fingerprint,
                 .response_value_image_fingerprint = receipt.response_value_image_fingerprint,
+                .recorded_response_fingerprint = receipt.recorded_response_fingerprint,
                 .request_fingerprint = receipt.request_fingerprint,
                 .receipt_fingerprint = receipt.receipt_fingerprint,
                 .idempotency_key_fingerprint = receipt.idempotency_key_fingerprint,
@@ -20249,9 +20286,17 @@ pub const Actuation = struct {
                 .frame_response_fingerprint = if (status == .responded) receipt.frame_response_fingerprint orelse return error.ReplayMissing else receipt.frame_response_fingerprint,
                 .value_image_fingerprint = receipt.response_value_image_fingerprint,
                 .response_image = response_image,
-                .recorded_response_fingerprint = if (status == .responded or receipt.frame_response_fingerprint != null) null else receipt.response_fingerprint,
+                .recorded_response_fingerprint = recordedResponseFingerprintForReplay(status, receipt.frame_response_fingerprint, receipt.response_fingerprint, receipt.recorded_response_fingerprint),
                 .metadata = "replay",
             });
+        }
+
+        fn recordedResponseFingerprintForReplay(status: Actuation.ResponseStatus, frame_response_fingerprint: ?u64, response_fingerprint: u64, recorded_response_fingerprint: ?u64) ?u64 {
+            if (status == .responded or frame_response_fingerprint != null) return null;
+            return switch (status) {
+                .rejected, .failed, .cancelled => recorded_response_fingerprint orelse response_fingerprint,
+                else => null,
+            };
         }
     };
 
@@ -20587,6 +20632,7 @@ pub const Actuation = struct {
                 if (self.receipt.responseStatus() != self.response.status) return error.InvalidFrameEncoding;
                 if (self.receipt.frame_response_fingerprint != self.response.frame_response_fingerprint) return error.InvalidFrameEncoding;
                 if (self.receipt.response_value_image_fingerprint != self.response.value_image_fingerprint) return error.InvalidFrameEncoding;
+                if (self.receipt.recorded_response_fingerprint != self.response.recorded_response_fingerprint) return error.InvalidFrameEncoding;
                 if (self.receipt.actuator_ref_fingerprint != self.intent.actuator_ref_fingerprint) return error.InvalidFrameEncoding;
                 if (self.receipt.actuator_ref_fingerprint != self.response.actuator_ref_fingerprint) return error.InvalidFrameEncoding;
                 if (self.receipt.idempotency_key_fingerprint != self.intent.idempotency_key_fingerprint) return error.InvalidFrameEncoding;
@@ -21530,6 +21576,7 @@ pub const Actuation = struct {
         hashU64(&hasher, @intFromEnum(receipt.response_kind));
         hashOptionalU64(&hasher, receipt.frame_response_fingerprint);
         hashOptionalU64(&hasher, receipt.response_value_image_fingerprint);
+        hashOptionalU64(&hasher, receipt.recorded_response_fingerprint);
         hashU64(&hasher, receipt.actuator_ref_fingerprint);
         hashU64(&hasher, receipt.idempotency_key_fingerprint);
         hashOptionalU64(&hasher, receipt.request_fingerprint);
@@ -21576,6 +21623,7 @@ pub const Actuation = struct {
             if (entry.response_kind) |kind| hashU64(&hasher, @intFromEnum(kind));
             hashOptionalU64(&hasher, entry.frame_response_fingerprint);
             hashOptionalU64(&hasher, entry.response_value_image_fingerprint);
+            hashOptionalU64(&hasher, entry.recorded_response_fingerprint);
             hashOptionalU64(&hasher, entry.receipt_fingerprint);
             hashOptionalU64(&hasher, entry.idempotency_key_fingerprint);
             hashOptionalU64(&hasher, entry.request_fingerprint);
@@ -29580,6 +29628,7 @@ pub const Continuity = struct {
                 .response_kind = @intFromEnum(receipt.response_kind),
                 .frame_response_fingerprint = receipt.frame_response_fingerprint,
                 .response_value_image_fingerprint = receipt.response_value_image_fingerprint,
+                .recorded_response_fingerprint = receipt.recorded_response_fingerprint,
                 .request_fingerprint = receipt.request_fingerprint,
             }),
         };
@@ -29618,7 +29667,8 @@ pub const Continuity = struct {
         const has_replay_evidence = entry.response_fingerprint != null or
             entry.response_kind != null or
             entry.frame_response_fingerprint != null or
-            entry.response_value_image_fingerprint != null;
+            entry.response_value_image_fingerprint != null or
+            entry.recorded_response_fingerprint != null;
         if (!has_replay_evidence) return null;
         return freshCommitReplayEvidenceFingerprint(.{
             .intent_fingerprint = entry.intent_fingerprint,
@@ -29626,6 +29676,7 @@ pub const Continuity = struct {
             .response_kind = if (entry.response_kind) |kind| @intFromEnum(kind) else null,
             .frame_response_fingerprint = entry.frame_response_fingerprint,
             .response_value_image_fingerprint = entry.response_value_image_fingerprint,
+            .recorded_response_fingerprint = entry.recorded_response_fingerprint,
             .request_fingerprint = entry.request_fingerprint,
         });
     }
@@ -29636,6 +29687,7 @@ pub const Continuity = struct {
         response_kind: ?u64,
         frame_response_fingerprint: ?u64,
         response_value_image_fingerprint: ?u64,
+        recorded_response_fingerprint: ?u64,
         request_fingerprint: ?u64,
     }) u64 {
         var hasher = std.hash.Wyhash.init(world_actuation_journal_fingerprint_version);
@@ -29644,6 +29696,7 @@ pub const Continuity = struct {
         hashOptionalU64(&hasher, args.response_kind);
         hashOptionalU64(&hasher, args.frame_response_fingerprint);
         hashOptionalU64(&hasher, args.response_value_image_fingerprint);
+        hashOptionalU64(&hasher, args.recorded_response_fingerprint);
         hashOptionalU64(&hasher, args.request_fingerprint);
         return hasher.final();
     }
@@ -30245,6 +30298,7 @@ pub const Continuity = struct {
                             receipt.responseStatus(),
                             receipt.frame_response_fingerprint,
                             receipt.response_fingerprint,
+                            receipt.recorded_response_fingerprint,
                         ),
                     });
                 }
@@ -30300,14 +30354,15 @@ pub const Continuity = struct {
                     journalEntryResponseStatus(entry),
                     entry.frame_response_fingerprint,
                     entry.response_fingerprint,
+                    entry.recorded_response_fingerprint,
                 ),
             });
         }
 
-        fn replayRecordedResponseFingerprint(status: Actuation.ResponseStatus, frame_response_fingerprint: ?u64, response_fingerprint: ?u64) ?u64 {
+        fn replayRecordedResponseFingerprint(status: Actuation.ResponseStatus, frame_response_fingerprint: ?u64, response_fingerprint: ?u64, recorded_response_fingerprint: ?u64) ?u64 {
             if (status == .responded or frame_response_fingerprint != null) return null;
             return switch (status) {
-                .rejected, .failed, .cancelled => response_fingerprint,
+                .rejected, .failed, .cancelled => recorded_response_fingerprint orelse response_fingerprint,
                 else => null,
             };
         }
@@ -39119,6 +39174,45 @@ test "vault replay preserves stored fingerprint for terminal receipt" {
     defer frame_response.deinit(allocator);
     try std.testing.expectEqual(receipt.response_fingerprint, frame_response.response_fingerprint);
     try std.testing.expectEqual(request.replay_key_seed.withResponse(receipt.response_fingerprint).fingerprint(), frame_response.replay_key);
+
+    const derived_receipt = Actuation.Receipt.init(.{
+        .intent_fingerprint = replayed.intent_fingerprint,
+        .envelope_fingerprint = 0x3315_0021,
+        .decision_fingerprint = 0x3315_0022,
+        .commit_fingerprint = replayed.commit_fingerprint.?,
+        .response_fingerprint = replayed.response_fingerprint,
+        .response_kind = replayed.response_kind,
+        .recorded_response_fingerprint = replayed.recorded_response_fingerprint,
+        .actuator_ref_fingerprint = replayed.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .request_fingerprint = replayed.request_fingerprint,
+        .target_ref_fingerprint = key.target_ref_fingerprint,
+        .world_surface_fingerprint = key.world_surface_fingerprint,
+        .world_port_id = replayed.world_port_id,
+        .class = .deterministic_fixture,
+        .mode = .replay,
+        .replayed = true,
+        .rejected = true,
+    });
+    try std.testing.expect(derived_receipt.response_fingerprint != receipt.response_fingerprint);
+    try std.testing.expectEqual(receipt.response_fingerprint, derived_receipt.recorded_response_fingerprint.?);
+
+    var derived_receipt_vault = Continuity.MemoryVault.init(allocator);
+    defer derived_receipt_vault.deinit();
+    _ = try derived_receipt_vault.putActuationReceipt(derived_receipt);
+    const derived_receipt_replay = try Actuation.replayFromVault(&derived_receipt_vault, key);
+    try std.testing.expectEqual(Actuation.ResponseStatus.rejected, derived_receipt_replay.status);
+    try std.testing.expectEqual(receipt.response_fingerprint, derived_receipt_replay.recorded_response_fingerprint.?);
+
+    var derived_journal_vault = Continuity.MemoryVault.init(allocator);
+    defer derived_journal_vault.deinit();
+    var derived_journal = Actuation.Journal.init();
+    defer derived_journal.deinit(allocator);
+    try derived_journal.appendReceipt(allocator, derived_receipt);
+    _ = try derived_journal_vault.putActuationJournal(derived_journal);
+    const derived_journal_replay = try Actuation.replayFromVault(&derived_journal_vault, key);
+    try std.testing.expectEqual(Actuation.ResponseStatus.rejected, derived_journal_replay.status);
+    try std.testing.expectEqual(receipt.response_fingerprint, derived_journal_replay.recorded_response_fingerprint.?);
 }
 
 test "vault replay accepts terminal receipt without optional request fingerprint" {

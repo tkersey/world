@@ -728,7 +728,7 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Actuation fixture tool example.",
             .expected_stdout =
             \\actuator_ref=10721e5b053f1ab3
-            \\actuation_receipt_fingerprint=4eaab1b92af7e17d
+            \\actuation_receipt_fingerprint=270733fa9b59c508
             \\final_result=fixture-tool-ok
             \\
             ,
@@ -764,8 +764,8 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Actuation pending Capsule example.",
             .expected_stdout =
             \\pending_actuation_intent_fingerprint=b0f6e22106da6b81
-            \\capsule_fingerprint=5bdfa05924e68c39
-            \\restore_report_fingerprint=5199fec5262545e8
+            \\capsule_fingerprint=36fd9fe6a214a37f
+            \\restore_report_fingerprint=f7b984c997a5c4ed
             \\final_result=true
             \\
             ,
@@ -788,7 +788,7 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Actuation guest bridge example.",
             .expected_stdout =
             \\guest_request_fingerprint=acc76001
-            \\actuation_receipt_fingerprint=516f5c5642914e81
+            \\actuation_receipt_fingerprint=866caf188039e1fe
             \\conformance=true
             \\
             ,
@@ -825,7 +825,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-continuity-actuation",
             .desc = "Run the World Continuity actuation example.",
             .expected_stdout =
-            \\actuation_receipt_ref=2587388892e96ecf
+            \\actuation_receipt_ref=2e34efed86e4104e
             \\idempotency_key_ref=99a8c7e8fafb160c
             \\lookup_matches=true
             \\replay_fresh_called=false
@@ -838,7 +838,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-continuity-bundle-roundtrip",
             .desc = "Run the World Continuity bundle roundtrip example.",
             .expected_stdout =
-            \\bundle_fingerprint=bde4c2fab59b369d
+            \\bundle_fingerprint=a320c156f921d764
             \\imported_object_count=2
             \\capsule_restored_to_inspectable_state=true
             \\
