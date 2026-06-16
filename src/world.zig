@@ -29271,6 +29271,7 @@ pub const Continuity = struct {
         };
 
         pub const IdempotencyRegistry = struct {
+            allocator: std.mem.Allocator,
             registry_fingerprint: u64,
             source_cursor_fingerprint: u64,
             idempotency_key_refs: []const ObjectRef = &.{},
@@ -29321,6 +29322,7 @@ pub const Continuity = struct {
                 const receipts = try receipt_refs.toOwnedSlice(vault.allocator);
                 const blocker_slice = try blockers.toOwnedSlice(vault.allocator);
                 var registry = @This(){
+                    .allocator = vault.allocator,
                     .registry_fingerprint = 0,
                     .source_cursor_fingerprint = vault.cursor().cursor_fingerprint,
                     .idempotency_key_refs = keys,
@@ -29353,9 +29355,35 @@ pub const Continuity = struct {
             }
 
             pub fn recordFreshCommit(self: *@This(), key: ObjectRef, receipt_ref: ObjectRef) !void {
-                _ = self;
-                _ = key;
-                _ = receipt_ref;
+                try key.validate();
+                try receipt_ref.validate();
+                if (key.kind != .actuation_idempotency_key or receipt_ref.kind != .actuation_receipt) return error.InvalidFrameEncoding;
+                if (self.lookup(key)) |existing| {
+                    if (existing.eql(receipt_ref)) return;
+                    return error.DuplicateBinding;
+                }
+
+                var key_refs: std.ArrayList(ObjectRef) = .empty;
+                errdefer deinitRefList(self.allocator, &key_refs);
+                for (self.idempotency_key_refs) |ref| try key_refs.append(self.allocator, try ref.clone(self.allocator));
+                try key_refs.append(self.allocator, try key.clone(self.allocator));
+
+                var receipt_refs: std.ArrayList(ObjectRef) = .empty;
+                errdefer deinitRefList(self.allocator, &receipt_refs);
+                for (self.committed_receipt_refs) |ref| try receipt_refs.append(self.allocator, try ref.clone(self.allocator));
+                try receipt_refs.append(self.allocator, try receipt_ref.clone(self.allocator));
+
+                const keys = try key_refs.toOwnedSlice(self.allocator);
+                errdefer freeRefSlice(self.allocator, keys);
+                const receipts = try receipt_refs.toOwnedSlice(self.allocator);
+                errdefer freeRefSlice(self.allocator, receipts);
+
+                freeRefSlice(self.allocator, @constCast(self.idempotency_key_refs));
+                freeRefSlice(self.allocator, @constCast(self.committed_receipt_refs));
+                self.idempotency_key_refs = keys;
+                self.committed_receipt_refs = receipts;
+                self.fresh_commit_count += 1;
+                self.registry_fingerprint = fingerprintIdempotencyRegistry(self.*);
             }
 
             pub fn recordReplay(self: *@This(), key: ObjectRef, receipt_ref: ObjectRef) !void {
@@ -31990,9 +32018,12 @@ pub const Continuity = struct {
             const requested_mode = recoveryRequestedModeFromThaw(options.thaw_options.mode);
             const source_cursor = session.cursor();
             const blockers: []const u64 = blk: {
-                var graph = preflightThawCapsule(session.vault, capsule_ref, registry, env, permit, options) catch {
-                    try session.vault.appendChronicleEvent(Chronicle.Event.init(.{ .kind = .recovery_blocked, .capsule_ref = capsule_ref }));
-                    break :blk &.{1};
+                var graph = preflightThawCapsule(session.vault, capsule_ref, registry, env, permit, options) catch |err| switch (err) {
+                    error.ObjectMissing, error.InvalidFrameEncoding, error.DuplicateBinding => {
+                        try session.vault.appendChronicleEvent(Chronicle.Event.init(.{ .kind = .recovery_blocked, .capsule_ref = capsule_ref }));
+                        break :blk &.{1};
+                    },
+                    else => return err,
                 };
                 graph.deinit();
                 try session.vault.appendChronicleEvent(Chronicle.Event.init(.{ .kind = .recovery_ready, .capsule_ref = capsule_ref }));
@@ -32053,9 +32084,12 @@ pub const Continuity = struct {
         pub fn planReplayFromVault(session: *Session, capsule_ref: ObjectRef, target: anytype, options: Options) !RecoveryPlan {
             const source_cursor = session.cursor();
             const blockers: []const u64 = blk: {
-                var graph = preflightReplayCapsule(session.vault, capsule_ref, target, options) catch {
-                    try session.vault.appendChronicleEvent(Chronicle.Event.init(.{ .kind = .recovery_blocked, .capsule_ref = capsule_ref }));
-                    break :blk &.{1};
+                var graph = preflightReplayCapsule(session.vault, capsule_ref, target, options) catch |err| switch (err) {
+                    error.ObjectMissing, error.InvalidFrameEncoding, error.DuplicateBinding => {
+                        try session.vault.appendChronicleEvent(Chronicle.Event.init(.{ .kind = .recovery_blocked, .capsule_ref = capsule_ref }));
+                        break :blk &.{1};
+                    },
+                    else => return err,
                 };
                 graph.deinit();
                 break :blk &.{};
@@ -36612,6 +36646,18 @@ test "idempotency registry records fresh commits and allows replay receipts" {
     });
     try std.testing.expect(registry.lookup(key_ref).?.eql(receipt_ref));
     try std.testing.expectError(error.DuplicateBinding, registry.assertFreshCommitAllowed(key_ref));
+
+    var incremental_vault = Continuity.MemoryVault.init(allocator);
+    defer incremental_vault.deinit();
+    var incremental_registry = try Continuity.Chronicle.IdempotencyRegistry.rebuild(&incremental_vault);
+    defer incremental_registry.deinit(allocator);
+    const incremental_key_ref = Continuity.semanticObjectRef(.actuation_idempotency_key, 0x3470_4040);
+    const incremental_receipt_ref = Continuity.semanticObjectRef(.actuation_receipt, 0x3470_4014);
+    try incremental_registry.assertFreshCommitAllowed(incremental_key_ref);
+    try incremental_registry.recordFreshCommit(incremental_key_ref, incremental_receipt_ref);
+    try std.testing.expect(incremental_registry.lookup(incremental_key_ref).?.eql(incremental_receipt_ref));
+    try std.testing.expectError(error.DuplicateBinding, incremental_registry.assertFreshCommitAllowed(incremental_key_ref));
+    try std.testing.expectEqual(@as(usize, 1), incremental_registry.fresh_commit_count);
 
     const replay_receipt = Actuation.Receipt.init(.{
         .intent_fingerprint = 0x3470_0030,
