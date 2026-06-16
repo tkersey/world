@@ -19527,6 +19527,7 @@ pub const Actuation = struct {
                     else => return error.InvalidFrameEncoding,
                 }
                 if (self.frame_response_fingerprint != null) return error.InvalidFrameEncoding;
+                if (self.mode != .replay and self.mode != .verify) return error.InvalidFrameEncoding;
             }
             if (self.mode == .replay and self.fresh_called) return error.InvalidFrameEncoding;
             if (self.replayed and self.verified) return error.InvalidFrameEncoding;
@@ -19821,6 +19822,7 @@ pub const Actuation = struct {
                     else => return error.InvalidFrameEncoding,
                 }
                 if (entry.frame_response_fingerprint != null) return error.InvalidFrameEncoding;
+                if (entry.fresh_called) return error.InvalidFrameEncoding;
             }
             try validateJournalEntryFingerprint(entry.receipt_fingerprint, &evidence_count);
             try validateJournalEntryFingerprint(entry.idempotency_key_fingerprint, &evidence_count);
@@ -39563,6 +39565,58 @@ test "vault replay accepts terminal receipt without optional request fingerprint
     try std.testing.expectEqual(Actuation.ResponseStatus.rejected, replayed.status);
     try std.testing.expectEqual(key.request_fingerprint, replayed.request_fingerprint);
     try std.testing.expectEqual(receipt.response_fingerprint, replayed.recorded_response_fingerprint.?);
+}
+
+test "recorded response fingerprints require replay evidence" {
+    const allocator = std.testing.allocator;
+    const fresh_receipt = Actuation.Receipt.init(.{
+        .intent_fingerprint = 0x3318_0010,
+        .envelope_fingerprint = 0x3318_0011,
+        .decision_fingerprint = 0x3318_0012,
+        .commit_fingerprint = 0x3318_0013,
+        .response_fingerprint = 0x3318_0014,
+        .recorded_response_fingerprint = 0x3318_0015,
+        .actuator_ref_fingerprint = 0x3318_0016,
+        .idempotency_key_fingerprint = 0x3318_0017,
+        .target_ref_fingerprint = 0x3318_0018,
+        .world_surface_fingerprint = 0x3318_0019,
+        .world_port_id = 8,
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+        .rejected = true,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, fresh_receipt.validate());
+
+    const replay_receipt = Actuation.Receipt.init(.{
+        .intent_fingerprint = 0x3318_0020,
+        .envelope_fingerprint = 0x3318_0021,
+        .decision_fingerprint = 0x3318_0022,
+        .commit_fingerprint = 0x3318_0023,
+        .response_fingerprint = 0x3318_0024,
+        .recorded_response_fingerprint = 0x3318_0025,
+        .actuator_ref_fingerprint = 0x3318_0026,
+        .idempotency_key_fingerprint = 0x3318_0027,
+        .target_ref_fingerprint = 0x3318_0028,
+        .world_surface_fingerprint = 0x3318_0029,
+        .world_port_id = 8,
+        .class = .deterministic_fixture,
+        .mode = .replay,
+        .replayed = true,
+        .rejected = true,
+    });
+    try replay_receipt.validate();
+
+    var journal = Actuation.Journal.init();
+    defer journal.deinit(allocator);
+    try journal.entries.append(allocator, .{
+        .order = journal.takeOrder(),
+        .response_fingerprint = 0x3318_0030,
+        .recorded_response_fingerprint = 0x3318_0031,
+        .fresh_called = true,
+        .rejected = true,
+    });
+    journal.refreshFingerprint();
+    try std.testing.expectError(error.InvalidFrameEncoding, journal.validate());
 }
 
 test "actuation response deinit does not free borrowed response image" {
