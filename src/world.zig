@@ -32333,12 +32333,21 @@ pub const Continuity = struct {
         pub fn executeThawPlanFromVault(session: *Session, runspace: *Runspace, plan: RecoveryPlan, registry: anytype, env: anytype, permit: anytype, options: Options) !RecoveryReport {
             try plan.validate();
             if (plan.requested_mode != recoveryRequestedModeFromThaw(options.thaw_options.mode)) return error.InvalidFrameEncoding;
+            if (session.policy.require_transaction_for_recovery and !recoveryPlanWasRecorded(session.vault, plan)) return error.InvalidFrameEncoding;
             const before_slots = runspace.slots.items.len;
             if (plan.blockers.len != 0) {
                 if (before_slots != runspace.slots.items.len) return error.InvalidRunspaceTransition;
                 return recoveryRejectedReport(session, plan);
             }
             const capsule_ref = plan.capsule_ref;
+            var graph = preflightThawCapsule(session.vault, capsule_ref, registry, env, permit, options) catch |err| switch (err) {
+                error.ObjectMissing, error.InvalidFrameEncoding, error.DuplicateBinding => {
+                    if (before_slots != runspace.slots.items.len) return error.InvalidRunspaceTransition;
+                    return recoveryRejectedReport(session, plan);
+                },
+                else => return err,
+            };
+            graph.deinit();
             var image = try session.vault.getCapsule(capsule_ref);
             defer image.deinit(session.vault.allocator);
             const target = thawTargetRefFingerprintFromArg(registry, image.manifest.root_target_ref_fingerprint) orelse 0;
@@ -32492,6 +32501,18 @@ pub const Continuity = struct {
         fn appendRecoveryChronicleEvent(session: *Session, event: Chronicle.Event) !void {
             if (!session.policy.require_transaction_for_recovery) return;
             try session.appendChronicleEvent(event);
+        }
+
+        fn recoveryPlanWasRecorded(vault: *const Continuity.MemoryVault, plan: RecoveryPlan) bool {
+            const plan_ref = semanticObjectRef(.capsule_thaw_plan, plan.plan_fingerprint);
+            const expected_kind: Chronicle.EventKind = if (plan.blockers.len == 0) .capsule_recovery_ready else .capsule_recovery_rejected;
+            for (vault.chronicle_events.items) |event| {
+                if (event.kind != expected_kind) continue;
+                if (event.recovery_plan_ref == null or !event.recovery_plan_ref.?.eql(plan_ref)) continue;
+                if (event.capsule_ref == null or !event.capsule_ref.?.eql(plan.capsule_ref)) continue;
+                return true;
+            }
+            return false;
         }
 
         fn appendOwnedRecoveryChronicleEventAssumeCapacity(session: *Session, event: Chronicle.Event) void {
@@ -37665,6 +37686,14 @@ test "executable recovery plans and rejects before runspace mutation" {
     var recovery_projection = try Continuity.Chronicle.Projection.rebuild(&vault, .recovery_queue);
     defer recovery_projection.deinit();
     try std.testing.expect(recovery_projection.report.object_refs_consumed.len != 0);
+    try std.testing.expectEqual(before_slots, runspace.slots.items.len);
+    const forged_plan = Continuity.RecoveryPlan.init(.{
+        .capsule_ref = missing_capsule,
+        .source_cursor_fingerprint = session.cursor().cursor_fingerprint,
+        .requested_mode = .thaw_completed,
+        .runspace_mutation_plan = "forged empty-blocker plan",
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, Continuity.Recovery.executeThawPlanFromVault(&session, &runspace, forged_plan, {}, {}, {}, .{}));
     try std.testing.expectEqual(before_slots, runspace.slots.items.len);
 
     var source_runspace = Runspace.init(allocator, .{});
