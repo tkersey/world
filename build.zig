@@ -926,7 +926,7 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Chronicle recovery example.",
             .expected_stdout =
             \\recovery_plan_fingerprint=838e17dfcd727dab
-            \\recovery_report_fingerprint=7d57ea904b641b1
+            \\recovery_report_fingerprint=7a15f7e3261d5da8
             \\restored=true
             \\final_result=chronicle-recovery-ok
             \\

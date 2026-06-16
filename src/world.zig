@@ -32326,12 +32326,19 @@ pub const Continuity = struct {
         }
 
         pub fn thawFromVault(session: *Session, runspace: *Runspace, capsule_ref: ObjectRef, registry: anytype, env: anytype, permit: anytype, options: Options) !RecoveryReport {
-            const before_slots = runspace.slots.items.len;
             const plan = try planThawFromVault(session, capsule_ref, registry, env, permit, options);
+            return executeThawPlanFromVault(session, runspace, plan, registry, env, permit, options);
+        }
+
+        pub fn executeThawPlanFromVault(session: *Session, runspace: *Runspace, plan: RecoveryPlan, registry: anytype, env: anytype, permit: anytype, options: Options) !RecoveryReport {
+            try plan.validate();
+            if (plan.requested_mode != recoveryRequestedModeFromThaw(options.thaw_options.mode)) return error.InvalidFrameEncoding;
+            const before_slots = runspace.slots.items.len;
             if (plan.blockers.len != 0) {
                 if (before_slots != runspace.slots.items.len) return error.InvalidRunspaceTransition;
                 return recoveryRejectedReport(session, plan);
             }
+            const capsule_ref = plan.capsule_ref;
             var image = try session.vault.getCapsule(capsule_ref);
             defer image.deinit(session.vault.allocator);
             const target = thawTargetRefFingerprintFromArg(registry, image.manifest.root_target_ref_fingerprint) orelse 0;
@@ -37626,7 +37633,7 @@ test "executable recovery plans and rejects before runspace mutation" {
     try std.testing.expect(disabled_plan.blockers.len != 0);
     try std.testing.expectEqual(disabled_event_count, disabled_vault.eventCount());
     try std.testing.expectEqual(disabled_cursor.cursor_fingerprint, disabled_session.cursor().cursor_fingerprint);
-    const disabled_report = try Continuity.Recovery.thawFromVault(&disabled_session, &disabled_runspace, missing_disabled_capsule, {}, {}, {}, .{});
+    const disabled_report = try Continuity.Recovery.executeThawPlanFromVault(&disabled_session, &disabled_runspace, disabled_plan, {}, {}, {}, .{});
     try disabled_report.validate();
     try std.testing.expect(!disabled_report.accepted);
     try std.testing.expectEqual(disabled_event_count, disabled_vault.eventCount());
@@ -37651,7 +37658,7 @@ test "executable recovery plans and rejects before runspace mutation" {
     try std.testing.expectEqual(cursor_before_plan.cursor_fingerprint, plan.source_cursor_fingerprint);
     try std.testing.expect(cursor_before_plan.cursor_fingerprint != session.cursor().cursor_fingerprint);
     try std.testing.expect(plan.blockers.len != 0);
-    const report = try Continuity.Recovery.thawFromVault(&session, &runspace, missing_capsule, {}, {}, {}, .{});
+    const report = try Continuity.Recovery.executeThawPlanFromVault(&session, &runspace, plan, {}, {}, {}, .{});
     try report.validate();
     try std.testing.expect(!report.accepted);
     try std.testing.expect(report.restored_capsule_ref == null);
