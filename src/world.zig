@@ -32358,8 +32358,16 @@ pub const Continuity = struct {
             }
             var restore = try Capsule.thawIntoRunspace(image, runspace, target, environment, permit_fingerprint, options.thaw_options);
             defer restore.deinit(session.vault.allocator);
-            if (restore.restored_root_run_handles.len != handles.len) return error.InvalidFrameEncoding;
-            @memcpy(handles, restore.restored_root_run_handles);
+            var restored_handles: []const u64 = &.{};
+            if (restore.accepted) {
+                if (restore.restored_root_run_handles.len != handles.len) return error.InvalidFrameEncoding;
+                @memcpy(handles, restore.restored_root_run_handles);
+                restored_handles = handles;
+                handles_owned = false;
+            } else {
+                session.vault.allocator.free(handles);
+                handles_owned = false;
+            }
             if (session.policy.require_transaction_for_recovery) {
                 if (restore.accepted) {
                     appendOwnedRecoveryChronicleEventAssumeCapacity(session, owned_recovery_executed_event.?);
@@ -32379,13 +32387,12 @@ pub const Continuity = struct {
                 .recovery_plan_fingerprint = plan.plan_fingerprint,
                 .accepted = restore.accepted,
                 .resulting_cursor_fingerprint = session.cursor().cursor_fingerprint,
-                .restored_capsule_ref = capsule_ref,
-                .restored_run_handles = handles,
+                .restored_capsule_ref = if (restore.accepted) capsule_ref else null,
+                .restored_run_handles = restored_handles,
                 .blockers = if (restore.accepted) &.{} else &.{1},
             });
-            report.owns_memory = true;
+            report.owns_memory = restore.accepted;
             try report.validate();
-            handles_owned = false;
             return report;
         }
 
@@ -37633,6 +37640,21 @@ test "executable recovery plans and rejects before runspace mutation" {
     defer recovery_projection.deinit();
     try std.testing.expect(recovery_projection.report.object_refs_consumed.len != 0);
     try std.testing.expectEqual(before_slots, runspace.slots.items.len);
+
+    var source_runspace = Runspace.init(allocator, .{});
+    defer source_runspace.deinit();
+    var image = try Capsule.freezeRunspace(&source_runspace, .{});
+    defer image.deinit(allocator);
+    const capsule_ref = try session.storeCapsule(image);
+    var admission_required_runspace = Runspace.init(allocator, .{ .require_admission = true });
+    defer admission_required_runspace.deinit();
+    const admission_required_slots_before = admission_required_runspace.slots.items.len;
+    const denied_report = try Continuity.Recovery.thawFromVault(&session, &admission_required_runspace, capsule_ref, {}, {}, {}, .{});
+    try denied_report.validate();
+    try std.testing.expect(!denied_report.accepted);
+    try std.testing.expect(denied_report.restored_capsule_ref == null);
+    try std.testing.expectEqual(@as(usize, 0), denied_report.restored_run_handles.len);
+    try std.testing.expectEqual(admission_required_slots_before, admission_required_runspace.slots.items.len);
 }
 
 test "memory vault stores capsule receipt journal and looks up idempotency key" {
