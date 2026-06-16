@@ -32464,19 +32464,36 @@ pub const Continuity = struct {
                 graph.deinit();
                 break :blk &.{};
             };
-            return RecoveryPlan.init(.{
+            const plan = RecoveryPlan.init(.{
                 .capsule_ref = capsule_ref,
                 .source_cursor_fingerprint = source_cursor.cursor_fingerprint,
                 .requested_mode = .replay_only,
                 .blockers = blockers,
                 .runspace_mutation_plan = "replay without fresh host calls",
             });
+            try plan.validate();
+            try appendRecoveryChronicleEvent(session, Chronicle.Event.init(.{
+                .kind = .capsule_replay_planned,
+                .capsule_ref = capsule_ref,
+                .recovery_plan_ref = semanticObjectRef(.capsule_thaw_plan, plan.plan_fingerprint),
+            }));
+            return plan;
         }
 
         pub fn replayFromVault(session: *Session, capsule_ref: ObjectRef, target: anytype, options: Options) !RecoveryReport {
             const plan = try planReplayFromVault(session, capsule_ref, target, options);
             if (plan.blockers.len != 0) return recoveryRejectedReport(session, plan);
-            try appendRecoveryChronicleEvent(session, Chronicle.Event.init(.{ .kind = .capsule_replayed, .capsule_ref = capsule_ref }));
+            const plan_ref = semanticObjectRef(.capsule_thaw_plan, plan.plan_fingerprint);
+            try appendRecoveryChronicleEvent(session, Chronicle.Event.init(.{
+                .kind = .capsule_replayed,
+                .capsule_ref = capsule_ref,
+                .recovery_plan_ref = plan_ref,
+            }));
+            try appendRecoveryChronicleEvent(session, Chronicle.Event.init(.{
+                .kind = .recovery_report_stored,
+                .capsule_ref = capsule_ref,
+                .recovery_plan_ref = plan_ref,
+            }));
             const report = RecoveryReport.init(.{
                 .recovery_plan_fingerprint = plan.plan_fingerprint,
                 .accepted = true,
