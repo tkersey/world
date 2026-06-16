@@ -28990,12 +28990,27 @@ pub const Continuity = struct {
                     }
                 }
                 const owned = try envelope.clone(self.allocator);
-                errdefer {
+                var owned_pending = true;
+                errdefer if (owned_pending) {
                     var cleanup = owned;
                     cleanup.deinit(self.allocator);
-                }
+                };
                 try self.staged_envelopes.append(self.allocator, owned);
-                try self.staged_root_refs.append(self.allocator, try ref.clone(self.allocator));
+                owned_pending = false;
+                var envelope_appended = true;
+                errdefer if (envelope_appended) {
+                    var cleanup = self.staged_envelopes.pop().?;
+                    cleanup.deinit(self.allocator);
+                };
+                const owned_ref = try ref.clone(self.allocator);
+                var ref_pending = true;
+                errdefer if (ref_pending) {
+                    var cleanup = owned_ref;
+                    cleanup.deinit(self.allocator);
+                };
+                try self.staged_root_refs.append(self.allocator, owned_ref);
+                ref_pending = false;
+                envelope_appended = false;
                 self.accepted = false;
                 self.refreshFingerprint();
                 return ref;
@@ -36637,6 +36652,30 @@ test "chronicle transaction duplicate identical deduplicates and conflicting obj
         .label = "conflicting diagnostics",
     };
     try std.testing.expectError(error.InvalidFrameEncoding, tx.put(conflicting));
+}
+
+test "chronicle transaction staging allocation failure owns envelope once" {
+    const allocator = std.testing.allocator;
+    const envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .capsule_manifest,
+        .object_format_version = world_capsule_manifest_format_version,
+        .payload_bytes = "manifest",
+        .label = "manifest",
+    });
+
+    for (0..64) |fail_index| {
+        var failing_allocator = std.testing.FailingAllocator.init(allocator, .{
+            .fail_index = fail_index,
+        });
+        var vault = Continuity.MemoryVault.init(failing_allocator.allocator());
+        defer vault.deinit();
+        var tx = vault.beginTransaction(.custom, .{}) catch continue;
+        defer tx.deinit();
+        _ = tx.put(envelope) catch |err| switch (err) {
+            error.OutOfMemory => continue,
+            else => return err,
+        };
+    }
 }
 
 test "persist policy presets are deterministic and default persists nothing" {
