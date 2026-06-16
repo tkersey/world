@@ -3290,6 +3290,7 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
     const rejected_replay_response = try rejected_replay_source.responseForIntent(replay_intent, key, .rejected, .@"resume");
     try std.testing.expectEqual(world.Actuation.ResponseStatus.rejected, rejected_replay_response.status);
     try std.testing.expectEqual(@as(?u64, null), rejected_replay_response.frame_response_fingerprint);
+    try std.testing.expectEqual(reject_exec.receipt.response_fingerprint, rejected_replay_response.recorded_response_fingerprint.?);
     try std.testing.expectError(error.ReplayResponseKindMismatch, world.Actuation.Membrane.execute(.{
         .policy = policy,
         .intent = replay_intent,

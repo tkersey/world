@@ -20242,6 +20242,7 @@ pub const Actuation = struct {
                 .frame_response_fingerprint = if (status == .responded) receipt.frame_response_fingerprint orelse return error.ReplayMissing else receipt.frame_response_fingerprint,
                 .value_image_fingerprint = receipt.response_value_image_fingerprint,
                 .response_image = response_image,
+                .recorded_response_fingerprint = if (status == .responded or receipt.frame_response_fingerprint != null) null else receipt.response_fingerprint,
                 .metadata = "replay",
             });
         }
@@ -20542,7 +20543,14 @@ pub const Actuation = struct {
                 try self.commit_value.validateAfterDecision(self.decision);
                 try self.validateDecisionBinding();
                 if (self.response.commit_fingerprint == null) return error.InvalidFrameEncoding;
-                if (self.response.recorded_response_fingerprint != null) return error.InvalidFrameEncoding;
+                if (self.response.recorded_response_fingerprint != null) {
+                    if (self.intent.requested_mode != .replay) return error.InvalidFrameEncoding;
+                    switch (self.response.status) {
+                        .rejected, .failed, .cancelled => {},
+                        else => return error.InvalidFrameEncoding,
+                    }
+                    if (self.response.frame_response_fingerprint != null) return error.InvalidFrameEncoding;
+                }
                 if (self.decision.approved) {
                     const descriptor = self.descriptor orelse return error.InvalidFrameEncoding;
                     try self.response.validate(self.policy, descriptor);
@@ -28531,6 +28539,9 @@ pub const Continuity = struct {
                     .frame_request => {
                         if (try frameRequestSemanticFingerprintMatches(self.allocator, envelope.payload_bytes, fingerprint)) return envelope.objectRef();
                     },
+                    .frame_response => {
+                        if (try frameResponseSemanticFingerprintMatches(self.allocator, envelope.payload_bytes, fingerprint)) return envelope.objectRef();
+                    },
                     .transcript_image => {
                         var image = TranscriptImage.decode(self.allocator, envelope.payload_bytes) catch |err| switch (err) {
                             error.OutOfMemory => return err,
@@ -30184,7 +30195,7 @@ pub const Continuity = struct {
                 defer receipt.deinit(vault.allocator);
                 if (receipt.idempotency_key_fingerprint != idempotency_key.key_fingerprint) return error.InvalidFrameEncoding;
                 if (!receiptMatchesIdempotencyKey(receipt, idempotency_key)) return error.InvalidFrameEncoding;
-                if (!receipt.pending and !receipt.deferred) {
+                if (receiptIsTerminalFreshCommit(receipt)) {
                     const response_image = try replayResponseImage(vault, receipt);
                     return Actuation.Response.init(.{
                         .intent_fingerprint = receipt.intent_fingerprint,
@@ -30203,6 +30214,29 @@ pub const Continuity = struct {
                 }
             }
             if (try replayActuationFromJournalEvidence(vault, idempotency_key)) |response| return response;
+            if (try vault.lookupActuationByIdempotencyKey(idempotency_key)) |receipt_ref| {
+                var receipt = try vault.getActuationReceipt(receipt_ref);
+                defer receipt.deinit(vault.allocator);
+                if (receipt.idempotency_key_fingerprint != idempotency_key.key_fingerprint) return error.InvalidFrameEncoding;
+                if (!receiptMatchesIdempotencyKey(receipt, idempotency_key)) return error.InvalidFrameEncoding;
+                if (!receipt.pending and !receipt.deferred) {
+                    const response_image = try replayResponseImage(vault, receipt);
+                    return Actuation.Response.init(.{
+                        .intent_fingerprint = receipt.intent_fingerprint,
+                        .commit_fingerprint = receipt.commit_fingerprint,
+                        .actuator_ref_fingerprint = receipt.actuator_ref_fingerprint,
+                        .world_port_id = receipt.world_port_id,
+                        .request_fingerprint = receipt.request_fingerprint orelse idempotency_key.request_fingerprint,
+                        .status = receipt.responseStatus(),
+                        .response_kind = receipt.response_kind,
+                        .frame_response_fingerprint = receipt.frame_response_fingerprint,
+                        .value_image_fingerprint = receipt.response_value_image_fingerprint,
+                        .response_image = response_image,
+                        .owns_response_image = response_image != null,
+                        .recorded_response_fingerprint = receipt.response_fingerprint,
+                    });
+                }
+            }
             return error.ObjectMissing;
         }
 
@@ -30636,6 +30670,7 @@ pub const Continuity = struct {
                 break :blk image.value_image_fingerprint == fingerprint;
             },
             .frame_request => try frameRequestSemanticFingerprintMatches(allocator, envelope.payload_bytes, fingerprint),
+            .frame_response => try frameResponseSemanticFingerprintMatches(allocator, envelope.payload_bytes, fingerprint),
             .transcript_image => blk: {
                 var image = TranscriptImage.decode(allocator, envelope.payload_bytes) catch |err| switch (err) {
                     error.OutOfMemory => return err,
@@ -30667,6 +30702,16 @@ pub const Continuity = struct {
         defer frame.deinit(allocator);
         validateRequestFrameImage(frame) catch return false;
         return frame.frame_fingerprint == fingerprint or frame.request_fingerprint == fingerprint;
+    }
+
+    fn frameResponseSemanticFingerprintMatches(allocator: std.mem.Allocator, payload_bytes: []const u8, fingerprint: u64) !bool {
+        var frame = Frame.Response.decode(allocator, payload_bytes) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => return false,
+        };
+        defer frame.deinit(allocator);
+        validateResponseFrameImage(frame, false) catch return false;
+        return frame.frame_fingerprint == fingerprint or frame.response_fingerprint == fingerprint;
     }
 
     fn evidenceEnvelopeSemanticFingerprint(allocator: std.mem.Allocator, envelope: ObjectEnvelope) anyerror!?u64 {
@@ -32332,7 +32377,7 @@ pub const Continuity = struct {
             };
             defer journal.deinit(vault.allocator);
             for (journal.entries.items) |entry| {
-                if (journalEntryIsTerminalResponse(entry)) return true;
+                if (journalEntryIsTerminalFreshCommit(entry)) return true;
             }
         }
         return false;
@@ -37010,8 +37055,48 @@ test "capsule graph resolves pending intents from journal refs" {
     try std.testing.expectEqual(@as(usize, 0), failed_pending.len);
     const failed_committed = try failed_index.committedActuationCapsules();
     defer allocator.free(failed_committed);
-    try std.testing.expectEqual(@as(usize, 1), failed_committed.len);
-    try std.testing.expect(failed_committed[0].eql(failed_capsule_ref));
+    try std.testing.expectEqual(@as(usize, 0), failed_committed.len);
+
+    var commit_only_vault = Continuity.MemoryVault.init(allocator);
+    defer commit_only_vault.deinit();
+    const commit_only_intent_fingerprint: u64 = 0x3300_00b0;
+    const commit_only_commit = Actuation.Commit.init(.{
+        .intent_fingerprint = commit_only_intent_fingerprint,
+        .decision_fingerprint = 0x3300_00b1,
+        .envelope_fingerprint = 0x3300_00b2,
+        .idempotency_key_fingerprint = 0x3300_00b3,
+        .status = .committed,
+        .fresh_called = true,
+    });
+    var commit_only_journal = Actuation.Journal.init();
+    defer commit_only_journal.deinit(allocator);
+    try commit_only_journal.appendCommit(allocator, commit_only_commit);
+    _ = try commit_only_vault.putActuationJournal(commit_only_journal);
+
+    const commit_only_journal_refs = [_]u64{commit_only_journal.journal_fingerprint};
+    const commit_only_image = Capsule.Image.init(.{
+        .manifest = Capsule.Manifest.init(.{
+            .kind = .completed_assembly,
+            .root_target_ref_fingerprint = 0x3300_00b5,
+            .actuation_intent_fingerprints = &.{commit_only_intent_fingerprint},
+            .actuation_journal_fingerprints = &commit_only_journal_refs,
+            .normal_form = .quiescent_completed,
+        }),
+        .runspace_image = Capsule.RunspaceImage.init(.{
+            .runspace_fingerprint = 0x3300_00b6,
+            .runspace_report_fingerprint = 0x3300_00b7,
+            .actuation_intent_refs = &.{commit_only_intent_fingerprint},
+            .actuation_journal_refs = &commit_only_journal_refs,
+        }),
+        .actuation_intent_refs = &.{commit_only_intent_fingerprint},
+        .actuation_journal_refs = &commit_only_journal_refs,
+    });
+    const commit_only_capsule_ref = try commit_only_vault.putCapsule(commit_only_image);
+    const commit_only_index = Continuity.CapsuleIndex.init(&commit_only_vault);
+    const commit_only_committed = try commit_only_index.committedActuationCapsules();
+    defer allocator.free(commit_only_committed);
+    try std.testing.expectEqual(@as(usize, 1), commit_only_committed.len);
+    try std.testing.expect(commit_only_committed[0].eql(commit_only_capsule_ref));
 }
 
 test "actuation index finds receipts by actuator target port capsule state and idempotency" {
@@ -37735,6 +37820,24 @@ test "recovery preflight inspects capsules replays receipt evidence and rejects 
 
     var failed_then_retry_journal_vault = Continuity.MemoryVault.init(allocator);
     defer failed_then_retry_journal_vault.deinit();
+    const stale_failed_receipt = Actuation.Receipt.init(.{
+        .intent_fingerprint = receipt.intent_fingerprint,
+        .envelope_fingerprint = receipt.envelope_fingerprint ^ 0xbb,
+        .decision_fingerprint = receipt.decision_fingerprint ^ 0xbb,
+        .commit_fingerprint = receipt.commit_fingerprint ^ 0xbb,
+        .response_fingerprint = receipt.response_fingerprint ^ 0xbb,
+        .actuator_ref_fingerprint = key.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .request_fingerprint = key.request_fingerprint,
+        .target_ref_fingerprint = key.target_ref_fingerprint,
+        .world_surface_fingerprint = key.world_surface_fingerprint,
+        .world_port_id = key.world_port_id,
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+        .fresh_called = true,
+        .failed = true,
+    });
+    _ = try failed_then_retry_journal_vault.putActuationReceipt(stale_failed_receipt);
     var failed_then_retry_journal = Actuation.Journal.init();
     defer failed_then_retry_journal.deinit(allocator);
     try failed_then_retry_journal.entries.append(allocator, .{
@@ -38539,6 +38642,7 @@ test "vault actuation receipt dependencies preserve and resolve component eviden
         .dependency_refs = frame_response_deps,
         .payload_bytes = frame_response_payload,
     }));
+    try std.testing.expect(vault.has(Continuity.semanticObjectRef(.frame_response, frame_response.frame_fingerprint)));
     const key_payload = try Continuity.encodePortableEvidence(Actuation.IdempotencyKey, allocator, key);
     defer allocator.free(key_payload);
     const key_envelope = Continuity.ObjectEnvelope.init(.{
