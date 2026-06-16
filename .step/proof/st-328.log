@@ -1,0 +1,4 @@
+zig fmt src/world.zig --check: pass
+zig build test --summary none -- --test-filter "object graph": pass
+zig build test --summary none -- --test-filter "capsule graph": pass
+zig build test --summary none -- --test-filter "actuation graph": pass

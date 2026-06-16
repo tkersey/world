@@ -1,0 +1,17 @@
+World Continuity examples, docs, and build wiring completed.
+
+Changed:
+- Added five runnable continuity examples.
+- Added run steps for all five examples in build.zig.
+- Updated README with World Continuity Core overview and non-goals.
+- Added docs/continuity.md with object model, graphs, bundles, indexes, and recovery preflight sections.
+- Added a src/world.zig module test target so focused continuity filters exercise source tests.
+
+Proof:
+- zig fmt build.zig src/world.zig examples/world_continuity_*.zig --check
+- zig build run-world-continuity-capsule-basic --summary none
+- zig build run-world-continuity-actuation --summary none
+- zig build run-world-continuity-bundle-roundtrip --summary none
+- zig build run-world-continuity-pending-actuation --summary none
+- zig build run-world-continuity-agent-evidence --summary none
+- zig build test --summary none -- --test-filter "continuity"

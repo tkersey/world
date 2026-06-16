@@ -1,0 +1,37 @@
+World Continuity proof closeout completed.
+
+Toolchain:
+- zig version => 0.16.0
+
+Proof commands:
+- zig fmt --check build.zig src examples test
+- git diff --check
+- zig build --summary all
+- zig build check --summary all
+- zig build world-wasm
+- zig build check-world-wasm
+- zig build run-world-continuity-capsule-basic
+- zig build run-world-continuity-actuation
+- zig build run-world-continuity-bundle-roundtrip
+- zig build run-world-continuity-pending-actuation
+- zig build run-world-continuity-agent-evidence
+- zig build test --summary none -- --test-filter "continuity"
+- zig build test --summary none -- --test-filter "object ref"
+- zig build test --summary none -- --test-filter "object envelope"
+- zig build test --summary none -- --test-filter "memory vault"
+- zig build test --summary none -- --test-filter "object graph"
+- zig build test --summary none -- --test-filter "capsule graph"
+- zig build test --summary none -- --test-filter "actuation graph"
+- zig build test --summary none -- --test-filter "bundle"
+- zig build test --summary none -- --test-filter "ledger"
+- zig build test --summary none -- --test-filter "capsule index"
+- zig build test --summary none -- --test-filter "actuation index"
+- zig build test --summary none -- --test-filter "recovery"
+- zig build test --summary none -- --test-filter "vault capsule"
+- zig build test --summary none -- --test-filter "vault actuation"
+- zig build lint -- --max-warnings 0
+
+Aggregate receipts:
+- zig build --summary all: 8/8 steps succeeded; 513/513 tests passed.
+- zig build check --summary all: 200/200 steps succeeded; 513/513 tests passed.
+- check step covered existing Actuation/Capsule/Linker/Fabric/Guest/Runspace/Admission/Supervision/Handoff/Timeline/Machine example matrix and existing wasm checks.

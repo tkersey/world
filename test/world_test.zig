@@ -676,6 +676,7 @@ test "actuation policy idempotency key and intent gates are deterministic" {
     try std.testing.expect(!strict.allowsResponseStatus(.pending));
     try std.testing.expect(!strict.allowsResponseStatus(.deferred));
     try std.testing.expect(!strict.allowsResponseStatus(.cancelled));
+    try std.testing.expectEqual(@as(u32, 2), world.world_actuation_response_fingerprint_version);
     const cancelled_response = world.Actuation.Response.init(.{
         .intent_fingerprint = intent.intent_fingerprint,
         .actuator_ref_fingerprint = ref.ref_fingerprint,
@@ -1091,6 +1092,21 @@ test "actuation commit response receipt journal and replay bind idempotency" {
     try pending_resolution_journal.appendCommit(std.testing.allocator, pending_commit);
     try pending_resolution_journal.appendCommit(std.testing.allocator, terminal_commit);
     try pending_resolution_journal.assertNoDuplicateFreshCommit();
+
+    const conflicting_terminal_commit = world.Actuation.Commit.init(.{
+        .intent_fingerprint = intent.intent_fingerprint +% 1,
+        .decision_fingerprint = decision.decision_fingerprint +% 1,
+        .envelope_fingerprint = envelope.envelope_fingerprint +% 1,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .attempt_number = 3,
+        .status = .committed,
+        .fresh_called = true,
+    });
+    var duplicate_commit_journal = world.Actuation.Journal.init();
+    defer duplicate_commit_journal.deinit(std.testing.allocator);
+    try duplicate_commit_journal.appendCommit(std.testing.allocator, terminal_commit);
+    try duplicate_commit_journal.appendCommit(std.testing.allocator, conflicting_terminal_commit);
+    try std.testing.expectError(error.DuplicateBinding, duplicate_commit_journal.assertNoDuplicateFreshCommit());
 
     const replay_source = world.Actuation.ReplaySource.init(.{ .receipts = &.{receipt} });
     const replay_response = try replay_source.responseForIntent(intent, key, .responded, .@"resume");
@@ -3274,6 +3290,7 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
     const rejected_replay_response = try rejected_replay_source.responseForIntent(replay_intent, key, .rejected, .@"resume");
     try std.testing.expectEqual(world.Actuation.ResponseStatus.rejected, rejected_replay_response.status);
     try std.testing.expectEqual(@as(?u64, null), rejected_replay_response.frame_response_fingerprint);
+    try std.testing.expectEqual(reject_exec.receipt.response_fingerprint, rejected_replay_response.recorded_response_fingerprint.?);
     try std.testing.expectError(error.ReplayResponseKindMismatch, world.Actuation.Membrane.execute(.{
         .policy = policy,
         .intent = replay_intent,
@@ -8408,18 +8425,7 @@ test "actuation capsule refs thaw replay evidence and admission summaries" {
         .runspace_image = hidden_runspace_image,
         .actuation_intent_refs = &intent_refs,
     });
-    try hidden_refs_image.validate(.{});
-    const hidden_refs_admission = world.Admission.capsuleAdmissionReport(.{
-        .mode = .replay_only,
-        .image = hidden_refs_image,
-        .thaw_plan = world.Capsule.ThawPlan.init(.{
-            .capsule_image_fingerprint = hidden_refs_image.image_fingerprint,
-            .requested_mode = .replay_only,
-        }),
-    });
-    try std.testing.expect(!hidden_refs_admission.accepted);
-    try std.testing.expect(!hidden_refs_admission.replay_only_actuation_feasible);
-    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, hidden_refs_admission.blockers[0]);
+    try std.testing.expectError(error.InvalidFrameEncoding, hidden_refs_image.validate(.{}));
 }
 
 test "capsule image encode decode roundtrips dependency and object refs" {
