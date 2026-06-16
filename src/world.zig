@@ -24347,7 +24347,7 @@ pub const Capsule = struct {
     }
 
     pub fn freezeRunToSession(session: *Continuity.Session, runspace: *Runspace, handle: RunHandle, options: FreezeOptions) !Continuity.ObjectRef {
-        _ = runspace;
+        _ = try runspace.getSlotSummary(handle);
         var image = try freezeRun(handle, options);
         defer image.deinit(session.allocator);
         return session.storeCapsule(image);
@@ -29257,12 +29257,10 @@ pub const Continuity = struct {
             }
 
             pub fn replayFromKind(vault: *Continuity.MemoryVault, cursor: Cursor, kind: ProjectionKind) !@This() {
-                var projection = try rebuild(vault, kind);
                 if (cursor.cursor_fingerprint != vault.cursor().cursor_fingerprint) {
-                    projection.report.blockers = &.{cursor.cursor_fingerprint};
-                    projection.report.projection_fingerprint = fingerprintProjectionReport(projection.report);
+                    return error.StaleProjection;
                 }
-                return projection;
+                return rebuild(vault, kind);
             }
 
             pub fn assertFresh(self: @This(), cursor: Cursor) !void {
@@ -29288,34 +29286,60 @@ pub const Continuity = struct {
                 errdefer deinitRefList(vault.allocator, &receipt_refs);
                 var blockers: std.ArrayList(u64) = .empty;
                 errdefer blockers.deinit(vault.allocator);
+                var fresh_records: std.ArrayList(FreshCommitRecord) = .empty;
+                defer fresh_records.deinit(vault.allocator);
                 var fresh_count: usize = 0;
                 var replay_count: usize = 0;
                 var conflict_count: usize = 0;
                 for (vault.objects.items) |envelope| {
-                    if (envelope.kind != .actuation_receipt) continue;
-                    var receipt = try Actuation.Receipt.decode(vault.allocator, envelope.payload_bytes);
-                    defer receipt.deinit(vault.allocator);
-                    if (receiptIsTerminalFreshCommit(receipt)) {
-                        const key_ref = semanticObjectRef(.actuation_idempotency_key, receipt.idempotency_key_fingerprint);
-                        for (receipt_refs.items) |existing_ref| {
-                            var existing = try vault.getActuationReceipt(existing_ref);
-                            defer existing.deinit(vault.allocator);
-                            if (existing.idempotency_key_fingerprint != receipt.idempotency_key_fingerprint) continue;
-                            if (!freshCommitRecordsSameBinding(
-                                freshCommitRecordFromReceipt(existing.idempotency_key_fingerprint, existing),
-                                freshCommitRecordFromReceipt(receipt.idempotency_key_fingerprint, receipt),
-                            )) {
-                                conflict_count += 1;
-                                try blockers.append(vault.allocator, receipt.idempotency_key_fingerprint);
+                    switch (envelope.kind) {
+                        .actuation_receipt => {
+                            var receipt = try Actuation.Receipt.decode(vault.allocator, envelope.payload_bytes);
+                            defer receipt.deinit(vault.allocator);
+                            if (receiptIsTerminalFreshCommit(receipt)) {
+                                fresh_count += 1;
+                                if (try recordRegistryFreshCommit(
+                                    vault.allocator,
+                                    &key_refs,
+                                    &receipt_refs,
+                                    &fresh_records,
+                                    receipt.idempotency_key_fingerprint,
+                                    envelope.objectRef(),
+                                    freshCommitRecordFromReceipt(receipt.idempotency_key_fingerprint, receipt),
+                                )) {
+                                    conflict_count += 1;
+                                    try blockers.append(vault.allocator, receipt.idempotency_key_fingerprint);
+                                }
+                            } else if (isReplayableReceipt(receipt)) {
+                                replay_count += 1;
                             }
-                        }
-                        fresh_count += 1;
-                        if (!containsRef(key_refs.items, key_ref)) {
-                            try key_refs.append(vault.allocator, try key_ref.clone(vault.allocator));
-                            try receipt_refs.append(vault.allocator, try envelope.objectRef().clone(vault.allocator));
-                        }
-                    } else if (isReplayableReceipt(receipt)) {
-                        replay_count += 1;
+                        },
+                        .actuation_journal => {
+                            var journal = try Actuation.Journal.decode(vault.allocator, envelope.payload_bytes);
+                            defer journal.deinit(vault.allocator);
+                            for (journal.entries.items) |entry| {
+                                if (journalEntryIsTerminalFreshCommit(entry)) {
+                                    const key = entry.idempotency_key_fingerprint orelse return error.InvalidFrameEncoding;
+                                    fresh_count += 1;
+                                    const evidence_ref = try registryEvidenceRefForJournalEntry(vault, envelope.objectRef(), entry);
+                                    if (try recordRegistryFreshCommit(
+                                        vault.allocator,
+                                        &key_refs,
+                                        &receipt_refs,
+                                        &fresh_records,
+                                        key,
+                                        evidence_ref,
+                                        freshCommitRecordFromJournalEntry(key, entry),
+                                    )) {
+                                        conflict_count += 1;
+                                        try blockers.append(vault.allocator, key);
+                                    }
+                                } else if (try isReplayableJournalEntryForVault(vault, entry, journal.fingerprint_version)) {
+                                    replay_count += 1;
+                                }
+                            }
+                        },
+                        else => {},
                     }
                 }
                 const keys = try key_refs.toOwnedSlice(vault.allocator);
@@ -31468,6 +31492,55 @@ pub const Continuity = struct {
         }
         if (a.replay_evidence_fingerprint == null and b.replay_evidence_fingerprint == null) return true;
         return a.replay_evidence_fingerprint == b.replay_evidence_fingerprint;
+    }
+
+    fn recordRegistryFreshCommit(
+        allocator: std.mem.Allocator,
+        key_refs: *std.ArrayList(ObjectRef),
+        evidence_refs: *std.ArrayList(ObjectRef),
+        fresh_records: *std.ArrayList(FreshCommitRecord),
+        key_fingerprint: u64,
+        evidence_ref: ObjectRef,
+        record: FreshCommitRecord,
+    ) !bool {
+        for (fresh_records.items) |existing| {
+            if (existing.key_fingerprint != key_fingerprint) continue;
+            return !freshCommitRecordsSameBinding(existing, record);
+        }
+
+        try fresh_records.append(allocator, record);
+        var record_appended = true;
+        errdefer if (record_appended) {
+            _ = fresh_records.pop();
+        };
+
+        const key_ref = semanticObjectRef(.actuation_idempotency_key, key_fingerprint);
+        var key_clone = try key_ref.clone(allocator);
+        var key_clone_owned = true;
+        errdefer if (key_clone_owned) key_clone.deinit(allocator);
+        try key_refs.append(allocator, key_clone);
+        key_clone_owned = false;
+        var key_appended = true;
+        errdefer if (key_appended) {
+            var owned = key_refs.pop().?;
+            owned.deinit(allocator);
+        };
+
+        var evidence_clone = try evidence_ref.clone(allocator);
+        var evidence_clone_owned = true;
+        errdefer if (evidence_clone_owned) evidence_clone.deinit(allocator);
+        try evidence_refs.append(allocator, evidence_clone);
+        evidence_clone_owned = false;
+        key_appended = false;
+        record_appended = false;
+        return false;
+    }
+
+    fn registryEvidenceRefForJournalEntry(vault: *Continuity.MemoryVault, journal_ref: ObjectRef, entry: Actuation.Journal.Entry) !ObjectRef {
+        if (entry.receipt_fingerprint) |fingerprint| {
+            if (try vault.refByKindFingerprint(.actuation_receipt, fingerprint)) |ref| return ref;
+        }
+        return journal_ref;
     }
 
     fn journalEntryReplayEvidenceFingerprint(entry: Actuation.Journal.Entry) ?u64 {
@@ -36455,11 +36528,33 @@ test "freeze to session stores completed and handle capsules through chronicle t
     const capsule_ref = try Capsule.freezeToSession(&session, &runspace, .{});
     try std.testing.expect(vault.has(capsule_ref));
 
-    const handle = RunHandle.init(.{
+    const forged_handle = RunHandle.init(.{
         .runspace_fingerprint = runspace.runspace_fingerprint,
         .local_run_id = 0,
         .target_ref_fingerprint = 0x3465_0001,
     });
+    try std.testing.expectError(error.StaleRunHandle, Capsule.freezeRunToSession(&session, &runspace, forged_handle, .{}));
+
+    var target_ref = TargetRef{
+        .target_ref_fingerprint = 0,
+        .world_surface_fingerprint = 0x3465_0101,
+        .target_certificate_fingerprint = 0x3465_0102,
+    };
+    target_ref.target_ref_fingerprint = fingerprintTargetRef(target_ref);
+    const handle = RunHandle.init(.{
+        .runspace_fingerprint = runspace.runspace_fingerprint,
+        .local_run_id = 0,
+        .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+    });
+    try runspace.slots.append(allocator, Runspace.RunSlot.fromState(.{
+        .handle = handle,
+        .target_ref = target_ref,
+        .current_state = RunState.init(.{
+            .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+            .status = .completed,
+        }),
+        .status = .completed,
+    }));
     const handle_ref = try Capsule.freezeRunToSession(&session, &runspace, handle, .{});
     try std.testing.expect(vault.has(handle_ref));
     try std.testing.expectEqual(@as(usize, 2), session.committed_transaction_count);
@@ -36628,6 +36723,7 @@ test "projection reports detect stale cursor and chronicle replay reports are st
     _ = try second_tx.put(second);
     _ = try second_tx.commit();
     try std.testing.expectError(error.StaleProjection, projection.assertFresh(vault.cursor()));
+    try std.testing.expectError(error.StaleProjection, Continuity.Chronicle.Projection.replayFromKind(&vault, cursor, .object_index));
 }
 
 test "projection result summaries ignore unrelated chronicle objects" {
@@ -36724,6 +36820,36 @@ test "idempotency registry records fresh commits and allows replay receipts" {
     try std.testing.expect(incremental_registry.lookup(incremental_key_ref).?.eql(incremental_receipt_ref));
     try std.testing.expectError(error.DuplicateBinding, incremental_registry.assertFreshCommitAllowed(incremental_key_ref));
     try std.testing.expectEqual(@as(usize, 1), incremental_registry.fresh_commit_count);
+
+    var journal_only_vault = Continuity.MemoryVault.init(allocator);
+    defer journal_only_vault.deinit();
+    var journal_only_session = try Continuity.Session.init(allocator, &journal_only_vault, Continuity.PersistPolicy.actuation_only());
+    const journal_receipt = Actuation.Receipt.init(.{
+        .intent_fingerprint = 0x3470_5010,
+        .envelope_fingerprint = 0x3470_5011,
+        .decision_fingerprint = 0x3470_5012,
+        .commit_fingerprint = 0x3470_5013,
+        .response_fingerprint = 0x3470_5014,
+        .frame_response_fingerprint = 0x3470_5015,
+        .actuator_ref_fingerprint = 0x3470_5004,
+        .idempotency_key_fingerprint = 0x3470_5020,
+        .request_fingerprint = 0x3470_5003,
+        .target_ref_fingerprint = 0x3470_5001,
+        .world_surface_fingerprint = 0x3470_5002,
+        .world_port_id = 7,
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+        .fresh_called = true,
+    });
+    var fresh_journal = Actuation.Journal.init();
+    defer fresh_journal.deinit(allocator);
+    try fresh_journal.appendReceipt(allocator, journal_receipt);
+    const journal_ref = try journal_only_session.storeActuationJournal(fresh_journal);
+    var journal_registry = try Continuity.Chronicle.IdempotencyRegistry.rebuild(&journal_only_vault);
+    defer journal_registry.deinit(allocator);
+    const journal_key_ref = Continuity.semanticObjectRef(.actuation_idempotency_key, journal_receipt.idempotency_key_fingerprint);
+    try std.testing.expect(journal_registry.lookup(journal_key_ref).?.eql(journal_ref));
+    try std.testing.expectError(error.DuplicateBinding, journal_registry.assertFreshCommitAllowed(journal_key_ref));
 
     const replay_receipt = Actuation.Receipt.init(.{
         .intent_fingerprint = 0x3470_0030,
