@@ -28307,16 +28307,22 @@ pub const Continuity = struct {
         fn storableEnvelopeRequiresDependencyPayloadValidation(kind: ObjectKind) bool {
             return switch (kind) {
                 .actuation_descriptor,
+                .actuation_binding,
                 .actuation_idempotency_key,
                 .actuation_envelope,
                 .actuation_decision,
                 .actuation_commit,
                 .actuation_response,
                 .actuation_receipt,
+                .actuation_journal,
                 .actuation_verify_report,
+                .frame_response,
+                .run_permit,
                 .run_receipt,
+                .admission_receipt,
                 .run_image,
                 .guest_conformance_report,
+                .fabric_receipt,
                 => true,
                 else => false,
             };
@@ -31381,6 +31387,15 @@ pub const Continuity = struct {
                 if (!validActuationDescriptorPayload(descriptor)) break :blk false;
                 break :blk try bundleActuationDescriptorDependencyPayloadsValid(allocator, envelopes, descriptor);
             },
+            .actuation_binding => blk: {
+                const binding = decodePortableEvidence(Actuation.Binding, allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => break :blk false,
+                };
+                defer deinitOwnedValue(allocator, binding);
+                if (!validActuationBindingPayload(binding)) break :blk false;
+                break :blk try bundleActuationBindingDependencyPayloadsValid(allocator, envelopes, binding);
+            },
             .actuation_idempotency_key => blk: {
                 const key = decodePortableEvidence(Actuation.IdempotencyKey, allocator, envelope.payload_bytes) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
@@ -31388,17 +31403,7 @@ pub const Continuity = struct {
                 };
                 defer deinitOwnedValue(allocator, key);
                 if (!validActuationIdempotencyKeyPayload(key)) break :blk false;
-                const intent_fingerprint = key.intent_fingerprint orelse break :blk true;
-                const intent_ref = semanticObjectRef(.actuation_intent, intent_fingerprint);
-                const intent_envelope = (try bundleEnvelopeForRef(allocator, envelopes, intent_ref)) orelse break :blk true;
-                var intent = Actuation.Intent.decode(allocator, intent_envelope.payload_bytes) catch |err| switch (err) {
-                    error.OutOfMemory => return error.OutOfMemory,
-                    else => break :blk false,
-                };
-                defer intent.deinit(allocator);
-                if (!validActuationIntentPayload(intent)) break :blk false;
-                Actuation.validateIdempotencyKeyForIntent(key, intent) catch break :blk false;
-                break :blk true;
+                break :blk try bundleActuationIdempotencyKeyDependencyPayloadsValid(allocator, envelopes, key);
             },
             .actuation_envelope => blk: {
                 const actuation_envelope = decodePortableEvidence(Actuation.Envelope, allocator, envelope.payload_bytes) catch |err| switch (err) {
@@ -31485,6 +31490,33 @@ pub const Continuity = struct {
                 if (!validActuationResponsePayload(response)) break :blk false;
                 break :blk try bundleActuationResponseDependencyPayloadsValid(allocator, envelopes, response);
             },
+            .actuation_journal => blk: {
+                var journal = Actuation.Journal.decode(allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => break :blk false,
+                };
+                defer journal.deinit(allocator);
+                journal.validate() catch break :blk false;
+                break :blk try bundleActuationJournalDependencyPayloadsValid(allocator, envelopes, journal);
+            },
+            .frame_response => blk: {
+                var response = Frame.Response.decode(allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => break :blk false,
+                };
+                defer response.deinit(allocator);
+                validateResponseFrameImage(response, false) catch break :blk false;
+                break :blk try bundleFrameResponseDependencyPayloadsValid(allocator, envelopes, response);
+            },
+            .run_permit => blk: {
+                const permit = decodePortableEvidence(RunPermit, allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => break :blk false,
+                };
+                defer deinitOwnedValue(allocator, permit);
+                if (!validRunPermitPayload(permit)) break :blk false;
+                break :blk try bundleRunPermitDependencyPayloadsValid(allocator, envelopes, permit);
+            },
             .run_receipt => blk: {
                 const receipt = decodePortableEvidence(RunReceipt, allocator, envelope.payload_bytes) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
@@ -31493,6 +31525,15 @@ pub const Continuity = struct {
                 defer deinitOwnedValue(allocator, receipt);
                 if (!validRunReceiptPayload(receipt)) break :blk false;
                 break :blk try bundleRunReceiptDependencyPayloadsValid(allocator, envelopes, receipt);
+            },
+            .admission_receipt => blk: {
+                const receipt = decodePortableEvidence(Admission.AdmissionReceipt, allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => break :blk false,
+                };
+                defer deinitOwnedValue(allocator, receipt);
+                if (!validAdmissionReceiptPayload(receipt)) break :blk false;
+                break :blk try bundleAdmissionReceiptDependencyPayloadsValid(allocator, envelopes, receipt);
             },
             .run_image => blk: {
                 var image = RunImage.decode(allocator, envelope.payload_bytes) catch |err| switch (err) {
@@ -31510,6 +31551,15 @@ pub const Continuity = struct {
                 defer deinitOwnedValue(allocator, report);
                 if (!validGuestConformanceReportPayload(report)) break :blk false;
                 break :blk try bundleGuestConformanceReportDependencyPayloadsValid(allocator, envelopes, report);
+            },
+            .fabric_receipt => blk: {
+                const receipt = decodePortableEvidence(Fabric.Receipt, allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => break :blk false,
+                };
+                defer deinitOwnedValue(allocator, receipt);
+                if (!validFabricReceiptPayload(receipt)) break :blk false;
+                break :blk try bundleFabricReceiptDependencyPayloadsValid(allocator, envelopes, receipt);
             },
             .actuation_verify_report => blk: {
                 const report = decodePortableEvidence(Actuation.VerifyReport, allocator, envelope.payload_bytes) catch |err| switch (err) {
@@ -31537,6 +31587,80 @@ pub const Continuity = struct {
             if (ref.class != descriptor.class) return false;
             if (!modeSetSubset(descriptor.supported_modes, ref.supported_modes)) return false;
             if (!responseStatusSetSubset(descriptor.allowed_response_kinds, ref.supported_response_statuses)) return false;
+        }
+        return true;
+    }
+
+    fn bundleActuationBindingDependencyPayloadsValid(allocator: std.mem.Allocator, envelopes: []const ObjectEnvelope, binding: Actuation.Binding) !bool {
+        if (try bundleEnvelopeForRef(allocator, envelopes, semanticObjectRef(.actuation_descriptor, binding.descriptor_fingerprint))) |descriptor_envelope| {
+            const descriptor = decodePortableEvidence(Actuation.Descriptor, allocator, descriptor_envelope.payload_bytes) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return false,
+            };
+            defer deinitOwnedValue(allocator, descriptor);
+            if (!validActuationDescriptorPayload(descriptor)) return false;
+            binding.validateForDescriptor(descriptor) catch return false;
+        }
+
+        if (try bundleEnvelopeForRef(allocator, envelopes, semanticObjectRef(.actuator_ref, binding.actuator_ref_fingerprint))) |ref_envelope| {
+            const ref = decodePortableEvidence(Actuation.Ref, allocator, ref_envelope.payload_bytes) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return false,
+            };
+            defer deinitOwnedValue(allocator, ref);
+            if (!validActuationRefPayload(ref)) return false;
+            if (ref.ref_fingerprint != binding.actuator_ref_fingerprint) return false;
+        }
+
+        if (binding.environment_certificate_fingerprint) |fingerprint| {
+            if (try bundleEnvelopeForRef(allocator, envelopes, semanticObjectRef(.environment_certificate, fingerprint))) |cert_envelope| {
+                const cert = decodePortableEvidence(EnvironmentCertificate, allocator, cert_envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => return false,
+                };
+                defer deinitOwnedValue(allocator, cert);
+                if (!validEnvironmentCertificatePayload(cert)) return false;
+                if (cert.certificate_fingerprint != fingerprint) return false;
+                if (cert.target_ref_fingerprint != binding.target_ref_fingerprint) return false;
+                if (cert.world_surface_fingerprint != binding.world_surface_fingerprint) return false;
+            }
+        }
+        return true;
+    }
+
+    fn bundleActuationIdempotencyKeyDependencyPayloadsValid(allocator: std.mem.Allocator, envelopes: []const ObjectEnvelope, key: Actuation.IdempotencyKey) !bool {
+        if (try bundleEnvelopeForRef(allocator, envelopes, semanticObjectRef(.frame_request, key.request_fingerprint))) |request_envelope| {
+            var request = Frame.Request.decode(allocator, request_envelope.payload_bytes) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return false,
+            };
+            defer request.deinit(allocator);
+            validateRequestFrameImage(request) catch return false;
+            if (request.request_fingerprint != key.request_fingerprint) return false;
+            if (request.world_surface_fingerprint != key.world_surface_fingerprint) return false;
+            if (request.world_port_id != key.world_port_id) return false;
+        }
+
+        if (try bundleEnvelopeForRef(allocator, envelopes, semanticObjectRef(.actuator_ref, key.actuator_ref_fingerprint))) |ref_envelope| {
+            const ref = decodePortableEvidence(Actuation.Ref, allocator, ref_envelope.payload_bytes) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return false,
+            };
+            defer deinitOwnedValue(allocator, ref);
+            if (!validActuationRefPayload(ref)) return false;
+            if (ref.ref_fingerprint != key.actuator_ref_fingerprint) return false;
+        }
+
+        if (key.intent_fingerprint) |intent_fingerprint| {
+            if (try bundleEnvelopeForRef(allocator, envelopes, semanticObjectRef(.actuation_intent, intent_fingerprint))) |intent_envelope| {
+                var intent = Actuation.Intent.decode(allocator, intent_envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => return false,
+                };
+                defer intent.deinit(allocator);
+                if (!validActuationIntentPayload(intent)) return false;
+                Actuation.validateIdempotencyKeyForIntent(key, intent) catch return false;
+            }
         }
         return true;
     }
@@ -31782,6 +31906,124 @@ pub const Continuity = struct {
         return true;
     }
 
+    fn bundleActuationJournalDependencyPayloadsValid(allocator: std.mem.Allocator, envelopes: []const ObjectEnvelope, journal: Actuation.Journal) !bool {
+        for (journal.entries.items) |entry| {
+            if (!try bundleActuationJournalEntryDependencyPayloadsValid(allocator, envelopes, entry)) return false;
+        }
+        return true;
+    }
+
+    fn bundleActuationJournalEntryDependencyPayloadsValid(allocator: std.mem.Allocator, envelopes: []const ObjectEnvelope, entry: Actuation.Journal.Entry) !bool {
+        if (entry.intent_fingerprint) |fingerprint| {
+            if (try bundleEnvelopeForRef(allocator, envelopes, semanticObjectRef(.actuation_intent, fingerprint))) |intent_envelope| {
+                var intent = Actuation.Intent.decode(allocator, intent_envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => return false,
+                };
+                defer intent.deinit(allocator);
+                if (!validActuationIntentPayload(intent)) return false;
+                if (intent.intent_fingerprint != fingerprint) return false;
+            }
+        }
+        if (entry.decision_fingerprint) |fingerprint| {
+            if (try bundleEnvelopeForRef(allocator, envelopes, semanticObjectRef(.actuation_decision, fingerprint))) |decision_envelope| {
+                const decision = decodePortableEvidence(Actuation.Decision, allocator, decision_envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => return false,
+                };
+                defer deinitOwnedValue(allocator, decision);
+                if (!validActuationDecisionPayload(decision)) return false;
+                if (decision.decision_fingerprint != fingerprint) return false;
+                if (entry.intent_fingerprint) |intent_fingerprint| if (decision.intent_fingerprint != intent_fingerprint) return false;
+            }
+        }
+        if (entry.commit_fingerprint) |fingerprint| {
+            if (try bundleEnvelopeForRef(allocator, envelopes, semanticObjectRef(.actuation_commit, fingerprint))) |commit_envelope| {
+                const commit = decodePortableEvidence(Actuation.Commit, allocator, commit_envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => return false,
+                };
+                defer deinitOwnedValue(allocator, commit);
+                if (!validActuationCommitPayload(commit)) return false;
+                if (commit.commit_fingerprint != fingerprint) return false;
+                if (entry.intent_fingerprint) |intent_fingerprint| if (commit.intent_fingerprint != intent_fingerprint) return false;
+                if (entry.decision_fingerprint) |decision_fingerprint| if (commit.decision_fingerprint != decision_fingerprint) return false;
+                if (entry.envelope_fingerprint) |envelope_fingerprint| if (commit.envelope_fingerprint != envelope_fingerprint) return false;
+                if (entry.idempotency_key_fingerprint) |key_fingerprint| if (commit.idempotency_key_fingerprint != key_fingerprint) return false;
+                if (commit.fresh_called != entry.fresh_called) return false;
+                if (commit.replayed != entry.replayed) return false;
+                if (commit.verified != entry.verified) return false;
+            }
+        }
+        if (entry.response_fingerprint) |fingerprint| {
+            if (try bundleEnvelopeForRef(allocator, envelopes, semanticObjectRef(.actuation_response, fingerprint))) |response_envelope| {
+                const response = decodePortableEvidence(Actuation.Response, allocator, response_envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => return false,
+                };
+                defer deinitOwnedValue(allocator, response);
+                if (!validActuationResponsePayload(response)) return false;
+                if (response.response_fingerprint != fingerprint) return false;
+                if (entry.intent_fingerprint) |intent_fingerprint| if (response.intent_fingerprint != intent_fingerprint) return false;
+                if (entry.commit_fingerprint) |commit_fingerprint| if (response.commit_fingerprint != commit_fingerprint) return false;
+                if (entry.request_fingerprint) |request_fingerprint| if (response.request_fingerprint != request_fingerprint) return false;
+                if (response.status != journalEntryPayloadResponseStatus(entry)) return false;
+                if (entry.response_kind) |kind| if (response.response_kind != kind) return false;
+                if (response.frame_response_fingerprint != entry.frame_response_fingerprint) return false;
+                if (response.value_image_fingerprint != entry.response_value_image_fingerprint) return false;
+                if (response.recorded_response_fingerprint != entry.recorded_response_fingerprint) return false;
+            }
+        }
+        if (entry.receipt_fingerprint) |fingerprint| {
+            if (try bundleEnvelopeForRef(allocator, envelopes, semanticObjectRef(.actuation_receipt, fingerprint))) |receipt_envelope| {
+                var receipt = Actuation.Receipt.decode(allocator, receipt_envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => return false,
+                };
+                defer receipt.deinit(allocator);
+                receipt.validate() catch return false;
+                if (receipt.receipt_fingerprint != fingerprint) return false;
+                if (entry.intent_fingerprint) |intent_fingerprint| if (receipt.intent_fingerprint != intent_fingerprint) return false;
+                if (entry.envelope_fingerprint) |envelope_fingerprint| if (receipt.envelope_fingerprint != envelope_fingerprint) return false;
+                if (entry.decision_fingerprint) |decision_fingerprint| if (receipt.decision_fingerprint != decision_fingerprint) return false;
+                if (entry.commit_fingerprint) |commit_fingerprint| if (receipt.commit_fingerprint != commit_fingerprint) return false;
+                if (entry.response_fingerprint) |response_fingerprint| if (receipt.response_fingerprint != response_fingerprint) return false;
+                if (entry.idempotency_key_fingerprint) |key_fingerprint| if (receipt.idempotency_key_fingerprint != key_fingerprint) return false;
+                if (entry.request_fingerprint) |request_fingerprint| {
+                    if (receipt.request_fingerprint == null or receipt.request_fingerprint.? != request_fingerprint) return false;
+                }
+                if (receipt.responseStatus() != journalEntryPayloadResponseStatus(entry)) return false;
+                if (entry.response_kind) |kind| if (receipt.response_kind != kind) return false;
+                if (receipt.frame_response_fingerprint != entry.frame_response_fingerprint) return false;
+                if (receipt.response_value_image_fingerprint != entry.response_value_image_fingerprint) return false;
+                if (receipt.recorded_response_fingerprint != entry.recorded_response_fingerprint) return false;
+            }
+        }
+        if (entry.idempotency_key_fingerprint) |fingerprint| {
+            if (try bundleEnvelopeForRef(allocator, envelopes, semanticObjectRef(.actuation_idempotency_key, fingerprint))) |key_envelope| {
+                const key = decodePortableEvidence(Actuation.IdempotencyKey, allocator, key_envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => return false,
+                };
+                defer deinitOwnedValue(allocator, key);
+                if (!validActuationIdempotencyKeyPayload(key)) return false;
+                if (key.key_fingerprint != fingerprint) return false;
+                if (entry.intent_fingerprint) |intent_fingerprint| if (key.intent_fingerprint != null and key.intent_fingerprint.? != intent_fingerprint) return false;
+                if (entry.request_fingerprint) |request_fingerprint| if (key.request_fingerprint != request_fingerprint) return false;
+            }
+        }
+        return true;
+    }
+
+    fn journalEntryPayloadResponseStatus(entry: Actuation.Journal.Entry) Actuation.ResponseStatus {
+        if (entry.rejected) return .rejected;
+        if (entry.failed) return .failed;
+        if (entry.pending) return .pending;
+        if (entry.deferred) return .deferred;
+        if (entry.cancelled) return .cancelled;
+        return .responded;
+    }
+
     fn bundleRunReceiptDependencyPayloadsValid(allocator: std.mem.Allocator, envelopes: []const ObjectEnvelope, receipt: RunReceipt) !bool {
         if (try bundleEnvelopeForRef(allocator, envelopes, semanticObjectRef(.run_permit, receipt.run_permit_fingerprint))) |permit_envelope| {
             const permit = decodePortableEvidence(RunPermit, allocator, permit_envelope.payload_bytes) catch |err| switch (err) {
@@ -31813,6 +32055,55 @@ pub const Continuity = struct {
         return true;
     }
 
+    fn bundleFrameResponseDependencyPayloadsValid(allocator: std.mem.Allocator, envelopes: []const ObjectEnvelope, response: Frame.Response) !bool {
+        if (try bundleEnvelopeForRef(allocator, envelopes, semanticObjectRef(.frame_request, response.request_fingerprint))) |request_envelope| {
+            var request = Frame.Request.decode(allocator, request_envelope.payload_bytes) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return false,
+            };
+            defer request.deinit(allocator);
+            validateRequestFrameImage(request) catch return false;
+            if (request.request_fingerprint != response.request_fingerprint) return false;
+            if (request.world_surface_fingerprint != response.world_surface_fingerprint) return false;
+            if (request.target_certificate_fingerprint != response.target_certificate_fingerprint) return false;
+            if (request.world_port_id != response.world_port_id) return false;
+            if (!response.responseFingerprintDeferred() and response.replay_key != request.replay_key_seed.withResponse(response.response_fingerprint).fingerprint()) return false;
+        }
+        return true;
+    }
+
+    fn bundleRunPermitDependencyPayloadsValid(allocator: std.mem.Allocator, envelopes: []const ObjectEnvelope, permit: RunPermit) !bool {
+        if (!Supervision.modeAllowedByPolicy(permit.policy, permit.mode)) return false;
+        if (try bundleEnvelopeForRef(allocator, envelopes, semanticObjectRef(.environment_certificate, permit.environment_certificate_fingerprint))) |cert_envelope| {
+            const cert = decodePortableEvidence(EnvironmentCertificate, allocator, cert_envelope.payload_bytes) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return false,
+            };
+            defer deinitOwnedValue(allocator, cert);
+            if (!validEnvironmentCertificatePayload(cert)) return false;
+            if (cert.certificate_fingerprint != permit.environment_certificate_fingerprint) return false;
+            if (cert.target_ref_fingerprint != permit.target_ref_fingerprint) return false;
+            if (cert.world_surface_fingerprint != permit.world_surface_fingerprint) return false;
+            if (cert.target_certificate_fingerprint != permit.target_certificate_fingerprint) return false;
+            if (cert.binding_plan_fingerprint != permit.binding_plan_fingerprint) return false;
+        }
+        if (permit.admission_receipt_fingerprint) |fingerprint| {
+            if (try bundleEnvelopeForRef(allocator, envelopes, semanticObjectRef(.admission_receipt, fingerprint))) |receipt_envelope| {
+                const receipt = decodePortableEvidence(Admission.AdmissionReceipt, allocator, receipt_envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => return false,
+                };
+                defer deinitOwnedValue(allocator, receipt);
+                if (!validAdmissionReceiptPayload(receipt)) return false;
+                if (receipt.receipt_fingerprint != fingerprint) return false;
+                if (receipt.target_ref_fingerprint != permit.target_ref_fingerprint) return false;
+                if (receipt.environment_certificate_fingerprint != permit.environment_certificate_fingerprint) return false;
+                if (receipt.run_permit_fingerprint != null and receipt.run_permit_fingerprint.? != permit.permit_fingerprint) return false;
+            }
+        }
+        return true;
+    }
+
     fn bundleRunImageDependencyPayloadsValid(allocator: std.mem.Allocator, envelopes: []const ObjectEnvelope, image: RunImage) !bool {
         const transcript_fingerprint = image.current_state.transcript_image_fingerprint orelse return true;
         if (try bundleEnvelopeForRef(allocator, envelopes, semanticObjectRef(.transcript_image, transcript_fingerprint))) |transcript_envelope| {
@@ -31824,6 +32115,36 @@ pub const Continuity = struct {
             if (transcript.transcript_image_fingerprint != transcript_fingerprint) return false;
             if (transcript.world_surface_fingerprint != image.target_ref.world_surface_fingerprint) return false;
             if (transcript.target_certificate_fingerprint != image.target_ref.target_certificate_fingerprint) return false;
+        }
+        return true;
+    }
+
+    fn bundleAdmissionReceiptDependencyPayloadsValid(allocator: std.mem.Allocator, envelopes: []const ObjectEnvelope, receipt: Admission.AdmissionReceipt) !bool {
+        if (receipt.environment_certificate_fingerprint) |fingerprint| {
+            if (try bundleEnvelopeForRef(allocator, envelopes, semanticObjectRef(.environment_certificate, fingerprint))) |cert_envelope| {
+                const cert = decodePortableEvidence(EnvironmentCertificate, allocator, cert_envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => return false,
+                };
+                defer deinitOwnedValue(allocator, cert);
+                if (!validEnvironmentCertificatePayload(cert)) return false;
+                if (cert.certificate_fingerprint != fingerprint) return false;
+                if (cert.target_ref_fingerprint != receipt.target_ref_fingerprint) return false;
+            }
+        }
+        if (receipt.run_permit_fingerprint) |fingerprint| {
+            if (try bundleEnvelopeForRef(allocator, envelopes, semanticObjectRef(.run_permit, fingerprint))) |permit_envelope| {
+                const permit = decodePortableEvidence(RunPermit, allocator, permit_envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => return false,
+                };
+                defer deinitOwnedValue(allocator, permit);
+                if (!validRunPermitPayload(permit)) return false;
+                if (permit.permit_fingerprint != fingerprint) return false;
+                if (permit.target_ref_fingerprint != receipt.target_ref_fingerprint) return false;
+                if (receipt.environment_certificate_fingerprint) |cert| if (permit.environment_certificate_fingerprint != cert) return false;
+                if (permit.admission_receipt_fingerprint != null and permit.admission_receipt_fingerprint.? != receipt.receipt_fingerprint) return false;
+            }
         }
         return true;
     }
@@ -31876,6 +32197,41 @@ pub const Continuity = struct {
             }
         }
         return true;
+    }
+
+    fn bundleFabricReceiptDependencyPayloadsValid(allocator: std.mem.Allocator, envelopes: []const ObjectEnvelope, receipt: Fabric.Receipt) !bool {
+        if (receipt.provider_run_receipt_fingerprint) |fingerprint| {
+            if (try bundleEnvelopeForRef(allocator, envelopes, semanticObjectRef(.run_receipt, fingerprint))) |run_receipt_envelope| {
+                const run_receipt = decodePortableEvidence(RunReceipt, allocator, run_receipt_envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => return false,
+                };
+                defer deinitOwnedValue(allocator, run_receipt);
+                if (!validRunReceiptPayload(run_receipt)) return false;
+                if (run_receipt.receipt_fingerprint != fingerprint) return false;
+                if (receipt.status == .completed and run_receipt.final_status != .completed) return false;
+            }
+        }
+        if (receipt.actuation_receipt_fingerprint) |fingerprint| {
+            if (try bundleEnvelopeForRef(allocator, envelopes, semanticObjectRef(.actuation_receipt, fingerprint))) |actuation_receipt_envelope| {
+                var actuation_receipt = Actuation.Receipt.decode(allocator, actuation_receipt_envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => return false,
+                };
+                defer actuation_receipt.deinit(allocator);
+                actuation_receipt.validate() catch return false;
+                if (actuation_receipt.receipt_fingerprint != fingerprint) return false;
+                if (receipt.status == .completed and !actuationResponseStatusTerminalForParent(actuation_receipt.responseStatus())) return false;
+            }
+        }
+        return true;
+    }
+
+    fn actuationResponseStatusTerminalForParent(status: Actuation.ResponseStatus) bool {
+        return switch (status) {
+            .responded, .rejected, .failed, .cancelled => true,
+            .pending, .deferred => false,
+        };
     }
 
     fn guestStatusMatchesRunReceipt(status: Guest.Status, final_status: RunReceipt.FinalStatus) bool {
@@ -39371,13 +39727,20 @@ test "vault actuation receipt dependencies preserve and resolve component eviden
         .status = .committed,
         .fresh_called = true,
     });
-    const frame_response = Frame.Response.init(.{
+    const frame_response_fingerprint = 0x3306_0113;
+    const frame_response_replay_seed = ReplayKeySeed{
         .world_surface_fingerprint = key.world_surface_fingerprint,
-        .target_certificate_fingerprint = 0x3306_0112,
+        .world_surface_scope_fingerprint = key.world_surface_fingerprint,
         .world_port_id = key.world_port_id,
         .request_fingerprint = key.request_fingerprint,
-        .response_fingerprint = 0x3306_0113,
-        .replay_key = 0x3306_0114,
+    };
+    const frame_response = Frame.Response.init(.{
+        .world_surface_fingerprint = key.world_surface_fingerprint,
+        .target_certificate_fingerprint = 0x3306_0104,
+        .world_port_id = key.world_port_id,
+        .request_fingerprint = key.request_fingerprint,
+        .response_fingerprint = frame_response_fingerprint,
+        .replay_key = frame_response_replay_seed.withResponse(frame_response_fingerprint).fingerprint(),
     });
     const response = Actuation.Response.init(.{
         .intent_fingerprint = intent.intent_fingerprint,
