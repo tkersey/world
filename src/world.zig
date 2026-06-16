@@ -30682,11 +30682,19 @@ pub const Continuity = struct {
             var imported_manifest = try bundle.manifest.clone(vault.allocator);
             errdefer imported_manifest.deinit(vault.allocator);
             const object_count_before = vault.objects.items.len;
+            const event_count_before = vault.chronicle_events.items.len;
+            const backing_count_before = vault.chronicle_commit_backing.items.len;
+            const cursor_before = vault.chronicle_cursor;
             const ledger_count_before = vault.ledger.events.items.len;
             const ledger_next_order_before = vault.ledger.next_order;
             errdefer {
                 for (vault.objects.items[object_count_before..]) |*object| object.deinit(vault.allocator);
                 vault.objects.shrinkRetainingCapacity(object_count_before);
+                for (vault.chronicle_events.items[event_count_before..]) |*event| event.deinit(vault.allocator);
+                vault.chronicle_events.shrinkRetainingCapacity(event_count_before);
+                for (vault.chronicle_commit_backing.items[backing_count_before..]) |backing| freeEnvelopeSlice(vault.allocator, backing);
+                vault.chronicle_commit_backing.shrinkRetainingCapacity(backing_count_before);
+                vault.chronicle_cursor = cursor_before;
                 vault.ledger.events.shrinkRetainingCapacity(ledger_count_before);
                 vault.ledger.next_order = ledger_next_order_before;
             }
@@ -37827,6 +37835,55 @@ test "bundle export enforces object count and byte limits" {
         &.{first},
         .{ .max_bundle_bytes = 1 },
     ));
+}
+
+test "bundle import allocation failure restores chronicle state" {
+    const allocator = std.testing.allocator;
+    var source = Continuity.MemoryVault.init(allocator);
+    defer source.deinit();
+
+    const first = try source.put(Continuity.ObjectEnvelope.init(.{
+        .kind = .capsule_manifest,
+        .object_format_version = world_capsule_manifest_format_version,
+        .payload_bytes = "first",
+    }));
+    const second = try source.put(Continuity.ObjectEnvelope.init(.{
+        .kind = .capsule_manifest,
+        .object_format_version = world_capsule_manifest_format_version,
+        .payload_bytes = "second",
+    }));
+    var bundle = try Continuity.Bundle.exportFromVault(&source, &.{ first, second }, .{});
+    defer bundle.deinit();
+    const bytes = try bundle.toBytes(allocator);
+    defer allocator.free(bytes);
+
+    for (0..96) |fail_index| {
+        var failing_allocator = std.testing.FailingAllocator.init(allocator, .{
+            .fail_index = fail_index,
+        });
+        var destination = Continuity.MemoryVault.init(failing_allocator.allocator());
+        defer destination.deinit();
+        const object_count_before = destination.objectCount();
+        const event_count_before = destination.eventCount();
+        const backing_count_before = destination.chronicle_commit_backing.items.len;
+        const cursor_before = destination.cursor();
+        const ledger_count_before = destination.ledger.events.items.len;
+        const ledger_next_order_before = destination.ledger.next_order;
+
+        var imported_manifest = Continuity.Bundle.importIntoVault(&destination, bytes, .{}) catch |err| switch (err) {
+            error.OutOfMemory => {
+                try std.testing.expectEqual(object_count_before, destination.objectCount());
+                try std.testing.expectEqual(event_count_before, destination.eventCount());
+                try std.testing.expectEqual(backing_count_before, destination.chronicle_commit_backing.items.len);
+                try std.testing.expectEqual(cursor_before.cursor_fingerprint, destination.cursor().cursor_fingerprint);
+                try std.testing.expectEqual(ledger_count_before, destination.ledger.events.items.len);
+                try std.testing.expectEqual(ledger_next_order_before, destination.ledger.next_order);
+                continue;
+            },
+            else => return err,
+        };
+        imported_manifest.deinit(failing_allocator.allocator());
+    }
 }
 
 test "object envelope fingerprint binds metadata fields" {
