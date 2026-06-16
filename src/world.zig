@@ -33191,7 +33191,7 @@ pub const Continuity = struct {
 
     fn replayCommittedObjectsIntoVault(source: *Continuity.MemoryVault, destination: *Continuity.MemoryVault) !void {
         for (source.chronicle_commit_backing.items) |backing| {
-            for (backing) |envelope| _ = try destination.putValidatedEnvelopeFromTransaction(envelope);
+            for (backing) |envelope| _ = try destination.putAcceptedTransactionEnvelope(envelope);
         }
     }
 
@@ -36988,6 +36988,64 @@ test "projection reports detect stale cursor and chronicle replay reports are st
     try std.testing.expectEqual(@as(usize, 0), replay_after_public_put.mismatch_count);
     try std.testing.expectError(error.StaleProjection, projection.assertFresh(vault.cursor()));
     try std.testing.expectError(error.StaleProjection, Continuity.Chronicle.Projection.replayFromKind(&vault, cursor, .object_index));
+}
+
+test "chronicle replay preserves transaction dependency context" {
+    const allocator = std.testing.allocator;
+    var vault = Continuity.MemoryVault.init(allocator);
+    defer vault.deinit();
+
+    const request_fingerprint = 0x3480_8010;
+    const response_fingerprint = 0x3480_8020;
+    const request = Frame.Request.init(.{
+        .world_surface_fingerprint = 0x3480_8011,
+        .target_certificate_fingerprint = 0x3480_8012,
+        .world_port_id = 6,
+        .residual_site_index = 0,
+        .residual_site_fingerprint = 0x3480_8014,
+        .request_fingerprint = request_fingerprint,
+        .turn_index = 0,
+    });
+    const response = Frame.Response.init(.{
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .target_certificate_fingerprint = request.target_certificate_fingerprint,
+        .world_port_id = request.world_port_id,
+        .request_fingerprint = request_fingerprint,
+        .response_fingerprint = response_fingerprint,
+        .replay_key = request.replay_key_seed.withResponse(response_fingerprint).fingerprint(),
+    });
+    const request_payload = try request.encode(allocator);
+    defer allocator.free(request_payload);
+    const response_payload = try response.encode(allocator);
+    defer allocator.free(response_payload);
+    const request_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .frame_request,
+        .object_format_version = world_frame_request_format_version,
+        .payload_bytes = request_payload,
+    });
+    const request_ref = Continuity.semanticObjectRef(.frame_request, request.frame_fingerprint);
+    const response_deps = [_]Continuity.ObjectRef{request_ref};
+    const response_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .frame_response,
+        .object_format_version = world_frame_response_format_version,
+        .dependency_refs = &response_deps,
+        .payload_bytes = response_payload,
+    });
+    const response_ref = response_envelope.objectRef();
+    var envelopes = [_]Continuity.ObjectEnvelope{ response_envelope, request_envelope };
+    const roots = [_]Continuity.ObjectRef{ response_ref, request_ref };
+    const bundle = Continuity.Bundle{
+        .allocator = allocator,
+        .manifest = Continuity.BundleManifest.init(.{ .roots = &roots, .object_count = envelopes.len }),
+        .envelopes = &envelopes,
+    };
+    var tx = try vault.beginTransaction(.import_bundle, .{});
+    defer tx.deinit();
+    try tx.putBundle(bundle);
+    _ = try tx.commit();
+
+    const replay = try Continuity.Chronicle.replay(&vault, .{});
+    try std.testing.expectEqual(@as(usize, 0), replay.mismatch_count);
 }
 
 test "projection result summaries ignore unrelated chronicle objects" {
