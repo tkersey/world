@@ -24347,7 +24347,8 @@ pub const Capsule = struct {
     }
 
     pub fn freezeRunToSession(session: *Continuity.Session, runspace: *Runspace, handle: RunHandle, options: FreezeOptions) !Continuity.ObjectRef {
-        _ = try runspace.getSlotSummary(handle);
+        const summary = try runspace.getSlotSummary(handle);
+        if (summary.status != .completed) return error.InvalidFrameEncoding;
         var image = try freezeRun(handle, options);
         defer image.deinit(session.allocator);
         return session.storeCapsule(image);
@@ -29166,6 +29167,9 @@ pub const Continuity = struct {
                     const object_count_before_put = self.vault.objects.items.len;
                     const ref = try self.vault.putAcceptedTransactionEnvelope(envelope);
                     if (self.vault.objects.items.len == object_count_before_put) continue;
+                    if (ledgerEventKindForCommittedEnvelope(envelope.kind)) |ledger_kind| {
+                        try self.vault.ledger.record(ledger_kind, ref);
+                    }
                     if (!containsRef(committed_refs.items, ref)) try committed_refs.append(self.allocator, try ref.clone(self.allocator));
                     const event_refs = [_]ObjectRef{ref};
                     const event = Event.init(.{
@@ -29723,6 +29727,16 @@ pub const Continuity = struct {
             self.next_order += 1;
         }
     };
+
+    fn ledgerEventKindForCommittedEnvelope(kind: ObjectKind) ?Ledger.EventKind {
+        return switch (kind) {
+            .capsule_image => .capsule_stored,
+            .actuation_intent => .actuation_intent_stored,
+            .actuation_receipt => .actuation_receipt_stored,
+            .actuation_journal => .actuation_journal_stored,
+            else => null,
+        };
+    }
 
     pub const MemoryVault = struct {
         allocator: std.mem.Allocator,
@@ -30588,7 +30602,11 @@ pub const Continuity = struct {
 
         pub fn recordCompletedCapsule(self: *@This(), runspace: *Runspace, options: Capsule.FreezeOptions) !?ObjectRef {
             if (!self.policy.persist_completed_capsule) return null;
-            return try Capsule.freezeToSession(self.session, runspace, options);
+            var completed_options = options;
+            completed_options.allow_failed = false;
+            completed_options.allow_parked = false;
+            completed_options.allow_active_fabric_parked = false;
+            return try Capsule.freezeToSession(self.session, runspace, completed_options);
         }
 
         pub fn recordParkedCapsule(self: *@This(), runspace: *Runspace, options: Capsule.FreezeOptions) !?ObjectRef {
@@ -32357,9 +32375,9 @@ pub const Continuity = struct {
             for (image.runspace_image.run_slots) |slot_image| {
                 if (slot_image.role == .root) restored_root_count += 1;
             }
-            const handles = try session.vault.allocator.alloc(u64, restored_root_count);
+            const handles = try runspace.allocator.alloc(u64, restored_root_count);
             var handles_owned = true;
-            errdefer if (handles_owned) session.vault.allocator.free(handles);
+            errdefer if (handles_owned) runspace.allocator.free(handles);
             if (session.policy.require_transaction_for_recovery) {
                 try session.vault.chronicle_events.ensureUnusedCapacity(session.vault.allocator, 2);
             }
@@ -32373,7 +32391,11 @@ pub const Continuity = struct {
                 .capsule_ref = capsule_ref,
                 .recovery_plan_ref = semanticObjectRef(.capsule_thaw_plan, plan.plan_fingerprint),
             });
-            const recovery_report_event = Chronicle.Event.init(.{ .kind = .recovery_report_stored, .capsule_ref = capsule_ref });
+            const recovery_report_event = Chronicle.Event.init(.{
+                .kind = .recovery_report_stored,
+                .capsule_ref = capsule_ref,
+                .recovery_plan_ref = semanticObjectRef(.capsule_thaw_plan, plan.plan_fingerprint),
+            });
             var owned_recovery_executed_event: ?Chronicle.Event = null;
             var owned_recovery_blocked_event: ?Chronicle.Event = null;
             var owned_recovery_report_event: ?Chronicle.Event = null;
@@ -32391,13 +32413,14 @@ pub const Continuity = struct {
             var restore = try Capsule.thawIntoRunspace(image, runspace, target, environment, permit_fingerprint, options.thaw_options);
             defer restore.deinit(runspace.allocator);
             var restored_handles: []const u64 = &.{};
-            if (restore.accepted) {
+            const mutates_runspace = options.thaw_options.mode != .inspect_only and options.thaw_options.mode != .replay_only;
+            if (restore.accepted and mutates_runspace) {
                 if (restore.restored_root_run_handles.len != handles.len) return error.InvalidFrameEncoding;
                 @memcpy(handles, restore.restored_root_run_handles);
                 restored_handles = handles;
                 handles_owned = false;
             } else {
-                session.vault.allocator.free(handles);
+                runspace.allocator.free(handles);
                 handles_owned = false;
             }
             if (session.policy.require_transaction_for_recovery) {
@@ -33135,8 +33158,8 @@ pub const Continuity = struct {
         hashOptionalRef(&hasher, event.run_permit_ref);
         hashOptionalRef(&hasher, event.admission_receipt_ref);
         hashOptionalRef(&hasher, event.environment_certificate_ref);
-        hashBytes(&hasher, event.blocker_summary);
-        hashBytes(&hasher, event.warning_summary);
+        hashBytesWithLenLocal(&hasher, event.blocker_summary);
+        hashBytesWithLenLocal(&hasher, event.warning_summary);
         return hasher.final();
     }
 
@@ -33322,6 +33345,8 @@ pub const Continuity = struct {
                 event_kind == .capsule_recovery_rejected or
                 event_kind == .capsule_recovery_ready or
                 event_kind == .capsule_restored or
+                event_kind == .capsule_replay_planned or
+                event_kind == .capsule_replayed or
                 event_kind == .recovery_preflighted or
                 event_kind == .recovery_blocked or
                 event_kind == .recovery_ready or
@@ -33400,9 +33425,9 @@ pub const Continuity = struct {
         hashRefSlice(&hasher, plan.actuation_replay_refs);
         hashRefSlice(&hasher, plan.actuation_local_fresh_requirements);
         hashU64SliceLocal(&hasher, plan.idempotency_conflict_blockers);
-        hashBytes(&hasher, plan.runspace_mutation_plan);
-        hashBytes(&hasher, plan.handle_remap_plan);
-        hashBytes(&hasher, plan.mailbox_remap_plan);
+        hashBytesWithLenLocal(&hasher, plan.runspace_mutation_plan);
+        hashBytesWithLenLocal(&hasher, plan.handle_remap_plan);
+        hashBytesWithLenLocal(&hasher, plan.mailbox_remap_plan);
         hashU64SliceLocal(&hasher, plan.blockers);
         hashU64SliceLocal(&hasher, plan.warnings);
         return hasher.final();
