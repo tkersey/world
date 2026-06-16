@@ -29843,7 +29843,11 @@ pub const Continuity = struct {
         pub fn intentsByCapsule(self: @This(), capsule_ref: ObjectRef) ![]ObjectRef {
             var image = try self.vault.getCapsule(capsule_ref);
             defer image.deinit(self.vault.allocator);
-            return refsFromFingerprints(self.vault, .actuation_intent, image.actuation_intent_refs);
+            return capsuleActuationRefs(self.vault, image, .actuation_intent, &.{
+                image.actuation_intent_refs,
+                image.runspace_image.actuation_intent_refs,
+                image.manifest.actuation_intent_fingerprints,
+            });
         }
 
         pub fn pendingActuations(self: @This()) ![]ObjectRef {
@@ -36822,6 +36826,33 @@ test "capsule index finds target completed pending committed and relink capsules
     defer allocator.free(relink);
     try std.testing.expectEqual(@as(usize, 1), relink.len);
     try std.testing.expect(relink[0].eql(relink_ref));
+
+    const actuation_index = Continuity.ActuationIndex.init(&vault);
+    const pending_intents = try actuation_index.intentsByCapsule(pending_ref);
+    defer Continuity.freeRefSlice(allocator, pending_intents);
+    try std.testing.expectEqual(@as(usize, 1), pending_intents.len);
+    try std.testing.expectEqual(@as(u64, 0x3300_0010), pending_intents[0].object_fingerprint);
+
+    const runspace_only_intent: u64 = 0x3300_0050;
+    var runspace_only_image = Capsule.Image.init(.{
+        .manifest = Capsule.Manifest.init(.{
+            .kind = base_image.manifest.kind,
+            .root_target_ref_fingerprint = 0x3300_0051,
+            .root_module_ref_fingerprint = 0x3300_0052,
+            .normal_form = base_image.manifest.normal_form,
+        }),
+        .runspace_image = Capsule.RunspaceImage.init(.{
+            .runspace_fingerprint = 0x3300_0053,
+            .runspace_report_fingerprint = 0x3300_0054,
+            .actuation_intent_refs = &.{runspace_only_intent},
+        }),
+    });
+    runspace_only_image.format_version = 2;
+    const runspace_only_ref = try vault.putCapsule(runspace_only_image);
+    const runspace_only_intents = try actuation_index.intentsByCapsule(runspace_only_ref);
+    defer Continuity.freeRefSlice(allocator, runspace_only_intents);
+    try std.testing.expectEqual(@as(usize, 1), runspace_only_intents.len);
+    try std.testing.expectEqual(runspace_only_intent, runspace_only_intents[0].object_fingerprint);
 }
 
 test "capsule graph treats unresolved intents as pending despite other receipts" {
