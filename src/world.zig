@@ -30220,7 +30220,11 @@ pub const Continuity = struct {
                         .value_image_fingerprint = receipt.response_value_image_fingerprint,
                         .response_image = response_image,
                         .owns_response_image = response_image != null,
-                        .recorded_response_fingerprint = receipt.response_fingerprint,
+                        .recorded_response_fingerprint = replayRecordedResponseFingerprint(
+                            receipt.responseStatus(),
+                            receipt.frame_response_fingerprint,
+                            receipt.response_fingerprint,
+                        ),
                     });
                 }
             }
@@ -30271,8 +30275,20 @@ pub const Continuity = struct {
                 .value_image_fingerprint = entry.response_value_image_fingerprint,
                 .response_image = response_image,
                 .owns_response_image = response_image != null,
-                .recorded_response_fingerprint = entry.response_fingerprint,
+                .recorded_response_fingerprint = replayRecordedResponseFingerprint(
+                    journalEntryResponseStatus(entry),
+                    entry.frame_response_fingerprint,
+                    entry.response_fingerprint,
+                ),
             });
+        }
+
+        fn replayRecordedResponseFingerprint(status: Actuation.ResponseStatus, frame_response_fingerprint: ?u64, response_fingerprint: ?u64) ?u64 {
+            if (status == .responded or frame_response_fingerprint != null) return null;
+            return switch (status) {
+                .rejected, .failed, .cancelled => response_fingerprint,
+                else => null,
+            };
         }
 
         fn replayResponseImage(vault: *Continuity.MemoryVault, receipt: Actuation.Receipt) !?Frame.ValueImage {
@@ -37822,7 +37838,7 @@ test "recovery preflight inspects capsules replays receipt evidence and rejects 
     _ = try stale_journal_winning_receipt_vault.putActuationReceipt(receipt);
     const winning_receipt_replay = try Continuity.Recovery.replayActuation(&stale_journal_winning_receipt_vault, key);
     try std.testing.expectEqual(Actuation.ResponseStatus.responded, winning_receipt_replay.status);
-    try std.testing.expectEqual(receipt.response_fingerprint, winning_receipt_replay.recorded_response_fingerprint.?);
+    try std.testing.expectEqual(@as(?u64, null), winning_receipt_replay.recorded_response_fingerprint);
     var journal_replay_vault = Continuity.MemoryVault.init(allocator);
     defer journal_replay_vault.deinit();
     var replay_journal = Actuation.Journal.init();
@@ -37831,7 +37847,7 @@ test "recovery preflight inspects capsules replays receipt evidence and rejects 
     _ = try journal_replay_vault.putActuationJournal(replay_journal);
     const journal_replay_response = try Continuity.Recovery.replayActuation(&journal_replay_vault, key);
     try std.testing.expectEqual(Actuation.ResponseStatus.responded, journal_replay_response.status);
-    try std.testing.expectEqual(receipt.response_fingerprint, journal_replay_response.recorded_response_fingerprint.?);
+    try std.testing.expectEqual(@as(?u64, null), journal_replay_response.recorded_response_fingerprint);
 
     var failed_then_retry_journal_vault = Continuity.MemoryVault.init(allocator);
     defer failed_then_retry_journal_vault.deinit();
@@ -38848,7 +38864,7 @@ test "vault actuation helpers store load journal and replay receipt" {
     defer imported_replay.deinit(allocator);
     try std.testing.expect(imported_replay.response_image != null);
     try std.testing.expectEqual(value_image.value_image_fingerprint, imported_replay.response_image.?.value_image_fingerprint);
-    try std.testing.expectEqual(receipt.response_fingerprint, imported_replay.recorded_response_fingerprint.?);
+    try std.testing.expectEqual(@as(?u64, null), imported_replay.recorded_response_fingerprint);
 
     var replayed = try Actuation.replayFromVault(&vault, key);
     defer replayed.deinit(allocator);
@@ -38856,7 +38872,7 @@ test "vault actuation helpers store load journal and replay receipt" {
     try std.testing.expectEqual(key.world_port_id, replayed.world_port_id);
     try std.testing.expect(replayed.response_image != null);
     try std.testing.expectEqual(value_image.value_image_fingerprint, replayed.response_image.?.value_image_fingerprint);
-    try std.testing.expectEqual(receipt.response_fingerprint, replayed.recorded_response_fingerprint.?);
+    try std.testing.expectEqual(@as(?u64, null), replayed.recorded_response_fingerprint);
 }
 
 test "vault replay preserves stored fingerprint for terminal receipt" {
@@ -39125,7 +39141,7 @@ test "vault replay preserves stored response value image for recorded frame resp
     defer replayed.deinit(allocator);
     try std.testing.expect(replayed.response_image != null);
     try std.testing.expectEqual(value_image.value_image_fingerprint, replayed.response_image.?.value_image_fingerprint);
-    try std.testing.expectEqual(receipt.response_fingerprint, replayed.recorded_response_fingerprint.?);
+    try std.testing.expectEqual(@as(?u64, null), replayed.recorded_response_fingerprint);
 
     var partial_bundle = try Continuity.Bundle.exportFromVault(&vault, &.{receipt_ref}, .{ .include_dependencies = false, .allow_external_dependencies = true });
     defer partial_bundle.deinit();
