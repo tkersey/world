@@ -29510,6 +29510,7 @@ pub const Continuity = struct {
 
             pub fn stageCapsule(self: *@This(), capsule_ref: ObjectRef) !ObjectRef {
                 try capsule_ref.validate();
+                if (!self.session.vault.has(capsule_ref)) return error.ObjectMissing;
                 const envelope = HandoffEnvelope.init(.{
                     .direction = .outbound,
                     .capsule_ref = capsule_ref,
@@ -32979,9 +32980,6 @@ pub const Continuity = struct {
         hashRefSlice(&hasher, tx.dependency_refs.items);
         hashRefSlice(&hasher, tx.validation_report_refs.items);
         hashRefSlice(&hasher, tx.idempotency_key_refs.items);
-        hashBool(&hasher, tx.accepted);
-        hashBool(&hasher, tx.committed);
-        hashBool(&hasher, tx.aborted);
         hashBytes(&hasher, tx.blockers);
         hashBytes(&hasher, tx.warnings);
         hashBytes(&hasher, tx.metadata_bytes);
@@ -33072,14 +33070,9 @@ pub const Continuity = struct {
         hashU64(&hasher, @intFromEnum(kind));
         hashRefSlice(&hasher, refs);
         for (vault.objects.items) |envelope| {
-            switch (kind) {
-                .capsule_index => if (envelope.kind != .capsule_image) continue,
-                .actuation_index, .idempotency_registry => if (envelope.kind != .actuation_receipt and envelope.kind != .actuation_journal) continue,
-                .object_index => {},
-                .bundle_history => if (envelope.kind != .bundle) continue,
-                .inbox, .outbox, .recovery_queue => {},
-            }
-            hashU64(&hasher, envelope.objectRef().ref_fingerprint);
+            const ref = envelope.objectRef();
+            if (!projectionKindIncludesRef(kind, ref)) continue;
+            hashU64(&hasher, ref.ref_fingerprint);
         }
         return hasher.final();
     }
@@ -33105,15 +33098,7 @@ pub const Continuity = struct {
         var refs: std.ArrayList(ObjectRef) = .empty;
         defer refs.deinit(vault.allocator);
         for (vault.objects.items) |envelope| {
-            switch (kind) {
-                .capsule_index => if (envelope.kind != .capsule_image) continue,
-                .actuation_index, .idempotency_registry => if (envelope.kind != .actuation_receipt and envelope.kind != .actuation_journal) continue,
-                .object_index => {},
-                .bundle_history => if (envelope.kind != .bundle) continue,
-                .inbox, .outbox, .recovery_queue => {},
-            }
-            const ref = envelope.objectRef();
-            if (!containsRef(refs.items, ref)) try refs.append(vault.allocator, ref);
+            try appendProjectionRef(vault.allocator, &refs, kind, envelope.objectRef());
         }
         var hasher = std.hash.Wyhash.init(0);
         hashBytes(&hasher, "world.continuity.chronicle.replay.projection.summary");
@@ -36474,6 +36459,7 @@ test "chronicle transaction staged put abort and commit are atomic" {
     defer commit.deinit(allocator);
     try commit.validate();
     try std.testing.expect(!commit.owns_memory);
+    try std.testing.expectEqual(commit.transaction_fingerprint, commit_tx.transaction_fingerprint);
     try std.testing.expect(vault.has(committed_ref));
     try std.testing.expectEqual(initial_object_count + 1, vault.objectCount());
     try std.testing.expect(vault.eventCount() > initial_event_count);
@@ -37087,6 +37073,8 @@ test "inbox outbox views rebuild from chronicle events" {
     _ = try tx.commit();
 
     var outbox = Continuity.Chronicle.Outbox.init(&outbound_session);
+    const missing_capsule = Continuity.semanticObjectRef(.capsule_image, 0x3480_9999);
+    try std.testing.expectError(error.ObjectMissing, outbox.stageCapsule(missing_capsule));
     const cursor_before_outbox_stage = outbound_session.cursor();
     const outbound_ref = try outbox.stageCapsule(root_ref);
     try std.testing.expect(cursor_before_outbox_stage.cursor_fingerprint != outbound_session.cursor().cursor_fingerprint);
@@ -37136,6 +37124,26 @@ test "inbox outbox views rebuild from chronicle events" {
     const cursor_before_inbox_validate = inbound_session.cursor();
     try inbox.validate(inbound_ref);
     try std.testing.expect(cursor_before_inbox_validate.cursor_fingerprint != inbound_session.cursor().cursor_fingerprint);
+    const inbox_summary_before_unrelated = try Continuity.projectionSummaryForReplay(&inbound_vault, .inbox);
+    const unrelated_receipt = Actuation.Receipt.init(.{
+        .intent_fingerprint = 0x3480_3010,
+        .envelope_fingerprint = 0x3480_3011,
+        .decision_fingerprint = 0x3480_3012,
+        .commit_fingerprint = 0x3480_3013,
+        .response_fingerprint = 0x3480_3014,
+        .frame_response_fingerprint = 0x3480_3015,
+        .actuator_ref_fingerprint = 0x3480_3004,
+        .idempotency_key_fingerprint = 0x3480_3020,
+        .request_fingerprint = 0x3480_3003,
+        .target_ref_fingerprint = 0x3480_3001,
+        .world_surface_fingerprint = 0x3480_3002,
+        .world_port_id = 7,
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+        .fresh_called = true,
+    });
+    _ = try inbound_session.storeActuationReceipt(unrelated_receipt);
+    try std.testing.expectEqual(inbox_summary_before_unrelated, try Continuity.projectionSummaryForReplay(&inbound_vault, .inbox));
     const cursor_before_inbox_accept = inbound_session.cursor();
     try inbox.accept(inbound_ref);
     try std.testing.expect(cursor_before_inbox_accept.cursor_fingerprint != inbound_session.cursor().cursor_fingerprint);
