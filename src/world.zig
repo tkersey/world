@@ -30526,6 +30526,7 @@ pub const Continuity = struct {
 
         pub fn recordGuestReport(self: *@This(), report: Guest.ConformanceReport) !void {
             if (!self.policy.persist_guest_report) return;
+            if (!self.session.policy.persist_guest_reports) return error.PersistenceDisabled;
             const payload = try encodePortableEvidence(Guest.ConformanceReport, self.session.allocator, report);
             defer self.session.allocator.free(payload);
             const envelope = ObjectEnvelope.init(.{
@@ -32219,13 +32220,13 @@ pub const Continuity = struct {
             const blockers: []const u64 = blk: {
                 var graph = preflightThawCapsule(session.vault, capsule_ref, registry, env, permit, options) catch |err| switch (err) {
                     error.ObjectMissing, error.InvalidFrameEncoding, error.DuplicateBinding => {
-                        try session.appendChronicleEvent(Chronicle.Event.init(.{ .kind = .recovery_blocked, .capsule_ref = capsule_ref }));
+                        try appendRecoveryChronicleEvent(session, Chronicle.Event.init(.{ .kind = .recovery_blocked, .capsule_ref = capsule_ref }));
                         break :blk &.{1};
                     },
                     else => return err,
                 };
                 graph.deinit();
-                try session.appendChronicleEvent(Chronicle.Event.init(.{ .kind = .recovery_ready, .capsule_ref = capsule_ref }));
+                try appendRecoveryChronicleEvent(session, Chronicle.Event.init(.{ .kind = .recovery_ready, .capsule_ref = capsule_ref }));
                 break :blk &.{};
             };
             const plan = RecoveryPlan.init(.{
@@ -32236,7 +32237,7 @@ pub const Continuity = struct {
                 .runspace_mutation_plan = if (blockers.len == 0) "capsule thaw may mutate runspace" else "blocked before runspace mutation",
             });
             try plan.validate();
-            try session.appendChronicleEvent(Chronicle.Event.init(.{
+            try appendRecoveryChronicleEvent(session, Chronicle.Event.init(.{
                 .kind = if (blockers.len == 0) .capsule_recovery_ready else .capsule_recovery_rejected,
                 .capsule_ref = capsule_ref,
                 .recovery_plan_ref = semanticObjectRef(.capsule_thaw_plan, plan.plan_fingerprint),
@@ -32260,12 +32261,12 @@ pub const Continuity = struct {
             defer restore.deinit(session.vault.allocator);
             const handles = try session.vault.allocator.dupe(u64, restore.restored_root_run_handles);
             errdefer session.vault.allocator.free(handles);
-            try session.appendChronicleEvent(Chronicle.Event.init(.{
+            try appendRecoveryChronicleEvent(session, Chronicle.Event.init(.{
                 .kind = if (restore.accepted) .recovery_executed else .recovery_blocked,
                 .capsule_ref = capsule_ref,
                 .recovery_plan_ref = semanticObjectRef(.capsule_thaw_plan, plan.plan_fingerprint),
             }));
-            try session.appendChronicleEvent(Chronicle.Event.init(.{ .kind = .recovery_report_stored, .capsule_ref = capsule_ref }));
+            try appendRecoveryChronicleEvent(session, Chronicle.Event.init(.{ .kind = .recovery_report_stored, .capsule_ref = capsule_ref }));
             var report = RecoveryReport.init(.{
                 .recovery_plan_fingerprint = plan.plan_fingerprint,
                 .accepted = restore.accepted,
@@ -32284,7 +32285,7 @@ pub const Continuity = struct {
             const blockers: []const u64 = blk: {
                 var graph = preflightReplayCapsule(session.vault, capsule_ref, target, options) catch |err| switch (err) {
                     error.ObjectMissing, error.InvalidFrameEncoding, error.DuplicateBinding => {
-                        try session.appendChronicleEvent(Chronicle.Event.init(.{ .kind = .recovery_blocked, .capsule_ref = capsule_ref }));
+                        try appendRecoveryChronicleEvent(session, Chronicle.Event.init(.{ .kind = .recovery_blocked, .capsule_ref = capsule_ref }));
                         break :blk &.{1};
                     },
                     else => return err,
@@ -32304,7 +32305,7 @@ pub const Continuity = struct {
         pub fn replayFromVault(session: *Session, capsule_ref: ObjectRef, target: anytype, options: Options) !RecoveryReport {
             const plan = try planReplayFromVault(session, capsule_ref, target, options);
             if (plan.blockers.len != 0) return recoveryRejectedReport(session, plan);
-            try session.appendChronicleEvent(Chronicle.Event.init(.{ .kind = .capsule_replayed, .capsule_ref = capsule_ref }));
+            try appendRecoveryChronicleEvent(session, Chronicle.Event.init(.{ .kind = .capsule_replayed, .capsule_ref = capsule_ref }));
             const report = RecoveryReport.init(.{
                 .recovery_plan_fingerprint = plan.plan_fingerprint,
                 .accepted = true,
@@ -32334,7 +32335,7 @@ pub const Continuity = struct {
         }
 
         fn recoveryRejectedReport(session: *Session, plan: RecoveryPlan) !RecoveryReport {
-            try session.appendChronicleEvent(Chronicle.Event.init(.{
+            try appendRecoveryChronicleEvent(session, Chronicle.Event.init(.{
                 .kind = .recovery_blocked,
                 .capsule_ref = plan.capsule_ref,
                 .recovery_plan_ref = semanticObjectRef(.capsule_thaw_plan, plan.plan_fingerprint),
@@ -32347,6 +32348,11 @@ pub const Continuity = struct {
             });
             try report.validate();
             return report;
+        }
+
+        fn appendRecoveryChronicleEvent(session: *Session, event: Chronicle.Event) !void {
+            if (!session.policy.require_transaction_for_recovery) return;
+            try session.appendChronicleEvent(event);
         }
 
         pub fn inspectCapsule(vault: *Continuity.MemoryVault, capsule_ref: ObjectRef) !CapsuleGraph {
@@ -36922,6 +36928,14 @@ test "ContinuitySink opt-in bridge persists configured evidence and surfaces fai
         .transcript_match = true,
         .receipt_match = true,
     });
+    var disabled_guest_sink = Continuity.Sink.init(&disabled_session, Continuity.SinkPolicy.full_local_evidence());
+    const disabled_guest_event_count = disabled_vault.eventCount();
+    const disabled_guest_cursor = disabled_vault.cursor();
+    try std.testing.expectError(error.PersistenceDisabled, disabled_guest_sink.recordGuestReport(guest_report));
+    try std.testing.expectEqual(@as(usize, 0), disabled_vault.objectCount());
+    try std.testing.expectEqual(disabled_guest_event_count, disabled_vault.eventCount());
+    try std.testing.expectEqual(disabled_guest_cursor.cursor_fingerprint, disabled_vault.cursor().cursor_fingerprint);
+
     try sink.recordGuestReport(guest_report);
     const guest_ref = (try vault.refByKindFingerprint(.guest_conformance_report, guest_report.report_fingerprint)) orelse return error.TestUnexpectedResult;
     try std.testing.expect(vault.has(guest_ref));
@@ -37370,6 +37384,30 @@ test "continuity session import validates bundles before transaction commit" {
 
 test "executable recovery plans and rejects before runspace mutation" {
     const allocator = std.testing.allocator;
+    var disabled_vault = Continuity.MemoryVault.init(allocator);
+    defer disabled_vault.deinit();
+    var disabled_session = try Continuity.Session.init(allocator, &disabled_vault, null);
+    const missing_disabled_capsule = Continuity.ObjectRef.init(.{
+        .kind = .capsule_image,
+        .object_format_version = world_capsule_image_format_version,
+        .object_fingerprint = 0x3490_1001,
+        .byte_len = 0,
+    });
+    var disabled_runspace = Runspace.init(allocator, .{});
+    defer disabled_runspace.deinit();
+    const disabled_event_count = disabled_vault.eventCount();
+    const disabled_cursor = disabled_session.cursor();
+    const disabled_plan = try Continuity.Recovery.planThawFromVault(&disabled_session, missing_disabled_capsule, {}, {}, {}, .{});
+    try disabled_plan.validate();
+    try std.testing.expect(disabled_plan.blockers.len != 0);
+    try std.testing.expectEqual(disabled_event_count, disabled_vault.eventCount());
+    try std.testing.expectEqual(disabled_cursor.cursor_fingerprint, disabled_session.cursor().cursor_fingerprint);
+    const disabled_report = try Continuity.Recovery.thawFromVault(&disabled_session, &disabled_runspace, missing_disabled_capsule, {}, {}, {}, .{});
+    try disabled_report.validate();
+    try std.testing.expect(!disabled_report.accepted);
+    try std.testing.expectEqual(disabled_event_count, disabled_vault.eventCount());
+    try std.testing.expectEqual(disabled_cursor.cursor_fingerprint, disabled_session.cursor().cursor_fingerprint);
+
     var vault = Continuity.MemoryVault.init(allocator);
     defer vault.deinit();
     var session = try Continuity.Session.init(allocator, &vault, Continuity.PersistPolicy.full_local_evidence());
