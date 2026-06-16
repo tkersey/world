@@ -28181,6 +28181,20 @@ pub const Continuity = struct {
             try envelope.validate();
             if (!(try bundleEnvelopeTypedPayloadValid(self.allocator, envelope))) return error.InvalidFrameEncoding;
             if (!(try self.storableEnvelopeDeclaresRequiredDependencies(envelope))) return error.InvalidFrameEncoding;
+            if (storableEnvelopeRequiresDependencyPayloadValidation(envelope.kind)) {
+                if (!(try bundleEnvelopeDependencyPayloadsValid(self.allocator, self.objects.items, envelope))) return error.InvalidFrameEncoding;
+            }
+        }
+
+        fn storableEnvelopeRequiresDependencyPayloadValidation(kind: ObjectKind) bool {
+            return switch (kind) {
+                .actuation_envelope,
+                .actuation_commit,
+                .actuation_receipt,
+                .run_receipt,
+                => true,
+                else => false,
+            };
         }
 
         fn storableEnvelopeDeclaresRequiredDependencies(self: @This(), envelope: ObjectEnvelope) !bool {
@@ -30207,6 +30221,9 @@ pub const Continuity = struct {
                 if (receipt.idempotency_key_fingerprint != idempotency_key.key_fingerprint) return error.InvalidFrameEncoding;
                 if (!receiptMatchesIdempotencyKey(receipt, idempotency_key)) return error.InvalidFrameEncoding;
                 if (!receipt.pending and !receipt.deferred) {
+                    if (!receiptIsTerminalFreshCommit(receipt)) {
+                        if (try replayActuationFromJournalEvidence(vault, idempotency_key)) |response| return response;
+                    }
                     const response_image = try replayResponseImage(vault, receipt);
                     return Actuation.Response.init(.{
                         .intent_fingerprint = receipt.intent_fingerprint,
@@ -31259,6 +31276,8 @@ pub const Continuity = struct {
                 defer intent.deinit(allocator);
                 if (!validActuationIntentPayload(intent)) break :blk false;
                 Actuation.validateIdempotencyKeyForIntent(actuation_envelope.idempotency_key, intent) catch break :blk false;
+                if (actuation_envelope.encoded_frame_request_fingerprint != intent.encoded_frame_request_fingerprint) break :blk false;
+                if (actuation_envelope.payload_value_image_fingerprint != intent.payload_value_image_fingerprint) break :blk false;
                 break :blk true;
             },
             .actuation_receipt => blk: {
@@ -31286,7 +31305,36 @@ pub const Continuity = struct {
                 defer deinitOwnedValue(allocator, decision);
                 if (!validActuationDecisionPayload(decision)) break :blk false;
                 commit.validateAfterDecision(decision) catch break :blk false;
+                if (try bundleEnvelopeForRef(allocator, envelopes, semanticObjectRef(.actuation_envelope, commit.envelope_fingerprint))) |actuation_envelope| {
+                    const decoded_envelope = decodePortableEvidence(Actuation.Envelope, allocator, actuation_envelope.payload_bytes) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        else => break :blk false,
+                    };
+                    defer deinitOwnedValue(allocator, decoded_envelope);
+                    if (!validActuationEnvelopePayload(decoded_envelope)) break :blk false;
+                    if (decoded_envelope.intent_fingerprint != commit.intent_fingerprint) break :blk false;
+                    if (decoded_envelope.idempotency_key.key_fingerprint != commit.idempotency_key_fingerprint) break :blk false;
+                }
+                if (try bundleEnvelopeForRef(allocator, envelopes, semanticObjectRef(.actuation_idempotency_key, commit.idempotency_key_fingerprint))) |key_envelope| {
+                    const key = decodePortableEvidence(Actuation.IdempotencyKey, allocator, key_envelope.payload_bytes) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        else => break :blk false,
+                    };
+                    defer deinitOwnedValue(allocator, key);
+                    if (!validActuationIdempotencyKeyPayload(key)) break :blk false;
+                    if (key.key_fingerprint != commit.idempotency_key_fingerprint) break :blk false;
+                    if (key.intent_fingerprint) |fingerprint| if (fingerprint != commit.intent_fingerprint) break :blk false;
+                }
                 break :blk true;
+            },
+            .run_receipt => blk: {
+                const receipt = decodePortableEvidence(RunReceipt, allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => break :blk false,
+                };
+                defer deinitOwnedValue(allocator, receipt);
+                if (!validRunReceiptPayload(receipt)) break :blk false;
+                break :blk try bundleRunReceiptDependencyPayloadsValid(allocator, envelopes, receipt);
             },
             else => true,
         };
@@ -31391,6 +31439,37 @@ pub const Continuity = struct {
         return true;
     }
 
+    fn bundleRunReceiptDependencyPayloadsValid(allocator: std.mem.Allocator, envelopes: []const ObjectEnvelope, receipt: RunReceipt) !bool {
+        if (try bundleEnvelopeForRef(allocator, envelopes, semanticObjectRef(.run_permit, receipt.run_permit_fingerprint))) |permit_envelope| {
+            const permit = decodePortableEvidence(RunPermit, allocator, permit_envelope.payload_bytes) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return false,
+            };
+            defer deinitOwnedValue(allocator, permit);
+            if (!validRunPermitPayload(permit)) return false;
+            if (permit.permit_fingerprint != receipt.run_permit_fingerprint) return false;
+            if (permit.environment_certificate_fingerprint != receipt.environment_certificate_fingerprint) return false;
+            if (permit.target_ref_fingerprint != receipt.target_ref_fingerprint) return false;
+            if (permit.admission_receipt_fingerprint != receipt.admission_receipt_fingerprint) return false;
+            if (permit.module_ref_fingerprint != receipt.module_ref_fingerprint) return false;
+        }
+
+        if (receipt.run_image_fingerprint) |fingerprint| {
+            if (try bundleEnvelopeForRef(allocator, envelopes, semanticObjectRef(.run_image, fingerprint))) |run_image_envelope| {
+                var image = RunImage.decode(allocator, run_image_envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => return false,
+                };
+                defer image.deinit(allocator);
+                if (image.run_image_fingerprint != fingerprint) return false;
+                if (image.current_state.run_state_fingerprint != receipt.final_run_state_fingerprint) return false;
+                if (image.current_state.transcript_image_fingerprint != receipt.transcript_image_fingerprint) return false;
+            }
+        }
+
+        return true;
+    }
+
     fn bundleEnvelopeRequiredDependencyRefs(allocator: std.mem.Allocator, envelope: ObjectEnvelope) ![]ObjectRef {
         return switch (envelope.kind) {
             .actuation_descriptor => blk: {
@@ -31473,6 +31552,11 @@ pub const Continuity = struct {
                 defer response.deinit(allocator);
                 break :blk try bundleFrameResponseRequiredDependencyRefs(allocator, response);
             },
+            .run_image => blk: {
+                var image = try RunImage.decode(allocator, envelope.payload_bytes);
+                defer image.deinit(allocator);
+                break :blk try bundleRunImageRequiredDependencyRefs(allocator, image);
+            },
             .guest_conformance_report => blk: {
                 const report = try decodePortableEvidence(Guest.ConformanceReport, allocator, envelope.payload_bytes);
                 defer deinitOwnedValue(allocator, report);
@@ -31497,6 +31581,19 @@ pub const Continuity = struct {
             const kind = continuityKindForCapsuleDependencySection(capsule_ref.section) orelse continue;
             if (capsuleDependencyEmbedded(image, kind, capsule_ref.fingerprint)) continue;
             try appendUniqueSemanticRef(allocator, &refs, kind, capsule_ref.fingerprint);
+        }
+        for (image.actuation_intent_refs) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .actuation_intent, fingerprint);
+        for (image.runspace_image.actuation_intent_refs) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .actuation_intent, fingerprint);
+        for (image.manifest.actuation_intent_fingerprints) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .actuation_intent, fingerprint);
+        for (image.actuation_receipt_refs) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .actuation_receipt, fingerprint);
+        for (image.runspace_image.actuation_receipt_refs) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .actuation_receipt, fingerprint);
+        for (image.manifest.actuation_receipt_fingerprints) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .actuation_receipt, fingerprint);
+        for (image.actuation_journal_refs) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .actuation_journal, fingerprint);
+        for (image.runspace_image.actuation_journal_refs) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .actuation_journal, fingerprint);
+        for (image.manifest.actuation_journal_fingerprints) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .actuation_journal, fingerprint);
+        if (image.runspace_image.mailbox_image) |mailbox| {
+            for (mailbox.pending_actuation_intent_fingerprints) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .actuation_intent, fingerprint);
+            for (mailbox.committed_actuation_receipt_fingerprints) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .actuation_receipt, fingerprint);
         }
         return refs.toOwnedSlice(allocator);
     }
@@ -31631,6 +31728,15 @@ pub const Continuity = struct {
         var refs: std.ArrayList(ObjectRef) = .empty;
         errdefer deinitRefList(allocator, &refs);
         try appendUniqueSemanticRef(allocator, &refs, .frame_request, response.request_fingerprint);
+        return refs.toOwnedSlice(allocator);
+    }
+
+    fn bundleRunImageRequiredDependencyRefs(allocator: std.mem.Allocator, image: RunImage) ![]ObjectRef {
+        var refs: std.ArrayList(ObjectRef) = .empty;
+        errdefer deinitRefList(allocator, &refs);
+        if (image.transcript_image == null) {
+            if (image.current_state.transcript_image_fingerprint) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .transcript_image, fingerprint);
+        }
         return refs.toOwnedSlice(allocator);
     }
 
@@ -32120,8 +32226,18 @@ pub const Continuity = struct {
             }
         }
         for (image.actuation_intent_refs) |fingerprint| try appendUniqueRefForFingerprint(vault, &refs, .actuation_intent, fingerprint);
+        for (image.runspace_image.actuation_intent_refs) |fingerprint| try appendUniqueRefForFingerprint(vault, &refs, .actuation_intent, fingerprint);
+        for (image.manifest.actuation_intent_fingerprints) |fingerprint| try appendUniqueRefForFingerprint(vault, &refs, .actuation_intent, fingerprint);
         for (image.actuation_receipt_refs) |fingerprint| try appendUniqueRefForFingerprint(vault, &refs, .actuation_receipt, fingerprint);
+        for (image.runspace_image.actuation_receipt_refs) |fingerprint| try appendUniqueRefForFingerprint(vault, &refs, .actuation_receipt, fingerprint);
+        for (image.manifest.actuation_receipt_fingerprints) |fingerprint| try appendUniqueRefForFingerprint(vault, &refs, .actuation_receipt, fingerprint);
         for (image.actuation_journal_refs) |fingerprint| try appendUniqueRefForFingerprint(vault, &refs, .actuation_journal, fingerprint);
+        for (image.runspace_image.actuation_journal_refs) |fingerprint| try appendUniqueRefForFingerprint(vault, &refs, .actuation_journal, fingerprint);
+        for (image.manifest.actuation_journal_fingerprints) |fingerprint| try appendUniqueRefForFingerprint(vault, &refs, .actuation_journal, fingerprint);
+        if (image.runspace_image.mailbox_image) |mailbox| {
+            for (mailbox.pending_actuation_intent_fingerprints) |fingerprint| try appendUniqueRefForFingerprint(vault, &refs, .actuation_intent, fingerprint);
+            for (mailbox.committed_actuation_receipt_fingerprints) |fingerprint| try appendUniqueRefForFingerprint(vault, &refs, .actuation_receipt, fingerprint);
+        }
         return refs.toOwnedSlice(vault.allocator);
     }
 
@@ -37883,8 +37999,8 @@ test "recovery preflight inspects capsules replays receipt evidence and rejects 
     try failed_then_retry_journal.appendReceipt(allocator, receipt);
     _ = try failed_then_retry_journal_vault.putActuationJournal(failed_then_retry_journal);
     const failed_then_retry_response = try Continuity.Recovery.replayActuation(&failed_then_retry_journal_vault, key);
-    try std.testing.expectEqual(Actuation.ResponseStatus.failed, failed_then_retry_response.status);
-    try std.testing.expectEqual(stale_failed_receipt.response_fingerprint, failed_then_retry_response.recorded_response_fingerprint.?);
+    try std.testing.expectEqual(Actuation.ResponseStatus.responded, failed_then_retry_response.status);
+    try std.testing.expectEqual(@as(?u64, null), failed_then_retry_response.recorded_response_fingerprint);
 
     var mismatched_journal_vault = Continuity.MemoryVault.init(allocator);
     defer mismatched_journal_vault.deinit();
