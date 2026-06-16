@@ -338,6 +338,9 @@ pub const world_actuation_receipt_format_version: u32 = 2;
 pub const world_actuation_receipt_fingerprint_version: u32 = 3;
 pub const world_actuation_journal_fingerprint_version: u32 = 3;
 pub const world_actuation_verify_report_fingerprint_version: u32 = 1;
+const world_actuation_receipt_legacy_format_version: u32 = 1;
+const world_actuation_receipt_legacy_fingerprint_version: u32 = 2;
+const world_actuation_journal_legacy_fingerprint_version: u32 = 2;
 pub const world_continuity_object_ref_format_version: u32 = 1;
 pub const world_continuity_object_ref_fingerprint_version: u32 = 1;
 pub const world_continuity_object_envelope_format_version: u32 = 1;
@@ -19489,8 +19492,12 @@ pub const Actuation = struct {
         }
 
         pub fn validate(self: @This()) !void {
-            if (self.format_version != world_actuation_receipt_format_version) return error.InvalidFrameEncoding;
-            if (self.fingerprint_version != world_actuation_receipt_fingerprint_version) return error.InvalidFrameEncoding;
+            const legacy_receipt = self.format_version == world_actuation_receipt_legacy_format_version and
+                self.fingerprint_version == world_actuation_receipt_legacy_fingerprint_version;
+            const current_receipt = self.format_version == world_actuation_receipt_format_version and
+                self.fingerprint_version == world_actuation_receipt_fingerprint_version;
+            if (!legacy_receipt and !current_receipt) return error.InvalidFrameEncoding;
+            if (legacy_receipt and self.recorded_response_fingerprint != null) return error.InvalidFrameEncoding;
             if (self.intent_fingerprint == 0 or self.envelope_fingerprint == 0 or self.decision_fingerprint == 0) return error.InvalidFrameEncoding;
             if (self.commit_fingerprint == 0 or self.response_fingerprint == 0 or self.actuator_ref_fingerprint == 0) return error.InvalidFrameEncoding;
             if (self.idempotency_key_fingerprint == 0 or self.target_ref_fingerprint == 0 or self.world_surface_fingerprint == 0) return error.InvalidFrameEncoding;
@@ -19620,7 +19627,15 @@ pub const Actuation = struct {
             const response_kind = try enumFromByte(ResponseKind, try readU8(bytes, &cursor));
             const frame_response_fingerprint = try readOptionalU64(bytes, &cursor);
             const response_value_image_fingerprint = try readOptionalU64(bytes, &cursor);
-            const recorded_response_fingerprint = try readOptionalU64(bytes, &cursor);
+            const legacy_receipt = format_version == world_actuation_receipt_legacy_format_version and
+                fingerprint_version == world_actuation_receipt_legacy_fingerprint_version;
+            const current_receipt = format_version == world_actuation_receipt_format_version and
+                fingerprint_version == world_actuation_receipt_fingerprint_version;
+            if (!legacy_receipt and !current_receipt) return error.InvalidFrameEncoding;
+            const recorded_response_fingerprint = if (current_receipt)
+                try readOptionalU64(bytes, &cursor)
+            else
+                null;
             const actuator_ref_fingerprint = try readU64(bytes, &cursor);
             const idempotency_key_fingerprint = try readU64(bytes, &cursor);
             const request_fingerprint = try readOptionalU64(bytes, &cursor);
@@ -19755,7 +19770,9 @@ pub const Actuation = struct {
         }
 
         pub fn validate(self: @This()) !void {
-            if (self.fingerprint_version != world_actuation_journal_fingerprint_version) return error.InvalidFrameEncoding;
+            const legacy_journal = self.fingerprint_version == world_actuation_journal_legacy_fingerprint_version;
+            const current_journal = self.fingerprint_version == world_actuation_journal_fingerprint_version;
+            if (!legacy_journal and !current_journal) return error.InvalidFrameEncoding;
             if (self.journal_fingerprint != fingerprintJournal(self)) return error.InvalidFrameEncoding;
             if (self.entries.items.len > max_journal_entries) return error.InvalidFrameEncoding;
             if (self.next_order > @as(u64, @intCast(max_journal_entries))) return error.InvalidFrameEncoding;
@@ -19766,6 +19783,7 @@ pub const Actuation = struct {
                 if (previous_order) |prior| {
                     if (entry.order <= prior) return error.InvalidFrameEncoding;
                 }
+                if (legacy_journal and entry.recorded_response_fingerprint != null) return error.InvalidFrameEncoding;
                 try validateJournalEntry(entry);
                 previous_order = entry.order;
             }
@@ -19882,6 +19900,9 @@ pub const Actuation = struct {
             const next_order = try readU64(bytes, &cursor);
             const count = try readU64AsUsize(bytes, &cursor);
             if (count > max_journal_entries) return error.InvalidFrameEncoding;
+            const legacy_journal = fingerprint_version == world_actuation_journal_legacy_fingerprint_version;
+            const current_journal = fingerprint_version == world_actuation_journal_fingerprint_version;
+            if (!legacy_journal and !current_journal) return error.InvalidFrameEncoding;
             var journal = @This(){
                 .fingerprint_version = fingerprint_version,
                 .journal_fingerprint = journal_fingerprint,
@@ -19910,7 +19931,10 @@ pub const Actuation = struct {
                     .response_kind = response_kind,
                     .frame_response_fingerprint = try readOptionalU64(bytes, &cursor),
                     .response_value_image_fingerprint = try readOptionalU64(bytes, &cursor),
-                    .recorded_response_fingerprint = try readOptionalU64(bytes, &cursor),
+                    .recorded_response_fingerprint = if (current_journal)
+                        try readOptionalU64(bytes, &cursor)
+                    else
+                        null,
                     .receipt_fingerprint = try readOptionalU64(bytes, &cursor),
                     .idempotency_key_fingerprint = try readOptionalU64(bytes, &cursor),
                     .request_fingerprint = try readOptionalU64(bytes, &cursor),
@@ -21576,7 +21600,9 @@ pub const Actuation = struct {
         hashU64(&hasher, @intFromEnum(receipt.response_kind));
         hashOptionalU64(&hasher, receipt.frame_response_fingerprint);
         hashOptionalU64(&hasher, receipt.response_value_image_fingerprint);
-        hashOptionalU64(&hasher, receipt.recorded_response_fingerprint);
+        if (receipt.fingerprint_version == world_actuation_receipt_fingerprint_version) {
+            hashOptionalU64(&hasher, receipt.recorded_response_fingerprint);
+        }
         hashU64(&hasher, receipt.actuator_ref_fingerprint);
         hashU64(&hasher, receipt.idempotency_key_fingerprint);
         hashOptionalU64(&hasher, receipt.request_fingerprint);
@@ -21623,7 +21649,9 @@ pub const Actuation = struct {
             if (entry.response_kind) |kind| hashU64(&hasher, @intFromEnum(kind));
             hashOptionalU64(&hasher, entry.frame_response_fingerprint);
             hashOptionalU64(&hasher, entry.response_value_image_fingerprint);
-            hashOptionalU64(&hasher, entry.recorded_response_fingerprint);
+            if (journal.fingerprint_version == world_actuation_journal_fingerprint_version) {
+                hashOptionalU64(&hasher, entry.recorded_response_fingerprint);
+            }
             hashOptionalU64(&hasher, entry.receipt_fingerprint);
             hashOptionalU64(&hasher, entry.idempotency_key_fingerprint);
             hashOptionalU64(&hasher, entry.request_fingerprint);
@@ -27824,6 +27852,8 @@ pub const Continuity = struct {
                 .capsule_runspace_image => format_version == 1 or format_version == 2 or format_version == world_capsule_runspace_image_format_version,
                 .run_image => format_version == 1 or format_version == 2 or format_version == world_run_image_format_version,
                 .transcript_image => format_version == 2 or format_version == world_transcript_image_format_version,
+                .actuation_receipt => format_version == world_actuation_receipt_legacy_format_version or format_version == world_actuation_receipt_format_version,
+                .actuation_journal => format_version == world_actuation_journal_legacy_fingerprint_version or format_version == world_actuation_journal_fingerprint_version,
                 else => format_version == self.defaultFormatVersion(),
             };
         }
@@ -39090,6 +39120,172 @@ test "vault actuation helpers store load journal and replay receipt" {
     try std.testing.expect(replayed.response_image != null);
     try std.testing.expectEqual(value_image.value_image_fingerprint, replayed.response_image.?.value_image_fingerprint);
     try std.testing.expectEqual(@as(?u64, null), replayed.recorded_response_fingerprint);
+}
+
+fn encodeLegacyActuationReceiptPayloadForTest(allocator: std.mem.Allocator, receipt: Actuation.Receipt) ![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    try writeU32(&out, allocator, receipt.format_version);
+    try writeU32(&out, allocator, receipt.fingerprint_version);
+    try writeU64(&out, allocator, receipt.receipt_fingerprint);
+    try writeU64(&out, allocator, receipt.intent_fingerprint);
+    try writeU64(&out, allocator, receipt.envelope_fingerprint);
+    try writeU64(&out, allocator, receipt.decision_fingerprint);
+    try writeU64(&out, allocator, receipt.commit_fingerprint);
+    try writeU64(&out, allocator, receipt.response_fingerprint);
+    try writeU8(&out, allocator, @intFromEnum(receipt.response_kind));
+    try writeOptionalU64(&out, allocator, receipt.frame_response_fingerprint);
+    try writeOptionalU64(&out, allocator, receipt.response_value_image_fingerprint);
+    try writeU64(&out, allocator, receipt.actuator_ref_fingerprint);
+    try writeU64(&out, allocator, receipt.idempotency_key_fingerprint);
+    try writeOptionalU64(&out, allocator, receipt.request_fingerprint);
+    try writeOptionalU64(&out, allocator, receipt.replay_key_fingerprint);
+    try writeOptionalU64(&out, allocator, receipt.pending_actuation_receipt_fingerprint);
+    try writeU64(&out, allocator, receipt.target_ref_fingerprint);
+    try writeU64(&out, allocator, receipt.world_surface_fingerprint);
+    try writeU32(&out, allocator, receipt.world_port_id);
+    try writeU8(&out, allocator, @intFromEnum(receipt.class));
+    try writeU8(&out, allocator, @intFromEnum(receipt.mode));
+    try writeBool(&out, allocator, receipt.fresh_called);
+    try writeBool(&out, allocator, receipt.replayed);
+    try writeBool(&out, allocator, receipt.verified);
+    try writeBool(&out, allocator, receipt.pending);
+    try writeBool(&out, allocator, receipt.deferred);
+    try writeBool(&out, allocator, receipt.rejected);
+    try writeBool(&out, allocator, receipt.failed);
+    try writeBool(&out, allocator, receipt.cancelled);
+    try writeU32(&out, allocator, receipt.attempt_number);
+    try writeOptionalU64(&out, allocator, receipt.run_permit_fingerprint);
+    try writeOptionalU64(&out, allocator, receipt.environment_certificate_fingerprint);
+    try writeOptionalU64(&out, allocator, receipt.run_receipt_fingerprint);
+    try writeOptionalU64(&out, allocator, receipt.capsule_fingerprint);
+    try writeU64Slice(&out, allocator, receipt.blockers);
+    try writeU64Slice(&out, allocator, receipt.warnings);
+    try writeBytes(&out, allocator, receipt.metadata);
+    return out.toOwnedSlice(allocator);
+}
+
+fn encodeLegacyActuationJournalPayloadForTest(allocator: std.mem.Allocator, journal: Actuation.Journal) ![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    try writeU32(&out, allocator, journal.fingerprint_version);
+    try writeU64(&out, allocator, journal.journal_fingerprint);
+    try writeU64(&out, allocator, journal.next_order);
+    try writeU64(&out, allocator, journal.entries.items.len);
+    for (journal.entries.items) |entry| {
+        try writeU64(&out, allocator, entry.order);
+        try writeOptionalU64(&out, allocator, entry.intent_fingerprint);
+        try writeOptionalU64(&out, allocator, entry.envelope_fingerprint);
+        try writeOptionalU64(&out, allocator, entry.decision_fingerprint);
+        try writeOptionalU64(&out, allocator, entry.commit_fingerprint);
+        try writeOptionalU64(&out, allocator, entry.response_fingerprint);
+        if (entry.response_kind) |kind| {
+            try writeBool(&out, allocator, true);
+            try writeU8(&out, allocator, @intFromEnum(kind));
+        } else {
+            try writeBool(&out, allocator, false);
+        }
+        try writeOptionalU64(&out, allocator, entry.frame_response_fingerprint);
+        try writeOptionalU64(&out, allocator, entry.response_value_image_fingerprint);
+        try writeOptionalU64(&out, allocator, entry.receipt_fingerprint);
+        try writeOptionalU64(&out, allocator, entry.idempotency_key_fingerprint);
+        try writeOptionalU64(&out, allocator, entry.request_fingerprint);
+        try writeBool(&out, allocator, entry.fresh_called);
+        try writeBool(&out, allocator, entry.replayed);
+        try writeBool(&out, allocator, entry.verified);
+        try writeBool(&out, allocator, entry.pending);
+        try writeBool(&out, allocator, entry.deferred);
+        try writeBool(&out, allocator, entry.failed);
+        try writeBool(&out, allocator, entry.rejected);
+        try writeBool(&out, allocator, entry.cancelled);
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+test "actuation legacy receipt and journal payloads decode for vault replay" {
+    const allocator = std.testing.allocator;
+
+    const key = Actuation.IdempotencyKey.init(.{
+        .target_ref_fingerprint = 0x3317_0001,
+        .world_surface_fingerprint = 0x3317_0002,
+        .world_port_id = 8,
+        .request_fingerprint = 0x3317_0003,
+        .actuator_ref_fingerprint = 0x3317_0004,
+    });
+    var legacy_receipt = Actuation.Receipt.init(.{
+        .intent_fingerprint = 0x3317_0010,
+        .envelope_fingerprint = 0x3317_0011,
+        .decision_fingerprint = 0x3317_0012,
+        .commit_fingerprint = 0x3317_0013,
+        .response_fingerprint = 0x3317_0014,
+        .actuator_ref_fingerprint = key.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .request_fingerprint = key.request_fingerprint,
+        .target_ref_fingerprint = key.target_ref_fingerprint,
+        .world_surface_fingerprint = key.world_surface_fingerprint,
+        .world_port_id = key.world_port_id,
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+        .rejected = true,
+    });
+    legacy_receipt.format_version = world_actuation_receipt_legacy_format_version;
+    legacy_receipt.fingerprint_version = world_actuation_receipt_legacy_fingerprint_version;
+    legacy_receipt.receipt_fingerprint = Actuation.fingerprintReceipt(legacy_receipt);
+    try legacy_receipt.validate();
+
+    const legacy_receipt_payload = try encodeLegacyActuationReceiptPayloadForTest(allocator, legacy_receipt);
+    defer allocator.free(legacy_receipt_payload);
+    var decoded_receipt = try Actuation.Receipt.decode(allocator, legacy_receipt_payload);
+    defer decoded_receipt.deinit(allocator);
+    try std.testing.expectEqual(world_actuation_receipt_legacy_format_version, decoded_receipt.format_version);
+    try std.testing.expectEqual(world_actuation_receipt_legacy_fingerprint_version, decoded_receipt.fingerprint_version);
+    try std.testing.expectEqual(@as(?u64, null), decoded_receipt.recorded_response_fingerprint);
+    try std.testing.expectEqual(legacy_receipt.receipt_fingerprint, decoded_receipt.receipt_fingerprint);
+
+    var receipt_vault = Continuity.MemoryVault.init(allocator);
+    defer receipt_vault.deinit();
+    const receipt_deps = try Continuity.actuationReceiptStoredDependencyRefs(&receipt_vault, legacy_receipt);
+    defer Continuity.freeRefSlice(allocator, receipt_deps);
+    _ = try receipt_vault.put(Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_receipt,
+        .object_format_version = legacy_receipt.format_version,
+        .dependency_refs = receipt_deps,
+        .payload_bytes = legacy_receipt_payload,
+        .label = "actuation.receipt.legacy",
+    }));
+    const receipt_replay = try Actuation.replayFromVault(&receipt_vault, key);
+    try std.testing.expectEqual(Actuation.ResponseStatus.rejected, receipt_replay.status);
+    try std.testing.expectEqual(legacy_receipt.response_fingerprint, receipt_replay.recorded_response_fingerprint.?);
+
+    var legacy_journal = Actuation.Journal.init();
+    defer legacy_journal.deinit(allocator);
+    try legacy_journal.appendReceipt(allocator, legacy_receipt);
+    legacy_journal.fingerprint_version = world_actuation_journal_legacy_fingerprint_version;
+    legacy_journal.journal_fingerprint = Actuation.fingerprintJournal(legacy_journal);
+    try legacy_journal.validate();
+
+    const legacy_journal_payload = try encodeLegacyActuationJournalPayloadForTest(allocator, legacy_journal);
+    defer allocator.free(legacy_journal_payload);
+    var decoded_journal = try Actuation.Journal.decode(allocator, legacy_journal_payload);
+    defer decoded_journal.deinit(allocator);
+    try std.testing.expectEqual(world_actuation_journal_legacy_fingerprint_version, decoded_journal.fingerprint_version);
+    try std.testing.expectEqual(@as(?u64, null), decoded_journal.entries.items[0].recorded_response_fingerprint);
+    try std.testing.expectEqual(legacy_journal.journal_fingerprint, decoded_journal.journal_fingerprint);
+
+    var journal_vault = Continuity.MemoryVault.init(allocator);
+    defer journal_vault.deinit();
+    const journal_deps = try Continuity.actuationJournalStoredDependencyRefs(&journal_vault, legacy_journal);
+    defer Continuity.freeRefSlice(allocator, journal_deps);
+    _ = try journal_vault.put(Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_journal,
+        .object_format_version = legacy_journal.fingerprint_version,
+        .dependency_refs = journal_deps,
+        .payload_bytes = legacy_journal_payload,
+        .label = "actuation.journal.legacy",
+    }));
+    const journal_replay = try Actuation.replayFromVault(&journal_vault, key);
+    try std.testing.expectEqual(Actuation.ResponseStatus.rejected, journal_replay.status);
+    try std.testing.expectEqual(legacy_receipt.response_fingerprint, journal_replay.recorded_response_fingerprint.?);
 }
 
 test "vault replay preserves stored fingerprint for terminal receipt" {
