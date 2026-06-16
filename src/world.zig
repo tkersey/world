@@ -29510,6 +29510,7 @@ pub const Continuity = struct {
 
             pub fn stageCapsule(self: *@This(), capsule_ref: ObjectRef) !ObjectRef {
                 try capsule_ref.validate();
+                if (capsule_ref.kind != .capsule_image) return error.InvalidFrameEncoding;
                 if (!self.session.vault.has(capsule_ref)) return error.ObjectMissing;
                 const envelope = HandoffEnvelope.init(.{
                     .direction = .outbound,
@@ -29539,6 +29540,7 @@ pub const Continuity = struct {
 
             pub fn markExported(self: *@This(), ref: ObjectRef) !void {
                 _ = try self.inspect(ref);
+                if (!chronicleOutboxRefWasExported(self.session.vault, ref)) return error.OutboxItemNotExported;
                 const event = Event.init(.{ .kind = .outbox_item_completed, .inbox_outbox_item_ref = ref });
                 try self.session.appendChronicleEvent(event);
             }
@@ -33186,6 +33188,15 @@ pub const Continuity = struct {
             if (terminal) pending = false;
         }
         return pending;
+    }
+
+    fn chronicleOutboxRefWasExported(vault: *Continuity.MemoryVault, ref: ObjectRef) bool {
+        for (vault.chronicle_events.items) |event| {
+            if (event.kind != .outbox_item_exported) continue;
+            const item_ref = event.inbox_outbox_item_ref orelse continue;
+            if (item_ref.eql(ref)) return true;
+        }
+        return false;
     }
 
     fn inboxOutboxPendingRefs(vault: *Continuity.MemoryVault, inbox: bool) ![]ObjectRef {
@@ -37061,7 +37072,7 @@ test "inbox outbox views rebuild from chronicle events" {
     defer outbound_vault.deinit();
     var outbound_session = try Continuity.Session.init(allocator, &outbound_vault, Continuity.PersistPolicy.full_local_evidence());
 
-    const envelope = Continuity.ObjectEnvelope.init(.{
+    const non_capsule_envelope = Continuity.ObjectEnvelope.init(.{
         .kind = .capsule_manifest,
         .object_format_version = world_capsule_manifest_format_version,
         .payload_bytes = "manifest",
@@ -37069,12 +37080,18 @@ test "inbox outbox views rebuild from chronicle events" {
     });
     var tx = try outbound_vault.beginTransaction(.custom, .{});
     defer tx.deinit();
-    const root_ref = try tx.put(envelope);
+    const non_capsule_ref = try tx.put(non_capsule_envelope);
     _ = try tx.commit();
+    var runspace = Runspace.init(allocator, .{});
+    defer runspace.deinit();
+    var image = try Capsule.freezeRunspace(&runspace, .{});
+    defer image.deinit(allocator);
+    const root_ref = try outbound_session.storeCapsule(image);
 
     var outbox = Continuity.Chronicle.Outbox.init(&outbound_session);
     const missing_capsule = Continuity.semanticObjectRef(.capsule_image, 0x3480_9999);
     try std.testing.expectError(error.ObjectMissing, outbox.stageCapsule(missing_capsule));
+    try std.testing.expectError(error.InvalidFrameEncoding, outbox.stageCapsule(non_capsule_ref));
     const cursor_before_outbox_stage = outbound_session.cursor();
     const outbound_ref = try outbox.stageCapsule(root_ref);
     try std.testing.expect(cursor_before_outbox_stage.cursor_fingerprint != outbound_session.cursor().cursor_fingerprint);
@@ -37087,6 +37104,7 @@ test "inbox outbox views rebuild from chronicle events" {
     }
     try std.testing.expectEqual(@as(usize, 1), pending_outbound.len);
 
+    try std.testing.expectError(error.OutboxItemNotExported, outbox.markExported(outbound_ref));
     var bundle = try outbox.exportBundle(outbound_ref);
     defer bundle.deinit();
     const cursor_before_mark_exported = outbound_session.cursor();
