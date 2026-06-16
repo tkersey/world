@@ -28437,11 +28437,13 @@ pub const Continuity = struct {
             var mismatch_count: usize = 0;
             if (options.rebuild_capsule_index) {
                 var projection = try Projection.rebuild(vault, .capsule_index);
+                defer projection.deinit();
                 try projection.report.validate();
                 rebuilt_count += 1;
             }
             if (options.rebuild_actuation_index) {
                 var projection = try Projection.rebuild(vault, .actuation_index);
+                defer projection.deinit();
                 try projection.report.validate();
                 rebuilt_count += 1;
             }
@@ -29236,7 +29238,14 @@ pub const Continuity = struct {
         };
 
         pub const Projection = struct {
+            allocator: std.mem.Allocator,
             report: ProjectionReport,
+            owns_object_refs_consumed: bool = false,
+
+            pub fn deinit(self: *@This()) void {
+                if (self.owns_object_refs_consumed) freeRefSlice(self.allocator, @constCast(self.report.object_refs_consumed));
+                self.* = undefined;
+            }
 
             pub fn rebuild(vault: *Continuity.MemoryVault, kind: ProjectionKind) !@This() {
                 var refs: std.ArrayList(ObjectRef) = .empty;
@@ -29248,10 +29257,15 @@ pub const Continuity = struct {
                     for (event.actuation_refs) |ref| try appendProjectionRef(vault.allocator, &refs, kind, ref);
                 }
                 const summary = projectionSummaryFingerprint(vault, kind, refs.items);
-                return .{ .report = ProjectionReport.init(.{
+                const consumed_refs = if (refs.items.len == 0) &.{} else try cloneRefSlice(vault.allocator, refs.items);
+                errdefer if (consumed_refs.len != 0) {
+                    freeRefSlice(vault.allocator, consumed_refs);
+                };
+                return .{ .allocator = vault.allocator, .owns_object_refs_consumed = consumed_refs.len != 0, .report = ProjectionReport.init(.{
                     .projection_kind = kind,
                     .source_cursor_fingerprint = vault.cursor().cursor_fingerprint,
                     .event_count_consumed = vault.chronicle_events.items.len,
+                    .object_refs_consumed = consumed_refs,
                     .result_summary_fingerprint = summary,
                 }) };
             }
@@ -30330,8 +30344,8 @@ pub const Continuity = struct {
             try tx.addEvent(Chronicle.Event.init(.{ .kind = .bundle_import_started, .bundle_ref = bundle_ref }));
             try tx.putBundle(bundle);
             try tx.addEvent(Chronicle.Event.init(.{ .kind = .bundle_import_validated, .bundle_ref = bundle_ref }));
+            try tx.addEvent(Chronicle.Event.init(.{ .kind = .bundle_import_committed, .bundle_ref = bundle_ref }));
             _ = try tx.commit();
-            try self.appendChronicleEvent(Chronicle.Event.init(.{ .kind = .bundle_import_committed, .bundle_ref = bundle_ref }));
             self.finishTransaction();
             return bundle.manifest.clone(self.allocator);
         }
@@ -30433,10 +30447,33 @@ pub const Continuity = struct {
 
         pub fn recordGuestReport(self: *@This(), report: Guest.ConformanceReport) !void {
             if (!self.policy.persist_guest_report) return;
-            try self.session.appendChronicleEvent(Chronicle.Event.init(.{
-                .kind = .guest_report_stored,
-                .target_ref = semanticObjectRef(.guest_conformance_report, report.report_fingerprint),
+            const payload = try encodePortableEvidence(Guest.ConformanceReport, self.session.allocator, report);
+            defer self.session.allocator.free(payload);
+            const envelope = ObjectEnvelope.init(.{
+                .kind = .guest_conformance_report,
+                .object_format_version = world_guest_conformance_report_fingerprint_version,
+                .payload_bytes = payload,
+                .label = "guest.conformance.report",
+            });
+            const deps = try bundleEnvelopeRequiredDependencyRefs(self.session.allocator, envelope);
+            defer freeRefSlice(self.session.allocator, deps);
+
+            var tx = try self.session.begin(.guest_report_record);
+            errdefer self.session.abandonTransaction();
+            defer tx.deinit();
+            const report_ref = try tx.put(ObjectEnvelope.init(.{
+                .kind = .guest_conformance_report,
+                .object_format_version = world_guest_conformance_report_fingerprint_version,
+                .dependency_refs = deps,
+                .payload_bytes = payload,
+                .label = "guest.conformance.report",
             }));
+            try tx.addEvent(Chronicle.Event.init(.{
+                .kind = .guest_report_stored,
+                .target_ref = report_ref,
+            }));
+            _ = try tx.commit();
+            self.session.finishTransaction();
         }
     };
 
@@ -32227,7 +32264,6 @@ pub const Continuity = struct {
                 .recovery_plan_fingerprint = plan.plan_fingerprint,
                 .accepted = false,
                 .resulting_cursor_fingerprint = session.cursor().cursor_fingerprint,
-                .restored_capsule_ref = plan.capsule_ref,
                 .blockers = if (plan.blockers.len == 0) &.{1} else plan.blockers,
             });
             try report.validate();
@@ -36687,6 +36723,22 @@ test "ContinuitySink opt-in bridge persists configured evidence and surfaces fai
     defer runspace.deinit();
     const capsule_ref = (try sink.recordCompletedCapsule(&runspace, .{})).?;
     try std.testing.expect(vault.has(capsule_ref));
+
+    const guest_summary = Guest.RunResultSummary{ .status = .done, .result_fingerprint = 0x3467_1010 };
+    const guest_report = Guest.ConformanceReport.init(.{
+        .vector_fingerprint = 0x3467_1020,
+        .native_run_result = guest_summary,
+        .native_abi_result = guest_summary,
+        .wasm_inspection_passed = true,
+        .status_sequence_match = true,
+        .pending_frame_match = true,
+        .final_result_match = true,
+        .transcript_match = true,
+        .receipt_match = true,
+    });
+    try sink.recordGuestReport(guest_report);
+    const guest_ref = (try vault.refByKindFingerprint(.guest_conformance_report, guest_report.report_fingerprint)) orelse return error.TestUnexpectedResult;
+    try std.testing.expect(vault.has(guest_ref));
 }
 
 test "projection reports detect stale cursor and chronicle replay reports are stable" {
@@ -36707,6 +36759,7 @@ test "projection reports detect stale cursor and chronicle replay reports are st
 
     const cursor = vault.cursor();
     var projection = try Continuity.Chronicle.Projection.rebuild(&vault, .object_index);
+    defer projection.deinit();
     try projection.report.validate();
     try projection.assertFresh(cursor);
 
@@ -36741,7 +36794,9 @@ test "projection result summaries ignore unrelated chronicle objects" {
     var sink = Continuity.Sink.init(&session, Continuity.SinkPolicy.full_local_evidence());
     _ = (try sink.recordCompletedCapsule(&runspace, .{})).?;
 
-    const capsule_before_actuation = try Continuity.Chronicle.Projection.rebuild(&vault, .capsule_index);
+    var capsule_before_actuation = try Continuity.Chronicle.Projection.rebuild(&vault, .capsule_index);
+    defer capsule_before_actuation.deinit();
+    try std.testing.expect(capsule_before_actuation.report.object_refs_consumed.len != 0);
     const receipt = Actuation.Receipt.init(.{
         .intent_fingerprint = 0x3473_0010,
         .envelope_fingerprint = 0x3473_0011,
@@ -36760,10 +36815,12 @@ test "projection result summaries ignore unrelated chronicle objects" {
         .fresh_called = true,
     });
     _ = try session.storeActuationReceipt(receipt);
-    const capsule_after_actuation = try Continuity.Chronicle.Projection.rebuild(&vault, .capsule_index);
+    var capsule_after_actuation = try Continuity.Chronicle.Projection.rebuild(&vault, .capsule_index);
+    defer capsule_after_actuation.deinit();
     try std.testing.expectEqual(capsule_before_actuation.report.result_summary_fingerprint, capsule_after_actuation.report.result_summary_fingerprint);
 
-    const actuation_before_capsule = try Continuity.Chronicle.Projection.rebuild(&vault, .actuation_index);
+    var actuation_before_capsule = try Continuity.Chronicle.Projection.rebuild(&vault, .actuation_index);
+    defer actuation_before_capsule.deinit();
     const unrelated_manifest = Continuity.ObjectEnvelope.init(.{
         .kind = .capsule_manifest,
         .object_format_version = world_capsule_manifest_format_version,
@@ -36774,7 +36831,8 @@ test "projection result summaries ignore unrelated chronicle objects" {
     defer unrelated_tx.deinit();
     _ = try unrelated_tx.put(unrelated_manifest);
     _ = try unrelated_tx.commit();
-    const actuation_after_capsule = try Continuity.Chronicle.Projection.rebuild(&vault, .actuation_index);
+    var actuation_after_capsule = try Continuity.Chronicle.Projection.rebuild(&vault, .actuation_index);
+    defer actuation_after_capsule.deinit();
     try std.testing.expectEqual(actuation_before_capsule.report.result_summary_fingerprint, actuation_after_capsule.report.result_summary_fingerprint);
 }
 
@@ -37098,6 +37156,7 @@ test "executable recovery plans and rejects before runspace mutation" {
     const report = try Continuity.Recovery.thawFromVault(&session, &runspace, missing_capsule, {}, {}, {}, .{});
     try report.validate();
     try std.testing.expect(!report.accepted);
+    try std.testing.expect(report.restored_capsule_ref == null);
     try std.testing.expectEqual(before_slots, runspace.slots.items.len);
 }
 

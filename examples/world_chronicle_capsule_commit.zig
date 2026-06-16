@@ -15,6 +15,7 @@ pub fn main(init: std.process.Init) !void {
 
     const capsule_ref = try world.Capsule.freezeToSession(&session, &runspace, .{});
     var projection = try world.Continuity.Chronicle.Projection.rebuild(&vault, .capsule_index);
+    defer projection.deinit();
     try projection.assertFresh(session.cursor());
 
     const commit = vault.chronicle_commits.items[vault.chronicle_commits.items.len - 1];

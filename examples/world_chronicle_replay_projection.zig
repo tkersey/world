@@ -35,11 +35,15 @@ pub fn main(init: std.process.Init) !void {
     _ = try world.Capsule.freezeToSession(&session, &runspace, .{});
     _ = try world.Actuation.commitToSession(&session, receiptFor(), .{});
 
-    const capsule_projection = try world.Continuity.Chronicle.Projection.rebuild(&vault, .capsule_index);
-    const actuation_projection = try world.Continuity.Chronicle.Projection.rebuild(&vault, .actuation_index);
+    var capsule_projection = try world.Continuity.Chronicle.Projection.rebuild(&vault, .capsule_index);
+    defer capsule_projection.deinit();
+    var actuation_projection = try world.Continuity.Chronicle.Projection.rebuild(&vault, .actuation_index);
+    defer actuation_projection.deinit();
     const replay = try world.Continuity.Chronicle.replay(&vault, .{});
-    const replayed_capsule_projection = try world.Continuity.Chronicle.Projection.rebuild(&vault, .capsule_index);
-    const replayed_actuation_projection = try world.Continuity.Chronicle.Projection.rebuild(&vault, .actuation_index);
+    var replayed_capsule_projection = try world.Continuity.Chronicle.Projection.rebuild(&vault, .capsule_index);
+    defer replayed_capsule_projection.deinit();
+    var replayed_actuation_projection = try world.Continuity.Chronicle.Projection.rebuild(&vault, .actuation_index);
+    defer replayed_actuation_projection.deinit();
     const match = capsule_projection.report.result_summary_fingerprint == replayed_capsule_projection.report.result_summary_fingerprint and
         actuation_projection.report.result_summary_fingerprint == replayed_actuation_projection.report.result_summary_fingerprint;
 
