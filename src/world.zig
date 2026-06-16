@@ -31539,7 +31539,7 @@ pub const Continuity = struct {
                 };
                 defer response.deinit(allocator);
                 validateResponseFrameImage(response, false) catch break :blk false;
-                break :blk try bundleFrameResponseDependencyPayloadsValid(allocator, envelopes, response);
+                break :blk try bundleFrameResponseDependencyPayloadsValid(allocator, envelopes, envelope.dependency_refs, response);
             },
             .run_permit => blk: {
                 const permit = decodePortableEvidence(RunPermit, allocator, envelope.payload_bytes) catch |err| switch (err) {
@@ -32088,8 +32088,25 @@ pub const Continuity = struct {
         return true;
     }
 
-    fn bundleFrameResponseDependencyPayloadsValid(allocator: std.mem.Allocator, envelopes: []const ObjectEnvelope, response: Frame.Response) !bool {
-        if (try bundleEnvelopeForRef(allocator, envelopes, semanticObjectRef(.frame_request, response.request_fingerprint))) |request_envelope| {
+    fn bundleFrameResponseDependencyPayloadsValid(allocator: std.mem.Allocator, envelopes: []const ObjectEnvelope, dependency_refs: []const ObjectRef, response: Frame.Response) !bool {
+        var saw_declared_request_ref = false;
+        for (dependency_refs) |dependency_ref| {
+            if (dependency_ref.kind != .frame_request) continue;
+            saw_declared_request_ref = true;
+            const request_envelope = (try bundleEnvelopeForRef(allocator, envelopes, dependency_ref)) orelse continue;
+            if (!try frameResponseDependencyRequestPayloadValid(allocator, request_envelope, response)) return false;
+        }
+
+        if (!saw_declared_request_ref) {
+            if (try bundleEnvelopeForRef(allocator, envelopes, semanticObjectRef(.frame_request, response.request_fingerprint))) |request_envelope| {
+                if (!try frameResponseDependencyRequestPayloadValid(allocator, request_envelope, response)) return false;
+            }
+        }
+        return true;
+    }
+
+    fn frameResponseDependencyRequestPayloadValid(allocator: std.mem.Allocator, request_envelope: ObjectEnvelope, response: Frame.Response) !bool {
+        {
             var request = Frame.Request.decode(allocator, request_envelope.payload_bytes) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
                 else => return false,
@@ -40820,6 +40837,77 @@ test "vault replay preserves stored response value image for recorded frame resp
     defer imported_replay.deinit(allocator);
     try std.testing.expect(imported_replay.response_image != null);
     try std.testing.expectEqual(value_image.value_image_fingerprint, imported_replay.response_image.?.value_image_fingerprint);
+}
+
+test "frame response dependency validation follows declared request ref" {
+    const allocator = std.testing.allocator;
+    const request_fingerprint = 0x3315_0003;
+    const wrong_request = Frame.Request.init(.{
+        .world_surface_fingerprint = 0x3315_0001,
+        .target_certificate_fingerprint = 0x3315_0002,
+        .world_port_id = 5,
+        .residual_site_index = 0,
+        .residual_site_fingerprint = 0x3315_0004,
+        .request_fingerprint = request_fingerprint,
+        .turn_index = 0,
+    });
+    const declared_request = Frame.Request.init(.{
+        .world_surface_fingerprint = 0x3315_0011,
+        .target_certificate_fingerprint = 0x3315_0012,
+        .world_port_id = 6,
+        .residual_site_index = 0,
+        .residual_site_fingerprint = 0x3315_0014,
+        .request_fingerprint = request_fingerprint,
+        .turn_index = 0,
+    });
+    const response_fingerprint = 0x3315_0020;
+    const response = Frame.Response.init(.{
+        .world_surface_fingerprint = declared_request.world_surface_fingerprint,
+        .target_certificate_fingerprint = declared_request.target_certificate_fingerprint,
+        .world_port_id = declared_request.world_port_id,
+        .request_fingerprint = request_fingerprint,
+        .response_fingerprint = response_fingerprint,
+        .replay_key = declared_request.replay_key_seed.withResponse(response_fingerprint).fingerprint(),
+    });
+
+    const wrong_request_payload = try wrong_request.encode(allocator);
+    defer allocator.free(wrong_request_payload);
+    const declared_request_payload = try declared_request.encode(allocator);
+    defer allocator.free(declared_request_payload);
+    const response_payload = try response.encode(allocator);
+    defer allocator.free(response_payload);
+
+    const wrong_request_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .frame_request,
+        .object_format_version = world_frame_request_format_version,
+        .payload_bytes = wrong_request_payload,
+    });
+    const declared_request_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .frame_request,
+        .object_format_version = world_frame_request_format_version,
+        .payload_bytes = declared_request_payload,
+    });
+    const bundle_envelopes = [_]Continuity.ObjectEnvelope{ wrong_request_envelope, declared_request_envelope };
+
+    const declared_request_ref = Continuity.semanticObjectRef(.frame_request, declared_request.frame_fingerprint);
+    const declared_request_deps = [_]Continuity.ObjectRef{declared_request_ref};
+    const response_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .frame_response,
+        .object_format_version = world_frame_response_format_version,
+        .dependency_refs = &declared_request_deps,
+        .payload_bytes = response_payload,
+    });
+    try std.testing.expect(try Continuity.bundleEnvelopeDependencyPayloadsValid(allocator, &bundle_envelopes, response_envelope));
+
+    const wrong_request_ref = Continuity.semanticObjectRef(.frame_request, wrong_request.frame_fingerprint);
+    const wrong_request_deps = [_]Continuity.ObjectRef{wrong_request_ref};
+    const mismatched_response_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .frame_response,
+        .object_format_version = world_frame_response_format_version,
+        .dependency_refs = &wrong_request_deps,
+        .payload_bytes = response_payload,
+    });
+    try std.testing.expect(!try Continuity.bundleEnvelopeDependencyPayloadsValid(allocator, &bundle_envelopes, mismatched_response_envelope));
 }
 
 test "vault replay rejects response value image missing boundary binding" {
