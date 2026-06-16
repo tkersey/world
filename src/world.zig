@@ -29096,7 +29096,9 @@ pub const Continuity = struct {
                 errdefer freeEnvelopeSlice(self.allocator, backing_envelopes);
 
                 for (self.staged_envelopes.items) |envelope| {
+                    const object_count_before_put = self.vault.objects.items.len;
                     const ref = try self.vault.putAcceptedTransactionEnvelope(envelope);
+                    if (self.vault.objects.items.len == object_count_before_put) continue;
                     if (!containsRef(committed_refs.items, ref)) try committed_refs.append(self.allocator, try ref.clone(self.allocator));
                     const event_refs = [_]ObjectRef{ref};
                     const event = Event.init(.{
@@ -36477,6 +36479,17 @@ test "chronicle transaction staged put abort and commit are atomic" {
     try std.testing.expect(vault.eventCount() > initial_event_count);
     try std.testing.expect(vault.cursor().cursor_fingerprint != initial_cursor.cursor_fingerprint);
     try std.testing.expectEqual(@as(usize, 1), vault.commitCount());
+
+    const committed_object_count_before_duplicate = vault.cursor().committed_object_count;
+    const object_count_before_duplicate = vault.objectCount();
+    var duplicate_tx = try vault.beginTransaction(.custom, .{});
+    defer duplicate_tx.deinit();
+    _ = try duplicate_tx.put(envelope);
+    var duplicate_commit = try duplicate_tx.commit();
+    defer duplicate_commit.deinit(allocator);
+    try std.testing.expectEqual(object_count_before_duplicate, vault.objectCount());
+    try std.testing.expectEqual(@as(usize, 0), duplicate_commit.committed_object_refs.len);
+    try std.testing.expectEqual(committed_object_count_before_duplicate, vault.cursor().committed_object_count);
 }
 
 test "chronicle transaction duplicate identical deduplicates and conflicting object rejects" {
