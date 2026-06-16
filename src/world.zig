@@ -32391,24 +32391,15 @@ pub const Continuity = struct {
                 .capsule_ref = capsule_ref,
                 .recovery_plan_ref = semanticObjectRef(.capsule_thaw_plan, plan.plan_fingerprint),
             });
-            const recovery_report_event = Chronicle.Event.init(.{
-                .kind = .recovery_report_stored,
-                .capsule_ref = capsule_ref,
-                .recovery_plan_ref = semanticObjectRef(.capsule_thaw_plan, plan.plan_fingerprint),
-            });
             var owned_recovery_executed_event: ?Chronicle.Event = null;
             var owned_recovery_blocked_event: ?Chronicle.Event = null;
-            var owned_recovery_report_event: ?Chronicle.Event = null;
             errdefer if (owned_recovery_executed_event) |*event| event.deinit(session.vault.allocator);
             errdefer if (owned_recovery_blocked_event) |*event| event.deinit(session.vault.allocator);
-            errdefer if (owned_recovery_report_event) |*event| event.deinit(session.vault.allocator);
             if (session.policy.require_transaction_for_recovery) {
                 try recovery_executed_event.validate();
                 try recovery_blocked_event.validate();
-                try recovery_report_event.validate();
                 owned_recovery_executed_event = try recovery_executed_event.clone(session.vault.allocator);
                 owned_recovery_blocked_event = try recovery_blocked_event.clone(session.vault.allocator);
-                owned_recovery_report_event = try recovery_report_event.clone(session.vault.allocator);
             }
             var restore = try Capsule.thawIntoRunspace(image, runspace, target, environment, permit_fingerprint, options.thaw_options);
             defer restore.deinit(runspace.allocator);
@@ -32435,8 +32426,6 @@ pub const Continuity = struct {
                     owned_recovery_executed_event.?.deinit(session.vault.allocator);
                     owned_recovery_executed_event = null;
                 }
-                appendOwnedRecoveryChronicleEventAssumeCapacity(session, owned_recovery_report_event.?);
-                owned_recovery_report_event = null;
             }
             var report = RecoveryReport.init(.{
                 .recovery_plan_fingerprint = plan.plan_fingerprint,
@@ -32448,6 +32437,14 @@ pub const Continuity = struct {
             });
             report.owns_memory = restore.accepted;
             try report.validate();
+            if (session.policy.require_transaction_for_recovery) {
+                appendOwnedRecoveryChronicleEventAssumeCapacity(session, Chronicle.Event.init(.{
+                    .kind = .recovery_report_stored,
+                    .capsule_ref = capsule_ref,
+                    .recovery_plan_ref = semanticObjectRef(.capsule_thaw_plan, plan.plan_fingerprint),
+                    .recovery_report_ref = semanticObjectRef(.capsule_restore_report, report.report_fingerprint),
+                }));
+            }
             return report;
         }
 
@@ -32489,17 +32486,18 @@ pub const Continuity = struct {
                 .capsule_ref = capsule_ref,
                 .recovery_plan_ref = plan_ref,
             }));
-            try appendRecoveryChronicleEvent(session, Chronicle.Event.init(.{
-                .kind = .recovery_report_stored,
-                .capsule_ref = capsule_ref,
-                .recovery_plan_ref = plan_ref,
-            }));
             const report = RecoveryReport.init(.{
                 .recovery_plan_fingerprint = plan.plan_fingerprint,
                 .accepted = true,
                 .resulting_cursor_fingerprint = session.cursor().cursor_fingerprint,
                 .restored_capsule_ref = capsule_ref,
             });
+            try appendRecoveryChronicleEvent(session, Chronicle.Event.init(.{
+                .kind = .recovery_report_stored,
+                .capsule_ref = capsule_ref,
+                .recovery_plan_ref = plan_ref,
+                .recovery_report_ref = semanticObjectRef(.capsule_restore_report, report.report_fingerprint),
+            }));
             return report;
         }
 
@@ -32535,6 +32533,12 @@ pub const Continuity = struct {
                 .blockers = if (plan.blockers.len == 0) &.{1} else plan.blockers,
             });
             try report.validate();
+            try appendRecoveryChronicleEvent(session, Chronicle.Event.init(.{
+                .kind = .recovery_report_stored,
+                .capsule_ref = plan.capsule_ref,
+                .recovery_plan_ref = semanticObjectRef(.capsule_thaw_plan, plan.plan_fingerprint),
+                .recovery_report_ref = semanticObjectRef(.capsule_restore_report, report.report_fingerprint),
+            }));
             return report;
         }
 
