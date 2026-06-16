@@ -34,7 +34,8 @@ pub fn main(init: std.process.Init) !void {
     const permit = .{ .permit_fingerprint = @as(u64, 0x4505_0004) };
 
     const plan = try world.Continuity.Recovery.planThawFromVault(&session, capsule_ref, target_ref, {}, permit, .{});
-    const report = try world.Continuity.Recovery.thawFromVault(&session, &target, capsule_ref, target_ref, {}, permit, .{});
+    var report = try world.Continuity.Recovery.thawFromVault(&session, &target, capsule_ref, target_ref, {}, permit, .{});
+    defer report.deinit(allocator);
 
     try stdout.print("recovery_plan_fingerprint={x}\n", .{plan.plan_fingerprint});
     try stdout.print("recovery_report_fingerprint={x}\n", .{report.report_fingerprint});

@@ -28989,9 +28989,12 @@ pub const Continuity = struct {
                 try journal.validate();
                 const payload = try journal.encode(self.allocator);
                 defer self.allocator.free(payload);
+                const deps = try actuationJournalStoredDependencyRefs(self.vault, journal);
+                defer freeRefSlice(self.allocator, deps);
                 const envelope = ObjectEnvelope.init(.{
                     .kind = .actuation_journal,
                     .object_format_version = journal.fingerprint_version,
+                    .dependency_refs = deps,
                     .payload_bytes = payload,
                     .label = "actuation.journal",
                 });
@@ -29091,7 +29094,8 @@ pub const Continuity = struct {
                 const owned_commit = try commit_record.clone(self.allocator);
                 try self.vault.chronicle_commits.append(self.allocator, owned_commit);
                 try self.vault.chronicle_commit_backing.append(self.allocator, backing_envelopes);
-                const stored_commit = self.vault.chronicle_commits.items[self.vault.chronicle_commits.items.len - 1];
+                var stored_commit = self.vault.chronicle_commits.items[self.vault.chronicle_commits.items.len - 1];
+                stored_commit.owns_memory = false;
                 self.committed = true;
                 self.refreshFingerprint();
                 return stored_commit;
@@ -29594,6 +29598,8 @@ pub const Continuity = struct {
         }
 
         fn putValidatedEnvelopeFromTransaction(self: *@This(), envelope: ObjectEnvelope) !ObjectRef {
+            try self.validateStorableEnvelope(envelope);
+            try self.rejectDuplicateFreshCommitsForEnvelope(envelope);
             const ref = envelope.objectRef();
             for (self.objects.items) |existing| {
                 if (existing.objectRef().eql(ref)) {
@@ -29630,9 +29636,9 @@ pub const Continuity = struct {
             }
         }
 
-        fn assertTransactionCanStageEnvelope(self: @This(), tx: *const Chronicle.Transaction, envelope: ObjectEnvelope) !void {
-            try envelope.validate();
-            if (!(try bundleEnvelopeTypedPayloadValid(self.allocator, envelope))) return error.InvalidFrameEncoding;
+        fn assertTransactionCanStageEnvelope(self: *@This(), tx: *const Chronicle.Transaction, envelope: ObjectEnvelope) !void {
+            try self.validateStorableEnvelope(envelope);
+            try self.rejectDuplicateFreshCommitsForEnvelope(envelope);
             const ref = envelope.objectRef();
             for (self.objects.items) |existing| {
                 if (existing.objectRef().eql(ref)) {
@@ -31873,6 +31879,7 @@ pub const Continuity = struct {
         receiver_permit_ref: ?ObjectRef = null,
         blockers: []const u64 = &.{},
         warnings: []const u64 = &.{},
+        owns_memory: bool = false,
 
         pub fn init(args: struct {
             recovery_plan_fingerprint: u64,
@@ -31901,6 +31908,13 @@ pub const Continuity = struct {
             if (self.recovery_plan_fingerprint == 0 or self.resulting_cursor_fingerprint == 0) return error.InvalidFrameEncoding;
             if (self.restored_capsule_ref) |ref| try ref.validate();
             if (self.report_fingerprint != fingerprintRecoveryReport(self)) return error.InvalidFrameEncoding;
+        }
+
+        pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+            if (self.owns_memory) {
+                allocator.free(self.restored_run_handles);
+            }
+            self.* = undefined;
         }
     };
 
@@ -31954,8 +31968,9 @@ pub const Continuity = struct {
             const permit_fingerprint = permitFingerprintFromArg(permit);
             var restore = try Capsule.thawIntoRunspace(image, runspace, target, environment, permit_fingerprint, options.thaw_options);
             defer restore.deinit(session.vault.allocator);
-            const handles = restore.restored_root_run_handles;
-            const report = RecoveryReport.init(.{
+            const handles = try session.vault.allocator.dupe(u64, restore.restored_root_run_handles);
+            errdefer session.vault.allocator.free(handles);
+            var report = RecoveryReport.init(.{
                 .recovery_plan_fingerprint = plan.plan_fingerprint,
                 .accepted = restore.accepted,
                 .resulting_cursor_fingerprint = session.cursor().cursor_fingerprint,
@@ -31963,6 +31978,7 @@ pub const Continuity = struct {
                 .restored_run_handles = handles,
                 .blockers = if (restore.accepted) &.{} else &.{1},
             });
+            report.owns_memory = true;
             try report.validate();
             try session.vault.appendChronicleEvent(Chronicle.Event.init(.{
                 .kind = if (restore.accepted) .recovery_executed else .recovery_blocked,
@@ -36185,8 +36201,10 @@ test "chronicle transaction staged put abort and commit are atomic" {
     defer commit_tx.deinit();
     const committed_ref = try commit_tx.put(envelope);
     try commit_tx.validate();
-    const commit = try commit_tx.commit();
+    var commit = try commit_tx.commit();
+    defer commit.deinit(allocator);
     try commit.validate();
+    try std.testing.expect(!commit.owns_memory);
     try std.testing.expect(vault.has(committed_ref));
     try std.testing.expectEqual(initial_object_count + 1, vault.objectCount());
     try std.testing.expect(vault.eventCount() > initial_event_count);
@@ -36400,6 +36418,10 @@ test "actuation to session records idempotency and permits replay receipts" {
     try journal.appendReceipt(allocator, replay_receipt);
     const journal_ref = try Actuation.journalToSession(&session, journal, .{});
     try std.testing.expect(vault.has(journal_ref));
+    const journal_deps = try vault.dependencies(journal_ref);
+    defer Continuity.freeRefSlice(allocator, journal_deps);
+    try std.testing.expect(journal_deps.len != 0);
+    try std.testing.expect(Continuity.containsRef(journal_deps, Continuity.semanticObjectRef(.actuation_receipt, replay_receipt.receipt_fingerprint)));
 }
 
 test "ContinuitySink opt-in bridge persists configured evidence and surfaces failure" {
