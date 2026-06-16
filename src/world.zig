@@ -32444,7 +32444,7 @@ pub const Continuity = struct {
                 .restored_run_handles = restored_handles,
                 .blockers = if (restore.accepted) &.{} else &.{1},
             });
-            report.owns_memory = restore.accepted;
+            report.owns_memory = restored_handles.len != 0;
             if (session.policy.require_transaction_for_recovery) {
                 appendOwnedRecoveryChronicleEventAssumeCapacity(session, Chronicle.Event.init(.{
                     .kind = .recovery_report_stored,
@@ -37835,6 +37835,17 @@ test "executable recovery plans and rejects before runspace mutation" {
     try std.testing.expectEqual(session.cursor().cursor_fingerprint, denied_report.resulting_cursor_fingerprint);
     try std.testing.expectEqual(@as(usize, 0), denied_report.restored_run_handles.len);
     try std.testing.expectEqual(admission_required_slots_before, admission_required_runspace.slots.items.len);
+
+    var inspect_runspace = Runspace.init(allocator, .{});
+    defer inspect_runspace.deinit();
+    var inspect_report = try Continuity.Recovery.thawFromVault(&session, &inspect_runspace, capsule_ref, {}, {}, {}, .{
+        .thaw_options = .{ .mode = .inspect_only },
+    });
+    defer inspect_report.deinit(allocator);
+    try inspect_report.validate();
+    try std.testing.expect(inspect_report.accepted);
+    try std.testing.expectEqual(@as(usize, 0), inspect_report.restored_run_handles.len);
+    try std.testing.expect(!inspect_report.owns_memory);
 }
 
 test "memory vault stores capsule receipt journal and looks up idempotency key" {
