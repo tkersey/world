@@ -29071,6 +29071,20 @@ pub const Continuity = struct {
                 if (!report.valid) return error.InvalidFrameEncoding;
                 try rejectDuplicateFreshCommitsAgainstVault(self.vault, bundle);
                 for (bundle.envelopes) |envelope| try self.vault.assertTransactionBundleEnvelopeCanStage(self, bundle, envelope);
+                const staged_envelope_count_before = self.staged_envelopes.items.len;
+                const staged_root_ref_count_before = self.staged_root_refs.items.len;
+                const staged_bundle_envelopes_before = self.staged_bundle_envelopes;
+                const accepted_before = self.accepted;
+                const transaction_fingerprint_before = self.transaction_fingerprint;
+                errdefer {
+                    for (self.staged_envelopes.items[staged_envelope_count_before..]) |*envelope| envelope.deinit(self.allocator);
+                    self.staged_envelopes.shrinkRetainingCapacity(staged_envelope_count_before);
+                    for (self.staged_root_refs.items[staged_root_ref_count_before..]) |*ref| ref.deinit(self.allocator);
+                    self.staged_root_refs.shrinkRetainingCapacity(staged_root_ref_count_before);
+                    self.staged_bundle_envelopes = staged_bundle_envelopes_before;
+                    self.accepted = accepted_before;
+                    self.transaction_fingerprint = transaction_fingerprint_before;
+                }
                 for (bundle.envelopes) |envelope| _ = try self.stageValidatedEnvelope(envelope);
                 self.staged_bundle_envelopes = true;
                 self.accepted = false;
@@ -29308,8 +29322,10 @@ pub const Continuity = struct {
             pub fn rebuild(vault: *Continuity.MemoryVault, kind: ProjectionKind) !@This() {
                 var refs: std.ArrayList(ObjectRef) = .empty;
                 defer refs.deinit(vault.allocator);
+                var consumed_event_count: usize = 0;
                 for (vault.chronicle_events.items) |event| {
                     if (!projectionKindConsumesEvent(kind, event.kind)) continue;
+                    consumed_event_count += 1;
                     for (event.object_refs) |ref| try appendProjectionRef(vault.allocator, &refs, kind, ref);
                     if (event.capsule_ref) |ref| try appendProjectionRef(vault.allocator, &refs, kind, ref);
                     if (event.bundle_ref) |ref| try appendProjectionRef(vault.allocator, &refs, kind, ref);
@@ -29326,7 +29342,7 @@ pub const Continuity = struct {
                 return .{ .allocator = vault.allocator, .owns_object_refs_consumed = consumed_refs.len != 0, .report = ProjectionReport.init(.{
                     .projection_kind = kind,
                     .source_cursor_fingerprint = vault.cursor().cursor_fingerprint,
-                    .event_count_consumed = vault.chronicle_events.items.len,
+                    .event_count_consumed = consumed_event_count,
                     .object_refs_consumed = consumed_refs,
                     .result_summary_fingerprint = summary,
                 }) };
@@ -37537,6 +37553,9 @@ test "inbox outbox views rebuild from chronicle events" {
     });
     _ = try inbound_session.storeActuationReceipt(unrelated_receipt);
     try std.testing.expectEqual(inbox_summary_before_unrelated, try Continuity.projectionSummaryForReplay(&inbound_vault, .inbox));
+    var inbox_projection_after_unrelated = try Continuity.Chronicle.Projection.rebuild(&inbound_vault, .inbox);
+    defer inbox_projection_after_unrelated.deinit();
+    try std.testing.expect(inbox_projection_after_unrelated.report.event_count_consumed < inbound_vault.eventCount());
     const cursor_before_inbox_accept = inbound_session.cursor();
     try inbox.accept(inbound_ref);
     try std.testing.expect(cursor_before_inbox_accept.cursor_fingerprint != inbound_session.cursor().cursor_fingerprint);
@@ -38096,6 +38115,54 @@ test "bundle import allocation failure restores chronicle state" {
         };
         imported_manifest.deinit(failing_allocator.allocator());
     }
+}
+
+test "chronicle transaction bundle staging allocation failure restores staged state" {
+    const allocator = std.testing.allocator;
+    const first = Continuity.ObjectEnvelope.init(.{
+        .kind = .capsule_manifest,
+        .object_format_version = world_capsule_manifest_format_version,
+        .payload_bytes = "transaction bundle staging first",
+    });
+    const second = Continuity.ObjectEnvelope.init(.{
+        .kind = .capsule_manifest,
+        .object_format_version = world_capsule_manifest_format_version,
+        .payload_bytes = "transaction bundle staging second",
+    });
+    var envelopes = [_]Continuity.ObjectEnvelope{ first, second };
+    var roots = [_]Continuity.ObjectRef{ first.objectRef(), second.objectRef() };
+    const bundle = Continuity.Bundle{
+        .allocator = allocator,
+        .manifest = Continuity.BundleManifest.init(.{ .roots = &roots, .object_count = envelopes.len }),
+        .envelopes = &envelopes,
+    };
+
+    var induced_failures: usize = 0;
+    for (0..128) |fail_index| {
+        var failing_allocator = std.testing.FailingAllocator.init(allocator, .{
+            .fail_index = fail_index,
+        });
+        var vault = Continuity.MemoryVault.init(failing_allocator.allocator());
+        defer vault.deinit();
+        var tx = vault.beginTransaction(.import_bundle, .{}) catch continue;
+        defer tx.deinit();
+        if (failing_allocator.has_induced_failure) continue;
+
+        tx.putBundle(bundle) catch |err| switch (err) {
+            error.OutOfMemory => {
+                try std.testing.expect(failing_allocator.has_induced_failure);
+                induced_failures += 1;
+                try std.testing.expectEqual(@as(usize, 0), tx.staged_envelopes.items.len);
+                try std.testing.expectEqual(@as(usize, 0), tx.staged_root_refs.items.len);
+                try std.testing.expect(!tx.staged_bundle_envelopes);
+                continue;
+            },
+            else => return err,
+        };
+        try std.testing.expect(!failing_allocator.has_induced_failure);
+        break;
+    }
+    try std.testing.expect(induced_failures > 0);
 }
 
 test "continuity session export allocation failure restores ledger state" {
