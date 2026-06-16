@@ -28488,6 +28488,11 @@ pub const Continuity = struct {
                 const replayed = try projectionSummaryForReplay(&replay_vault, .actuation_index);
                 if (source != replayed) mismatch_count += 1;
             }
+            if (options.rebuild_idempotency_registry) {
+                const source = try idempotencyRegistrySummaryForReplay(vault);
+                const replayed = try idempotencyRegistrySummaryForReplay(&replay_vault);
+                if (source != replayed) mismatch_count += 1;
+            }
             if (options.rebuild_inbox) {
                 const source = try projectionSummaryForReplay(vault, .inbox);
                 const replayed = try projectionSummaryForReplay(&replay_vault, .inbox);
@@ -32436,7 +32441,6 @@ pub const Continuity = struct {
                 .blockers = if (restore.accepted) &.{} else &.{1},
             });
             report.owns_memory = restore.accepted;
-            try report.validate();
             if (session.policy.require_transaction_for_recovery) {
                 appendOwnedRecoveryChronicleEventAssumeCapacity(session, Chronicle.Event.init(.{
                     .kind = .recovery_report_stored,
@@ -32444,7 +32448,9 @@ pub const Continuity = struct {
                     .recovery_plan_ref = semanticObjectRef(.capsule_thaw_plan, plan.plan_fingerprint),
                     .recovery_report_ref = semanticObjectRef(.capsule_restore_report, report.report_fingerprint),
                 }));
+                report.resulting_cursor_fingerprint = session.cursor().cursor_fingerprint;
             }
+            try report.validate();
             return report;
         }
 
@@ -32486,7 +32492,7 @@ pub const Continuity = struct {
                 .capsule_ref = capsule_ref,
                 .recovery_plan_ref = plan_ref,
             }));
-            const report = RecoveryReport.init(.{
+            var report = RecoveryReport.init(.{
                 .recovery_plan_fingerprint = plan.plan_fingerprint,
                 .accepted = true,
                 .resulting_cursor_fingerprint = session.cursor().cursor_fingerprint,
@@ -32498,6 +32504,8 @@ pub const Continuity = struct {
                 .recovery_plan_ref = plan_ref,
                 .recovery_report_ref = semanticObjectRef(.capsule_restore_report, report.report_fingerprint),
             }));
+            report.resulting_cursor_fingerprint = session.cursor().cursor_fingerprint;
+            try report.validate();
             return report;
         }
 
@@ -32526,19 +32534,20 @@ pub const Continuity = struct {
                 .capsule_ref = plan.capsule_ref,
                 .recovery_plan_ref = semanticObjectRef(.capsule_thaw_plan, plan.plan_fingerprint),
             }));
-            const report = RecoveryReport.init(.{
+            var report = RecoveryReport.init(.{
                 .recovery_plan_fingerprint = plan.plan_fingerprint,
                 .accepted = false,
                 .resulting_cursor_fingerprint = session.cursor().cursor_fingerprint,
                 .blockers = if (plan.blockers.len == 0) &.{1} else plan.blockers,
             });
-            try report.validate();
             try appendRecoveryChronicleEvent(session, Chronicle.Event.init(.{
                 .kind = .recovery_report_stored,
                 .capsule_ref = plan.capsule_ref,
                 .recovery_plan_ref = semanticObjectRef(.capsule_thaw_plan, plan.plan_fingerprint),
                 .recovery_report_ref = semanticObjectRef(.capsule_restore_report, report.report_fingerprint),
             }));
+            report.resulting_cursor_fingerprint = session.cursor().cursor_fingerprint;
+            try report.validate();
             return report;
         }
 
@@ -33394,6 +33403,12 @@ pub const Continuity = struct {
         return projection.report.result_summary_fingerprint;
     }
 
+    fn idempotencyRegistrySummaryForReplay(vault: *Continuity.MemoryVault) !u64 {
+        var registry = try Chronicle.IdempotencyRegistry.rebuild(vault);
+        defer registry.deinit(registry.allocator);
+        return registry.registry_fingerprint;
+    }
+
     fn replayCommittedObjectsIntoVault(source: *Continuity.MemoryVault, destination: *Continuity.MemoryVault) !void {
         for (source.chronicle_commit_backing.items) |backing| {
             for (backing) |envelope| _ = try destination.putAcceptedTransactionEnvelope(envelope);
@@ -33459,7 +33474,6 @@ pub const Continuity = struct {
         hashBytes(&hasher, "world.continuity.recovery.report");
         hashU64(&hasher, report.recovery_plan_fingerprint);
         hashBool(&hasher, report.accepted);
-        hashU64(&hasher, report.resulting_cursor_fingerprint);
         hashOptionalRef(&hasher, report.restored_capsule_ref);
         hashU64SliceLocal(&hasher, report.restored_run_handles);
         hashU64SliceLocal(&hasher, report.restored_pending_ports);
@@ -37703,6 +37717,7 @@ test "executable recovery plans and rejects before runspace mutation" {
     const disabled_report = try Continuity.Recovery.executeThawPlanFromVault(&disabled_session, &disabled_runspace, disabled_plan, {}, {}, {}, .{});
     try disabled_report.validate();
     try std.testing.expect(!disabled_report.accepted);
+    try std.testing.expectEqual(disabled_session.cursor().cursor_fingerprint, disabled_report.resulting_cursor_fingerprint);
     try std.testing.expectEqual(disabled_event_count, disabled_vault.eventCount());
     try std.testing.expectEqual(disabled_cursor.cursor_fingerprint, disabled_session.cursor().cursor_fingerprint);
 
@@ -37729,6 +37744,7 @@ test "executable recovery plans and rejects before runspace mutation" {
     try report.validate();
     try std.testing.expect(!report.accepted);
     try std.testing.expect(report.restored_capsule_ref == null);
+    try std.testing.expectEqual(session.cursor().cursor_fingerprint, report.resulting_cursor_fingerprint);
     var recovery_projection = try Continuity.Chronicle.Projection.rebuild(&vault, .recovery_queue);
     defer recovery_projection.deinit();
     try std.testing.expect(recovery_projection.report.object_refs_consumed.len != 0);
@@ -37754,6 +37770,7 @@ test "executable recovery plans and rejects before runspace mutation" {
     try denied_report.validate();
     try std.testing.expect(!denied_report.accepted);
     try std.testing.expect(denied_report.restored_capsule_ref == null);
+    try std.testing.expectEqual(session.cursor().cursor_fingerprint, denied_report.resulting_cursor_fingerprint);
     try std.testing.expectEqual(@as(usize, 0), denied_report.restored_run_handles.len);
     try std.testing.expectEqual(admission_required_slots_before, admission_required_runspace.slots.items.len);
 }
