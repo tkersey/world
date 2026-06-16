@@ -32357,7 +32357,7 @@ pub const Continuity = struct {
                 owned_recovery_report_event = try recovery_report_event.clone(session.vault.allocator);
             }
             var restore = try Capsule.thawIntoRunspace(image, runspace, target, environment, permit_fingerprint, options.thaw_options);
-            defer restore.deinit(session.vault.allocator);
+            defer restore.deinit(runspace.allocator);
             var restored_handles: []const u64 = &.{};
             if (restore.accepted) {
                 if (restore.restored_root_run_handles.len != handles.len) return error.InvalidFrameEncoding;
