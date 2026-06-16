@@ -29238,10 +29238,10 @@ pub const Continuity = struct {
                 var refs: std.ArrayList(ObjectRef) = .empty;
                 defer refs.deinit(vault.allocator);
                 for (vault.chronicle_events.items) |event| {
-                    for (event.object_refs) |ref| if (!containsRef(refs.items, ref)) try refs.append(vault.allocator, ref);
-                    if (event.capsule_ref) |ref| if (!containsRef(refs.items, ref)) try refs.append(vault.allocator, ref);
-                    if (event.bundle_ref) |ref| if (!containsRef(refs.items, ref)) try refs.append(vault.allocator, ref);
-                    for (event.actuation_refs) |ref| if (!containsRef(refs.items, ref)) try refs.append(vault.allocator, ref);
+                    for (event.object_refs) |ref| try appendProjectionRef(vault.allocator, &refs, kind, ref);
+                    if (event.capsule_ref) |ref| try appendProjectionRef(vault.allocator, &refs, kind, ref);
+                    if (event.bundle_ref) |ref| try appendProjectionRef(vault.allocator, &refs, kind, ref);
+                    for (event.actuation_refs) |ref| try appendProjectionRef(vault.allocator, &refs, kind, ref);
                 }
                 const summary = projectionSummaryFingerprint(vault, kind, refs.items);
                 return .{ .report = ProjectionReport.init(.{
@@ -32923,9 +32923,6 @@ pub const Continuity = struct {
         var hasher = std.hash.Wyhash.init(0);
         hashBytes(&hasher, "world.continuity.chronicle.projection.summary");
         hashU64(&hasher, @intFromEnum(kind));
-        hashU64(&hasher, vault.objectCount());
-        hashU64(&hasher, vault.eventCount());
-        hashU64(&hasher, vault.commitCount());
         hashRefSlice(&hasher, refs);
         for (vault.objects.items) |envelope| {
             switch (kind) {
@@ -32938,6 +32935,22 @@ pub const Continuity = struct {
             hashU64(&hasher, envelope.objectRef().ref_fingerprint);
         }
         return hasher.final();
+    }
+
+    fn appendProjectionRef(allocator: std.mem.Allocator, refs: *std.ArrayList(ObjectRef), kind: Chronicle.ProjectionKind, ref: ObjectRef) !void {
+        if (!projectionKindIncludesRef(kind, ref)) return;
+        if (containsRef(refs.items, ref)) return;
+        try refs.append(allocator, ref);
+    }
+
+    fn projectionKindIncludesRef(kind: Chronicle.ProjectionKind, ref: ObjectRef) bool {
+        return switch (kind) {
+            .capsule_index => ref.kind == .capsule_image,
+            .actuation_index, .idempotency_registry => ref.kind == .actuation_receipt or ref.kind == .actuation_journal,
+            .object_index => true,
+            .bundle_history => ref.kind == .bundle,
+            .inbox, .outbox, .recovery_queue => true,
+        };
     }
 
     fn projectionSummaryForReplay(vault: *Continuity.MemoryVault, kind: Chronicle.ProjectionKind) !u64 {
@@ -36615,6 +36628,54 @@ test "projection reports detect stale cursor and chronicle replay reports are st
     _ = try second_tx.put(second);
     _ = try second_tx.commit();
     try std.testing.expectError(error.StaleProjection, projection.assertFresh(vault.cursor()));
+}
+
+test "projection result summaries ignore unrelated chronicle objects" {
+    const allocator = std.testing.allocator;
+    var vault = Continuity.MemoryVault.init(allocator);
+    defer vault.deinit();
+    var session = try Continuity.Session.init(allocator, &vault, Continuity.PersistPolicy.full_local_evidence());
+
+    var runspace = Runspace.init(allocator, .{});
+    defer runspace.deinit();
+    var sink = Continuity.Sink.init(&session, Continuity.SinkPolicy.full_local_evidence());
+    _ = (try sink.recordCompletedCapsule(&runspace, .{})).?;
+
+    const capsule_before_actuation = try Continuity.Chronicle.Projection.rebuild(&vault, .capsule_index);
+    const receipt = Actuation.Receipt.init(.{
+        .intent_fingerprint = 0x3473_0010,
+        .envelope_fingerprint = 0x3473_0011,
+        .decision_fingerprint = 0x3473_0012,
+        .commit_fingerprint = 0x3473_0013,
+        .response_fingerprint = 0x3473_0014,
+        .frame_response_fingerprint = 0x3473_0015,
+        .actuator_ref_fingerprint = 0x3473_0004,
+        .idempotency_key_fingerprint = 0x3473_0020,
+        .request_fingerprint = 0x3473_0003,
+        .target_ref_fingerprint = 0x3473_0001,
+        .world_surface_fingerprint = 0x3473_0002,
+        .world_port_id = 7,
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+        .fresh_called = true,
+    });
+    _ = try session.storeActuationReceipt(receipt);
+    const capsule_after_actuation = try Continuity.Chronicle.Projection.rebuild(&vault, .capsule_index);
+    try std.testing.expectEqual(capsule_before_actuation.report.result_summary_fingerprint, capsule_after_actuation.report.result_summary_fingerprint);
+
+    const actuation_before_capsule = try Continuity.Chronicle.Projection.rebuild(&vault, .actuation_index);
+    const unrelated_manifest = Continuity.ObjectEnvelope.init(.{
+        .kind = .capsule_manifest,
+        .object_format_version = world_capsule_manifest_format_version,
+        .payload_bytes = "manifest-2",
+        .label = "manifest-2",
+    });
+    var unrelated_tx = try vault.beginTransaction(.custom, .{});
+    defer unrelated_tx.deinit();
+    _ = try unrelated_tx.put(unrelated_manifest);
+    _ = try unrelated_tx.commit();
+    const actuation_after_capsule = try Continuity.Chronicle.Projection.rebuild(&vault, .actuation_index);
+    try std.testing.expectEqual(actuation_before_capsule.report.result_summary_fingerprint, actuation_after_capsule.report.result_summary_fingerprint);
 }
 
 test "idempotency registry records fresh commits and allows replay receipts" {
