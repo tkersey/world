@@ -902,7 +902,7 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Chronicle replay projection example.",
             .expected_stdout =
             \\event_count=7
-            \\replay_report_fingerprint=47c6ca0703fb151e
+            \\replay_report_fingerprint=bddafead5b8fe557
             \\projection_match=true
             \\
             ,
@@ -926,7 +926,7 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Chronicle recovery example.",
             .expected_stdout =
             \\recovery_plan_fingerprint=52ae932966ff735f
-            \\recovery_report_fingerprint=ecc168fe90d06d8f
+            \\recovery_report_fingerprint=f32ee8d4b24c1c31
             \\restored=true
             \\final_result=chronicle-recovery-ok
             \\

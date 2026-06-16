@@ -28970,11 +28970,15 @@ pub const Continuity = struct {
 
             pub fn putActuationReceipt(self: *@This(), receipt: Actuation.Receipt) !ObjectRef {
                 try receipt.validate();
+                try self.vault.rejectDuplicateFreshCommitReceipt(receipt);
                 const payload = try receipt.encode(self.allocator);
                 defer self.allocator.free(payload);
+                const deps = try actuationReceiptStoredDependencyRefs(self.vault, receipt);
+                defer freeRefSlice(self.allocator, deps);
                 const envelope = ObjectEnvelope.init(.{
                     .kind = .actuation_receipt,
                     .object_format_version = receipt.format_version,
+                    .dependency_refs = deps,
                     .payload_bytes = payload,
                     .label = "actuation.receipt",
                 });
@@ -29062,12 +29066,12 @@ pub const Continuity = struct {
                         .object_refs = &event_refs,
                         .target_ref = ref,
                     });
-                    try self.vault.appendChronicleEvent(event);
+                    try self.vault.appendChronicleEventWithoutCursor(event);
                     try committed_event_fingerprints.append(self.allocator, event.event_fingerprint);
                 }
 
                 for (self.staged_events.items) |event| {
-                    try self.vault.appendChronicleEvent(event);
+                    try self.vault.appendChronicleEventWithoutCursor(event);
                     try committed_event_fingerprints.append(self.allocator, event.event_fingerprint);
                 }
 
@@ -29256,9 +29260,8 @@ pub const Continuity = struct {
                     if (envelope.kind != .actuation_receipt) continue;
                     var receipt = try Actuation.Receipt.decode(vault.allocator, envelope.payload_bytes);
                     defer receipt.deinit(vault.allocator);
-                    const key_ref = semanticObjectRef(.actuation_idempotency_key, receipt.idempotency_key_fingerprint);
-                    if (!containsRef(key_refs.items, key_ref)) try key_refs.append(vault.allocator, try key_ref.clone(vault.allocator));
                     if (receiptIsTerminalFreshCommit(receipt)) {
+                        const key_ref = semanticObjectRef(.actuation_idempotency_key, receipt.idempotency_key_fingerprint);
                         for (receipt_refs.items) |existing_ref| {
                             var existing = try vault.getActuationReceipt(existing_ref);
                             defer existing.deinit(vault.allocator);
@@ -29272,7 +29275,10 @@ pub const Continuity = struct {
                             }
                         }
                         fresh_count += 1;
-                        try receipt_refs.append(vault.allocator, try envelope.objectRef().clone(vault.allocator));
+                        if (!containsRef(key_refs.items, key_ref)) {
+                            try key_refs.append(vault.allocator, try key_ref.clone(vault.allocator));
+                            try receipt_refs.append(vault.allocator, try envelope.objectRef().clone(vault.allocator));
+                        }
                     } else if (isReplayableReceipt(receipt)) {
                         replay_count += 1;
                     }
@@ -29514,7 +29520,6 @@ pub const Continuity = struct {
             vault.ledger.record(.vault_initialized, null) catch {};
             const event = Chronicle.Event.init(.{ .kind = .vault_initialized });
             vault.appendChronicleEvent(event) catch return vault;
-            vault.chronicle_cursor = vault.chronicle_cursor.advance(&.{event.event_fingerprint}, 0, 0);
             return vault;
         }
 
@@ -29574,6 +29579,11 @@ pub const Continuity = struct {
         }
 
         fn appendChronicleEvent(self: *@This(), event: Chronicle.Event) !void {
+            try self.appendChronicleEventWithoutCursor(event);
+            self.chronicle_cursor = self.chronicle_cursor.advance(&.{event.event_fingerprint}, 0, 0);
+        }
+
+        fn appendChronicleEventWithoutCursor(self: *@This(), event: Chronicle.Event) !void {
             try event.validate();
             const owned = try event.clone(self.allocator);
             errdefer {
@@ -30180,6 +30190,10 @@ pub const Continuity = struct {
             defer tx.deinit();
             var bundle = try Bundle.decode(self.allocator, bytes, .{});
             defer bundle.deinit();
+            const report = try bundle.validationReport(.{});
+            if (!report.valid) return error.InvalidFrameEncoding;
+            try canonicalizeBundleDependencyRefsForStorage(&bundle);
+            try rejectDuplicateFreshCommitsAgainstVault(self.vault, bundle);
             const bundle_ref = ObjectRef.init(.{
                 .kind = .bundle,
                 .object_format_version = 1,
@@ -31900,6 +31914,7 @@ pub const Continuity = struct {
 
         pub fn planThawFromVault(session: *Session, capsule_ref: ObjectRef, registry: anytype, env: anytype, permit: anytype, options: Options) !RecoveryPlan {
             const requested_mode = recoveryRequestedModeFromThaw(options.thaw_options.mode);
+            const source_cursor = session.cursor();
             const blockers: []const u64 = blk: {
                 var graph = preflightThawCapsule(session.vault, capsule_ref, registry, env, permit, options) catch {
                     try session.vault.appendChronicleEvent(Chronicle.Event.init(.{ .kind = .recovery_blocked, .capsule_ref = capsule_ref }));
@@ -31911,7 +31926,7 @@ pub const Continuity = struct {
             };
             const plan = RecoveryPlan.init(.{
                 .capsule_ref = capsule_ref,
-                .source_cursor_fingerprint = session.cursor().cursor_fingerprint,
+                .source_cursor_fingerprint = source_cursor.cursor_fingerprint,
                 .requested_mode = requested_mode,
                 .blockers = blockers,
                 .runspace_mutation_plan = if (blockers.len == 0) "capsule thaw may mutate runspace" else "blocked before runspace mutation",
@@ -31960,6 +31975,7 @@ pub const Continuity = struct {
         }
 
         pub fn planReplayFromVault(session: *Session, capsule_ref: ObjectRef, target: anytype, options: Options) !RecoveryPlan {
+            const source_cursor = session.cursor();
             const blockers: []const u64 = blk: {
                 var graph = preflightReplayCapsule(session.vault, capsule_ref, target, options) catch {
                     try session.vault.appendChronicleEvent(Chronicle.Event.init(.{ .kind = .recovery_blocked, .capsule_ref = capsule_ref }));
@@ -31970,7 +31986,7 @@ pub const Continuity = struct {
             };
             return RecoveryPlan.init(.{
                 .capsule_ref = capsule_ref,
-                .source_cursor_fingerprint = session.cursor().cursor_fingerprint,
+                .source_cursor_fingerprint = source_cursor.cursor_fingerprint,
                 .requested_mode = .replay_only,
                 .blockers = blockers,
                 .runspace_mutation_plan = "replay without fresh host calls",
@@ -36347,6 +36363,14 @@ test "actuation to session records idempotency and permits replay receipts" {
     });
     const receipt_ref = try Actuation.commitToSession(&session, receipt, .{});
     try std.testing.expect(vault.has(receipt_ref));
+    const receipt_deps = try vault.dependencies(receipt_ref);
+    defer Continuity.freeRefSlice(allocator, receipt_deps);
+    try std.testing.expect(receipt_deps.len != 0);
+    try std.testing.expect(Continuity.containsRef(receipt_deps, Continuity.ObjectRef.init(.{
+        .kind = .actuation_idempotency_key,
+        .object_fingerprint = key.key_fingerprint,
+        .byte_len = 0,
+    })));
     try std.testing.expectError(error.DuplicateBinding, Actuation.assertIdempotencyAvailable(&session, key, .{}));
     try std.testing.expectError(error.DuplicateBinding, Actuation.commitToSession(&session, receipt, .{}));
 
@@ -36520,6 +36544,73 @@ test "idempotency registry records fresh commits and allows replay receipts" {
     defer replay_registry.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 1), replay_registry.fresh_commit_count);
     try std.testing.expectEqual(@as(usize, 1), replay_registry.replay_receipt_count);
+
+    var mixed_vault = Continuity.MemoryVault.init(allocator);
+    defer mixed_vault.deinit();
+    var mixed_session = try Continuity.Session.init(allocator, &mixed_vault, Continuity.PersistPolicy.actuation_only());
+    const replay_first = Actuation.Receipt.init(.{
+        .intent_fingerprint = 0x3470_1030,
+        .envelope_fingerprint = 0x3470_1031,
+        .decision_fingerprint = 0x3470_1032,
+        .commit_fingerprint = 0x3470_1033,
+        .response_fingerprint = 0x3470_1034,
+        .frame_response_fingerprint = 0x3470_1035,
+        .actuator_ref_fingerprint = 0x3470_1004,
+        .idempotency_key_fingerprint = 0x3470_1040,
+        .request_fingerprint = 0x3470_1003,
+        .target_ref_fingerprint = 0x3470_1001,
+        .world_surface_fingerprint = 0x3470_1002,
+        .world_port_id = 7,
+        .class = .deterministic_fixture,
+        .mode = .replay,
+        .fresh_called = false,
+        .replayed = true,
+    });
+    _ = try mixed_session.storeActuationReceipt(replay_first);
+    const fresh_b = Actuation.Receipt.init(.{
+        .intent_fingerprint = 0x3470_2010,
+        .envelope_fingerprint = 0x3470_2011,
+        .decision_fingerprint = 0x3470_2012,
+        .commit_fingerprint = 0x3470_2013,
+        .response_fingerprint = 0x3470_2014,
+        .frame_response_fingerprint = 0x3470_2015,
+        .actuator_ref_fingerprint = 0x3470_2004,
+        .idempotency_key_fingerprint = 0x3470_2020,
+        .request_fingerprint = 0x3470_2003,
+        .target_ref_fingerprint = 0x3470_2001,
+        .world_surface_fingerprint = 0x3470_2002,
+        .world_port_id = 8,
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+        .fresh_called = true,
+    });
+    const fresh_b_ref = try mixed_session.storeActuationReceipt(fresh_b);
+    var mixed_registry = try Continuity.Chronicle.IdempotencyRegistry.rebuild(&mixed_vault);
+    defer mixed_registry.deinit(allocator);
+    const fresh_b_key = Continuity.ObjectRef.init(.{
+        .kind = .actuation_idempotency_key,
+        .object_fingerprint = fresh_b.idempotency_key_fingerprint,
+        .byte_len = 0,
+    });
+    try std.testing.expect(mixed_registry.lookup(fresh_b_key).?.eql(fresh_b_ref));
+    const duplicate_fresh_b = Actuation.Receipt.init(.{
+        .intent_fingerprint = 0x3470_3010,
+        .envelope_fingerprint = 0x3470_3011,
+        .decision_fingerprint = 0x3470_3012,
+        .commit_fingerprint = 0x3470_3013,
+        .response_fingerprint = 0x3470_3014,
+        .frame_response_fingerprint = 0x3470_3015,
+        .actuator_ref_fingerprint = fresh_b.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = fresh_b.idempotency_key_fingerprint,
+        .request_fingerprint = fresh_b.request_fingerprint,
+        .target_ref_fingerprint = fresh_b.target_ref_fingerprint,
+        .world_surface_fingerprint = fresh_b.world_surface_fingerprint,
+        .world_port_id = fresh_b.world_port_id,
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+        .fresh_called = true,
+    });
+    try std.testing.expectError(error.DuplicateBinding, mixed_session.storeActuationReceipt(duplicate_fresh_b));
 }
 
 test "inbox outbox views rebuild from chronicle events" {
@@ -36540,7 +36631,9 @@ test "inbox outbox views rebuild from chronicle events" {
     _ = try tx.commit();
 
     var outbox = Continuity.Chronicle.Outbox.init(&outbound_session);
+    const cursor_before_outbox_stage = outbound_session.cursor();
     const outbound_ref = try outbox.stageCapsule(root_ref);
+    try std.testing.expect(cursor_before_outbox_stage.cursor_fingerprint != outbound_session.cursor().cursor_fingerprint);
     const pending_outbound = try outbox.listPending();
     defer {
         for (pending_outbound) |*ref| ref.deinit(allocator);
@@ -36550,7 +36643,9 @@ test "inbox outbox views rebuild from chronicle events" {
 
     var bundle = try outbox.exportBundle(outbound_ref);
     defer bundle.deinit();
+    const cursor_before_mark_exported = outbound_session.cursor();
     try outbox.markExported(outbound_ref);
+    try std.testing.expect(cursor_before_mark_exported.cursor_fingerprint != outbound_session.cursor().cursor_fingerprint);
     const completed_outbound = try outbox.listPending();
     defer {
         for (completed_outbound) |*ref| ref.deinit(allocator);
@@ -36564,7 +36659,9 @@ test "inbox outbox views rebuild from chronicle events" {
     defer inbound_vault.deinit();
     var inbound_session = try Continuity.Session.init(allocator, &inbound_vault, Continuity.PersistPolicy.full_local_evidence());
     var inbox = Continuity.Chronicle.Inbox.init(&inbound_session);
+    const cursor_before_inbox_import = inbound_session.cursor();
     const inbound_ref = try inbox.importBundle(bundle_bytes);
+    try std.testing.expect(cursor_before_inbox_import.cursor_fingerprint != inbound_session.cursor().cursor_fingerprint);
     const pending_inbound = try inbox.listPending();
     defer {
         for (pending_inbound) |*ref| ref.deinit(allocator);
@@ -36572,14 +36669,47 @@ test "inbox outbox views rebuild from chronicle events" {
     }
     try std.testing.expectEqual(@as(usize, 1), pending_inbound.len);
     try std.testing.expect(pending_inbound[0].eql(inbound_ref));
+    const cursor_before_inbox_validate = inbound_session.cursor();
     try inbox.validate(inbound_ref);
+    try std.testing.expect(cursor_before_inbox_validate.cursor_fingerprint != inbound_session.cursor().cursor_fingerprint);
+    const cursor_before_inbox_accept = inbound_session.cursor();
     try inbox.accept(inbound_ref);
+    try std.testing.expect(cursor_before_inbox_accept.cursor_fingerprint != inbound_session.cursor().cursor_fingerprint);
     const accepted_inbound = try inbox.listPending();
     defer {
         for (accepted_inbound) |*ref| ref.deinit(allocator);
         allocator.free(accepted_inbound);
     }
     try std.testing.expectEqual(@as(usize, 0), accepted_inbound.len);
+}
+
+test "continuity session import validates bundles before transaction commit" {
+    const allocator = std.testing.allocator;
+    var vault = Continuity.MemoryVault.init(allocator);
+    defer vault.deinit();
+    var session = try Continuity.Session.init(allocator, &vault, Continuity.PersistPolicy.full_local_evidence());
+
+    const missing_root = Continuity.ObjectRef.init(.{
+        .kind = .capsule_manifest,
+        .object_format_version = world_capsule_manifest_format_version,
+        .object_fingerprint = 0x3471_0001,
+        .byte_len = 0,
+    });
+    var roots = [_]Continuity.ObjectRef{missing_root};
+    var no_envelopes = [_]Continuity.ObjectEnvelope{};
+    const malformed_bundle = Continuity.Bundle{
+        .allocator = allocator,
+        .manifest = Continuity.BundleManifest.init(.{ .roots = &roots, .object_count = no_envelopes.len }),
+        .envelopes = &no_envelopes,
+    };
+    const bytes = try malformed_bundle.toBytes(allocator);
+    defer allocator.free(bytes);
+
+    const object_count_before = vault.objectCount();
+    const event_count_before = vault.eventCount();
+    try std.testing.expectError(error.InvalidFrameEncoding, session.importBundle(bytes));
+    try std.testing.expectEqual(object_count_before, vault.objectCount());
+    try std.testing.expectEqual(event_count_before, vault.eventCount());
 }
 
 test "executable recovery plans and rejects before runspace mutation" {
@@ -36597,9 +36727,11 @@ test "executable recovery plans and rejects before runspace mutation" {
     defer runspace.deinit();
     const before_slots = runspace.slots.items.len;
 
+    const cursor_before_plan = session.cursor();
     const plan = try Continuity.Recovery.planThawFromVault(&session, missing_capsule, {}, {}, {}, .{});
     try plan.validate();
-    try std.testing.expectEqual(session.cursor().cursor_fingerprint, plan.source_cursor_fingerprint);
+    try std.testing.expectEqual(cursor_before_plan.cursor_fingerprint, plan.source_cursor_fingerprint);
+    try std.testing.expect(cursor_before_plan.cursor_fingerprint != session.cursor().cursor_fingerprint);
     try std.testing.expect(plan.blockers.len != 0);
     const report = try Continuity.Recovery.thawFromVault(&session, &runspace, missing_capsule, {}, {}, {}, .{});
     try report.validate();
