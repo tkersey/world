@@ -33273,12 +33273,17 @@ pub const Continuity = struct {
     }
 
     fn chronicleOutboxRefWasExported(vault: *Continuity.MemoryVault, ref: ObjectRef) bool {
+        var exported = false;
         for (vault.chronicle_events.items) |event| {
-            if (event.kind != .outbox_item_exported) continue;
             const item_ref = event.inbox_outbox_item_ref orelse continue;
-            if (item_ref.eql(ref)) return true;
+            if (!item_ref.eql(ref)) continue;
+            switch (event.kind) {
+                .outbox_item_created, .outbox_item_completed => exported = false,
+                .outbox_item_exported => exported = true,
+                else => {},
+            }
         }
-        return false;
+        return exported;
     }
 
     fn inboxOutboxPendingRefs(vault: *Continuity.MemoryVault, inbox: bool) ![]ObjectRef {
@@ -37264,6 +37269,13 @@ test "inbox outbox views rebuild from chronicle events" {
         allocator.free(completed_outbound);
     }
     try std.testing.expectEqual(@as(usize, 0), completed_outbound.len);
+
+    const repeated_outbound_ref = try outbox.stageCapsule(root_ref);
+    try std.testing.expect(repeated_outbound_ref.eql(outbound_ref));
+    try std.testing.expectError(error.OutboxItemNotExported, outbox.markExported(repeated_outbound_ref));
+    var repeated_bundle = try outbox.exportBundle(repeated_outbound_ref);
+    defer repeated_bundle.deinit();
+    try outbox.markExported(repeated_outbound_ref);
 
     const bundle_bytes = try bundle.toBytes(allocator);
     defer allocator.free(bundle_bytes);
