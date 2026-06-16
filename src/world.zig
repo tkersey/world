@@ -28899,6 +28899,7 @@ pub const Continuity = struct {
             dependency_refs: std.ArrayList(ObjectRef) = .empty,
             validation_report_refs: std.ArrayList(ObjectRef) = .empty,
             idempotency_key_refs: std.ArrayList(ObjectRef) = .empty,
+            staged_bundle_envelopes: bool = false,
             accepted: bool = false,
             committed: bool = false,
             aborted: bool = false,
@@ -28936,7 +28937,12 @@ pub const Continuity = struct {
 
             pub fn put(self: *@This(), envelope: ObjectEnvelope) !ObjectRef {
                 if (self.committed or self.aborted) return error.InvalidRunspaceTransition;
+                if (self.staged_bundle_envelopes) return error.InvalidRunspaceTransition;
                 try self.vault.assertTransactionCanStageEnvelope(self, envelope);
+                return self.stageValidatedEnvelope(envelope);
+            }
+
+            fn stageValidatedEnvelope(self: *@This(), envelope: ObjectEnvelope) !ObjectRef {
                 const ref = envelope.objectRef();
                 for (self.staged_envelopes.items) |existing| {
                     if (existing.objectRef().eql(ref)) {
@@ -28959,9 +28965,12 @@ pub const Continuity = struct {
                 try image.validate(.{});
                 const payload = try image.encode(self.allocator);
                 defer self.allocator.free(payload);
+                const deps = try capsuleStoredDependencyRefs(self.vault, image);
+                defer freeRefSlice(self.allocator, deps);
                 const envelope = ObjectEnvelope.init(.{
                     .kind = .capsule_image,
                     .object_format_version = image.format_version,
+                    .dependency_refs = deps,
                     .payload_bytes = payload,
                     .label = "capsule.image",
                 });
@@ -29002,7 +29011,13 @@ pub const Continuity = struct {
             }
 
             pub fn putBundle(self: *@This(), bundle: Bundle) !void {
-                for (bundle.envelopes) |envelope| _ = try self.put(envelope);
+                if (self.committed or self.aborted) return error.InvalidRunspaceTransition;
+                const report = try bundle.validationReport(.{});
+                if (!report.valid) return error.InvalidFrameEncoding;
+                try rejectDuplicateFreshCommitsAgainstVault(self.vault, bundle);
+                for (bundle.envelopes) |envelope| try self.vault.assertTransactionBundleEnvelopeCanStage(self, bundle, envelope);
+                for (bundle.envelopes) |envelope| _ = try self.stageValidatedEnvelope(envelope);
+                self.staged_bundle_envelopes = true;
             }
 
             pub fn addEvent(self: *@This(), event: Event) !void {
@@ -29021,7 +29036,22 @@ pub const Continuity = struct {
                 if (self.committed or self.aborted) return error.InvalidRunspaceTransition;
                 if (self.transaction_fingerprint_version != world_chronicle_transaction_fingerprint_version) return error.InvalidFrameEncoding;
                 try self.vault.rejectConflictingTransactionEnvelopes(self.staged_envelopes.items);
-                for (self.staged_envelopes.items) |envelope| try self.vault.assertTransactionCanStageEnvelope(self, envelope);
+                if (self.staged_bundle_envelopes) {
+                    const bundle = Bundle{
+                        .allocator = self.allocator,
+                        .manifest = BundleManifest.init(.{
+                            .roots = self.staged_root_refs.items,
+                            .object_count = self.staged_envelopes.items.len,
+                        }),
+                        .envelopes = self.staged_envelopes.items,
+                    };
+                    const report = try bundle.validationReport(.{});
+                    if (!report.valid) return error.InvalidFrameEncoding;
+                    try rejectDuplicateFreshCommitsAgainstVault(self.vault, bundle);
+                    for (self.staged_envelopes.items) |envelope| try self.vault.assertTransactionBundleEnvelopeCanStage(self, bundle, envelope);
+                } else {
+                    for (self.staged_envelopes.items) |envelope| try self.vault.assertTransactionCanStageEnvelope(self, envelope);
+                }
                 for (self.staged_events.items) |event| try event.validate();
                 self.accepted = true;
                 self.refreshFingerprint();
@@ -29060,7 +29090,7 @@ pub const Continuity = struct {
                 errdefer freeEnvelopeSlice(self.allocator, backing_envelopes);
 
                 for (self.staged_envelopes.items) |envelope| {
-                    const ref = try self.vault.putValidatedEnvelopeFromTransaction(envelope);
+                    const ref = try self.vault.putAcceptedTransactionEnvelope(envelope);
                     if (!containsRef(committed_refs.items, ref)) try committed_refs.append(self.allocator, try ref.clone(self.allocator));
                     const event_refs = [_]ObjectRef{ref};
                     const event = Event.init(.{
@@ -29367,7 +29397,7 @@ pub const Continuity = struct {
             }
 
             pub fn inspect(self: @This(), ref: ObjectRef) !ObjectRef {
-                if (!chronicleSawInboxOutboxRef(self.session.vault, ref)) return error.ObjectMissing;
+                if (!chronicleInboxOutboxRefIsPending(self.session.vault, ref, true)) return error.ObjectMissing;
                 return ref;
             }
 
@@ -29417,6 +29447,7 @@ pub const Continuity = struct {
             }
 
             pub fn exportBundle(self: *@This(), ref: ObjectRef) !Bundle {
+                _ = try self.inspect(ref);
                 const capsule_ref = try outboxCapsuleForRef(self.session.vault, ref);
                 const bundle = try self.session.exportBundle(&.{capsule_ref});
                 const bundle_ref = ObjectRef.init(.{
@@ -29441,7 +29472,7 @@ pub const Continuity = struct {
             }
 
             fn inspect(self: @This(), ref: ObjectRef) !ObjectRef {
-                if (!chronicleSawInboxOutboxRef(self.session.vault, ref)) return error.ObjectMissing;
+                if (!chronicleInboxOutboxRefIsPending(self.session.vault, ref, false)) return error.ObjectMissing;
                 return ref;
             }
         };
@@ -29600,6 +29631,10 @@ pub const Continuity = struct {
         fn putValidatedEnvelopeFromTransaction(self: *@This(), envelope: ObjectEnvelope) !ObjectRef {
             try self.validateStorableEnvelope(envelope);
             try self.rejectDuplicateFreshCommitsForEnvelope(envelope);
+            return self.putAcceptedTransactionEnvelope(envelope);
+        }
+
+        fn putAcceptedTransactionEnvelope(self: *@This(), envelope: ObjectEnvelope) !ObjectRef {
             const ref = envelope.objectRef();
             for (self.objects.items) |existing| {
                 if (existing.objectRef().eql(ref)) {
@@ -29639,6 +29674,20 @@ pub const Continuity = struct {
         fn assertTransactionCanStageEnvelope(self: *@This(), tx: *const Chronicle.Transaction, envelope: ObjectEnvelope) !void {
             try self.validateStorableEnvelope(envelope);
             try self.rejectDuplicateFreshCommitsForEnvelope(envelope);
+            try self.assertTransactionEnvelopeRefAvailable(tx, envelope);
+        }
+
+        fn assertTransactionBundleEnvelopeCanStage(self: *@This(), tx: *const Chronicle.Transaction, bundle: Bundle, envelope: ObjectEnvelope) !void {
+            try envelope.validate();
+            if (!(try bundleEnvelopeTypedPayloadValid(self.allocator, envelope))) return error.InvalidFrameEncoding;
+            if (!(try bundleEnvelopeDeclaresRequiredDependencies(self.allocator, bundle.envelopes, envelope))) return error.InvalidFrameEncoding;
+            if (storableEnvelopeRequiresDependencyPayloadValidation(envelope.kind)) {
+                if (!(try bundleEnvelopeDependencyPayloadsValid(self.allocator, bundle.envelopes, envelope))) return error.InvalidFrameEncoding;
+            }
+            try self.assertTransactionEnvelopeRefAvailable(tx, envelope);
+        }
+
+        fn assertTransactionEnvelopeRefAvailable(self: @This(), tx: *const Chronicle.Transaction, envelope: ObjectEnvelope) !void {
             const ref = envelope.objectRef();
             for (self.objects.items) |existing| {
                 if (existing.objectRef().eql(ref)) {
@@ -30135,7 +30184,13 @@ pub const Continuity = struct {
         pub fn begin(self: *@This(), kind: Chronicle.TransactionKind) !Chronicle.Transaction {
             self.active_transaction_count += 1;
             self.refreshFingerprint();
+            errdefer self.abandonTransaction();
             return self.vault.beginTransaction(kind, .{});
+        }
+
+        fn abandonTransaction(self: *@This()) void {
+            if (self.active_transaction_count > 0) self.active_transaction_count -= 1;
+            self.refreshFingerprint();
         }
 
         pub fn cursor(self: @This()) Chronicle.Cursor {
@@ -30145,6 +30200,7 @@ pub const Continuity = struct {
         pub fn storeCapsule(self: *@This(), image: Capsule.Image) !ObjectRef {
             if (!self.policy.persist_capsules) return error.PersistenceDisabled;
             var tx = try self.begin(.store_capsule);
+            errdefer self.abandonTransaction();
             defer tx.deinit();
             const ref = try tx.putCapsule(image);
             try tx.addEvent(Chronicle.Event.init(.{ .kind = .capsule_stored, .capsule_ref = ref }));
@@ -30162,6 +30218,7 @@ pub const Continuity = struct {
                 try registry.assertFreshCommitAllowed(semanticObjectRef(.actuation_idempotency_key, receipt.idempotency_key_fingerprint));
             }
             var tx = try self.begin(.store_actuation);
+            errdefer self.abandonTransaction();
             defer tx.deinit();
             const ref = try tx.putActuationReceipt(receipt);
             const actuation_refs = [_]ObjectRef{ref};
@@ -30182,6 +30239,7 @@ pub const Continuity = struct {
         pub fn storeActuationJournal(self: *@This(), journal: Actuation.Journal) !ObjectRef {
             if (!self.policy.persist_actuation_journals) return error.PersistenceDisabled;
             var tx = try self.begin(.store_actuation);
+            errdefer self.abandonTransaction();
             defer tx.deinit();
             const ref = try tx.putActuationJournal(journal);
             const actuation_refs = [_]ObjectRef{ref};
@@ -30193,6 +30251,7 @@ pub const Continuity = struct {
 
         pub fn importBundle(self: *@This(), bytes: []const u8) !BundleManifest {
             var tx = try self.begin(.import_bundle);
+            errdefer self.abandonTransaction();
             defer tx.deinit();
             var bundle = try Bundle.decode(self.allocator, bytes, .{});
             defer bundle.deinit();
@@ -30217,6 +30276,7 @@ pub const Continuity = struct {
 
         pub fn exportBundle(self: *@This(), roots: []const ObjectRef) !Bundle {
             var tx = try self.begin(.export_bundle);
+            errdefer self.abandonTransaction();
             defer tx.deinit();
             try tx.addEvent(Chronicle.Event.init(.{ .kind = .bundle_export_started, .root_refs = roots }));
             const bundle = try Bundle.exportFromVault(self.vault, roots, .{});
@@ -32925,13 +32985,23 @@ pub const Continuity = struct {
         return hasher.final();
     }
 
-    fn chronicleSawInboxOutboxRef(vault: *Continuity.MemoryVault, ref: ObjectRef) bool {
+    fn chronicleInboxOutboxRefIsPending(vault: *Continuity.MemoryVault, ref: ObjectRef, inbox: bool) bool {
+        var pending = false;
         for (vault.chronicle_events.items) |event| {
-            if (event.inbox_outbox_item_ref) |item_ref| {
-                if (item_ref.eql(ref)) return true;
-            }
+            const item_ref = event.inbox_outbox_item_ref orelse continue;
+            if (!item_ref.eql(ref)) continue;
+            const created = if (inbox)
+                event.kind == .inbox_item_created or event.kind == .inbox_item_validated
+            else
+                event.kind == .outbox_item_created or event.kind == .outbox_item_exported;
+            const terminal = if (inbox)
+                event.kind == .inbox_item_accepted or event.kind == .inbox_item_rejected or event.kind == .inbox_item_restored
+            else
+                event.kind == .outbox_item_completed;
+            if (created) pending = true;
+            if (terminal) pending = false;
         }
-        return false;
+        return pending;
     }
 
     fn inboxOutboxPendingRefs(vault: *Continuity.MemoryVault, inbox: bool) ![]ObjectRef {
@@ -36656,6 +36726,8 @@ test "inbox outbox views rebuild from chronicle events" {
     const cursor_before_outbox_stage = outbound_session.cursor();
     const outbound_ref = try outbox.stageCapsule(root_ref);
     try std.testing.expect(cursor_before_outbox_stage.cursor_fingerprint != outbound_session.cursor().cursor_fingerprint);
+    var wrong_inbox = Continuity.Chronicle.Inbox.init(&outbound_session);
+    try std.testing.expectError(error.ObjectMissing, wrong_inbox.inspect(outbound_ref));
     const pending_outbound = try outbox.listPending();
     defer {
         for (pending_outbound) |*ref| ref.deinit(allocator);
@@ -36668,6 +36740,7 @@ test "inbox outbox views rebuild from chronicle events" {
     const cursor_before_mark_exported = outbound_session.cursor();
     try outbox.markExported(outbound_ref);
     try std.testing.expect(cursor_before_mark_exported.cursor_fingerprint != outbound_session.cursor().cursor_fingerprint);
+    try std.testing.expectError(error.ObjectMissing, outbox.exportBundle(outbound_ref));
     const completed_outbound = try outbox.listPending();
     defer {
         for (completed_outbound) |*ref| ref.deinit(allocator);
@@ -36684,6 +36757,8 @@ test "inbox outbox views rebuild from chronicle events" {
     const cursor_before_inbox_import = inbound_session.cursor();
     const inbound_ref = try inbox.importBundle(bundle_bytes);
     try std.testing.expect(cursor_before_inbox_import.cursor_fingerprint != inbound_session.cursor().cursor_fingerprint);
+    var wrong_outbox = Continuity.Chronicle.Outbox.init(&inbound_session);
+    try std.testing.expectError(error.ObjectMissing, wrong_outbox.markExported(inbound_ref));
     const pending_inbound = try inbox.listPending();
     defer {
         for (pending_inbound) |*ref| ref.deinit(allocator);
@@ -36729,9 +36804,13 @@ test "continuity session import validates bundles before transaction commit" {
 
     const object_count_before = vault.objectCount();
     const event_count_before = vault.eventCount();
+    const active_transaction_count_before = session.active_transaction_count;
+    const session_fingerprint_before = session.session_fingerprint;
     try std.testing.expectError(error.InvalidFrameEncoding, session.importBundle(bytes));
     try std.testing.expectEqual(object_count_before, vault.objectCount());
     try std.testing.expectEqual(event_count_before, vault.eventCount());
+    try std.testing.expectEqual(active_transaction_count_before, session.active_transaction_count);
+    try std.testing.expectEqual(session_fingerprint_before, session.session_fingerprint);
 }
 
 test "executable recovery plans and rejects before runspace mutation" {
