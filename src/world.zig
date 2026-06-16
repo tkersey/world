@@ -20116,7 +20116,8 @@ pub const Actuation = struct {
             const has_replay_evidence = entry.response_fingerprint != null or
                 entry.response_kind != null or
                 entry.frame_response_fingerprint != null or
-                entry.response_value_image_fingerprint != null;
+                entry.response_value_image_fingerprint != null or
+                entry.recorded_response_fingerprint != null;
             if (!has_replay_evidence) return null;
             var hasher = std.hash.Wyhash.init(world_actuation_journal_fingerprint_version);
             hashOptionalU64(&hasher, entry.intent_fingerprint);
@@ -20124,6 +20125,7 @@ pub const Actuation = struct {
             hashOptionalU64(&hasher, if (entry.response_kind) |kind| @intFromEnum(kind) else null);
             hashOptionalU64(&hasher, entry.frame_response_fingerprint);
             hashOptionalU64(&hasher, entry.response_value_image_fingerprint);
+            hashOptionalU64(&hasher, entry.recorded_response_fingerprint);
             hashOptionalU64(&hasher, entry.request_fingerprint);
             return hasher.final();
         }
@@ -28559,7 +28561,7 @@ pub const Continuity = struct {
             defer freeRefSlice(self.allocator, deps);
             const envelope = ObjectEnvelope.init(.{
                 .kind = .actuation_journal,
-                .object_format_version = world_actuation_journal_fingerprint_version,
+                .object_format_version = journal.fingerprint_version,
                 .dependency_refs = deps,
                 .payload_bytes = payload,
                 .label = "actuation.journal",
@@ -31260,7 +31262,7 @@ pub const Continuity = struct {
                     else => break :blk false,
                 };
                 defer journal.deinit(allocator);
-                break :blk true;
+                break :blk journal.fingerprint_version == envelope.object_format_version;
             },
             .value_image => blk: {
                 var image = Frame.ValueImage.decode(allocator, envelope.payload_bytes) catch |err| switch (err) {
@@ -31547,6 +31549,7 @@ pub const Continuity = struct {
             if (response.response_kind != receipt.response_kind) return false;
             if (response.frame_response_fingerprint != receipt.frame_response_fingerprint) return false;
             if (response.value_image_fingerprint != receipt.response_value_image_fingerprint) return false;
+            if (response.recorded_response_fingerprint != receipt.recorded_response_fingerprint) return false;
         }
 
         return true;
@@ -39340,6 +39343,15 @@ test "actuation legacy receipt and journal payloads decode for vault replay" {
     const typed_journal_replay = try Actuation.replayFromVault(&typed_journal_vault, key);
     try std.testing.expectEqual(Actuation.ResponseStatus.rejected, typed_journal_replay.status);
     try std.testing.expectEqual(legacy_receipt.response_fingerprint, typed_journal_replay.recorded_response_fingerprint.?);
+
+    const mismatched_journal_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_journal,
+        .object_format_version = world_actuation_journal_fingerprint_version,
+        .dependency_refs = journal_deps,
+        .payload_bytes = legacy_journal_payload,
+        .label = "actuation.journal.mismatched-version",
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, journal_vault.put(mismatched_journal_envelope));
 }
 
 test "vault replay preserves stored fingerprint for terminal receipt" {
