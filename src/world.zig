@@ -29013,7 +29013,7 @@ pub const Continuity = struct {
                 for (self.staged_envelopes.items) |existing| {
                     if (existing.objectRef().eql(ref)) {
                         if (existing.envelope_fingerprint != envelope.envelope_fingerprint) return error.InvalidFrameEncoding;
-                        return existing.objectRef();
+                        return try self.vault.backedObjectRef(existing.objectRef());
                     }
                 }
                 const owned = try envelope.clone(self.allocator);
@@ -29029,7 +29029,8 @@ pub const Continuity = struct {
                     var cleanup = self.staged_envelopes.pop().?;
                     cleanup.deinit(self.allocator);
                 };
-                const owned_ref = try ref.clone(self.allocator);
+                const staged_ref = self.staged_envelopes.items[self.staged_envelopes.items.len - 1].objectRef();
+                const owned_ref = try staged_ref.clone(self.allocator);
                 var ref_pending = true;
                 errdefer if (ref_pending) {
                     var cleanup = owned_ref;
@@ -29040,7 +29041,7 @@ pub const Continuity = struct {
                 envelope_appended = false;
                 self.accepted = false;
                 self.refreshFingerprint();
-                return ref;
+                return try self.vault.backedObjectRef(staged_ref);
             }
 
             pub fn putCapsule(self: *@This(), image: Capsule.Image) !ObjectRef {
@@ -29829,6 +29830,7 @@ pub const Continuity = struct {
         chronicle_events: std.ArrayList(Chronicle.Event) = .empty,
         chronicle_commits: std.ArrayList(Chronicle.Commit) = .empty,
         chronicle_commit_backing: std.ArrayList([]ObjectEnvelope) = .empty,
+        returned_ref_backing: std.ArrayList(ObjectRef) = .empty,
         chronicle_cursor: Chronicle.Cursor = Chronicle.Cursor.initial(),
         ledger: Ledger,
 
@@ -29849,6 +29851,7 @@ pub const Continuity = struct {
             self.chronicle_commits.deinit(self.allocator);
             for (self.chronicle_commit_backing.items) |backing| freeEnvelopeSlice(self.allocator, backing);
             self.chronicle_commit_backing.deinit(self.allocator);
+            deinitRefList(self.allocator, &self.returned_ref_backing);
             self.ledger.deinit();
             self.* = undefined;
         }
@@ -29871,6 +29874,15 @@ pub const Continuity = struct {
 
         pub fn beginTransaction(self: *@This(), kind: Chronicle.TransactionKind, options: Chronicle.TransactionOptions) !Chronicle.Transaction {
             return Chronicle.Transaction.init(self, kind, options);
+        }
+
+        fn backedObjectRef(self: *@This(), ref: ObjectRef) !ObjectRef {
+            var owned = try ref.clone(self.allocator);
+            errdefer owned.deinit(self.allocator);
+            try self.returned_ref_backing.append(self.allocator, owned);
+            var borrowed = self.returned_ref_backing.items[self.returned_ref_backing.items.len - 1];
+            borrowed.owns_memory = false;
+            return borrowed;
         }
 
         pub fn put(self: *@This(), envelope: ObjectEnvelope) !ObjectRef {
@@ -37407,6 +37419,43 @@ test "chronicle transaction duplicate identical deduplicates and conflicting obj
         .label = "conflicting diagnostics",
     };
     try std.testing.expectError(error.InvalidFrameEncoding, tx.put(conflicting));
+}
+
+test "chronicle transaction put returns vault-backed object ref" {
+    const allocator = std.testing.allocator;
+    var vault = Continuity.MemoryVault.init(allocator);
+    defer vault.deinit();
+
+    const source_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .capsule_manifest,
+        .object_format_version = world_capsule_manifest_format_version,
+        .payload_bytes = "manifest",
+        .label = "owned manifest",
+        .metadata = "owned diagnostics",
+    });
+    var owned_envelope = try source_envelope.clone(allocator);
+    var owned_envelope_live = true;
+    defer if (owned_envelope_live) owned_envelope.deinit(allocator);
+
+    var staged_ref: Continuity.ObjectRef = undefined;
+    {
+        var tx = try vault.beginTransaction(.custom, .{});
+        defer tx.deinit();
+        staged_ref = try tx.put(owned_envelope);
+        try std.testing.expectEqual(@as(usize, 1), tx.staged_envelopes.items.len);
+        try std.testing.expectEqualStrings("owned manifest", staged_ref.label);
+        try std.testing.expectEqualStrings("owned diagnostics", staged_ref.metadata);
+        try std.testing.expect(staged_ref.label.ptr != owned_envelope.label.ptr);
+        try std.testing.expect(staged_ref.metadata.ptr != owned_envelope.metadata.ptr);
+
+        owned_envelope.deinit(allocator);
+        owned_envelope_live = false;
+        var commit = try tx.commit();
+        defer commit.deinit(allocator);
+    }
+    try std.testing.expect(vault.has(staged_ref));
+    try std.testing.expectEqualStrings("owned manifest", staged_ref.label);
+    try std.testing.expectEqualStrings("owned diagnostics", staged_ref.metadata);
 }
 
 test "chronicle transaction staging allocation failure owns envelope once" {
