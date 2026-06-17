@@ -32401,9 +32401,9 @@ pub const Continuity = struct {
             for (image.runspace_image.run_slots) |slot_image| {
                 if (slot_image.role == .root) restored_root_count += 1;
             }
-            const handles = try session.vault.allocator.alloc(u64, restored_root_count);
+            const handles = try session.allocator.alloc(u64, restored_root_count);
             var handles_owned = true;
-            errdefer if (handles_owned) session.vault.allocator.free(handles);
+            errdefer if (handles_owned) session.allocator.free(handles);
             if (session.policy.require_transaction_for_recovery) {
                 try session.vault.chronicle_events.ensureUnusedCapacity(session.vault.allocator, 2);
             }
@@ -32437,7 +32437,7 @@ pub const Continuity = struct {
                 restored_handles = handles;
                 handles_owned = false;
             } else {
-                session.vault.allocator.free(handles);
+                session.allocator.free(handles);
                 handles_owned = false;
             }
             if (session.policy.require_transaction_for_recovery) {
