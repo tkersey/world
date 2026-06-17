@@ -29382,7 +29382,7 @@ pub const Continuity = struct {
                     if (event.recovery_report_ref) |ref| try appendProjectionRef(vault, &refs, kind, ref);
                     for (event.actuation_refs) |ref| try appendProjectionRef(vault, &refs, kind, ref);
                 }
-                const summary = projectionSummaryFingerprint(vault, kind, refs.items);
+                const summary = projectionSummaryFingerprint(kind, refs.items);
                 const consumed_refs = if (refs.items.len == 0) &.{} else try cloneRefSlice(vault.allocator, refs.items);
                 errdefer if (consumed_refs.len != 0) {
                     freeRefSlice(vault.allocator, consumed_refs);
@@ -33546,25 +33546,12 @@ pub const Continuity = struct {
         return hasher.final();
     }
 
-    fn projectionSummaryFingerprint(vault: *Continuity.MemoryVault, kind: Chronicle.ProjectionKind, refs: []const ObjectRef) u64 {
+    fn projectionSummaryFingerprint(kind: Chronicle.ProjectionKind, refs: []const ObjectRef) u64 {
         var hasher = std.hash.Wyhash.init(0);
         hashBytes(&hasher, "world.continuity.chronicle.projection.summary");
         hashU64(&hasher, @intFromEnum(kind));
         hashRefSlice(&hasher, refs);
-        for (vault.objects.items) |envelope| {
-            const ref = envelope.objectRef();
-            if (!projectionSummaryIncludesObject(kind, refs, ref)) continue;
-            hashU64(&hasher, ref.ref_fingerprint);
-        }
         return hasher.final();
-    }
-
-    fn projectionSummaryIncludesObject(kind: Chronicle.ProjectionKind, refs: []const ObjectRef, ref: ObjectRef) bool {
-        if (!projectionKindIncludesRef(kind, ref)) return false;
-        return switch (kind) {
-            .inbox, .outbox, .recovery_queue => containsRef(refs, ref),
-            else => true,
-        };
     }
 
     fn appendProjectionRef(vault: *Continuity.MemoryVault, refs: *std.ArrayList(ObjectRef), kind: Chronicle.ProjectionKind, ref: ObjectRef) !void {
@@ -37581,6 +37568,20 @@ test "projection reports detect stale cursor and chronicle replay reports are st
     defer projection.deinit();
     try projection.report.validate();
     try projection.assertFresh(cursor);
+    try std.testing.expect(Continuity.containsRef(projection.report.object_refs_consumed, envelope.objectRef()));
+    const projection_summary_before_stray = projection.report.result_summary_fingerprint;
+    const stray_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .capsule_manifest,
+        .object_format_version = world_capsule_manifest_format_version,
+        .payload_bytes = "stray-manifest",
+        .label = "stray-manifest",
+    });
+    try vault.objects.append(allocator, try stray_envelope.clone(allocator));
+    var projection_after_stray = try Continuity.Chronicle.Projection.rebuild(&vault, .object_index);
+    defer projection_after_stray.deinit();
+    try projection_after_stray.assertFresh(cursor);
+    try std.testing.expect(!Continuity.containsRef(projection_after_stray.report.object_refs_consumed, stray_envelope.objectRef()));
+    try std.testing.expectEqual(projection_summary_before_stray, projection_after_stray.report.result_summary_fingerprint);
 
     const report = try Continuity.Chronicle.replay(&vault, .{});
     try report.validate();
