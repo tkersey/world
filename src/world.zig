@@ -29629,6 +29629,7 @@ pub const Continuity = struct {
                     .status = .created,
                 });
                 const ref = envelope.objectRef();
+                if (chronicleInboxOutboxRefIsPending(self.session.vault, ref, false)) return ref;
                 const event = Event.init(.{ .kind = .outbox_item_created, .inbox_outbox_item_ref = ref, .capsule_ref = capsule_ref });
                 try self.session.appendChronicleEvent(event);
                 return ref;
@@ -37741,6 +37742,8 @@ test "inbox outbox views rebuild from chronicle events" {
     try std.testing.expectError(error.OutboxItemNotExported, outbox.markExported(outbound_ref));
     var bundle = try outbox.exportBundle(outbound_ref);
     defer bundle.deinit();
+    const duplicate_exported_outbound_ref = try outbox.stageCapsule(root_ref);
+    try std.testing.expect(duplicate_exported_outbound_ref.eql(outbound_ref));
     const cursor_before_mark_exported = outbound_session.cursor();
     try outbox.markExported(outbound_ref);
     try std.testing.expect(cursor_before_mark_exported.cursor_fingerprint != outbound_session.cursor().cursor_fingerprint);
