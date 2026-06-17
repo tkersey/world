@@ -32369,9 +32369,17 @@ pub const Continuity = struct {
         pub fn planThawFromVault(session: *Session, capsule_ref: ObjectRef, registry: anytype, env: anytype, permit: anytype, options: Options) !RecoveryPlan {
             const requested_mode = recoveryRequestedModeFromThaw(options.thaw_options.mode);
             const source_cursor = session.cursor();
-            var target_ref_fingerprint: u64 = 0;
+            var target_ref_fingerprint = targetRefFingerprintFromArg(registry) orelse 0;
             const environment_fingerprint = environmentFingerprintFromArg(env) orelse 0;
             const permit_fingerprint = permitFingerprintFromArg(permit) orelse 0;
+            if (session.vault.getCapsule(capsule_ref)) |loaded_image| {
+                var image = loaded_image;
+                defer image.deinit(session.vault.allocator);
+                target_ref_fingerprint = thawTargetRefFingerprintFromArg(registry, image.manifest.root_target_ref_fingerprint) orelse target_ref_fingerprint;
+            } else |err| switch (err) {
+                error.ObjectMissing => {},
+                else => return err,
+            }
             const blockers: []const u64 = blk: {
                 var graph = preflightThawCapsule(session.vault, capsule_ref, registry, env, permit, options) catch |err| switch (err) {
                     error.ObjectMissing, error.InvalidFrameEncoding, error.DuplicateBinding => {
@@ -32380,9 +32388,6 @@ pub const Continuity = struct {
                     else => return err,
                 };
                 graph.deinit();
-                var image = try session.vault.getCapsule(capsule_ref);
-                defer image.deinit(session.vault.allocator);
-                target_ref_fingerprint = thawTargetRefFingerprintFromArg(registry, image.manifest.root_target_ref_fingerprint) orelse 0;
                 break :blk &.{};
             };
             const plan = RecoveryPlan.init(.{
@@ -32652,7 +32657,10 @@ pub const Continuity = struct {
         }
 
         fn appendRecoveryPlanningChronicleEvents(session: *Session, preplan_event: Chronicle.Event, plan_event: Chronicle.Event) !void {
-            if (!session.policy.require_transaction_for_recovery) return;
+            if (!session.policy.require_transaction_for_recovery) {
+                session.refreshFingerprint();
+                return;
+            }
             try preplan_event.validate();
             try plan_event.validate();
             try session.vault.chronicle_events.ensureUnusedCapacity(session.vault.allocator, 2);
@@ -38030,6 +38038,19 @@ test "executable recovery plans and rejects before runspace mutation" {
     try std.testing.expectEqual(disabled_event_count, disabled_vault.eventCount());
     try std.testing.expectEqual(disabled_cursor.cursor_fingerprint, disabled_session.cursor().cursor_fingerprint);
 
+    var disabled_ready_vault = Continuity.MemoryVault.init(allocator);
+    defer disabled_ready_vault.deinit();
+    var disabled_ready_source = Runspace.init(allocator, .{});
+    defer disabled_ready_source.deinit();
+    var disabled_ready_image = try Capsule.freezeRunspace(&disabled_ready_source, .{});
+    defer disabled_ready_image.deinit(allocator);
+    const disabled_ready_ref = try disabled_ready_vault.putCapsule(disabled_ready_image);
+    var disabled_ready_session = try Continuity.Session.init(allocator, &disabled_ready_vault, null);
+    const disabled_ready_session_fingerprint = disabled_ready_session.session_fingerprint;
+    const disabled_ready_plan = try Continuity.Recovery.planThawFromVault(&disabled_ready_session, disabled_ready_ref, {}, {}, {}, .{});
+    try disabled_ready_plan.validate();
+    try std.testing.expect(disabled_ready_session_fingerprint != disabled_ready_session.session_fingerprint);
+
     var vault = Continuity.MemoryVault.init(allocator);
     defer vault.deinit();
     var session = try Continuity.Session.init(allocator, &vault, Continuity.PersistPolicy.full_local_evidence());
@@ -38074,6 +38095,16 @@ test "executable recovery plans and rejects before runspace mutation" {
         .runspace_mutation_plan = "forged empty-blocker plan",
     });
     try std.testing.expectError(error.InvalidFrameEncoding, Continuity.Recovery.executeThawPlanFromVault(&session, &runspace, forged_plan, {}, {}, {}, .{}));
+    try std.testing.expectEqual(before_slots, runspace.slots.items.len);
+    const target_registry = .{ .target_ref_fingerprint = 0x3490_8801 };
+    const other_target_registry = .{ .target_ref_fingerprint = 0x3490_8802 };
+    const target_bound_plan = try Continuity.Recovery.planThawFromVault(&session, missing_capsule, target_registry, {}, {}, .{});
+    try target_bound_plan.validate();
+    try std.testing.expectEqual(target_registry.target_ref_fingerprint, target_bound_plan.target_ref_fingerprint);
+    try std.testing.expectError(error.InvalidFrameEncoding, Continuity.Recovery.executeThawPlanFromVault(&session, &runspace, target_bound_plan, other_target_registry, {}, {}, .{}));
+    const target_bound_report = try Continuity.Recovery.executeThawPlanFromVault(&session, &runspace, target_bound_plan, target_registry, {}, {}, .{});
+    try target_bound_report.validate();
+    try std.testing.expect(!target_bound_report.accepted);
     try std.testing.expectEqual(before_slots, runspace.slots.items.len);
 
     var source_runspace = Runspace.init(allocator, .{});
