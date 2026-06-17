@@ -876,7 +876,7 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Chronicle capsule commit example.",
             .expected_stdout =
             \\capsule_ref=886e63b600519640
-            \\commit_fingerprint=cea80fbe20017aae
+            \\commit_fingerprint=47f7f46fc9d6de28
             \\cursor_fingerprint=2a241676a6887324
             \\final_result=chronicle-capsule-commit-ok
             \\

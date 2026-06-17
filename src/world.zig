@@ -29435,6 +29435,7 @@ pub const Continuity = struct {
             blockers: []const u64 = &.{},
 
             pub fn rebuild(vault: *Continuity.MemoryVault) !@This() {
+                try requireChronicleEventsMatchCursor(vault);
                 var key_refs: std.ArrayList(ObjectRef) = .empty;
                 errdefer deinitRefList(vault.allocator, &key_refs);
                 var evidence_refs: std.ArrayList(ObjectRef) = .empty;
@@ -29447,6 +29448,7 @@ pub const Continuity = struct {
                 var replay_count: usize = 0;
                 var conflict_count: usize = 0;
                 for (vault.objects.items) |envelope| {
+                    if (!try chronicleCommittedObjectRefExistsInAuthenticatedEvents(vault, envelope.objectRef())) continue;
                     switch (envelope.kind) {
                         .actuation_commit => {
                             const commit = decodePortableEvidence(Actuation.Commit, vault.allocator, envelope.payload_bytes) catch |err| switch (err) {
@@ -29653,7 +29655,7 @@ pub const Continuity = struct {
             }
 
             pub fn inspect(self: @This(), ref: ObjectRef) !ObjectRef {
-                if (!chronicleInboxOutboxRefIsPending(self.session.vault, ref, true)) return error.ObjectMissing;
+                if (!try chronicleInboxOutboxRefIsPending(self.session.vault, ref, true)) return error.ObjectMissing;
                 return ref;
             }
 
@@ -29701,7 +29703,7 @@ pub const Continuity = struct {
                     .status = .created,
                 });
                 const ref = envelope.objectRef();
-                if (chronicleInboxOutboxRefIsPending(self.session.vault, ref, false)) return ref;
+                if (try chronicleInboxOutboxRefIsPending(self.session.vault, ref, false)) return ref;
                 const event = Event.init(.{ .kind = .outbox_item_created, .inbox_outbox_item_ref = ref, .capsule_ref = stored_capsule_ref });
                 try self.session.appendChronicleEvent(event);
                 return ref;
@@ -29742,7 +29744,7 @@ pub const Continuity = struct {
             pub fn markExported(self: *@This(), ref: ObjectRef) !void {
                 if (!self.session.policy.require_transaction_for_bundle_export) return error.PersistenceDisabled;
                 _ = try self.inspect(ref);
-                if (!chronicleOutboxRefWasExported(self.session.vault, ref)) return error.OutboxItemNotExported;
+                if (!try chronicleOutboxRefWasExported(self.session.vault, ref)) return error.OutboxItemNotExported;
                 const event = Event.init(.{ .kind = .outbox_item_completed, .inbox_outbox_item_ref = ref });
                 try self.session.appendChronicleEvent(event);
             }
@@ -29752,7 +29754,7 @@ pub const Continuity = struct {
             }
 
             fn inspect(self: @This(), ref: ObjectRef) !ObjectRef {
-                if (!chronicleInboxOutboxRefIsPending(self.session.vault, ref, false)) return error.ObjectMissing;
+                if (!try chronicleInboxOutboxRefIsPending(self.session.vault, ref, false)) return error.ObjectMissing;
                 return ref;
             }
         };
@@ -32615,7 +32617,12 @@ pub const Continuity = struct {
                 error.ObjectMissing => {},
                 else => return err,
             }
+            const committed_capsule_backing = if (session.policy.require_transaction_for_recovery)
+                try chronicleCommittedObjectRefExists(session.vault, capsule_ref)
+            else
+                true;
             const blockers: []const u64 = blk: {
+                if (!committed_capsule_backing) break :blk &.{1};
                 var graph = preflightThawCapsule(session.vault, capsule_ref, registry, env, permit, options) catch |err| switch (err) {
                     error.ObjectMissing, error.InvalidFrameEncoding, error.DuplicateBinding => {
                         break :blk &.{1};
@@ -32656,7 +32663,8 @@ pub const Continuity = struct {
         pub fn executeThawPlanFromVault(session: *Session, runspace: *Runspace, plan: RecoveryPlan, registry: anytype, env: anytype, permit: anytype, options: Options) !RecoveryReport {
             try plan.validate();
             if (plan.requested_mode != recoveryRequestedModeFromThaw(options.thaw_options.mode)) return error.InvalidFrameEncoding;
-            if (session.policy.require_transaction_for_recovery and !recoveryPlanIsCurrent(session.vault, plan)) return error.InvalidFrameEncoding;
+            if (session.policy.require_transaction_for_recovery and !try recoveryPlanIsCurrent(session.vault, plan)) return error.InvalidFrameEncoding;
+            if (session.policy.require_transaction_for_recovery and plan.blockers.len == 0 and !try chronicleCommittedObjectRefExists(session.vault, plan.capsule_ref)) return error.InvalidFrameEncoding;
             if (!try recoveryPlanAuthorityMatches(session.vault, plan, registry, env, permit)) return error.InvalidFrameEncoding;
             const before_slots = runspace.slots.items.len;
             if (plan.blockers.len != 0) {
@@ -32789,7 +32797,12 @@ pub const Continuity = struct {
                 session.vault.chronicle_cursor = cursor_before;
                 session.session_fingerprint = session_fingerprint_before;
             };
+            const committed_capsule_backing = if (session.policy.require_transaction_for_recovery)
+                try chronicleCommittedObjectRefExists(session.vault, capsule_ref)
+            else
+                true;
             const blockers: []const u64 = blk: {
+                if (!committed_capsule_backing) break :blk &.{1};
                 var graph = preflightReplayCapsule(session.vault, capsule_ref, target, options) catch |err| switch (err) {
                     error.ObjectMissing, error.InvalidFrameEncoding, error.DuplicateBinding => {
                         break :blk &.{1};
@@ -32958,7 +32971,8 @@ pub const Continuity = struct {
             return false;
         }
 
-        fn recoveryPlanIsCurrent(vault: *const Continuity.MemoryVault, plan: RecoveryPlan) bool {
+        fn recoveryPlanIsCurrent(vault: *const Continuity.MemoryVault, plan: RecoveryPlan) !bool {
+            if (!try chronicleEventsMatchCursor(vault)) return false;
             if (!recoveryPlanWasRecorded(vault, plan)) return false;
             if (vault.chronicle_events.items.len == 0) return false;
             const last_event = vault.chronicle_events.items[vault.chronicle_events.items.len - 1];
@@ -33670,6 +33684,7 @@ pub const Continuity = struct {
         hashRefSlice(&hasher, commit.validation_report_refs);
         hashBytesWithLenLocal(&hasher, commit.blocker_summary);
         hashBytesWithLenLocal(&hasher, commit.warning_summary);
+        hashBytesWithLenLocal(&hasher, commit.metadata_bytes);
         return hasher.final();
     }
 
@@ -33933,6 +33948,43 @@ pub const Continuity = struct {
         return cursor;
     }
 
+    fn chronicleEventsMatchCursor(vault: *const Continuity.MemoryVault) !bool {
+        const authenticated_cursor = try replayCursorFromChronicle(vault, vault.allocator);
+        return authenticated_cursor.cursor_fingerprint == vault.cursor().cursor_fingerprint;
+    }
+
+    fn requireChronicleEventsMatchCursor(vault: *const Continuity.MemoryVault) !void {
+        if (!try chronicleEventsMatchCursor(vault)) return error.StaleProjection;
+    }
+
+    fn chronicleCommittedObjectRefExists(vault: *const Continuity.MemoryVault, ref: ObjectRef) !bool {
+        try ref.validate();
+        if (!try chronicleEventsMatchCursor(vault)) return false;
+        return chronicleCommittedObjectRefExistsInAuthenticatedEvents(vault, ref);
+    }
+
+    fn chronicleCommittedObjectRefExistsInAuthenticatedEvents(vault: *const Continuity.MemoryVault, ref: ObjectRef) !bool {
+        const resolved_ref = (try chronicleResolveObjectRef(vault, ref)) orelse return false;
+        for (vault.chronicle_events.items) |event| {
+            if (event.kind != .object_committed) continue;
+            if (containsRef(event.object_refs, resolved_ref)) return true;
+        }
+        return false;
+    }
+
+    fn chronicleResolveObjectRef(vault: *const Continuity.MemoryVault, ref: ObjectRef) !?ObjectRef {
+        for (vault.objects.items) |envelope| {
+            const envelope_ref = envelope.objectRef();
+            if (envelope_ref.eql(ref)) return envelope_ref;
+        }
+        if (ref.byte_len != 0) return null;
+        for (vault.objects.items) |envelope| {
+            const envelope_ref = envelope.objectRef();
+            if (envelope_ref.kind == ref.kind and envelope_ref.object_fingerprint == ref.object_fingerprint) return envelope_ref;
+        }
+        return null;
+    }
+
     fn replayCursorAdvanceEvent(cursor: Chronicle.Cursor, event: Chronicle.Event) Chronicle.Cursor {
         const committed_object_count: u64 = if (event.kind == .object_committed and event.transaction_fingerprint == null) 1 else 0;
         return cursor.advance(&.{event.event_fingerprint}, committed_object_count, 0);
@@ -34015,7 +34067,8 @@ pub const Continuity = struct {
         return hasher.final();
     }
 
-    fn chronicleInboxOutboxRefIsPending(vault: *Continuity.MemoryVault, ref: ObjectRef, inbox: bool) bool {
+    fn chronicleInboxOutboxRefIsPending(vault: *Continuity.MemoryVault, ref: ObjectRef, inbox: bool) !bool {
+        try requireChronicleEventsMatchCursor(vault);
         var pending = false;
         for (vault.chronicle_events.items) |event| {
             const item_ref = event.inbox_outbox_item_ref orelse continue;
@@ -34034,7 +34087,8 @@ pub const Continuity = struct {
         return pending;
     }
 
-    fn chronicleOutboxRefWasExported(vault: *Continuity.MemoryVault, ref: ObjectRef) bool {
+    fn chronicleOutboxRefWasExported(vault: *Continuity.MemoryVault, ref: ObjectRef) !bool {
+        try requireChronicleEventsMatchCursor(vault);
         var exported = false;
         for (vault.chronicle_events.items) |event| {
             const item_ref = event.inbox_outbox_item_ref orelse continue;
@@ -34049,6 +34103,7 @@ pub const Continuity = struct {
     }
 
     fn inboxOutboxPendingRefs(vault: *Continuity.MemoryVault, inbox: bool) ![]ObjectRef {
+        try requireChronicleEventsMatchCursor(vault);
         var refs: std.ArrayList(ObjectRef) = .empty;
         errdefer deinitRefList(vault.allocator, &refs);
         for (vault.chronicle_events.items) |event| {
@@ -34068,6 +34123,7 @@ pub const Continuity = struct {
     }
 
     fn outboxCapsuleForRef(vault: *Continuity.MemoryVault, ref: ObjectRef) !ObjectRef {
+        try requireChronicleEventsMatchCursor(vault);
         for (vault.chronicle_events.items) |event| {
             if (event.kind != .outbox_item_created) continue;
             const item_ref = event.inbox_outbox_item_ref orelse continue;
@@ -37100,7 +37156,10 @@ test "chronicle commit fingerprint binds transaction cursors objects and events"
         .capsule_refs = &objects,
         .metadata_bytes = "diagnostic b",
     });
-    try std.testing.expectEqual(commit.commit_fingerprint, same_authority_different_metadata.commit_fingerprint);
+    try std.testing.expect(commit.commit_fingerprint != same_authority_different_metadata.commit_fingerprint);
+    var tampered_metadata = commit;
+    tampered_metadata.metadata_bytes = "diagnostic b";
+    try std.testing.expectError(error.InvalidFrameEncoding, tampered_metadata.validate());
 
     var changed_events = [_]u64{0xaaaa};
     const changed_commit = Continuity.Chronicle.Commit.init(.{
@@ -38080,6 +38139,58 @@ test "idempotency registry records fresh commits and allows replay receipts" {
     try std.testing.expect(registry.lookup(key_ref).?.eql(receipt_ref));
     try std.testing.expectError(error.DuplicateBinding, registry.assertFreshCommitAllowed(key_ref));
 
+    try vault.appendChronicleEventWithoutCursor(Continuity.Chronicle.Event.init(.{
+        .kind = .actuation_receipt_stored,
+        .actuation_refs = &.{receipt_ref},
+        .target_ref = receipt_ref,
+    }));
+    try std.testing.expectError(error.StaleProjection, Continuity.Chronicle.IdempotencyRegistry.rebuild(&vault));
+    var unauthenticated_receipt_event = vault.chronicle_events.pop().?;
+    unauthenticated_receipt_event.deinit(allocator);
+
+    const uncommitted_key = Actuation.IdempotencyKey.init(.{
+        .target_ref_fingerprint = 0x3470_7101,
+        .world_surface_fingerprint = 0x3470_7102,
+        .world_port_id = 11,
+        .request_fingerprint = 0x3470_7103,
+        .actuator_ref_fingerprint = 0x3470_7104,
+        .intent_fingerprint = 0x3470_7110,
+    });
+    const uncommitted_receipt = Actuation.Receipt.init(.{
+        .intent_fingerprint = 0x3470_7110,
+        .envelope_fingerprint = 0x3470_7111,
+        .decision_fingerprint = 0x3470_7112,
+        .commit_fingerprint = 0x3470_7113,
+        .response_fingerprint = 0x3470_7114,
+        .frame_response_fingerprint = 0x3470_7115,
+        .actuator_ref_fingerprint = 0x3470_7104,
+        .idempotency_key_fingerprint = uncommitted_key.key_fingerprint,
+        .request_fingerprint = 0x3470_7103,
+        .target_ref_fingerprint = 0x3470_7101,
+        .world_surface_fingerprint = 0x3470_7102,
+        .world_port_id = 11,
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+        .fresh_called = true,
+    });
+    const uncommitted_receipt_payload = try uncommitted_receipt.encode(allocator);
+    defer allocator.free(uncommitted_receipt_payload);
+    const uncommitted_receipt_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_receipt,
+        .object_format_version = uncommitted_receipt.format_version,
+        .payload_bytes = uncommitted_receipt_payload,
+        .label = "uncommitted actuation receipt",
+    });
+    try vault.objects.append(allocator, try uncommitted_receipt_envelope.clone(allocator));
+    var filtered_registry = try Continuity.Chronicle.IdempotencyRegistry.rebuild(&vault);
+    defer filtered_registry.deinit(filtered_registry.allocator);
+    try std.testing.expectEqual(@as(usize, 1), filtered_registry.fresh_commit_count);
+    const uncommitted_key_ref = Continuity.semanticObjectRef(.actuation_idempotency_key, uncommitted_key.key_fingerprint);
+    try std.testing.expect(filtered_registry.lookup(uncommitted_key_ref) == null);
+    try Actuation.assertIdempotencyAvailable(&session, uncommitted_key, .{});
+    var uncommitted_receipt_cleanup = vault.objects.pop().?;
+    uncommitted_receipt_cleanup.deinit(allocator);
+
     var incremental_vault = Continuity.MemoryVault.init(allocator);
     defer incremental_vault.deinit();
     var incremental_registry = try Continuity.Chronicle.IdempotencyRegistry.rebuild(&incremental_vault);
@@ -38350,6 +38461,15 @@ test "inbox outbox views rebuild from chronicle events" {
     var repeated_bundle = try outbox.exportBundle(repeated_outbound_ref);
     defer repeated_bundle.deinit();
     try outbox.markExported(repeated_outbound_ref);
+    try outbound_vault.appendChronicleEventWithoutCursor(Continuity.Chronicle.Event.init(.{
+        .kind = .outbox_item_created,
+        .capsule_ref = root_ref,
+        .inbox_outbox_item_ref = repeated_outbound_ref,
+    }));
+    try std.testing.expectError(error.StaleProjection, outbox.listPending());
+    try std.testing.expectError(error.StaleProjection, outbox.exportBundle(repeated_outbound_ref));
+    var unauthenticated_outbox_event = outbound_vault.chronicle_events.pop().?;
+    unauthenticated_outbox_event.deinit(allocator);
 
     const bundle_bytes = try bundle.toBytes(allocator);
     defer allocator.free(bundle_bytes);
@@ -38412,6 +38532,14 @@ test "inbox outbox views rebuild from chronicle events" {
         allocator.free(accepted_inbound);
     }
     try std.testing.expectEqual(@as(usize, 0), accepted_inbound.len);
+    try inbound_vault.appendChronicleEventWithoutCursor(Continuity.Chronicle.Event.init(.{
+        .kind = .inbox_item_created,
+        .inbox_outbox_item_ref = inbound_ref,
+    }));
+    try std.testing.expectError(error.StaleProjection, inbox.listPending());
+    try std.testing.expectError(error.StaleProjection, inbox.inspect(inbound_ref));
+    var unauthenticated_inbox_event = inbound_vault.chronicle_events.pop().?;
+    unauthenticated_inbox_event.deinit(allocator);
 }
 
 test "continuity session import validates bundles before transaction commit" {
@@ -38644,6 +38772,36 @@ test "executable recovery plans and rejects before runspace mutation" {
     );
     try target_bound_replay_plan.validate();
     try std.testing.expectEqual(replay_target_fingerprint, target_bound_replay_plan.target_ref_fingerprint);
+
+    var uncommitted_vault = Continuity.MemoryVault.init(allocator);
+    defer uncommitted_vault.deinit();
+    var uncommitted_session = try Continuity.Session.init(allocator, &uncommitted_vault, Continuity.PersistPolicy.full_local_evidence());
+    var uncommitted_source = Runspace.init(allocator, .{});
+    defer uncommitted_source.deinit();
+    var uncommitted_image = try Capsule.freezeRunspace(&uncommitted_source, .{});
+    defer uncommitted_image.deinit(allocator);
+    const uncommitted_payload = try uncommitted_image.encode(allocator);
+    defer allocator.free(uncommitted_payload);
+    const uncommitted_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .capsule_image,
+        .object_format_version = uncommitted_image.format_version,
+        .payload_bytes = uncommitted_payload,
+        .label = "uncommitted-capsule",
+    });
+    try uncommitted_vault.objects.append(allocator, try uncommitted_envelope.clone(allocator));
+    const uncommitted_ref = uncommitted_envelope.objectRef();
+    const uncommitted_plan = try Continuity.Recovery.planThawFromVault(&uncommitted_session, uncommitted_ref, {}, {}, {}, .{});
+    try uncommitted_plan.validate();
+    try std.testing.expect(uncommitted_plan.blockers.len != 0);
+    var uncommitted_runspace = Runspace.init(allocator, .{});
+    defer uncommitted_runspace.deinit();
+    const uncommitted_report = try Continuity.Recovery.executeThawPlanFromVault(&uncommitted_session, &uncommitted_runspace, uncommitted_plan, {}, {}, {}, .{});
+    try uncommitted_report.validate();
+    try std.testing.expect(!uncommitted_report.accepted);
+    try std.testing.expectEqual(@as(usize, 0), uncommitted_runspace.slots.items.len);
+    const uncommitted_replay_plan = try Continuity.Recovery.planReplayFromVault(&uncommitted_session, uncommitted_ref, .{ .target_ref_fingerprint = 0 }, .{});
+    try uncommitted_replay_plan.validate();
+    try std.testing.expect(uncommitted_replay_plan.blockers.len != 0);
 
     var vault = Continuity.MemoryVault.init(allocator);
     defer vault.deinit();
