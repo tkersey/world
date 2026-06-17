@@ -28442,6 +28442,7 @@ pub const Continuity = struct {
             rebuild_capsule_index: bool = true,
             rebuild_actuation_index: bool = true,
             rebuild_idempotency_registry: bool = true,
+            rebuild_object_index: bool = true,
             rebuild_inbox: bool = true,
             rebuild_outbox: bool = true,
             rebuild_recovery_queue: bool = true,
@@ -28466,6 +28467,12 @@ pub const Continuity = struct {
             if (options.rebuild_idempotency_registry) {
                 var registry = try IdempotencyRegistry.rebuild(vault);
                 defer registry.deinit(registry.allocator);
+                rebuilt_count += 1;
+            }
+            if (options.rebuild_object_index) {
+                var projection = try Projection.rebuild(vault, .object_index);
+                defer projection.deinit();
+                try projection.report.validate();
                 rebuilt_count += 1;
             }
             if (options.rebuild_inbox) {
@@ -28505,6 +28512,11 @@ pub const Continuity = struct {
                 const replayed = try idempotencyRegistrySummaryForReplay(&replay_vault);
                 if (source != replayed) mismatch_count += 1;
             }
+            if (options.rebuild_object_index) {
+                const source = try projectionSummaryForReplay(vault, .object_index);
+                const replayed = try projectionSummaryForReplay(&replay_vault, .object_index);
+                if (source != replayed) mismatch_count += 1;
+            }
             if (options.rebuild_inbox) {
                 const source = try projectionSummaryForReplay(vault, .inbox);
                 const replayed = try projectionSummaryForReplay(&replay_vault, .inbox);
@@ -28520,6 +28532,7 @@ pub const Continuity = struct {
                 const replayed = try projectionSummaryForReplay(&replay_vault, .recovery_queue);
                 if (source != replayed) mismatch_count += 1;
             }
+            if (vault.cursor().cursor_fingerprint != replay_vault.cursor().cursor_fingerprint) mismatch_count += 1;
             return ReplayReport.init(.{
                 .start_cursor_fingerprint = start.cursor_fingerprint,
                 .end_cursor_fingerprint = vault.cursor().cursor_fingerprint,
@@ -33536,7 +33549,31 @@ pub const Continuity = struct {
             try destination.chronicle_events.append(destination.allocator, owned);
             owned_pending = false;
         }
-        destination.chronicle_cursor = source.chronicle_cursor;
+        destination.chronicle_cursor = replayCursorFromChronicle(source);
+    }
+
+    fn replayCursorFromChronicle(vault: *const Continuity.MemoryVault) Chronicle.Cursor {
+        var cursor = Chronicle.Cursor.initial();
+        var event_index: usize = 0;
+        for (vault.chronicle_commits.items) |commit| {
+            while (cursor.cursor_fingerprint != commit.parent_cursor_fingerprint and event_index < vault.chronicle_events.items.len) {
+                cursor = replayCursorAdvanceEvent(cursor, vault.chronicle_events.items[event_index]);
+                event_index += 1;
+            }
+            if (cursor.cursor_fingerprint != commit.parent_cursor_fingerprint) continue;
+            cursor = cursor.advance(commit.committed_event_fingerprints, commit.committed_object_refs.len, 1);
+            event_index += @min(commit.committed_event_fingerprints.len, vault.chronicle_events.items.len - event_index);
+        }
+        while (event_index < vault.chronicle_events.items.len) {
+            cursor = replayCursorAdvanceEvent(cursor, vault.chronicle_events.items[event_index]);
+            event_index += 1;
+        }
+        return cursor;
+    }
+
+    fn replayCursorAdvanceEvent(cursor: Chronicle.Cursor, event: Chronicle.Event) Chronicle.Cursor {
+        const committed_object_count: u64 = if (event.kind == .object_committed and event.transaction_fingerprint == null) 1 else 0;
+        return cursor.advance(&.{event.event_fingerprint}, committed_object_count, 0);
     }
 
     fn fingerprintHandoffEnvelope(envelope: HandoffEnvelope) u64 {

@@ -902,7 +902,7 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Chronicle replay projection example.",
             .expected_stdout =
             \\event_count=7
-            \\replay_report_fingerprint=1cc8b988f3f655d7
+            \\replay_report_fingerprint=751fbdbe18d1839d
             \\projection_match=true
             \\
             ,
