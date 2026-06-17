@@ -29386,7 +29386,13 @@ pub const Continuity = struct {
                 for (vault.chronicle_events.items) |event| {
                     if (!projectionKindConsumesEvent(kind, event.kind)) continue;
                     consumed_event_count += 1;
-                    for (event.object_refs) |ref| try appendProjectionCommittedObjectRef(vault, &refs, kind, ref);
+                    for (event.object_refs) |ref| {
+                        if (event.kind == .object_committed) {
+                            try appendProjectionCommittedObjectRef(vault, &refs, kind, ref);
+                        } else {
+                            try appendProjectionRef(vault, &refs, kind, ref);
+                        }
+                    }
                     if (event.capsule_ref) |ref| try appendProjectionRef(vault, &refs, kind, ref);
                     if (event.bundle_ref) |ref| try appendProjectionRef(vault, &refs, kind, ref);
                     if (event.inbox_outbox_item_ref) |ref| try appendProjectionRef(vault, &refs, kind, ref);
@@ -30000,9 +30006,39 @@ pub const Continuity = struct {
         }
 
         fn assertTransactionCanStageEnvelope(self: *@This(), tx: *const Chronicle.Transaction, envelope: ObjectEnvelope) !void {
-            try self.validateStorableEnvelope(envelope);
+            try self.validateTransactionStorableEnvelope(tx, envelope);
             try self.rejectDuplicateFreshCommitsForEnvelope(envelope);
             try self.assertTransactionEnvelopeRefAvailable(tx, envelope);
+        }
+
+        fn validateTransactionStorableEnvelope(self: *@This(), tx: *const Chronicle.Transaction, envelope: ObjectEnvelope) !void {
+            var available_envelopes: std.ArrayList(ObjectEnvelope) = .empty;
+            defer available_envelopes.deinit(self.allocator);
+            try appendChronicleCommittedVaultEnvelopes(self.allocator, self, &available_envelopes);
+            try available_envelopes.appendSlice(self.allocator, tx.staged_envelopes.items);
+            if (!(try bundleContainsRef(self.allocator, available_envelopes.items, envelope.objectRef()))) {
+                try available_envelopes.append(self.allocator, envelope);
+            }
+
+            var roots = [_]ObjectRef{envelope.objectRef()};
+            var envelopes = [_]ObjectEnvelope{envelope};
+            const bundle = Bundle{
+                .allocator = self.allocator,
+                .manifest = BundleManifest.init(.{ .roots = &roots, .object_count = envelopes.len }),
+                .envelopes = &envelopes,
+            };
+            const report = try bundleValidationReportAgainstAvailable(self.allocator, bundle, available_envelopes.items, .{
+                .allow_external_dependencies = true,
+            });
+            if (!report.valid) return error.InvalidFrameEncoding;
+            try self.assertStoredDependencyRefsAvailable(available_envelopes.items, envelope);
+        }
+
+        fn assertStoredDependencyRefsAvailable(self: @This(), available_envelopes: []const ObjectEnvelope, envelope: ObjectEnvelope) !void {
+            for (envelope.dependency_refs) |dep| {
+                if (dep.byte_len == 0) continue;
+                if (!(try bundleContainsRef(self.allocator, available_envelopes, dep))) return error.InvalidFrameEncoding;
+            }
         }
 
         fn assertTransactionBundleEnvelopeCanStage(self: *@This(), tx: *const Chronicle.Transaction, bundle: Bundle, envelope: ObjectEnvelope) !void {
@@ -32016,7 +32052,7 @@ pub const Continuity = struct {
 
     fn registryEvidenceRefForJournalEntry(vault: *Continuity.MemoryVault, journal_ref: ObjectRef, entry: Actuation.Journal.Entry) !ObjectRef {
         if (entry.receipt_fingerprint) |fingerprint| {
-            if (try vault.refByKindFingerprint(.actuation_receipt, fingerprint)) |ref| return ref;
+            if (try chronicleCommittedRefByKindFingerprint(vault, .actuation_receipt, fingerprint)) |ref| return ref;
         }
         return journal_ref;
     }
@@ -33994,6 +34030,15 @@ pub const Continuity = struct {
             if (containsRef(event.object_refs, resolved_ref)) return true;
         }
         return false;
+    }
+
+    fn chronicleCommittedRefByKindFingerprint(vault: *const Continuity.MemoryVault, kind: ObjectKind, fingerprint: u64) !?ObjectRef {
+        for (vault.objects.items) |envelope| {
+            const ref = envelope.objectRef();
+            if (ref.kind != kind or ref.object_fingerprint != fingerprint) continue;
+            if (try chronicleCommittedObjectRefExistsInAuthenticatedEvents(vault, ref)) return ref;
+        }
+        return null;
     }
 
     fn chronicleResolveObjectRef(vault: *const Continuity.MemoryVault, ref: ObjectRef) !?ObjectRef {
@@ -38045,6 +38090,20 @@ test "projection reports detect stale cursor and chronicle replay reports are st
     missing_object_vault.objects.shrinkRetainingCapacity(0);
     try std.testing.expectError(error.ObjectMissing, Continuity.Chronicle.Projection.rebuild(&missing_object_vault, .object_index));
 
+    const missing_validated_ref = Continuity.semanticObjectRef(.capsule_manifest, 0x3472_9001);
+    const missing_validated_refs = [_]Continuity.ObjectRef{missing_validated_ref};
+    var non_commit_ref_tx = try vault.beginTransaction(.custom, .{});
+    defer non_commit_ref_tx.deinit();
+    try non_commit_ref_tx.addEvent(Continuity.Chronicle.Event.init(.{
+        .kind = .object_validated,
+        .object_refs = &missing_validated_refs,
+        .target_ref = missing_validated_ref,
+    }));
+    _ = try non_commit_ref_tx.commit();
+    var projection_after_non_commit_ref = try Continuity.Chronicle.Projection.rebuild(&vault, .object_index);
+    defer projection_after_non_commit_ref.deinit();
+    try std.testing.expect(!Continuity.containsRef(projection_after_non_commit_ref.report.object_refs_consumed, missing_validated_ref));
+
     const report = try Continuity.Chronicle.replay(&vault, .{});
     try report.validate();
     try std.testing.expectEqual(vault.eventCount(), report.replayed_event_count);
@@ -38335,6 +38394,22 @@ test "idempotency registry records fresh commits and allows replay receipts" {
     defer journal_registry.deinit(journal_registry.allocator);
     const journal_key_ref = Continuity.semanticObjectRef(.actuation_idempotency_key, journal_receipt.idempotency_key_fingerprint);
     try std.testing.expect(journal_registry.lookup(journal_key_ref).?.eql(journal_ref));
+    const raw_journal_receipt_payload = try journal_receipt.encode(allocator);
+    defer allocator.free(raw_journal_receipt_payload);
+    const raw_journal_receipt_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_receipt,
+        .object_format_version = journal_receipt.format_version,
+        .payload_bytes = raw_journal_receipt_payload,
+        .label = "raw journal receipt evidence",
+    });
+    try journal_only_vault.objects.append(allocator, try raw_journal_receipt_envelope.clone(allocator));
+    var journal_registry_with_raw_receipt = try Continuity.Chronicle.IdempotencyRegistry.rebuild(&journal_only_vault);
+    defer journal_registry_with_raw_receipt.deinit(journal_registry_with_raw_receipt.allocator);
+    try std.testing.expect(journal_registry_with_raw_receipt.lookup(journal_key_ref).?.eql(journal_ref));
+    try std.testing.expect(Continuity.containsRef(journal_registry_with_raw_receipt.committed_evidence_refs, journal_ref));
+    try std.testing.expect(!Continuity.containsRef(journal_registry_with_raw_receipt.committed_evidence_refs, raw_journal_receipt_envelope.objectRef()));
+    var raw_journal_receipt_cleanup = journal_only_vault.objects.pop().?;
+    raw_journal_receipt_cleanup.deinit(allocator);
     try std.testing.expectError(error.DuplicateBinding, journal_registry.assertFreshCommitAllowed(journal_key_ref));
     try std.testing.expectError(error.DuplicateBinding, journal_only_session.storeActuationJournal(fresh_journal));
 
@@ -38483,6 +38558,56 @@ test "idempotency registry records fresh commits and allows replay receipts" {
     try raw_conflict_vault.objects.append(allocator, try raw_conflict_envelope.clone(allocator));
     const raw_conflict_ref = try raw_conflict_session.storeActuationReceipt(fresh_b);
     try std.testing.expect(raw_conflict_vault.has(raw_conflict_ref));
+
+    var raw_dependency_vault = Continuity.MemoryVault.init(allocator);
+    defer raw_dependency_vault.deinit();
+    const raw_dependency_key = Actuation.IdempotencyKey.init(.{
+        .target_ref_fingerprint = 0x3470_9101,
+        .world_surface_fingerprint = 0x3470_9102,
+        .world_port_id = 12,
+        .request_fingerprint = 0x3470_9103,
+        .actuator_ref_fingerprint = 0x3470_9104,
+        .intent_fingerprint = 0x3470_9110,
+    });
+    const raw_dependency_key_payload = try Continuity.encodePortableEvidence(Actuation.IdempotencyKey, allocator, raw_dependency_key);
+    defer allocator.free(raw_dependency_key_payload);
+    const raw_dependency_key_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_idempotency_key,
+        .object_format_version = raw_dependency_key.format_version,
+        .payload_bytes = raw_dependency_key_payload,
+        .label = "raw idempotency key",
+    });
+    try raw_dependency_vault.objects.append(allocator, try raw_dependency_key_envelope.clone(allocator));
+    const raw_dependency_receipt = Actuation.Receipt.init(.{
+        .intent_fingerprint = 0x3470_9110,
+        .envelope_fingerprint = 0x3470_9111,
+        .decision_fingerprint = 0x3470_9112,
+        .commit_fingerprint = 0x3470_9113,
+        .response_fingerprint = 0x3470_9114,
+        .frame_response_fingerprint = 0x3470_9115,
+        .actuator_ref_fingerprint = raw_dependency_key.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = raw_dependency_key.key_fingerprint,
+        .request_fingerprint = raw_dependency_key.request_fingerprint,
+        .target_ref_fingerprint = raw_dependency_key.target_ref_fingerprint,
+        .world_surface_fingerprint = raw_dependency_key.world_surface_fingerprint,
+        .world_port_id = raw_dependency_key.world_port_id,
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+        .fresh_called = true,
+    });
+    const raw_dependency_receipt_payload = try raw_dependency_receipt.encode(allocator);
+    defer allocator.free(raw_dependency_receipt_payload);
+    const raw_dependency_refs = [_]Continuity.ObjectRef{raw_dependency_key_envelope.objectRef()};
+    const raw_dependency_receipt_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_receipt,
+        .object_format_version = raw_dependency_receipt.format_version,
+        .dependency_refs = &raw_dependency_refs,
+        .payload_bytes = raw_dependency_receipt_payload,
+        .label = "receipt with raw dependency",
+    });
+    var raw_dependency_tx = try raw_dependency_vault.beginTransaction(.store_actuation, .{});
+    defer raw_dependency_tx.deinit();
+    try std.testing.expectError(error.InvalidFrameEncoding, raw_dependency_tx.put(raw_dependency_receipt_envelope));
 
     var transaction_vault = Continuity.MemoryVault.init(allocator);
     defer transaction_vault.deinit();
