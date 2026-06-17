@@ -21813,8 +21813,16 @@ pub const Actuation = struct {
     }
 
     pub fn journalToSession(session: *Continuity.Session, journal: Journal, options: SessionStoreOptions) !Continuity.ObjectRef {
-        _ = options;
         try journal.validate();
+        if (options.strict_idempotency) {
+            var registry = try Continuity.Chronicle.IdempotencyRegistry.rebuild(session.vault);
+            defer registry.deinit(registry.allocator);
+            for (journal.entries.items) |entry| {
+                if (!Continuity.journalEntryIsTerminalFreshCommit(entry)) continue;
+                const key = entry.idempotency_key_fingerprint orelse return error.InvalidFrameEncoding;
+                try registry.assertFreshCommitAllowed(Continuity.semanticObjectRef(.actuation_idempotency_key, key));
+            }
+        }
         return session.storeActuationJournal(journal);
     }
 
@@ -32462,12 +32470,13 @@ pub const Continuity = struct {
                     .recovery_report_ref = report.report_ref,
                 }));
                 report.report_fingerprint = fingerprintRecoveryReport(report);
-                appendOwnedRecoveryChronicleEventAssumeCapacity(session, Chronicle.Event.init(.{
+                const owned_recovery_report_event = try Chronicle.Event.init(.{
                     .kind = .recovery_report_stored,
                     .capsule_ref = capsule_ref,
                     .recovery_plan_ref = semanticObjectRef(.capsule_thaw_plan, plan.plan_fingerprint),
                     .recovery_report_ref = report.report_ref,
-                }));
+                }).clone(session.vault.allocator);
+                appendOwnedRecoveryChronicleEventAssumeCapacity(session, owned_recovery_report_event);
             }
             try report.validate();
             return report;
@@ -32508,11 +32517,12 @@ pub const Continuity = struct {
             const plan_ref = semanticObjectRef(.capsule_thaw_plan, plan.plan_fingerprint);
             if (session.policy.require_transaction_for_recovery) {
                 try session.vault.chronicle_events.ensureUnusedCapacity(session.vault.allocator, 2);
-                appendOwnedRecoveryChronicleEventAssumeCapacity(session, Chronicle.Event.init(.{
+                const owned_replayed_event = try Chronicle.Event.init(.{
                     .kind = .capsule_replayed,
                     .capsule_ref = capsule_ref,
                     .recovery_plan_ref = plan_ref,
-                }));
+                }).clone(session.vault.allocator);
+                appendOwnedRecoveryChronicleEventAssumeCapacity(session, owned_replayed_event);
             }
             var report = RecoveryReport.init(.{
                 .recovery_plan_fingerprint = plan.plan_fingerprint,
@@ -32530,12 +32540,13 @@ pub const Continuity = struct {
                 report.report_fingerprint = fingerprintRecoveryReport(report);
             }
             if (session.policy.require_transaction_for_recovery) {
-                appendOwnedRecoveryChronicleEventAssumeCapacity(session, Chronicle.Event.init(.{
+                const owned_recovery_report_event = try Chronicle.Event.init(.{
                     .kind = .recovery_report_stored,
                     .capsule_ref = capsule_ref,
                     .recovery_plan_ref = plan_ref,
                     .recovery_report_ref = report.report_ref,
-                }));
+                }).clone(session.vault.allocator);
+                appendOwnedRecoveryChronicleEventAssumeCapacity(session, owned_recovery_report_event);
             }
             try report.validate();
             return report;
@@ -32564,11 +32575,12 @@ pub const Continuity = struct {
             const plan_ref = semanticObjectRef(.capsule_thaw_plan, plan.plan_fingerprint);
             if (session.policy.require_transaction_for_recovery) {
                 try session.vault.chronicle_events.ensureUnusedCapacity(session.vault.allocator, 2);
-                appendOwnedRecoveryChronicleEventAssumeCapacity(session, Chronicle.Event.init(.{
+                const owned_recovery_blocked_event = try Chronicle.Event.init(.{
                     .kind = .recovery_blocked,
                     .capsule_ref = plan.capsule_ref,
                     .recovery_plan_ref = plan_ref,
-                }));
+                }).clone(session.vault.allocator);
+                appendOwnedRecoveryChronicleEventAssumeCapacity(session, owned_recovery_blocked_event);
             }
             var report = RecoveryReport.init(.{
                 .recovery_plan_fingerprint = plan.plan_fingerprint,
@@ -32586,12 +32598,13 @@ pub const Continuity = struct {
                 report.report_fingerprint = fingerprintRecoveryReport(report);
             }
             if (session.policy.require_transaction_for_recovery) {
-                appendOwnedRecoveryChronicleEventAssumeCapacity(session, Chronicle.Event.init(.{
+                const owned_recovery_report_event = try Chronicle.Event.init(.{
                     .kind = .recovery_report_stored,
                     .capsule_ref = plan.capsule_ref,
                     .recovery_plan_ref = plan_ref,
                     .recovery_report_ref = report.report_ref,
-                }));
+                }).clone(session.vault.allocator);
+                appendOwnedRecoveryChronicleEventAssumeCapacity(session, owned_recovery_report_event);
             }
             try report.validate();
             return report;
@@ -32621,9 +32634,28 @@ pub const Continuity = struct {
 
         fn appendOwnedRecoveryChronicleEventAssumeCapacity(session: *Session, event: Chronicle.Event) void {
             std.debug.assert(session.policy.require_transaction_for_recovery);
+            std.debug.assert(event.owns_memory or chronicleRecoveryEventUsesStableStorage(event));
             session.vault.chronicle_events.appendAssumeCapacity(event);
             session.vault.chronicle_cursor = session.vault.chronicle_cursor.advance(&.{event.event_fingerprint}, 0, 0);
             session.refreshFingerprint();
+        }
+
+        fn chronicleRecoveryEventUsesStableStorage(event: Chronicle.Event) bool {
+            if (event.parent_event_fingerprints.len != 0 or
+                event.object_refs.len != 0 or
+                event.root_refs.len != 0 or
+                event.actuation_refs.len != 0 or
+                event.blocker_summary.len != 0 or
+                event.warning_summary.len != 0 or
+                event.metadata_bytes.len != 0) return false;
+            if (event.capsule_ref) |ref| if (!objectRefUsesStableStorage(ref)) return false;
+            if (event.recovery_plan_ref) |ref| if (!objectRefUsesStableStorage(ref)) return false;
+            if (event.recovery_report_ref) |ref| if (!objectRefUsesStableStorage(ref)) return false;
+            return true;
+        }
+
+        fn objectRefUsesStableStorage(ref: ObjectRef) bool {
+            return !ref.owns_memory and ref.label.len == 0 and ref.metadata.len == 0;
         }
 
         pub fn inspectCapsule(vault: *Continuity.MemoryVault, capsule_ref: ObjectRef) !CapsuleGraph {
