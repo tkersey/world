@@ -1,4 +1,5 @@
 # Runtime/transient orchestration files
+.ledger/*
 .step/st-plan.jsonl.lock
 .step/update-plan.json
 .step/proof.log
