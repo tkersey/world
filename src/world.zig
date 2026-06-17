@@ -31139,14 +31139,14 @@ pub const Continuity = struct {
 
             var envelope = vault.get(resolved_current) catch |err| switch (err) {
                 error.ObjectMissing => {
-                    try missing.append(vault.allocator, try current.clone(vault.allocator));
+                    try appendClonedRef(missing, vault.allocator, current);
                     return;
                 },
                 else => return err,
             };
             defer envelope.deinit(vault.allocator);
 
-            try active.append(vault.allocator, try resolved_current.clone(vault.allocator));
+            try appendClonedRef(active, vault.allocator, resolved_current);
             defer {
                 var owned = active.pop().?;
                 owned.deinit(vault.allocator);
@@ -31157,7 +31157,7 @@ pub const Continuity = struct {
                 try visitObject(vault, dep, options, objects, missing, active, dependency_cycle);
             }
             if (objects.items.len + missing.items.len >= options.max_object_count) return error.InvalidFrameEncoding;
-            try objects.append(vault.allocator, try resolved_current.clone(vault.allocator));
+            try appendClonedRef(objects, vault.allocator, resolved_current);
         }
 
         pub fn validateClosure(vault: *Continuity.MemoryVault, roots: []const ObjectRef, options: GraphOptions) !ObjectValidationReport {
