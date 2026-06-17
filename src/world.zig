@@ -33990,7 +33990,7 @@ pub const Continuity = struct {
                 event.kind == .inbox_item_accepted or event.kind == .inbox_item_rejected or event.kind == .inbox_item_restored
             else
                 event.kind == .outbox_item_completed;
-            if (created and !containsRef(refs.items, ref)) try refs.append(vault.allocator, try ref.clone(vault.allocator));
+            if (created and !containsRef(refs.items, ref)) try appendClonedRef(&refs, vault.allocator, ref);
             if (terminal) removeRef(&refs, vault.allocator, ref);
         }
         return refs.toOwnedSlice(vault.allocator);
