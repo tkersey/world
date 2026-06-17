@@ -32767,6 +32767,7 @@ pub const Continuity = struct {
 
         pub fn planReplayFromVault(session: *Session, capsule_ref: ObjectRef, target: anytype, options: Options) !RecoveryPlan {
             const source_cursor = session.cursor();
+            const target_ref_fingerprint = targetRefFingerprintFromArg(target) orelse 0;
             const ledger_count_before = session.vault.ledger.events.items.len;
             const ledger_next_order_before = session.vault.ledger.next_order;
             const event_count_before = session.vault.chronicle_events.items.len;
@@ -32796,6 +32797,7 @@ pub const Continuity = struct {
                 .capsule_ref = capsule_ref,
                 .source_cursor_fingerprint = source_cursor.cursor_fingerprint,
                 .requested_mode = .replay_only,
+                .target_ref_fingerprint = target_ref_fingerprint,
                 .blockers = blockers,
                 .runspace_mutation_plan = "replay without fresh host calls",
             });
@@ -38606,6 +38608,27 @@ test "executable recovery plans and rejects before runspace mutation" {
     const disabled_replay_plan = try Continuity.Recovery.planReplayFromVault(&disabled_ready_session, disabled_ready_ref, .{ .target_ref_fingerprint = 0 }, .{});
     try disabled_replay_plan.validate();
     try std.testing.expect(disabled_before_replay_plan_fingerprint != disabled_ready_session.session_fingerprint);
+    const replay_target_fingerprint = 0x3490_2211;
+    const target_bound_replay_image = Capsule.Image.init(.{
+        .manifest = Capsule.Manifest.init(.{
+            .kind = .replay_only,
+            .root_target_ref_fingerprint = replay_target_fingerprint,
+            .normal_form = disabled_ready_image.manifest.normal_form,
+        }),
+        .runspace_image = Capsule.RunspaceImage.init(.{
+            .runspace_fingerprint = 0x3490_2212,
+            .runspace_report_fingerprint = 0x3490_2213,
+        }),
+    });
+    const target_bound_replay_ref = try disabled_ready_vault.putCapsule(target_bound_replay_image);
+    const target_bound_replay_plan = try Continuity.Recovery.planReplayFromVault(
+        &disabled_ready_session,
+        target_bound_replay_ref,
+        .{ .target_ref_fingerprint = replay_target_fingerprint },
+        .{},
+    );
+    try target_bound_replay_plan.validate();
+    try std.testing.expectEqual(replay_target_fingerprint, target_bound_replay_plan.target_ref_fingerprint);
 
     var vault = Continuity.MemoryVault.init(allocator);
     defer vault.deinit();
