@@ -29335,13 +29335,13 @@ pub const Continuity = struct {
                 for (vault.chronicle_events.items) |event| {
                     if (!projectionKindConsumesEvent(kind, event.kind)) continue;
                     consumed_event_count += 1;
-                    for (event.object_refs) |ref| try appendProjectionRef(vault.allocator, &refs, kind, ref);
-                    if (event.capsule_ref) |ref| try appendProjectionRef(vault.allocator, &refs, kind, ref);
-                    if (event.bundle_ref) |ref| try appendProjectionRef(vault.allocator, &refs, kind, ref);
-                    if (event.inbox_outbox_item_ref) |ref| try appendProjectionRef(vault.allocator, &refs, kind, ref);
-                    if (event.recovery_plan_ref) |ref| try appendProjectionRef(vault.allocator, &refs, kind, ref);
-                    if (event.recovery_report_ref) |ref| try appendProjectionRef(vault.allocator, &refs, kind, ref);
-                    for (event.actuation_refs) |ref| try appendProjectionRef(vault.allocator, &refs, kind, ref);
+                    for (event.object_refs) |ref| try appendProjectionRef(vault, &refs, kind, ref);
+                    if (event.capsule_ref) |ref| try appendProjectionRef(vault, &refs, kind, ref);
+                    if (event.bundle_ref) |ref| try appendProjectionRef(vault, &refs, kind, ref);
+                    if (event.inbox_outbox_item_ref) |ref| try appendProjectionRef(vault, &refs, kind, ref);
+                    if (event.recovery_plan_ref) |ref| try appendProjectionRef(vault, &refs, kind, ref);
+                    if (event.recovery_report_ref) |ref| try appendProjectionRef(vault, &refs, kind, ref);
+                    for (event.actuation_refs) |ref| try appendProjectionRef(vault, &refs, kind, ref);
                 }
                 const summary = projectionSummaryFingerprint(vault, kind, refs.items);
                 const consumed_refs = if (refs.items.len == 0) &.{} else try cloneRefSlice(vault.allocator, refs.items);
@@ -32385,9 +32385,9 @@ pub const Continuity = struct {
             for (image.runspace_image.run_slots) |slot_image| {
                 if (slot_image.role == .root) restored_root_count += 1;
             }
-            const handles = try runspace.allocator.alloc(u64, restored_root_count);
+            const handles = try session.vault.allocator.alloc(u64, restored_root_count);
             var handles_owned = true;
-            errdefer if (handles_owned) runspace.allocator.free(handles);
+            errdefer if (handles_owned) session.vault.allocator.free(handles);
             if (session.policy.require_transaction_for_recovery) {
                 try session.vault.chronicle_events.ensureUnusedCapacity(session.vault.allocator, 2);
             }
@@ -32421,7 +32421,7 @@ pub const Continuity = struct {
                 restored_handles = handles;
                 handles_owned = false;
             } else {
-                runspace.allocator.free(handles);
+                session.vault.allocator.free(handles);
                 handles_owned = false;
             }
             if (session.policy.require_transaction_for_recovery) {
@@ -33387,10 +33387,18 @@ pub const Continuity = struct {
         };
     }
 
-    fn appendProjectionRef(allocator: std.mem.Allocator, refs: *std.ArrayList(ObjectRef), kind: Chronicle.ProjectionKind, ref: ObjectRef) !void {
+    fn appendProjectionRef(vault: *Continuity.MemoryVault, refs: *std.ArrayList(ObjectRef), kind: Chronicle.ProjectionKind, ref: ObjectRef) !void {
         if (!projectionKindIncludesRef(kind, ref)) return;
+        if (projectionKindRequiresStoredRef(kind) and !vault.has(ref)) return;
         if (containsRef(refs.items, ref)) return;
-        try refs.append(allocator, ref);
+        try refs.append(vault.allocator, ref);
+    }
+
+    fn projectionKindRequiresStoredRef(kind: Chronicle.ProjectionKind) bool {
+        return switch (kind) {
+            .capsule_index, .actuation_index, .idempotency_registry, .object_index => true,
+            else => false,
+        };
     }
 
     fn projectionKindConsumesEvent(kind: Chronicle.ProjectionKind, event_kind: Chronicle.EventKind) bool {
@@ -37846,6 +37854,9 @@ test "executable recovery plans and rejects before runspace mutation" {
     var recovery_projection = try Continuity.Chronicle.Projection.rebuild(&vault, .recovery_queue);
     defer recovery_projection.deinit();
     try std.testing.expect(recovery_projection.report.object_refs_consumed.len != 0);
+    var capsule_projection = try Continuity.Chronicle.Projection.rebuild(&vault, .capsule_index);
+    defer capsule_projection.deinit();
+    try std.testing.expect(!Continuity.containsRef(capsule_projection.report.object_refs_consumed, missing_capsule));
     try std.testing.expectEqual(before_slots, runspace.slots.items.len);
     const forged_plan = Continuity.RecoveryPlan.init(.{
         .capsule_ref = missing_capsule,
