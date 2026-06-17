@@ -33819,7 +33819,8 @@ pub const Continuity = struct {
     fn projectionKindIncludesRef(kind: Chronicle.ProjectionKind, ref: ObjectRef) bool {
         return switch (kind) {
             .capsule_index => ref.kind == .capsule_image,
-            .actuation_index, .idempotency_registry => ref.kind == .actuation_receipt or ref.kind == .actuation_journal,
+            .actuation_index => ref.kind == .actuation_receipt or ref.kind == .actuation_journal,
+            .idempotency_registry => ref.kind == .actuation_commit or ref.kind == .actuation_receipt or ref.kind == .actuation_journal,
             .object_index => true,
             .bundle_history => ref.kind == .bundle,
             .inbox, .outbox => ref.kind == .handoff_envelope or ref.kind == .bundle or ref.kind == .capsule_image,
@@ -38141,6 +38142,9 @@ test "idempotency registry records fresh commits and allows replay receipts" {
     try std.testing.expect(commit_only_registry.lookup(commit_key_ref).?.eql(standalone_commit_ref));
     try std.testing.expectError(error.DuplicateBinding, commit_only_registry.assertFreshCommitAllowed(commit_key_ref));
     try std.testing.expectError(error.DuplicateBinding, Actuation.assertIdempotencyAvailable(&commit_only_session, commit_key, .{}));
+    var commit_only_projection = try Continuity.Chronicle.Projection.rebuild(&commit_only_vault, .idempotency_registry);
+    defer commit_only_projection.deinit();
+    try std.testing.expect(Continuity.containsRef(commit_only_projection.report.object_refs_consumed, standalone_commit_ref));
 
     const replay_receipt = Actuation.Receipt.init(.{
         .intent_fingerprint = 0x3470_0030,
