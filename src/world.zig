@@ -32238,6 +32238,9 @@ pub const Continuity = struct {
         capsule_ref: ObjectRef,
         source_cursor_fingerprint: u64,
         requested_mode: RequestedMode,
+        target_ref_fingerprint: u64 = 0,
+        environment_fingerprint: u64 = 0,
+        permit_fingerprint: u64 = 0,
         target_match_refs: []const ObjectRef = &.{},
         module_match_refs: []const ObjectRef = &.{},
         link_verification_status: bool = false,
@@ -32256,6 +32259,9 @@ pub const Continuity = struct {
             capsule_ref: ObjectRef,
             source_cursor_fingerprint: u64,
             requested_mode: RequestedMode,
+            target_ref_fingerprint: u64 = 0,
+            environment_fingerprint: u64 = 0,
+            permit_fingerprint: u64 = 0,
             blockers: []const u64 = &.{},
             warnings: []const u64 = &.{},
             runspace_mutation_plan: []const u8 = "",
@@ -32265,6 +32271,9 @@ pub const Continuity = struct {
                 .capsule_ref = args.capsule_ref,
                 .source_cursor_fingerprint = args.source_cursor_fingerprint,
                 .requested_mode = args.requested_mode,
+                .target_ref_fingerprint = args.target_ref_fingerprint,
+                .environment_fingerprint = args.environment_fingerprint,
+                .permit_fingerprint = args.permit_fingerprint,
                 .blockers = args.blockers,
                 .warnings = args.warnings,
                 .runspace_mutation_plan = args.runspace_mutation_plan,
@@ -32355,6 +32364,9 @@ pub const Continuity = struct {
         pub fn planThawFromVault(session: *Session, capsule_ref: ObjectRef, registry: anytype, env: anytype, permit: anytype, options: Options) !RecoveryPlan {
             const requested_mode = recoveryRequestedModeFromThaw(options.thaw_options.mode);
             const source_cursor = session.cursor();
+            var target_ref_fingerprint: u64 = 0;
+            const environment_fingerprint = environmentFingerprintFromArg(env) orelse 0;
+            const permit_fingerprint = permitFingerprintFromArg(permit) orelse 0;
             const blockers: []const u64 = blk: {
                 var graph = preflightThawCapsule(session.vault, capsule_ref, registry, env, permit, options) catch |err| switch (err) {
                     error.ObjectMissing, error.InvalidFrameEncoding, error.DuplicateBinding => {
@@ -32364,6 +32376,9 @@ pub const Continuity = struct {
                     else => return err,
                 };
                 graph.deinit();
+                var image = try session.vault.getCapsule(capsule_ref);
+                defer image.deinit(session.vault.allocator);
+                target_ref_fingerprint = thawTargetRefFingerprintFromArg(registry, image.manifest.root_target_ref_fingerprint) orelse 0;
                 try appendRecoveryChronicleEvent(session, Chronicle.Event.init(.{ .kind = .recovery_ready, .capsule_ref = capsule_ref }));
                 break :blk &.{};
             };
@@ -32371,6 +32386,9 @@ pub const Continuity = struct {
                 .capsule_ref = capsule_ref,
                 .source_cursor_fingerprint = source_cursor.cursor_fingerprint,
                 .requested_mode = requested_mode,
+                .target_ref_fingerprint = target_ref_fingerprint,
+                .environment_fingerprint = environment_fingerprint,
+                .permit_fingerprint = permit_fingerprint,
                 .blockers = blockers,
                 .runspace_mutation_plan = if (blockers.len == 0) "capsule thaw may mutate runspace" else "blocked before runspace mutation",
             });
@@ -32392,6 +32410,7 @@ pub const Continuity = struct {
             try plan.validate();
             if (plan.requested_mode != recoveryRequestedModeFromThaw(options.thaw_options.mode)) return error.InvalidFrameEncoding;
             if (session.policy.require_transaction_for_recovery and !recoveryPlanIsCurrent(session.vault, plan)) return error.InvalidFrameEncoding;
+            if (!try recoveryPlanAuthorityMatches(session.vault, plan, registry, env, permit)) return error.InvalidFrameEncoding;
             const before_slots = runspace.slots.items.len;
             if (plan.blockers.len != 0) {
                 if (before_slots != runspace.slots.items.len) return error.InvalidRunspaceTransition;
@@ -32651,6 +32670,20 @@ pub const Continuity = struct {
             const last_event = vault.chronicle_events.items[vault.chronicle_events.items.len - 1];
             const expected_kind: Chronicle.EventKind = if (plan.blockers.len == 0) .capsule_recovery_ready else .capsule_recovery_rejected;
             return recoveryPlanEventMatches(last_event, plan, expected_kind);
+        }
+
+        fn recoveryPlanAuthorityMatches(vault: *Continuity.MemoryVault, plan: RecoveryPlan, registry: anytype, env: anytype, permit: anytype) !bool {
+            const environment_fingerprint = environmentFingerprintFromArg(env) orelse 0;
+            const permit_fingerprint = permitFingerprintFromArg(permit) orelse 0;
+            if (environment_fingerprint != plan.environment_fingerprint) return false;
+            if (permit_fingerprint != plan.permit_fingerprint) return false;
+            var image = vault.getCapsule(plan.capsule_ref) catch |err| switch (err) {
+                error.ObjectMissing => return plan.target_ref_fingerprint == (targetRefFingerprintFromArg(registry) orelse 0),
+                else => return err,
+            };
+            defer image.deinit(vault.allocator);
+            const target_ref_fingerprint = thawTargetRefFingerprintFromArg(registry, image.manifest.root_target_ref_fingerprint) orelse 0;
+            return target_ref_fingerprint == plan.target_ref_fingerprint;
         }
 
         fn recoveryPlanEventMatches(event: Chronicle.Event, plan: RecoveryPlan, expected_kind: Chronicle.EventKind) bool {
@@ -33598,6 +33631,9 @@ pub const Continuity = struct {
         hashOptionalRef(&hasher, plan.capsule_ref);
         hashU64(&hasher, plan.source_cursor_fingerprint);
         hashU64(&hasher, @intFromEnum(plan.requested_mode));
+        hashU64(&hasher, plan.target_ref_fingerprint);
+        hashU64(&hasher, plan.environment_fingerprint);
+        hashU64(&hasher, plan.permit_fingerprint);
         hashRefSlice(&hasher, plan.target_match_refs);
         hashRefSlice(&hasher, plan.module_match_refs);
         hashBool(&hasher, plan.link_verification_status);
@@ -37971,6 +38007,7 @@ test "executable recovery plans and rejects before runspace mutation" {
     const current_plan = try Continuity.Recovery.planThawFromVault(&session, missing_capsule, {}, {}, {}, .{});
     try current_plan.validate();
     try std.testing.expect(current_plan.blockers.len != 0);
+    try std.testing.expectError(error.InvalidFrameEncoding, Continuity.Recovery.executeThawPlanFromVault(&session, &runspace, current_plan, {}, {}, .{ .permit_fingerprint = 0x3490_7771 }, .{}));
     const report = try Continuity.Recovery.executeThawPlanFromVault(&session, &runspace, current_plan, {}, {}, {}, .{});
     try report.validate();
     try std.testing.expect(!report.accepted);
