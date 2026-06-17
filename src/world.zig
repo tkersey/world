@@ -32420,13 +32420,16 @@ pub const Continuity = struct {
             });
             var owned_recovery_executed_event: ?Chronicle.Event = null;
             var owned_recovery_blocked_event: ?Chronicle.Event = null;
+            var owned_recovery_report_capsule_ref: ?ObjectRef = null;
             errdefer if (owned_recovery_executed_event) |*event| event.deinit(session.vault.allocator);
             errdefer if (owned_recovery_blocked_event) |*event| event.deinit(session.vault.allocator);
+            errdefer if (owned_recovery_report_capsule_ref) |*ref| ref.deinit(session.vault.allocator);
             if (session.policy.require_transaction_for_recovery) {
                 try recovery_executed_event.validate();
                 try recovery_blocked_event.validate();
                 owned_recovery_executed_event = try recovery_executed_event.clone(session.vault.allocator);
                 owned_recovery_blocked_event = try recovery_blocked_event.clone(session.vault.allocator);
+                owned_recovery_report_capsule_ref = try capsule_ref.clone(session.vault.allocator);
             }
             var restore = try Capsule.thawIntoRunspace(image, runspace, target, environment, permit_fingerprint, options.thaw_options);
             defer restore.deinit(runspace.allocator);
@@ -32464,20 +32467,17 @@ pub const Continuity = struct {
             });
             report.owns_memory = restored_handles.len != 0;
             if (session.policy.require_transaction_for_recovery) {
-                report.resulting_cursor_fingerprint = recoveryReportResultingCursorFingerprint(session, Chronicle.Event.init(.{
+                var owned_recovery_report_event = Chronicle.Event.init(.{
                     .kind = .recovery_report_stored,
-                    .capsule_ref = capsule_ref,
+                    .capsule_ref = owned_recovery_report_capsule_ref.?,
                     .recovery_plan_ref = semanticObjectRef(.capsule_thaw_plan, plan.plan_fingerprint),
                     .recovery_report_ref = report.report_ref,
-                }));
+                });
+                owned_recovery_report_event.owns_memory = true;
+                report.resulting_cursor_fingerprint = recoveryReportResultingCursorFingerprint(session, owned_recovery_report_event);
                 report.report_fingerprint = fingerprintRecoveryReport(report);
-                const owned_recovery_report_event = try Chronicle.Event.init(.{
-                    .kind = .recovery_report_stored,
-                    .capsule_ref = capsule_ref,
-                    .recovery_plan_ref = semanticObjectRef(.capsule_thaw_plan, plan.plan_fingerprint),
-                    .recovery_report_ref = report.report_ref,
-                }).clone(session.vault.allocator);
                 appendOwnedRecoveryChronicleEventAssumeCapacity(session, owned_recovery_report_event);
+                owned_recovery_report_capsule_ref = null;
             }
             try report.validate();
             return report;
