@@ -21788,41 +21788,25 @@ pub const Actuation = struct {
         return vault.putActuationJournal(journal);
     }
 
-    pub const SessionStoreOptions = struct {
-        strict_idempotency: bool = true,
-    };
+    pub const SessionStoreOptions = struct {};
 
     pub fn assertIdempotencyAvailable(session: *Continuity.Session, key: IdempotencyKey, options: SessionStoreOptions) !void {
+        _ = options;
         try key.validate();
-        if (!options.strict_idempotency) return;
         var registry = try Continuity.Chronicle.IdempotencyRegistry.rebuild(session.vault);
         defer registry.deinit(registry.allocator);
         try registry.assertFreshCommitAllowed(Continuity.semanticObjectRef(.actuation_idempotency_key, key.key_fingerprint));
     }
 
     pub fn commitToSession(session: *Continuity.Session, receipt: Receipt, options: SessionStoreOptions) !Continuity.ObjectRef {
+        _ = options;
         try receipt.validate();
-        if (options.strict_idempotency and receipt.fresh_called and
-            !receipt.pending and !receipt.deferred and !receipt.failed and !receipt.rejected and !receipt.cancelled)
-        {
-            var registry = try Continuity.Chronicle.IdempotencyRegistry.rebuild(session.vault);
-            defer registry.deinit(registry.allocator);
-            try registry.assertFreshCommitAllowed(Continuity.semanticObjectRef(.actuation_idempotency_key, receipt.idempotency_key_fingerprint));
-        }
         return session.storeActuationReceipt(receipt);
     }
 
     pub fn journalToSession(session: *Continuity.Session, journal: Journal, options: SessionStoreOptions) !Continuity.ObjectRef {
+        _ = options;
         try journal.validate();
-        if (options.strict_idempotency) {
-            var registry = try Continuity.Chronicle.IdempotencyRegistry.rebuild(session.vault);
-            defer registry.deinit(registry.allocator);
-            for (journal.entries.items) |entry| {
-                if (!Continuity.journalEntryIsTerminalFreshCommit(entry)) continue;
-                const key = entry.idempotency_key_fingerprint orelse return error.InvalidFrameEncoding;
-                try registry.assertFreshCommitAllowed(Continuity.semanticObjectRef(.actuation_idempotency_key, key));
-            }
-        }
         return session.storeActuationJournal(journal);
     }
 
