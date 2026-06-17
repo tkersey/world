@@ -29619,12 +29619,7 @@ pub const Continuity = struct {
                 defer bundle.deinit();
                 try canonicalizeBundleDependencyRefsForStorage(&bundle);
                 try rejectDuplicateFreshCommitsAgainstVault(self.session.vault, bundle);
-                const bundle_ref = ObjectRef.init(.{
-                    .kind = .bundle,
-                    .object_format_version = 1,
-                    .object_fingerprint = bundle.manifest.manifest_fingerprint,
-                    .byte_len = bytes.len,
-                });
+                const bundle_ref = bundleObjectRefFromBytes(bytes);
                 const envelope = HandoffEnvelope.init(.{
                     .direction = .inbound,
                     .bundle_ref = bundle_ref,
@@ -29725,14 +29720,12 @@ pub const Continuity = struct {
                 };
                 const roots = [_]ObjectRef{capsule_ref};
                 try tx.addEvent(Chronicle.Event.init(.{ .kind = .bundle_export_started, .root_refs = &roots }));
+                if (!try chronicleCommittedObjectRefExists(self.session.vault, capsule_ref)) return error.ObjectMissing;
                 var bundle = try Bundle.exportFromVault(self.session.vault, &roots, .{});
                 errdefer bundle.deinit();
-                const bundle_ref = ObjectRef.init(.{
-                    .kind = .bundle,
-                    .object_format_version = 1,
-                    .object_fingerprint = bundle.manifest.manifest_fingerprint,
-                    .byte_len = bundle.manifest.bundle_byte_len,
-                });
+                const bundle_bytes = try bundle.toBytes(self.session.allocator);
+                defer self.session.allocator.free(bundle_bytes);
+                const bundle_ref = bundleObjectRefFromBytes(bundle_bytes);
                 try tx.addEvent(Event.init(.{ .kind = .outbox_item_exported, .inbox_outbox_item_ref = ref, .bundle_ref = bundle_ref }));
                 try tx.addEvent(Chronicle.Event.init(.{ .kind = .bundle_export_committed, .bundle_ref = bundle_ref, .root_refs = &roots }));
                 _ = try tx.commit();
@@ -30596,12 +30589,7 @@ pub const Continuity = struct {
             try rejectDuplicateFreshCommitsAgainstVault(self.vault, bundle);
             var manifest = try bundle.manifest.clone(self.allocator);
             errdefer manifest.deinit(self.allocator);
-            const bundle_ref = ObjectRef.init(.{
-                .kind = .bundle,
-                .object_format_version = 1,
-                .object_fingerprint = bundle.manifest.manifest_fingerprint,
-                .byte_len = bytes.len,
-            });
+            const bundle_ref = bundleObjectRefFromBytes(bytes);
             const ledger_count_before = self.vault.ledger.events.items.len;
             const ledger_next_order_before = self.vault.ledger.next_order;
             var restore_ledger = true;
@@ -30625,6 +30613,9 @@ pub const Continuity = struct {
             var tx = try self.begin(.export_bundle);
             errdefer self.abandonTransaction();
             defer tx.deinit();
+            for (roots) |root| {
+                if (!try chronicleCommittedObjectRefExists(self.vault, root)) return error.ObjectMissing;
+            }
             const ledger_count_before = self.vault.ledger.events.items.len;
             const ledger_next_order_before = self.vault.ledger.next_order;
             var restore_ledger = true;
@@ -30635,12 +30626,9 @@ pub const Continuity = struct {
             try tx.addEvent(Chronicle.Event.init(.{ .kind = .bundle_export_started, .root_refs = roots }));
             var bundle = try Bundle.exportFromVault(self.vault, roots, .{});
             errdefer bundle.deinit();
-            const bundle_ref = ObjectRef.init(.{
-                .kind = .bundle,
-                .object_format_version = 1,
-                .object_fingerprint = bundle.manifest.manifest_fingerprint,
-                .byte_len = bundle.manifest.bundle_byte_len,
-            });
+            const bundle_bytes = try bundle.toBytes(self.allocator);
+            defer self.allocator.free(bundle_bytes);
+            const bundle_ref = bundleObjectRefFromBytes(bundle_bytes);
             try tx.addEvent(Chronicle.Event.init(.{ .kind = .bundle_export_committed, .bundle_ref = bundle_ref, .root_refs = roots }));
             _ = try tx.commit();
             self.finishTransaction();
@@ -30718,6 +30706,7 @@ pub const Continuity = struct {
         pub fn recordCompletedCapsule(self: *@This(), runspace: *Runspace, options: Capsule.FreezeOptions) !?ObjectRef {
             if (!self.policy.persist_completed_capsule) return null;
             var completed_options = options;
+            completed_options.require_quiescent = true;
             completed_options.allow_failed = false;
             completed_options.allow_parked = false;
             completed_options.allow_active_fabric_parked = false;
@@ -32538,6 +32527,7 @@ pub const Continuity = struct {
         receiver_permit_ref: ?ObjectRef = null,
         blockers: []const u64 = &.{},
         warnings: []const u64 = &.{},
+        owned_memory_allocator: ?std.mem.Allocator = null,
         owns_memory: bool = false,
 
         pub fn init(args: struct {
@@ -32571,11 +32561,13 @@ pub const Continuity = struct {
             if (!self.report_ref.eql(semanticObjectRef(.capsule_restore_report, fingerprintRecoveryReportRef(self)))) return error.InvalidFrameEncoding;
             if (self.restored_capsule_ref) |ref| try ref.validate();
             if (self.report_fingerprint != fingerprintRecoveryReport(self)) return error.InvalidFrameEncoding;
+            if (self.owns_memory and self.owned_memory_allocator == null) return error.InvalidFrameEncoding;
         }
 
         pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
             if (self.owns_memory) {
-                allocator.free(self.restored_run_handles);
+                const owned_allocator = self.owned_memory_allocator orelse allocator;
+                owned_allocator.free(self.restored_run_handles);
             }
             self.* = undefined;
         }
@@ -32763,6 +32755,7 @@ pub const Continuity = struct {
                 .blockers = if (restore.accepted) &.{} else &.{1},
             });
             report.owns_memory = restored_handles.len != 0;
+            if (report.owns_memory) report.owned_memory_allocator = session.allocator;
             if (session.policy.require_transaction_for_recovery) {
                 var owned_recovery_report_event = Chronicle.Event.init(.{
                     .kind = .recovery_report_stored,
@@ -34140,6 +34133,10 @@ pub const Continuity = struct {
         hashU64(&hasher, manifest.object_count);
         hashU64(&hasher, manifest.bundle_byte_len);
         return hasher.final();
+    }
+
+    fn bundleObjectRefFromBytes(bytes: []const u8) ObjectRef {
+        return ObjectRef.fromPayload(.bundle, 1, bytes, "bundle.bytes");
     }
 
     fn bundleContainsRef(allocator: std.mem.Allocator, envelopes: []const ObjectEnvelope, ref: ObjectRef) !bool {
@@ -38713,6 +38710,29 @@ test "continuity session import validates bundles before transaction commit" {
     try std.testing.expectError(error.InvalidFrameEncoding, cycle_import_session.importBundle(cycle_import_bytes));
 }
 
+test "bundle object refs bind encoded bundle bytes" {
+    const first_ref = Continuity.bundleObjectRefFromBytes("bundle-roots-a");
+    const second_ref = Continuity.bundleObjectRefFromBytes("bundle-roots-b");
+    try std.testing.expectEqual(first_ref.byte_len, second_ref.byte_len);
+    try std.testing.expect(!first_ref.eql(second_ref));
+}
+
+test "recovery report deinit uses owned allocator for restored handles" {
+    const allocator = std.testing.allocator;
+    const handles = try allocator.alloc(u64, 1);
+    handles[0] = 0x3488_0001;
+    var report = Continuity.RecoveryReport.init(.{
+        .recovery_plan_fingerprint = 0x3488_1001,
+        .accepted = true,
+        .resulting_cursor_fingerprint = 0x3488_1002,
+        .restored_run_handles = handles,
+    });
+    report.owns_memory = true;
+    report.owned_memory_allocator = allocator;
+    try report.validate();
+    report.deinit(std.heap.page_allocator);
+}
+
 test "executable recovery plans and rejects before runspace mutation" {
     const allocator = std.testing.allocator;
     var disabled_vault = Continuity.MemoryVault.init(allocator);
@@ -39406,6 +39426,18 @@ test "chronicle transaction bundle staging allocation failure restores staged st
 
 test "continuity session export allocation failure restores ledger state" {
     const allocator = std.testing.allocator;
+    var unauthenticated_vault = Continuity.MemoryVault.init(allocator);
+    defer unauthenticated_vault.deinit();
+    var unauthenticated_session = try Continuity.Session.init(allocator, &unauthenticated_vault, Continuity.PersistPolicy.full_local_evidence());
+    const unauthenticated_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .capsule_manifest,
+        .object_format_version = world_capsule_manifest_format_version,
+        .payload_bytes = "unauthenticated export root",
+    });
+    const unauthenticated_root = unauthenticated_envelope.objectRef();
+    try unauthenticated_vault.objects.append(allocator, try unauthenticated_envelope.clone(allocator));
+    try std.testing.expectError(error.ObjectMissing, unauthenticated_session.exportBundle(&.{unauthenticated_root}));
+
     const envelope = Continuity.ObjectEnvelope.init(.{
         .kind = .capsule_manifest,
         .object_format_version = world_capsule_manifest_format_version,

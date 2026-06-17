@@ -914,7 +914,7 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Chronicle bundle inbox example.",
             .expected_stdout =
             \\outbound_envelope_ref=4b8a94ac7e375cdb
-            \\inbound_envelope_ref=f39666ffa95b7fd
+            \\inbound_envelope_ref=eda78eed6788f67b
             \\accepted=true
             \\
             ,
