@@ -31131,7 +31131,7 @@ pub const Continuity = struct {
         if (bundle.envelopes.len > options.max_object_count) return error.InvalidFrameEncoding;
         var missing_root_count: usize = 0;
         for (bundle.manifest.roots) |root| {
-            if (!(try bundleContainsRef(allocator, available_envelopes, root))) missing_root_count += 1;
+            if (!(try bundleContainsRef(allocator, bundle.envelopes, root))) missing_root_count += 1;
         }
         if (missing_root_count != 0) {
             return ObjectValidationReport.init(.{
@@ -38573,6 +38573,28 @@ test "continuity session import validates bundles before transaction commit" {
     try std.testing.expectEqual(event_count_before, vault.eventCount());
     try std.testing.expectEqual(active_transaction_count_before, session.active_transaction_count);
     try std.testing.expectEqual(session_fingerprint_before, session.session_fingerprint);
+
+    var locally_available_root_vault = Continuity.MemoryVault.init(allocator);
+    defer locally_available_root_vault.deinit();
+    var locally_available_root_session = try Continuity.Session.init(allocator, &locally_available_root_vault, Continuity.PersistPolicy.full_local_evidence());
+    const local_root_ref = try locally_available_root_vault.put(Continuity.ObjectEnvelope.init(.{
+        .kind = .capsule_manifest,
+        .object_format_version = world_capsule_manifest_format_version,
+        .payload_bytes = "locally-available-root",
+    }));
+    const local_roots = [_]Continuity.ObjectRef{local_root_ref};
+    const local_root_missing_from_bundle = Continuity.Bundle{
+        .allocator = allocator,
+        .manifest = Continuity.BundleManifest.init(.{ .roots = &local_roots, .object_count = no_envelopes.len }),
+        .envelopes = &no_envelopes,
+    };
+    const local_root_missing_bytes = try local_root_missing_from_bundle.toBytes(allocator);
+    defer allocator.free(local_root_missing_bytes);
+    const local_root_object_count_before = locally_available_root_vault.objectCount();
+    const local_root_event_count_before = locally_available_root_vault.eventCount();
+    try std.testing.expectError(error.InvalidFrameEncoding, locally_available_root_session.importBundle(local_root_missing_bytes));
+    try std.testing.expectEqual(local_root_object_count_before, locally_available_root_vault.objectCount());
+    try std.testing.expectEqual(local_root_event_count_before, locally_available_root_vault.eventCount());
 
     var incremental_vault = Continuity.MemoryVault.init(allocator);
     defer incremental_vault.deinit();
