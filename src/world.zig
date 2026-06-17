@@ -32370,7 +32370,6 @@ pub const Continuity = struct {
             const blockers: []const u64 = blk: {
                 var graph = preflightThawCapsule(session.vault, capsule_ref, registry, env, permit, options) catch |err| switch (err) {
                     error.ObjectMissing, error.InvalidFrameEncoding, error.DuplicateBinding => {
-                        try appendRecoveryChronicleEvent(session, Chronicle.Event.init(.{ .kind = .recovery_blocked, .capsule_ref = capsule_ref }));
                         break :blk &.{1};
                     },
                     else => return err,
@@ -32379,7 +32378,6 @@ pub const Continuity = struct {
                 var image = try session.vault.getCapsule(capsule_ref);
                 defer image.deinit(session.vault.allocator);
                 target_ref_fingerprint = thawTargetRefFingerprintFromArg(registry, image.manifest.root_target_ref_fingerprint) orelse 0;
-                try appendRecoveryChronicleEvent(session, Chronicle.Event.init(.{ .kind = .recovery_ready, .capsule_ref = capsule_ref }));
                 break :blk &.{};
             };
             const plan = RecoveryPlan.init(.{
@@ -32393,7 +32391,10 @@ pub const Continuity = struct {
                 .runspace_mutation_plan = if (blockers.len == 0) "capsule thaw may mutate runspace" else "blocked before runspace mutation",
             });
             try plan.validate();
-            try appendRecoveryChronicleEvent(session, Chronicle.Event.init(.{
+            try appendRecoveryPlanningChronicleEvents(session, Chronicle.Event.init(.{
+                .kind = if (blockers.len == 0) .recovery_ready else .recovery_blocked,
+                .capsule_ref = capsule_ref,
+            }), Chronicle.Event.init(.{
                 .kind = if (blockers.len == 0) .capsule_recovery_ready else .capsule_recovery_rejected,
                 .capsule_ref = capsule_ref,
                 .recovery_plan_ref = semanticObjectRef(.capsule_thaw_plan, plan.plan_fingerprint),
@@ -32643,6 +32644,21 @@ pub const Continuity = struct {
             }
             try report.validate();
             return report;
+        }
+
+        fn appendRecoveryPlanningChronicleEvents(session: *Session, preplan_event: Chronicle.Event, plan_event: Chronicle.Event) !void {
+            if (!session.policy.require_transaction_for_recovery) return;
+            try preplan_event.validate();
+            try plan_event.validate();
+            try session.vault.chronicle_events.ensureUnusedCapacity(session.vault.allocator, 2);
+            var owned_preplan_event: ?Chronicle.Event = try preplan_event.clone(session.vault.allocator);
+            errdefer if (owned_preplan_event) |*event| event.deinit(session.vault.allocator);
+            var owned_plan_event: ?Chronicle.Event = try plan_event.clone(session.vault.allocator);
+            errdefer if (owned_plan_event) |*event| event.deinit(session.vault.allocator);
+            appendOwnedRecoveryChronicleEventAssumeCapacity(session, owned_preplan_event.?);
+            owned_preplan_event = null;
+            appendOwnedRecoveryChronicleEventAssumeCapacity(session, owned_plan_event.?);
+            owned_plan_event = null;
         }
 
         fn appendRecoveryChronicleEvent(session: *Session, event: Chronicle.Event) !void {
