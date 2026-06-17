@@ -29108,7 +29108,7 @@ pub const Continuity = struct {
                     .manifest = bundle.manifest,
                     .envelopes = validation_envelopes.items,
                 };
-                const report = try validation_bundle.validationReport(.{});
+                const report = try bundleValidationReportAgainstAvailable(self.allocator, bundle, validation_envelopes.items, .{});
                 if (!report.valid) return error.InvalidFrameEncoding;
                 try rejectDuplicateFreshCommitsAgainstVault(self.vault, bundle);
                 for (bundle.envelopes) |envelope| try self.vault.assertTransactionBundleEnvelopeCanStage(self, validation_bundle, envelope);
@@ -29166,13 +29166,10 @@ pub const Continuity = struct {
                     try validation_envelopes.appendSlice(self.allocator, self.staged_envelopes.items);
                     const validation_bundle = Bundle{
                         .allocator = self.allocator,
-                        .manifest = BundleManifest.init(.{
-                            .roots = self.staged_root_refs.items,
-                            .object_count = validation_envelopes.items.len,
-                        }),
+                        .manifest = staged_bundle.manifest,
                         .envelopes = validation_envelopes.items,
                     };
-                    const report = try validation_bundle.validationReport(.{});
+                    const report = try bundleValidationReportAgainstAvailable(self.allocator, staged_bundle, validation_envelopes.items, .{});
                     if (!report.valid) return error.InvalidFrameEncoding;
                     for (self.staged_envelopes.items) |envelope| try self.vault.assertTransactionBundleEnvelopeCanStage(self, validation_bundle, envelope);
                 } else {
@@ -31080,6 +31077,150 @@ pub const Continuity = struct {
             self.* = undefined;
         }
     };
+
+    fn bundleValidationReportAgainstAvailable(
+        allocator: std.mem.Allocator,
+        bundle: Bundle,
+        available_envelopes: []const ObjectEnvelope,
+        options: BundleOptions,
+    ) !ObjectValidationReport {
+        if (bundle.envelopes.len > options.max_object_count) return error.InvalidFrameEncoding;
+        var missing_root_count: usize = 0;
+        for (bundle.manifest.roots) |root| {
+            if (!(try bundleContainsRef(allocator, available_envelopes, root))) missing_root_count += 1;
+        }
+        if (missing_root_count != 0) {
+            return ObjectValidationReport.init(.{
+                .object_ref = ObjectRef.init(.{
+                    .kind = .bundle,
+                    .object_format_version = 1,
+                    .object_fingerprint = bundle.manifest.manifest_fingerprint,
+                    .byte_len = bundle.manifest.bundle_byte_len,
+                }),
+                .valid = false,
+                .object_kind = .bundle,
+                .object_format_version = 1,
+                .payload_fingerprint_valid = true,
+                .envelope_fingerprint_valid = true,
+                .dependency_count = bundle.envelopes.len,
+                .missing_dependency_count = missing_root_count,
+                .blockers = &.{.ObjectMissing},
+            });
+        }
+        try rejectConflictingDuplicateEnvelopes(bundle.envelopes);
+        var missing_count: usize = 0;
+        for (bundle.envelopes) |envelope| {
+            if (envelope.dependency_refs.len > options.max_dependency_count) return error.InvalidFrameEncoding;
+            try envelope.validate();
+            if (!(try bundleEnvelopeTypedPayloadValid(allocator, envelope))) {
+                return ObjectValidationReport.init(.{
+                    .object_ref = ObjectRef.init(.{
+                        .kind = envelope.kind,
+                        .object_format_version = envelope.object_format_version,
+                        .object_fingerprint = envelope.object_fingerprint,
+                        .byte_len = envelope.object_byte_len,
+                    }),
+                    .valid = false,
+                    .object_kind = envelope.kind,
+                    .object_format_version = envelope.object_format_version,
+                    .payload_fingerprint_valid = true,
+                    .envelope_fingerprint_valid = true,
+                    .dependency_count = envelope.dependency_refs.len,
+                    .blockers = &.{.DecodeFailed},
+                });
+            }
+            if (!(try bundleEnvelopeDeclaresRequiredDependencies(allocator, available_envelopes, envelope))) {
+                return ObjectValidationReport.init(.{
+                    .object_ref = ObjectRef.init(.{
+                        .kind = envelope.kind,
+                        .object_format_version = envelope.object_format_version,
+                        .object_fingerprint = envelope.object_fingerprint,
+                        .byte_len = envelope.object_byte_len,
+                    }),
+                    .valid = false,
+                    .object_kind = envelope.kind,
+                    .object_format_version = envelope.object_format_version,
+                    .payload_fingerprint_valid = true,
+                    .envelope_fingerprint_valid = true,
+                    .dependency_count = envelope.dependency_refs.len,
+                    .missing_dependency_count = 1,
+                    .blockers = &.{.MissingDependency},
+                });
+            }
+            if (!(try bundleEnvelopeDependencyPayloadsValid(allocator, available_envelopes, envelope))) {
+                return ObjectValidationReport.init(.{
+                    .object_ref = ObjectRef.init(.{
+                        .kind = envelope.kind,
+                        .object_format_version = envelope.object_format_version,
+                        .object_fingerprint = envelope.object_fingerprint,
+                        .byte_len = envelope.object_byte_len,
+                    }),
+                    .valid = false,
+                    .object_kind = envelope.kind,
+                    .object_format_version = envelope.object_format_version,
+                    .payload_fingerprint_valid = true,
+                    .envelope_fingerprint_valid = true,
+                    .dependency_count = envelope.dependency_refs.len,
+                    .blockers = &.{.DecodeFailed},
+                });
+            }
+            for (envelope.dependency_refs) |dep| {
+                if (!(try bundleContainsRef(allocator, available_envelopes, dep))) missing_count += 1;
+            }
+        }
+        const dependency_cycle = try bundleHasDependencyCycle(allocator, bundle.envelopes);
+        if (dependency_cycle) {
+            return ObjectValidationReport.init(.{
+                .object_ref = ObjectRef.init(.{
+                    .kind = .bundle,
+                    .object_format_version = 1,
+                    .object_fingerprint = bundle.manifest.manifest_fingerprint,
+                    .byte_len = bundle.manifest.bundle_byte_len,
+                }),
+                .valid = false,
+                .object_kind = .bundle,
+                .object_format_version = 1,
+                .payload_fingerprint_valid = true,
+                .envelope_fingerprint_valid = true,
+                .dependency_count = bundle.envelopes.len,
+                .blockers = &.{.DependencyCycle},
+            });
+        }
+        if (missing_count != 0 and !options.allow_external_dependencies) {
+            return ObjectValidationReport.init(.{
+                .object_ref = ObjectRef.init(.{
+                    .kind = .bundle,
+                    .object_format_version = 1,
+                    .object_fingerprint = bundle.manifest.manifest_fingerprint,
+                    .byte_len = bundle.manifest.bundle_byte_len,
+                }),
+                .valid = false,
+                .object_kind = .bundle,
+                .object_format_version = 1,
+                .payload_fingerprint_valid = true,
+                .envelope_fingerprint_valid = true,
+                .dependency_count = bundle.envelopes.len,
+                .missing_dependency_count = missing_count,
+                .blockers = &.{.MissingDependency},
+            });
+        }
+        if (options.reject_duplicate_fresh_actuation) try rejectDuplicateFreshCommitsInBundle(bundle);
+        return ObjectValidationReport.init(.{
+            .object_ref = ObjectRef.init(.{
+                .kind = .bundle,
+                .object_format_version = 1,
+                .object_fingerprint = bundle.manifest.manifest_fingerprint,
+                .byte_len = bundle.manifest.bundle_byte_len,
+            }),
+            .valid = true,
+            .object_kind = .bundle,
+            .object_format_version = 1,
+            .payload_fingerprint_valid = true,
+            .envelope_fingerprint_valid = true,
+            .dependency_count = bundle.envelopes.len,
+            .missing_dependency_count = missing_count,
+        });
+    }
 
     pub const GraphOptions = struct {
         max_object_count: usize = 8192,
@@ -38141,6 +38282,19 @@ test "continuity session import validates bundles before transaction commit" {
     });
     const request_ref = Continuity.semanticObjectRef(.frame_request, request.frame_fingerprint);
     _ = try incremental_vault.put(request_envelope);
+    const unrelated_missing_ref = Continuity.ObjectRef.init(.{
+        .kind = .capsule_certificate,
+        .object_format_version = world_capsule_certificate_format_version,
+        .object_fingerprint = 0x3471_2001,
+        .byte_len = 0,
+    });
+    const unrelated_legacy_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .capsule_manifest,
+        .object_format_version = world_capsule_manifest_format_version,
+        .dependency_refs = &.{unrelated_missing_ref},
+        .payload_bytes = "legacy-manifest",
+    });
+    try incremental_vault.objects.append(allocator, try unrelated_legacy_envelope.clone(allocator));
     const response_deps = [_]Continuity.ObjectRef{request_ref};
     const response_envelope = Continuity.ObjectEnvelope.init(.{
         .kind = .frame_response,
@@ -38168,6 +38322,7 @@ test "continuity session import validates bundles before transaction commit" {
     defer incremental_inbox_vault.deinit();
     var incremental_inbox_session = try Continuity.Session.init(allocator, &incremental_inbox_vault, Continuity.PersistPolicy.full_local_evidence());
     _ = try incremental_inbox_vault.put(request_envelope);
+    try incremental_inbox_vault.objects.append(allocator, try unrelated_legacy_envelope.clone(allocator));
     var incremental_inbox = Continuity.Chronicle.Inbox.init(&incremental_inbox_session);
     const inbox_ledger_count_before_incremental = incremental_inbox_vault.ledger.events.items.len;
     _ = try incremental_inbox.importBundle(incremental_bytes);
