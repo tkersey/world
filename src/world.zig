@@ -32785,7 +32785,6 @@ pub const Continuity = struct {
             const blockers: []const u64 = blk: {
                 var graph = preflightReplayCapsule(session.vault, capsule_ref, target, options) catch |err| switch (err) {
                     error.ObjectMissing, error.InvalidFrameEncoding, error.DuplicateBinding => {
-                        try appendRecoveryChronicleEvent(session, Chronicle.Event.init(.{ .kind = .recovery_blocked, .capsule_ref = capsule_ref }));
                         break :blk &.{1};
                     },
                     else => return err,
@@ -32803,7 +32802,7 @@ pub const Continuity = struct {
             });
             try plan.validate();
             try appendRecoveryChronicleEvent(session, Chronicle.Event.init(.{
-                .kind = .capsule_replay_planned,
+                .kind = if (blockers.len == 0) .capsule_replay_planned else .recovery_blocked,
                 .capsule_ref = capsule_ref,
                 .recovery_plan_ref = semanticObjectRef(.capsule_thaw_plan, plan.plan_fingerprint),
             }));
@@ -38642,6 +38641,12 @@ test "executable recovery plans and rejects before runspace mutation" {
     var runspace = Runspace.init(allocator, .{});
     defer runspace.deinit();
     const before_slots = runspace.slots.items.len;
+    const blocked_replay_plan = try Continuity.Recovery.planReplayFromVault(&session, missing_capsule, .{ .target_ref_fingerprint = 0 }, .{});
+    try blocked_replay_plan.validate();
+    try std.testing.expect(blocked_replay_plan.blockers.len != 0);
+    const blocked_replay_event = vault.chronicle_events.items[vault.chronicle_events.items.len - 1];
+    try std.testing.expectEqual(Continuity.Chronicle.EventKind.recovery_blocked, blocked_replay_event.kind);
+    try std.testing.expect(blocked_replay_event.recovery_plan_ref.?.eql(Continuity.semanticObjectRef(.capsule_thaw_plan, blocked_replay_plan.plan_fingerprint)));
 
     const cursor_before_plan = session.cursor();
     const plan = try Continuity.Recovery.planThawFromVault(&session, missing_capsule, {}, {}, {}, .{});
