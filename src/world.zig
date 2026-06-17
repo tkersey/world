@@ -28446,6 +28446,7 @@ pub const Continuity = struct {
             rebuild_inbox: bool = true,
             rebuild_outbox: bool = true,
             rebuild_recovery_queue: bool = true,
+            rebuild_bundle_history: bool = true,
         };
 
         pub fn replay(vault: *Continuity.MemoryVault, options: ReplayOptions) !ReplayReport {
@@ -28493,6 +28494,12 @@ pub const Continuity = struct {
                 try projection.report.validate();
                 rebuilt_count += 1;
             }
+            if (options.rebuild_bundle_history) {
+                var projection = try Projection.rebuild(vault, .bundle_history);
+                defer projection.deinit();
+                try projection.report.validate();
+                rebuilt_count += 1;
+            }
             var replay_vault = Continuity.MemoryVault.init(vault.allocator);
             defer replay_vault.deinit();
             try replayCommittedObjectsIntoVault(vault, &replay_vault);
@@ -28530,6 +28537,11 @@ pub const Continuity = struct {
             if (options.rebuild_recovery_queue) {
                 const source = try projectionSummaryForReplay(vault, .recovery_queue);
                 const replayed = try projectionSummaryForReplay(&replay_vault, .recovery_queue);
+                if (source != replayed) mismatch_count += 1;
+            }
+            if (options.rebuild_bundle_history) {
+                const source = try projectionSummaryForReplay(vault, .bundle_history);
+                const replayed = try projectionSummaryForReplay(&replay_vault, .bundle_history);
                 if (source != replayed) mismatch_count += 1;
             }
             if (vault.cursor().cursor_fingerprint != replay_vault.cursor().cursor_fingerprint) mismatch_count += 1;
@@ -33703,9 +33715,12 @@ pub const Continuity = struct {
 
     fn appendProjectionRef(vault: *Continuity.MemoryVault, refs: *std.ArrayList(ObjectRef), kind: Chronicle.ProjectionKind, ref: ObjectRef) !void {
         if (!projectionKindIncludesRef(kind, ref)) return;
-        if (projectionKindRequiresStoredRef(kind) and !vault.has(ref)) return;
-        if (containsRef(refs.items, ref)) return;
-        try refs.append(vault.allocator, ref);
+        const projection_ref = if (projectionKindRequiresStoredRef(kind))
+            (try vault.resolveRef(ref)) orelse return
+        else
+            ref;
+        if (containsRef(refs.items, projection_ref)) return;
+        try refs.append(vault.allocator, projection_ref);
     }
 
     fn projectionKindRequiresStoredRef(kind: Chronicle.ProjectionKind) bool {
@@ -38113,6 +38128,10 @@ test "inbox outbox views rebuild from chronicle events" {
     const semantic_root_ref = Continuity.semanticObjectRef(.capsule_image, image.image_fingerprint);
     const semantic_outbound_ref = try outbox.stageCapsule(semantic_root_ref);
     try std.testing.expect(semantic_outbound_ref.eql(outbound_ref));
+    var outbound_capsule_projection = try Continuity.Chronicle.Projection.rebuild(&outbound_vault, .capsule_index);
+    defer outbound_capsule_projection.deinit();
+    try std.testing.expect(Continuity.containsRef(outbound_capsule_projection.report.object_refs_consumed, root_ref));
+    try std.testing.expect(!Continuity.containsRef(outbound_capsule_projection.report.object_refs_consumed, semantic_root_ref));
     var wrong_inbox = Continuity.Chronicle.Inbox.init(&outbound_session);
     try std.testing.expectError(error.ObjectMissing, wrong_inbox.inspect(outbound_ref));
     const pending_outbound = try outbox.listPending();
@@ -38317,6 +38336,12 @@ test "continuity session import validates bundles before transaction commit" {
     defer incremental_manifest.deinit(allocator);
     try std.testing.expect(incremental_vault.has(response_ref));
     try std.testing.expectEqual(Continuity.Ledger.EventKind.bundle_imported, incremental_vault.ledger.events.items[ledger_count_before_incremental].kind);
+    const incremental_replay = try Continuity.Chronicle.replay(&incremental_vault, .{});
+    try std.testing.expectEqual(@as(usize, 8), incremental_replay.rebuilt_projection_count);
+    try std.testing.expectEqual(@as(usize, 0), incremental_replay.mismatch_count);
+    var incremental_bundle_projection = try Continuity.Chronicle.Projection.rebuild(&incremental_vault, .bundle_history);
+    defer incremental_bundle_projection.deinit();
+    try std.testing.expect(incremental_bundle_projection.report.object_refs_consumed.len != 0);
 
     var incremental_inbox_vault = Continuity.MemoryVault.init(allocator);
     defer incremental_inbox_vault.deinit();
