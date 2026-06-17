@@ -33663,6 +33663,7 @@ pub const Continuity = struct {
         hashU64(&hasher, cursor.cumulative_prefix_fingerprint);
         hashU64(&hasher, cursor.committed_object_count);
         hashU64(&hasher, cursor.committed_transaction_count);
+        hashBytesWithLenLocal(&hasher, cursor.metadata_bytes);
         return hasher.final();
     }
 
@@ -37153,6 +37154,10 @@ test "chronicle cursor initial and deterministic advancement" {
     const advanced_again = initial.advance(&events, 3, 1);
     try std.testing.expectEqual(advanced.cursor_fingerprint, advanced_again.cursor_fingerprint);
     try std.testing.expectEqual(advanced.cumulative_prefix_fingerprint, advanced_again.cumulative_prefix_fingerprint);
+
+    var tampered_metadata = advanced;
+    tampered_metadata.metadata_bytes = "diagnostic";
+    try std.testing.expectError(error.InvalidFrameEncoding, tampered_metadata.validate());
 }
 
 test "chronicle commit fingerprint binds transaction cursors objects and events" {
